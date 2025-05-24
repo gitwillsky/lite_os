@@ -1,0 +1,19 @@
+[package]
+name = "bootloader"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "bootloader"
+test = false
+bench = false
+
+[dependencies]
+dtb-walker = "=0.2.0-alpha.3"
+log = "0.4.27"
+riscv = "0.10.1"
+rustsbi = { version = "0.4.0", features = ["machine"] }
+sbi-spec = { version = "0.0.8", features = ["legacy"] }
+sifive-test-device = "0.0.0"
+spin = "0.10.0"
+uart16550 = "0.0.1"
