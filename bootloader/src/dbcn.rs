@@ -3,6 +3,7 @@ use core::ops::Range;
 use rustsbi::{Console, Physical, SbiRet};
 use spin::Once;
 
+/// 调试控制提扩展(Debug Console Extension,DBCN)
 pub(crate) struct DBCN(Range<usize>);
 
 static INSTANCE: Once<DBCN> = Once::new();

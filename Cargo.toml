@@ -1,7 +1,13 @@
 [workspace]
-members = ["kernel", "bootloader"]
+members = ["kernel", "bootloader", "user"]
 default-members = ["kernel"]
 resolver = "3"
 
 [profile.release]
-opt-level = 3
+panic = "abort"
+opt-level = "s"
+lto = "fat"
+
+[profile.dev]
+panic = "abort"
+opt-level = "s"

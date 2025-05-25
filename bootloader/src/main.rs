@@ -84,7 +84,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 [rustsbi] Implementation     : RustSBI-QEMU Version {ver_impl}
 [rustsbi] Platform Name      : {model}
 [rustsbi] Platform SMP       : {smp}
-[rustsbi] Platform Memory    : {mem:#x?}
+[rustsbi] Platform Memory    : {mem_addr:#x?},{mem_size}MiB
 [rustsbi] Boot HART          : {hart_id}
 [rustsbi] Device Tree Region : {dtb:#x?}
 [rustsbi] Firmware Address   : {firmware:#x}
@@ -95,7 +95,8 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             ver_impl = env!("CARGO_PKG_VERSION"),
             model = board_info.model,
             smp = board_info.smp,
-            mem = board_info.mem,
+            mem_addr = board_info.mem,
+            mem_size = (board_info.mem.end - board_info.mem.start) / (1024 * 1024),
             dtb = board_info.dtb,
             firmware = _start as usize,
         );
@@ -139,7 +140,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
     }
 }
 
-/// 设置 PMP。
+/// 设置 PMP，物理内存保护
 fn set_pmp(board_info: &BoardInfo) {
     use riscv::register::*;
     let mem = &board_info.mem;
