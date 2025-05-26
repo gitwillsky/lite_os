@@ -78,11 +78,9 @@ pub fn console_putchar(c: u8) -> SbiResult<()> {
     Ok(())
 }
 
-pub fn shutdown() -> ! {
-    let _ = sbi_call(0x08, 0, [0; 6]);
-    loop {
-        unsafe { core::arch::asm!("wfi") }
-    }
+pub fn shutdown() -> SbiResult<()> {
+    sbi_call(0x08, 0, [0; 6])?;
+    Ok(())
 }
 
 pub fn set_timer(timer_value: usize) -> SbiResult<()> {

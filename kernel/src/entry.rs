@@ -7,7 +7,11 @@ unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
             la sp, boot_stack_top
+            add t0, x10, x0
+            add t1, x11, x0
             call {clear_bss}
+            mv x10, t0
+            mv x11, t1
             call kmain
         1:
             wfi

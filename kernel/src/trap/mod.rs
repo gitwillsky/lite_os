@@ -31,6 +31,9 @@ pub fn init() {
         let current_sp: usize;
         core::arch::asm!("mv {}, sp", out(reg) current_sp);
         register::sscratch::write(current_sp);
+
+        // 使能中断
+        register::sstatus::set_sie();
     }
     println!("Trap module initialized");
 }

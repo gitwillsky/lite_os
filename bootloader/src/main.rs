@@ -50,7 +50,6 @@ unsafe extern "C" fn _start() -> ! {
 extern "C" fn rust_main(hart_id: usize, opaque: usize) {
     static GENESIS: AtomicBool = AtomicBool::new(true);
     static BOARD_INFO: Once<BoardInfo> = Once::new();
-
     // 全局初始化过程
     if GENESIS.swap(false, Ordering::Acquire) {
         unsafe extern "C" {

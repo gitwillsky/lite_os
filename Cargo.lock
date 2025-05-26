@@ -60,7 +60,9 @@ checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "dtb-walker",
  "riscv 0.13.0",
+ "spin",
 ]
 
 [[package]]

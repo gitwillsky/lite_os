@@ -10,3 +10,5 @@ bench = false
 
 [dependencies]
 riscv = "0.13.0"
+spin = "0.10.0"
+dtb-walker = "=0.2.0-alpha.3"

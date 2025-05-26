@@ -1,6 +1,6 @@
 use crate::arch::sbi;
 
-pub fn print_str(s: &str) {
+fn print_str(s: &str) {
     for c in s.bytes() {
         let _ = sbi::console_putchar(c);
     }
@@ -16,14 +16,16 @@ macro_rules! print {
 #[macro_export]
 macro_rules! println {
     ($($arg:tt)*) => {
-        $crate::console::_print_fmt(format_args!($($arg)*));
-        $crate::console::print_str("\n");
+        $crate::print!("{}\n", format_args!($($arg)*));
     };
 }
 
+static CONSOLE: spin::Mutex<ConsoleWriter> = spin::Mutex::new(ConsoleWriter);
+
 pub fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    let mut writer = ConsoleWriter;
+    let mut writer = CONSOLE.lock();
+
     match writer.write_fmt(args) {
         Ok(_) => {}
         Err(_) => {

@@ -1,51 +1,33 @@
 #![no_std]
 #![no_main]
-use core::{arch::asm, panic::PanicInfo};
 
-use arch::sbi;
-use riscv::register;
+use board::BoardInfo;
+use riscv::asm::wfi;
 
-#[macro_use]
-mod console;
 mod arch;
 mod config;
+#[macro_use]
+mod console;
+mod board;
 mod entry;
+mod lang_item;
 mod memory;
 mod process;
 mod timer;
 mod trap;
 
 #[unsafe(no_mangle)]
-extern "C" fn kmain() -> ! {
+extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
+    let board_info = BoardInfo::parse(dtb_addr);
+
     trap::init();
-    timer::init_timer_interrupt();
+    timer::init_timer_interrupt(board_info.time_base_freq);
     memory::init();
     process::init();
-
-    unsafe {
-        register::sstatus::set_sie();
-    }
 
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
     loop {
-        unsafe {
-            asm!("wfi");
-        }
+        wfi();
     }
-}
-
-#[panic_handler]
-fn panic_handler(info: &PanicInfo) -> ! {
-    print!("Kernel panic: ");
-    if let Some(location) = info.location() {
-        print!("{}", location.file());
-        print!(":");
-        print!("{}", location.line());
-        print!("\n");
-    }
-    if let Some(message) = info.message().as_str() {
-        print!("{}", message);
-    }
-    sbi::shutdown();
 }
