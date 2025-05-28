@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
-use board::BoardInfo;
 use riscv::asm::wfi;
+
+extern crate alloc;
 
 mod arch;
 mod config;
@@ -13,15 +15,15 @@ mod entry;
 mod lang_item;
 mod memory;
 mod process;
+mod syscall;
 mod timer;
 mod trap;
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
-    let board_info = BoardInfo::parse(dtb_addr);
-
+    board::init(dtb_addr);
     trap::init();
-    timer::init_timer_interrupt(board_info.time_base_freq);
+    timer::init();
     memory::init();
     process::init();
 

@@ -1,8 +1,10 @@
 #![no_std]
-#![no_main]
 #![feature(linkage)]
 
-mod syscall;
+pub mod syscall;
+#[macro_use]
+pub mod console;
+mod lang_item;
 
 use syscall::*;
 

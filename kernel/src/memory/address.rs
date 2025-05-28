@@ -1,3 +1,5 @@
+use super::config;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct PhysicalAddress(usize);
 
@@ -31,5 +33,47 @@ impl From<usize> for PhysicalPageNumber {
 impl From<usize> for VirtualPageNumber {
     fn from(addr: usize) -> Self {
         VirtualPageNumber(addr)
+    }
+}
+
+impl PhysicalAddress {
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn page_number(&self) -> PhysicalPageNumber {
+        PhysicalPageNumber(self.0 / config::PAGE_SIZE)
+    }
+
+    pub fn page_offset(&self) -> usize {
+        self.0 & (config::PAGE_SIZE - 1)
+    }
+
+    pub fn floor(&self) -> PhysicalPageNumber {
+        self.page_number()
+    }
+
+    pub fn ceil(&self) -> PhysicalPageNumber {
+        PhysicalPageNumber((self.0 + config::PAGE_SIZE - 1) / config::PAGE_SIZE)
+    }
+}
+
+impl From<PhysicalPageNumber> for PhysicalAddress {
+    fn from(ppn: PhysicalPageNumber) -> Self {
+        PhysicalAddress(ppn.0 * config::PAGE_SIZE)
+    }
+}
+
+impl PhysicalPageNumber {
+    pub fn as_usize(&self) -> usize {
+        self.0
+    }
+
+    pub fn get_bytes_mut(&self) -> &'static mut [u8; config::PAGE_SIZE] {
+        unsafe {
+            ((self.0 * config::PAGE_SIZE) as *mut [u8; config::PAGE_SIZE])
+                .as_mut()
+                .unwrap()
+        }
     }
 }

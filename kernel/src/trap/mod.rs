@@ -12,7 +12,7 @@ use riscv::{
     },
 };
 
-use crate::timer;
+use crate::{syscall, timer};
 
 global_asm!(include_str!("trap.S"));
 
@@ -42,7 +42,6 @@ pub fn init() {
 pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
-    let original_sepc = ctx.sepc;
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -66,6 +65,7 @@ pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
         return ctx;
     }
 
+    let original_sepc = ctx.sepc;
     if let Trap::Exception(code) = interrupt_type {
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
@@ -90,7 +90,9 @@ pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
                     panic!("Load misaligned");
                 }
                 Exception::UserEnvCall => {
-                    panic!("User env call");
+                    ctx.sepc += if (original_sepc & 0b11) != 0b11 { 2 } else { 4 };
+                    let ret = syscall::syscall(ctx.x[17], [ctx.x[10], ctx.x[11], ctx.x[12]]);
+                    ctx.x[10] = ret as usize;
                 }
                 Exception::StoreFault => {
                     panic!("Store fault");

@@ -1,26 +1,18 @@
 use core::{
-    arch::asm,
     panic::PanicInfo,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use riscv::register;
 
-use crate::{arch::sbi, print};
-
-#[inline(always)]
-fn wfi() {
-    unsafe {
-        asm!("wfi");
-    }
-}
+use crate::arch::sbi;
 
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
     if IN_PANIC.swap(true, Ordering::SeqCst) {
         loop {
-            wfi();
+            riscv::asm::wfi();
         }
     }
 
@@ -45,6 +37,6 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
     #[allow(unreachable_code)]
     loop {
-        wfi();
+        riscv::asm::wfi();
     }
 }

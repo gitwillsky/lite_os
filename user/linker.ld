@@ -48,7 +48,7 @@ SECTIONS {
     . = ALIGN(4K);
     ebss = .;
 
-    /* 为启动栈分配空间 */
+    /* 为栈分配空间 */
     . = ALIGN(16);
     boot_stack_bottom = .;
     . += USER_STACK_SIZE;
