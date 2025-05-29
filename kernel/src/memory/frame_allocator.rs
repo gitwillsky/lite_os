@@ -10,6 +10,25 @@ pub enum FrameAllocError {
     Duplicate,
 }
 
+pub struct FrameTracker {
+    ppn: PhysicalPageNumber,
+}
+
+impl FrameTracker {
+    pub fn new(ppn: PhysicalPageNumber) -> Self {
+        for i in ppn.get_bytes_mut() {
+            *i = 0;
+        }
+        Self { ppn }
+    }
+}
+
+impl Drop for FrameTracker {
+    fn drop(&mut self) {
+        FRAME_ALLOCATOR.wait().lock().dealloc(self.ppn);
+    }
+}
+
 #[derive(Debug)]
 pub struct StackFrameAllocator {
     start_ppn: PhysicalPageNumber,
@@ -61,19 +80,12 @@ pub fn init(start_addr: usize, end_addr: usize) {
         .call_once(|| Mutex::new(StackFrameAllocator::new(start_addr.into(), end_addr.into())));
 }
 
-impl Drop for PhysicalPageNumber {
-    fn drop(&mut self) {
-        FRAME_ALLOCATOR.wait().lock().dealloc(*self);
-    }
-}
-
-pub fn alloc() -> Option<PhysicalPageNumber> {
-    FRAME_ALLOCATOR.wait().lock().alloc().map(|b| {
-        for i in b.get_bytes_mut() {
-            *i = 0;
-        }
-        b
-    })
+pub fn alloc() -> Option<FrameTracker> {
+    FRAME_ALLOCATOR
+        .wait()
+        .lock()
+        .alloc()
+        .map(|b| FrameTracker::new(b))
 }
 
 pub fn dealloc(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
