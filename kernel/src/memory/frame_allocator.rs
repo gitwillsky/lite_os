@@ -11,7 +11,7 @@ pub enum FrameAllocError {
 }
 
 pub struct FrameTracker {
-    ppn: PhysicalPageNumber,
+    pub ppn: PhysicalPageNumber,
 }
 
 impl FrameTracker {
@@ -75,9 +75,8 @@ impl StackFrameAllocator {
     }
 }
 
-pub fn init(start_addr: usize, end_addr: usize) {
-    FRAME_ALLOCATOR
-        .call_once(|| Mutex::new(StackFrameAllocator::new(start_addr.into(), end_addr.into())));
+pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
+    FRAME_ALLOCATOR.call_once(|| Mutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
 pub fn alloc() -> Option<FrameTracker> {

@@ -17,7 +17,7 @@ static HEAP_ALLOCATOR: LockedHeapAllocator = LockedHeap::empty();
 
 #[alloc_error_handler]
 pub fn handle_heap_alloc_error(layout: alloc::Layout) -> ! {
-    panic!("[Kernel] allocate heap memory error, layout = {:?}", layout);
+    panic!("allocate heap memory error, layout = {:?}", layout);
 }
 
 pub fn init() {

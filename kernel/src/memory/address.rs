@@ -18,9 +18,21 @@ impl From<usize> for PhysicalAddress {
     }
 }
 
+impl From<PhysicalAddress> for usize {
+    fn from(addr: PhysicalAddress) -> Self {
+        addr.0
+    }
+}
+
 impl From<usize> for VirtualAddress {
     fn from(addr: usize) -> Self {
         VirtualAddress(addr)
+    }
+}
+
+impl From<VirtualAddress> for usize {
+    fn from(addr: VirtualAddress) -> Self {
+        addr.0
     }
 }
 
@@ -55,6 +67,20 @@ impl PhysicalAddress {
 
     pub fn ceil(&self) -> PhysicalPageNumber {
         PhysicalPageNumber((self.0 + config::PAGE_SIZE - 1) / config::PAGE_SIZE)
+    }
+
+    pub fn is_aligned(&self) -> bool {
+        self.0 % config::PAGE_SIZE == 0
+    }
+}
+
+impl VirtualAddress {
+    pub fn is_aligned(&self) -> bool {
+        self.0 % config::PAGE_SIZE == 0
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.0
     }
 }
 
