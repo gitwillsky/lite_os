@@ -54,6 +54,7 @@ impl PhysicalAddress {
     }
 
     pub fn page_number(&self) -> PhysicalPageNumber {
+        assert!(self.is_aligned());
         PhysicalPageNumber(self.0 / config::PAGE_SIZE)
     }
 

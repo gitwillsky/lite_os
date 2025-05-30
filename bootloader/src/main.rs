@@ -79,7 +79,6 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         print!(
             "\
 [rustsbi] RustSBI version {ver_sbi}, adapting to RISC-V SBI v2.0.0
-{logo}
 [rustsbi] Implementation     : RustSBI-QEMU Version {ver_impl}
 [rustsbi] Platform Name      : {model}
 [rustsbi] Platform SMP       : {smp}
@@ -90,7 +89,6 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 [rustsbi] Supervisor Address : {KERNEL_ENTRY:#x}
 ",
             ver_sbi = rustsbi::VERSION,
-            logo = rustsbi::LOGO,
             ver_impl = env!("CARGO_PKG_VERSION"),
             model = board_info.model,
             smp = board_info.smp,
