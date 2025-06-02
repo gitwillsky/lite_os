@@ -2,8 +2,6 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use riscv::asm::wfi;
 
 extern crate alloc;

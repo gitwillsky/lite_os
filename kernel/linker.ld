@@ -60,6 +60,7 @@ SECTIONS {
     ekernel = .;
 
     /DISCARD/ : {
-        *(.eh_frame) /* 丢弃语言异常处理的栈展开信息 */
+        /* 丢弃语言异常处理的栈展开信息 */
+        *(.eh_frame)
     }
 }

@@ -4,10 +4,10 @@ default-members = ["kernel"]
 resolver = "3"
 
 [profile.release]
-panic = "abort"
+# panic = "abort"
 opt-level = "s"
 lto = "fat"
 
 [profile.dev]
-panic = "abort"
+# panic = "abort"
 opt-level = "s"

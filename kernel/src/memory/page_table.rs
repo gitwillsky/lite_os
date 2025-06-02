@@ -27,7 +27,7 @@ pub struct PageTableEntry(u64);
 
 impl PageTableEntry {
     fn calc_pte(ppn: PhysicalPageNumber, flags: PTEFlags) -> u64 {
-        (ppn.as_usize() * config::PAGE_SIZE << PPN_SHIFT) as u64 | (flags.bits() & FLAGS_MASK)
+        (ppn.as_usize()  << PPN_SHIFT) as u64 | (flags.bits() & FLAGS_MASK)
     }
 
     pub fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
