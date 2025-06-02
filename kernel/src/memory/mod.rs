@@ -6,10 +6,11 @@ use page_table::{PTEFlags, PageTableEntry};
 use crate::board;
 
 pub mod address;
-pub mod config;
+mod config;
 pub mod frame_allocator;
 pub mod heap_allocator;
-pub mod page_table;
+mod mm;
+mod page_table;
 
 unsafe extern "C" {
     fn skernel();

@@ -1,13 +1,13 @@
 pub mod context;
 
-use core::arch::global_asm;
+use core::{arch::global_asm, panic};
 
 pub use context::TrapContext;
 use riscv::{
     ExceptionNumber, InterruptNumber,
     interrupt::{Exception, Interrupt, Trap},
     register::{
-        self, sip,
+        self, sip, stval,
         stvec::{self, TrapMode},
     },
 };
@@ -42,6 +42,8 @@ pub fn init() {
 pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
+    // 在发生缺页异常时，保存导致问题的虚拟地址
+    let stval = stval::read();
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -96,6 +98,17 @@ pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
                 }
                 Exception::StoreFault => {
                     panic!("Store fault");
+                }
+                Exception::InstructionPageFault => {
+                    // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
+                    // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
+                    panic!("Instruction Page Fault, VA:{:#x}", stval);
+                }
+                Exception::LoadPageFault => {
+                    panic!("Load Page Fault, VA:{:#x}", stval)
+                }
+                Exception::StorePageFault => {
+                    panic!("Store page fault, VA:{:#x}", stval)
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);

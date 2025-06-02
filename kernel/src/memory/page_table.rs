@@ -27,7 +27,7 @@ pub struct PageTableEntry(u64);
 
 impl PageTableEntry {
     fn calc_pte(ppn: PhysicalPageNumber, flags: PTEFlags) -> u64 {
-        (ppn.as_usize()  << PPN_SHIFT) as u64 | (flags.bits() & FLAGS_MASK)
+        (ppn.as_usize() << PPN_SHIFT) as u64 | (flags.bits() & FLAGS_MASK)
     }
 
     pub fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
@@ -76,14 +76,21 @@ const PTE_COUNTER_PER_TABLE: usize = 2 ^ 9; // sv39 下每个页表地址空间�
 #[repr(align(4096))]
 #[derive(Debug)]
 pub struct PageTable {
+    root_ppn: PhysicalPageNumber,
     entries: [PageTableEntry; PTE_COUNTER_PER_TABLE],
 }
 
 impl PageTable {
-    pub fn new() -> Self {
+    pub fn new(root_ppn: PhysicalPageNumber) -> Self {
         Self {
+            root_ppn,
             entries: [PageTableEntry(0); PTE_COUNTER_PER_TABLE],
         }
+    }
+
+    pub fn satp_val(&self) -> usize {
+        // sv39 模式下，SATP 的 Mode 字段是 8
+        (8 << 60) | self.root_ppn.as_usize()
     }
 
     pub fn get_pte(&self, index: usize) -> Option<PageTableEntry> {
