@@ -43,7 +43,7 @@ pub fn init() {
     let root_ppn = init_kernel_page_table(memory_end_addr);
 
     // enable mmu
-    let stap_val = (8 << 60) | root_ppn.as_usize();
+    let stap_val = (8 << 60) | root_ppn.as_usize(); // sv39
     unsafe {
         asm!("csrw satp, {}", in(reg) stap_val);
         asm!("sfence.vma zero, zero")
@@ -81,9 +81,6 @@ fn map_page_table_region(
             let ppn = new_l1_table_ppn.ppn;
             *l2_page_entry = PageTableEntry::new(ppn, PTEFlags::V);
 
-            // 注意：这里需要确保 new_l1_table_ppn 的生命周期管理
-            // 当前实现存在内存泄漏风险，因为 FrameTracker 会在函数结束时释放页帧
-            // TODO: 需要在页表结构中持有 FrameTracker 的所有权
             core::mem::forget(new_l1_table_ppn); // 临时解决方案：阻止自动释放
             ppn
         } else {
@@ -137,7 +134,7 @@ fn init_kernel_page_table(memory_end_addr: PhysicalAddress) -> PhysicalPageNumbe
         PTEFlags::G | PTEFlags::R,
     );
 
-    // // map kernel data section
+    // map kernel data section
     map_page_table_region(
         root_ppn,
         (sdata as usize).into(),
@@ -146,7 +143,7 @@ fn init_kernel_page_table(memory_end_addr: PhysicalAddress) -> PhysicalPageNumbe
         PTEFlags::G | PTEFlags::R | PTEFlags::W,
     );
 
-    // // map kernel bss section
+    // map kernel bss section
     map_page_table_region(
         root_ppn,
         (sbss as usize).into(),
@@ -155,11 +152,12 @@ fn init_kernel_page_table(memory_end_addr: PhysicalAddress) -> PhysicalPageNumbe
         PTEFlags::G | PTEFlags::R | PTEFlags::W,
     );
 
-    // // map kernel stack section
+    // map kernel stack section
+    let guard_size = config::PAGE_SIZE; // 预留一页作为内核栈哨兵页
     map_page_table_region(
         root_ppn,
-        (boot_stack_bottom as usize).into(),
-        (boot_stack_bottom as usize).into(),
+        (boot_stack_bottom as usize + guard_size).into(),
+        (boot_stack_bottom as usize + guard_size).into(),
         boot_stack_top as usize - boot_stack_bottom as usize,
         PTEFlags::G | PTEFlags::R | PTEFlags::W,
     );
