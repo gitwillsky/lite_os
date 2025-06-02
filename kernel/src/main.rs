@@ -23,13 +23,9 @@ mod trap;
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     board::init(dtb_addr);
     trap::init();
+    memory::init();
     timer::init();
     process::init();
-    memory::init();
-
-    println!("[HEAP TEST] Attempting to exhaust memory by repeated small allocations...");
-
-
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
     loop {

@@ -41,4 +41,5 @@ pub fn init() {
     }
 
     set_next_timer_interrupt();
+    println!("timer initialized");
 }
