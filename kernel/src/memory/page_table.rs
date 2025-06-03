@@ -2,6 +2,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
+use crate::memory::address::VirtualPageNumber;
+
 use super::{
     address::PhysicalPageNumber,
     config::PTE_FLAGS_WIDTH,
@@ -85,29 +87,16 @@ impl PageTable {
 
     pub fn from_token(satp_val: usize) -> Self {
         Self {
-            root_ppn: PhysicalPageNumber::from(satp_val & ((1usize << 44) - 1)),
+            root_ppn: PhysicalPageNumber::from(satp_val),
             entries: Vec::new(),
         }
     }
 
-    pub fn satp_val(&self) -> usize {
-        // sv39 模式下，SATP 的 Mode 字段是 8
-        (8 << 60) | self.root_ppn.as_usize()
+    pub fn map(&mut self, vpn: VirtualPageNumber, ppn: PhysicalPageNumber, flags: PTEFlags) {
+
     }
 
-    pub fn get_pte(&self, index: usize) -> Option<PageTableEntry> {
-        self.entries.get(index).copied()
-    }
+    pub fn unmap(&mut self, vpn: VirtualPageNumber) {
 
-    pub fn set_pte(&mut self, index: usize, pte: PageTableEntry) {
-        assert!(
-            index < PTE_COUNTER_PER_TABLE,
-            "set pte failed, invalid index"
-        );
-        self.entries[index] = pte;
-    }
-
-    pub fn get_pte_mut(&mut self, index: usize) -> Option<&mut PageTableEntry> {
-        self.entries.get_mut(index)
     }
 }

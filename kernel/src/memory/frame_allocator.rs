@@ -33,12 +33,12 @@ impl Drop for FrameTracker {
 
 impl Debug for FrameTracker {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("FrameTracker PPN:{:#x}", self.ppn.as_usize()))
+        f.write_fmt(format_args!("FrameTracker PPN:{:#x}", self.ppn.0))
     }
 }
 
 #[derive(Debug)]
-pub struct StackFrameAllocator {
+struct StackFrameAllocator {
     start_ppn: PhysicalPageNumber,
     current_start_ppn: PhysicalPageNumber,
     end_ppn: PhysicalPageNumber,
@@ -63,7 +63,7 @@ impl StackFrameAllocator {
         }
         if self.current_start_ppn < self.end_ppn {
             let current = self.current_start_ppn;
-            self.current_start_ppn = (current.as_usize() + 1).into();
+            self.current_start_ppn = (current.0 + 1).into();
             return Some(current);
         }
         return None;

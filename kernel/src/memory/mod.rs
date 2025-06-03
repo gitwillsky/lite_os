@@ -59,56 +59,7 @@ fn map_page_table_region(
     size: usize,
     flags: PTEFlags,
 ) {
-    assert!(va_start.is_aligned());
-    assert!(pa_start.is_aligned());
-    assert_eq!(size % config::PAGE_SIZE, 0);
-
-    let pages = size / config::PAGE_SIZE;
-
-    for i in 0..pages {
-        let va: VirtualAddress = (usize::from(va_start) + i * config::PAGE_SIZE).into();
-        let pa: PhysicalAddress = (usize::from(pa_start) + i * config::PAGE_SIZE).into();
-
-        let l2_table_entry_addr =
-            PhysicalAddress::from(root_ppn).as_usize() + (va.as_usize() >> 30 & 0x1FF) * 8;
-
-        let l2_page_entry = unsafe { &mut *(l2_table_entry_addr as *mut PageTableEntry) };
-
-        let l1_table_ppn: PhysicalPageNumber = if l2_page_entry.is_leaf()
-            || !l2_page_entry.is_valid()
-        {
-            // reset
-            let new_l1_table_ppn = frame_allocator::alloc().expect("can not allocate l1 table ppn");
-            let ppn = new_l1_table_ppn.ppn;
-            *l2_page_entry = PageTableEntry::new(ppn, PTEFlags::V);
-
-            core::mem::forget(new_l1_table_ppn); // 临时解决方案：阻止自动释放
-            ppn
-        } else {
-            l2_page_entry.ppn()
-        };
-
-        // find in l1 table
-        let l1_table_entry_addr =
-            PhysicalAddress::from(l1_table_ppn).as_usize() + (va.as_usize() >> 21 & 0x1FF) * 8;
-        let l1_table_entry = unsafe { &mut *(l1_table_entry_addr as *mut PageTableEntry) };
-        let l0_table_ppn: PhysicalPageNumber = if l1_table_entry.is_leaf()
-            || !l1_table_entry.is_valid()
-        {
-            let new_l0_table_ppn = frame_allocator::alloc().expect("can not allocate l0 table ppn");
-            let ppn = new_l0_table_ppn.ppn;
-            *l1_table_entry = PageTableEntry::new(ppn, PTEFlags::V);
-            core::mem::forget(new_l0_table_ppn);
-            ppn
-        } else {
-            l1_table_entry.ppn()
-        };
-
-        let l0_table_entry_addr =
-            PhysicalAddress::from(l0_table_ppn).as_usize() + (va.as_usize() >> 12 & 0x1FF) * 8;
-        let l0_table_entry = unsafe { &mut *(l0_table_entry_addr as *mut PageTableEntry) };
-        *l0_table_entry = PageTableEntry::new(pa.page_number(), PTEFlags::V | flags);
-    }
+    
 }
 
 fn init_kernel_page_table(memory_end_addr: PhysicalAddress) -> PhysicalPageNumber {

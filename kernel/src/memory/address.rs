@@ -2,16 +2,16 @@ use super::config::{self, PHYSICAL_ADDRESS_WIDTH, PPN_WIDTH, VPN_WIDTH};
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalAddress(usize);
+pub struct PhysicalAddress(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualAddress(usize);
+pub struct VirtualAddress(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalPageNumber(usize);
+pub struct PhysicalPageNumber(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualPageNumber(usize);
+pub struct VirtualPageNumber(pub usize);
 
 impl Debug for PhysicalAddress {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
