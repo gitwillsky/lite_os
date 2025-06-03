@@ -1,4 +1,4 @@
-use super::config;
+use super::config::{self, PHYSICAL_ADDRESS_WIDTH, PPN_WIDTH, VPN_WIDTH};
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -39,7 +39,7 @@ impl Debug for VirtualPageNumber {
 
 impl From<usize> for PhysicalAddress {
     fn from(addr: usize) -> Self {
-        PhysicalAddress(addr)
+        PhysicalAddress(addr & ((1usize << PHYSICAL_ADDRESS_WIDTH) - 1))
     }
 }
 
@@ -49,46 +49,49 @@ impl From<PhysicalAddress> for usize {
     }
 }
 
-impl From<usize> for VirtualAddress {
-    fn from(addr: usize) -> Self {
-        VirtualAddress(addr)
-    }
-}
-
 impl From<VirtualAddress> for usize {
     fn from(addr: VirtualAddress) -> Self {
         addr.0
     }
 }
 
+impl From<PhysicalPageNumber> for usize {
+    fn from(value: PhysicalPageNumber) -> Self {
+        value.0
+    }
+}
+
+impl From<VirtualPageNumber> for usize {
+    fn from(value: VirtualPageNumber) -> Self {
+        value.0
+    }
+}
+
+impl From<usize> for VirtualAddress {
+    fn from(addr: usize) -> Self {
+        VirtualAddress(addr)
+    }
+}
+
 impl From<usize> for PhysicalPageNumber {
     fn from(addr: usize) -> Self {
-        PhysicalPageNumber(addr)
+        PhysicalPageNumber(addr & ((1usize << PPN_WIDTH) - 1))
     }
 }
 
 impl From<usize> for VirtualPageNumber {
     fn from(addr: usize) -> Self {
-        VirtualPageNumber(addr)
+        VirtualPageNumber(addr & ((1usize << VPN_WIDTH) - 1))
     }
 }
 
 impl PhysicalAddress {
-    pub fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    pub fn page_number(&self) -> PhysicalPageNumber {
-        assert!(self.is_aligned());
-        PhysicalPageNumber(self.0 / config::PAGE_SIZE)
-    }
-
     pub fn page_offset(&self) -> usize {
         self.0 & (config::PAGE_SIZE - 1)
     }
 
     pub fn floor(&self) -> PhysicalPageNumber {
-        self.page_number()
+        PhysicalPageNumber(self.0 / config::PAGE_SIZE)
     }
 
     pub fn ceil(&self) -> PhysicalPageNumber {
@@ -104,10 +107,6 @@ impl VirtualAddress {
     pub fn is_aligned(&self) -> bool {
         self.0 % config::PAGE_SIZE == 0
     }
-
-    pub fn as_usize(&self) -> usize {
-        self.0
-    }
 }
 
 impl From<PhysicalPageNumber> for PhysicalAddress {
@@ -116,11 +115,14 @@ impl From<PhysicalPageNumber> for PhysicalAddress {
     }
 }
 
-impl PhysicalPageNumber {
-    pub fn as_usize(&self) -> usize {
-        self.0
+impl From<PhysicalAddress> for PhysicalPageNumber {
+    fn from(value: PhysicalAddress) -> Self {
+        assert!(value.is_aligned());
+        value.floor()
     }
+}
 
+impl PhysicalPageNumber {
     pub fn get_bytes_mut(&self) -> &'static mut [u8; config::PAGE_SIZE] {
         unsafe {
             ((self.0 * config::PAGE_SIZE) as *mut [u8; config::PAGE_SIZE])

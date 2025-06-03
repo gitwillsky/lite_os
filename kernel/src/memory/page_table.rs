@@ -1,10 +1,16 @@
+use alloc::vec;
+use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use super::{address::PhysicalPageNumber, config};
+use super::{
+    address::PhysicalPageNumber,
+    config::PTE_FLAGS_WIDTH,
+    frame_allocator::{self, FrameTracker},
+};
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct PTEFlags: u64 {
+    pub struct PTEFlags: u8 {
         const V = 1 << 0; // Valid
         const R = 1 << 1; // Read
         const W = 1 << 2; // Write
@@ -16,34 +22,25 @@ bitflags! {
     }
 }
 
-// PPN 在 PTE 中的左位移
-const PPN_SHIFT: usize = 10;
-const FLAGS_MASK: u64 = 0x3FF; // Bits 0-9 for flags
-const PPN_MASK: usize = 0xFFFFFFFFFF; // 44 bits for PPN
-
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)] // 确保内存布局与 u64 完全相同
-pub struct PageTableEntry(u64);
+pub struct PageTableEntry(usize);
 
 impl PageTableEntry {
-    fn calc_pte(ppn: PhysicalPageNumber, flags: PTEFlags) -> u64 {
-        (ppn.as_usize() << PPN_SHIFT) as u64 | (flags.bits() & FLAGS_MASK)
-    }
-
     pub fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
-        Self(PageTableEntry::calc_pte(ppn, flags))
+        Self(usize::from(ppn) << PTE_FLAGS_WIDTH & flags.bits() as usize)
     }
 
-    pub fn reset(&mut self, ppn: PhysicalPageNumber, flags: PTEFlags) {
-        self.0 = PageTableEntry::calc_pte(ppn, flags)
+    pub fn empty() -> Self {
+        Self(0)
     }
 
     pub fn flags(&self) -> PTEFlags {
-        PTEFlags::from_bits_truncate(self.0 & FLAGS_MASK)
+        PTEFlags::from_bits(self.0 as u8).unwrap()
     }
 
     pub fn ppn(&self) -> PhysicalPageNumber {
-        (self.0 as usize >> PPN_SHIFT & PPN_MASK).into()
+        (self.0 as usize >> PTE_FLAGS_WIDTH).into()
     }
 
     pub fn is_valid(&self) -> bool {
@@ -71,20 +68,25 @@ impl PageTableEntry {
     }
 }
 
-const PTE_COUNTER_PER_TABLE: usize = 2 ^ 9; // sv39 下每个页表地址空间有 9 bit
-
-#[repr(align(4096))]
 #[derive(Debug)]
 pub struct PageTable {
     root_ppn: PhysicalPageNumber,
-    entries: [PageTableEntry; PTE_COUNTER_PER_TABLE],
+    entries: Vec<FrameTracker>,
 }
 
 impl PageTable {
-    pub fn new(root_ppn: PhysicalPageNumber) -> Self {
+    pub fn new() -> Self {
+        let frame_tracker = frame_allocator::alloc().expect("can not alloc new frame");
         Self {
-            root_ppn,
-            entries: [PageTableEntry(0); PTE_COUNTER_PER_TABLE],
+            root_ppn: frame_tracker.ppn,
+            entries: vec![frame_tracker],
+        }
+    }
+
+    pub fn from_token(satp_val: usize) -> Self {
+        Self {
+            root_ppn: PhysicalPageNumber::from(satp_val & ((1usize << 44) - 1)),
+            entries: Vec::new(),
         }
     }
 

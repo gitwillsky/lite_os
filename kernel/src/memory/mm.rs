@@ -55,4 +55,8 @@ impl MemorySet {
             areas: Vec::new(),
         }
     }
+
+    pub fn active(&self) {
+        let satp_val = self.page_table
+    }
 }
