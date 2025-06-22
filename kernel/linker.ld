@@ -16,6 +16,10 @@ SECTIONS {
     stext = .;
     .text : {
        *(.text.entry) /* 放置入口代码 */
+       . = ALIGN(4K)
+       strampoline = .;
+       *(.text.strampoline);
+       . = ALIGN(4K)
        *(.text .text.*) /* 剩余代码段 */
     }
     . = ALIGN(4K);

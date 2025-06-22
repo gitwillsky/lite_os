@@ -89,6 +89,10 @@ impl PageTable {
         }
     }
 
+    pub fn token(&self) -> usize {
+        self.root_ppn.as_usize() | 8usize << 60
+    }
+
     pub fn from_token(satp_val: usize) -> Self {
         Self {
             root_ppn: PhysicalPageNumber::from(satp_val),
@@ -98,8 +102,9 @@ impl PageTable {
 
     fn new_pte(&mut self, flags: Option<PTEFlags>) -> PageTableEntry {
         let frame = alloc().unwrap();
+        let ppn = frame.ppn;
         self.entries.push(frame);
-        PageTableEntry::new(frame.ppn, flags.unwrap_or(PTEFlags::V))
+        PageTableEntry::new(ppn, flags.unwrap_or(PTEFlags::V))
     }
 
     fn find_pte_create(&mut self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
@@ -108,7 +113,7 @@ impl PageTable {
         let mut result: Option<_> = None;
 
         for i in 0..3 {
-            let pte = ppn.get_pte_array()[idxs[i]];
+            let pte = &mut ppn.get_pte_array()[idxs[i]];
             if i == 2 {
                 result = Some(pte);
                 break;
@@ -125,12 +130,12 @@ impl PageTable {
         let idxs = vpn.indexes();
 
         let mut ppn = self.root_ppn;
-        let mut result: Option<_> = None;
+        let mut result: Option<&mut PageTableEntry> = None;
 
         for i in 0..3 {
-            let pte = ppn.get_pte_array()[idxs[i]];
+            let pte = &mut ppn.get_pte_array()[idxs[i]];
             if i == 2 {
-                result = Some(result);
+                result = Some(pte);
                 break;
             }
             if !pte.is_valid() {

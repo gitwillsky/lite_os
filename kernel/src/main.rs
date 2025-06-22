@@ -13,9 +13,11 @@ mod console;
 mod board;
 mod entry;
 mod lang_item;
+mod loader;
 mod memory;
 mod process;
 mod syscall;
+mod task;
 mod timer;
 mod trap;
 

@@ -33,7 +33,7 @@ impl Drop for FrameTracker {
 
 impl Debug for FrameTracker {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("FrameTracker PPN:{:#x}", self.ppn.0))
+        f.write_fmt(format_args!("FrameTracker PPN:{:#x}", self.ppn.as_usize()))
     }
 }
 

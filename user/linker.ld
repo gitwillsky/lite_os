@@ -3,7 +3,7 @@ OUTPUT_ARCH(riscv)
 /* 入口点为 _start 函数 */
 ENTRY(_start)
 
-BASE_ADDRESS = 0x80400000;
+BASE_ADDRESS = 0x10000;
 
 /* 定义栈大小 */
 USER_STACK_SIZE = 16K;

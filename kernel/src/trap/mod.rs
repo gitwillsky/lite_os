@@ -1,6 +1,9 @@
 pub mod context;
 
-use core::{arch::global_asm, panic};
+use core::{
+    arch::{asm, global_asm},
+    panic,
+};
 
 pub use context::TrapContext;
 use riscv::{
@@ -12,34 +15,30 @@ use riscv::{
     },
 };
 
-use crate::{syscall, timer};
+use crate::{
+    memory::{TRAMPOLINE, TRAP_CONTEXT},
+    syscall, timer,
+};
 
 global_asm!(include_str!("trap.S"));
 
+unsafe extern "C" {
+    unsafe fn __all_traps();
+    unsafe fn __restore();
+}
+
 pub fn init() {
-    unsafe extern "C" {
-        fn __alltraps();
-    }
+    set_kernel_trap_entry();
+
     unsafe {
-        let mut val = stvec::Stvec::from_bits(0);
-        val.set_address(__alltraps as usize);
-        val.set_trap_mode(TrapMode::Direct);
-        stvec::write(val);
-
-        // 初始化 sscratch 寄存器为当前栈指针
-        // 这样当中断发生时，sscratch 包含有效的内核栈地址
-        let current_sp: usize;
-        core::arch::asm!("mv {}, sp", out(reg) current_sp);
-        register::sscratch::write(current_sp);
-
-        // 使能中断
-        register::sstatus::set_sie();
+        // 启用时钟中断
+        register::sie::set_stimer();
     }
-    println!("Trap module initialized");
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
+pub fn trap_handler() -> ! {
+    set_kernel_trap_entry();
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
@@ -121,4 +120,46 @@ pub fn trap_handler(ctx: &mut TrapContext) -> &mut TrapContext {
     }
 
     panic!("Can not handle trap: scause: {:?}", scause_val);
+}
+
+fn set_kernel_trap_entry() {
+    let mut val = stvec::Stvec::from_bits(0);
+    val.set_address(trap_from_kernel as usize);
+    val.set_trap_mode(TrapMode::Direct);
+    unsafe {
+        stvec::write(val);
+    }
+}
+
+fn set_user_trap_entry() {
+    let mut val = stvec::Stvec::from_bits(0);
+    val.set_address(trap_handler as usize);
+    val.set_trap_mode(TrapMode::Direct);
+    unsafe {
+        stvec::write(val);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn trap_return() -> ! {
+    set_user_trap_entry();
+
+    let trap_cx_ptr = TRAP_CONTEXT;
+    let user_satp = current_user_token();
+    let restore_va = __restore as usize - __all_traps as usize + TRAMPOLINE;
+    unsafe {
+        asm!(
+            "fence.i",
+            "jr {restore_va}",
+            restore_va = in(reg) restore_va,
+            in("x10") trap_cx_ptr,
+            in("x11") user_satp,
+            options(noreturn)
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub fn trap_from_kernel() -> ! {
+    panic!("a trap from kernel")
 }
