@@ -1,17 +1,19 @@
+use crate::memory::{config::VIRTUAL_ADDRESS_WIDTH, page_table::PageTableEntry};
+
 use super::config::{self, PHYSICAL_ADDRESS_WIDTH, PPN_WIDTH, VPN_WIDTH};
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalAddress(pub usize);
+pub struct PhysicalAddress(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualAddress(pub usize);
+pub struct VirtualAddress(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalPageNumber(pub usize);
+pub struct PhysicalPageNumber(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualPageNumber(pub usize);
+pub struct VirtualPageNumber(usize);
 
 impl Debug for PhysicalAddress {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -39,7 +41,15 @@ impl Debug for VirtualPageNumber {
 
 impl From<usize> for PhysicalAddress {
     fn from(addr: usize) -> Self {
+        // 仅低位有效
         PhysicalAddress(addr & ((1usize << PHYSICAL_ADDRESS_WIDTH) - 1))
+    }
+}
+
+impl From<usize> for VirtualAddress {
+    fn from(addr: usize) -> Self {
+        // 仅低位有效
+        VirtualAddress(addr & ((1usize << VIRTUAL_ADDRESS_WIDTH) - 1))
     }
 }
 
@@ -64,12 +74,6 @@ impl From<PhysicalPageNumber> for usize {
 impl From<VirtualPageNumber> for usize {
     fn from(value: VirtualPageNumber) -> Self {
         value.0
-    }
-}
-
-impl From<usize> for VirtualAddress {
-    fn from(addr: usize) -> Self {
-        VirtualAddress(addr)
     }
 }
 
@@ -101,11 +105,27 @@ impl PhysicalAddress {
     pub fn is_aligned(&self) -> bool {
         self.0 % config::PAGE_SIZE == 0
     }
+
+    pub fn as_usize(&self) -> usize {
+        self.into()
+    }
 }
 
 impl VirtualAddress {
     pub fn is_aligned(&self) -> bool {
         self.0 % config::PAGE_SIZE == 0
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.into()
+    }
+
+    pub fn floor(&self) -> VirtualPageNumber {
+        VirtualPageNumber(self.0 / config::PAGE_SIZE)
+    }
+
+    pub fn ceil(&self) -> VirtualPageNumber {
+        VirtualPageNumber((self.0 + config::PAGE_SIZE - 1) / config::PAGE_SIZE)
     }
 }
 
@@ -123,11 +143,35 @@ impl From<PhysicalAddress> for PhysicalPageNumber {
 }
 
 impl PhysicalPageNumber {
-    pub fn get_bytes_mut(&self) -> &'static mut [u8; config::PAGE_SIZE] {
-        unsafe {
-            ((self.0 * config::PAGE_SIZE) as *mut [u8; config::PAGE_SIZE])
-                .as_mut()
-                .unwrap()
+    pub fn get_bytes_array_mut(&self) -> &'static mut [u8; config::PAGE_SIZE] {
+        let pa: PhysicalAddress = self.into();
+        unsafe { core::slice::from_raw_parts_mut(pa.as_usize() as *mut u8, config::PAGE_SIZE) }
+    }
+
+    pub fn get_pte_array(&self) -> &'static mut [PageTableEntry; 512] {
+        let pa: PhysicalAddress = self.into();
+        unsafe { core::slice::from_raw_parts_mut(pa.as_usize() as *mut PageTableEntry, 512) }
+    }
+
+    pub fn get_mut<T>(&self) -> &'static mut T {
+        let pa: PhysicalAddress = self.into();
+        unsafe { (pa.as_usize() as *mut T).as_mut().unwrap() }
+    }
+
+    pub fn as_usize(&self) -> usize {
+        self.into()
+    }
+}
+
+impl VirtualPageNumber {
+    // 获取页号
+    pub fn indexes(&self) -> [usize; 3] {
+        let mut vpn = self.0;
+        let mut indexes = [0uisze; 3];
+        for i in (0..3).rev() {
+            indexes[i] = vpn & 511;
+            vpn >>= 9;
         }
+        indexes
     }
 }

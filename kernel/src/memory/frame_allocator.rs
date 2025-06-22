@@ -18,7 +18,7 @@ pub struct FrameTracker {
 
 impl FrameTracker {
     pub fn new(ppn: PhysicalPageNumber) -> Self {
-        for i in ppn.get_bytes_mut() {
+        for i in ppn.get_bytes_array_mut() {
             *i = 0;
         }
         Self { ppn }
@@ -63,7 +63,7 @@ impl StackFrameAllocator {
         }
         if self.current_start_ppn < self.end_ppn {
             let current = self.current_start_ppn;
-            self.current_start_ppn = (current.0 + 1).into();
+            self.current_start_ppn = (current.as_usize() + 1).into();
             return Some(current);
         }
         return None;
