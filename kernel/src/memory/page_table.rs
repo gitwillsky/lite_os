@@ -33,7 +33,10 @@ pub struct PageTableEntry(usize);
 
 impl PageTableEntry {
     pub fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
-        Self(usize::from(ppn) << PTE_FLAGS_WIDTH & flags.bits() as usize)
+        let ppn_val = usize::from(ppn);
+        let flags_val = flags.bits() as usize;
+        let result = (ppn_val << PTE_FLAGS_WIDTH) | flags_val;
+        Self(result)
     }
 
     pub fn empty() -> Self {
@@ -45,7 +48,9 @@ impl PageTableEntry {
     }
 
     pub fn ppn(&self) -> PhysicalPageNumber {
-        (self.0 >> PTE_FLAGS_WIDTH).into()
+        let ppn_val = self.0 >> PTE_FLAGS_WIDTH;
+        let result = PhysicalPageNumber::from_ppn(ppn_val);
+        result
     }
 
     pub fn is_valid(&self) -> bool {
@@ -149,8 +154,8 @@ impl PageTable {
 
     pub fn map(&mut self, vpn: VirtualPageNumber, ppn: PhysicalPageNumber, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before mapping", vpn);
-        *pte = PageTableEntry::new(ppn, flags)
+        assert!(!pte.is_valid(), "vpn {:?} is already mapped", vpn);
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
 
     pub fn unmap(&mut self, vpn: VirtualPageNumber) {

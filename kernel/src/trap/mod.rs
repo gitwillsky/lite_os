@@ -10,21 +10,23 @@ use riscv::{
     ExceptionNumber, InterruptNumber,
     interrupt::{Exception, Interrupt, Trap},
     register::{
-        self, sip, stval,
+        self, scause, sepc, sip, stval,
         stvec::{self, TrapMode},
     },
 };
 
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
-    syscall, timer,
+    syscall,
+    task::task_manager::{TASK_MANAGER, current_user_token},
+    timer,
 };
 
 global_asm!(include_str!("trap.S"));
 
 unsafe extern "C" {
-    unsafe fn __all_traps();
-    unsafe fn __restore();
+    fn __alltraps();
+    fn __restore();
 }
 
 pub fn init() {
@@ -37,7 +39,7 @@ pub fn init() {
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_handler() -> ! {
+pub fn trap_handler(ctx: &mut TrapContext) {
     set_kernel_trap_entry();
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
@@ -49,6 +51,8 @@ pub fn trap_handler() -> ! {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::handle_supervisor_timer_interrupt();
+                    let guard = TASK_MANAGER.wait().lock();
+                    (&*guard).switch_to_next();
                 }
                 Interrupt::SupervisorSoft => unsafe {
                     sip::clear_ssoft();
@@ -63,7 +67,7 @@ pub fn trap_handler() -> ! {
         } else {
             panic!("Invalid interrupt code: {:?}", code);
         }
-        return ctx;
+        return;
     }
 
     let original_sepc = ctx.sepc;
@@ -116,7 +120,7 @@ pub fn trap_handler() -> ! {
         } else {
             panic!("Invalid exception code: {:?}", code);
         }
-        return ctx;
+        return;
     }
 
     panic!("Can not handle trap: scause: {:?}", scause_val);
@@ -146,7 +150,7 @@ pub fn trap_return() -> ! {
 
     let trap_cx_ptr = TRAP_CONTEXT;
     let user_satp = current_user_token();
-    let restore_va = __restore as usize - __all_traps as usize + TRAMPOLINE;
+    let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
     unsafe {
         asm!(
             "fence.i",
@@ -161,5 +165,11 @@ pub fn trap_return() -> ! {
 
 #[unsafe(no_mangle)]
 pub fn trap_from_kernel() -> ! {
-    panic!("a trap from kernel")
+    println!(
+        "[trap_from_kernel] scause={:?}, stval={:#x}, sepc={:#x}",
+        scause::read(),
+        stval::read(),
+        sepc::read()
+    );
+    panic!("a trap from kernel");
 }

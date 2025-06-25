@@ -50,6 +50,7 @@ __alltraps:
     csrw satp, t0   # switch to kernel space
     sfence.vma
 
+    mv a0, sp       # a0 = TrapContext 指针
     jr t1           # jump to trap_handler
 __restore:
     # a0: *TrapContext in user space; a1: user space Token

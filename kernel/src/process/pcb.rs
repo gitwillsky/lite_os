@@ -17,6 +17,10 @@ pub struct ProcessControlBlock {
 
 impl ProcessControlBlock {
     pub fn trap_context_mut(&self) -> &mut TrapContext {
-        unsafe { (self.trap_ctx_ptr.0 as *mut TrapContext).as_mut().unwrap() }
+        unsafe {
+            (self.trap_ctx_ptr.as_usize() as *mut TrapContext)
+                .as_mut()
+                .unwrap()
+        }
     }
 }

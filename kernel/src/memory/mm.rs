@@ -65,11 +65,10 @@ impl MapArea {
 
         loop {
             let src = &data[start..len.min(start + config::PAGE_SIZE)];
-            let dst = &mut page_table
-                .translate(current_vpn)
-                .unwrap()
-                .ppn()
-                .get_bytes_array_mut()[..src.len()];
+            let pte = page_table.translate(current_vpn).unwrap();
+            let ppn = pte.ppn();
+            let vaddr = ppn.get_bytes_array_mut().as_ptr() as usize;
+            let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
             dst.copy_from_slice(src);
             start += config::PAGE_SIZE;
             if start >= len {
@@ -81,13 +80,13 @@ impl MapArea {
 
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.map_one(page_table, vpn.into());
+            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn));
         }
     }
 
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.unmap_one(page_table, vpn.into());
+            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
         }
     }
 
@@ -100,7 +99,7 @@ impl MapArea {
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Identical => {
-                ppn = vpn.as_usize().into();
+                ppn = PhysicalPageNumber::from_ppn(vpn.as_usize());
             }
         }
 
@@ -120,7 +119,7 @@ impl MapArea {
 
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
         for vpn in new_end.as_usize()..self.vpn_range.end.as_usize() {
-            self.unmap_one(page_table, vpn.into());
+            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
         }
         self.vpn_range = Range {
             start: self.vpn_range.start,
@@ -130,7 +129,7 @@ impl MapArea {
 
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
         for vpn in self.vpn_range.end.as_usize()..new_end.as_usize() {
-            self.map_one(page_table, vpn.into());
+            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn));
         }
         self.vpn_range = Range {
             start: self.vpn_range.start,
@@ -155,7 +154,7 @@ impl MemorySet {
     pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
-            map_area.copy_data(&self.page_table, data);
+            map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
     }
@@ -177,9 +176,12 @@ impl MemorySet {
     }
 
     pub fn map_trampoline(&mut self) {
+        let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
+        let strampoline_pa = PhysicalAddress::from(strampoline as usize);
+
         self.page_table.map(
-            config::TRAMPOLINE.into(),
-            (&PhysicalAddress::from(strampoline as usize)).into(),
+            trampoline_va.floor(),
+            strampoline_pa.floor(),
             PTEFlags::R | PTEFlags::X,
         );
     }

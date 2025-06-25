@@ -60,4 +60,59 @@ impl TaskManager {
     pub fn current_task_mut(&self) -> core::cell::RefMut<'_, usize> {
         core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.current_task)
     }
+
+    pub fn mark_current_exited(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let current = inner.current_task;
+        inner.tasks[current].task_status = crate::task::task::TaskStatus::Exited;
+    }
+
+    pub fn find_next_task(&self) -> Option<usize> {
+        let inner = self.inner.borrow();
+        let n = inner.tasks.len();
+        let mut cur = inner.current_task;
+        for _ in 0..n {
+            cur = (cur + 1) % n;
+            if inner.tasks[cur].task_status == crate::task::task::TaskStatus::Ready {
+                return Some(cur);
+            }
+        }
+        None
+    }
+
+    pub fn switch_to_next(&self) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(next) = self.find_next_task() {
+            let current = inner.current_task;
+            let n = inner.tasks.len();
+            let (first, second) = inner.tasks.split_at_mut(current.max(next));
+            let (current_task, next_task) = if current < next {
+                (&mut first[current], &mut second[0])
+            } else {
+                (&mut second[0], &mut first[next])
+            };
+            if current_task.task_status == crate::task::task::TaskStatus::Running {
+                current_task.task_status = crate::task::task::TaskStatus::Ready;
+            }
+            next_task.task_status = crate::task::task::TaskStatus::Running;
+            let current_cx_ptr = &mut current_task.task_cx as *mut _;
+            let next_cx_ptr = &next_task.task_cx as *const _;
+            inner.current_task = next;
+            drop(inner);
+            unsafe {
+                crate::task::__switch(current_cx_ptr, next_cx_ptr);
+            }
+        } else {
+            println!("[kernel] All user tasks exited, shutting down...");
+            crate::arch::sbi::shutdown().ok();
+            loop {}
+        }
+    }
+}
+
+pub fn current_user_token() -> usize {
+    let task_manager = TASK_MANAGER.wait();
+    let inner = task_manager.lock();
+    let current = inner.inner.borrow().current_task;
+    inner.inner.borrow().tasks[current].get_user_token()
 }

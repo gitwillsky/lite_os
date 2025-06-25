@@ -4,7 +4,7 @@ use crate::task::context::TaskContext;
 
 mod context;
 mod task;
-mod task_manager;
+pub mod task_manager;
 
 global_asm!(include_str!("switch.S"));
 

@@ -1,4 +1,4 @@
-extern "C" {
+unsafe extern "C" {
     fn _num_app();
 }
 

@@ -18,8 +18,9 @@ pub struct FrameTracker {
 
 impl FrameTracker {
     pub fn new(ppn: PhysicalPageNumber) -> Self {
-        for i in ppn.get_bytes_array_mut() {
-            *i = 0;
+        let vaddr = ppn.get_bytes_array_mut().as_ptr() as *mut u8;
+        unsafe {
+            core::ptr::write_bytes(vaddr, 0, crate::memory::config::PAGE_SIZE);
         }
         Self { ppn }
     }
@@ -27,7 +28,7 @@ impl FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
-        FRAME_ALLOCATOR.wait().lock().dealloc(self.ppn);
+        let _ = FRAME_ALLOCATOR.wait().lock().dealloc(self.ppn);
     }
 }
 
@@ -58,21 +59,25 @@ impl StackFrameAllocator {
     }
 
     pub fn alloc(&mut self) -> Option<PhysicalPageNumber> {
-        if !self.recycled_ppns.is_empty() {
-            return self.recycled_ppns.pop();
-        }
-        if self.current_start_ppn < self.end_ppn {
+        if let Some(ppn) = self.recycled_ppns.pop() {
+            Some(ppn)
+        } else if self.current_start_ppn < self.end_ppn {
             let current = self.current_start_ppn;
-            self.current_start_ppn = (current.as_usize() + 1).into();
-            return Some(current);
+            self.current_start_ppn = current.add_one();
+            Some(current)
+        } else {
+            None
         }
-        return None;
     }
 
     pub fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
-        if ppn < self.start_ppn || ppn > self.end_ppn {
-            return Err(FrameAllocError::OutOfRange);
-        }
+        assert!(
+            ppn >= self.start_ppn && ppn < self.end_ppn,
+            "dealloc: 非法ppn={:#x}, 合法区间=[{:#x}, {:#x})",
+            ppn.as_usize(),
+            self.start_ppn.as_usize(),
+            self.end_ppn.as_usize()
+        );
         if ppn > self.current_start_ppn && ppn < self.end_ppn {
             return Err(FrameAllocError::OutOfRange);
         }
@@ -84,15 +89,20 @@ impl StackFrameAllocator {
 }
 
 pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
+    let start_ppn = start_addr.ceil();
+    let end_ppn = end_addr.floor();
+    assert!(
+        end_ppn.as_usize() > start_ppn.as_usize(),
+        "frame_allocator: 分配区间为0，start_ppn={:#x}, end_ppn={:#x}",
+        start_ppn.as_usize(),
+        end_ppn.as_usize()
+    );
     FRAME_ALLOCATOR.call_once(|| Mutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
 pub fn alloc() -> Option<FrameTracker> {
-    FRAME_ALLOCATOR
-        .wait()
-        .lock()
-        .alloc()
-        .map(|b| FrameTracker::new(b))
+    let res = FRAME_ALLOCATOR.wait().lock().alloc();
+    res.map(|b| FrameTracker::new(b))
 }
 
 pub fn dealloc(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {

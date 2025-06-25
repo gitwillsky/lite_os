@@ -22,6 +22,11 @@ pub fn handle_heap_alloc_error(layout: alloc::Layout) -> ! {
 
 pub fn init() {
     unsafe {
+        println!(
+            "[heap_allocator::init] heap vaddr={:#x}, size={:#x}",
+            addr_of_mut!(KERNEL_HEAP_MEMORY) as usize,
+            config::MAX_HEAP_SIZE
+        );
         HEAP_ALLOCATOR.lock().init(
             addr_of_mut!(KERNEL_HEAP_MEMORY) as usize,
             config::MAX_HEAP_SIZE,

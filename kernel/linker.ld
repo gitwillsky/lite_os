@@ -14,13 +14,13 @@ SECTIONS {
     skernel = .;
 
     stext = .;
-    .text : {
-       *(.text.entry) /* 放置入口代码 */
-       . = ALIGN(4K)
-       strampoline = .;
-       *(.text.strampoline);
-       . = ALIGN(4K)
-       *(.text .text.*) /* 剩余代码段 */
+       .text : {
+        *(.text.entry)
+        . = ALIGN(4K);
+        strampoline = .;
+        *(.text.trampoline);
+        . = ALIGN(4K);
+        *(.text .text.*)
     }
     . = ALIGN(4K);
     etext = .;

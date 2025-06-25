@@ -12,5 +12,8 @@ pub const VPN_WIDTH: usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH;
 pub const USER_STACK_SIZE: usize = 8192 * 2;
 pub const KERNEL_STACK_SIZE: usize = 8192 * 2;
 
-pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
+// 在SV39地址空间中，有效的虚拟地址范围是39位
+// 最高有效虚拟地址是 (1 << 39) - 1 = 0x7fffffffff
+// 但是为了简化，我们使用接近最高地址的位置
+pub const TRAMPOLINE: usize = (1 << (VIRTUAL_ADDRESS_WIDTH - 1)) - PAGE_SIZE;
 pub const TRAP_CONTEXT: usize = TRAMPOLINE - PAGE_SIZE;
