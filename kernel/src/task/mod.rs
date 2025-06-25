@@ -2,7 +2,7 @@ use core::arch::global_asm;
 
 use crate::task::context::TaskContext;
 
-mod context;
+pub mod context;
 mod task;
 pub mod task_manager;
 

@@ -151,6 +151,7 @@ pub fn trap_return() -> ! {
     let trap_cx_ptr = TRAP_CONTEXT;
     let user_satp = current_user_token();
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
+
     unsafe {
         asm!(
             "fence.i",
