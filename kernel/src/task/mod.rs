@@ -20,3 +20,5 @@ unsafe extern "C" {
 pub fn init() {
     task_manager::init();
 }
+
+pub use task_manager::*;

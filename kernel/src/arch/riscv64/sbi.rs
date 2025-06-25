@@ -88,3 +88,10 @@ pub fn set_timer(timer_value: usize) -> SbiResult<()> {
     sbi_call(0x54494D45, 0, [timer_value, 0, 0, 0, 0, 0])?;
     Ok(())
 }
+
+pub fn console_getchar() -> isize {
+    match sbi_call(0x01, 1, [0; 6]) {
+        Ok(ch) => ch,
+        Err(_) => -1,
+    }
+}

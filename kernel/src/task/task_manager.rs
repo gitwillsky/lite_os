@@ -42,5 +42,22 @@ pub fn init() {
 }
 
 impl TaskManager {
-    fn run_first_task(&self) -> ! {}
+    pub fn run_first_task(&self) -> ! {
+        let inner = self.inner.borrow();
+        let first_task = &inner.tasks[0];
+        let task_cx_ptr = &first_task.task_cx as *const _;
+        drop(inner);
+        unsafe {
+            crate::task::__switch(core::ptr::null_mut(), task_cx_ptr);
+        }
+        panic!("run_first_task should never return");
+    }
+
+    pub fn tasks_mut(&self) -> core::cell::RefMut<'_, Vec<TaskControlBlock>> {
+        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.tasks)
+    }
+
+    pub fn current_task_mut(&self) -> core::cell::RefMut<'_, usize> {
+        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.current_task)
+    }
 }

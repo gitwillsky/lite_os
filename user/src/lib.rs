@@ -8,6 +8,8 @@ mod lang_item;
 
 use syscall::*;
 
+pub use syscall::sys_read;
+
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 extern "C" fn _start() -> ! {

@@ -30,6 +30,8 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     process::init();
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
+    process::run_first_process();
+
     loop {
         wfi();
     }
