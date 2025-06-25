@@ -1,7 +1,7 @@
 use crate::{
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
-        address::{PhysicalPageNumber, VirtualAddress},
+        address::{PhysicalPageNumber, VirtualAddress, VirtualPageNumber},
         kernel_stack_position,
         mm::{self, MapPermission, MemorySet},
     },
@@ -39,10 +39,10 @@ impl TaskControlBlock {
 
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
-        let trap_cx_ppn = memory_set
-            .translate((&VirtualAddress::from(TRAP_CONTEXT)).into())
-            .unwrap()
-            .ppn();
+
+        let trap_context_vpn: VirtualPageNumber = (&VirtualAddress::from(TRAP_CONTEXT)).into();
+        let translate_result = memory_set.translate(trap_context_vpn);
+        let trap_cx_ppn = translate_result.unwrap().ppn();
 
         let task_status = TaskStatus::Ready;
 

@@ -131,14 +131,14 @@ impl PageTable {
         result
     }
 
-    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
+    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&PageTableEntry> {
         let idxs = vpn.indexes();
 
         let mut ppn = self.root_ppn;
-        let mut result: Option<&mut PageTableEntry> = None;
+        let mut result: Option<&PageTableEntry> = None;
 
         for i in 0..3 {
-            let pte = &mut ppn.get_pte_array()[idxs[i]];
+            let pte = &ppn.get_pte_array()[idxs[i]];
             if i == 2 {
                 result = Some(pte);
                 break;
@@ -165,7 +165,6 @@ impl PageTable {
     }
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
-        let pte = self.find_pte(vpn);
-        pte.map(|pte| pte.clone())
+        self.find_pte(vpn).map(|pte| *pte)
     }
 }

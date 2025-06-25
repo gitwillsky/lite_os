@@ -74,7 +74,7 @@ impl MapArea {
             if start >= len {
                 break;
             }
-            current_vpn = (current_vpn.as_usize() + 1).into();
+            current_vpn = VirtualPageNumber::from_vpn(current_vpn.as_usize() + 1);
         }
     }
 
