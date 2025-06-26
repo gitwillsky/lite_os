@@ -4,7 +4,7 @@ build:
 	cd user && cargo build && cd -
 
 run: build
-	qemu-system-riscv64 -machine virt -bios target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel
+	(sleep 15 && killall qemu-system-riscv64 &) && qemu-system-riscv64 -machine virt -bios target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel
 
 run-gdb: build
 	qemu-system-riscv64 -machine virt -bios target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -S -s
