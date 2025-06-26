@@ -40,7 +40,7 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     println!("[kmain] after task::init");
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
-    TASK_MANAGER.wait().lock().run_first_task();
+    task::run_first_task();
 
     loop {
         wfi();

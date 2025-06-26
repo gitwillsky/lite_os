@@ -137,7 +137,7 @@ fn set_kernel_trap_entry() {
 
 fn set_user_trap_entry() {
     let mut val = stvec::Stvec::from_bits(0);
-    val.set_address(trap_handler as usize);
+    val.set_address(TRAMPOLINE);
     val.set_trap_mode(TrapMode::Direct);
     unsafe {
         stvec::write(val);
@@ -152,6 +152,10 @@ pub fn trap_return() -> ! {
     let user_satp = current_user_token();
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
+    println!(
+        "trap_return: trap_cx_ptr={:#x}, user_satp={:#x}, restore_va={:#x}",
+        trap_cx_ptr, user_satp, restore_va
+    );
     unsafe {
         asm!(
             "fence.i",

@@ -47,24 +47,6 @@ impl TaskManager {
         &inner.tasks[0].task_cx as *const _
     }
 
-    pub fn run_first_task(&self) -> ! {
-        let task_cx_ptr = {
-            let inner = self.inner.borrow();
-            let first_task = &inner.tasks[0];
-            let ptr = &first_task.task_cx as *const _;
-            ptr
-        };
-
-        // 为第一次任务切换创建一个临时的任务上下文
-        let mut dummy_cx = crate::task::context::TaskContext::zero_init();
-        let dummy_cx_ptr = &mut dummy_cx as *mut _;
-
-        unsafe {
-            crate::task::__switch(dummy_cx_ptr, task_cx_ptr);
-        }
-        panic!("run_first_task should never return");
-    }
-
     pub fn tasks_mut(&self) -> core::cell::RefMut<'_, Vec<TaskControlBlock>> {
         core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.tasks)
     }
@@ -120,6 +102,25 @@ impl TaskManager {
             loop {}
         }
     }
+}
+
+pub fn run_first_task() -> ! {
+    let task_cx_ptr = {
+        let task_manager = TASK_MANAGER.wait().lock();
+        let inner = task_manager.inner.borrow();
+        let first_task = &inner.tasks[0];
+        let ptr = &first_task.task_cx as *const _;
+        ptr
+    }; // 锁在这里释放
+
+    // 为第一次任务切换创建一个临时的任务上下文
+    let mut dummy_cx = crate::task::context::TaskContext::zero_init();
+    let dummy_cx_ptr = &mut dummy_cx as *mut _;
+
+    unsafe {
+        crate::task::__switch(dummy_cx_ptr, task_cx_ptr);
+    }
+    panic!("run_first_task should never return");
 }
 
 pub fn current_user_token() -> usize {
