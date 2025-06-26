@@ -5,6 +5,8 @@
 use core::arch::global_asm;
 use riscv::asm::wfi;
 
+use crate::task::TASK_MANAGER;
+
 extern crate alloc;
 
 mod arch;
@@ -16,7 +18,6 @@ mod entry;
 mod lang_item;
 mod loader;
 mod memory;
-mod process;
 mod syscall;
 mod task;
 mod timer;
@@ -35,11 +36,11 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     println!("[kmain] after memory::init");
     timer::init();
     println!("[kmain] after timer::init");
-    process::init();
-    println!("[kmain] after process::init");
+    task::init();
+    println!("[kmain] after task::init");
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
-    process::run_first_process();
+    TASK_MANAGER.wait().lock().run_first_task();
 
     loop {
         wfi();
