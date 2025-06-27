@@ -24,11 +24,6 @@ use crate::{
 
 global_asm!(include_str!("trap.S"));
 
-unsafe extern "C" {
-    fn __alltraps();
-    fn __restore();
-}
-
 pub fn init() {
     set_kernel_trap_entry();
 
@@ -150,6 +145,10 @@ pub fn trap_return() -> ! {
 
     let trap_cx_ptr = TRAP_CONTEXT;
     let user_satp = current_user_token();
+    unsafe extern "C" {
+        fn __restore();
+        fn __alltraps();
+    }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
     println!(
