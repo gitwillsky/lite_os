@@ -18,9 +18,9 @@ pub struct FrameTracker {
 
 impl FrameTracker {
     pub fn new(ppn: PhysicalPageNumber) -> Self {
-        let vaddr = ppn.get_bytes_array_mut().as_ptr() as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(vaddr, 0, crate::memory::config::PAGE_SIZE);
+        let bytes_array = ppn.get_bytes_array_mut();
+        for byte in bytes_array {
+            *byte = 0;
         }
         Self { ppn }
     }

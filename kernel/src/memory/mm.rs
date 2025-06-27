@@ -67,14 +67,13 @@ impl MapArea {
             let src = &data[start..len.min(start + config::PAGE_SIZE)];
             let pte = page_table.translate(current_vpn).unwrap();
             let ppn = pte.ppn();
-            let vaddr = ppn.get_bytes_array_mut().as_ptr() as usize;
             let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
             dst.copy_from_slice(src);
             start += config::PAGE_SIZE;
             if start >= len {
                 break;
             }
-            current_vpn = VirtualPageNumber::from_vpn(current_vpn.as_usize() + 1);
+            current_vpn = current_vpn.next();
         }
     }
 
@@ -99,7 +98,7 @@ impl MapArea {
                 self.data_frames.insert(vpn, frame);
             }
             MapType::Identical => {
-                ppn = PhysicalPageNumber::from_ppn(vpn.as_usize());
+                ppn = vpn.as_usize().into();
             }
         }
 
@@ -180,8 +179,8 @@ impl MemorySet {
         let strampoline_pa = PhysicalAddress::from(strampoline as usize);
 
         self.page_table.map(
-            trampoline_va.floor(),
-            strampoline_pa.floor(),
+            trampoline_va.into(),
+            strampoline_pa.into(),
             PTEFlags::R | PTEFlags::X,
         );
     }
@@ -263,7 +262,7 @@ impl MemorySet {
         }
 
         // map user stack
-        let max_end_va: VirtualAddress = (&max_end_vpn).into();
+        let max_end_va: VirtualAddress = max_end_vpn.into();
         let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
         user_stack_bottom += config::PAGE_SIZE;

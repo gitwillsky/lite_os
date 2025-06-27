@@ -40,7 +40,7 @@ impl TaskControlBlock {
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
 
-        let trap_context_vpn: VirtualPageNumber = (&VirtualAddress::from(TRAP_CONTEXT)).into();
+        let trap_context_vpn: VirtualPageNumber = VirtualAddress::from(TRAP_CONTEXT).into();
         let translate_result = memory_set.translate(trap_context_vpn);
         let trap_cx_ppn = translate_result.unwrap().ppn();
 

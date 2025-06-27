@@ -2,10 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::memory::{
-    address::{PhysicalAddress, VirtualPageNumber},
-    frame_allocator::alloc,
-};
+use crate::memory::{address::VirtualPageNumber, frame_allocator::alloc};
 
 use super::{
     address::PhysicalPageNumber,
@@ -49,8 +46,7 @@ impl PageTableEntry {
 
     pub fn ppn(&self) -> PhysicalPageNumber {
         let ppn_val = self.0 >> PTE_FLAGS_WIDTH;
-        let result = PhysicalPageNumber::from_ppn(ppn_val);
-        result
+        ppn_val.into()
     }
 
     pub fn is_valid(&self) -> bool {
@@ -101,7 +97,7 @@ impl PageTable {
     pub fn from_token(satp_val: usize) -> Self {
         Self {
             root_ppn: PhysicalPageNumber::from(satp_val),
-            entries: Vec::new(),
+            entries: vec![],
         }
     }
 
@@ -117,8 +113,8 @@ impl PageTable {
         let mut ppn = self.root_ppn;
         let mut result: Option<_> = None;
 
-        for i in 0..3 {
-            let pte = &mut ppn.get_pte_array()[idxs[i]];
+        for (i, idx) in idxs.iter().enumerate() {
+            let pte = &mut ppn.get_pte_array()[*idx];
             if i == 2 {
                 result = Some(pte);
                 break;
@@ -137,8 +133,8 @@ impl PageTable {
         let mut ppn = self.root_ppn;
         let mut result: Option<&PageTableEntry> = None;
 
-        for i in 0..3 {
-            let pte = &ppn.get_pte_array()[idxs[i]];
+        for (i, idx) in idxs.iter().enumerate() {
+            let pte = &ppn.get_pte_array()[*idx];
             if i == 2 {
                 result = Some(pte);
                 break;
