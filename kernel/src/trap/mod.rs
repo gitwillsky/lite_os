@@ -40,6 +40,7 @@ pub fn trap_handler(ctx: &mut TrapContext) {
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
     let stval = stval::read();
+    println!("[trap_handler] scause={:?}, stval={:#x}, sepc={:#x}", scause_val, stval, ctx.sepc);
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -152,7 +153,7 @@ pub fn trap_return() -> ! {
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
     println!(
-        "trap_return: trap_cx_ptr={:#x}, user_satp={:#x}, restore_va={:#x}",
+        "[trap_return] Starting user program: trap_cx_ptr={:#x}, user_satp={:#x}, restore_va={:#x}",
         trap_cx_ptr, user_satp, restore_va
     );
     unsafe {
