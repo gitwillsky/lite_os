@@ -12,5 +12,5 @@ pub const VPN_WIDTH: usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH;
 pub const USER_STACK_SIZE: usize = 8192 * 2;
 pub const KERNEL_STACK_SIZE: usize = 8192 * 2;
 
-pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE;
+pub const TRAMPOLINE: usize = usize::MAX & !(PAGE_SIZE - 1);
 pub const TRAP_CONTEXT: usize = TRAMPOLINE - PAGE_SIZE;

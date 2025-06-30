@@ -13,7 +13,7 @@ _num_app:
     .global app_0_end
     .align 3
 app_0_start:
-    .incbin "target/riscv64gc-unknown-none-elf/debug/hello_world"
+    .incbin "target/riscv64gc-unknown-none-elf/release/hello_world"
 app_0_end:
 
     .section .data
@@ -21,5 +21,5 @@ app_0_end:
     .global app_1_end
     .align 3
 app_1_start:
-    .incbin "target/riscv64gc-unknown-none-elf/debug/shell"
+    .incbin "target/riscv64gc-unknown-none-elf/release/shell"
 app_1_end:
