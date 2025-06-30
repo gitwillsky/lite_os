@@ -40,9 +40,10 @@ impl TaskControlBlock {
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
 
-        let trap_context_vpn: VirtualPageNumber = VirtualAddress::from(TRAP_CONTEXT).into();
-        let translate_result = memory_set.translate(trap_context_vpn);
-        let trap_cx_ppn = translate_result.unwrap().ppn();
+        println!("[TaskControlBlock::new] app_id={}, entry_point={:#x}, user_sp={:#x}", app_id, entry_point, user_sp);
+
+        // 为TRAP_CONTEXT分配一个物理页面
+        let trap_cx_ppn = crate::memory::frame_allocator::alloc().unwrap().ppn;
 
         let task_status = TaskStatus::Ready;
 
@@ -54,7 +55,7 @@ impl TaskControlBlock {
             MapPermission::R | MapPermission::W,
         );
 
-        let tcb = Self {
+        let mut tcb = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
             memory_set,
@@ -63,6 +64,19 @@ impl TaskControlBlock {
             heap_bottom: user_sp,
             program_brk: user_sp,
         };
+
+        // 修复TRAP_CONTEXT的映射：需要将虚拟地址映射到实际的TrapContext物理页面
+        let trap_context_vpn: VirtualPageNumber = VirtualAddress::from(TRAP_CONTEXT).into();
+        // 映射到正确的物理页面，注意需要添加用户权限U标志
+        tcb.memory_set.map_one(
+            trap_context_vpn,
+            trap_cx_ppn,
+            crate::memory::page_table::PTEFlags::R | crate::memory::page_table::PTEFlags::W | crate::memory::page_table::PTEFlags::U,
+        );
+        println!(
+            "[TaskControlBlock::new] Mapped TRAP_CONTEXT: vpn={:#x} -> ppn={:#x}",
+            trap_context_vpn.as_usize(), trap_cx_ppn.as_usize()
+        );
 
         // prepare TrapContext in user space
         let trap_cx = tcb.get_trap_cx();
@@ -73,6 +87,7 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         );
+        println!("[TaskControlBlock::new] TrapContext initialized: sepc={:#x}, sp={:#x}", trap_cx.sepc, trap_cx.x[2]);
         tcb
     }
 

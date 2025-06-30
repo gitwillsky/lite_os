@@ -18,7 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::task_manager::{TASK_MANAGER, current_user_token},
+    task::task_manager::{TASK_MANAGER, current_user_token, current_trap_cx},
     timer,
 };
 
@@ -41,6 +41,7 @@ pub fn trap_handler(ctx: &mut TrapContext) {
     // 在发生缺页异常时，保存导致问题的虚拟地址
     let stval = stval::read();
     println!("[trap_handler] scause={:?}, stval={:#x}, sepc={:#x}", scause_val, stval, ctx.sepc);
+    println!("[trap_handler] TrapContext registers: x10={:#x}, x17={:#x}, sp={:#x}", ctx.x[10], ctx.x[17], ctx.x[2]);
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -152,9 +153,19 @@ pub fn trap_return() -> ! {
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
+        // 调试：通过当前任务的物理页号访问TrapContext
+    let current_trap_cx = current_trap_cx();
     println!(
         "[trap_return] Starting user program: trap_cx_ptr={:#x}, user_satp={:#x}, restore_va={:#x}",
         trap_cx_ptr, user_satp, restore_va
+    );
+    println!(
+        "[trap_return] TrapContext content: sepc={:#x}, sp={:#x}, sstatus={:#x}",
+        current_trap_cx.sepc, current_trap_cx.x[2], current_trap_cx.sstatus.bits()
+    );
+    println!(
+        "[trap_return] TrapContext registers: x10={:#x}, x11={:#x}, x12={:#x}, x17={:#x}",
+        current_trap_cx.x[10], current_trap_cx.x[11], current_trap_cx.x[12], current_trap_cx.x[17]
     );
     unsafe {
         asm!(
