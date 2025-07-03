@@ -9,6 +9,7 @@ mod lang_item;
 use syscall::*;
 
 pub use syscall::sys_read;
+pub use syscall::sys_write;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]

@@ -21,6 +21,7 @@ fn read_line(buf: &mut [u8]) -> usize {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
+    println!("[user shell] User shell program started");
     println!("[user shell] shell main entry");
     let mut buf = [0u8; 128];
     loop {
@@ -43,5 +44,6 @@ fn main() -> i32 {
             }
         }
     }
+    println!("[user shell] Shell program about to exit");
     0
 }

@@ -1,6 +1,7 @@
 use crate::{
     memory::{
-        KERNEL_SPACE, address::PhysicalPageNumber,
+        KERNEL_SPACE, TRAP_CONTEXT,
+        address::{PhysicalPageNumber, VirtualAddress, VirtualPageNumber},
         kernel_stack_position,
         mm::{self, MapPermission, MemorySet},
     },
@@ -39,11 +40,6 @@ impl TaskControlBlock {
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
 
-        println!("[TaskControlBlock::new] app_id={}, entry_point={:#x}, user_sp={:#x}", app_id, entry_point, user_sp);
-
-        // 为TRAP_CONTEXT分配一个物理页面
-        let trap_cx_ppn = crate::memory::frame_allocator::alloc().unwrap().ppn;
-
         let task_status = TaskStatus::Ready;
 
         let (kernel_stack_bottom, kernel_stack_top) = kernel_stack_position(app_id);
@@ -53,6 +49,12 @@ impl TaskControlBlock {
             kernel_stack_top.into(),
             MapPermission::R | MapPermission::W,
         );
+
+        // 获取用户空间中TRAP_CONTEXT映射的物理页面
+        let trap_cx_ppn = memory_set
+            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
+            .expect("TRAP_CONTEXT should be mapped")
+            .ppn();
 
         let tcb = Self {
             task_status,
@@ -73,7 +75,6 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         );
-        println!("[TaskControlBlock::new] TrapContext initialized: sepc={:#x}, sp={:#x}", trap_cx.sepc, trap_cx.x[2]);
         tcb
     }
 
