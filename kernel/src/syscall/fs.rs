@@ -1,21 +1,27 @@
-use crate::arch::sbi;
+use crate::{arch::sbi, memory::page_table::translated_byte_buffer, task::current_user_token};
 const STD_OUT: usize = 1;
 const STD_IN: usize = 0;
 
+
+/// write buf of length `len`  to a file with `fd`
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     match fd {
         STD_OUT => {
-            let str = unsafe { core::slice::from_raw_parts(buf, len) };
-            let strr = core::str::from_utf8(str).unwrap();
-            print!("{}", strr);
+            let buffers = translated_byte_buffer(current_user_token(), buf, len);
+            for buffer in buffers {
+                let s = core::str::from_utf8(buffer).unwrap();
+                for c in s.bytes() {
+                    sbi::console_putchar(c as usize);
+                }
+            }
             len as isize
         }
         _ => {
-            println!("sys_write: invalid fd: {}", fd);
-            -1
+            panic!("Unsupported fd in sys_write!");
         }
     }
 }
+
 
 pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
     match fd {

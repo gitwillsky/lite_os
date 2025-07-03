@@ -73,8 +73,8 @@ pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> SbiResult<isize> {
     }
 }
 
-pub fn console_putchar(c: u8) -> SbiResult<()> {
-    sbi_call(0x01, 0, [c as usize, 0, 0, 0, 0, 0])?;
+pub fn console_putchar(c: usize) -> SbiResult<()> {
+    sbi_call(0x01, 0, [c, 0, 0, 0, 0, 0])?;
     Ok(())
 }
 

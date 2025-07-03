@@ -2,7 +2,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
-use crate::memory::{address::VirtualPageNumber, frame_allocator::alloc};
+use crate::memory::{
+    address::{VirtualAddress, VirtualPageNumber},
+    frame_allocator::alloc,
+};
 
 use super::{
     address::PhysicalPageNumber,
@@ -96,7 +99,7 @@ impl PageTable {
 
     pub fn from_token(satp_val: usize) -> Self {
         Self {
-            root_ppn: PhysicalPageNumber::from(satp_val),
+            root_ppn: PhysicalPageNumber::from(satp_val & ((1 << 44) - 1)),
             entries: vec![],
         }
     }
@@ -163,4 +166,27 @@ impl PageTable {
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
     }
+}
+
+/// translate a pointer to a mutable u8 Vec through page table
+pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    let page_table = PageTable::from_token(token);
+    let mut start = ptr as usize;
+    let end = start + len;
+    let mut v = Vec::new();
+    while start < end {
+        let start_va = VirtualAddress::from(start);
+        let vpn = start_va.floor();
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let next_vpn = vpn.next();
+        let mut end_va: VirtualAddress = next_vpn.into();
+        end_va = end_va.min(VirtualAddress::from(end));
+        if end_va.page_offset() == 0 {
+            v.push(&mut ppn.get_bytes_array_mut()[start_va.page_offset()..]);
+        } else {
+            v.push(&mut ppn.get_bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]);
+        }
+        start = end_va.into();
+    }
+    v
 }

@@ -2,7 +2,7 @@ use crate::arch::sbi;
 
 fn print_str(s: &str) {
     for c in s.bytes() {
-        let _ = sbi::console_putchar(c);
+        let _ = sbi::console_putchar(c as usize);
     }
 }
 
