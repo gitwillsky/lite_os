@@ -1,11 +1,15 @@
-use core::{cell::RefCell, num};
-
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use spin::{Mutex, Once};
 
 use crate::{
+    arch::sbi,
     loader::{get_app_data, get_num_app},
-    task::task::TaskControlBlock,
+    task::{
+        context::TaskContext,
+        task::{TaskControlBlock, TaskStatus},
+    },
+    trap::TrapContext,
 };
 
 pub struct TaskManager {
@@ -51,14 +55,21 @@ impl TaskManager {
         core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.tasks)
     }
 
-    pub fn current_task_mut(&self) -> core::cell::RefMut<'_, usize> {
-        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.current_task)
+    pub fn current_task_mut(&self) -> core::cell::RefMut<'_, TaskControlBlock> {
+        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| {
+            &mut inner.tasks[inner.current_task]
+        })
     }
 
     pub fn mark_current_exited(&self) {
-        let mut inner = self.inner.borrow_mut();
-        let current = inner.current_task;
-        inner.tasks[current].task_status = crate::task::task::TaskStatus::Exited;
+        self.current_task_mut().task_status = TaskStatus::Exited;
+    }
+
+    pub fn mark_current_suspended(&self) {
+        let mut current_task = self.current_task_mut();
+        if current_task.task_status == TaskStatus::Running {
+            current_task.task_status = TaskStatus::Ready;
+        }
     }
 
     pub fn find_next_task(&self) -> Option<usize> {
@@ -67,7 +78,7 @@ impl TaskManager {
         let mut cur = inner.current_task;
         for _ in 0..n {
             cur = (cur + 1) % n;
-            if inner.tasks[cur].task_status == crate::task::task::TaskStatus::Ready {
+            if inner.tasks[cur].task_status == TaskStatus::Ready {
                 return Some(cur);
             }
         }
@@ -78,17 +89,16 @@ impl TaskManager {
         let mut inner = self.inner.borrow_mut();
         if let Some(next) = self.find_next_task() {
             let current = inner.current_task;
-            let n = inner.tasks.len();
             let (first, second) = inner.tasks.split_at_mut(current.max(next));
             let (current_task, next_task) = if current < next {
                 (&mut first[current], &mut second[0])
             } else {
                 (&mut second[0], &mut first[next])
             };
-            if current_task.task_status == crate::task::task::TaskStatus::Running {
-                current_task.task_status = crate::task::task::TaskStatus::Ready;
+            if current_task.task_status == TaskStatus::Running {
+                current_task.task_status = TaskStatus::Ready;
             }
-            next_task.task_status = crate::task::task::TaskStatus::Running;
+            next_task.task_status = TaskStatus::Running;
             let current_cx_ptr = &mut current_task.task_cx as *mut _;
             let next_cx_ptr = &next_task.task_cx as *const _;
             inner.current_task = next;
@@ -98,35 +108,45 @@ impl TaskManager {
             }
         } else {
             println!("[kernel] All user tasks exited, shutting down...");
-            crate::arch::sbi::shutdown().ok();
+            sbi::shutdown().ok();
             loop {}
         }
     }
 }
 
 pub fn run_first_task() -> ! {
-    let task_cx_ptr = {
+    let first_task_ptr = {
         let task_manager = TASK_MANAGER.wait().lock();
-        let inner = task_manager.inner.borrow();
-        let first_task = &inner.tasks[0];
-        let ptr = &first_task.task_cx as *const _;
-        ptr
-    }; // 锁在这里释放
+        task_manager.get_first_task_cx_ptr()
+    };
 
-    // 为第一次任务切换创建一个临时的任务上下文
-    let mut dummy_cx = crate::task::context::TaskContext::zero_init();
-    let dummy_cx_ptr = &mut dummy_cx as *mut _;
-
+    let mut zero_task_ptr = TaskContext::zero_init();
     unsafe {
-        crate::task::__switch(dummy_cx_ptr, task_cx_ptr);
+        crate::task::__switch(&mut zero_task_ptr as *mut _, first_task_ptr);
     }
-    panic!("run_first_task should never return");
+    unreachable!()
 }
 
 pub fn current_user_token() -> usize {
-    let task_manager = TASK_MANAGER.wait();
-    let inner = task_manager.lock();
-    let current = inner.inner.borrow().current_task;
-    let token = inner.inner.borrow().tasks[current].get_user_token();
-    token
+    TASK_MANAGER
+        .wait()
+        .lock()
+        .current_task_mut()
+        .get_user_token()
+}
+
+pub fn current_trap_cx() -> &'static mut TrapContext {
+    TASK_MANAGER.wait().lock().current_task_mut().get_trap_cx()
+}
+
+pub fn exit_current_and_run_next() {
+    let task_manager = TASK_MANAGER.wait().lock();
+    task_manager.mark_current_exited();
+    task_manager.switch_to_next();
+}
+
+pub fn suspend_current_and_run_next() {
+    let task_manager = TASK_MANAGER.wait().lock();
+    task_manager.mark_current_suspended();
+    task_manager.switch_to_next();
 }

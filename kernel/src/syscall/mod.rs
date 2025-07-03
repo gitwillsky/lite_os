@@ -3,7 +3,7 @@ mod timer;
 
 use fs::*;
 use timer::*;
-use crate::task::task_manager::TASK_MANAGER;
+use crate::task::{exit_current_and_run_next };
 
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_GET_TIME_MSEC: usize = 169;
@@ -26,7 +26,6 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
 
 pub fn sys_exit(exit_code: i32) -> isize {
     println!("[sys_exit] Task exiting with code: {}", exit_code);
-    let guard = TASK_MANAGER.wait().lock();
-    (&*guard).exit_current_and_run_next();
+    exit_current_and_run_next();
     unreachable!("sys_exit should not return")
 }

@@ -5,8 +5,6 @@
 use core::arch::global_asm;
 use riscv::asm::wfi;
 
-use crate::task::TASK_MANAGER;
-
 extern crate alloc;
 
 mod arch;

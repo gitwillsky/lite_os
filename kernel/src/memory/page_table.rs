@@ -127,14 +127,14 @@ impl PageTable {
         result
     }
 
-    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&PageTableEntry> {
+    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
 
         let mut ppn = self.root_ppn;
-        let mut result: Option<&PageTableEntry> = None;
+        let mut result: Option<&mut PageTableEntry> = None;
 
         for (i, idx) in idxs.iter().enumerate() {
-            let pte = &ppn.get_pte_array()[*idx];
+            let pte = &mut ppn.get_pte_array()[*idx];
             if i == 2 {
                 result = Some(pte);
                 break;
@@ -155,7 +155,7 @@ impl PageTable {
     }
 
     pub fn unmap(&mut self, vpn: VirtualPageNumber) {
-        let pte = self.find_pte_create(vpn).unwrap();
+        let pte = self.find_pte(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
     }

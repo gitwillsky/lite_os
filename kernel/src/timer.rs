@@ -8,13 +8,6 @@ static mut TICK_INTERVAL_VALUE: u64 = 0;
 
 const MSEC_PER_SEC: u64 = 1000;
 
-pub fn handle_supervisor_timer_interrupt() {
-    set_next_timer_interrupt();
-    unsafe {
-        TICKS += 1;
-    }
-}
-
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::get_board_info().time_base_freq;
@@ -22,7 +15,7 @@ pub fn get_time_msec() -> u64 {
 }
 
 #[inline(always)]
-fn set_next_timer_interrupt() {
+pub fn set_next_timer_interrupt() {
     let current_mtime = register::time::read64();
     let next_mtime = current_mtime + unsafe { TICK_INTERVAL_VALUE };
 

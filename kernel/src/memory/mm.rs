@@ -234,9 +234,6 @@ impl MemorySet {
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
         let ph_count = elf_header.pt2.ph_count();
 
-        // 记录程序的虚拟地址范围
-        let mut program_start = usize::MAX;
-        let mut program_end = 0usize;
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
 
         for i in 0..ph_count {
@@ -246,9 +243,6 @@ impl MemorySet {
             }
             let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
             let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
-
-            program_start = program_start.min(start_va.as_usize());
-            program_end = program_end.max(end_va.as_usize());
 
             let mut map_perm = MapPermission::U;
             let ph_flags = ph.flags();
@@ -264,7 +258,10 @@ impl MemorySet {
             let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
 
             // 记录实际映射的最大页面号
-            max_mapped_vpn = max_mapped_vpn.as_usize().max(map_area.vpn_range.end.as_usize()).into();
+            max_mapped_vpn = max_mapped_vpn
+                .as_usize()
+                .max(map_area.vpn_range.end.as_usize())
+                .into();
 
             memory_set.push(
                 map_area,
@@ -272,41 +269,27 @@ impl MemorySet {
             );
         }
 
-        // 检查是否需要为栈区域分配额外内存
-        // 从用户程序符号看，栈在0x12000-0x16000
-        let stack_start = 0x12000;
-        let stack_end = 0x16000;
-
-        let mut user_stack_pointer = stack_end;  // 默认使用栈顶
-
-        // 从实际映射的下一个页面开始分配栈空间
-        let next_unmapped_vpn = max_mapped_vpn;
-        let next_unmapped_page: VirtualAddress = next_unmapped_vpn.into();
-        let next_unmapped_addr = next_unmapped_page.as_usize();
-
-        if next_unmapped_addr < stack_end {
-            // 需要为BSS段和栈分配内存
-            let bss_start = next_unmapped_addr.max(stack_start);
-            memory_set.push(
-                MapArea::new(
-                    bss_start.into(),
-                    stack_end.into(),
-                    MapType::Framed,
-                    MapPermission::R | MapPermission::W | MapPermission::U,
-                ),
-                None, // BSS段和栈应该被清零
-            );
-        }
-
-        // map user stack (内核管理的额外栈)
-        let mut kernel_stack_bottom: usize = stack_end;
+        let max_end_va: VirtualAddress = max_mapped_vpn.into();
+        let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
-        kernel_stack_bottom += config::PAGE_SIZE;
-        let kernel_stack_top = kernel_stack_bottom + config::USER_STACK_SIZE;
+        user_stack_bottom += config::PAGE_SIZE;
+        let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
+
         memory_set.push(
             MapArea::new(
-                kernel_stack_bottom.into(),
-                kernel_stack_top.into(),
+                user_stack_bottom.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+
+        // used in sbrk
+        memory_set.push(
+            MapArea::new(
+                user_stack_top.into(),
+                user_stack_top.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W | MapPermission::U,
             ),
@@ -326,7 +309,7 @@ impl MemorySet {
 
         (
             memory_set,
-            user_stack_pointer,
+            user_stack_top,
             elf.header.pt2.entry_point() as usize,
         )
     }

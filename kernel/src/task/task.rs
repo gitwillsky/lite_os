@@ -1,7 +1,6 @@
 use crate::{
     memory::{
-        KERNEL_SPACE, TRAP_CONTEXT,
-        address::{PhysicalPageNumber, VirtualAddress, VirtualPageNumber},
+        KERNEL_SPACE, address::PhysicalPageNumber,
         kernel_stack_position,
         mm::{self, MapPermission, MemorySet},
     },
@@ -55,7 +54,7 @@ impl TaskControlBlock {
             MapPermission::R | MapPermission::W,
         );
 
-        let mut tcb = Self {
+        let tcb = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
             memory_set,
@@ -64,19 +63,6 @@ impl TaskControlBlock {
             heap_bottom: user_sp,
             program_brk: user_sp,
         };
-
-        // 修复TRAP_CONTEXT的映射：需要将虚拟地址映射到实际的TrapContext物理页面
-        let trap_context_vpn: VirtualPageNumber = VirtualAddress::from(TRAP_CONTEXT).into();
-        // 映射到正确的物理页面，注意需要添加用户权限U标志
-        tcb.memory_set.map_one(
-            trap_context_vpn,
-            trap_cx_ppn,
-            crate::memory::page_table::PTEFlags::R | crate::memory::page_table::PTEFlags::W | crate::memory::page_table::PTEFlags::U,
-        );
-        println!(
-            "[TaskControlBlock::new] Mapped TRAP_CONTEXT: vpn={:#x} -> ppn={:#x}",
-            trap_context_vpn.as_usize(), trap_cx_ppn.as_usize()
-        );
 
         // prepare TrapContext in user space
         let trap_cx = tcb.get_trap_cx();

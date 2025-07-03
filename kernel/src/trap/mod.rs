@@ -10,7 +10,7 @@ use riscv::{
     ExceptionNumber, InterruptNumber,
     interrupt::{Exception, Interrupt, Trap},
     register::{
-        self, scause, sepc, sip, stval,
+        self, scause, sepc, stval,
         stvec::{self, TrapMode},
     },
 };
@@ -18,7 +18,9 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::task_manager::{TASK_MANAGER, current_user_token, current_trap_cx},
+    task::{
+        current_trap_cx, exit_current_and_run_next, suspend_current_and_run_next, task_manager::current_user_token
+    },
     timer,
 };
 
@@ -34,28 +36,20 @@ pub fn init() {
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_handler(ctx: &mut TrapContext) {
+pub fn trap_handler() {
     set_kernel_trap_entry();
+    let cx = current_trap_cx();
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
     let stval = stval::read();
-    println!("[trap_handler] scause={:?}, stval={:#x}, sepc={:#x}", scause_val, stval, ctx.sepc);
-    println!("[trap_handler] TrapContext registers: x10={:#x}, x17={:#x}, sp={:#x}", ctx.x[10], ctx.x[17], ctx.x[2]);
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
             match interrupt {
                 Interrupt::SupervisorTimer => {
-                    timer::handle_supervisor_timer_interrupt();
-                    let guard = TASK_MANAGER.wait().lock();
-                    (&*guard).switch_to_next();
-                }
-                Interrupt::SupervisorSoft => unsafe {
-                    sip::clear_ssoft();
-                },
-                Interrupt::SupervisorExternal => {
-                    println!("Supervisor external interrupt");
+                    timer::set_next_timer_interrupt();
+                    suspend_current_and_run_next();
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);
@@ -67,18 +61,13 @@ pub fn trap_handler(ctx: &mut TrapContext) {
         return;
     }
 
-    let original_sepc = ctx.sepc;
+    let original_sepc = cx.sepc;
     if let Trap::Exception(code) = interrupt_type {
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
-                Exception::InstructionMisaligned => {
-                    panic!("Instruction misaligned");
-                }
-                Exception::InstructionFault => {
-                    panic!("Instruction fault");
-                }
                 Exception::IllegalInstruction => {
-                    panic!("Illegal instruction");
+                    println!("[kernel] IllegalInstruction in application, kernel killed it.");
+                    exit_current_and_run_next();
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -86,29 +75,27 @@ pub fn trap_handler(ctx: &mut TrapContext) {
                     // 一个简单（但不完全鲁棒）的判断方法是检查指令的低两位：如果指令的低两位是 11，它是一个 32-bit 或更长的指令。
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
-                    ctx.sepc += if (original_sepc & 0b11) != 0b11 { 2 } else { 4 };
-                }
-                Exception::LoadMisaligned => {
-                    panic!("Load misaligned");
+                    cx.sepc += if (original_sepc & 0b11) != 0b11 { 2 } else { 4 };
                 }
                 Exception::UserEnvCall => {
-                    ctx.sepc += if (original_sepc & 0b11) != 0b11 { 2 } else { 4 };
-                    let ret = syscall::syscall(ctx.x[17], [ctx.x[10], ctx.x[11], ctx.x[12]]);
-                    ctx.x[10] = ret as usize;
-                }
-                Exception::StoreFault => {
-                    panic!("Store fault");
+                    cx.sepc += if (original_sepc & 0b11) != 0b11 { 2 } else { 4 };
+                    let ret = syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]);
+                    cx.x[10] = ret as usize;
                 }
                 Exception::InstructionPageFault => {
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     panic!("Instruction Page Fault, VA:{:#x}", stval);
                 }
-                Exception::LoadPageFault => {
-                    panic!("Load Page Fault, VA:{:#x}", stval)
-                }
-                Exception::StorePageFault => {
-                    panic!("Store page fault, VA:{:#x}", stval)
+                Exception::LoadFault
+                | Exception::LoadPageFault
+                | Exception::StoreFault
+                | Exception::StorePageFault => {
+                    println!(
+                        "[kernel] PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
+                        stval, cx.sepc
+                    );
+                    exit_current_and_run_next();
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);
@@ -153,20 +140,6 @@ pub fn trap_return() -> ! {
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
-        // 调试：通过当前任务的物理页号访问TrapContext
-    let current_trap_cx = current_trap_cx();
-    println!(
-        "[trap_return] Starting user program: trap_cx_ptr={:#x}, user_satp={:#x}, restore_va={:#x}",
-        trap_cx_ptr, user_satp, restore_va
-    );
-    println!(
-        "[trap_return] TrapContext content: sepc={:#x}, sp={:#x}, sstatus={:#x}",
-        current_trap_cx.sepc, current_trap_cx.x[2], current_trap_cx.sstatus.bits()
-    );
-    println!(
-        "[trap_return] TrapContext registers: x10={:#x}, x11={:#x}, x12={:#x}, x17={:#x}",
-        current_trap_cx.x[10], current_trap_cx.x[11], current_trap_cx.x[12], current_trap_cx.x[17]
-    );
     unsafe {
         asm!(
             "fence.i",
