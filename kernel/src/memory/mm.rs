@@ -280,7 +280,11 @@ impl MemorySet {
         // guard page
         user_stack_bottom += config::PAGE_SIZE;
         let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
-        println!("[from_elf] User stack: {:#x} - {:#x}", user_stack_bottom, user_stack_top);
+        println!(
+            "[from_elf] User stack: {:#x} - {:#x}",
+            user_stack_bottom,
+            user_stack_top
+        );
 
         memory_set.push(
             MapArea::new(

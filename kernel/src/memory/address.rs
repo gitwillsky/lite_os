@@ -136,7 +136,7 @@ impl VirtualAddress {
         if self.0 == 0 {
             VirtualPageNumber(0)
         } else {
-            VirtualPageNumber((self.0 + config::PAGE_SIZE - 1) / config::PAGE_SIZE)
+            VirtualPageNumber((self.0 - 1 + config::PAGE_SIZE) / config::PAGE_SIZE)
         }
     }
 

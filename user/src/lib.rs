@@ -14,7 +14,6 @@ pub use syscall::sys_write;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 extern "C" fn _start() -> ! {
-    clear_bss();
     exit(main());
     unreachable!()
 }
@@ -23,21 +22,6 @@ extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     panic!("Can not find app main function")
-}
-
-fn clear_bss() {
-    unsafe extern "C" {
-        static mut sbss: u8;
-        static mut ebss: u8;
-    }
-    unsafe {
-        let bss_start = sbss as *const u8 as usize;
-        let bss_end = ebss as *const u8 as usize;
-        let count = bss_end - bss_start;
-        if count > 0 {
-            core::ptr::write_bytes(bss_start as *mut u8, 0, count);
-        }
-    }
 }
 
 pub fn write(fd: usize, buf: &[u8]) -> isize {
