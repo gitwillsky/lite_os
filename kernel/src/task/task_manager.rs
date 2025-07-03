@@ -1,10 +1,11 @@
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use spin::{Mutex, Once};
+use spin::Once;
 
 use crate::{
     arch::sbi,
     loader::{get_app_data, get_num_app},
+    sync::UPSafeCell,
     task::{
         context::TaskContext,
         task::{TaskControlBlock, TaskStatus},
@@ -15,7 +16,7 @@ use crate::{
 pub struct TaskManager {
     num_app: usize,
 
-    inner: RefCell<TaskManagerInner>,
+    inner: UPSafeCell<TaskManagerInner>,
 }
 
 struct TaskManagerInner {
@@ -23,7 +24,7 @@ struct TaskManagerInner {
     current_task: usize,
 }
 
-pub static TASK_MANAGER: Once<Mutex<TaskManager>> = Once::new();
+pub static TASK_MANAGER: Once<TaskManager> = Once::new();
 
 pub fn init() {
     TASK_MANAGER.call_once(|| {
@@ -35,28 +36,28 @@ pub fn init() {
             tasks.push(TaskControlBlock::new(get_app_data(i), i));
         }
 
-        Mutex::new(TaskManager {
+        TaskManager {
             num_app,
-            inner: RefCell::new(TaskManagerInner {
+            inner: UPSafeCell::new(TaskManagerInner {
                 tasks,
                 current_task: 0,
             }),
-        })
+        }
     });
 }
 
 impl TaskManager {
     pub fn get_first_task_cx_ptr(&self) -> *const crate::task::context::TaskContext {
-        let inner = self.inner.borrow();
+        let inner = self.inner.exclusive_access();
         &inner.tasks[0].task_cx as *const _
     }
 
     pub fn tasks_mut(&self) -> core::cell::RefMut<'_, Vec<TaskControlBlock>> {
-        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| &mut inner.tasks)
+        core::cell::RefMut::map(self.inner.exclusive_access(), |inner| &mut inner.tasks)
     }
 
     pub fn current_task_mut(&self) -> core::cell::RefMut<'_, TaskControlBlock> {
-        core::cell::RefMut::map(self.inner.borrow_mut(), |inner| {
+        core::cell::RefMut::map(self.inner.exclusive_access(), |inner| {
             &mut inner.tasks[inner.current_task]
         })
     }
@@ -73,7 +74,7 @@ impl TaskManager {
     }
 
     pub fn find_next_task(&self) -> Option<usize> {
-        let inner = self.inner.borrow();
+        let inner = self.inner.exclusive_access();
         let n = inner.tasks.len();
         let mut cur = inner.current_task;
         for _ in 0..n {
@@ -86,7 +87,7 @@ impl TaskManager {
     }
 
     pub fn switch_to_next(&self) {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.inner.exclusive_access();
         if let Some(next) = self.find_next_task() {
             let current = inner.current_task;
             let (first, second) = inner.tasks.split_at_mut(current.max(next));
@@ -116,7 +117,7 @@ impl TaskManager {
 
 pub fn run_first_task() -> ! {
     let first_task_ptr = {
-        let task_manager = TASK_MANAGER.wait().lock();
+        let task_manager = TASK_MANAGER.wait();
         task_manager.get_first_task_cx_ptr()
     };
 
@@ -130,23 +131,22 @@ pub fn run_first_task() -> ! {
 pub fn current_user_token() -> usize {
     TASK_MANAGER
         .wait()
-        .lock()
         .current_task_mut()
         .get_user_token()
 }
 
 pub fn current_trap_cx() -> &'static mut TrapContext {
-    TASK_MANAGER.wait().lock().current_task_mut().get_trap_cx()
+    TASK_MANAGER.wait().current_task_mut().get_trap_cx()
 }
 
 pub fn exit_current_and_run_next() {
-    let task_manager = TASK_MANAGER.wait().lock();
+    let task_manager = TASK_MANAGER.wait();
     task_manager.mark_current_exited();
     task_manager.switch_to_next();
 }
 
 pub fn suspend_current_and_run_next() {
-    let task_manager = TASK_MANAGER.wait().lock();
+    let task_manager = TASK_MANAGER.wait();
     task_manager.mark_current_suspended();
     task_manager.switch_to_next();
 }
