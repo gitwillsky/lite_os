@@ -39,7 +39,10 @@ pub fn console_putchar(c: usize) {
 }
 
 pub fn shutdown() {
-    sbi_call(0x08, 0, [0; 6]);
+    // SRST (System Reset Extension) EID = 0x53525354 ("SRST")
+    // FID = 0 (sbi_system_reset)
+    // reset_type = 0 (shutdown), reset_reason = 0 (no reason)
+    sbi_call(0x53525354, 0, [0, 0, 0, 0, 0, 0]);
 }
 
 pub fn set_timer(timer_value: usize) {
