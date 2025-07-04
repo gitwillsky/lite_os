@@ -11,7 +11,6 @@ const SYSCALL_READ: usize = 63;
 const SYSCALL_EXIT: usize = 93;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
-    println!("[syscall] id={}, args=[{:#x}, {:#x}, {:#x}]", syscall_id, args[0], args[1], args[2]);
     match syscall_id {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_GET_TIME_MSEC => sys_get_time_msec(),

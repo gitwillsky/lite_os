@@ -13,7 +13,6 @@ use crate::{
 };
 
 pub struct TaskManager {
-    num_app: usize,
     inner: UPSafeCell<TaskManagerInner>,
 }
 
@@ -95,7 +94,6 @@ pub fn init() {
         }
 
         TaskManager {
-            num_app,
             inner: UPSafeCell::new(TaskManagerInner {
                 tasks,
                 current_task: 0,
@@ -154,20 +152,26 @@ impl TaskManager {
     pub fn suspend_current_and_run_next(&self) {
         let switch_info = {
             let mut inner = self.inner.exclusive_access();
-            inner.mark_current_suspended();
-            inner.switch_to_next_task()
+            let current_task_id = inner.current_task;
+
+            // 检查是否有其他就绪任务
+            if let Some(next_task_id) = inner.find_next_ready_task() {
+                if next_task_id == current_task_id {
+                    // 如果只有一个就绪任务（即当前任务），则无需切换
+                    None
+                } else {
+                    inner.mark_current_suspended();
+                    inner.switch_to_next_task()
+                }
+            } else {
+                // 没有其他就绪任务
+                None
+            }
         };
 
-        match switch_info {
-            Some((current_cx_ptr, next_cx_ptr)) => {
-                unsafe {
-                    crate::task::__switch(current_cx_ptr, next_cx_ptr);
-                }
-            }
-            None => {
-                println!("[kernel] All user tasks exited, shutting down...");
-                sbi::shutdown().ok();
-                loop {}
+        if let Some((current_cx_ptr, next_cx_ptr)) = switch_info {
+            unsafe {
+                crate::task::__switch(current_cx_ptr, next_cx_ptr);
             }
         }
     }

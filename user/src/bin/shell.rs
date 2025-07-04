@@ -9,8 +9,8 @@ fn read_line(buf: &mut [u8]) -> usize {
     let mut i = 0;
     while i < buf.len() {
         let mut byte = [0u8; 1];
-        let n = sys_read(0, &mut byte);
-        if n <= 0 || byte[0] == b'\n' || byte[0] == b'\r' {
+        sys_read(0, &mut byte);
+        if byte[0] == b'\n' || byte[0] == b'\r' {
             break;
         }
         buf[i] = byte[0];
@@ -39,11 +39,12 @@ fn main() -> i32 {
                 println!("Bye!");
                 break;
             }
-            _ => {
-                println!("Unknown command: {}", cmd.trim());
+            s => {
+                print!("{}",s)
             }
         }
     }
     println!("[user shell] Shell program about to exit");
     0
 }
+

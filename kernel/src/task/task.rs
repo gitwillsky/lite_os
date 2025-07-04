@@ -1,7 +1,7 @@
 use crate::{
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
-        address::{PhysicalPageNumber, VirtualAddress, VirtualPageNumber},
+        address::{PhysicalPageNumber, VirtualAddress},
         kernel_stack_position,
         mm::{self, MapPermission, MemorySet},
     },

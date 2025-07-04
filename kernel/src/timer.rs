@@ -2,8 +2,6 @@ use riscv::register;
 
 use crate::{arch::sbi, board, config};
 
-static mut TICKS: usize = 0;
-
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
 const MSEC_PER_SEC: u64 = 1000;
