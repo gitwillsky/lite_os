@@ -40,6 +40,8 @@ _num_app:
 
     for (idx, app) in apps.iter().enumerate() {
         println!("app_{}: {}", idx, app);
+        let app_bin_path = format!("{}{}.bin", TARGET_PATH, app);
+        println!("cargo:rerun-if-changed={}", app_bin_path);
         writeln!(
             f,
             r#"

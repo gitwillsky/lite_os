@@ -142,7 +142,7 @@ impl TaskManager {
             }
             None => {
                 println!("[kernel] All user tasks exited, shutting down...");
-                sbi::shutdown().ok();
+                sbi::shutdown();
                 loop {}
             }
         }
@@ -179,19 +179,15 @@ impl TaskManager {
 
 // 全局接口函数
 pub fn run_first_task() -> ! {
-    println!("[run_first_task] Starting first task");
     let first_task_ptr = {
         let task_manager = TASK_MANAGER.wait();
         task_manager.get_first_task_cx_ptr()
     };
-    println!("[run_first_task] Got first task context ptr: {:#x}", first_task_ptr as usize);
 
     let mut zero_task_ptr = TaskContext::zero_init();
-    println!("[run_first_task] Ready to switch to first task");
     unsafe {
         crate::task::__switch(&mut zero_task_ptr as *mut _, first_task_ptr);
     }
-    println!("[run_first_task] Task switch completed - this should not be reached");
     unreachable!()
 }
 

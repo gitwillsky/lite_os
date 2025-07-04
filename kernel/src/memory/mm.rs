@@ -228,14 +228,12 @@ impl MemorySet {
         let mut memory_set = MemorySet::new();
 
         memory_set.map_trampoline();
-        println!("[from_elf] TRAMPOLINE mapped");
 
         let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
         let elf_header = elf.header;
         let magic = elf_header.pt1.magic;
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
         let ph_count = elf_header.pt2.ph_count();
-        println!("[from_elf] ELF has {} program headers", ph_count);
 
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
 
@@ -246,8 +244,6 @@ impl MemorySet {
             }
             let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
             let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
-
-            println!("[from_elf] Program header {}: {:#x} - {:#x}", i, start_va.as_usize(), end_va.as_usize());
 
             let mut map_perm = MapPermission::U;
             let ph_flags = ph.flags();
@@ -260,7 +256,6 @@ impl MemorySet {
             if ph_flags.is_write() {
                 map_perm |= MapPermission::W
             }
-            println!("[from_elf] Permissions: {:?}", map_perm);
             let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
 
             // 记录实际映射的最大页面号
@@ -280,11 +275,6 @@ impl MemorySet {
         // guard page
         user_stack_bottom += config::PAGE_SIZE;
         let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
-        println!(
-            "[from_elf] User stack: {:#x} - {:#x}",
-            user_stack_bottom,
-            user_stack_top
-        );
 
         memory_set.push(
             MapArea::new(
@@ -307,8 +297,6 @@ impl MemorySet {
             None,
         );
 
-        // map TrapContext
-        println!("[from_elf] Mapping TRAP_CONTEXT: {:#x} - {:#x}", config::TRAP_CONTEXT, config::TRAMPOLINE);
         memory_set.push(
             MapArea::new(
                 config::TRAP_CONTEXT.into(),
@@ -320,12 +308,7 @@ impl MemorySet {
         );
 
         let entry_point = elf.header.pt2.entry_point() as usize;
-        println!("[from_elf] Entry point: {:#x}, User stack top: {:#x}", entry_point, user_stack_top);
 
-        (
-            memory_set,
-            user_stack_top,
-            entry_point,
-        )
+        (memory_set, user_stack_top, entry_point)
     }
 }

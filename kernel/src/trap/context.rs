@@ -24,9 +24,7 @@ impl TrapContext {
         trap_handler: usize,
     ) -> Self {
         let mut sstatus = sstatus::read(); // CSR status
-        println!("[app_init_context] Original sstatus: {:?}", sstatus);
         sstatus.set_spp(SPP::User);
-        println!("[app_init_context] After setting SPP to User: {:?}", sstatus);
 
         let mut cx = Self {
             x: [0; 32],
@@ -38,7 +36,6 @@ impl TrapContext {
         };
 
         cx.set_sp(sp);
-        println!("[app_init_context] Final context: entry={:#x}, sp={:#x}", entry, sp);
         cx
     }
 }

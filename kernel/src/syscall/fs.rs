@@ -34,16 +34,12 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                     let ch = loop {
                         let c = sbi::console_getchar();
                         if c >= 0 {
-                            break c as u8;
+                            break c as u8
                         }
                     };
 
                     buffer[i] = ch;
                     read_len += 1;
-
-                    if ch == b'\n' || ch == b'\r' {
-                        return read_len as isize;
-                    }
                 }
             }
             read_len as isize

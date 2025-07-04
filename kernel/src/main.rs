@@ -3,7 +3,6 @@
 #![feature(alloc_error_handler)]
 
 use core::arch::global_asm;
-use riscv::asm::wfi;
 
 extern crate alloc;
 
@@ -16,11 +15,11 @@ mod entry;
 mod lang_item;
 mod loader;
 mod memory;
+mod sync;
 mod syscall;
 mod task;
 mod timer;
 mod trap;
-mod sync;
 
 global_asm!(include_str!("link_app.S"));
 
@@ -40,8 +39,4 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     println!("[kernel] Interrupts enabled, Kernel is running...");
 
     task::run_first_task();
-
-    loop {
-        wfi();
-    }
 }

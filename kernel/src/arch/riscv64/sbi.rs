@@ -1,38 +1,3 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SbiError {
-    Success,
-    Failed,
-    NotSupported,
-    InvalidParameter,
-    Denied,
-    InvalidAddress,
-    AlreadyAvailable,
-    AlreadyStarted,
-    AlreadyStopped,
-    NoShmem, // SBI 2.0
-    Unknown(isize),
-}
-
-impl From<isize> for SbiError {
-    fn from(value: isize) -> Self {
-        match value {
-            0 => SbiError::Success,
-            -1 => SbiError::Failed,
-            -2 => SbiError::NotSupported,
-            -3 => SbiError::InvalidParameter,
-            -4 => SbiError::Denied,
-            -5 => SbiError::InvalidAddress,
-            -6 => SbiError::AlreadyAvailable,
-            -7 => SbiError::AlreadyStarted,
-            -8 => SbiError::AlreadyStopped,
-            -9 => SbiError::NoShmem,
-            _ => SbiError::Unknown(value),
-        }
-    }
-}
-
-pub type SbiResult<T> = Result<T, SbiError>;
-
 /// 通用的 SBI 调用函数。
 ///
 /// # Arguments
@@ -47,7 +12,7 @@ pub type SbiResult<T> = Result<T, SbiError>;
 /// # Safety
 /// 调用者必须确保提供的 EID, FID 和参数对于目标 SBI 实现是有效的。
 #[inline(always)]
-pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> SbiResult<isize> {
+pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> (isize, isize) {
     let mut error_code: isize;
     let mut result_value: isize;
 
@@ -66,32 +31,23 @@ pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> SbiResult<isize> {
             in("x15") args[5],
         )
     }
-
-    match SbiError::from(error_code) {
-        SbiError::Success => Ok(result_value),
-        _ => Err(SbiError::from(error_code)),
-    }
+    (result_value, error_code)
 }
 
-pub fn console_putchar(c: usize) -> SbiResult<()> {
-    sbi_call(0x01, 0, [c, 0, 0, 0, 0, 0])?;
-    Ok(())
+pub fn console_putchar(c: usize) {
+    sbi_call(0x01, 0, [c, 0, 0, 0, 0, 0]);
 }
 
-pub fn shutdown() -> SbiResult<()> {
-    sbi_call(0x08, 0, [0; 6])?;
-    Ok(())
+pub fn shutdown() {
+    sbi_call(0x08, 0, [0; 6]);
 }
 
-pub fn set_timer(timer_value: usize) -> SbiResult<()> {
+pub fn set_timer(timer_value: usize) {
     // 0x54494D45 = ASCII "TIME"
-    sbi_call(0x54494D45, 0, [timer_value, 0, 0, 0, 0, 0])?;
-    Ok(())
+    sbi_call(0x54494D45, 0, [timer_value, 0, 0, 0, 0, 0]);
 }
 
 pub fn console_getchar() -> isize {
-    match sbi_call(0x01, 1, [0; 6]) {
-        Ok(ch) => ch,
-        Err(_) => -1,
-    }
+    let (_, ch) = sbi_call(0x02, 0, [0; 6]);
+    ch
 }
