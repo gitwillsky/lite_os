@@ -1,7 +1,7 @@
 use crate::syscall;
 
 fn print_str(s: &str) {
-    syscall::sys_write(1, s.as_bytes());
+    syscall::write(1, s.as_bytes());
 }
 
 #[macro_export]
