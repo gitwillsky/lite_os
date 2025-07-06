@@ -26,11 +26,6 @@ global_asm!(include_str!("trap.S"));
 
 pub fn init() {
     set_kernel_trap_entry();
-
-    unsafe {
-        // 使能中断
-        register::sstatus::set_sie();
-    }
 }
 
 #[unsafe(no_mangle)]
@@ -130,7 +125,6 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
-    println!("enter trap_return");
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;
