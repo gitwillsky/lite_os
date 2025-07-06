@@ -8,6 +8,7 @@ const SYSCALL_YIELD: usize = 124;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAIT: usize = 260;
+const SYSCALL_SHUTDOWN: usize = 110;
 
 /// 系统调用
 ///
@@ -73,6 +74,12 @@ pub fn yield_() {
 /// 否则返回结束的子进程的进程 ID。
 fn sys_wait(pid: isize, exit_code: *mut i32) -> isize {
     syscall(SYSCALL_WAIT, [pid as usize, exit_code as usize, 0])
+}
+
+/// 功能：关闭系统
+/// 返回值：无
+pub fn shutdown() -> isize {
+    syscall(SYSCALL_SHUTDOWN, [0, 0, 0])
 }
 
 /// 等待任意一个子进程结束

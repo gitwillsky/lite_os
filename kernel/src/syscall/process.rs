@@ -79,3 +79,8 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         -2
     }
 }
+
+pub fn sys_shutdown() -> ! {
+    crate::arch::sbi::shutdown();
+    unreachable!();
+}
