@@ -24,34 +24,33 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         }
     }
 }
-
-pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
+pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
     match fd {
         STD_IN => {
-            let buffers = translated_byte_buffer(current_user_token(), buf, len);
-            let mut read_len = 0;
-
-            for buffer in buffers {
-                for i in 0..buffer.len() {
-                    let ch = loop {
-                        let c = sbi::console_getchar();
-                        if c == 0 {
-                            suspend_current_and_run_next();
-                            continue;
-                        } else {
-                            break c;
-                        }
-                    };
-
-                    buffer[i] = ch as u8;
-                    read_len += 1;
-                }
+            if len == 0 {
+                return 0;
             }
-            read_len as isize
+            assert_eq!(len, 1, "Only support len = 1 in sys_read!");
+            let buffers = translated_byte_buffer(current_user_token(), buf, len);
+            let ch = loop {
+                let c = sbi::console_getchar();
+                if c == -1 {
+                    suspend_current_and_run_next();
+                    continue;
+                } else {
+                    break c;
+                }
+            };
+            let user_buf = buffers.into_iter().next().unwrap();
+            if !user_buf.is_empty() {
+                user_buf[0] = ch as u8;
+                1
+            } else {
+                0
+            }
         }
         _ => {
-            println!("sys_read: invalid fd: {}", fd);
-            -1
+            panic!("Unsupported fd in sys_read!");
         }
     }
 }

@@ -11,7 +11,7 @@ _num_app:
 
     .global _app_names
 _app_names:
-    .string "hello_world"
+    .string "hello"
     .string "initproc"
     .string "user_shell"
 
@@ -20,7 +20,7 @@ _app_names:
     .global app_0_end
     .align 3
 app_0_start:
-    .incbin "target/riscv64gc-unknown-none-elf/release/hello_world"
+    .incbin "target/riscv64gc-unknown-none-elf/release/hello"
 app_0_end:
 
     .section .data

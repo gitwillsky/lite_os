@@ -225,7 +225,7 @@ where
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
     page_table
-        .translate_va(VirtualAddress::from(va).into())
+        .translate_va(VirtualAddress::from(va))
         .unwrap()
         .get_mut()
 }

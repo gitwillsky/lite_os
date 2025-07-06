@@ -236,7 +236,15 @@ impl MemorySet {
     }
 
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
-        self.areas.retain(|area| area.vpn_range.start != start_vpn);
+        if let Some((idx, area)) = self
+            .areas
+            .iter_mut()
+            .enumerate()
+            .find(|(_, area)| area.vpn_range.start == start_vpn)
+        {
+            area.unmap(&mut self.page_table);
+            self.areas.remove(idx);
+        }
     }
 
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {

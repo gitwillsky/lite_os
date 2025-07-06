@@ -1,7 +1,9 @@
 use alloc::sync::Arc;
 use lazy_static::lazy_static;
+use riscv::asm::wfi;
 
 use crate::{
+    arch::sbi::shutdown,
     sync::UPSafeCell,
     task::{
         __switch,
@@ -55,6 +57,9 @@ pub fn run_tasks() -> ! {
             unsafe {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }
+        } else {
+            // 没有可运行的任务，让出 CPU 等待下一次中断（比如时钟中断）
+            wfi();
         }
     }
 }
@@ -69,6 +74,64 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+pub fn suspend_current_and_run_next() {
+    let task = take_current_task().unwrap();
+
+    let mut task_inner = task.inner_exclusive_access();
+    let task_cx_ptr = &mut task_inner.task_cx as *mut _;
+    task_inner.task_status = TaskStatus::Ready;
+    drop(task_inner);
+
+    // push back to ready queue
+    super::add_task(task);
+
+    // jump to schedule cycle
+    schedule(task_cx_ptr);
+}
+
+pub const IDLE_PID: usize = 0;
+
+pub fn exit_current_and_run_next(exit_code: i32) {
+    let task = take_current_task().unwrap();
+
+    let pid = task.get_pid();
+    if pid == IDLE_PID {
+        println!(
+            "[kernel] Idle process exit with exit_code {} ...",
+            exit_code
+        );
+        if exit_code != 0 {
+            shutdown()
+        } else {
+            shutdown()
+        }
+    }
+
+    let mut inner = task.inner_exclusive_access();
+
+    inner.task_status = TaskStatus::Zombie;
+    inner.exit_code = exit_code;
+
+    {
+        let init_proc = super::task_manager::get_init_proc().unwrap();
+        let mut init_proc_inner = init_proc.inner_exclusive_access();
+        for child in inner.children.iter() {
+            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
+            init_proc_inner.children.push(child.clone());
+        }
+    }
+
+    inner.children.clear();
+    // deallocate user space
+    inner.memory_set.recycle_data_pages();
+    drop(inner);
+
+    drop(task);
+
+    let mut _unused = TaskContext::zero_init();
+    schedule(&mut _unused as *mut _);
 }
 
 /// 描述 CPU 执行状态

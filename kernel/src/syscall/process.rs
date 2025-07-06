@@ -3,7 +3,10 @@ use alloc::sync::Arc;
 use crate::{
     loader::get_app_data_by_name,
     memory::page_table::{translated_ref_mut, translated_str},
-    task::{self, current_task, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{
+        self, current_task, current_user_token, exit_current_and_run_next,
+        suspend_current_and_run_next,
+    },
 };
 
 pub fn sys_exit(exit_code: i32) -> ! {
@@ -31,12 +34,11 @@ pub fn sys_fork() -> isize {
 }
 
 pub fn sys_exec(path: *const u8) -> isize {
-    let current_task = current_task().unwrap();
-    let user_token = current_task.inner_exclusive_access().get_user_token();
-    let path_str = translated_str(user_token, path);
-
+    let token = current_user_token();
+    let path_str = translated_str(token, path);
     if let Some(elf_data) = get_app_data_by_name(&path_str) {
-        current_task.exec(elf_data);
+        let task = current_task().unwrap();
+        task.exec(elf_data);
         0
     } else {
         -1
@@ -63,13 +65,15 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 
     if let Some((idx, _)) = pair {
         let child = inner.children.remove(idx);
-        assert_eq!(Arc::strong_count(&child), 1);
+        assert_eq!(
+            Arc::strong_count(&child),
+            1,
+            "Leaked Arc reference to child process!"
+        );
         let found_pid = child.get_pid();
         let exit_code = child.inner_exclusive_access().exit_code;
-        *translated_ref_mut(
-            child.inner_exclusive_access().get_user_token(),
-            exit_code_ptr,
-        ) = exit_code;
+        let parent_token = inner.get_user_token();
+        *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
         found_pid as isize
     } else {
         -2

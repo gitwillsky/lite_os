@@ -4,7 +4,6 @@
 #[macro_use]
 extern crate user_lib;
 
-
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     // 直接使用系统调用输出简单字符串

@@ -106,7 +106,7 @@ impl Drop for KernelStack {
         KERNEL_SPACE
             .wait()
             .lock()
-            .remove_area_with_start_vpn(bottom.into());
+            .remove_area_with_start_vpn(VirtualAddress::from(bottom).into());
     }
 }
 

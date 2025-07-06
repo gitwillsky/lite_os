@@ -237,12 +237,11 @@ extern "C" fn fast_handler(
                             legacy::LEGACY_CONSOLE_GETCHAR => {
                                 let mut c = 0u8;
                                 let uart = uart16550::UART.lock();
-                                loop {
-                                    if uart.get().read(core::slice::from_mut(&mut c)) == 1 {
-                                        ret.error = c as _;
-                                        ret.value = a1;
-                                        break;
-                                    }
+                                if uart.get().read(core::slice::from_mut(&mut c)) == 1 {
+                                    ret.error = c as _;
+                                    ret.value = a1;
+                                } else {
+                                    ret.error = -1_isize as usize;
                                 }
                             }
                             _ => {}
@@ -277,8 +276,8 @@ extern "C" fn fast_handler(
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use rustsbi::{
-        Reset,
         spec::srst::{RESET_REASON_SYSTEM_FAILURE, RESET_TYPE_SHUTDOWN},
+        Reset,
     };
     // 输出的信息大概是“[rustsbi-panic] hart 0 panicked at ...”
     println!("[rustsbi-panic] hart {} {info}", hart_id());
