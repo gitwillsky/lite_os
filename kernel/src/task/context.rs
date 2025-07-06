@@ -1,7 +1,8 @@
 use crate::trap::trap_return;
 
-#[repr(C)]
 /// Task context structure containing some registers
+#[repr(C)]
+#[derive(Debug)]
 pub struct TaskContext {
     /// return address
     ra: usize,

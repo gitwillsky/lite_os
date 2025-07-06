@@ -19,7 +19,7 @@ use crate::{
     trap::{self, TrapContext, trap_handler},
 };
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TaskStatus {
     Ready,
     Running,
@@ -27,6 +27,7 @@ pub enum TaskStatus {
     Zombie,
 }
 
+#[derive(Debug)]
 pub struct TaskControlBlockInner {
     /// 进程状态
     pub task_status: TaskStatus,
@@ -48,6 +49,7 @@ pub struct TaskControlBlockInner {
 }
 
 /// Task Control block structure
+#[derive(Debug)]
 pub struct TaskControlBlock {
     pub pid: PidHandle,
     pub kernel_stack: KernelStack,

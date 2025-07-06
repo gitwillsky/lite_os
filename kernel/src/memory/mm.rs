@@ -1,4 +1,4 @@
-use core::{arch::asm, mem, ops::Range};
+use core::{arch::asm, ops::Range};
 
 use alloc::{collections::BTreeMap, vec::Vec};
 use bitflags::bitflags;
@@ -31,6 +31,7 @@ pub enum MapType {
     Framed,    // 映射到分配的物理页帧
 }
 
+#[derive(Debug)]
 pub struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_frames: BTreeMap<VirtualPageNumber, FrameTracker>,
@@ -147,6 +148,7 @@ impl MapArea {
     }
 }
 
+#[derive(Debug)]
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,

@@ -2,7 +2,10 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 
 use crate::{
-    memory::{KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, mm::MapPermission},
+    memory::{
+        KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
+        mm::MapPermission,
+    },
     sync::UPSafeCell,
 };
 
@@ -18,6 +21,7 @@ lazy_static! {
     static ref PID_ALLOCATOR: UPSafeCell<PidAllocator> = UPSafeCell::new(PidAllocator::new());
 }
 
+#[derive(Debug)]
 pub struct PidHandle(pub usize);
 
 impl Drop for PidHandle {
@@ -60,6 +64,7 @@ impl PidAllocator {
     }
 }
 
+#[derive(Debug)]
 pub struct KernelStack {
     pid: usize,
 }
