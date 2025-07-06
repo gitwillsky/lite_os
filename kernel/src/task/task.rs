@@ -1,12 +1,22 @@
+use core::cell::RefMut;
+
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+
 use crate::{
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::{PhysicalPageNumber, VirtualAddress},
-        kernel_stack_position,
-        mm::{self, MapPermission, MemorySet},
+        mm::{self, MemorySet},
     },
-    task::context::TaskContext,
-    trap::{TrapContext, trap_handler},
+    sync::UPSafeCell,
+    task::{
+        context::TaskContext,
+        pid::{KernelStack, PidHandle, alloc_pid},
+    },
+    trap::{self, TrapContext, trap_handler},
 };
 
 #[derive(Copy, Clone, PartialEq)]
@@ -14,41 +24,46 @@ pub enum TaskStatus {
     Ready,
     Running,
     Exited,
+    Zombie,
+}
+
+pub struct TaskControlBlockInner {
+    /// 进程状态
+    pub task_status: TaskStatus,
+    /// 用户态的 TaskContext
+    pub task_cx: TaskContext,
+    /// 用户态的内存空间
+    pub memory_set: mm::MemorySet,
+    /// 用户态的 TrapContext 的物理页号
+    pub trap_cx_ppn: PhysicalPageNumber,
+    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
+    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
+    pub base_size: usize,
+    /// 父进程, 子进程有可能在父进程退出时还存活，因此需要弱引用
+    pub parent: Option<Weak<TaskControlBlock>>,
+    /// 子进程
+    pub children: Vec<Arc<TaskControlBlock>>,
+    /// 子进程退出时，父进程可以获取其退出码
+    pub exit_code: i32,
 }
 
 /// Task Control block structure
 pub struct TaskControlBlock {
-    pub task_status: TaskStatus,
-    pub task_cx: TaskContext,
-    pub memory_set: mm::MemorySet,
-    pub trap_cx_ppn: PhysicalPageNumber,
+    pub pid: PidHandle,
+    pub kernel_stack: KernelStack,
 
-    pub base_size: usize,
-    pub heap_bottom: usize,
-    pub program_brk: usize,
+    inner: UPSafeCell<TaskControlBlockInner>,
 }
 
 impl TaskControlBlock {
-    pub fn get_trap_cx(&self) -> &'static mut TrapContext {
-        self.trap_cx_ppn.get_mut()
-    }
-
-    pub fn get_user_token(&self) -> usize {
-        self.memory_set.token()
-    }
-
-    pub fn new(elf_data: &[u8], app_id: usize) -> Self {
+    pub fn new(elf_data: &[u8]) -> Self {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
 
         let task_status = TaskStatus::Ready;
 
-        let (kernel_stack_bottom, kernel_stack_top) = kernel_stack_position(app_id);
-
-        KERNEL_SPACE.wait().lock().insert_framed_area(
-            kernel_stack_bottom.into(),
-            kernel_stack_top.into(),
-            MapPermission::R | MapPermission::W,
-        );
+        let pid = alloc_pid();
+        let kernel_stack = KernelStack::new(pid.0);
+        let kernel_stack_top = kernel_stack.get_top();
 
         // 获取用户空间中TRAP_CONTEXT映射的物理页面
         let trap_cx_ppn = memory_set
@@ -57,17 +72,22 @@ impl TaskControlBlock {
             .ppn();
 
         let tcb = Self {
-            task_status,
-            task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-            memory_set,
-            trap_cx_ppn,
-            base_size: user_sp,
-            heap_bottom: user_sp,
-            program_brk: user_sp,
+            pid,
+            kernel_stack,
+            inner: UPSafeCell::new(TaskControlBlockInner {
+                task_status,
+                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                memory_set,
+                trap_cx_ppn,
+                base_size: user_sp,
+                parent: None,
+                children: Vec::new(),
+                exit_code: 0,
+            }),
         };
 
         // prepare TrapContext in user space
-        let trap_cx = tcb.get_trap_cx();
+        let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entry_point,
             user_sp,
@@ -78,25 +98,77 @@ impl TaskControlBlock {
         tcb
     }
 
-    pub fn change_program_brk(&mut self, size: i32) -> Option<usize> {
-        let old_brk = self.program_brk;
-        let new_brk = self.program_brk as isize + size as isize;
+    pub fn get_pid(&self) -> usize {
+        self.pid.0
+    }
 
-        if new_brk < self.heap_bottom as isize {
-            return None;
-        }
-        let result = if size < 0 {
-            self.memory_set
-                .shrink_to(self.heap_bottom.into(), (new_brk as usize).into())
-        } else {
-            self.memory_set
-                .append_to(self.heap_bottom.into(), (new_brk as usize).into())
-        };
-        if result {
-            self.program_brk = new_brk as usize;
-            Some(old_brk)
-        } else {
-            None
-        }
+    pub fn inner_exclusive_access(&self) -> RefMut<TaskControlBlockInner> {
+        self.inner.exclusive_access()
+    }
+
+    pub fn exec(&self, elf_data: &[u8]) {
+        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set.translate(TRAP_CONTEXT.into()).unwrap().ppn();
+
+        let mut inner = self.inner_exclusive_access();
+        inner.trap_cx_ppn = trap_cx_ppn;
+        inner.memory_set = memory_set;
+        let trap_cx = inner.get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entrypoint,
+            user_stack_top,
+            KERNEL_SPACE.wait().lock().token(),
+            self.kernel_stack.get_top(),
+            trap_handler as usize,
+        );
+    }
+
+    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
+        let mut parent_inner = self.inner_exclusive_access();
+        let memory_set = MemorySet::form_existed_user(&parent_inner.memory_set);
+        let trap_cx_ppn = memory_set.translate(TRAP_CONTEXT.into()).unwrap().ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid = alloc_pid();
+        let kernel_stack = KernelStack::new(pid.0);
+        let kernel_stack_top = kernel_stack.get_top();
+
+        let tcb = Arc::new(TaskControlBlock {
+            pid,
+            kernel_stack,
+            inner: UPSafeCell::new(TaskControlBlockInner {
+                task_status: TaskStatus::Ready,
+                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                memory_set,
+                trap_cx_ppn,
+                base_size: parent_inner.base_size,
+                parent: Some(Arc::downgrade(self)),
+                children: Vec::new(),
+                exit_code: 0,
+            }),
+        });
+
+        parent_inner.children.push(tcb.clone());
+        let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
+        trap_cx.kernel_sp = kernel_stack_top;
+        tcb
+    }
+}
+
+impl TaskControlBlockInner {
+    pub fn get_trap_cx(&self) -> &'static mut TrapContext {
+        self.trap_cx_ppn.get_mut()
+    }
+
+    pub fn get_user_token(&self) -> usize {
+        self.memory_set.token()
+    }
+
+    pub fn get_status(&self) -> TaskStatus {
+        self.task_status
+    }
+
+    pub fn is_zombie(&self) -> bool {
+        self.task_status == TaskStatus::Zombie
     }
 }

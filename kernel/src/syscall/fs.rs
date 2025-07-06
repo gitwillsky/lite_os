@@ -1,7 +1,10 @@
-use crate::{arch::sbi, memory::page_table::translated_byte_buffer, task::current_user_token};
+use crate::{
+    arch::sbi,
+    memory::page_table::translated_byte_buffer,
+    task::{current_user_token, suspend_current_and_run_next},
+};
 const STD_OUT: usize = 1;
 const STD_IN: usize = 0;
-
 
 /// write buf of length `len`  to a file with `fd`
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
@@ -22,7 +25,6 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     }
 }
 
-
 pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
     match fd {
         STD_IN => {
@@ -33,12 +35,15 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                 for i in 0..buffer.len() {
                     let ch = loop {
                         let c = sbi::console_getchar();
-                        if c >= 0 {
-                            break c as u8
+                        if c == 0 {
+                            suspend_current_and_run_next();
+                            continue;
+                        } else {
+                            break c;
                         }
                     };
 
-                    buffer[i] = ch;
+                    buffer[i] = ch as u8;
                     read_len += 1;
                 }
             }

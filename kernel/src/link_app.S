@@ -9,6 +9,12 @@ _num_app:
     .quad app_2_start
     .quad app_2_end
 
+    .global _app_names
+_app_names:
+    .string "hello_world"
+    .string "initproc"
+    .string "user_shell"
+
     .section .data
     .global app_0_start
     .global app_0_end

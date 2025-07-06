@@ -18,10 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{
-        current_trap_cx, exit_current_and_run_next, suspend_current_and_run_next,
-        task_manager::current_user_token,
-    },
+    task::{self, exit_current_and_run_next, suspend_current_and_run_next},
     timer,
 };
 
@@ -39,7 +36,6 @@ pub fn init() {
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
     set_kernel_trap_entry();
-    let cx = current_trap_cx();
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
@@ -60,12 +56,11 @@ pub fn trap_handler() {
             panic!("Invalid interrupt code: {:?}", code);
         }
     } else if let Trap::Exception(code) = interrupt_type {
-        let original_sepc = cx.sepc;
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
                 Exception::IllegalInstruction => {
                     println!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    exit_current_and_run_next();
+                    exit_current_and_run_next(-3);
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -74,11 +69,17 @@ pub fn trap_handler() {
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
                     println!("[trap_handler] Breakpoint exception");
+                    let cx = task::current_trap_context();
                     cx.sepc += 4;
                 }
                 Exception::UserEnvCall => {
+                    let cx = task::current_trap_context();
                     cx.sepc += 4;
                     let ret = syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]);
+
+                    // sys_exec change the TrapContext, we need reload it
+                    let cx = task::current_trap_context();
+
                     cx.x[10] = ret as usize;
                 }
                 Exception::InstructionPageFault => {
@@ -91,10 +92,12 @@ pub fn trap_handler() {
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
                     println!(
-                        "[kernel] PageFault in application, bad addr = {:#x}, bad instruction = {:#x}, kernel killed it.",
-                        stval, cx.sepc
+                        "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, core dumped.",
+                        scause_val,
+                        stval,
+                        task::current_trap_context().sepc,
                     );
-                    exit_current_and_run_next();
+                    exit_current_and_run_next(-2);
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);
@@ -130,7 +133,7 @@ pub fn trap_return() -> ! {
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;
-    let user_satp = current_user_token();
+    let user_satp = task::current_user_token();
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();

@@ -1,4 +1,4 @@
-use core::{arch::asm, ops::Range};
+use core::{arch::asm, mem, ops::Range};
 
 use alloc::{collections::BTreeMap, vec::Vec};
 use bitflags::bitflags;
@@ -16,7 +16,7 @@ use super::{address::VirtualPageNumber, page_table::PageTable};
 
 bitflags! {
     // PTE Flags 的子集
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     pub struct MapPermission: u8 {
         const R = 1 << 1; // 可读
         const W = 1 << 2; // 可写
@@ -25,7 +25,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum MapType {
     Identical, // PA <-> VA 恒等映射
     Framed,    // 映射到分配的物理页帧
@@ -136,6 +136,15 @@ impl MapArea {
             end: new_end,
         }
     }
+
+    pub fn from_another(another: &MapArea) -> Self {
+        Self {
+            vpn_range: another.vpn_range.clone(),
+            data_frames: BTreeMap::new(),
+            map_type: another.map_type,
+            map_permission: another.map_permission,
+        }
+    }
 }
 
 pub struct MemorySet {
@@ -224,6 +233,10 @@ impl MemorySet {
         }
     }
 
+    pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
+        self.areas.retain(|area| area.vpn_range.start != start_vpn);
+    }
+
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
         let mut memory_set = MemorySet::new();
 
@@ -310,5 +323,29 @@ impl MemorySet {
         let entry_point = elf.header.pt2.entry_point() as usize;
 
         (memory_set, user_stack_top, entry_point)
+    }
+
+    pub fn form_existed_user(user_space: &MemorySet) -> Self {
+        let mut memory_set = MemorySet::new();
+        memory_set.map_trampoline();
+
+        for area in user_space.areas.iter() {
+            let new_area = MapArea::from_another(area);
+            memory_set.push(new_area, None);
+
+            for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
+                let vpn = VirtualPageNumber::from_vpn(vpn);
+                let src_ppn = user_space.translate(vpn).unwrap().ppn();
+                let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
+                dst_ppn
+                    .get_bytes_array_mut()
+                    .copy_from_slice(&src_ppn.get_bytes_array_mut());
+            }
+        }
+        memory_set
+    }
+
+    pub fn recycle_data_pages(&mut self) {
+        self.areas.clear();
     }
 }

@@ -38,6 +38,17 @@ _num_app:
     }
     writeln!(f, r#"    .quad app_{}_end"#, apps.len() - 1)?;
 
+    // 写入 app_names
+    writeln!(
+        f,
+        r#"
+    .global _app_names
+_app_names:"#
+    )?;
+    for app in apps.iter() {
+        writeln!(f, r#"    .string "{0}""#, app)?;
+    }
+
     for (idx, app) in apps.iter().enumerate() {
         println!("app_{}: {}", idx, app);
         let app_bin_path = format!("{}{}.bin", TARGET_PATH, app);

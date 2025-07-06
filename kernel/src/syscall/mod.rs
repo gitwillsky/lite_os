@@ -1,30 +1,30 @@
 mod fs;
+mod process;
 mod timer;
 
 use fs::*;
-use timer::*;
-use crate::task::{exit_current_and_run_next };
+use process::*;
 
-const SYSCALL_WRITE: usize = 64;
-const SYSCALL_GET_TIME_MSEC: usize = 169;
 const SYSCALL_READ: usize = 63;
+const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
+const SYSCALL_YIELD: usize = 124;
+const SYSCALL_FORK: usize = 220;
+const SYSCALL_EXEC: usize = 221;
+const SYSCALL_WAIT: usize = 260;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_GET_TIME_MSEC => sys_get_time_msec(),
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
+        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
+        SYSCALL_YIELD => sys_yield(),
+        SYSCALL_FORK => sys_fork(),
+        SYSCALL_EXEC => sys_exec(args[0] as *const u8),
+        SYSCALL_WAIT => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
             -1
         }
     }
-}
-
-pub fn sys_exit(exit_code: i32) -> isize {
-    println!("[sys_exit] Task exiting with code: {}", exit_code);
-    exit_current_and_run_next();
-    unreachable!("sys_exit should not return")
 }
