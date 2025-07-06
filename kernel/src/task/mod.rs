@@ -1,6 +1,7 @@
 use core::arch::global_asm;
 
 use crate::{
+    arch::sbi::shutdown,
     loader::get_app_data_by_name,
     task::{
         context::TaskContext,
@@ -51,8 +52,23 @@ pub fn suspend_current_and_run_next() {
     schedule(task_cx_ptr);
 }
 
+pub const IDLE_PID: usize = 0;
+
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().unwrap();
+
+    let pid = task.get_pid();
+    if pid == IDLE_PID {
+        println!(
+            "[kernel] Idle process exit with exit_code {} ...",
+            exit_code
+        );
+        if exit_code != 0 {
+            shutdown()
+        } else {
+            shutdown()
+        }
+    }
 
     let mut inner = task.inner_exclusive_access();
 

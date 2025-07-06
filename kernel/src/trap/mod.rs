@@ -28,8 +28,8 @@ pub fn init() {
     set_kernel_trap_entry();
 
     unsafe {
-        // 启用时钟中断
-        register::sie::set_stimer();
+        // 使能中断
+        register::sstatus::set_sie();
     }
 }
 
@@ -130,6 +130,7 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
+    println!("enter trap_return");
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;

@@ -14,6 +14,7 @@ pub fn get_time_msec() -> u64 {
 
 #[inline(always)]
 pub fn set_next_timer_interrupt() {
+    println!("tick");
     let current_mtime = register::time::read64();
     let next_mtime = current_mtime + unsafe { TICK_INTERVAL_VALUE };
 
@@ -25,6 +26,7 @@ pub fn init() {
 
     unsafe {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
+        register::sie::set_stimer();
     }
 
     set_next_timer_interrupt();
