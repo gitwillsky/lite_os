@@ -74,7 +74,6 @@ fn main() -> i32 {
                     if pid == 0 {
                         if exec(line.as_str()) == -1 {
                             println!("command not found: {}", line);
-                            continue;
                         }
                     } else {
                         let mut exit_code: i32 = 0;
@@ -87,7 +86,6 @@ fn main() -> i32 {
                     line.clear();
                 }
                 print!("$");
-                break;
             }
             BS | DL => {
                 if line.len() > 0 {

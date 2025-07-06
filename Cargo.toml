@@ -1,5 +1,6 @@
 [workspace]
-members = ["kernel", "bootloader", "user"]
+members = ["kernel", "user"]
+exclude = ["bootloader"]
 default-members = ["kernel"]
 resolver = "3"
 
