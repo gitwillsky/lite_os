@@ -16,7 +16,7 @@ use crate::{
         context::TaskContext,
         pid::{KernelStack, PidHandle, alloc_pid},
     },
-    trap::{self, TrapContext, trap_handler},
+    trap::{TrapContext, trap_handler},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -110,7 +110,10 @@ impl TaskControlBlock {
 
     pub fn exec(&self, elf_data: &[u8]) {
         let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data);
-        let trap_cx_ppn = memory_set.translate(TRAP_CONTEXT.into()).unwrap().ppn();
+        let trap_cx_ppn = memory_set
+            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
+            .unwrap()
+            .ppn();
 
         let mut inner = self.inner_exclusive_access();
         inner.trap_cx_ppn = trap_cx_ppn;
@@ -128,7 +131,10 @@ impl TaskControlBlock {
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         let mut parent_inner = self.inner_exclusive_access();
         let memory_set = MemorySet::form_existed_user(&parent_inner.memory_set);
-        let trap_cx_ppn = memory_set.translate(TRAP_CONTEXT.into()).unwrap().ppn();
+        let trap_cx_ppn = memory_set
+            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
+            .unwrap()
+            .ppn();
 
         // alloc a pid and a kernel stack in kernel space
         let pid = alloc_pid();

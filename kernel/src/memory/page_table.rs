@@ -2,10 +2,10 @@ use alloc::vec::Vec;
 use alloc::{string::String, vec};
 use bitflags::bitflags;
 
+use crate::memory::address::PhysicalAddress;
 use crate::memory::{
     address::{VirtualAddress, VirtualPageNumber},
     frame_allocator::alloc,
-    page_table,
 };
 
 use super::{
@@ -167,6 +167,15 @@ impl PageTable {
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
     }
+
+    pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
+        self.find_pte(va.clone().floor()).map(|pte| {
+            let aligned_pa: PhysicalAddress = pte.ppn().into();
+            let offset = va.page_offset();
+            let aligned_pa_usize: usize = aligned_pa.into();
+            (aligned_pa_usize + offset).into()
+        })
+    }
 }
 
 /// translate a pointer to a mutable u8 Vec through page table
@@ -197,7 +206,8 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     let mut string = String::new();
     let mut va = ptr as usize;
     loop {
-        let ch: u8 = *(page_table.translate(va.into()).unwrap().ppn().get_mut());
+        let v_addr: VirtualAddress = va.into();
+        let ch: u8 = *(page_table.translate_va(v_addr).unwrap().get_mut());
         if ch == 0 {
             break;
         } else {
@@ -214,5 +224,8 @@ where
 {
     let page_table = PageTable::from_token(token);
     let va = ptr as usize;
-    page_table.translate(va.into()).unwrap().ppn().get_mut()
+    page_table
+        .translate_va(VirtualAddress::from(va).into())
+        .unwrap()
+        .get_mut()
 }
