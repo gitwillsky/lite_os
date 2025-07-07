@@ -1,5 +1,5 @@
 [workspace]
-members = ["kernel", "user"]
+members = ["easy-fs", "kernel", "user"]
 exclude = ["bootloader"]
 default-members = ["kernel"]
 resolver = "3"
