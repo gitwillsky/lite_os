@@ -4,7 +4,7 @@ use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::{BLOCK_SZ, block_dev::BlockDevice};
+use crate::{BLOCK_SIZE, block_dev::BlockDevice};
 
 lazy_static! {
     pub static ref BlOCK_CACHE_MANAGER: Mutex<BlockCacheManager> =
@@ -65,7 +65,7 @@ impl BlockCacheManager {
 }
 
 pub struct BlockCache {
-    cache: [u8; BLOCK_SZ],
+    cache: [u8; BLOCK_SIZE],
     block_id: usize,
     block_device: Arc<dyn BlockDevice>,
     modified: bool,
@@ -73,7 +73,7 @@ pub struct BlockCache {
 
 impl BlockCache {
     pub fn new(block_id: usize, block_device: Arc<dyn BlockDevice>) -> Self {
-        let mut cache = [0u8; BLOCK_SZ];
+        let mut cache = [0u8; BLOCK_SIZE];
         block_device.read_block(block_id, &mut cache);
 
         Self {
@@ -93,7 +93,7 @@ impl BlockCache {
         T: Sized,
     {
         let type_size = mem::size_of::<T>();
-        assert!(offset + type_size <= BLOCK_SZ);
+        assert!(offset + type_size <= BLOCK_SIZE);
 
         let addr = self.addr_of_offset(offset);
 
@@ -105,7 +105,7 @@ impl BlockCache {
         T: Sized,
     {
         let type_size = mem::size_of::<T>();
-        assert!(offset + type_size <= BLOCK_SZ);
+        assert!(offset + type_size <= BLOCK_SIZE);
         self.modified = true;
 
         let addr = self.addr_of_offset(offset);
