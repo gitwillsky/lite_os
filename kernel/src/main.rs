@@ -11,7 +11,9 @@ mod config;
 #[macro_use]
 mod console;
 mod board;
+mod drivers;
 mod entry;
+mod fs;
 mod lang_item;
 mod loader;
 mod memory;
@@ -34,6 +36,10 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     println!("[kmain] after memory::init");
     timer::init();
     println!("[kmain] after timer::init");
+    fs::vfs::init_vfs();
+    println!("[kmain] after fs::vfs::init_vfs");
+    drivers::init_devices();
+    println!("[kmain] after drivers::init_devices");
     task::init();
     println!("[kmain] after task::init");
 

@@ -158,5 +158,21 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         None,
     );
 
+    // VirtIO MMIO 设备映射
+    println!(
+        "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
+        0x10001000,
+        0x10009000
+    );
+    memory_set.push(
+        MapArea::new(
+            0x10001000.into(),
+            0x10009000.into(),
+            mm::MapType::Identical,
+            MapPermission::R | MapPermission::W,
+        ),
+        None,
+    );
+
     memory_set
 }

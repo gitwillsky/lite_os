@@ -10,6 +10,15 @@ const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAIT: usize = 260;
 const SYSCALL_SHUTDOWN: usize = 110;
 
+// 文件系统系统调用
+const SYSCALL_OPEN: usize = 56;
+const SYSCALL_CLOSE: usize = 57;
+const SYSCALL_LISTDIR: usize = 500;
+const SYSCALL_MKDIR: usize = 501;
+const SYSCALL_REMOVE: usize = 502;
+const SYSCALL_STAT: usize = 80;
+const SYSCALL_READ_FILE: usize = 503;
+
 /// 系统调用
 ///
 /// # Arguments
@@ -104,4 +113,41 @@ pub fn wait_pid(pid: usize, exit_code: *mut i32) -> isize {
             exit_code => return exit_code,
         }
     }
+}
+
+// 文件系统系统调用封装
+
+/// 打开文件
+pub fn open(path: &str, flags: u32) -> isize {
+    syscall(SYSCALL_OPEN, [path.as_ptr() as usize, flags as usize, 0])
+}
+
+/// 关闭文件
+pub fn close(fd: usize) -> isize {
+    syscall(SYSCALL_CLOSE, [fd, 0, 0])
+}
+
+/// 列出目录内容
+pub fn listdir(path: &str, buf: &mut [u8]) -> isize {
+    syscall(SYSCALL_LISTDIR, [path.as_ptr() as usize, buf.as_mut_ptr() as usize, buf.len()])
+}
+
+/// 创建目录
+pub fn mkdir(path: &str) -> isize {
+    syscall(SYSCALL_MKDIR, [path.as_ptr() as usize, 0, 0])
+}
+
+/// 删除文件或目录
+pub fn remove(path: &str) -> isize {
+    syscall(SYSCALL_REMOVE, [path.as_ptr() as usize, 0, 0])
+}
+
+/// 获取文件信息
+pub fn stat(path: &str, buf: &mut [u8]) -> isize {
+    syscall(SYSCALL_STAT, [path.as_ptr() as usize, buf.as_mut_ptr() as usize, 0])
+}
+
+/// 读取文件内容
+pub fn read_file(path: &str, buf: &mut [u8]) -> isize {
+    syscall(SYSCALL_READ_FILE, [path.as_ptr() as usize, buf.as_mut_ptr() as usize, buf.len()])
 }

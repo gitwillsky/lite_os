@@ -7,6 +7,7 @@ extern crate alloc;
 extern crate user_lib;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use user_lib::{exec, fork, read, wait_pid, yield_};
 
 const LF: u8 = b'\n';
@@ -69,18 +70,30 @@ fn main() -> i32 {
             CR | LF => {
                 println!("");
                 if !line.is_empty() {
-                    line.push('\0');
-                    let pid = fork();
-                    if pid == 0 {
-                        if exec(line.as_str()) == -1 {
-                            println!("command not found: {}", line);
-                        }
+                    // 处理内置命令
+                    if line.starts_with("ls") {
+                        handle_ls_command(&line);
+                    } else if line.starts_with("cat") {
+                        handle_cat_command(&line);
+                    } else if line.starts_with("mkdir") {
+                        handle_mkdir_command(&line);
+                    } else if line.starts_with("rm") {
+                        handle_rm_command(&line);
                     } else {
-                        let mut exit_code: i32 = 0;
-                        let exit_pid = wait_pid(pid as usize, &mut exit_code);
-                        assert_eq!(pid, exit_pid);
-                        if exit_code != 0 {
-                            println!("Shell: Process {} exited with code {}", pid, exit_code);
+                        // 执行外部程序
+                        line.push('\0');
+                        let pid = fork();
+                        if pid == 0 {
+                            if exec(line.as_str()) == -1 {
+                                println!("command not found: {}", line);
+                            }
+                        } else {
+                            let mut exit_code: i32 = 0;
+                            let exit_pid = wait_pid(pid as usize, &mut exit_code);
+                            assert_eq!(pid, exit_pid);
+                            if exit_code != 0 {
+                                println!("Shell: Process {} exited with code {}", pid, exit_code);
+                            }
                         }
                     }
                     line.clear();
@@ -102,4 +115,69 @@ fn main() -> i32 {
         }
     }
     0
+}
+
+fn handle_ls_command(line: &str) {
+    let path = if line.len() > 2 {
+        line[2..].trim()
+    } else {
+        "/"
+    };
+    
+    let mut buf = [0u8; 1024];
+    let len = user_lib::listdir(path, &mut buf);
+    if len >= 0 {
+        let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
+        print!("{}", contents);
+    } else {
+        println!("ls: cannot access '{}': No such file or directory", path);
+    }
+}
+
+fn handle_cat_command(line: &str) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        println!("cat: missing file operand");
+        return;
+    }
+    
+    let path = parts[1];
+    let mut buf = [0u8; 4096];
+    let len = user_lib::read_file(path, &mut buf);
+    if len >= 0 {
+        let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
+        print!("{}", contents);
+    } else {
+        println!("cat: {}: No such file or directory", path);
+    }
+}
+
+fn handle_mkdir_command(line: &str) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        println!("mkdir: missing operand");
+        return;
+    }
+    
+    let path = parts[1];
+    if user_lib::mkdir(path) == 0 {
+        println!("Directory '{}' created", path);
+    } else {
+        println!("mkdir: cannot create directory '{}': File exists or permission denied", path);
+    }
+}
+
+fn handle_rm_command(line: &str) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 2 {
+        println!("rm: missing operand");
+        return;
+    }
+    
+    let path = parts[1];
+    if user_lib::remove(path) == 0 {
+        println!("'{}' removed", path);
+    } else {
+        println!("rm: cannot remove '{}': No such file or directory", path);
+    }
 }

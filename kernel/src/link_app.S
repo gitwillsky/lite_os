@@ -3,15 +3,17 @@
     .section .data
     .global _num_app
 _num_app:
-    .quad 4
+    .quad 5
     .quad app_0_start
     .quad app_1_start
     .quad app_2_start
     .quad app_3_start
-    .quad app_3_end
+    .quad app_4_start
+    .quad app_4_end
 
     .global _app_names
 _app_names:
+    .string "fs_test"
     .string "hello"
     .string "initproc"
     .string "shutdown"
@@ -22,7 +24,7 @@ _app_names:
     .global app_0_end
     .align 3
 app_0_start:
-    .incbin "target/riscv64gc-unknown-none-elf/release/hello"
+    .incbin "target/riscv64gc-unknown-none-elf/release/fs_test"
 app_0_end:
 
     .section .data
@@ -30,7 +32,7 @@ app_0_end:
     .global app_1_end
     .align 3
 app_1_start:
-    .incbin "target/riscv64gc-unknown-none-elf/release/initproc"
+    .incbin "target/riscv64gc-unknown-none-elf/release/hello"
 app_1_end:
 
     .section .data
@@ -38,7 +40,7 @@ app_1_end:
     .global app_2_end
     .align 3
 app_2_start:
-    .incbin "target/riscv64gc-unknown-none-elf/release/shutdown"
+    .incbin "target/riscv64gc-unknown-none-elf/release/initproc"
 app_2_end:
 
     .section .data
@@ -46,5 +48,13 @@ app_2_end:
     .global app_3_end
     .align 3
 app_3_start:
-    .incbin "target/riscv64gc-unknown-none-elf/release/user_shell"
+    .incbin "target/riscv64gc-unknown-none-elf/release/shutdown"
 app_3_end:
+
+    .section .data
+    .global app_4_start
+    .global app_4_end
+    .align 3
+app_4_start:
+    .incbin "target/riscv64gc-unknown-none-elf/release/user_shell"
+app_4_end:

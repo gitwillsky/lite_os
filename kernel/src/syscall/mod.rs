@@ -14,6 +14,15 @@ const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAIT: usize = 260;
 const SYSCALL_SHUTDOWN: usize = 110;
 
+// 文件系统系统调用
+const SYSCALL_OPEN: usize = 56;
+const SYSCALL_CLOSE: usize = 57;
+const SYSCALL_LISTDIR: usize = 500;
+const SYSCALL_MKDIR: usize = 501;
+const SYSCALL_REMOVE: usize = 502;
+const SYSCALL_STAT: usize = 80;
+const SYSCALL_READ_FILE: usize = 503;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -24,6 +33,16 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_EXEC => sys_exec(args[0] as *const u8),
         SYSCALL_WAIT => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
         SYSCALL_SHUTDOWN => sys_shutdown(),
+        
+        // 文件系统系统调用
+        SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
+        SYSCALL_CLOSE => sys_close(args[0]),
+        SYSCALL_LISTDIR => sys_listdir(args[0] as *const u8, args[1] as *mut u8, args[2]),
+        SYSCALL_MKDIR => sys_mkdir(args[0] as *const u8),
+        SYSCALL_REMOVE => sys_remove(args[0] as *const u8),
+        SYSCALL_STAT => sys_stat(args[0] as *const u8, args[1] as *mut u8),
+        SYSCALL_READ_FILE => sys_read_file(args[0] as *const u8, args[1] as *mut u8, args[2]),
+        
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
             -1
