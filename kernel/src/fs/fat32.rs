@@ -88,13 +88,22 @@ pub struct FAT32FileSystem {
 impl FAT32FileSystem {
     pub fn new(device: Arc<dyn BlockDevice>) -> Option<Arc<Self>> {
         println!("[FAT32] Attempting to initialize FAT32 filesystem...");
+        println!("[FAT32] Device block size: {}", device.block_size());
         
-        let mut bpb_bytes = [0u8; SECTOR_SIZE];
-        if let Err(e) = device.read_block(0, &mut bpb_bytes) {
+        // Read full block (4096 bytes) to accommodate VirtIO block size
+        let mut block_bytes = vec![0u8; device.block_size()];
+        if let Err(e) = device.read_block(0, &mut block_bytes) {
             println!("[FAT32] Failed to read boot sector: {:?}", e);
             return None;
         }
         println!("[FAT32] Successfully read boot sector");
+        
+        // Extract the 512-byte boot sector from the full block
+        let mut bpb_bytes = [0u8; SECTOR_SIZE];
+        bpb_bytes.copy_from_slice(&block_bytes[..SECTOR_SIZE]);
+        
+        // Debug: show first few bytes of boot sector
+        println!("[FAT32] Boot sector first 16 bytes: {:02x?}", &bpb_bytes[..16]);
         
         let bpb = unsafe { *(bpb_bytes.as_ptr() as *const BiosParameterBlock) };
         
@@ -103,14 +112,14 @@ impl FAT32FileSystem {
         let signature = unsafe { core::ptr::read_unaligned(bpb_ptr.add(510) as *const u16) };
         println!("[FAT32] Boot signature: {:#x}", signature);
         if signature != FAT32_SIGNATURE {
-            println!("[FAT32] Invalid boot signature: {:#x}", signature);
+            println!("[FAT32] Invalid boot signature: {:#x} (expected {:#x})", signature, FAT32_SIGNATURE);
             return None;
         }
         
         let sectors_per_fat_32 = unsafe { core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32) };
         println!("[FAT32] Sectors per FAT32: {}", sectors_per_fat_32);
         if sectors_per_fat_32 == 0 {
-            println!("[FAT32] Not a FAT32 filesystem");
+            println!("[FAT32] Not a FAT32 filesystem (sectors_per_fat_32 is 0)");
             return None;
         }
         
@@ -138,16 +147,34 @@ impl FAT32FileSystem {
         let fat_entries = (fat_sectors * SECTOR_SIZE) / 4;
         let mut fat_cache = Vec::with_capacity(fat_entries);
         
-        for sector in 0..fat_sectors {
-            let mut sector_data = [0u8; SECTOR_SIZE];
-            if device.read_block(fat_start_sector as usize + sector, &mut sector_data).is_err() {
+        // Calculate how many device blocks we need for the FAT
+        let device_block_size = device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
+        let fat_blocks = (fat_sectors + sectors_per_block - 1) / sectors_per_block;
+        
+        for block_idx in 0..fat_blocks {
+            let mut block_data = vec![0u8; device_block_size];
+            let block_num = fat_start_sector as usize / sectors_per_block + block_idx;
+            
+            if device.read_block(block_num, &mut block_data).is_err() {
                 return None;
             }
             
-            let entries = unsafe {
-                core::slice::from_raw_parts(sector_data.as_ptr() as *const u32, SECTOR_SIZE / 4)
-            };
-            fat_cache.extend_from_slice(entries);
+            // Process each sector within the block
+            for sector_in_block in 0..sectors_per_block {
+                let current_sector = block_idx * sectors_per_block + sector_in_block;
+                if current_sector >= fat_sectors {
+                    break;
+                }
+                
+                let sector_offset = sector_in_block * SECTOR_SIZE;
+                let sector_data = &block_data[sector_offset..sector_offset + SECTOR_SIZE];
+                
+                let entries = unsafe {
+                    core::slice::from_raw_parts(sector_data.as_ptr() as *const u32, SECTOR_SIZE / 4)
+                };
+                fat_cache.extend_from_slice(entries);
+            }
         }
         
         Some(Arc::new(FAT32FileSystem {
@@ -172,13 +199,24 @@ impl FAT32FileSystem {
         }
         
         let start_sector = self.cluster_to_sector(cluster);
+        let device_block_size = self.device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
         
         for i in 0..self.sectors_per_cluster {
-            let sector_offset = i as usize * SECTOR_SIZE;
-            self.device.read_block(
-                (start_sector + i) as usize,
-                &mut buf[sector_offset..sector_offset + SECTOR_SIZE],
-            )?;
+            let sector_num = start_sector + i;
+            let block_num = sector_num / sectors_per_block as u32;
+            let sector_in_block = sector_num % sectors_per_block as u32;
+            
+            // Read the full device block
+            let mut block_data = vec![0u8; device_block_size];
+            self.device.read_block(block_num as usize, &mut block_data)?;
+            
+            // Extract the specific sector from the block
+            let sector_offset_in_block = sector_in_block as usize * SECTOR_SIZE;
+            let sector_offset_in_buf = i as usize * SECTOR_SIZE;
+            
+            buf[sector_offset_in_buf..sector_offset_in_buf + SECTOR_SIZE]
+                .copy_from_slice(&block_data[sector_offset_in_block..sector_offset_in_block + SECTOR_SIZE]);
         }
         
         Ok(())
@@ -190,13 +228,27 @@ impl FAT32FileSystem {
         }
         
         let start_sector = self.cluster_to_sector(cluster);
+        let device_block_size = self.device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
         
         for i in 0..self.sectors_per_cluster {
-            let sector_offset = i as usize * SECTOR_SIZE;
-            self.device.write_block(
-                (start_sector + i) as usize,
-                &buf[sector_offset..sector_offset + SECTOR_SIZE],
-            )?;
+            let sector_num = start_sector + i;
+            let block_num = sector_num / sectors_per_block as u32;
+            let sector_in_block = sector_num % sectors_per_block as u32;
+            
+            // Read the full device block first (read-modify-write)
+            let mut block_data = vec![0u8; device_block_size];
+            self.device.read_block(block_num as usize, &mut block_data)?;
+            
+            // Modify the specific sector in the block
+            let sector_offset_in_block = sector_in_block as usize * SECTOR_SIZE;
+            let sector_offset_in_buf = i as usize * SECTOR_SIZE;
+            
+            block_data[sector_offset_in_block..sector_offset_in_block + SECTOR_SIZE]
+                .copy_from_slice(&buf[sector_offset_in_buf..sector_offset_in_buf + SECTOR_SIZE]);
+            
+            // Write the modified block back
+            self.device.write_block(block_num as usize, &block_data)?;
         }
         
         Ok(())

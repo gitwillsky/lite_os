@@ -194,11 +194,17 @@ impl VirtIOBlockDevice {
         self.mmio.notify_queue(0);
 
         // 等待完成
+        let mut timeout = 100000; // Add timeout
         loop {
             if let Some((id, _len)) = queue.get_used() {
                 if id == desc_idx {
                     break;
                 }
+            }
+            timeout -= 1;
+            if timeout == 0 {
+                println!("[VirtIOBlock] I/O operation timed out");
+                return Err(BlockError::IoError);
             }
             // 简单的忙等待，实际实现中应该使用中断
             core::hint::spin_loop();
