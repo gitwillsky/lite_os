@@ -2,3 +2,4 @@ target/
 .gdb_history
 link_app.S
 *.img
+virtio-drivers/

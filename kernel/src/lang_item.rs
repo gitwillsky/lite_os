@@ -16,7 +16,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
         }
     }
 
-    // 禁用中断
+    // Disable interrupts
     unsafe {
         register::sstatus::clear_sie();
     }

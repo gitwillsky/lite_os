@@ -56,7 +56,7 @@ impl VirtualFileSystem {
         let mut current = fs.root_inode();
         
         if path.starts_with('/') {
-            let path = &path[1..]; // 去掉开头的'/'
+            let path = &path[1..]; // Remove leading '/'
             if path.is_empty() {
                 return Ok(current);
             }

@@ -205,6 +205,10 @@ impl MemorySet {
         }
     }
 
+    pub fn get_page_table(&self) -> &PageTable {
+        &self.page_table
+    }
+
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }

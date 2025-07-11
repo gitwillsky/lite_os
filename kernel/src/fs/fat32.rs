@@ -81,43 +81,59 @@ pub struct FAT32FileSystem {
     cluster_start_sector: u32,
     sectors_per_cluster: u32,
     bytes_per_cluster: u32,
+    root_cluster: u32,
     fat_cache: Mutex<Vec<u32>>,
 }
 
 impl FAT32FileSystem {
     pub fn new(device: Arc<dyn BlockDevice>) -> Option<Arc<Self>> {
+        println!("[FAT32] Attempting to initialize FAT32 filesystem...");
+        
         let mut bpb_bytes = [0u8; SECTOR_SIZE];
-        device.read_block(0, &mut bpb_bytes).ok()?;
+        if let Err(e) = device.read_block(0, &mut bpb_bytes) {
+            println!("[FAT32] Failed to read boot sector: {:?}", e);
+            return None;
+        }
+        println!("[FAT32] Successfully read boot sector");
         
         let bpb = unsafe { *(bpb_bytes.as_ptr() as *const BiosParameterBlock) };
         
-        // 验证FAT32文件系统
-        let bpb_ptr = &bpb as *const _ as *const u8;
+        // Verify FAT32 filesystem
+        let bpb_ptr = bpb_bytes.as_ptr();
         let signature = unsafe { core::ptr::read_unaligned(bpb_ptr.add(510) as *const u16) };
+        println!("[FAT32] Boot signature: {:#x}", signature);
         if signature != FAT32_SIGNATURE {
-            println!("[FAT32] 无效的启动签名: {:#x}", signature);
+            println!("[FAT32] Invalid boot signature: {:#x}", signature);
             return None;
         }
         
         let sectors_per_fat_32 = unsafe { core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32) };
+        println!("[FAT32] Sectors per FAT32: {}", sectors_per_fat_32);
         if sectors_per_fat_32 == 0 {
-            println!("[FAT32] 不是FAT32文件系统");
+            println!("[FAT32] Not a FAT32 filesystem");
             return None;
         }
         
-        let fat_start_sector = unsafe { core::ptr::read_unaligned(bpb_ptr.add(14) as *const u16) } as u32;
-        let num_fats = unsafe { core::ptr::read_unaligned(bpb_ptr.add(16) as *const u8) } as u32;
-        let cluster_start_sector = fat_start_sector + (num_fats * sectors_per_fat_32);
-        let sectors_per_cluster = unsafe { core::ptr::read_unaligned(bpb_ptr.add(13) as *const u8) } as u32;
-        let bytes_per_cluster = sectors_per_cluster * SECTOR_SIZE as u32;
+        let reserved_sectors = unsafe { core::ptr::read_unaligned(bpb_ptr.add(14) as *const u16) };
+        let num_fats = unsafe { core::ptr::read_unaligned(bpb_ptr.add(16) as *const u8) };
+        let sectors_per_cluster = unsafe { core::ptr::read_unaligned(bpb_ptr.add(13) as *const u8) };
         let root_cluster = unsafe { core::ptr::read_unaligned(bpb_ptr.add(44) as *const u32) };
         
-        println!("[FAT32] 文件系统初始化成功");
-        println!("[FAT32] 每簇扇区数: {}", sectors_per_cluster);
-        println!("[FAT32] 每簇字节数: {}", bytes_per_cluster);
-        println!("[FAT32] 根目录簇: {}", root_cluster);
+        let fat_start_sector = reserved_sectors as u32;
+        let cluster_start_sector = fat_start_sector + (num_fats as u32 * sectors_per_fat_32);
+        let sectors_per_cluster = sectors_per_cluster as u32;
+        let bytes_per_cluster = sectors_per_cluster * SECTOR_SIZE as u32;
         
-        // 加载FAT表
+        println!("[FAT32] Filesystem initialized successfully");
+        println!("[FAT32] Reserved sectors: {}", reserved_sectors);
+        println!("[FAT32] Number of FATs: {}", num_fats);
+        println!("[FAT32] Sectors per FAT: {}", sectors_per_fat_32);
+        println!("[FAT32] Sectors per cluster: {}", sectors_per_cluster);
+        println!("[FAT32] Bytes per cluster: {}", bytes_per_cluster);
+        println!("[FAT32] Root directory cluster: {}", root_cluster);
+        println!("[FAT32] Data area start sector: {}", cluster_start_sector);
+        
+        // Load FAT table
         let fat_sectors = sectors_per_fat_32 as usize;
         let fat_entries = (fat_sectors * SECTOR_SIZE) / 4;
         let mut fat_cache = Vec::with_capacity(fat_entries);
@@ -141,6 +157,7 @@ impl FAT32FileSystem {
             cluster_start_sector,
             sectors_per_cluster,
             bytes_per_cluster,
+            root_cluster,
             fat_cache: Mutex::new(fat_cache),
         }))
     }
@@ -206,17 +223,17 @@ impl FAT32FileSystem {
                 let entry = unsafe { *(chunk.as_ptr() as *const DirectoryEntry) };
                 
                 if entry.name[0] == 0x00 {
-                    // 目录结束
+                    // End of directory
                     return Ok(entries);
                 }
                 
                 if entry.name[0] == 0xE5 {
-                    // 已删除的条目
+                    // Deleted entry
                     continue;
                 }
                 
                 if entry.attr & ATTR_LONG_NAME == ATTR_LONG_NAME {
-                    // 长文件名条目，暂时跳过
+                    // Long filename entry, skip for now
                     continue;
                 }
                 
@@ -235,11 +252,9 @@ impl FAT32FileSystem {
 
 impl FileSystem for FAT32FileSystem {
     fn root_inode(&self) -> Arc<dyn Inode> {
-        let bpb_ptr = &self.bpb as *const _ as *const u8;
-        let root_cluster = unsafe { core::ptr::read_unaligned(bpb_ptr.add(44) as *const u32) };
         Arc::new(FAT32Inode {
             fs: self as *const _ as *const FAT32FileSystem,
-            cluster: root_cluster,
+            cluster: self.root_cluster,
             size: 0,
             is_dir: true,
         })
@@ -287,7 +302,7 @@ impl FAT32Inode {
     fn entry_name_to_string(entry: &DirectoryEntry) -> String {
         let mut name = String::new();
         
-        // 处理文件名
+        // Process filename
         for &byte in &entry.name {
             if byte == 0x20 {
                 break;
@@ -295,7 +310,7 @@ impl FAT32Inode {
             name.push(byte as char);
         }
         
-        // 处理扩展名
+        // Process extension
         let mut ext = String::new();
         for &byte in &entry.ext {
             if byte == 0x20 {
@@ -340,7 +355,7 @@ impl Inode for FAT32Inode {
         let mut cluster_offset = offset;
         let bytes_per_cluster = self.fs().bytes_per_cluster as u64;
         
-        // 跳过前面的簇
+        // Skip preceding clusters
         while cluster_offset >= bytes_per_cluster {
             current_cluster = self.fs().get_next_cluster(current_cluster);
             if current_cluster >= CLUSTER_EOF {

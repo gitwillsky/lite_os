@@ -5,7 +5,7 @@ use spin::Mutex;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
 use crate::fs::{make_filesystem, vfs::get_vfs, FileSystem};
 
-// QEMU VirtIO 设备的基地址
+// VirtIO device base address in QEMU
 const VIRTIO_MMIO_BASE: usize = 0x10001000;
 const VIRTIO_MMIO_SIZE: usize = 0x1000;
 const VIRTIO_MMIO_IRQ: usize = 1;
@@ -13,53 +13,53 @@ const VIRTIO_MMIO_IRQ: usize = 1;
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 
 pub fn init_devices() {
-    println!("[device] 初始化设备...");
+    println!("[device] Initializing devices...");
     
-    // 扫描VirtIO设备
+    // Scan VirtIO devices
     scan_virtio_devices();
     
-    // 初始化文件系统
+    // Initialize file systems
     init_filesystems();
 }
 
 fn scan_virtio_devices() {
-    println!("[device] 扫描VirtIO设备...");
+    println!("[device] Scanning VirtIO devices...");
     
-    // 在QEMU中，VirtIO设备通常从0x10001000开始，每个设备间隔0x1000
+    // In QEMU, VirtIO devices typically start at 0x10001000, with 0x1000 spacing
     for i in 0..8 {
         let base_addr = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_SIZE;
         
         if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-            println!("[device] 发现VirtIO块设备，地址: {:#x}", base_addr);
+            println!("[device] Found VirtIO block device at address: {:#x}", base_addr);
             DEVICES.lock().push(device);
         }
     }
 }
 
 fn init_filesystems() {
-    println!("[device] 初始化文件系统...");
+    println!("[device] Initializing file systems...");
     
     let devices = DEVICES.lock();
     if devices.is_empty() {
-        println!("[device] 警告: 没有找到块设备");
+        println!("[device] Warning: No block devices found");
         return;
     }
     
-    // 使用第一个块设备作为根文件系统
+    // Use the first block device as root file system
     let device = devices[0].clone();
-    println!("[device] 使用块设备作为根文件系统");
+    println!("[device] Using block device as root file system");
     
     if let Some(fs) = make_filesystem(device) {
-        println!("[device] 成功创建文件系统");
+        println!("[device] Successfully created file system");
         
-        // 挂载到根目录
+        // Mount to root directory
         if let Err(e) = get_vfs().mount("/", fs) {
-            println!("[device] 文件系统挂载失败: {:?}", e);
+            println!("[device] File system mount failed: {:?}", e);
         } else {
-            println!("[device] 文件系统挂载成功");
+            println!("[device] File system mounted successfully");
         }
     } else {
-        println!("[device] 无法创建文件系统");
+        println!("[device] Unable to create file system");
     }
 }
 
