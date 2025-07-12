@@ -120,7 +120,7 @@ def create_simple_fat32(filename, size_mb=128):
         hello_entry[11] = 0x20  # 文件属性
         hello_entry[26:28] = struct.pack('<H', 3)  # 起始簇号低16位
         hello_entry[20:22] = struct.pack('<H', 0)  # 起始簇号高16位
-        hello_entry[28:32] = struct.pack('<L', 26) # 文件大小
+        hello_entry[28:32] = struct.pack('<L', 30) # 文件大小
         root_dir_cluster[0:32] = hello_entry
         
         # test.txt
@@ -130,7 +130,7 @@ def create_simple_fat32(filename, size_mb=128):
         test_entry[11] = 0x20  # 文件属性
         test_entry[26:28] = struct.pack('<H', 4)  # 起始簇号低16位
         test_entry[20:22] = struct.pack('<H', 0)  # 起始簇号高16位
-        test_entry[28:32] = struct.pack('<L', 17) # 文件大小
+        test_entry[28:32] = struct.pack('<L', 20) # 文件大小
         root_dir_cluster[32:64] = test_entry
         
         f.write(root_dir_cluster)

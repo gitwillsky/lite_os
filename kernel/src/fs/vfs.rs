@@ -19,7 +19,7 @@ impl VirtualFileSystem {
     }
 
     /// 将相对路径转换为绝对路径
-    fn resolve_relative_path(&self, path: &str) -> String {
+    pub fn resolve_relative_path(&self, path: &str) -> String {
         if path.starts_with('/') {
             // 已经是绝对路径
             path.to_string()

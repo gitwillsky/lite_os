@@ -247,27 +247,22 @@ pub fn sys_chdir(path: *const u8) -> isize {
     // Check if the path exists and is a directory
     match get_vfs().open(&path_str) {
         Ok(inode) => {
-            if inode.list_dir().is_ok() {
-                // Set the current working directory for the current task
-                if let Some(task) = current_task() {
-                    let mut task_inner = task.inner_exclusive_access();
-                    // Resolve to absolute path
-                    let absolute_path = if path_str.starts_with('/') {
-                        path_str
+            // Try to list the directory to verify it's actually a directory
+            match inode.list_dir() {
+                Ok(_) => {
+                    // It's a directory, set the current working directory for the current task
+                    if let Some(task) = current_task() {
+                        let mut task_inner = task.inner_exclusive_access();
+                        // Use VFS to resolve the path properly
+                        let absolute_path = get_vfs().resolve_relative_path(&path_str);
+                        task_inner.cwd = absolute_path;
+                        0 // Success
                     } else {
-                        if task_inner.cwd == "/" {
-                            format!("/{}", path_str)
-                        } else {
-                            format!("{}/{}", task_inner.cwd, path_str)
-                        }
-                    };
-                    task_inner.cwd = absolute_path;
-                    0 // Success
-                } else {
-                    -1 // No current task
+                        -1 // No current task
+                    }
                 }
-            } else {
-                -20 // ENOTDIR - Not a directory
+                Err(FileSystemError::NotDirectory) => -20, // ENOTDIR - Not a directory
+                Err(_) => -13, // EACCES - Permission denied or other error
             }
         }
         Err(e) => {
