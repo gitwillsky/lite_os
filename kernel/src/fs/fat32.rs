@@ -262,6 +262,47 @@ impl FAT32FileSystem {
         fat_cache[cluster as usize] & 0x0FFFFFFF
     }
 
+    fn allocate_cluster(&self) -> Option<u32> {
+        let mut fat_cache = self.fat_cache.lock();
+        // Start from cluster 2 (clusters 0 and 1 are reserved)
+        for i in 2..fat_cache.len() {
+            if fat_cache[i] == CLUSTER_FREE {
+                fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
+                return Some(i as u32);
+            }
+        }
+        None
+    }
+
+    fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
+        let mut fat_cache = self.fat_cache.lock();
+        if cluster as usize >= fat_cache.len() {
+            return Err(BlockError::InvalidBlock);
+        }
+        
+        fat_cache[cluster as usize] = value & 0x0FFFFFFF;
+        
+        // Write back to disk
+        let fat_sector = self.fat_start_sector + (cluster * 4) / SECTOR_SIZE as u32;
+        let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+        
+        let device_block_size = self.device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
+        let block_num = fat_sector / sectors_per_block as u32;
+        let sector_in_block = fat_sector % sectors_per_block as u32;
+        
+        // Read-modify-write the block
+        let mut block_data = vec![0u8; device_block_size];
+        self.device.read_block(block_num as usize, &mut block_data)?;
+        
+        let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
+        let value_bytes = value.to_le_bytes();
+        block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
+        
+        self.device.write_block(block_num as usize, &block_data)?;
+        Ok(())
+    }
+
     fn read_directory_entries(&self, cluster: u32) -> Result<Vec<DirectoryEntry>, FileSystemError> {
         let mut entries = Vec::new();
         let mut current_cluster = cluster;
@@ -300,6 +341,86 @@ impl FAT32FileSystem {
 
         Ok(entries)
     }
+
+    fn create_directory_entry(&self, parent_cluster: u32, name: &str, new_cluster: u32, is_dir: bool) -> Result<(), FileSystemError> {
+        // Find an empty slot in the parent directory
+        let mut current_cluster = parent_cluster;
+        
+        loop {
+            let mut cluster_data = vec![0u8; self.bytes_per_cluster as usize];
+            self.read_cluster(current_cluster, &mut cluster_data)
+                .map_err(|_| FileSystemError::IoError)?;
+
+            // Look for an empty entry (first byte is 0x00 or 0xE5)
+            for (i, chunk) in cluster_data.chunks_exact_mut(32).enumerate() {
+                if chunk[0] == 0x00 || chunk[0] == 0xE5 {
+                    // Found empty slot, create new entry
+                    let mut entry = DirectoryEntry {
+                        name: [0x20; 8], // Space-padded name
+                        ext: [0x20; 3],  // Space-padded extension
+                        attr: if is_dir { ATTR_DIRECTORY } else { 0 },
+                        reserved: 0,
+                        create_time_tenth: 0,
+                        create_time: 0,
+                        create_date: 0,
+                        last_access_date: 0,
+                        first_cluster_high: (new_cluster >> 16) as u16,
+                        last_write_time: 0,
+                        last_write_date: 0,
+                        first_cluster_low: (new_cluster & 0xFFFF) as u16,
+                        file_size: 0,
+                    };
+
+                    // Convert name to 8.3 format
+                    let name_upper = name.to_uppercase();
+                    let name_bytes = name_upper.as_bytes();
+                    for (j, &byte) in name_bytes.iter().take(8).enumerate() {
+                        entry.name[j] = byte;
+                    }
+
+                    // Copy entry to cluster data
+                    unsafe {
+                        let entry_bytes = core::slice::from_raw_parts(
+                            &entry as *const _ as *const u8,
+                            32
+                        );
+                        chunk.copy_from_slice(entry_bytes);
+                    }
+
+                    // Write the modified cluster back
+                    self.write_cluster(current_cluster, &cluster_data)
+                        .map_err(|_| FileSystemError::IoError)?;
+
+                    return Ok(());
+                }
+            }
+
+            // Check if this is the last cluster or if we need to continue
+            let next_cluster = self.get_next_cluster(current_cluster);
+            if next_cluster >= CLUSTER_EOF {
+                // Need to allocate a new cluster for the directory
+                if let Some(new_dir_cluster) = self.allocate_cluster() {
+                    // Link the new cluster
+                    self.write_fat_entry(current_cluster, new_dir_cluster)
+                        .map_err(|_| FileSystemError::IoError)?;
+                    self.write_fat_entry(new_dir_cluster, CLUSTER_EOF)
+                        .map_err(|_| FileSystemError::IoError)?;
+                    
+                    // Clear the new cluster
+                    let empty_cluster = vec![0u8; self.bytes_per_cluster as usize];
+                    self.write_cluster(new_dir_cluster, &empty_cluster)
+                        .map_err(|_| FileSystemError::IoError)?;
+                    
+                    current_cluster = new_dir_cluster;
+                    continue;
+                } else {
+                    return Err(FileSystemError::NoSpace);
+                }
+            } else {
+                current_cluster = next_cluster;
+            }
+        }
+    }
 }
 
 impl FileSystem for FAT32FileSystem {
@@ -317,6 +438,7 @@ impl FileSystem for FAT32FileSystem {
     }
 
     fn create_directory(&self, _parent: &Arc<dyn Inode>, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        // This should not be called directly, use the inode's create_directory instead
         Err(FileSystemError::PermissionDenied)
     }
 
@@ -497,8 +619,81 @@ impl Inode for FAT32Inode {
         Err(FileSystemError::PermissionDenied)
     }
 
-    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        Err(FileSystemError::PermissionDenied)
+    fn create_directory(&self, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        if !self.is_dir {
+            return Err(FileSystemError::NotDirectory);
+        }
+        
+        // Check if directory already exists
+        if let Ok(_) = self.find_child(name) {
+            return Err(FileSystemError::AlreadyExists);
+        }
+        
+        let fs = self.fs();
+        
+        // Allocate a new cluster for the directory
+        let new_cluster = fs.allocate_cluster().ok_or(FileSystemError::NoSpace)?;
+        
+        // Initialize the new directory cluster with "." and ".." entries
+        let mut dir_data = vec![0u8; fs.bytes_per_cluster as usize];
+        
+        // Create "." entry (current directory)
+        let dot_entry = DirectoryEntry {
+            name: [b'.', b' ', b' ', b' ', b' ', b' ', b' ', b' '],
+            ext: [b' ', b' ', b' '],
+            attr: ATTR_DIRECTORY,
+            reserved: 0,
+            create_time_tenth: 0,
+            create_time: 0,
+            create_date: 0,
+            last_access_date: 0,
+            first_cluster_high: (new_cluster >> 16) as u16,
+            last_write_time: 0,
+            last_write_date: 0,
+            first_cluster_low: (new_cluster & 0xFFFF) as u16,
+            file_size: 0,
+        };
+        
+        // Create ".." entry (parent directory)
+        let dotdot_entry = DirectoryEntry {
+            name: [b'.', b'.', b' ', b' ', b' ', b' ', b' ', b' '],
+            ext: [b' ', b' ', b' '],
+            attr: ATTR_DIRECTORY,
+            reserved: 0,
+            create_time_tenth: 0,
+            create_time: 0,
+            create_date: 0,
+            last_access_date: 0,
+            first_cluster_high: (self.cluster >> 16) as u16,
+            last_write_time: 0,
+            last_write_date: 0,
+            first_cluster_low: (self.cluster & 0xFFFF) as u16,
+            file_size: 0,
+        };
+        
+        // Copy entries to directory data
+        unsafe {
+            let dot_bytes = core::slice::from_raw_parts(&dot_entry as *const _ as *const u8, 32);
+            dir_data[0..32].copy_from_slice(dot_bytes);
+            
+            let dotdot_bytes = core::slice::from_raw_parts(&dotdot_entry as *const _ as *const u8, 32);
+            dir_data[32..64].copy_from_slice(dotdot_bytes);
+        }
+        
+        // Write the initialized directory cluster
+        fs.write_cluster(new_cluster, &dir_data)
+            .map_err(|_| FileSystemError::IoError)?;
+        
+        // Create directory entry in parent directory
+        fs.create_directory_entry(self.cluster, name, new_cluster, true)?;
+        
+        // Return the new directory inode
+        Ok(Arc::new(FAT32Inode {
+            fs: self.fs,
+            cluster: new_cluster,
+            size: 0,
+            is_dir: true,
+        }))
     }
 
     fn remove(&self, _name: &str) -> Result<(), FileSystemError> {

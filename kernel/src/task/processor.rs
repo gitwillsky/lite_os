@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{string::{String, ToString}, sync::Arc};
 use lazy_static::lazy_static;
 use riscv::asm::wfi;
 
@@ -132,6 +132,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
+}
+
+pub fn current_cwd() -> String {
+    current_task()
+        .map(|task| task.inner_exclusive_access().cwd.clone())
+        .unwrap_or_else(|| "/".to_string())
 }
 
 /// 描述 CPU 执行状态

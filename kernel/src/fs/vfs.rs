@@ -1,6 +1,8 @@
 use alloc::{collections::BTreeMap, format, string::{String, ToString}, sync::Arc};
 use spin::Mutex;
 
+use crate::task;
+
 use super::{FileSystem, FileSystemError, Inode};
 
 pub struct VirtualFileSystem {
@@ -13,6 +15,22 @@ impl VirtualFileSystem {
         Self {
             filesystems: Mutex::new(BTreeMap::new()),
             root_fs: Mutex::new(None),
+        }
+    }
+
+    /// 将相对路径转换为绝对路径
+    fn resolve_relative_path(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            // 已经是绝对路径
+            path.to_string()
+        } else {
+            // 相对路径：结合当前工作目录
+            let cwd = task::current_cwd();
+            if cwd.ends_with('/') {
+                format!("{}{}", cwd, path)
+            } else {
+                format!("{}/{}", cwd, path)
+            }
         }
     }
 
@@ -39,16 +57,20 @@ impl VirtualFileSystem {
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if path == "/" {
+        let abs_path = self.resolve_relative_path(path);
+        debug!("[DEBUG] VFS open: original='{}' -> absolute='{}'", path, abs_path);
+        
+        if abs_path == "/" {
             let root_fs = self.root_fs.lock();
             let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
             return Ok(fs.root_inode());
         }
         
-        self.resolve_path(path)
+        self.resolve_path(&abs_path)
     }
 
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        debug!("[DEBUG] resolve_path called with: '{}'", path);
         let root_fs = self.root_fs.lock();
         let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
         
@@ -60,6 +82,8 @@ impl VirtualFileSystem {
             path // Treat relative paths as relative to root
         };
         
+        debug!("[DEBUG] resolve_path after removing '/': '{}'", path);
+        
         if path.is_empty() {
             return Ok(current);
         }
@@ -68,6 +92,7 @@ impl VirtualFileSystem {
             if component.is_empty() {
                 continue;
             }
+            debug!("[DEBUG] resolve_path looking for component: '{}'", component);
             current = current.find_child(component)?;
         }
         
@@ -75,19 +100,22 @@ impl VirtualFileSystem {
     }
 
     pub fn create_file(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let (parent_path, filename) = self.split_path(path)?;
+        let abs_path = self.resolve_relative_path(path);
+        let (parent_path, filename) = self.split_path(&abs_path)?;
         let parent = self.resolve_path(&parent_path)?;
         parent.create_file(&filename)
     }
 
     pub fn create_directory(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let (parent_path, dirname) = self.split_path(path)?;
+        let abs_path = self.resolve_relative_path(path);
+        let (parent_path, dirname) = self.split_path(&abs_path)?;
         let parent = self.resolve_path(&parent_path)?;
         parent.create_directory(&dirname)
     }
 
     pub fn remove(&self, path: &str) -> Result<(), FileSystemError> {
-        let (parent_path, filename) = self.split_path(path)?;
+        let abs_path = self.resolve_relative_path(path);
+        let (parent_path, filename) = self.split_path(&abs_path)?;
         let parent = self.resolve_path(&parent_path)?;
         parent.remove(&filename)
     }

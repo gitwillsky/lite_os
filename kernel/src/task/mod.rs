@@ -1,5 +1,7 @@
 use core::arch::global_asm;
 
+use alloc::sync::Arc;
+
 use crate::{
     loader::get_app_data_by_name,
     task::{context::TaskContext, task::TaskControlBlock, task_manager::set_init_proc},
@@ -11,7 +13,6 @@ mod processor;
 mod task;
 mod task_manager;
 
-use alloc::sync::Arc;
 pub use processor::*;
 pub use task_manager::add_task;
 

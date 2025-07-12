@@ -2,7 +2,7 @@ use alloc::string::String;
 
 use crate::{
     arch::sbi,
-    fs::vfs::get_vfs,
+    fs::{vfs::get_vfs, FileSystemError},
     memory::page_table::translated_byte_buffer,
     task::{current_user_token, suspend_current_and_run_next},
 };
@@ -135,7 +135,17 @@ pub fn sys_mkdir(path: *const u8) -> isize {
     
     match get_vfs().create_directory(&path_str) {
         Ok(_) => 0,
-        Err(_) => -1,
+        Err(e) => {
+            // Return more specific error codes
+            match e {
+                FileSystemError::AlreadyExists => -17, // EEXIST
+                FileSystemError::PermissionDenied => -13, // EACCES
+                FileSystemError::NotFound => -2, // ENOENT (parent directory not found)
+                FileSystemError::NotDirectory => -20, // ENOTDIR
+                FileSystemError::NoSpace => -28, // ENOSPC
+                _ => -1, // Generic error
+            }
+        }
     }
 }
 
@@ -170,6 +180,8 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
     let path_str = translated_c_string(token, path);
     
+    debug!("[DEBUG] sys_read_file called with path: '{}'", path_str);
+    
     match get_vfs().open(&path_str) {
         Ok(inode) => {
             let buffers = translated_byte_buffer(token, buf, len);
@@ -191,7 +203,10 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
             
             total_read as isize
         }
-        Err(_) => -1,
+        Err(e) => {
+            debug!("[DEBUG] sys_read_file failed with error: {:?}", e);
+            -1
+        }
     }
 }
 

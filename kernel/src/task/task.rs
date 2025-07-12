@@ -1,6 +1,7 @@
 use core::cell::RefMut;
 
 use alloc::{
+    string::{String, ToString},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -46,6 +47,8 @@ pub struct TaskControlBlockInner {
     pub children: Vec<Arc<TaskControlBlock>>,
     /// 子进程退出时，父进程可以获取其退出码
     pub exit_code: i32,
+    /// 当前工作目录
+    pub cwd: String,
 }
 
 /// Task Control block structure
@@ -85,6 +88,7 @@ impl TaskControlBlock {
                 parent: None,
                 children: Vec::new(),
                 exit_code: 0,
+                cwd: "/".to_string(),  // 新进程默认工作目录为根目录
             }),
         };
 
@@ -153,6 +157,7 @@ impl TaskControlBlock {
                 parent: Some(Arc::downgrade(self)),
                 children: Vec::new(),
                 exit_code: 0,
+                cwd: parent_inner.cwd.clone(),  // 复制父进程的工作目录
             }),
         });
 

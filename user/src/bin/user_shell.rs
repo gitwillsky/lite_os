@@ -160,10 +160,15 @@ fn handle_mkdir_command(line: &str) {
     }
     
     let path = parts[1];
-    if user_lib::mkdir(path) == 0 {
-        println!("Directory '{}' created", path);
-    } else {
-        println!("mkdir: cannot create directory '{}': File exists or permission denied", path);
+    let result = user_lib::mkdir(path);
+    match result {
+        0 => println!("Directory '{}' created", path),
+        -17 => println!("mkdir: cannot create directory '{}': File exists", path),
+        -13 => println!("mkdir: cannot create directory '{}': Permission denied", path),
+        -2 => println!("mkdir: cannot create directory '{}': No such file or directory", path),
+        -20 => println!("mkdir: cannot create directory '{}': Not a directory", path),
+        -28 => println!("mkdir: cannot create directory '{}': No space left on device", path),
+        _ => println!("mkdir: cannot create directory '{}': Unknown error ({})", path, result),
     }
 }
 
