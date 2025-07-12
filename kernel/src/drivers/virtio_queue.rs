@@ -70,27 +70,52 @@ impl VirtQueue {
             return None; // 队列大小必须是2的幂
         }
 
-        // 计算需要的内存大小
+        // 计算需要的内存大小 - 严格按照VirtIO规范进行对齐
         let desc_size = size_of::<VirtqDesc>() * size as usize;
-        let avail_size = size_of::<VirtqAvail>() + size_of::<u16>() * size as usize;
-        let used_size = size_of::<VirtqUsed>() + size_of::<VirtqUsedElem>() * size as usize;
         
-        // 对齐到页边界
-        let total_size = (desc_size + avail_size + used_size + 4095) & !4095;
+        // Available ring: flags(2) + idx(2) + ring[size](2*size) + used_event(2)
+        let avail_size = 2 + 2 + 2 * size as usize + 2;
+        let avail_offset = desc_size;
         
-        // 分配内存
-        let frame_tracker = crate::memory::frame_allocator::alloc()?;
+        // Used ring需要对齐到4字节边界
+        let used_offset = (avail_offset + avail_size + 3) & !3;
+        // Used ring: flags(2) + idx(2) + ring[size](8*size) + avail_event(2)
+        let used_size = 2 + 2 + 8 * size as usize + 2;
+        
+        // 总大小对齐到页边界
+        let total_size = (used_offset + used_size + 4095) & !4095;
+        
+        println!("[VirtQueue] queue layout: desc_size={}, avail_size={}, used_size={}, total={}", 
+                 desc_size, avail_size, used_size, total_size);
+        println!("[VirtQueue] offsets: desc=0, avail={}, used={}", avail_offset, used_offset);
+        
+        // 分配足够的页面
+        let pages_needed = (total_size + 4095) / 4096;
+        let mut frame_tracker = crate::memory::frame_allocator::alloc()?;
+        
+        // 如果需要多页，分配连续页面
+        for _ in 1..pages_needed {
+            let _ = crate::memory::frame_allocator::alloc()?;
+        }
+        
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
         
+        // 确保内存被清零
+        let memory_slice = unsafe { 
+            core::slice::from_raw_parts_mut(va.as_usize() as *mut u8, total_size) 
+        };
+        memory_slice.fill(0);
+        println!("[VirtQueue] allocated and cleared {} bytes at VA={:#x}", total_size, va.as_usize());
+        
         let desc = va.as_usize() as *mut VirtqDesc;
-        let avail = (va.as_usize() + desc_size) as *mut VirtqAvail;
-        let used = (va.as_usize() + desc_size + avail_size) as *mut VirtqUsed;
+        let avail = (va.as_usize() + avail_offset) as *mut VirtqAvail;
+        let used = (va.as_usize() + used_offset) as *mut VirtqUsed;
 
         // 初始化描述符链
         let mut desc_shadow = Vec::with_capacity(size as usize);
         unsafe {
             for i in 0..size {
-                let mut shadow_desc = VirtqDesc {
+                let shadow_desc = VirtqDesc {
                     next: if i == size - 1 { 0 } else { i + 1 },
                     flags: 0,
                     addr: 0,
@@ -132,7 +157,22 @@ impl VirtQueue {
     pub fn physical_address(&self) -> PhysicalAddress {
         // 简单地返回虚拟地址对应的物理地址
         let va = VirtualAddress::from(self.desc as usize);
-        PhysicalAddress::from(va.as_usize())
+        
+        // 详细调试虚拟地址到物理地址的转换
+        let vpn = va.floor();
+        let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
+        let pte = kernel_space.translate(vpn)
+            .expect("Failed to translate virtual address to physical address");
+        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
+        
+        println!("[VirtQueue] physical_address: desc VA={:#x}, VPN={:#x}, PPN={:#x}, PA={:#x}", 
+                 va.as_usize(), vpn.as_usize(), pte.ppn().as_usize(), pa);
+        
+        // 验证物理地址的可访问性
+        println!("[VirtQueue] queue layout: desc={:#x}, avail={:#x}, used={:#x}", 
+                 self.desc as usize, self.avail as usize, self.used as usize);
+        
+        PhysicalAddress::from(pa)
     }
 
     // Write descriptor from shadow to actual - inspired by virtio-drivers
@@ -254,17 +294,18 @@ impl VirtQueue {
     pub fn get_used(&mut self) -> Option<(u16, u32)> {
         unsafe {
             let used_idx = (*self.used).idx.load(Ordering::Acquire);
-            println!("[VirtQueue] get_used: device_used_idx={}, last_used_idx={}", used_idx, self.last_used_idx);
             
             if self.last_used_idx == used_idx {
                 return None;
             }
 
             let ring_slot = self.last_used_idx & (self.size - 1);
-            let ring_ptr = (self.used as *mut u8).add(4) as *mut VirtqUsedElem;
-            let used_elem = *ring_ptr.add(ring_slot as usize);
             
-            println!("[VirtQueue] found used element: id={}, len={}", used_elem.id, used_elem.len);
+            // 正确计算used ring元素的位置
+            // VirtqUsed结构: flags(2字节) + idx(2字节) + ring[]
+            // 但是ring是VirtqUsedElem数组，每个元素8字节
+            let ring_base = (self.used as *const u8).add(4) as *const VirtqUsedElem;
+            let used_elem = *ring_base.add(ring_slot as usize);
             
             self.last_used_idx = self.last_used_idx.wrapping_add(1);
             

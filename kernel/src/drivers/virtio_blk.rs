@@ -138,7 +138,21 @@ impl VirtIOBlockDevice {
 
         let queue_pfn = queue.physical_address().as_usize() >> 12;
         println!("[VirtIOBlock] queue physical address: {:#x}, pfn: {:#x}", queue.physical_address().as_usize(), queue_pfn);
+        
+        // 设置队列PFN
         mmio.set_queue_pfn(queue_pfn as u32);
+        
+        // 读回验证
+        let readback_pfn = mmio.read_reg(VIRTIO_MMIO_QUEUE_PFN);
+        println!("[VirtIOBlock] device readback pfn: {:#x} (expected: {:#x})", readback_pfn, queue_pfn);
+        
+        if readback_pfn != queue_pfn as u32 {
+            println!("[VirtIOBlock] WARNING: queue pfn mismatch!");
+        }
+
+        // 设置队列就绪标志 - 这是关键的修复
+        mmio.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
+        println!("[VirtIOBlock] set queue ready flag");
 
         // 读取容量
         let capacity = unsafe {
@@ -170,12 +184,18 @@ impl VirtIOBlockDevice {
 
         let mut queue = self.queue.lock();
 
-        // 准备请求头
+        // 准备请求头 - sector字段应该是512字节扇区号，不是4096字节块号
+        let sectors_per_block = BLOCK_SIZE / 512; // 4096 / 512 = 8
+        let sector_id = block_id * sectors_per_block;
+        
         let req = VirtIOBlkReq {
             type_: if is_write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN },
             reserved: 0,
-            sector: block_id as u64,
+            sector: sector_id as u64,
         };
+        
+        println!("[VirtIOBlock] request: type={}, sector={} (block {} * {} sectors/block)", 
+                 req.type_, req.sector, block_id, sectors_per_block);
 
         let req_bytes = unsafe {
             core::slice::from_raw_parts(&req as *const _ as *const u8, core::mem::size_of::<VirtIOBlkReq>())
@@ -212,38 +232,55 @@ impl VirtIOBlockDevice {
         println!("[VirtIOBlock] notifying device");
         self.mmio.notify_queue(0);
 
-        // 等待完成
-        let mut timeout = 100000; // Add timeout
-        let mut check_count = 0;
+        // 等待完成 - 先检查中断状态，如果有中断则处理
+        let mut attempts = 1000;
+        
         loop {
-            // 每1000次检查打印一次状态
-            if check_count % 1000 == 0 {
-                let int_status = self.mmio.interrupt_status();
-                let device_status = self.mmio.get_status();
-                println!("[VirtIOBlock] check {}: int_status={:#x}, device_status={:#x}, used_idx={}", 
-                         check_count / 1000, int_status, device_status, queue.last_used_idx);
-                
-                // 如果有中断，确认中断
-                if int_status != 0 {
-                    println!("[VirtIOBlock] acknowledging interrupt: {:#x}", int_status);
-                    self.mmio.interrupt_ack(int_status);
-                }
+            // 检查设备中断状态
+            let int_status = self.mmio.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
+            if int_status & 0x1 != 0 {
+                // 发现used buffer中断，确认中断并处理
+                println!("[VirtIOBlock] Interrupt detected, status: {:#x}", int_status);
+                self.mmio.write_reg(VIRTIO_MMIO_INTERRUPT_ACK, 0x1);
+                break;
             }
             
-            if let Some((id, _len)) = queue.get_used() {
-                println!("[VirtIOBlock] got used desc_idx: {}", id);
-                if id == desc_idx {
-                    break;
-                }
+            // 直接检查used ring索引是否更新
+            let used_idx = unsafe {
+                core::ptr::read_volatile(&(*queue.used).idx as *const core::sync::atomic::AtomicU16 as *const u16)
+            };
+            
+            if used_idx != queue.last_used_idx {
+                println!("[VirtIOBlock] used_idx changed from {} to {}", queue.last_used_idx, used_idx);
+                break;
             }
-            timeout -= 1;
-            check_count += 1;
-            if timeout == 0 {
-                println!("[VirtIOBlock] I/O operation timed out");
+            
+            attempts -= 1;
+            if attempts == 0 {
+                println!("[VirtIOBlock] I/O operation timed out after polling");
+                println!("[VirtIOBlock] Debug: used_idx={}, last_used_idx={}", used_idx, queue.last_used_idx);
+                
+                // 检查设备状态
+                let device_status = self.mmio.read_reg(VIRTIO_MMIO_STATUS);
+                let int_status = self.mmio.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
+                println!("[VirtIOBlock] Device status: {:#x}, Interrupt status: {:#x}", device_status, int_status);
+                
                 return Err(BlockError::IoError);
             }
-            // 简单的忙等待，实际实现中应该使用中断
-            core::hint::spin_loop();
+            
+            // 稍微增加延迟
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+        }
+        
+        // 现在获取结果
+        if let Some((id, _len)) = queue.get_used() {
+            if id != desc_idx {
+                println!("[VirtIOBlock] Warning: expected desc_idx {}, got {}", desc_idx, id);
+            }
+        } else {
+            println!("[VirtIOBlock] Warning: no used descriptor found");
         }
 
         // 检查状态

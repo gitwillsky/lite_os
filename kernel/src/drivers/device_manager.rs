@@ -71,3 +71,10 @@ fn init_filesystems() {
 pub fn get_block_devices() -> Vec<Arc<dyn BlockDevice>> {
     DEVICES.lock().clone()
 }
+
+pub fn handle_external_interrupt() {
+    // 简单的VirtIO中断处理 - 遍历所有设备检查中断状态
+    println!("[device] Handling external interrupt");
+    // 这里可以添加具体的设备中断处理逻辑
+    // 由于当前使用轮询方式，暂时不需要复杂的中断处理
+}

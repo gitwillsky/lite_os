@@ -56,7 +56,9 @@ impl VirtIOMMIO {
     pub fn probe(&self) -> bool {
         let magic = self.read_reg(VIRTIO_MMIO_MAGIC_VALUE);
         let version = self.read_reg(VIRTIO_MMIO_VERSION);
-        magic == VIRTIO_MMIO_MAGIC && version == VIRTIO_VERSION
+        println!("[VirtIOMMIO] probe: magic={:#x} (expected {:#x}), version={}", 
+                 magic, VIRTIO_MMIO_MAGIC, version);
+        magic == VIRTIO_MMIO_MAGIC && (version == 1 || version == 2)
     }
 
     pub fn device_id(&self) -> u32 {
@@ -105,6 +107,10 @@ impl VirtIOMMIO {
 
     pub fn set_queue_pfn(&self, pfn: u32) {
         self.write_reg(VIRTIO_MMIO_QUEUE_PFN, pfn);
+    }
+    
+    pub fn set_queue_ready(&self, ready: u32) {
+        self.write_reg(VIRTIO_MMIO_QUEUE_READY, ready);
     }
 
     pub fn notify_queue(&self, queue: u32) {

@@ -43,6 +43,11 @@ pub fn trap_handler() {
                     timer::set_next_timer_interrupt();
                     suspend_current_and_run_next();
                 }
+                Interrupt::SupervisorExternal => {
+                    // 处理外部中断（包括VirtIO设备中断）
+                    println!("[trap_handler] External interrupt");
+                    crate::drivers::handle_external_interrupt();
+                }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);
                 }
