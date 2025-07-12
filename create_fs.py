@@ -100,6 +100,9 @@ def create_simple_fat32(filename, size_mb=128):
             struct.pack_into('<L', fat_sector, 0, 0x0FFFFFF8)   # FAT[0]
             struct.pack_into('<L', fat_sector, 4, 0x0FFFFFFF)   # FAT[1]
             struct.pack_into('<L', fat_sector, 8, 0x0FFFFFFF)   # FAT[2] (根目录,EOF)
+            # 为测试文件设置FAT条目
+            struct.pack_into('<L', fat_sector, 12, 0x0FFFFFFF)  # FAT[3] (hello.txt,EOF)
+            struct.pack_into('<L', fat_sector, 16, 0x0FFFFFFF)  # FAT[4] (test.txt,EOF)
             f.write(fat_sector)
             
             # 其余FAT扇区填充0

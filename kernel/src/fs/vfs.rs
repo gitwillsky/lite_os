@@ -1,4 +1,4 @@
-use alloc::{collections::BTreeMap, format, string::{String, ToString}, sync::Arc};
+use alloc::{collections::BTreeMap, format, string::{String, ToString}, sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::task;
@@ -22,16 +22,50 @@ impl VirtualFileSystem {
     pub fn resolve_relative_path(&self, path: &str) -> String {
         if path.starts_with('/') {
             // 已经是绝对路径
-            path.to_string()
+            self.canonicalize_path(path)
         } else {
             // 相对路径：结合当前工作目录
             let cwd = task::current_cwd();
-            if cwd.ends_with('/') {
+            let combined = if cwd.ends_with('/') {
                 format!("{}{}", cwd, path)
             } else {
                 format!("{}/{}", cwd, path)
+            };
+            self.canonicalize_path(&combined)
+        }
+    }
+
+    /// 规范化路径，解析 . 和 .. 组件
+    fn canonicalize_path(&self, path: &str) -> String {
+        debug!("[VFS] Canonicalizing path: {}", path);
+        let mut components = Vec::new();
+        
+        for component in path.split('/') {
+            match component {
+                "" | "." => {
+                    // 跳过空组件和当前目录引用
+                    continue;
+                }
+                ".." => {
+                    // 父目录引用：弹出最后一个组件（如果有的话）
+                    components.pop();
+                }
+                _ => {
+                    // 普通目录组件
+                    components.push(component);
+                }
             }
         }
+        
+        // 重新构建路径
+        let canonical = if components.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", components.join("/"))
+        };
+        
+        debug!("[VFS] Canonicalized {} -> {}", path, canonical);
+        canonical
     }
 
     pub fn mount(&self, path: &str, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {

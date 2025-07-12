@@ -177,6 +177,14 @@ impl FAT32FileSystem {
             }
         }
 
+        // Debug: Show first few FAT entries
+        info!("[FAT32] FAT table loaded with {} entries", fat_cache.len());
+        if fat_cache.len() >= 10 {
+            info!("[FAT32] FAT[0-9]: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}", 
+                fat_cache[0], fat_cache[1], fat_cache[2], fat_cache[3], fat_cache[4],
+                fat_cache[5], fat_cache[6], fat_cache[7], fat_cache[8], fat_cache[9]);
+        }
+
         Some(Arc::new(FAT32FileSystem {
             device,
             bpb,
@@ -264,8 +272,11 @@ impl FAT32FileSystem {
 
     fn allocate_cluster(&self) -> Option<u32> {
         let mut fat_cache = self.fat_cache.lock();
+        debug!("[FAT32] Looking for free cluster. FAT cache size: {}", fat_cache.len());
+        
         // Start from cluster 2 (clusters 0 and 1 are reserved)
         for i in 2..fat_cache.len() {
+            debug!("[FAT32] Checking cluster {}: FAT[{}] = {:#08x}", i, i, fat_cache[i]);
             if fat_cache[i] == CLUSTER_FREE {
                 fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
                 debug!("[FAT32] Allocated cluster {}", i);
