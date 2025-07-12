@@ -14,6 +14,7 @@ const LF: u8 = b'\n';
 const CR: u8 = b'\r';
 const DL: u8 = b'\x7f'; // DEL
 const BS: u8 = b'\x08'; // BACKSPACE
+const TAB: u8 = b'\t';  // TAB
 
 fn get_char() -> u8 {
     let mut byte = [0u8; 1];
@@ -54,6 +55,26 @@ fn read_line(buf: &mut [u8]) -> usize {
         }
     }
     i
+}
+
+// 计算字符在屏幕上的显示宽度
+fn char_display_width(c: char, cursor_pos: usize) -> usize {
+    match c {
+        '\t' => {
+            // Tab stops every 8 columns
+            8 - (cursor_pos % 8)
+        }
+        _ => 1,
+    }
+}
+
+// 计算字符串在屏幕上的显示宽度
+fn string_display_width(s: &str) -> usize {
+    let mut width = 0;
+    for c in s.chars() {
+        width += char_display_width(c, width);
+    }
+    width
 }
 
 #[unsafe(no_mangle)]
@@ -100,12 +121,26 @@ fn main() -> i32 {
                 }
                 print!("$");
             }
+            TAB => {
+                // 处理Tab字符 - 扩展为空格直到下一个tab stop
+                let current_pos = 1 + string_display_width(&line); // 1 for '$' prompt
+                let spaces_to_add = 8 - (current_pos % 8);
+                for _ in 0..spaces_to_add {
+                    print!(" ");
+                }
+                line.push('\t');
+            }
             BS | DL => {
                 if line.len() > 0 {
-                    print!("{}", BS as char);
-                    print!("{}", ' ' as char);
-                    print!("{}", BS as char);
-                    line.pop();
+                    let removed_char = line.pop().unwrap();
+                    // 计算要删除的字符的显示宽度
+                    let current_pos = 1 + string_display_width(&line); // position after removal
+                    let char_width = char_display_width(removed_char, current_pos);
+                    
+                    // 退格删除相应数量的字符
+                    for _ in 0..char_width {
+                        print!("{} {}", BS as char, BS as char);
+                    }
                 }
             }
             _ => {
