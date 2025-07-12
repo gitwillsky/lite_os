@@ -39,10 +39,9 @@ impl VirtualFileSystem {
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let root_fs = self.root_fs.lock();
-        let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
-        
         if path == "/" {
+            let root_fs = self.root_fs.lock();
+            let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
             return Ok(fs.root_inode());
         }
         
@@ -55,20 +54,21 @@ impl VirtualFileSystem {
         
         let mut current = fs.root_inode();
         
-        if path.starts_with('/') {
-            let path = &path[1..]; // Remove leading '/'
-            if path.is_empty() {
-                return Ok(current);
-            }
-            
-            for component in path.split('/') {
-                if component.is_empty() {
-                    continue;
-                }
-                current = current.find_child(component)?;
-            }
+        let path = if path.starts_with('/') {
+            &path[1..] // Remove leading '/'
         } else {
-            return Err(FileSystemError::InvalidPath);
+            path // Treat relative paths as relative to root
+        };
+        
+        if path.is_empty() {
+            return Ok(current);
+        }
+        
+        for component in path.split('/') {
+            if component.is_empty() {
+                continue;
+            }
+            current = current.find_child(component)?;
         }
         
         Ok(current)

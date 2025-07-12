@@ -259,10 +259,8 @@ impl VirtIOBlockDevice {
         // 现在获取结果
         if let Some((id, _len)) = queue.get_used() {
             if id != desc_idx {
-                warn!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
+                error!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
             }
-        } else {
-            warn!("VirtIO block: no used descriptor found");
         }
 
         // 检查状态
