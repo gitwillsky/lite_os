@@ -146,12 +146,28 @@ impl VirtQueue {
     // Simple HAL-like buffer sharing following virtio-drivers pattern
     fn share_buffer(&self, buf: &[u8]) -> u64 {
         let va = VirtualAddress::from(buf.as_ptr() as usize);
-        PhysicalAddress::from(va.as_usize()).as_usize() as u64
+        // 使用内核页表进行虚拟地址到物理地址的转换
+        let vpn = va.floor();
+        let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
+        let pte = kernel_space.translate(vpn)
+            .expect("Failed to translate virtual address to physical address");
+        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
+        
+        println!("[VirtQueue] share_buffer: VA={:#x} -> PA={:#x}", va.as_usize(), pa);
+        pa as u64
     }
 
     fn share_buffer_mut(&self, buf: &mut [u8]) -> u64 {
         let va = VirtualAddress::from(buf.as_ptr() as usize);
-        PhysicalAddress::from(va.as_usize()).as_usize() as u64
+        // 使用内核页表进行虚拟地址到物理地址的转换
+        let vpn = va.floor();
+        let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
+        let pte = kernel_space.translate(vpn)
+            .expect("Failed to translate virtual address to physical address");
+        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
+            
+        println!("[VirtQueue] share_buffer_mut: VA={:#x} -> PA={:#x}", va.as_usize(), pa);
+        pa as u64
     }
 
     pub fn add_buffer(&mut self, inputs: &[&[u8]], outputs: &mut [&mut [u8]]) -> Option<u16> {
@@ -238,6 +254,8 @@ impl VirtQueue {
     pub fn get_used(&mut self) -> Option<(u16, u32)> {
         unsafe {
             let used_idx = (*self.used).idx.load(Ordering::Acquire);
+            println!("[VirtQueue] get_used: device_used_idx={}, last_used_idx={}", used_idx, self.last_used_idx);
+            
             if self.last_used_idx == used_idx {
                 return None;
             }
@@ -245,6 +263,8 @@ impl VirtQueue {
             let ring_slot = self.last_used_idx & (self.size - 1);
             let ring_ptr = (self.used as *mut u8).add(4) as *mut VirtqUsedElem;
             let used_elem = *ring_ptr.add(ring_slot as usize);
+            
+            println!("[VirtQueue] found used element: id={}, len={}", used_elem.id, used_elem.len);
             
             self.last_used_idx = self.last_used_idx.wrapping_add(1);
             

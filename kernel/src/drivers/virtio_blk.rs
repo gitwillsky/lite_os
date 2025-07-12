@@ -214,7 +214,22 @@ impl VirtIOBlockDevice {
 
         // 等待完成
         let mut timeout = 100000; // Add timeout
+        let mut check_count = 0;
         loop {
+            // 每1000次检查打印一次状态
+            if check_count % 1000 == 0 {
+                let int_status = self.mmio.interrupt_status();
+                let device_status = self.mmio.get_status();
+                println!("[VirtIOBlock] check {}: int_status={:#x}, device_status={:#x}, used_idx={}", 
+                         check_count / 1000, int_status, device_status, queue.last_used_idx);
+                
+                // 如果有中断，确认中断
+                if int_status != 0 {
+                    println!("[VirtIOBlock] acknowledging interrupt: {:#x}", int_status);
+                    self.mmio.interrupt_ack(int_status);
+                }
+            }
+            
             if let Some((id, _len)) = queue.get_used() {
                 println!("[VirtIOBlock] got used desc_idx: {}", id);
                 if id == desc_idx {
@@ -222,6 +237,7 @@ impl VirtIOBlockDevice {
                 }
             }
             timeout -= 1;
+            check_count += 1;
             if timeout == 0 {
                 println!("[VirtIOBlock] I/O operation timed out");
                 return Err(BlockError::IoError);
