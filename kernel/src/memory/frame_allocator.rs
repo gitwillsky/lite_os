@@ -91,7 +91,7 @@ impl StackFrameAllocator {
         if pages == 0 {
             return None;
         }
-        
+
         // For contiguous allocation, we can only use the continuous range
         // Cannot use recycled pages as they might not be contiguous
         if self.current_start_ppn.as_usize() + pages <= self.end_ppn.as_usize() {
@@ -106,7 +106,7 @@ impl StackFrameAllocator {
     pub fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
         assert!(
             ppn >= self.start_ppn && ppn < self.end_ppn,
-            "dealloc: 非法ppn={:#x}, 合法区间=[{:#x}, {:#x})",
+            "dealloc: invalid ppn={:#x}, valid range=[{:#x}, {:#x})",
             ppn.as_usize(),
             self.start_ppn.as_usize(),
             self.end_ppn.as_usize()
@@ -126,7 +126,7 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     let end_ppn = end_addr.floor();
     assert!(
         end_ppn.as_usize() > start_ppn.as_usize(),
-        "frame_allocator: 分配区间为0，start_ppn={:#x}, end_ppn={:#x}",
+        "frame_allocator: range is 0, start_ppn={:#x}, end_ppn={:#x}",
         start_ppn.as_usize(),
         end_ppn.as_usize()
     );

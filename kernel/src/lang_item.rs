@@ -22,7 +22,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
     }
 
     if let Some(location) = info.location() {
-        println!(
+        error!(
             "[Kernel] Panic at {}:{}:{} {}",
             location.file(),
             location.line(),
@@ -30,7 +30,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
             info.message()
         );
     } else {
-        println!("[Kernel] Panic: {}", info.message());
+        error!("[Kernel] Panic: {}", info.message());
     }
 
     _ = sbi::shutdown();

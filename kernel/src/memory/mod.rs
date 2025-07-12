@@ -41,8 +41,8 @@ pub static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 pub fn init() {
     let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
     let memory_end_addr: PhysicalAddress = board::get_board_info().mem.end.into();
-    println!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
-    println!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
+    debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
+    debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
     heap_allocator::init();
     frame_allocator::init(kernel_end_addr, memory_end_addr);
@@ -56,10 +56,38 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     memory_set.map_trampoline();
 
+    // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
+    let board_info = crate::board::get_board_info();
+    if board_info.virtio_count > 0 {
+        let mut min_addr = usize::MAX;
+        let mut max_addr = 0;
+
+        for i in 0..board_info.virtio_count {
+            if let Some(dev) = &board_info.virtio_devices[i] {
+                min_addr = min_addr.min(dev.base_addr);
+                max_addr = max_addr.max(dev.base_addr + dev.size);
+            }
+        }
+
+        debug!(
+            "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
+            min_addr, max_addr
+        );
+        memory_set.push(
+            MapArea::new(
+                min_addr.into(),
+                max_addr.into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+    }
+
     // kernel text section
     let stext_addr = stext as usize;
     let etext_addr = etext as usize;
-    println!(
+    debug!(
         "[init_kernel_space] .text section: {:#x} - {:#x}",
         stext_addr, etext_addr
     );
@@ -76,7 +104,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel read only data
     let srodata_addr = srodata as usize;
     let erodata_addr = erodata as usize;
-    println!(
+    debug!(
         "[init_kernel_space] .rodata section: {:#x} - {:#x}",
         srodata_addr, erodata_addr
     );
@@ -93,7 +121,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel data
     let sdata_addr = sdata as usize;
     let edata_addr = edata as usize;
-    println!(
+    debug!(
         "[init_kernel_space] .data section: {:#x} - {:#x}",
         sdata_addr, edata_addr
     );
@@ -110,7 +138,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel bss section
     let sbss_addr = sbss as usize;
     let ebss_addr = ebss as usize;
-    println!(
+    debug!(
         "[init_kernel_space] .bss section: {:#x} - {:#x}",
         sbss_addr, ebss_addr
     );
@@ -127,7 +155,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     // kernel boot stack
     let boot_stack_bottom_addr = boot_stack_bottom as usize;
     let boot_stack_top_addr = boot_stack_top as usize;
-    println!(
+    debug!(
         "[init_kernel_space] boot stack: {:#x} - {:#x}",
         boot_stack_bottom_addr, boot_stack_top_addr
     );
@@ -143,7 +171,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     // other memory
     let ekernel_addr = ekernel as usize;
-    println!(
+    debug!(
         "[init_kernel_space] other memory: {:#x} - {:#x}",
         ekernel_addr,
         memory_end_addr.as_usize()
@@ -157,34 +185,6 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         ),
         None,
     );
-
-    // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
-    let board_info = crate::board::get_board_info();
-    if board_info.virtio_count > 0 {
-        let mut min_addr = usize::MAX;
-        let mut max_addr = 0;
-        
-        for i in 0..board_info.virtio_count {
-            if let Some(dev) = &board_info.virtio_devices[i] {
-                min_addr = min_addr.min(dev.base_addr);
-                max_addr = max_addr.max(dev.base_addr + dev.size);
-            }
-        }
-        
-        println!(
-            "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
-            min_addr, max_addr
-        );
-        memory_set.push(
-            MapArea::new(
-                min_addr.into(),
-                max_addr.into(),
-                mm::MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
-    }
 
     memory_set
 }

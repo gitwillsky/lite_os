@@ -98,7 +98,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     let pid = task.get_pid();
     if pid == IDLE_PID {
-        println!(
+        debug!(
             "[kernel] Idle process exit with exit_code {} ...",
             exit_code
         );

@@ -8,7 +8,6 @@ pub mod vfs;
 
 pub use fat32::FAT32FileSystem;
 pub use inode::{Inode, InodeType};
-pub use vfs::get_vfs;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileSystemError {

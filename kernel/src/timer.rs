@@ -6,8 +6,6 @@ static mut TICK_INTERVAL_VALUE: u64 = 0;
 
 const MSEC_PER_SEC: u64 = 1000;
 
-// static mut TICKS: usize = 0;
-
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::get_board_info().time_base_freq;
@@ -16,12 +14,6 @@ pub fn get_time_msec() -> u64 {
 
 #[inline(always)]
 pub fn set_next_timer_interrupt() {
-    // unsafe {
-    //     TICKS += 1;
-    //     if TICKS % config::TICKS_PER_SEC == 0 {
-    //         println!("[kernel] {} seconds passed", TICKS / config::TICKS_PER_SEC);
-    //     }
-    // }
     let current_mtime = register::time::read64();
     let next_mtime = current_mtime + unsafe { TICK_INTERVAL_VALUE };
 
@@ -37,5 +29,5 @@ pub fn init() {
     }
 
     set_next_timer_interrupt();
-    println!("timer initialized");
+    debug!("timer initialized");
 }

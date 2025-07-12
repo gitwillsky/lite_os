@@ -1,7 +1,5 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use spin::Mutex;
-
-use crate::memory::address::PhysicalAddress;
 
 use super::{
     block::{BlockDevice, BlockError, BLOCK_SIZE},
@@ -86,16 +84,14 @@ impl VirtIOBlockDevice {
 
         // 探测设备
         if !mmio.probe() {
-            println!("[VirtIOBlock] device probe failed");
+            debug!("VirtIO block device probe failed");
             return None;
         }
 
         if mmio.device_id() != VIRTIO_ID_BLOCK {
-            println!("[VirtIOBlock] device id not match: {}", mmio.device_id());
+            debug!("VirtIO device ID mismatch: expected {}, got {}", VIRTIO_ID_BLOCK, mmio.device_id());
             return None;
         }
-
-        println!("[VirtIOBlock] found VirtIO block device");
 
         // 重置设备
         mmio.set_status(0);
@@ -108,7 +104,6 @@ impl VirtIOBlockDevice {
 
         // 读取设备特性
         let device_features = mmio.device_features();
-        println!("[VirtIOBlock] device features: {:#x}", device_features);
 
         // 设置驱动程序特性 (基础功能)
         mmio.set_driver_features(0);
@@ -118,7 +113,7 @@ impl VirtIOBlockDevice {
 
         // 验证FEATURES_OK
         if mmio.get_status() & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
-            println!("[VirtIOBlock] device not accept features");
+            error!("VirtIO block device does not accept features");
             return None;
         }
 
@@ -128,37 +123,33 @@ impl VirtIOBlockDevice {
         // 设置队列
         mmio.select_queue(0);
         let queue_size = mmio.queue_max_size();
-        println!("[VirtIOBlock] queue size: {}", queue_size);
 
         let queue = VirtQueue::new(queue_size as u16, 0)?;
-        println!("[VirtIOBlock] queue created successfully");
-        
+
         mmio.set_queue_size(queue_size);
         mmio.set_queue_align(4096);
 
         let queue_pfn = queue.physical_address().as_usize() >> 12;
-        println!("[VirtIOBlock] queue physical address: {:#x}, pfn: {:#x}", queue.physical_address().as_usize(), queue_pfn);
-        
+
         // 设置队列PFN
         mmio.set_queue_pfn(queue_pfn as u32);
-        
+
         // 读回验证
         let readback_pfn = mmio.read_reg(VIRTIO_MMIO_QUEUE_PFN);
-        println!("[VirtIOBlock] device readback pfn: {:#x} (expected: {:#x})", readback_pfn, queue_pfn);
-        
+
         if readback_pfn != queue_pfn as u32 {
-            println!("[VirtIOBlock] WARNING: queue pfn mismatch!");
+            warn!("Queue PFN mismatch: set {:#x}, readback {:#x}", queue_pfn, readback_pfn);
         }
 
         // 设置队列就绪标志 - 这是关键的修复
         mmio.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
-        println!("[VirtIOBlock] set queue ready flag");
 
         // 读取容量
         let capacity = unsafe {
             core::ptr::read_volatile((base_addr + VIRTIO_MMIO_CONFIG) as *const u64)
         };
-        println!("[VirtIOBlock] device capacity: {} sectors", capacity);
+        // print device capacity in MB
+        info!("VirtIO block device capacity: {} MB", capacity * 512 / 1024 / 1024);
 
         // 设置DRIVER_OK标志
         mmio.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER | VIRTIO_CONFIG_S_FEATURES_OK | VIRTIO_CONFIG_S_DRIVER_OK);
@@ -171,6 +162,11 @@ impl VirtIOBlockDevice {
     }
 
     fn perform_io(&self, is_write: bool, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        debug!("VirtIO block {} operation: block {} (sector {})",
+               if is_write { "write" } else { "read" },
+               block_id,
+               block_id * (BLOCK_SIZE / 512));
+
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);
         }
@@ -179,23 +175,19 @@ impl VirtIOBlockDevice {
             return Err(BlockError::InvalidBlock);
         }
 
-        println!("[VirtIOBlock] perform_io: {} block {}, buf len: {}", 
-                 if is_write { "write" } else { "read" }, block_id, buf.len());
 
         let mut queue = self.queue.lock();
 
         // 准备请求头 - sector字段应该是512字节扇区号，不是4096字节块号
         let sectors_per_block = BLOCK_SIZE / 512; // 4096 / 512 = 8
         let sector_id = block_id * sectors_per_block;
-        
+
         let req = VirtIOBlkReq {
             type_: if is_write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN },
             reserved: 0,
             sector: sector_id as u64,
         };
-        
-        println!("[VirtIOBlock] request: type={}, sector={} (block {} * {} sectors/block)", 
-                 req.type_, req.sector, block_id, sectors_per_block);
+
 
         let req_bytes = unsafe {
             core::slice::from_raw_parts(&req as *const _ as *const u8, core::mem::size_of::<VirtIOBlkReq>())
@@ -216,75 +208,64 @@ impl VirtIOBlockDevice {
 
         // 如果添加失败，返回错误
         let desc_idx = desc_idx.ok_or(BlockError::DeviceError)?;
-        println!("[VirtIOBlock] added to queue, desc_idx: {}", desc_idx);
-        
-        // DEBUG: Print queue state before notification
-        println!("[VirtIOBlock] queue state - avail_idx: {}, last_used_idx: {}, num_free: {}", 
-                 queue.avail_idx, queue.last_used_idx, queue.num_free);
+
 
         // 将描述符添加到available ring
         queue.add_to_avail(desc_idx);
-        
-        // DEBUG: Print queue state after adding to avail
-        println!("[VirtIOBlock] after add_to_avail - avail_idx: {}", queue.avail_idx);
+
 
         // 通知设备
-        println!("[VirtIOBlock] notifying device");
         self.mmio.notify_queue(0);
 
         // 等待完成 - 先检查中断状态，如果有中断则处理
-        let mut attempts = 1000;
-        
+        const MAX_ATTEMPTS: usize = 1000;
+        let mut attempts = MAX_ATTEMPTS;
+
         loop {
             // 检查设备中断状态
             let int_status = self.mmio.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
             if int_status & 0x1 != 0 {
                 // 发现used buffer中断，确认中断并处理
-                println!("[VirtIOBlock] Interrupt detected, status: {:#x}", int_status);
                 self.mmio.write_reg(VIRTIO_MMIO_INTERRUPT_ACK, 0x1);
                 break;
             }
-            
+
             // 直接检查used ring索引是否更新
             let used_idx = unsafe {
                 core::ptr::read_volatile(&(*queue.used).idx as *const core::sync::atomic::AtomicU16 as *const u16)
             };
-            
+
             if used_idx != queue.last_used_idx {
-                println!("[VirtIOBlock] used_idx changed from {} to {}", queue.last_used_idx, used_idx);
                 break;
             }
-            
+
             attempts -= 1;
             if attempts == 0 {
-                println!("[VirtIOBlock] I/O operation timed out after polling");
-                println!("[VirtIOBlock] Debug: used_idx={}, last_used_idx={}", used_idx, queue.last_used_idx);
-                
+                error!("VirtIO block I/O operation timed out after {} attempts", MAX_ATTEMPTS);
                 // 检查设备状态
                 let device_status = self.mmio.read_reg(VIRTIO_MMIO_STATUS);
                 let int_status = self.mmio.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
-                println!("[VirtIOBlock] Device status: {:#x}, Interrupt status: {:#x}", device_status, int_status);
-                
+                debug!("Device status: {:#x}, Interrupt status: {:#x}", device_status, int_status);
+
                 return Err(BlockError::IoError);
             }
-            
+
             // 稍微增加延迟
             for _ in 0..1000 {
                 core::hint::spin_loop();
             }
         }
-        
+
         // 现在获取结果
         if let Some((id, _len)) = queue.get_used() {
             if id != desc_idx {
-                println!("[VirtIOBlock] Warning: expected desc_idx {}, got {}", desc_idx, id);
+                warn!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
             }
         } else {
-            println!("[VirtIOBlock] Warning: no used descriptor found");
+            warn!("VirtIO block: no used descriptor found");
         }
 
         // 检查状态
-        println!("[VirtIOBlock] operation completed, status: {}", status[0]);
         match status[0] {
             VIRTIO_BLK_S_OK => Ok(()),
             VIRTIO_BLK_S_IOERR => Err(BlockError::IoError),

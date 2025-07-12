@@ -10,11 +10,15 @@ mod arch;
 mod config;
 #[macro_use]
 mod console;
+#[macro_use]
+mod log;
+
 mod board;
 mod drivers;
 mod entry;
 mod fs;
 mod lang_item;
+
 mod loader;
 mod memory;
 mod sync;
@@ -27,21 +31,15 @@ global_asm!(include_str!("link_app.S"));
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
-    println!("[kmain] entry");
-    board::init(dtb_addr);
-    println!("[kmain] after board::init");
-    trap::init();
-    println!("[kmain] after trap::init");
-    memory::init();
-    println!("[kmain] after memory::init");
-    timer::init();
-    println!("[kmain] after timer::init");
-    fs::vfs::init_vfs();
-    println!("[kmain] after fs::vfs::init_vfs");
-    drivers::init_devices();
-    println!("[kmain] after drivers::init_devices");
-    task::init();
-    println!("[kmain] after task::init");
+    debug!("Kernel main entry, dtb_addr: {:#x}", dtb_addr);
+    log::init(config::DEFAULT_LOG_LEVEL);
 
+    board::init(dtb_addr);
+    trap::init();
+    memory::init();
+    timer::init();
+    fs::vfs::init_vfs();
+    drivers::init_devices();
+    task::init();
     task::run_tasks();
 }
