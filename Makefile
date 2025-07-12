@@ -15,7 +15,7 @@ gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'
 
 create-fs:
-	dd if=/dev/zero of=fs.img bs=1M count=128
+	dd if=/dev/zero of=fs.img bs=1M count=64
 	echo "Creating FAT32 filesystem..."
 	# 在macOS上，我们可以使用newfs_msdos
 	newfs_msdos -F 32 fs.img || echo "FAT32 filesystem creation failed, but file created"
