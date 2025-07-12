@@ -58,7 +58,6 @@ impl VirtualFileSystem {
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
-        debug!("[DEBUG] VFS open: original='{}' -> absolute='{}'", path, abs_path);
         
         if abs_path == "/" {
             let root_fs = self.root_fs.lock();
@@ -70,7 +69,6 @@ impl VirtualFileSystem {
     }
 
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        debug!("[DEBUG] resolve_path called with: '{}'", path);
         let root_fs = self.root_fs.lock();
         let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
         
@@ -82,8 +80,6 @@ impl VirtualFileSystem {
             path // Treat relative paths as relative to root
         };
         
-        debug!("[DEBUG] resolve_path after removing '/': '{}'", path);
-        
         if path.is_empty() {
             return Ok(current);
         }
@@ -92,7 +88,6 @@ impl VirtualFileSystem {
             if component.is_empty() {
                 continue;
             }
-            debug!("[DEBUG] resolve_path looking for component: '{}'", component);
             current = current.find_child(component)?;
         }
         

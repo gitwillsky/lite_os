@@ -180,33 +180,40 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
     let path_str = translated_c_string(token, path);
     
-    debug!("[DEBUG] sys_read_file called with path: '{}'", path_str);
-    
     match get_vfs().open(&path_str) {
         Ok(inode) => {
-            let buffers = translated_byte_buffer(token, buf, len);
-            let mut total_read = 0;
-            let mut offset = 0;
+            // Read the entire file into a temporary buffer first
+            let file_size = inode.size() as usize;
+            let read_size = file_size.min(len);
             
-            for buffer in buffers {
-                match inode.read_at(offset, buffer) {
-                    Ok(bytes_read) => {
-                        total_read += bytes_read;
-                        offset += bytes_read as u64;
-                        if bytes_read < buffer.len() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
+            if read_size == 0 {
+                return 0;
             }
             
-            total_read as isize
+            // Create a temporary buffer to read the file contents
+            let mut temp_buf = alloc::vec![0u8; read_size];
+            
+            match inode.read_at(0, &mut temp_buf) {
+                Ok(bytes_read) => {
+                    // Now copy to user space using translated_byte_buffer
+                    let buffers = translated_byte_buffer(token, buf, bytes_read);
+                    let mut offset = 0;
+                    
+                    for buffer in buffers {
+                        if offset >= bytes_read {
+                            break;
+                        }
+                        let copy_len = buffer.len().min(bytes_read - offset);
+                        buffer[..copy_len].copy_from_slice(&temp_buf[offset..offset + copy_len]);
+                        offset += copy_len;
+                    }
+                    
+                    bytes_read as isize
+                }
+                Err(_) => -1
+            }
         }
-        Err(e) => {
-            debug!("[DEBUG] sys_read_file failed with error: {:?}", e);
-            -1
-        }
+        Err(_) => -1
     }
 }
 

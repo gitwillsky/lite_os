@@ -546,7 +546,7 @@ impl Inode for FAT32Inode {
                 .map_err(|_| FileSystemError::IoError)?;
 
             let copy_start = cluster_offset as usize;
-            let copy_size = ((bytes_per_cluster as usize - copy_start).min(read_size - bytes_read));
+            let copy_size = (bytes_per_cluster as usize - copy_start).min(read_size - bytes_read);
 
             buf[bytes_read..bytes_read + copy_size]
                 .copy_from_slice(&cluster_data[copy_start..copy_start + copy_size]);
