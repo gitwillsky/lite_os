@@ -121,9 +121,16 @@ impl VirtualFileSystem {
         }
         
         let path = &path[1..];
+        if path.is_empty() {
+            return Err(FileSystemError::InvalidPath);
+        }
+        
         if let Some(pos) = path.rfind('/') {
             let parent_path = format!("/{}", &path[..pos]);
             let filename = path[pos + 1..].to_string();
+            if filename.is_empty() {
+                return Err(FileSystemError::InvalidPath);
+            }
             Ok((parent_path, filename))
         } else {
             Ok(("/".to_string(), path.to_string()))
