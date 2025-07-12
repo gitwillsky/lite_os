@@ -28,7 +28,9 @@ unsafe extern "C" {
 }
 
 pub fn init() {
-    set_init_proc(Arc::new(TaskControlBlock::new(
-        get_app_data_by_name("initproc").unwrap().as_slice(),
-    )));
+    let init_proc = TaskControlBlock::new(get_app_data_by_name("initproc").unwrap().as_slice());
+    match init_proc {
+        Ok(tcb) => set_init_proc(Arc::new(tcb)),
+        Err(e) => panic!("Failed to create init proc: {:?}", e),
+    }
 }

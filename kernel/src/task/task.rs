@@ -1,9 +1,7 @@
-use core::cell::RefMut;
+use core::{cell::RefMut, error::Error};
 
 use alloc::{
-    string::{String, ToString},
-    sync::{Arc, Weak},
-    vec::Vec,
+    boxed::Box, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec
 };
 
 use crate::{
@@ -61,8 +59,8 @@ pub struct TaskControlBlock {
 }
 
 impl TaskControlBlock {
-    pub fn new(elf_data: &[u8]) -> Self {
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+    pub fn new(elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
 
         let task_status = TaskStatus::Ready;
 
@@ -101,7 +99,7 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         );
-        tcb
+        Ok(tcb)
     }
 
     pub fn get_pid(&self) -> usize {
@@ -112,8 +110,8 @@ impl TaskControlBlock {
         self.inner.exclusive_access()
     }
 
-    pub fn exec(&self, elf_data: &[u8]) {
-        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data);
+    pub fn exec(&self, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
+        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data)?;
         let trap_cx_ppn = memory_set
             .translate(VirtualAddress::from(TRAP_CONTEXT).into())
             .unwrap()
@@ -130,6 +128,7 @@ impl TaskControlBlock {
             self.kernel_stack.get_top(),
             trap_handler as usize,
         );
+        Ok(())
     }
 
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
