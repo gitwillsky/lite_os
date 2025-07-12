@@ -2,8 +2,6 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 
-use core::arch::global_asm;
-
 extern crate alloc;
 
 mod arch;
@@ -26,8 +24,6 @@ mod syscall;
 mod task;
 mod timer;
 mod trap;
-
-global_asm!(include_str!("link_app.S"));
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {

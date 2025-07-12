@@ -29,6 +29,6 @@ unsafe extern "C" {
 
 pub fn init() {
     set_init_proc(Arc::new(TaskControlBlock::new(
-        get_app_data_by_name("initproc").unwrap(),
+        get_app_data_by_name("initproc").unwrap().as_slice(),
     )));
 }

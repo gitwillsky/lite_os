@@ -1,18 +1,29 @@
-build: build-user
-	cd bootloader && cargo build --release && cd -
+ELFS := $(patsubst user/src/bin/%.rs, target/riscv64gc-unknown-none-elf/release/%, $(wildcard user/src/bin/*.rs))
+OBJCOPY := rust-objcopy --binary-architecture=riscv64
+
+build-user:
+	cd user && cargo build --release && cd -
+	@$(foreach elf, $(ELFS), $(OBJCOPY) $(elf) --strip-all -O binary $(patsubst target/riscv64gc-unknown-none-elf/release/%, target/riscv64gc-unknown-none-elf/release/%.bin, $(elf));)
+
+build-kernel:
 	cd kernel && cargo build  && cd -
 
-run-with-timeout: build
+build-bootloader:
+	cd bootloader && cargo build --release && cd -
+
+run-with-timeout: build-kernel
 	sleep 15 && killall qemu-system-riscv64 & qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0
 
-run: build
+run: build-kernel
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0
 
-run-gdb: build
+run-gdb: build-kernel
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -S -s
 
 clean:
 	cargo clean
+
+build: clean build-user build-kernel build-bootloader create-fs
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'
@@ -20,9 +31,3 @@ gdb:
 create-fs:
 	python3 create_fs.py
 
-ELFS := $(patsubst user/src/bin/%.rs, target/riscv64gc-unknown-none-elf/release/%, $(wildcard user/src/bin/*.rs))
-OBJCOPY := rust-objcopy --binary-architecture=riscv64
-
-build-user:
-	cd user && cargo build --release && cd -
-	@$(foreach elf, $(ELFS), $(OBJCOPY) $(elf) --strip-all -O binary $(patsubst target/riscv64gc-unknown-none-elf/release/%, target/riscv64gc-unknown-none-elf/release/%.bin, $(elf));)
