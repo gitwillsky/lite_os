@@ -244,6 +244,9 @@ pub fn sys_chdir(path: *const u8) -> isize {
     let token = current_user_token();
     let path_str = translated_c_string(token, path);
     
+    // Resolve the absolute path BEFORE getting exclusive access to avoid double borrow
+    let absolute_path = get_vfs().resolve_relative_path(&path_str);
+    
     // Check if the path exists and is a directory
     match get_vfs().open(&path_str) {
         Ok(inode) => {
@@ -253,8 +256,6 @@ pub fn sys_chdir(path: *const u8) -> isize {
                     // It's a directory, set the current working directory for the current task
                     if let Some(task) = current_task() {
                         let mut task_inner = task.inner_exclusive_access();
-                        // Use VFS to resolve the path properly
-                        let absolute_path = get_vfs().resolve_relative_path(&path_str);
                         task_inner.cwd = absolute_path;
                         0 // Success
                     } else {

@@ -285,29 +285,41 @@ impl FAT32FileSystem {
         
         fat_cache[cluster as usize] = value & 0x0FFFFFFF;
         
-        // Write back to disk
-        let fat_sector = self.fat_start_sector + (cluster * 4) / SECTOR_SIZE as u32;
-        let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+        // Write to both FAT copies
+        let sectors_per_fat_32 = unsafe { 
+            let bpb_ptr = &self.bpb as *const _ as *const u8;
+            core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32)
+        };
+        let num_fats = self.bpb.num_fats;
         
-        let device_block_size = self.device.block_size();
-        let sectors_per_block = device_block_size / SECTOR_SIZE;
-        let block_num = fat_sector / sectors_per_block as u32;
-        let sector_in_block = fat_sector % sectors_per_block as u32;
-        
-        // Read-modify-write the block
-        let mut block_data = vec![0u8; device_block_size];
-        self.device.read_block(block_num as usize, &mut block_data)?;
-        
-        let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
-        if block_sector_offset + 4 > device_block_size {
-            error!("[FAT32] FAT entry would exceed block boundary");
-            return Err(BlockError::InvalidBlock);
+        for fat_num in 0..num_fats {
+            // Calculate FAT sector for this copy
+            let fat_start = self.fat_start_sector + (fat_num as u32 * sectors_per_fat_32);
+            let fat_sector = fat_start + (cluster * 4) / SECTOR_SIZE as u32;
+            let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+            
+            let device_block_size = self.device.block_size();
+            let sectors_per_block = device_block_size / SECTOR_SIZE;
+            let block_num = fat_sector / sectors_per_block as u32;
+            let sector_in_block = fat_sector % sectors_per_block as u32;
+            
+            // Read-modify-write the block
+            let mut block_data = vec![0u8; device_block_size];
+            self.device.read_block(block_num as usize, &mut block_data)?;
+            
+            let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
+            if block_sector_offset + 4 > device_block_size {
+                error!("[FAT32] FAT entry would exceed block boundary");
+                return Err(BlockError::InvalidBlock);
+            }
+            
+            let value_bytes = value.to_le_bytes();
+            block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
+            
+            self.device.write_block(block_num as usize, &block_data)?;
+            debug!("[FAT32] Updated FAT {} entry for cluster {} with value {:#x}", fat_num, cluster, value);
         }
         
-        let value_bytes = value.to_le_bytes();
-        block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
-        
-        self.device.write_block(block_num as usize, &block_data)?;
         Ok(())
     }
 
@@ -384,6 +396,8 @@ impl FAT32FileSystem {
     }
 
     fn create_directory_entry(&self, parent_cluster: u32, name: &str, new_cluster: u32, is_dir: bool) -> Result<(), FileSystemError> {
+        debug!("[FAT32] Creating directory entry: {} (cluster: {}, is_dir: {})", name, new_cluster, is_dir);
+        
         // Find an empty slot in the parent directory
         let mut current_cluster = parent_cluster;
         
@@ -395,6 +409,8 @@ impl FAT32FileSystem {
             // Look for an empty entry (first byte is 0x00 or 0xE5)
             for (i, chunk) in cluster_data.chunks_exact_mut(32).enumerate() {
                 if chunk[0] == 0x00 || chunk[0] == 0xE5 {
+                    debug!("[FAT32] Found empty slot at index {}", i);
+                    
                     // Found empty slot, create new entry
                     let mut entry = DirectoryEntry {
                         name: [0x20; 8], // Space-padded name
@@ -418,6 +434,8 @@ impl FAT32FileSystem {
                     for (j, &byte) in name_bytes.iter().take(8).enumerate() {
                         entry.name[j] = byte;
                     }
+                    
+                    debug!("[FAT32] Created entry with name: {:?}", entry.name);
 
                     // Copy entry to cluster data
                     let entry_bytes = unsafe {
@@ -431,7 +449,8 @@ impl FAT32FileSystem {
                     // Write the modified cluster back
                     self.write_cluster(current_cluster, &cluster_data)
                         .map_err(|_| FileSystemError::IoError)?;
-
+                    
+                    debug!("[FAT32] Successfully wrote directory entry for {}", name);
                     return Ok(());
                 }
             }
@@ -441,6 +460,8 @@ impl FAT32FileSystem {
             if next_cluster >= CLUSTER_EOF {
                 // Need to allocate a new cluster for the directory
                 if let Some(new_dir_cluster) = self.allocate_cluster() {
+                    debug!("[FAT32] Allocating new cluster {} for directory expansion", new_dir_cluster);
+                    
                     // Link the new cluster
                     self.write_fat_entry(current_cluster, new_dir_cluster)
                         .map_err(|_| FileSystemError::IoError)?;
@@ -691,7 +712,7 @@ impl Inode for FAT32Inode {
 
             let name = Self::entry_name_to_string(&entry);
             if name != "." && name != ".." {
-                names.push(name);
+                names.push(name.to_lowercase());
             }
         }
 
@@ -703,7 +724,9 @@ impl Inode for FAT32Inode {
             return Err(FileSystemError::NotDirectory);
         }
 
+        debug!("[FAT32] Looking for child: {}", name);
         let entries = self.fs().read_directory_entries(self.cluster)?;
+        debug!("[FAT32] Found {} directory entries", entries.len());
 
         for entry in entries {
             if entry.attr & ATTR_VOLUME_ID != 0 {
@@ -711,11 +734,14 @@ impl Inode for FAT32Inode {
             }
 
             let entry_name = Self::entry_name_to_string(&entry);
-            if entry_name == name.to_lowercase() {
+            debug!("[FAT32] Checking entry: {} against {}", entry_name, name);
+            
+            if entry_name.to_lowercase() == name.to_lowercase() {
                 let cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
                 let is_dir = entry.attr & ATTR_DIRECTORY != 0;
                 let size = if is_dir { 0 } else { entry.file_size as u64 };
 
+                debug!("[FAT32] Found match: {} (cluster: {}, is_dir: {})", entry_name, cluster, is_dir);
                 return Ok(Arc::new(FAT32Inode {
                     fs: self.fs,
                     cluster,
@@ -725,6 +751,7 @@ impl Inode for FAT32Inode {
             }
         }
 
+        debug!("[FAT32] Child {} not found", name);
         Err(FileSystemError::NotFound)
     }
 
@@ -868,7 +895,7 @@ impl Inode for FAT32Inode {
                 }
                 
                 let entry_name = Self::entry_name_to_string(&entry);
-                if entry_name == name.to_lowercase() {
+                if entry_name.to_lowercase() == name.to_lowercase() {
                     // Get cluster before marking as deleted
                     child_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
                     
