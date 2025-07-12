@@ -2,13 +2,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
+use crate::board::get_board_info;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
 use crate::fs::{make_filesystem, vfs::get_vfs, FileSystem};
-
-// VirtIO device base address in QEMU
-const VIRTIO_MMIO_BASE: usize = 0x10001000;
-const VIRTIO_MMIO_SIZE: usize = 0x1000;
-const VIRTIO_MMIO_IRQ: usize = 1;
 
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 
@@ -25,13 +21,22 @@ pub fn init_devices() {
 fn scan_virtio_devices() {
     println!("[device] Scanning VirtIO devices...");
     
-    // In QEMU, VirtIO devices typically start at 0x10001000, with 0x1000 spacing
-    for i in 0..8 {
-        let base_addr = VIRTIO_MMIO_BASE + i * VIRTIO_MMIO_SIZE;
-        
-        if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-            println!("[device] Found VirtIO block device at address: {:#x}", base_addr);
-            DEVICES.lock().push(device);
+    // 从 BoardInfo 获取 VirtIO 设备信息
+    let board_info = get_board_info();
+    
+    println!("[device] Found {} VirtIO devices from device tree", board_info.virtio_count);
+    
+    for i in 0..board_info.virtio_count {
+        if let Some(virtio_dev) = &board_info.virtio_devices[i] {
+            let base_addr = virtio_dev.base_addr;
+            
+            println!("[device] Checking VirtIO device {} at address: {:#x}, IRQ: {}", 
+                     i, base_addr, virtio_dev.irq);
+            
+            if let Some(device) = VirtIOBlockDevice::new(base_addr) {
+                println!("[device] Found VirtIO block device at address: {:#x}", base_addr);
+                DEVICES.lock().push(device);
+            }
         }
     }
 }

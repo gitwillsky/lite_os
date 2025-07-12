@@ -158,21 +158,33 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         None,
     );
 
-    // VirtIO MMIO 设备映射
-    println!(
-        "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
-        0x10001000,
-        0x10009000
-    );
-    memory_set.push(
-        MapArea::new(
-            0x10001000.into(),
-            0x10009000.into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::W,
-        ),
-        None,
-    );
+    // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
+    let board_info = crate::board::get_board_info();
+    if board_info.virtio_count > 0 {
+        let mut min_addr = usize::MAX;
+        let mut max_addr = 0;
+        
+        for i in 0..board_info.virtio_count {
+            if let Some(dev) = &board_info.virtio_devices[i] {
+                min_addr = min_addr.min(dev.base_addr);
+                max_addr = max_addr.max(dev.base_addr + dev.size);
+            }
+        }
+        
+        println!(
+            "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
+            min_addr, max_addr
+        );
+        memory_set.push(
+            MapArea::new(
+                min_addr.into(),
+                max_addr.into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+    }
 
     memory_set
 }

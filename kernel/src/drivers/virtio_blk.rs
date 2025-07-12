@@ -131,10 +131,13 @@ impl VirtIOBlockDevice {
         println!("[VirtIOBlock] queue size: {}", queue_size);
 
         let queue = VirtQueue::new(queue_size as u16, 0)?;
+        println!("[VirtIOBlock] queue created successfully");
+        
         mmio.set_queue_size(queue_size);
         mmio.set_queue_align(4096);
 
         let queue_pfn = queue.physical_address().as_usize() >> 12;
+        println!("[VirtIOBlock] queue physical address: {:#x}, pfn: {:#x}", queue.physical_address().as_usize(), queue_pfn);
         mmio.set_queue_pfn(queue_pfn as u32);
 
         // 读取容量
@@ -162,6 +165,9 @@ impl VirtIOBlockDevice {
             return Err(BlockError::InvalidBlock);
         }
 
+        println!("[VirtIOBlock] perform_io: {} block {}, buf len: {}", 
+                 if is_write { "write" } else { "read" }, block_id, buf.len());
+
         let mut queue = self.queue.lock();
 
         // 准备请求头
@@ -179,24 +185,38 @@ impl VirtIOBlockDevice {
 
         // 添加到队列
         let desc_idx = if is_write {
-            queue.add_buffer(&[req_bytes, buf], &[&mut status])
+            let mut status_slice: &mut [u8] = &mut status;
+            let mut outputs = [status_slice];
+            queue.add_buffer(&[req_bytes, buf], &mut outputs)
         } else {
-            queue.add_buffer(&[req_bytes], &[buf, &mut status])
+            let mut status_slice: &mut [u8] = &mut status;
+            let mut outputs = [buf, status_slice];
+            queue.add_buffer(&[req_bytes], &mut outputs)
         };
 
         // 如果添加失败，返回错误
         let desc_idx = desc_idx.ok_or(BlockError::DeviceError)?;
+        println!("[VirtIOBlock] added to queue, desc_idx: {}", desc_idx);
+        
+        // DEBUG: Print queue state before notification
+        println!("[VirtIOBlock] queue state - avail_idx: {}, last_used_idx: {}, num_free: {}", 
+                 queue.avail_idx, queue.last_used_idx, queue.num_free);
 
         // 将描述符添加到available ring
         queue.add_to_avail(desc_idx);
+        
+        // DEBUG: Print queue state after adding to avail
+        println!("[VirtIOBlock] after add_to_avail - avail_idx: {}", queue.avail_idx);
 
         // 通知设备
+        println!("[VirtIOBlock] notifying device");
         self.mmio.notify_queue(0);
 
         // 等待完成
         let mut timeout = 100000; // Add timeout
         loop {
             if let Some((id, _len)) = queue.get_used() {
+                println!("[VirtIOBlock] got used desc_idx: {}", id);
                 if id == desc_idx {
                     break;
                 }
@@ -211,6 +231,7 @@ impl VirtIOBlockDevice {
         }
 
         // 检查状态
+        println!("[VirtIOBlock] operation completed, status: {}", status[0]);
         match status[0] {
             VIRTIO_BLK_S_OK => Ok(()),
             VIRTIO_BLK_S_IOERR => Err(BlockError::IoError),
