@@ -1,10 +1,11 @@
 use alloc::string::String;
+use alloc::format;
 
 use crate::{
     arch::sbi,
     fs::{vfs::get_vfs, FileSystemError},
     memory::page_table::translated_byte_buffer,
-    task::{current_user_token, suspend_current_and_run_next},
+    task::{current_user_token, suspend_current_and_run_next, current_task},
 };
 
 const STD_OUT: usize = 1;
@@ -236,4 +237,84 @@ fn translated_c_string(token: usize, ptr: *const u8) -> String {
     }
     
     string
+}
+
+/// 改变当前工作目录
+pub fn sys_chdir(path: *const u8) -> isize {
+    let token = current_user_token();
+    let path_str = translated_c_string(token, path);
+    
+    // Check if the path exists and is a directory
+    match get_vfs().open(&path_str) {
+        Ok(inode) => {
+            if inode.list_dir().is_ok() {
+                // Set the current working directory for the current task
+                if let Some(task) = current_task() {
+                    let mut task_inner = task.inner_exclusive_access();
+                    // Resolve to absolute path
+                    let absolute_path = if path_str.starts_with('/') {
+                        path_str
+                    } else {
+                        if task_inner.cwd == "/" {
+                            format!("/{}", path_str)
+                        } else {
+                            format!("{}/{}", task_inner.cwd, path_str)
+                        }
+                    };
+                    task_inner.cwd = absolute_path;
+                    0 // Success
+                } else {
+                    -1 // No current task
+                }
+            } else {
+                -20 // ENOTDIR - Not a directory
+            }
+        }
+        Err(e) => {
+            match e {
+                FileSystemError::NotFound => -2, // ENOENT
+                FileSystemError::PermissionDenied => -13, // EACCES
+                _ => -1, // Generic error
+            }
+        }
+    }
+}
+
+/// 获取当前工作目录
+pub fn sys_getcwd(buf: *mut u8, len: usize) -> isize {
+    let token = current_user_token();
+    
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_exclusive_access();
+        let cwd_bytes = task_inner.cwd.as_bytes();
+        let copy_len = (cwd_bytes.len() + 1).min(len); // +1 for null terminator
+        
+        if copy_len == 0 {
+            return -22; // EINVAL - Buffer too small
+        }
+        
+        let buffers = translated_byte_buffer(token, buf, copy_len);
+        let mut offset = 0;
+        
+        for buffer in buffers {
+            if offset >= cwd_bytes.len() {
+                break;
+            }
+            let chunk_len = buffer.len().min(cwd_bytes.len() - offset);
+            buffer[..chunk_len].copy_from_slice(&cwd_bytes[offset..offset + chunk_len]);
+            offset += chunk_len;
+        }
+        
+        // Add null terminator if there's space
+        if offset < copy_len {
+            let mut buffers = translated_byte_buffer(token, (buf as usize + offset) as *mut u8, 1);
+            if !buffers.is_empty() && !buffers[0].is_empty() {
+                buffers[0][0] = 0;
+            }
+        }
+        
+        copy_len as isize
+    } else {
+        -1 // No current task
+    }
 }

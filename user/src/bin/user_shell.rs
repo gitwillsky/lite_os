@@ -100,6 +100,10 @@ fn main() -> i32 {
                         handle_mkdir_command(&line);
                     } else if line.starts_with("rm") {
                         handle_rm_command(&line);
+                    } else if line.starts_with("cd") {
+                        handle_cd_command(&line);
+                    } else if line.starts_with("pwd") {
+                        handle_pwd_command(&line);
                     } else {
                         // 执行外部程序
                         line.push('\0');
@@ -219,5 +223,39 @@ fn handle_rm_command(line: &str) {
         println!("'{}' removed", path);
     } else {
         println!("rm: cannot remove '{}': No such file or directory", path);
+    }
+}
+
+fn handle_cd_command(line: &str) {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let path = if parts.len() < 2 {
+        "/"  // Default to root directory if no path specified
+    } else {
+        parts[1]
+    };
+    
+    let result = user_lib::chdir(path);
+    match result {
+        0 => {}, // Success, no output needed
+        -2 => println!("cd: {}: No such file or directory", path),
+        -13 => println!("cd: {}: Permission denied", path),
+        -20 => println!("cd: {}: Not a directory", path),
+        _ => println!("cd: {}: Unknown error ({})", path, result),
+    }
+}
+
+fn handle_pwd_command(_line: &str) {
+    let mut buf = [0u8; 256];
+    let result = user_lib::getcwd(&mut buf);
+    if result > 0 {
+        // Find the null terminator or use the returned length
+        let len = result as usize - 1; // Subtract 1 for null terminator
+        if let Ok(cwd) = core::str::from_utf8(&buf[..len]) {
+            println!("{}", cwd);
+        } else {
+            println!("pwd: Invalid UTF-8 in current directory path");
+        }
+    } else {
+        println!("pwd: Cannot get current directory");
     }
 }

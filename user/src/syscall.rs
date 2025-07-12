@@ -18,6 +18,8 @@ const SYSCALL_MKDIR: usize = 501;
 const SYSCALL_REMOVE: usize = 502;
 const SYSCALL_STAT: usize = 80;
 const SYSCALL_READ_FILE: usize = 503;
+const SYSCALL_CHDIR: usize = 504;
+const SYSCALL_GETCWD: usize = 505;
 
 /// 系统调用
 ///
@@ -150,4 +152,14 @@ pub fn stat(path: &str, buf: &mut [u8]) -> isize {
 /// 读取文件内容
 pub fn read_file(path: &str, buf: &mut [u8]) -> isize {
     syscall(SYSCALL_READ_FILE, [path.as_ptr() as usize, buf.as_mut_ptr() as usize, buf.len()])
+}
+
+/// 改变当前工作目录
+pub fn chdir(path: &str) -> isize {
+    syscall(SYSCALL_CHDIR, [path.as_ptr() as usize, 0, 0])
+}
+
+/// 获取当前工作目录
+pub fn getcwd(buf: &mut [u8]) -> isize {
+    syscall(SYSCALL_GETCWD, [buf.as_mut_ptr() as usize, buf.len(), 0])
 }

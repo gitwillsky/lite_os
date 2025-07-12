@@ -22,6 +22,8 @@ const SYSCALL_MKDIR: usize = 501;
 const SYSCALL_REMOVE: usize = 502;
 const SYSCALL_STAT: usize = 80;
 const SYSCALL_READ_FILE: usize = 503;
+const SYSCALL_CHDIR: usize = 504;
+const SYSCALL_GETCWD: usize = 505;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
@@ -42,6 +44,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_REMOVE => sys_remove(args[0] as *const u8),
         SYSCALL_STAT => sys_stat(args[0] as *const u8, args[1] as *mut u8),
         SYSCALL_READ_FILE => sys_read_file(args[0] as *const u8, args[1] as *mut u8, args[2]),
+        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
+        SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
         
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
