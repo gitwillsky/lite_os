@@ -197,11 +197,11 @@ impl VirtIOBlockDevice {
 
         // 添加到队列
         let desc_idx = if is_write {
-            let mut status_slice: &mut [u8] = &mut status;
+            let status_slice: &mut [u8] = &mut status;
             let mut outputs = [status_slice];
             queue.add_buffer(&[req_bytes, buf], &mut outputs)
         } else {
-            let mut status_slice: &mut [u8] = &mut status;
+            let status_slice: &mut [u8] = &mut status;
             let mut outputs = [buf, status_slice];
             queue.add_buffer(&[req_bytes], &mut outputs)
         };

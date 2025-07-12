@@ -1,4 +1,3 @@
-use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 
 use crate::drivers::BlockDevice;

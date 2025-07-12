@@ -535,7 +535,7 @@ impl FAT32FileSystem {
                 }
 
                 // Write SFN entry
-                let mut entry = DirectoryEntry {
+                let entry = DirectoryEntry {
                     name: sfn.name,
                     ext: sfn.ext,
                     attr: if is_dir { ATTR_DIRECTORY } else { 0 },
@@ -564,6 +564,13 @@ impl FAT32FileSystem {
             let next_cluster = self.get_next_cluster(current_cluster);
             if next_cluster >= CLUSTER_EOF {
                 // Allocate new cluster if needed
+                if let Some(new_cluster) = self.allocate_cluster() {
+                    self.write_fat_entry(current_cluster, new_cluster)
+                        .map_err(|_| FileSystemError::IoError)?;
+                    current_cluster = new_cluster;
+                } else {
+                    return Err(FileSystemError::NoSpace);
+                }
             } else {
                 current_cluster = next_cluster;
             }
