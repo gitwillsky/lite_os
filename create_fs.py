@@ -84,16 +84,27 @@ def copy_files_to_fs(mount_point):
 
     print("✓ 测试文件已创建")
 
-    # 查找并复制.bin文件（保持兼容性）
-    user_bins = glob.glob("target/riscv64gc-unknown-none-elf/release/*.bin")
-    if user_bins:
-        print(f"找到用户程序BIN文件: {[os.path.basename(f) for f in user_bins]}")
+    # 查找并复制用户程序ELF文件（原始ELF文件，不是.bin）
+    user_elfs = []
+    for elf_file in glob.glob("target/riscv64gc-unknown-none-elf/release/*"):
+        if (os.path.isfile(elf_file) and
+            not elf_file.endswith('.d') and
+            not elf_file.endswith('.bin') and
+            not elf_file.endswith('.json') and
+            not elf_file.endswith('.rlib') and
+            '.' not in os.path.basename(elf_file)):
+            user_elfs.append(elf_file)
 
-        for bin_file in user_bins:
-            dest_name = os.path.basename(bin_file).upper()
+    if user_elfs:
+        print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")
+
+        for elf_file in user_elfs:
+            dest_name = os.path.basename(elf_file)
             dest_path = os.path.join(mount_point, dest_name)
-            shutil.copy2(bin_file, dest_path)
-            print(f"✓ 复制: {os.path.basename(bin_file)} -> {dest_name}")
+            shutil.copy2(elf_file, dest_path)
+            print(f"✓ 复制ELF: {os.path.basename(elf_file)} -> {dest_name}")
+    else:
+        print("⚠ 未找到用户程序ELF文件")
 
     # 显示文件系统内容
     print("\n文件系统内容:")

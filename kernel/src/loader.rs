@@ -23,11 +23,11 @@ pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
 
 /// 标准ELF加载接口 - 从文件系统加载程序
 pub fn get_app_data_by_name(app_name: &str) -> Option<Vec<u8>> {
-    // 构造程序文件路径 - 支持多种命名格式
+    // 构造程序文件路径 - 优先尝试ELF文件，再尝试.bin文件
     let paths = [
-        alloc::format!("/{}.bin", app_name.to_uppercase()),
-        alloc::format!("/{}.bin", app_name.to_lowercase()),
-        alloc::format!("/{}", app_name),
+        alloc::format!("/{}", app_name),                 // ELF文件：/initproc
+        alloc::format!("/{}", app_name.to_uppercase()),  // ELF文件：/INITPROC
+        alloc::format!("/{}", app_name.to_lowercase()),  // ELF文件：/initproc
     ];
 
     for path in &paths {
