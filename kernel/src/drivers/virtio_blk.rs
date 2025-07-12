@@ -162,10 +162,10 @@ impl VirtIOBlockDevice {
     }
 
     fn perform_io(&self, is_write: bool, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        debug!("VirtIO block {} operation: block {} (sector {})",
-               if is_write { "write" } else { "read" },
-               block_id,
-               block_id * (BLOCK_SIZE / 512));
+        // debug!("VirtIO block {} operation: block {} (sector {})",
+        //        if is_write { "write" } else { "read" },
+        //        block_id,
+        //        block_id * (BLOCK_SIZE / 512));
 
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);

@@ -16,15 +16,14 @@ LiteOS is a Rust-based operating system for RISC-V 64-bit architecture with a th
 # Build entire project (user → bootloader → kernel)
 make build
 
-# Run OS in QEMU with timeout
-make run-with-timeout
-
 # Create filesystem image (64MB FAT32)
 make create-fs
 
 # Clean all build artifacts
 make clean
 ```
+
+你不要自己执行 make run 命令，由我来执行
 
 ## Architecture
 

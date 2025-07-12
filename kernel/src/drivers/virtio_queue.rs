@@ -150,19 +150,19 @@ impl VirtQueue {
             .expect("Failed to translate virtual address to physical address");
         let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
 
-        debug!(
-            "[VirtQueue] physical_address: desc VA={:#x}, VPN={:#x}, PPN={:#x}, PA={:#x}",
-            va.as_usize(),
-            vpn.as_usize(),
-            pte.ppn().as_usize(),
-            pa
-        );
+        // debug!(
+        //     "[VirtQueue] physical_address: desc VA={:#x}, VPN={:#x}, PPN={:#x}, PA={:#x}",
+        //     va.as_usize(),
+        //     vpn.as_usize(),
+        //     pte.ppn().as_usize(),
+        //     pa
+        // );
 
         // 验证物理地址的可访问性
-        debug!(
-            "[VirtQueue] queue layout: desc={:#x}, avail={:#x}, used={:#x}",
-            self.desc as usize, self.avail as usize, self.used as usize
-        );
+        // debug!(
+        //     "[VirtQueue] queue layout: desc={:#x}, avail={:#x}, used={:#x}",
+        //     self.desc as usize, self.avail as usize, self.used as usize
+        // );
 
         PhysicalAddress::from(pa)
     }
@@ -186,11 +186,11 @@ impl VirtQueue {
             .expect("Failed to translate virtual address to physical address");
         let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
 
-        debug!(
-            "[VirtQueue] share_buffer: VA={:#x} -> PA={:#x}",
-            va.as_usize(),
-            pa
-        );
+        // debug!(
+        //     "[VirtQueue] share_buffer: VA={:#x} -> PA={:#x}",
+        //     va.as_usize(),
+        //     pa
+        // );
         pa as u64
     }
 
@@ -204,11 +204,11 @@ impl VirtQueue {
             .expect("Failed to translate virtual address to physical address");
         let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
 
-        debug!(
-            "[VirtQueue] share_buffer_mut: VA={:#x} -> PA={:#x}",
-            va.as_usize(),
-            pa
-        );
+        // debug!(
+        //     "[VirtQueue] share_buffer_mut: VA={:#x} -> PA={:#x}",
+        //     va.as_usize(),
+        //     pa
+        // );
         pa as u64
     }
 
