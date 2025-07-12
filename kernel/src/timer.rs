@@ -34,7 +34,6 @@ pub fn init() {
     unsafe {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
         register::sie::set_stimer();
-        register::sie::set_sext(); // 启用外部中断（VirtIO设备中断）
     }
 
     set_next_timer_interrupt();
