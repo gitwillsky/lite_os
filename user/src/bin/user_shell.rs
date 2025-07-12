@@ -160,7 +160,7 @@ fn handle_ls_command(line: &str) {
     let path = if line.len() > 2 {
         line[2..].trim()
     } else {
-        "/"
+        "."  // Use current directory instead of root
     };
     
     let mut buf = [0u8; 1024];
