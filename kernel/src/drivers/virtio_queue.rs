@@ -89,16 +89,16 @@ impl VirtQueue {
                  desc_size, avail_size, used_size, total_size);
         println!("[VirtQueue] offsets: desc=0, avail={}, used={}", avail_offset, used_offset);
         
-        // 分配足够的页面
+        // 分配足够的连续页面
         let pages_needed = (total_size + 4095) / 4096;
-        let mut frame_tracker = crate::memory::frame_allocator::alloc()?;
-        
-        // 如果需要多页，分配连续页面
-        for _ in 1..pages_needed {
-            let _ = crate::memory::frame_allocator::alloc()?;
-        }
+        println!("[VirtQueue] allocating {} contiguous pages for {} bytes", pages_needed, total_size);
+        let frame_tracker = crate::memory::frame_allocator::alloc_contiguous(pages_needed)?;
         
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
+        let pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
+        
+        println!("[VirtQueue] allocated {} contiguous pages starting at PPN:{:#x} (PA:{:#x}, VA:{:#x})", 
+                 frame_tracker.pages, frame_tracker.ppn.as_usize(), pa.as_usize(), va.as_usize());
         
         // 确保内存被清零
         let memory_slice = unsafe { 
@@ -110,6 +110,16 @@ impl VirtQueue {
         let desc = va.as_usize() as *mut VirtqDesc;
         let avail = (va.as_usize() + avail_offset) as *mut VirtqAvail;
         let used = (va.as_usize() + used_offset) as *mut VirtqUsed;
+
+        // Convert virtual addresses to physical addresses for device communication
+        let desc_pa = pa.as_usize();
+        let avail_pa = pa.as_usize() + avail_offset;
+        let used_pa = pa.as_usize() + used_offset;
+        
+        println!("[VirtQueue] queue addresses:");
+        println!("  desc: VA={:#x} PA={:#x}", desc as usize, desc_pa);
+        println!("  avail: VA={:#x} PA={:#x}", avail as usize, avail_pa);
+        println!("  used: VA={:#x} PA={:#x}", used as usize, used_pa);
 
         // 初始化描述符链
         let mut desc_shadow = Vec::with_capacity(size as usize);
@@ -307,6 +317,18 @@ impl VirtQueue {
             let ring_base = (self.used as *const u8).add(4) as *const VirtqUsedElem;
             let used_elem = *ring_base.add(ring_slot as usize);
             
+            println!("[VirtQueue] get_used: ring_slot={}, used_elem.id={}, used_elem.len={}", 
+                     ring_slot, used_elem.id, used_elem.len);
+            
+            // Validate descriptor ID before processing
+            if used_elem.id >= self.size as u32 {
+                println!("[VirtQueue] ERROR: Device returned invalid descriptor ID {} (queue size: {})", 
+                         used_elem.id, self.size);
+                // Skip this element and continue
+                self.last_used_idx = self.last_used_idx.wrapping_add(1);
+                return None;
+            }
+            
             self.last_used_idx = self.last_used_idx.wrapping_add(1);
             
             // 释放描述符
@@ -318,6 +340,13 @@ impl VirtQueue {
 
     fn recycle_descriptors(&mut self, head: u16) {
         let mut desc_idx = head;
+        
+        // Validate descriptor index bounds
+        if desc_idx >= self.size {
+            println!("[VirtQueue] ERROR: Invalid descriptor ID {} (queue size: {})", desc_idx, self.size);
+            return;
+        }
+        
         loop {
             let desc = &mut self.desc_shadow[desc_idx as usize];
             let next = desc.next;
@@ -339,6 +368,13 @@ impl VirtQueue {
             if !has_next {
                 break;
             }
+            
+            // Validate next descriptor index bounds
+            if next >= self.size {
+                println!("[VirtQueue] ERROR: Invalid next descriptor ID {} (queue size: {})", next, self.size);
+                break;
+            }
+            
             desc_idx = next;
         }
     }
