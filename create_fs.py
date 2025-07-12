@@ -118,7 +118,7 @@ def copy_files_to_fs(mount_point):
         print(f"⚠ 无法列出目录内容: {e}")
 
 if __name__ == "__main__":
-    if create_fat32_filesystem("fs.img", 128):
+    if create_fat32_filesystem("fs.img", 64):
         print("\n🎉 文件系统创建成功!")
     else:
         print("\n❌ 文件系统创建失败!")
