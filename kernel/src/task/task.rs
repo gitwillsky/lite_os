@@ -1,4 +1,4 @@
-use core::{cell::RefMut, error::Error};
+use core::{cell::RefMut, error::Error, sync::atomic};
 
 use alloc::{
     boxed::Box, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec, collections::BTreeMap
@@ -22,7 +22,7 @@ use crate::{
 
 pub struct FileDescriptor {
     pub inode: Arc<dyn Inode>,
-    pub offset: UPSafeCell<u64>,
+    pub offset: atomic::AtomicU64,
     pub flags: u32,
     pub mode: u32,
 }
@@ -41,26 +41,28 @@ impl FileDescriptor {
     pub fn new(inode: Arc<dyn Inode>, flags: u32) -> Self {
         Self {
             inode,
-            offset: UPSafeCell::new(0),
+            offset: atomic::AtomicU64::new(0),
             flags,
             mode: 0o644, // Default file mode
         }
     }
 
     pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, crate::fs::FileSystemError> {
-        let mut offset = self.offset.exclusive_access();
-        let result = self.inode.read_at(*offset, buf);
+        // 对于FIFO等特殊文件，先释放offset借用以避免阻塞时的借用冲突
+        let current_offset = self.offset.load(atomic::Ordering::Relaxed);
+        let result = self.inode.read_at(current_offset, buf);
         if let Ok(bytes_read) = result {
-            *offset += bytes_read as u64;
+            self.offset.fetch_add(bytes_read as u64, atomic::Ordering::Relaxed);
         }
         result
     }
 
     pub fn write_at(&self, buf: &[u8]) -> Result<usize, crate::fs::FileSystemError> {
-        let mut offset = self.offset.exclusive_access();
-        let result = self.inode.write_at(*offset, buf);
+        // 对于FIFO等特殊文件，先释放offset借用以避免阻塞时的借用冲突
+        let current_offset = self.offset.load(atomic::Ordering::Relaxed);
+        let result = self.inode.write_at(current_offset, buf);
         if let Ok(bytes_written) = result {
-            *offset += bytes_written as u64;
+            self.offset.fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
         }
         result
     }
@@ -205,12 +207,12 @@ impl TaskControlBlock {
         );
         Ok(())
     }
-    
+
     /// Execute a new program with arguments and environment variables
     pub fn exec_with_args(
-        &self, 
-        elf_data: &[u8], 
-        args: &[String], 
+        &self,
+        elf_data: &[u8],
+        args: &[String],
         envs: &[String]
     ) -> Result<(), Box<dyn Error>> {
         let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf_with_args(elf_data, args, envs)?;
@@ -319,7 +321,7 @@ impl TaskControlBlockInner {
         // 基础时间片为10ms，根据优先级调整
         let base_slice = 10000; // 10ms in microseconds
         let priority = self.get_dynamic_priority();
-        
+
         match priority {
             0..=9 => base_slice * 2,    // 高优先级：20ms
             10..=19 => base_slice * 3 / 2, // 中等优先级：15ms
@@ -370,11 +372,11 @@ impl TaskControlBlockInner {
         if let Some(file_desc) = self.fd_table.get(&fd) {
             let new_fd = self.next_fd;
             // 获取当前偏移量值
-            let current_offset = *file_desc.offset.exclusive_access();
+            let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
             // 创建新的 FileDescriptor，复制当前偏移量
             let new_file_desc = Arc::new(FileDescriptor {
                 inode: file_desc.inode.clone(),
-                offset: UPSafeCell::new(current_offset),
+                offset: atomic::AtomicU64::new(current_offset),
                 flags: file_desc.flags,
                 mode: file_desc.mode,
             });
@@ -400,7 +402,7 @@ impl TaskControlBlockInner {
         // 首先获取 oldfd 的文件描述符信息
         let (inode, current_offset, flags, mode) = {
             if let Some(file_desc) = self.fd_table.get(&oldfd) {
-                let current_offset = *file_desc.offset.exclusive_access();
+                let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
                 (file_desc.inode.clone(), current_offset, file_desc.flags, file_desc.mode)
             } else {
                 return None;
@@ -411,21 +413,21 @@ impl TaskControlBlockInner {
         if self.fd_table.contains_key(&newfd) {
             self.fd_table.remove(&newfd);
         }
-        
+
         // 创建新的 FileDescriptor，复制当前偏移量
         let new_file_desc = Arc::new(FileDescriptor {
             inode,
-            offset: UPSafeCell::new(current_offset),
+            offset: atomic::AtomicU64::new(current_offset),
             flags,
             mode,
         });
         self.fd_table.insert(newfd, new_file_desc);
-        
+
         // 更新 next_fd 以避免与新分配的 fd 冲突
         if newfd >= self.next_fd {
             self.next_fd = newfd + 1;
         }
-        
+
         Some(newfd)
     }
 
