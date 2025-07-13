@@ -36,6 +36,8 @@ const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
 const SYSCALL_FLOCK: usize = 143;
 const SYSCALL_MKFIFO: usize = 506;
+const SYSCALL_CHMOD: usize = 507;
+const SYSCALL_CHOWN: usize = 508;
 
 // 调度相关系统调用
 const SYSCALL_SETPRIORITY: usize = 141;
@@ -51,6 +53,16 @@ const SYSCALL_SIGPROCMASK: usize = 135;
 const SYSCALL_SIGRETURN: usize = 139;
 const SYSCALL_PAUSE: usize = 34;
 const SYSCALL_ALARM: usize = 37;
+
+// 权限相关系统调用
+const SYSCALL_GETUID: usize = 102;
+const SYSCALL_GETGID: usize = 104;
+const SYSCALL_SETUID: usize = 146;
+const SYSCALL_SETGID: usize = 147;
+const SYSCALL_GETEUID: usize = 107;
+const SYSCALL_GETEGID: usize = 108;
+const SYSCALL_SETEUID: usize = 148;
+const SYSCALL_SETEGID: usize = 149;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
@@ -81,6 +93,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_DUP2 => sys_dup2(args[0], args[1]),
         SYSCALL_FLOCK => sys_flock(args[0], args[1] as i32),
         SYSCALL_MKFIFO => sys_mkfifo(args[0] as *const u8, args[1] as u32),
+        SYSCALL_CHMOD => sys_chmod(args[0] as *const u8, args[1] as u32),
+        SYSCALL_CHOWN => sys_chown(args[0] as *const u8, args[1] as u32, args[2] as u32),
 
         // 调度相关系统调用
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
@@ -96,6 +110,16 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_SIGRETURN => sys_sigreturn(),
         SYSCALL_PAUSE => sys_pause(),
         SYSCALL_ALARM => sys_alarm(args[0] as u32),
+
+        // 权限相关系统调用
+        SYSCALL_GETUID => sys_getuid(),
+        SYSCALL_GETGID => sys_getgid(),
+        SYSCALL_SETUID => sys_setuid(args[0] as u32),
+        SYSCALL_SETGID => sys_setgid(args[0] as u32),
+        SYSCALL_GETEUID => sys_geteuid(),
+        SYSCALL_GETEGID => sys_getegid(),
+        SYSCALL_SETEUID => sys_seteuid(args[0] as u32),
+        SYSCALL_SETEGID => sys_setegid(args[0] as u32),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

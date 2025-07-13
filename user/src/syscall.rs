@@ -29,6 +29,18 @@ const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
 const SYSCALL_FLOCK: usize = 143;
 const SYSCALL_MKFIFO: usize = 506;
+const SYSCALL_CHMOD: usize = 507;
+const SYSCALL_CHOWN: usize = 508;
+
+// 权限相关系统调用
+const SYSCALL_GETUID: usize = 102;
+const SYSCALL_GETGID: usize = 104;
+const SYSCALL_SETUID: usize = 146;
+const SYSCALL_SETGID: usize = 147;
+const SYSCALL_GETEUID: usize = 107;
+const SYSCALL_GETEGID: usize = 108;
+const SYSCALL_SETEUID: usize = 148;
+const SYSCALL_SETEGID: usize = 149;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -228,6 +240,52 @@ pub fn mkfifo(path: &str, mode: u32) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
     syscall(SYSCALL_MKFIFO, [null_terminated_path.as_ptr() as usize, mode as usize, 0])
+}
+
+// 权限相关系统调用封装
+
+pub fn getuid() -> u32 {
+    syscall(SYSCALL_GETUID, [0, 0, 0]) as u32
+}
+
+pub fn getgid() -> u32 {
+    syscall(SYSCALL_GETGID, [0, 0, 0]) as u32
+}
+
+pub fn geteuid() -> u32 {
+    syscall(SYSCALL_GETEUID, [0, 0, 0]) as u32
+}
+
+pub fn getegid() -> u32 {
+    syscall(SYSCALL_GETEGID, [0, 0, 0]) as u32
+}
+
+pub fn setuid(uid: u32) -> isize {
+    syscall(SYSCALL_SETUID, [uid as usize, 0, 0])
+}
+
+pub fn setgid(gid: u32) -> isize {
+    syscall(SYSCALL_SETGID, [gid as usize, 0, 0])
+}
+
+pub fn seteuid(euid: u32) -> isize {
+    syscall(SYSCALL_SETEUID, [euid as usize, 0, 0])
+}
+
+pub fn setegid(egid: u32) -> isize {
+    syscall(SYSCALL_SETEGID, [egid as usize, 0, 0])
+}
+
+pub fn chmod(path: &str, mode: u32) -> isize {
+    let mut null_terminated_path = String::from(path);
+    null_terminated_path.push('\0');
+    syscall(SYSCALL_CHMOD, [null_terminated_path.as_ptr() as usize, mode as usize, 0])
+}
+
+pub fn chown(path: &str, uid: u32, gid: u32) -> isize {
+    let mut null_terminated_path = String::from(path);
+    null_terminated_path.push('\0');
+    syscall(SYSCALL_CHOWN, [null_terminated_path.as_ptr() as usize, uid as usize, gid as usize])
 }
 
 /// 删除文件或目录

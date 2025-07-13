@@ -128,6 +128,32 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     match get_vfs().open(&path_str) {
         Ok(inode) => {
             if let Some(task) = current_task() {
+                let task_inner = task.inner_exclusive_access();
+                
+                // 检查文件权限
+                let file_mode = inode.get_mode();
+                let file_uid = inode.get_uid();
+                let file_gid = inode.get_gid();
+                
+                // 根据打开标志确定需要的权限
+                let mut required_perm = 0;
+                if flags & 0o1 != 0 || flags & 0o2 != 0 {  // O_WRONLY or O_RDWR
+                    required_perm |= 0o2; // 写权限
+                }
+                if flags & 0o1 == 0 || flags & 0o2 != 0 {  // O_RDONLY or O_RDWR
+                    required_perm |= 0o4; // 读权限
+                }
+                if required_perm == 0 {
+                    required_perm = 0o4; // 默认需要读权限
+                }
+                
+                // 检查权限
+                if !task_inner.check_file_permission(file_mode, file_uid, file_gid, required_perm) {
+                    return -13; // EACCES
+                }
+                
+                drop(task_inner); // 释放锁
+                
                 let mut task_inner = task.inner_exclusive_access();
                 let file_desc = Arc::new(FileDescriptor::new(inode, flags));
                 let fd = task_inner.alloc_fd(file_desc);
@@ -572,5 +598,80 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
                 _ => -1, // Generic error
             }
         }
+    }
+}
+
+/// 修改文件权限
+pub fn sys_chmod(path: *const u8, mode: u32) -> isize {
+    let token = current_user_token();
+    let path_str = translated_c_string(token, path);
+
+    match get_vfs().open(&path_str) {
+        Ok(inode) => {
+            if let Some(task) = current_task() {
+                let task_inner = task.inner_exclusive_access();
+                
+                // 检查权限：只有文件所有者或root用户可以修改权限
+                let file_uid = inode.get_uid();
+                if !task_inner.is_root() && task_inner.get_euid() != file_uid {
+                    return -1; // EPERM
+                }
+                
+                drop(task_inner); // 释放锁
+                
+                // 设置文件权限（只保留权限位，忽略文件类型位）
+                let permission_bits = mode & 0o7777;
+                match inode.set_mode(permission_bits) {
+                    Ok(()) => 0,
+                    Err(_) => -1,
+                }
+            } else {
+                -1
+            }
+        }
+        Err(_) => -2, // ENOENT
+    }
+}
+
+/// 修改文件所有者
+pub fn sys_chown(path: *const u8, uid: u32, gid: u32) -> isize {
+    let token = current_user_token();
+    let path_str = translated_c_string(token, path);
+
+    match get_vfs().open(&path_str) {
+        Ok(inode) => {
+            if let Some(task) = current_task() {
+                let task_inner = task.inner_exclusive_access();
+                
+                // 检查权限：只有文件所有者或root用户可以修改所有者
+                let file_uid = inode.get_uid();
+                if !task_inner.is_root() && task_inner.get_euid() != file_uid {
+                    return -1; // EPERM
+                }
+                
+                drop(task_inner); // 释放锁
+                
+                // 设置文件所有者
+                let uid_result = if uid != u32::MAX {
+                    inode.set_uid(uid)
+                } else {
+                    Ok(())
+                };
+                
+                let gid_result = if gid != u32::MAX {
+                    inode.set_gid(gid)
+                } else {
+                    Ok(())
+                };
+                
+                match (uid_result, gid_result) {
+                    (Ok(()), Ok(())) => 0,
+                    _ => -1,
+                }
+            } else {
+                -1
+            }
+        }
+        Err(_) => -2, // ENOENT
     }
 }

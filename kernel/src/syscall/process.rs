@@ -248,3 +248,73 @@ pub fn sys_shutdown() -> ! {
     crate::arch::sbi::shutdown();
     unreachable!();
 }
+
+// 权限相关系统调用实现
+
+/// 获取用户ID
+pub fn sys_getuid() -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    inner.get_uid() as isize
+}
+
+/// 获取组ID
+pub fn sys_getgid() -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    inner.get_gid() as isize
+}
+
+/// 获取有效用户ID
+pub fn sys_geteuid() -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    inner.get_euid() as isize
+}
+
+/// 获取有效组ID
+pub fn sys_getegid() -> isize {
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    inner.get_egid() as isize
+}
+
+/// 设置用户ID
+pub fn sys_setuid(uid: u32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    match inner.set_uid(uid) {
+        Ok(()) => 0,
+        Err(errno) => errno as isize,
+    }
+}
+
+/// 设置组ID
+pub fn sys_setgid(gid: u32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    match inner.set_gid(gid) {
+        Ok(()) => 0,
+        Err(errno) => errno as isize,
+    }
+}
+
+/// 设置有效用户ID
+pub fn sys_seteuid(euid: u32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    match inner.set_euid(euid) {
+        Ok(()) => 0,
+        Err(errno) => errno as isize,
+    }
+}
+
+/// 设置有效组ID
+pub fn sys_setegid(egid: u32) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    match inner.set_egid(egid) {
+        Ok(()) => 0,
+        Err(errno) => errno as isize,
+    }
+}

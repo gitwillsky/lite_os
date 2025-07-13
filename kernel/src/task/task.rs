@@ -114,6 +114,14 @@ pub struct TaskControlBlockInner {
     pub time_slice: u64,
     /// 信号状态
     pub signal_state: SignalState,
+    /// 用户ID
+    pub uid: u32,
+    /// 组ID
+    pub gid: u32,
+    /// 有效用户ID (用于权限检查)
+    pub euid: u32,
+    /// 有效组ID (用于权限检查)
+    pub egid: u32,
 }
 
 /// Task Control block structure
@@ -162,6 +170,10 @@ impl TaskControlBlock {
                 last_runtime: 0,
                 time_slice: 10000, // 默认10ms时间片
                 signal_state: SignalState::new(),
+                uid: 0,           // 初始进程为root用户
+                gid: 0,           // 初始进程为root组
+                euid: 0,          // 有效用户ID初始为root
+                egid: 0,          // 有效组ID初始为root
             }),
         };
 
@@ -270,6 +282,10 @@ impl TaskControlBlock {
                 last_runtime: 0,
                 time_slice: parent_inner.time_slice, // 继承父进程时间片设置
                 signal_state: parent_inner.signal_state.clone_for_fork(), // 复制信号状态
+                uid: parent_inner.uid,    // 继承父进程用户ID
+                gid: parent_inner.gid,    // 继承父进程组ID
+                euid: parent_inner.euid,  // 继承父进程有效用户ID
+                egid: parent_inner.egid,  // 继承父进程有效组ID
             }),
         });
 
@@ -474,5 +490,97 @@ impl TaskControlBlockInner {
     /// 解除阻塞信号
     pub fn unblock_signals(&self, signals: crate::task::signal::SignalSet) {
         self.signal_state.unblock_signals(signals);
+    }
+
+    /// 获取用户ID
+    pub fn get_uid(&self) -> u32 {
+        self.uid
+    }
+
+    /// 获取组ID
+    pub fn get_gid(&self) -> u32 {
+        self.gid
+    }
+
+    /// 获取有效用户ID
+    pub fn get_euid(&self) -> u32 {
+        self.euid
+    }
+
+    /// 获取有效组ID
+    pub fn get_egid(&self) -> u32 {
+        self.egid
+    }
+
+    /// 设置用户ID (需要root权限)
+    pub fn set_uid(&mut self, uid: u32) -> Result<(), i32> {
+        // 只有root用户可以设置任意UID
+        if self.euid != 0 && self.euid != uid {
+            return Err(-1); // EPERM
+        }
+        self.uid = uid;
+        self.euid = uid;
+        Ok(())
+    }
+
+    /// 设置组ID (需要root权限)
+    pub fn set_gid(&mut self, gid: u32) -> Result<(), i32> {
+        // 只有root用户可以设置任意GID
+        if self.euid != 0 && self.egid != gid {
+            return Err(-1); // EPERM
+        }
+        self.gid = gid;
+        self.egid = gid;
+        Ok(())
+    }
+
+    /// 设置有效用户ID
+    pub fn set_euid(&mut self, euid: u32) -> Result<(), i32> {
+        // 只有root用户或设置为实际UID才允许
+        if self.euid != 0 && euid != self.uid {
+            return Err(-1); // EPERM
+        }
+        self.euid = euid;
+        Ok(())
+    }
+
+    /// 设置有效组ID
+    pub fn set_egid(&mut self, egid: u32) -> Result<(), i32> {
+        // 只有root用户或设置为实际GID才允许
+        if self.euid != 0 && egid != self.gid {
+            return Err(-1); // EPERM
+        }
+        self.egid = egid;
+        Ok(())
+    }
+
+    /// 检查是否为root用户
+    pub fn is_root(&self) -> bool {
+        self.euid == 0
+    }
+
+    /// 检查对文件的访问权限
+    pub fn check_file_permission(&self, file_mode: u32, file_uid: u32, file_gid: u32, requested: u32) -> bool {
+        // root用户拥有所有权限
+        if self.euid == 0 {
+            return true;
+        }
+
+        let mut effective_mode = 0;
+
+        // 检查用户权限
+        if self.euid == file_uid {
+            effective_mode = (file_mode >> 6) & 0o7; // 用户权限位
+        }
+        // 检查组权限
+        else if self.egid == file_gid {
+            effective_mode = (file_mode >> 3) & 0o7; // 组权限位
+        }
+        // 其他用户权限
+        else {
+            effective_mode = file_mode & 0o7; // 其他用户权限位
+        }
+
+        (effective_mode & requested) == requested
     }
 }

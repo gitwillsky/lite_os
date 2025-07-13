@@ -183,17 +183,48 @@
 
 ### 第二阶段：系统增强（中优先级）
 
-#### 1. 权限和安全系统
+#### 1. 权限和安全系统 ✅ **已完成**
 
 **目标**：实现基础的用户权限管理
 
 **具体任务**：
 
-- [ ] 在进程控制块中添加UID/GID字段
-- [ ] 实现基础权限检查函数
-- [ ] 在文件操作前进行权限验证
-- [ ] 添加 `sys_setuid`、`sys_getuid` 等系统调用
-- [ ] 实现文件权限位的检查和设置
+- [x] 在进程控制块中添加UID/GID字段
+- [x] 实现基础权限检查函数
+- [x] 在文件操作前进行权限验证
+- [x] 添加 `sys_setuid`、`sys_getuid` 等系统调用
+- [x] 实现文件权限位的检查和设置
+- [x] 添加 `chmod` 和 `chown` 系统调用
+
+**实现亮点**：
+
+- **完整的POSIX权限模型**：实现了标准的UID/GID/EUID/EGID权限体系
+- **文件权限管理**：支持文件权限位检查和设置，包括chmod和chown系统调用
+- **进程权限继承**：fork时正确继承父进程的权限设置
+- **权限检查机制**：在文件打开等操作前进行权限验证
+- **root用户特权**：root用户(UID=0)拥有绕过权限检查的特权
+- **有效用户ID支持**：支持EUID/EGID机制，允许权限的临时切换
+- **安全的权限切换**：非root用户只能在受限条件下切换用户ID
+
+**新增系统调用**：
+
+- `getuid()` / `getgid()` / `geteuid()` / `getegid()` - 获取用户/组ID
+- `setuid()` / `setgid()` / `seteuid()` / `setegid()` - 设置用户/组ID
+- `chmod(path, mode)` - 修改文件权限
+- `chown(path, uid, gid)` - 修改文件所有者
+
+**新增文件**：
+
+- `user/src/bin/permission_test.rs` - 全面的权限系统测试程序
+
+**涉及文件**：
+
+- `kernel/src/task/task.rs` - 添加UID/GID字段和权限检查方法
+- `kernel/src/syscall/process.rs` - 权限相关系统调用实现
+- `kernel/src/syscall/fs.rs` - 文件权限检查和chmod/chown系统调用
+- `kernel/src/fs/inode.rs` - 扩展Inode trait支持权限相关方法
+- `kernel/src/syscall/mod.rs` - 添加权限系统调用派发
+- `user/src/syscall.rs` - 用户空间权限系统调用封装
 
 #### 2. 调度算法改进 ✅ **已完成**
 
