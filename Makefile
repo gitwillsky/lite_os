@@ -31,3 +31,5 @@ gdb:
 create-fs:
 	python3 create_fs.py
 
+addr2line:
+	@llvm-addr2line -e target/riscv64gc-unknown-none-elf/debug/kernel -f -p $(ADDR)

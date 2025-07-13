@@ -94,11 +94,10 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
         }
 
         if let Some(task) = current_task() {
-            let inner = task.inner_exclusive_access();
             let token = current_user_token();
 
             // 获取当前的信号处理器
-            let old_handler = inner.get_signal_handler(signal);
+            let old_handler = task.inner_exclusive_access().get_signal_handler(signal);
 
             // 如果oldact不为空，返回旧的信号处理器
             if !oldact.is_null() {
@@ -156,13 +155,12 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
                         flags: new_sigaction.sa_flags,
                     };
 
-                    inner.set_signal_handler(signal, disposition);
+                    task.inner_exclusive_access().set_signal_handler(signal, disposition);
                 } else {
                     return -1; // EFAULT
                 }
             }
 
-            drop(inner);
             0
         } else {
             -1
@@ -175,11 +173,10 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
 /// sigprocmask系统调用 - 设置信号掩码
 pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
     if let Some(task) = current_task() {
-        let inner = task.inner_exclusive_access();
         let token = current_user_token();
 
         // 获取当前信号掩码
-        let old_mask = inner.get_signal_mask();
+        let old_mask = task.inner_exclusive_access().get_signal_mask();
 
         // 如果oldset不为空，返回旧的信号掩码
         if !oldset.is_null() {
@@ -207,6 +204,7 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
             if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<u64>() {
                 let new_mask_raw = unsafe { *(buffers[0].as_ptr() as *const u64) };
                 let new_mask = SignalSet::from_raw(new_mask_raw);
+                let inner = task.inner_exclusive_access();
 
                 match how {
                     SIG_BLOCK => {
@@ -229,7 +227,6 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
             }
         }
 
-        drop(inner);
         0
     } else {
         -1
