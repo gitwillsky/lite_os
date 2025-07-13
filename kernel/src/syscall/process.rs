@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec, string::{String, ToString}};
+use alloc::{sync::Arc, vec::Vec, string::ToString};
 
 use crate::{
     loader::get_app_data_by_name,

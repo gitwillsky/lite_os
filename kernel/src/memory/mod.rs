@@ -8,6 +8,7 @@ use crate::{
 
 pub mod address;
 mod config;
+pub mod dynamic_linker;
 pub mod frame_allocator;
 pub mod heap_allocator;
 pub mod mm;

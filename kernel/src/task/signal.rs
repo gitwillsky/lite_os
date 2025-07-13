@@ -1,7 +1,6 @@
 use alloc::collections::BTreeMap;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
-use core::arch::asm;
 
 /// Standard POSIX signals
 #[repr(u8)]

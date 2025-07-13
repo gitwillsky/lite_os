@@ -9,6 +9,7 @@ use crate::memory::{
     frame_allocator::{FrameTracker, alloc},
     page_table::{PTEFlags, PageTableEntry},
     strampoline,
+    dynamic_linker::DynamicLinker,
 };
 
 use super::config;
@@ -152,6 +153,7 @@ impl MapArea {
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
+    dynamic_linker: Option<DynamicLinker>,
 }
 
 impl MemorySet {
@@ -159,6 +161,7 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
+            dynamic_linker: None,
         }
     }
 
@@ -252,98 +255,20 @@ impl MemorySet {
     }
 
     pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        let mut memory_set = MemorySet::new();
-
-        memory_set.map_trampoline();
-
-        let elf = xmas_elf::ElfFile::new(elf_data)?;
-        let elf_header = elf.header;
-        let magic = elf_header.pt1.magic;
-        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
-        let ph_count = elf_header.pt2.ph_count();
-
-        let mut max_mapped_vpn = VirtualPageNumber::from(0);
-
-        for i in 0..ph_count {
-            let ph = elf.program_header(i)?;
-            if ph.get_type()? != xmas_elf::program::Type::Load {
-                continue;
-            }
-            let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
-            let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
-
-            let mut map_perm = MapPermission::U;
-            let ph_flags = ph.flags();
-            if ph_flags.is_execute() {
-                map_perm |= MapPermission::X
-            }
-            if ph_flags.is_read() {
-                map_perm |= MapPermission::R
-            }
-            if ph_flags.is_write() {
-                map_perm |= MapPermission::W
-            }
-            let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
-
-            // 记录实际映射的最大页面号
-            max_mapped_vpn = max_mapped_vpn
-                .as_usize()
-                .max(map_area.vpn_range.end.as_usize())
-                .into();
-
-            memory_set.push(
-                map_area,
-                Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-            );
-        }
-
-        let max_end_va: VirtualAddress = max_mapped_vpn.into();
-        let mut user_stack_bottom: usize = max_end_va.into();
-        // guard page
-        user_stack_bottom += config::PAGE_SIZE;
-        let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
-
-        memory_set.push(
-            MapArea::new(
-                user_stack_bottom.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        );
-
-        // used in sbrk
-        memory_set.push(
-            MapArea::new(
-                user_stack_top.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        );
-
-        memory_set.push(
-            MapArea::new(
-                config::TRAP_CONTEXT.into(),
-                config::TRAMPOLINE.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        );
-
-        let entry_point = elf.header.pt2.entry_point() as usize;
-
-        Ok((memory_set, user_stack_top, entry_point))
+        Self::from_elf_internal(elf_data, &[], &[], false)
     }
 
-    /// Create a new memory set from ELF data with argument support
-    pub fn from_elf_with_args(
+    /// Create a memory set from ELF data with dynamic linking support
+    pub fn from_elf_with_dynamic_linking(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
+        Self::from_elf_internal(elf_data, &[], &[], true)
+    }
+
+    /// Internal ELF loading implementation with optional dynamic linking support
+    fn from_elf_internal(
         elf_data: &[u8], 
         args: &[String], 
-        envs: &[String]
+        envs: &[String],
+        enable_dynamic_linking: bool
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
         let mut memory_set = MemorySet::new();
 
@@ -353,41 +278,98 @@ impl MemorySet {
         let elf_header = elf.header;
         let magic = elf_header.pt1.magic;
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
+
+        // Check if this is a dynamically linked executable
+        let is_dynamic = elf_header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject ||
+                        elf.find_section_by_name(".dynamic").is_some();
+
+        if enable_dynamic_linking && is_dynamic {
+            info!("Loading dynamically linked ELF executable");
+            
+            // Initialize dynamic linker
+            let mut dynamic_linker = DynamicLinker::new();
+            
+            // Parse dynamic linking information
+            dynamic_linker.parse_dynamic_elf(&elf, VirtualAddress::from(0))?;
+            
+            memory_set.dynamic_linker = Some(dynamic_linker);
+        }
+
         let ph_count = elf_header.pt2.ph_count();
-
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
+        let mut plt_address = None;
+        let mut got_address = None;
 
+        // Process program headers
         for i in 0..ph_count {
             let ph = elf.program_header(i)?;
-            if ph.get_type()? != xmas_elf::program::Type::Load {
-                continue;
-            }
-            let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
-            let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+            
+            match ph.get_type()? {
+                xmas_elf::program::Type::Load => {
+                    // Load regular segments
+                    let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
+                    let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
 
-            let mut map_perm = MapPermission::U;
-            let ph_flags = ph.flags();
-            if ph_flags.is_execute() {
-                map_perm |= MapPermission::X
-            }
-            if ph_flags.is_read() {
-                map_perm |= MapPermission::R
-            }
-            if ph_flags.is_write() {
-                map_perm |= MapPermission::W
-            }
-            let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+                    let mut map_perm = MapPermission::U;
+                    let ph_flags = ph.flags();
+                    if ph_flags.is_execute() {
+                        map_perm |= MapPermission::X
+                    }
+                    if ph_flags.is_read() {
+                        map_perm |= MapPermission::R
+                    }
+                    if ph_flags.is_write() {
+                        map_perm |= MapPermission::W
+                    }
+                    let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
 
-            // 记录实际映射的最大页面号
-            max_mapped_vpn = max_mapped_vpn
-                .as_usize()
-                .max(map_area.vpn_range.end.as_usize())
-                .into();
+                    // 记录实际映射的最大页面号
+                    max_mapped_vpn = max_mapped_vpn
+                        .as_usize()
+                        .max(map_area.vpn_range.end.as_usize())
+                        .into();
 
-            memory_set.push(
-                map_area,
-                Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
-            );
+                    memory_set.push(
+                        map_area,
+                        Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                    );
+                }
+                xmas_elf::program::Type::Dynamic => {
+                    // Dynamic segment - already processed above
+                    debug!("Found PT_DYNAMIC segment at 0x{:x}", ph.virtual_addr());
+                }
+                xmas_elf::program::Type::Interp => {
+                    // Interpreter segment (dynamic linker path)
+                    debug!("Found PT_INTERP segment");
+                    if enable_dynamic_linking {
+                        // In a real implementation, this would specify the dynamic linker to use
+                        // For now, we use our built-in dynamic linker
+                    }
+                }
+                _ => {
+                    // Other program header types - ignore for now
+                }
+            }
+        }
+
+        // If dynamic linking is enabled, find PLT and GOT sections
+        if enable_dynamic_linking && memory_set.dynamic_linker.is_some() {
+            if let Some(plt_section) = elf.find_section_by_name(".plt") {
+                plt_address = Some(VirtualAddress::from(plt_section.address() as usize));
+                debug!("Found PLT section at 0x{:x}", plt_section.address());
+            }
+            
+            if let Some(got_section) = elf.find_section_by_name(".got") {
+                got_address = Some(VirtualAddress::from(got_section.address() as usize));
+                debug!("Found GOT section at 0x{:x}", got_section.address());
+            }
+            
+            // Setup PLT if both PLT and GOT are present
+            if let (Some(plt_addr), Some(got_addr)) = (plt_address, got_address) {
+                if let Some(ref mut linker) = memory_set.dynamic_linker {
+                    linker.setup_plt(plt_addr, got_addr)?;
+                }
+            }
         }
 
         let max_end_va: VirtualAddress = max_mapped_vpn.into();
@@ -429,10 +411,48 @@ impl MemorySet {
 
         let entry_point = elf.header.pt2.entry_point() as usize;
 
-        // Build argc/argv/envp on the stack
-        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
+        // Build argument stack if arguments are provided
+        let actual_stack_top = if !args.is_empty() || !envs.is_empty() {
+            memory_set.build_arg_stack(user_stack_top, args, envs)?
+        } else {
+            user_stack_top
+        };
+
+        // Apply dynamic relocations if dynamic linking is enabled
+        if enable_dynamic_linking && memory_set.dynamic_linker.is_some() {
+            // Take the linker temporarily to avoid borrow conflicts
+            if let Some(mut linker) = memory_set.dynamic_linker.take() {
+                // Apply relocations
+                {
+                    let page_table = memory_set.get_page_table();
+                    linker.apply_relocations(page_table)?;
+                }
+                // Run initializers
+                linker.run_initializers()?;
+                // Put linker back
+                memory_set.dynamic_linker = Some(linker);
+            }
+        }
 
         Ok((memory_set, actual_stack_top, entry_point))
+    }
+
+    /// Create a new memory set from ELF data with argument support
+    pub fn from_elf_with_args(
+        elf_data: &[u8], 
+        args: &[String], 
+        envs: &[String]
+    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
+        Self::from_elf_internal(elf_data, args, envs, false)
+    }
+
+    /// Create a new memory set from ELF data with arguments and dynamic linking support
+    pub fn from_elf_with_args_and_dynamic_linking(
+        elf_data: &[u8], 
+        args: &[String], 
+        envs: &[String]
+    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
+        Self::from_elf_internal(elf_data, args, envs, true)
     }
 
     /// Build argc/argv/envp layout on user stack
@@ -600,5 +620,40 @@ impl MemorySet {
 
     pub fn recycle_data_pages(&mut self) {
         self.areas.clear();
+    }
+
+    /// Get a reference to the dynamic linker
+    pub fn get_dynamic_linker(&self) -> Option<&DynamicLinker> {
+        self.dynamic_linker.as_ref()
+    }
+
+    /// Get a mutable reference to the dynamic linker
+    pub fn get_dynamic_linker_mut(&mut self) -> Option<&mut DynamicLinker> {
+        self.dynamic_linker.as_mut()
+    }
+
+    /// Load a shared library at runtime
+    pub fn load_shared_library(&mut self, library_name: &str) -> Result<VirtualAddress, Box<dyn Error>> {
+        if self.dynamic_linker.is_none() {
+            return Err("Dynamic linker not initialized".into());
+        }
+        
+        // Take the linker temporarily to avoid double borrow
+        if let Some(mut linker) = self.dynamic_linker.take() {
+            let result = linker.load_shared_library(self, library_name);
+            self.dynamic_linker = Some(linker);
+            result
+        } else {
+            Err("Dynamic linker not available".into())
+        }
+    }
+
+    /// Resolve a symbol by name across all loaded libraries
+    pub fn resolve_symbol(&self, symbol_name: &str) -> Option<VirtualAddress> {
+        if let Some(ref linker) = self.dynamic_linker {
+            linker.resolve_symbol(symbol_name)
+        } else {
+            None
+        }
     }
 }

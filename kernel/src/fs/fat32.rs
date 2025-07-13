@@ -1,4 +1,4 @@
-use alloc::{string::{String, ToString}, sync::Arc, vec, vec::Vec};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
 use crate::drivers::{BlockDevice, block::BlockError};
@@ -460,7 +460,7 @@ impl FAT32FileSystem {
         Ok(entries)
     }
 
-    fn update_file_size(&self, cluster: u32, new_size: u32) -> Result<(), BlockError> {
+    fn update_file_size(&self, _cluster: u32, _new_size: u32) -> Result<(), BlockError> {
         // Find the directory entry for this cluster and update its size
         // This is a simplified implementation - in a real system you'd want to track parent directory
         Ok(())

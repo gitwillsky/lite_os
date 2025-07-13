@@ -2,10 +2,12 @@ mod fs;
 mod process;
 mod signal;
 mod timer;
+mod dynamic_linking;
 
 use fs::*;
 use process::*;
 use signal::*;
+use dynamic_linking::*;
 
 pub use signal::sys_sigreturn;
 
@@ -64,6 +66,11 @@ const SYSCALL_GETEGID: usize = 108;
 const SYSCALL_SETEUID: usize = 148;
 const SYSCALL_SETEGID: usize = 149;
 
+// 动态链接相关系统调用
+const SYSCALL_DLOPEN: usize = 600;
+const SYSCALL_DLSYM: usize = 601;
+const SYSCALL_DLCLOSE: usize = 602;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -120,6 +127,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GETEGID => sys_getegid(),
         SYSCALL_SETEUID => sys_seteuid(args[0] as u32),
         SYSCALL_SETEGID => sys_setegid(args[0] as u32),
+
+        // 动态链接相关系统调用
+        SYSCALL_DLOPEN => sys_dlopen(args[0] as *const u8, args[1] as i32),
+        SYSCALL_DLSYM => sys_dlsym(args[0], args[1] as *const u8),
+        SYSCALL_DLCLOSE => sys_dlclose(args[0]),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
