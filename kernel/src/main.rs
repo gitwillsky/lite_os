@@ -15,6 +15,7 @@ mod board;
 mod drivers;
 mod entry;
 mod fs;
+mod ipc;
 mod lang_item;
 
 mod loader;
