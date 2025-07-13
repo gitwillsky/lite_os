@@ -488,11 +488,11 @@ pub fn sys_flock(fd: usize, operation: i32) -> isize {
             
             // Parse the operation
             let non_blocking = (operation & (LockOp::NonBlock as i32)) != 0;
-            let operation = operation & 0x7; // Remove LOCK_NB flag
+            let lock_operation = operation & !4; // Remove LOCK_NB flag (4), keep other bits
             
             let lock_manager = get_file_lock_manager();
             
-            match operation {
+            match lock_operation {
                 8 => { // LOCK_UN - Unlock
                     match lock_manager.unlock(inode, pid) {
                         Ok(()) => 0,
