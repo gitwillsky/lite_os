@@ -36,14 +36,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9404d41caa1aa659f7be44d5a902e318c0672900822fe9ca41d9e38c14b52332"
 
 [[package]]
-name = "easy-fs"
-version = "0.1.0"
-dependencies = [
- "lazy_static",
- "spin 0.10.0",
-]
-
-[[package]]
 name = "embedded-hal"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
