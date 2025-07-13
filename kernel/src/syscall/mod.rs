@@ -7,6 +7,8 @@ use fs::*;
 use process::*;
 use signal::*;
 
+pub use signal::sys_sigreturn;
+
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
@@ -58,7 +60,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_EXEC => sys_exec(args[0] as *const u8),
         SYSCALL_WAIT => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
         SYSCALL_SHUTDOWN => sys_shutdown(),
-        
+
         // 文件系统系统调用
         SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
@@ -73,13 +75,13 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_PIPE => sys_pipe(args[0] as *mut i32),
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP2 => sys_dup2(args[0], args[1]),
-        
+
         // 调度相关系统调用
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
         SYSCALL_GETPRIORITY => sys_getpriority(args[0] as i32, args[1] as i32),
         SYSCALL_SCHED_SETSCHEDULER => sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2] as *const u8),
         SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
-        
+
         // 信号相关系统调用
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
         SYSCALL_SIGNAL => sys_signal(args[1] as u32, args[2]),
@@ -88,7 +90,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_SIGRETURN => sys_sigreturn(),
         SYSCALL_PAUSE => sys_pause(),
         SYSCALL_ALARM => sys_alarm(args[0] as u32),
-        
+
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
             -1

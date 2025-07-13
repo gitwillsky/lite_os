@@ -571,36 +571,33 @@ impl SignalDelivery {
         let aligned_size = (signal_frame_size + 15) & !15; // 16字节对齐
         let signal_frame_addr = user_sp - aligned_size;
         
-        // 将信号帧写入用户栈
-        // 在实际实现中，这里需要检查内存权限和地址有效性
-        unsafe {
-            let frame_ptr = signal_frame_addr as *mut SignalFrame;
+        // 将信号帧写入用户栈和设置信号处理环境
+        {
+            let inner = task.inner_exclusive_access();
+            let token = inner.get_user_token();
             
             // 检查地址是否在用户空间范围内
-            if signal_frame_addr < 0x10000000 {
-                // 地址太低，可能有问题
-                warn!("Signal frame address too low: {:#x}", signal_frame_addr);
+            // 用户栈通常在较低地址，检查是否在合理范围内
+            if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
+                warn!("Signal frame address out of range: {:#x}", signal_frame_addr);
                 return;
             }
             
-            // 写入信号帧
-            core::ptr::write(frame_ptr, signal_frame);
+            // 使用页表转换安全地写入信号帧
+            let frame_ptr = signal_frame_addr as *mut SignalFrame;
+            let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr);
+            *frame_ref = signal_frame;
+            
+            // 进入信号处理器前，保存当前信号掩码并设置新的掩码
+            inner.signal_state.enter_signal_handler(handler_info.mask);
+            
+            // 如果设置了 SA_NODEFER 标志，不自动阻塞当前信号
+            if (handler_info.flags & crate::task::signal::SA_NODEFER) == 0 {
+                let mut current_signal_mask = SignalSet::new();
+                current_signal_mask.add(signal);
+                inner.signal_state.block_signals(current_signal_mask);
+            }
         }
-        
-        // 设置信号处理环境
-        let inner = task.inner_exclusive_access();
-        
-        // 进入信号处理器前，保存当前信号掩码并设置新的掩码
-        inner.signal_state.enter_signal_handler(handler_info.mask);
-        
-        // 如果设置了 SA_NODEFER 标志，不自动阻塞当前信号
-        if (handler_info.flags & crate::task::signal::SA_NODEFER) == 0 {
-            let mut current_signal_mask = SignalSet::new();
-            current_signal_mask.add(signal);
-            inner.signal_state.block_signals(current_signal_mask);
-        }
-        
-        drop(inner);
         
         // 修改trap context，设置信号处理函数执行环境
         trap_cx.sepc = handler_addr; // 设置程序计数器到信号处理函数
@@ -617,13 +614,14 @@ impl SignalDelivery {
 
     /// 获取sigreturn系统调用的地址
     fn get_sigreturn_addr() -> usize {
-        // 返回一个特殊的地址，用户空间的信号处理函数返回时会跳转到这里
-        // 在这个地址处，应该有一段代码调用sigreturn系统调用
-        // 这里返回一个魔数，在实际实现中应该是用户空间的一个函数地址
-        // 该函数的内容应该是：
-        // li a7, 139  # sigreturn syscall number
-        // ecall       # invoke system call
-        0xDEADBEEF // 占位符，实际应该是真实的用户空间地址
+        // 获取用户空间sigreturn函数的地址
+        // 这个地址应该从用户程序的符号表中获取
+        // 为了简化，我们可以让用户程序在初始化时通过系统调用告诉内核这个地址
+        // 或者使用一个固定的约定地址
+        
+        // 临时解决方案：返回一个特殊值，让信号处理函数直接返回到用户程序的正常流程
+        // 而不是尝试调用sigreturn
+        0 // 这会导致地址为0，触发异常，我们可以在异常处理中识别并处理
     }
 
     /// 从信号处理函数返回
@@ -641,21 +639,20 @@ impl SignalDelivery {
                user_sp, signal_frame_addr, aligned_size);
         
         // 检查地址有效性
-        if signal_frame_addr < 0x10000000 || signal_frame_addr >= 0x80000000 {
+        if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
             error!("Invalid signal frame address: {:#x}", signal_frame_addr);
             return false;
         }
         
-        let signal_frame = unsafe {
+        // 使用页表转换安全地读取信号帧
+        let inner = task.inner_exclusive_access();
+        let token = inner.get_user_token();
+        drop(inner);
+        
+        let signal_frame = {
             let frame_ptr = signal_frame_addr as *const SignalFrame;
-            // 检查指针是否有效
-            if frame_ptr.is_null() {
-                error!("Null signal frame pointer");
-                return false;
-            }
-            
-            // 读取信号帧
-            core::ptr::read(frame_ptr)
+            let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr as *mut SignalFrame);
+            *frame_ref
         };
         
         // 验证信号帧的有效性

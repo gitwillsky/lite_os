@@ -173,7 +173,7 @@ impl TaskManager {
         }
     }
 
-    /// 根据PID查找任务（仅搜索任务管理器中的队列）
+    /// 根据PID查找任务（搜索所有可能的位置）
     pub fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
         // 搜索就绪队列
         match self.scheduling_policy {
@@ -270,6 +270,13 @@ pub fn wakeup_task(task: Arc<TaskControlBlock>) {
 
 /// 根据PID查找任务，包括当前运行的任务
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
+    // 首先检查当前运行的任务
+    if let Some(current) = crate::task::processor::current_task() {
+        if current.get_pid() == pid {
+            return Some(current);
+        }
+    }
+    
     // 搜索任务管理器中的任务
     TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
 }
