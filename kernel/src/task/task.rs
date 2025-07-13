@@ -14,6 +14,7 @@ use crate::{
     task::{
         context::TaskContext,
         pid::{KernelStack, PidHandle, alloc_pid},
+        signal::SignalState,
     },
     trap::{TrapContext, trap_handler},
     fs::inode::Inode,
@@ -109,6 +110,8 @@ pub struct TaskControlBlockInner {
     pub last_runtime: u64,
     /// 动态时间片大小 (微秒)
     pub time_slice: u64,
+    /// 信号状态
+    pub signal_state: SignalState,
 }
 
 /// Task Control block structure
@@ -156,6 +159,7 @@ impl TaskControlBlock {
                 vruntime: 0,   // 初始虚拟运行时间
                 last_runtime: 0,
                 time_slice: 10000, // 默认10ms时间片
+                signal_state: SignalState::new(),
             }),
         };
 
@@ -189,6 +193,8 @@ impl TaskControlBlock {
         let mut inner = self.inner_exclusive_access();
         inner.trap_cx_ppn = trap_cx_ppn;
         inner.memory_set = memory_set;
+        // 重置信号状态（exec时应该重置信号处理器）
+        inner.signal_state.reset_for_exec();
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entrypoint,
@@ -233,6 +239,7 @@ impl TaskControlBlock {
                 vruntime: 0,                      // 子进程重新开始计算vruntime
                 last_runtime: 0,
                 time_slice: parent_inner.time_slice, // 继承父进程时间片设置
+                signal_state: parent_inner.signal_state.clone_for_fork(), // 复制信号状态
             }),
         });
 
@@ -385,5 +392,52 @@ impl TaskControlBlockInner {
         }
         
         Some(newfd)
+    }
+
+    /// 发送信号给进程
+    pub fn send_signal(&mut self, signal: crate::task::signal::Signal) {
+        // 直接操作信号状态，避免再次借用UPSafeCell
+        let mut pending = self.signal_state.pending.exclusive_access();
+        pending.add(signal);
+    }
+
+    /// 检查是否有可处理的信号
+    pub fn has_pending_signals(&self) -> bool {
+        self.signal_state.has_deliverable_signals()
+    }
+
+    /// 获取下一个待处理的信号
+    pub fn next_signal(&self) -> Option<crate::task::signal::Signal> {
+        self.signal_state.next_deliverable_signal()
+    }
+
+    /// 设置信号处理器
+    pub fn set_signal_handler(&self, signal: crate::task::signal::Signal, handler: crate::task::signal::SignalDisposition) {
+        self.signal_state.set_handler(signal, handler);
+    }
+
+    /// 获取信号处理器
+    pub fn get_signal_handler(&self, signal: crate::task::signal::Signal) -> crate::task::signal::SignalDisposition {
+        self.signal_state.get_handler(signal)
+    }
+
+    /// 设置信号掩码
+    pub fn set_signal_mask(&self, mask: crate::task::signal::SignalSet) {
+        self.signal_state.set_signal_mask(mask);
+    }
+
+    /// 获取信号掩码
+    pub fn get_signal_mask(&self) -> crate::task::signal::SignalSet {
+        self.signal_state.get_signal_mask()
+    }
+
+    /// 阻塞信号
+    pub fn block_signals(&self, signals: crate::task::signal::SignalSet) {
+        self.signal_state.block_signals(signals);
+    }
+
+    /// 解除阻塞信号
+    pub fn unblock_signals(&self, signals: crate::task::signal::SignalSet) {
+        self.signal_state.unblock_signals(signals);
     }
 }

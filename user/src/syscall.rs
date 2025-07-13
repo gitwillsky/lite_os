@@ -6,6 +6,7 @@ const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_YIELD: usize = 124;
+const SYSCALL_GETPID: usize = 172;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_WAIT: usize = 260;
@@ -25,6 +26,15 @@ const SYSCALL_LSEEK: usize = 62;
 const SYSCALL_PIPE: usize = 59;
 const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
+
+// 信号相关系统调用
+const SYSCALL_KILL: usize = 129;
+const SYSCALL_SIGNAL: usize = 48;
+const SYSCALL_SIGACTION: usize = 134;
+const SYSCALL_SIGPROCMASK: usize = 135;
+const SYSCALL_SIGRETURN: usize = 139;
+const SYSCALL_PAUSE: usize = 34;
+const SYSCALL_ALARM: usize = 37;
 
 /// 系统调用
 ///
@@ -83,6 +93,12 @@ pub fn exec(path: &str) -> isize {
 /// 返回值：无
 pub fn yield_() {
     syscall(SYSCALL_YIELD, [0, 0, 0]);
+}
+
+/// 功能：获取当前进程的PID
+/// 返回值：当前进程的PID
+pub fn getpid() -> isize {
+    syscall(SYSCALL_GETPID, [0, 0, 0])
 }
 
 /// 功能：当前进程等待一个子进程变为僵尸进程，回收其全部资源并收集其返回值。
@@ -204,3 +220,105 @@ pub fn lseek(fd: usize, offset: isize, whence: usize) -> isize {
 pub fn pipe(pipefd: &mut [i32; 2]) -> isize {
     syscall(SYSCALL_PIPE, [pipefd.as_mut_ptr() as usize, 0, 0])
 }
+
+// 信号相关系统调用
+
+/// 发送信号给进程
+pub fn kill(pid: usize, sig: u32) -> isize {
+    syscall(SYSCALL_KILL, [pid, sig as usize, 0])
+}
+
+/// 设置信号处理函数
+pub fn signal(sig: u32, handler: usize) -> isize {
+    syscall(SYSCALL_SIGNAL, [0, sig as usize, handler])
+}
+
+/// sigaction结构体
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SigAction {
+    pub sa_handler: usize,
+    pub sa_mask: u64,
+    pub sa_flags: u32,
+    pub sa_restorer: usize,
+}
+
+/// 设置信号动作
+pub fn sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) -> isize {
+    syscall(SYSCALL_SIGACTION, [sig as usize, act as usize, oldact as usize])
+}
+
+/// 设置信号掩码
+pub fn sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
+    syscall(SYSCALL_SIGPROCMASK, [how as usize, set as usize, oldset as usize])
+}
+
+/// 从信号处理函数返回
+pub fn sigreturn() -> isize {
+    syscall(SYSCALL_SIGRETURN, [0, 0, 0])
+}
+
+/// 暂停进程直到收到信号
+pub fn pause() -> isize {
+    syscall(SYSCALL_PAUSE, [0, 0, 0])
+}
+
+/// 设置定时器信号
+pub fn alarm(seconds: u32) -> isize {
+    syscall(SYSCALL_ALARM, [seconds as usize, 0, 0])
+}
+
+// 信号常量
+
+/// 信号编号
+pub mod signals {
+    pub const SIGHUP: u32 = 1;
+    pub const SIGINT: u32 = 2;
+    pub const SIGQUIT: u32 = 3;
+    pub const SIGILL: u32 = 4;
+    pub const SIGTRAP: u32 = 5;
+    pub const SIGABRT: u32 = 6;
+    pub const SIGBUS: u32 = 7;
+    pub const SIGFPE: u32 = 8;
+    pub const SIGKILL: u32 = 9;
+    pub const SIGUSR1: u32 = 10;
+    pub const SIGSEGV: u32 = 11;
+    pub const SIGUSR2: u32 = 12;
+    pub const SIGPIPE: u32 = 13;
+    pub const SIGALRM: u32 = 14;
+    pub const SIGTERM: u32 = 15;
+    pub const SIGSTKFLT: u32 = 16;
+    pub const SIGCHLD: u32 = 17;
+    pub const SIGCONT: u32 = 18;
+    pub const SIGSTOP: u32 = 19;
+    pub const SIGTSTP: u32 = 20;
+    pub const SIGTTIN: u32 = 21;
+    pub const SIGTTOU: u32 = 22;
+    pub const SIGURG: u32 = 23;
+    pub const SIGXCPU: u32 = 24;
+    pub const SIGXFSZ: u32 = 25;
+    pub const SIGVTALRM: u32 = 26;
+    pub const SIGPROF: u32 = 27;
+    pub const SIGWINCH: u32 = 28;
+    pub const SIGIO: u32 = 29;
+    pub const SIGPWR: u32 = 30;
+    pub const SIGSYS: u32 = 31;
+    
+    /// sigaction标志常量
+    pub const SA_NOCLDSTOP: u32 = 1;
+    pub const SA_NOCLDWAIT: u32 = 2;
+    pub const SA_SIGINFO: u32 = 4;
+    pub const SA_RESTART: u32 = 0x10000000;
+    pub const SA_NODEFER: u32 = 0x40000000;
+    pub const SA_RESETHAND: u32 = 0x80000000;
+    pub const SA_ONSTACK: u32 = 0x08000000;
+}
+
+/// 信号掩码操作常量
+pub const SIG_BLOCK: i32 = 0;
+pub const SIG_UNBLOCK: i32 = 1;
+pub const SIG_SETMASK: i32 = 2;
+
+/// 特殊信号处理器值
+pub const SIG_DFL: usize = 0;  // 默认动作
+pub const SIG_IGN: usize = 1;  // 忽略信号

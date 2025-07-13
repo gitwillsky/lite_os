@@ -130,6 +130,16 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
+    // 在返回用户态之前检查信号
+    if let Some(_task) = task::current_task() {
+        let (should_continue, exit_code) = crate::task::check_and_handle_signals();
+        if !should_continue {
+            if let Some(code) = exit_code {
+                exit_current_and_run_next(code);
+            }
+        }
+    }
+
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;

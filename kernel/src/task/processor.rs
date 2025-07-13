@@ -46,6 +46,29 @@ pub fn run_tasks() -> ! {
     loop {
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = super::task_manager::fetch_task() {
+            // 在运行任务前检查信号
+            {
+                let inner = task.inner_exclusive_access();
+                if inner.has_pending_signals() {
+                    drop(inner);
+                    drop(processor);
+                    // 如果有待处理的信号，让任务先处理信号
+                    let (should_continue, exit_code) = crate::task::check_and_handle_signals();
+                    if !should_continue {
+                        if let Some(code) = exit_code {
+                            // 如果信号要求终止进程，则终止进程
+                            let mut inner = task.inner_exclusive_access();
+                            inner.task_status = TaskStatus::Zombie;
+                            inner.exit_code = code;
+                            drop(inner);
+                            continue;
+                        }
+                    }
+                    // 重新获取processor锁
+                    processor = PROCESSOR.exclusive_access();
+                }
+            }
+
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;

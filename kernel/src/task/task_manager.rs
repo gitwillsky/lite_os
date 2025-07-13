@@ -172,6 +172,45 @@ impl TaskManager {
             SchedulingPolicy::CFS => self.cfs_queue.len(),
         }
     }
+
+    /// 根据PID查找任务（仅搜索任务管理器中的队列）
+    pub fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+        // 搜索就绪队列
+        match self.scheduling_policy {
+            SchedulingPolicy::FIFO => {
+                for task in &self.ready_queue {
+                    if task.get_pid() == pid {
+                        return Some(task.clone());
+                    }
+                }
+            },
+            SchedulingPolicy::Priority | SchedulingPolicy::RoundRobin => {
+                for queue in &self.priority_queues {
+                    for task in queue {
+                        if task.get_pid() == pid {
+                            return Some(task.clone());
+                        }
+                    }
+                }
+            },
+            SchedulingPolicy::CFS => {
+                for cfs_task in &self.cfs_queue {
+                    if cfs_task.task.get_pid() == pid {
+                        return Some(cfs_task.task.clone());
+                    }
+                }
+            }
+        }
+        
+        // 检查初始进程
+        if let Some(ref init_proc) = self.init_proc {
+            if init_proc.get_pid() == pid {
+                return Some(init_proc.clone());
+            }
+        }
+        
+        None
+    }
 }
 
 lazy_static! {
@@ -227,4 +266,17 @@ pub fn wakeup_task(task: Arc<TaskControlBlock>) {
         // 将任务添加到就绪队列
         add_task(task);
     }
+}
+
+/// 根据PID查找任务，包括当前运行的任务
+pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
+    // 首先检查当前运行的任务（在访问TASK_MANAGER之前）
+    if let Some(current) = crate::task::current_task() {
+        if current.get_pid() == pid {
+            return Some(current);
+        }
+    }
+    
+    // 然后搜索任务管理器中的任务
+    TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
 }
