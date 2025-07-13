@@ -125,44 +125,89 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let token = current_user_token();
     let path_str = translated_c_string(token, path);
 
-    match get_vfs().open(&path_str) {
+    // Open flags
+    const O_RDONLY: u32 = 0o0;
+    const O_WRONLY: u32 = 0o1;
+    const O_RDWR: u32 = 0o2;
+    const O_CREAT: u32 = 0o100;
+    const O_TRUNC: u32 = 0o1000;
+    
+    // 提取访问模式和文件标志
+    let access_mode = flags & 0o3;
+    let file_mode = flags & 0o777;   // 权限位（用于创建文件时）
+    let has_creat = (flags & O_CREAT) != 0;
+    let has_trunc = (flags & O_TRUNC) != 0;
+    
+    // 尝试打开现有文件
+    let inode_result = get_vfs().open(&path_str);
+    
+    let inode = match inode_result {
         Ok(inode) => {
-            if let Some(task) = current_task() {
-                let task_inner = task.inner_exclusive_access();
-                
-                // 检查文件权限
-                let file_mode = inode.get_mode();
-                let file_uid = inode.get_uid();
-                let file_gid = inode.get_gid();
-                
-                // 根据打开标志确定需要的权限
-                let mut required_perm = 0;
-                if flags & 0o1 != 0 || flags & 0o2 != 0 {  // O_WRONLY or O_RDWR
-                    required_perm |= 0o2; // 写权限
+            // 文件存在，检查 O_TRUNC 标志
+            if has_trunc {
+                if let Err(_) = inode.truncate(0) {
+                    return -1; // 截断失败
                 }
-                if flags & 0o1 == 0 || flags & 0o2 != 0 {  // O_RDONLY or O_RDWR
-                    required_perm |= 0o4; // 读权限
+            }
+            inode
+        }
+        Err(_) => {
+            // 文件不存在，检查 O_CREAT 标志
+            if !has_creat {
+                return -2; // ENOENT - 文件不存在且没有创建标志
+            }
+            
+            // 创建新文件
+            match get_vfs().create_file(&path_str) {
+                Ok(inode) => {
+                    debug!("[sys_open] File created successfully: {}", path_str);
+                    // 设置文件权限（如果文件系统支持的话）
+                    let _ = inode.set_mode(file_mode);
+                    if let Some(task) = current_task() {
+                        let task_inner = task.inner_exclusive_access();
+                        let _ = inode.set_uid(task_inner.get_euid());
+                        let _ = inode.set_gid(task_inner.get_egid());
+                    }
+                    inode
                 }
-                if required_perm == 0 {
-                    required_perm = 0o4; // 默认需要读权限
+                Err(e) => {
+                    debug!("[sys_open] Failed to create file {}: {:?}", path_str, e);
+                    return -1; // 创建失败
                 }
-                
-                // 检查权限
-                if !task_inner.check_file_permission(file_mode, file_uid, file_gid, required_perm) {
-                    return -13; // EACCES
-                }
-                
-                drop(task_inner); // 释放锁
-                
-                let mut task_inner = task.inner_exclusive_access();
-                let file_desc = Arc::new(FileDescriptor::new(inode, flags));
-                let fd = task_inner.alloc_fd(file_desc);
-                fd as isize
-            } else {
-                -1
             }
         }
-        Err(_) => -1,
+    };
+
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_exclusive_access();
+        
+        // 检查文件权限
+        let file_mode = inode.get_mode();
+        let file_uid = inode.get_uid();
+        let file_gid = inode.get_gid();
+        
+        // 根据访问模式确定需要的权限
+        let mut required_perm = 0;
+        match access_mode {
+            O_RDONLY => required_perm = 0o4, // 读权限
+            O_WRONLY => required_perm = 0o2, // 写权限
+            O_RDWR => required_perm = 0o6,   // 读写权限
+            _ => required_perm = 0o4,        // 默认读权限
+        }
+        
+        // 检查权限
+        if !task_inner.check_file_permission(file_mode, file_uid, file_gid, required_perm) {
+            return -13; // EACCES
+        }
+        
+        drop(task_inner); // 释放锁
+        
+        let mut task_inner = task.inner_exclusive_access();
+        let file_desc = Arc::new(FileDescriptor::new(inode, flags));
+        let fd = task_inner.alloc_fd(file_desc);
+        fd as isize
+    } else {
+        -1
     }
 }
 

@@ -578,67 +578,94 @@ impl FAT32FileSystem {
     }
 
     fn generate_filename_entries(&self, name: &str) -> (ShortFileNameEntry, Vec<LongFileNameEntry>) {
-        // Simplified SFN generation
-        let mut sfn_name = [0x20u8; 8];
-        let mut sfn_ext = [0x20u8; 3];
-        let parts: Vec<&str> = name.split('.').collect();
-        let name_part = parts[0].to_uppercase();
-        let ext_part = if parts.len() > 1 { parts[1].to_uppercase() } else { "".to_string() };
+        // 生成唯一的短文件名占位符（简化版本）
+        let mut sfn_name = [0x20u8; 8];  // 用空格填充
+        let sfn_ext = [0x20u8; 3];   // 用空格填充
 
-        for (i, c) in name_part.as_bytes().iter().take(8).enumerate() {
-            sfn_name[i] = *c;
+        // 使用文件名哈希生成唯一的8.3名称
+        let mut hasher = 0u32;
+        for c in name.bytes() {
+            hasher = hasher.wrapping_mul(31).wrapping_add(c as u32);
         }
-        for (i, c) in ext_part.as_bytes().iter().take(3).enumerate() {
-            sfn_ext[i] = *c;
+
+        // 手动生成格式为 "LFN" + 5位数字的占位符
+        let hash_suffix = hasher % 100000;
+        sfn_name[0] = b'L';
+        sfn_name[1] = b'F';
+        sfn_name[2] = b'N';
+
+        // 将数字转换为ASCII并填充到后5位
+        let mut num = hash_suffix;
+        for i in (3..8).rev() {
+            sfn_name[i] = b'0' + (num % 10) as u8;
+            num /= 10;
         }
 
         let sfn = ShortFileNameEntry { name: sfn_name, ext: sfn_ext };
 
-        // LFN generation
-        let mut lfn_entries = Vec::new();
+        // 生成长文件名条目
         let utf16_name: Vec<u16> = name.encode_utf16().collect();
+        // 计算需要多少个LFN条目 (每个条目存储13个UTF-16字符)
         let num_lfn_entries = (utf16_name.len() + 12) / 13;
-        let checksum = 0; // Simplified checksum
+        let mut lfn_entries = Vec::new();
 
+        // 计算校验和
+        let checksum = self.calculate_sfn_checksum(&sfn);
+
+        // 倒序生成LFN条目（FAT32要求）
         for i in 0..num_lfn_entries {
             let mut lfn = LongFileNameEntry {
                 order: (num_lfn_entries - i) as u8,
                 name1: [0xFFFF; 5],
                 attr: ATTR_LONG_NAME,
                 entry_type: 0,
-                checksum: checksum,
+                checksum,
                 name2: [0xFFFF; 6],
                 zero: 0,
                 name3: [0xFFFF; 2],
             };
+
+            // 标记最后一个（实际是第一个写入的）LFN条目
             if i == 0 {
-                lfn.order |= 0x40; // Mark last LFN entry
+                lfn.order |= 0x40;
             }
 
-            let start = i * 13;
+            // 计算这个LFN条目对应的字符起始位置（倒序索引）
+            let start = (num_lfn_entries - 1 - i) * 13;
             let mut name_idx = 0;
 
+            // 填充name1 (5个字符)
             for j in 0..5 {
                 if start + name_idx < utf16_name.len() {
                     lfn.name1[j] = utf16_name[start + name_idx];
                 } else if start + name_idx == utf16_name.len() {
-                    lfn.name1[j] = 0;
+                    lfn.name1[j] = 0; // null终止符
+                } else {
+                    lfn.name1[j] = 0xFFFF; // 填充
                 }
                 name_idx += 1;
             }
+
+            // 填充name2 (6个字符)
             for j in 0..6 {
                 if start + name_idx < utf16_name.len() {
                     lfn.name2[j] = utf16_name[start + name_idx];
                 } else if start + name_idx == utf16_name.len() {
-                    lfn.name2[j] = 0;
+                    lfn.name2[j] = 0; // null终止符
+                } else {
+                    lfn.name2[j] = 0xFFFF; // 填充
                 }
                 name_idx += 1;
             }
+
+            // 填充name3 (2个字符)
             for j in 0..2 {
                 if start + name_idx < utf16_name.len() {
                     lfn.name3[j] = utf16_name[start + name_idx];
                 } else if start + name_idx == utf16_name.len() {
-                    lfn.name3[j] = 0;
+                    lfn.name3[j] = 0; // null终止符
+                } else {
+                    lfn.name3[j] = 0xFFFF; // 填充
                 }
                 name_idx += 1;
             }
@@ -647,6 +674,20 @@ impl FAT32FileSystem {
         }
 
         (sfn, lfn_entries)
+    }
+
+    // 计算短文件名校验和
+    fn calculate_sfn_checksum(&self, sfn: &ShortFileNameEntry) -> u8 {
+        let mut checksum: u8 = 0;
+        for &c in &sfn.name {
+            checksum = ((checksum & 1) << 7) | ((checksum & 0xFE) >> 1);
+            checksum = checksum.wrapping_add(c);
+        }
+        for &c in &sfn.ext {
+            checksum = ((checksum & 1) << 7) | ((checksum & 0xFE) >> 1);
+            checksum = checksum.wrapping_add(c);
+        }
+        checksum
     }
 }
 
@@ -657,6 +698,9 @@ impl FileSystem for FAT32FileSystem {
             cluster: self.root_cluster,
             size: Mutex::new(0),
             is_dir: true,
+            mode: Mutex::new(0o755),  // 目录默认权限
+            uid: Mutex::new(0),       // root用户
+            gid: Mutex::new(0),       // root组
         })
     }
 
@@ -697,6 +741,9 @@ pub struct FAT32Inode {
     cluster: u32,
     size: Mutex<u64>,
     is_dir: bool,
+    mode: Mutex<u32>,   // 文件权限模式
+    uid: Mutex<u32>,    // 文件拥有者UID
+    gid: Mutex<u32>,    // 文件拥有者GID
 }
 
 unsafe impl Send for FAT32Inode {}
@@ -910,8 +957,6 @@ impl Inode for FAT32Inode {
                 continue;
             }
 
-            debug!("[FAT32] Checking entry: {} against {}", info.name, name);
-
             if info.name.to_lowercase() == name.to_lowercase() {
                 let entry = info.entry;
                 let cluster =
@@ -928,6 +973,9 @@ impl Inode for FAT32Inode {
                     cluster,
                     size: Mutex::new(size),
                     is_dir,
+                    mode: Mutex::new(if is_dir { 0o755 } else { 0o644 }),  // 默认权限
+                    uid: Mutex::new(0),       // root用户
+                    gid: Mutex::new(0),       // root组
                 }));
             }
         }
@@ -963,6 +1011,9 @@ impl Inode for FAT32Inode {
             cluster: new_cluster,
             size: Mutex::new(0),
             is_dir: false,
+            mode: Mutex::new(0o644),  // 文件默认权限
+            uid: Mutex::new(0),       // root用户
+            gid: Mutex::new(0),       // root组
         }))
     }
 
@@ -1051,6 +1102,9 @@ impl Inode for FAT32Inode {
             cluster: new_cluster,
             size: Mutex::new(0),
             is_dir: true,
+            mode: Mutex::new(0o755),  // 目录默认权限
+            uid: Mutex::new(0),       // root用户
+            gid: Mutex::new(0),       // root组
         }))
     }
 
@@ -1179,6 +1233,39 @@ impl Inode for FAT32Inode {
     }
 
     fn sync(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+
+    /// 获取文件权限模式
+    fn get_mode(&self) -> u32 {
+        *self.mode.lock()
+    }
+
+    /// 设置文件权限模式
+    fn set_mode(&self, mode: u32) -> Result<(), super::FileSystemError> {
+        *self.mode.lock() = mode;
+        Ok(())
+    }
+
+    /// 获取文件拥有者UID
+    fn get_uid(&self) -> u32 {
+        *self.uid.lock()
+    }
+
+    /// 设置文件拥有者UID
+    fn set_uid(&self, uid: u32) -> Result<(), super::FileSystemError> {
+        *self.uid.lock() = uid;
+        Ok(())
+    }
+
+    /// 获取文件拥有者GID
+    fn get_gid(&self) -> u32 {
+        *self.gid.lock()
+    }
+
+    /// 设置文件拥有者GID
+    fn set_gid(&self, gid: u32) -> Result<(), super::FileSystemError> {
+        *self.gid.lock() = gid;
         Ok(())
     }
 }

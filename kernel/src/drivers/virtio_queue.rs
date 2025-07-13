@@ -214,7 +214,7 @@ impl VirtQueue {
 
     pub fn add_buffer(&mut self, inputs: &[&[u8]], outputs: &mut [&mut [u8]]) -> Option<u16> {
         if self.num_free < (inputs.len() + outputs.len()) as u16 {
-            debug!("[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}", 
+            error!("[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
                    inputs.len() + outputs.len(), self.num_free);
             return None;
         }
@@ -381,9 +381,9 @@ impl VirtQueue {
 
     // 强制回收描述符，用于超时等异常情况
     pub fn recycle_descriptors_force(&mut self, head: u16) {
-        debug!("[VIRTIO_QUEUE] Force recycling descriptors starting from {}", head);
+        // debug!("[VIRTIO_QUEUE] Force recycling descriptors starting from {}", head);
         self.recycle_descriptors(head);
-        debug!("[VIRTIO_QUEUE] After force recycle: {} free descriptors", self.num_free);
+        // debug!("[VIRTIO_QUEUE] After force recycle: {} free descriptors", self.num_free);
     }
 }
 

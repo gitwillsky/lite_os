@@ -20,7 +20,7 @@ fn main() -> i32 {
     // Test creating file
     println!("\n2. Create test file:");
     let test_file = "/test_permissions.txt";
-    let fd = open(test_file, 0o644);
+    let fd = open(test_file, 0o100 | 0o644); // O_CREAT | mode
     if fd >= 0 {
         println!("File created successfully: {}", test_file);
         let content = b"This is a test file for permission testing.";
@@ -87,7 +87,7 @@ fn main() -> i32 {
 
     // Create a read-only file
     let readonly_file = "/readonly_test.txt";
-    let fd = open(readonly_file, 0o644);
+    let fd = open(readonly_file, 0o100 | 0o644); // O_CREAT | mode
     if fd >= 0 {
         write(fd as usize, b"readonly content");
         close(fd as usize);

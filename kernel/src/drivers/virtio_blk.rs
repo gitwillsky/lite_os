@@ -270,12 +270,12 @@ impl VirtIOBlockDevice {
             if id != desc_idx {
                 error!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
                 // 仍然需要回收正确的描述符
-                debug!("[VIRTIO_BLK] Recycling expected descriptor {} due to ID mismatch", desc_idx);
+                // debug!("[VIRTIO_BLK] Recycling expected descriptor {} due to ID mismatch", desc_idx);
                 queue.recycle_descriptors_force(desc_idx);
             }
         } else {
             // 如果get_used失败，强制回收描述符
-            debug!("[VIRTIO_BLK] get_used returned None, force recycling descriptor {}", desc_idx);
+            // debug!("[VIRTIO_BLK] get_used returned None, force recycling descriptor {}", desc_idx);
             queue.recycle_descriptors_force(desc_idx);
         }
 
@@ -300,12 +300,12 @@ impl VirtIOBlockDevice {
 
 impl BlockDevice for VirtIOBlockDevice {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        let block_capacity = (self.capacity * 512 / BLOCK_SIZE as u64) as usize;
-        debug!("[VIRTIO_BLK] Reading block {} (block capacity: {}, sector capacity: {})",
-               block_id, block_capacity, self.capacity);
+        // let block_capacity = (self.capacity * 512 / BLOCK_SIZE as u64) as usize;
+        // debug!("[VIRTIO_BLK] Reading block {} (block capacity: {}, sector capacity: {})",
+        //        block_id, block_capacity, self.capacity);
         self.perform_io(false, block_id, buf)
             .map_err(|e| {
-                debug!("[VIRTIO_BLK] read_block failed for block {}: {:?}", block_id, e);
+                // debug!("[VIRTIO_BLK] read_block failed for block {}: {:?}", block_id, e);
                 e
             })
     }

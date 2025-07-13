@@ -40,7 +40,7 @@ impl VirtualFileSystem {
     fn canonicalize_path(&self, path: &str) -> String {
         debug!("[VFS] Canonicalizing path: {}", path);
         let mut components = Vec::new();
-        
+
         for component in path.split('/') {
             match component {
                 "" | "." => {
@@ -57,54 +57,54 @@ impl VirtualFileSystem {
                 }
             }
         }
-        
+
         // 重新构建路径
         let canonical = if components.is_empty() {
             "/".to_string()
         } else {
             format!("/{}", components.join("/"))
         };
-        
+
         debug!("[VFS] Canonicalized {} -> {}", path, canonical);
         canonical
     }
 
     pub fn mount(&self, path: &str, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
         let mut filesystems = self.filesystems.lock();
-        
+
         if path == "/" {
             *self.root_fs.lock() = Some(fs.clone());
         }
-        
+
         filesystems.insert(path.to_string(), fs);
         Ok(())
     }
 
     pub fn unmount(&self, path: &str) -> Result<(), FileSystemError> {
         let mut filesystems = self.filesystems.lock();
-        
+
         if path == "/" {
             *self.root_fs.lock() = None;
         }
-        
+
         filesystems.remove(path);
         Ok(())
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
-        
+
         // First check if this is a named pipe (FIFO)
         if let Ok(fifo) = open_fifo(&abs_path) {
             return Ok(fifo as Arc<dyn Inode>);
         }
-        
+
         if abs_path == "/" {
             let root_fs = self.root_fs.lock();
             let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
             return Ok(fs.root_inode());
         }
-        
+
         self.resolve_path(&abs_path)
     }
 
@@ -112,20 +112,20 @@ impl VirtualFileSystem {
         debug!("[VFS] Resolving path: {}", path);
         let root_fs = self.root_fs.lock();
         let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
-        
+
         let mut current = fs.root_inode();
-        
+
         let path = if path.starts_with('/') {
             &path[1..] // Remove leading '/'
         } else {
             path // Treat relative paths as relative to root
         };
-        
+
         if path.is_empty() {
             debug!("[VFS] Returning root inode");
             return Ok(current);
         }
-        
+
         for component in path.split('/') {
             if component.is_empty() {
                 continue;
@@ -134,7 +134,7 @@ impl VirtualFileSystem {
             current = current.find_child(component)?;
             debug!("[VFS] Found component: {}", component);
         }
-        
+
         debug!("[VFS] Successfully resolved path: {}", path);
         Ok(current)
     }
@@ -164,12 +164,12 @@ impl VirtualFileSystem {
         if !path.starts_with('/') {
             return Err(FileSystemError::InvalidPath);
         }
-        
+
         let path = &path[1..];
         if path.is_empty() {
             return Err(FileSystemError::InvalidPath);
         }
-        
+
         if let Some(pos) = path.rfind('/') {
             let parent_path = format!("/{}", &path[..pos]);
             let filename = path[pos + 1..].to_string();
