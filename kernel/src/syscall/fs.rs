@@ -451,3 +451,29 @@ pub fn sys_getcwd(buf: *mut u8, len: usize) -> isize {
         -1 // No current task
     }
 }
+
+/// dup - 复制文件描述符
+pub fn sys_dup(fd: usize) -> isize {
+    if let Some(task) = current_task() {
+        let mut task_inner = task.inner_exclusive_access();
+        match task_inner.dup_fd(fd) {
+            Some(new_fd) => new_fd as isize,
+            None => -9, // EBADF - Bad file descriptor
+        }
+    } else {
+        -1
+    }
+}
+
+/// dup2 - 复制文件描述符到指定的文件描述符号
+pub fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
+    if let Some(task) = current_task() {
+        let mut task_inner = task.inner_exclusive_access();
+        match task_inner.dup2_fd(oldfd, newfd) {
+            Some(fd) => fd as isize,
+            None => -9, // EBADF - Bad file descriptor
+        }
+    } else {
+        -1
+    }
+}

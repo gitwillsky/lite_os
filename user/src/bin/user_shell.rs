@@ -8,7 +8,7 @@ extern crate user_lib;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use user_lib::{exec, fork, read, wait_pid, yield_};
+use user_lib::{exec, fork, read, wait_pid, yield_, open, close, dup2};
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
@@ -105,21 +105,8 @@ fn main() -> i32 {
                     } else if line.starts_with("pwd") {
                         handle_pwd_command(&line);
                     } else {
-                        // 执行外部程序
-                        line.push('\0');
-                        let pid = fork();
-                        if pid == 0 {
-                            if exec(line.as_str()) == -1 {
-                                println!("command not found: {}", line);
-                            }
-                        } else {
-                            let mut exit_code: i32 = 0;
-                            let exit_pid = wait_pid(pid as usize, &mut exit_code);
-                            assert_eq!(pid, exit_pid);
-                            if exit_code != 0 {
-                                println!("Shell: Process {} exited with code {}", pid, exit_code);
-                            }
-                        }
+                        // 执行外部程序，支持重定向
+                        execute_command_with_redirection(&line);
                     }
                     line.clear();
                 }
@@ -154,6 +141,116 @@ fn main() -> i32 {
         }
     }
     0
+}
+
+// 解析命令和重定向
+fn parse_command_with_redirection(line: &str) -> (String, Option<String>, Option<String>) {
+    let mut command = String::new();
+    let mut output_file = None;
+    let mut input_file = None;
+    
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let mut i = 0;
+    
+    while i < parts.len() {
+        match parts[i] {
+            ">" => {
+                // 输出重定向
+                if i + 1 < parts.len() {
+                    output_file = Some(String::from(parts[i + 1]));
+                    i += 2;
+                } else {
+                    println!("shell: syntax error near unexpected token '>'");
+                    return (command, None, None);
+                }
+            }
+            "<" => {
+                // 输入重定向
+                if i + 1 < parts.len() {
+                    input_file = Some(String::from(parts[i + 1]));
+                    i += 2;
+                } else {
+                    println!("shell: syntax error near unexpected token '<'");
+                    return (command, None, None);
+                }
+            }
+            _ => {
+                if !command.is_empty() {
+                    command.push(' ');
+                }
+                command.push_str(parts[i]);
+                i += 1;
+            }
+        }
+    }
+    
+    (command, output_file, input_file)
+}
+
+// 执行带重定向的命令
+fn execute_command_with_redirection(line: &str) {
+    let (command, output_file, input_file) = parse_command_with_redirection(line);
+    
+    if command.is_empty() {
+        return;
+    }
+    
+    let mut cmd_with_null = command.clone();
+    cmd_with_null.push('\0');
+    
+    let pid = fork();
+    if pid == 0 {
+        // 子进程：设置重定向并执行命令
+        
+        // 设置输入重定向
+        if let Some(input_filename) = input_file {
+            let mut input_filename_with_null = input_filename;
+            input_filename_with_null.push('\0');
+            let input_fd = open(input_filename_with_null.as_str(), 0);
+            if input_fd < 0 {
+                println!("shell: {}: No such file or directory", input_filename_with_null.trim_end_matches('\0'));
+                return;
+            }
+            // 重定向 stdin (fd 0) 到输入文件
+            if dup2(input_fd as usize, 0) < 0 {
+                println!("shell: failed to redirect input");
+                close(input_fd as usize);
+                return;
+            }
+            close(input_fd as usize);
+        }
+        
+        // 设置输出重定向
+        if let Some(output_filename) = output_file {
+            let mut output_filename_with_null = output_filename;
+            output_filename_with_null.push('\0');
+            let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
+            if output_fd < 0 {
+                println!("shell: failed to create output file: {}", output_filename_with_null.trim_end_matches('\0'));
+                return;
+            }
+            // 重定向 stdout (fd 1) 到输出文件
+            if dup2(output_fd as usize, 1) < 0 {
+                println!("shell: failed to redirect output");
+                close(output_fd as usize);
+                return;
+            }
+            close(output_fd as usize);
+        }
+        
+        // 执行命令
+        if exec(cmd_with_null.as_str()) == -1 {
+            println!("command not found: {}", command);
+        }
+    } else {
+        // 父进程：等待子进程完成
+        let mut exit_code: i32 = 0;
+        let exit_pid = wait_pid(pid as usize, &mut exit_code);
+        assert_eq!(pid, exit_pid);
+        if exit_code != 0 {
+            println!("Shell: Process {} exited with code {}", pid, exit_code);
+        }
+    }
 }
 
 fn handle_ls_command(line: &str) {

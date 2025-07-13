@@ -26,6 +26,8 @@ const SYSCALL_CHDIR: usize = 504;
 const SYSCALL_GETCWD: usize = 505;
 const SYSCALL_LSEEK: usize = 62;
 const SYSCALL_PIPE: usize = 59;
+const SYSCALL_DUP: usize = 23;
+const SYSCALL_DUP2: usize = 24;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
@@ -50,6 +52,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize, args[2]),
         SYSCALL_PIPE => sys_pipe(args[0] as *mut i32),
+        SYSCALL_DUP => sys_dup(args[0]),
+        SYSCALL_DUP2 => sys_dup2(args[0], args[1]),
         
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

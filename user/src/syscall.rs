@@ -21,6 +21,10 @@ const SYSCALL_STAT: usize = 80;
 const SYSCALL_READ_FILE: usize = 503;
 const SYSCALL_CHDIR: usize = 504;
 const SYSCALL_GETCWD: usize = 505;
+const SYSCALL_LSEEK: usize = 62;
+const SYSCALL_PIPE: usize = 59;
+const SYSCALL_DUP: usize = 23;
+const SYSCALL_DUP2: usize = 24;
 
 /// 系统调用
 ///
@@ -179,4 +183,24 @@ pub fn chdir(path: &str) -> isize {
 /// 获取当前工作目录
 pub fn getcwd(buf: &mut [u8]) -> isize {
     syscall(SYSCALL_GETCWD, [buf.as_mut_ptr() as usize, buf.len(), 0])
+}
+
+/// 复制文件描述符
+pub fn dup(fd: usize) -> isize {
+    syscall(SYSCALL_DUP, [fd, 0, 0])
+}
+
+/// 复制文件描述符到指定的文件描述符号
+pub fn dup2(oldfd: usize, newfd: usize) -> isize {
+    syscall(SYSCALL_DUP2, [oldfd, newfd, 0])
+}
+
+/// 设置文件偏移量
+pub fn lseek(fd: usize, offset: isize, whence: usize) -> isize {
+    syscall(SYSCALL_LSEEK, [fd, offset as usize, whence])
+}
+
+/// 创建管道
+pub fn pipe(pipefd: &mut [i32; 2]) -> isize {
+    syscall(SYSCALL_PIPE, [pipefd.as_mut_ptr() as usize, 0, 0])
 }

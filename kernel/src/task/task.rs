@@ -262,4 +262,68 @@ impl TaskControlBlockInner {
     pub fn close_all_fds(&mut self) {
         self.fd_table.clear();
     }
+
+    /// 复制文件描述符（用于 dup 系统调用）
+    pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
+        if let Some(file_desc) = self.fd_table.get(&fd) {
+            let new_fd = self.next_fd;
+            // 获取当前偏移量值
+            let current_offset = *file_desc.offset.exclusive_access();
+            // 创建新的 FileDescriptor，复制当前偏移量
+            let new_file_desc = Arc::new(FileDescriptor {
+                inode: file_desc.inode.clone(),
+                offset: UPSafeCell::new(current_offset),
+                flags: file_desc.flags,
+                mode: file_desc.mode,
+            });
+            self.fd_table.insert(new_fd, new_file_desc);
+            self.next_fd += 1;
+            Some(new_fd)
+        } else {
+            None
+        }
+    }
+
+    /// 复制文件描述符到指定的文件描述符号（用于 dup2 系统调用）
+    pub fn dup2_fd(&mut self, oldfd: usize, newfd: usize) -> Option<usize> {
+        // 如果 oldfd 和 newfd 相同，则直接返回 newfd（如果 oldfd 有效）
+        if oldfd == newfd {
+            return if self.fd_table.contains_key(&oldfd) {
+                Some(newfd)
+            } else {
+                None
+            };
+        }
+
+        // 首先获取 oldfd 的文件描述符信息
+        let (inode, current_offset, flags, mode) = {
+            if let Some(file_desc) = self.fd_table.get(&oldfd) {
+                let current_offset = *file_desc.offset.exclusive_access();
+                (file_desc.inode.clone(), current_offset, file_desc.flags, file_desc.mode)
+            } else {
+                return None;
+            }
+        };
+
+        // 如果 newfd 已存在，先关闭它
+        if self.fd_table.contains_key(&newfd) {
+            self.fd_table.remove(&newfd);
+        }
+        
+        // 创建新的 FileDescriptor，复制当前偏移量
+        let new_file_desc = Arc::new(FileDescriptor {
+            inode,
+            offset: UPSafeCell::new(current_offset),
+            flags,
+            mode,
+        });
+        self.fd_table.insert(newfd, new_file_desc);
+        
+        // 更新 next_fd 以避免与新分配的 fd 冲突
+        if newfd >= self.next_fd {
+            self.next_fd = newfd + 1;
+        }
+        
+        Some(newfd)
+    }
 }
