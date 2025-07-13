@@ -45,7 +45,7 @@ impl FileDescriptor {
             mode: 0o644, // Default file mode
         }
     }
-    
+
     pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, crate::fs::FileSystemError> {
         let mut offset = self.offset.exclusive_access();
         let result = self.inode.read_at(*offset, buf);
@@ -54,7 +54,7 @@ impl FileDescriptor {
         }
         result
     }
-    
+
     pub fn write_at(&self, buf: &[u8]) -> Result<usize, crate::fs::FileSystemError> {
         let mut offset = self.offset.exclusive_access();
         let result = self.inode.write_at(*offset, buf);
@@ -71,6 +71,7 @@ pub enum TaskStatus {
     Running,
     Exited,
     Zombie,
+    Sleeping,    // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
 }
 
 #[derive(Debug)]

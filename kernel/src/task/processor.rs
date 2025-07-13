@@ -81,11 +81,33 @@ pub fn suspend_current_and_run_next() {
 
     let mut task_inner = task.inner_exclusive_access();
     let task_cx_ptr = &mut task_inner.task_cx as *mut _;
-    task_inner.task_status = TaskStatus::Ready;
+    let task_status = task_inner.task_status;
+    
+    if task_status == TaskStatus::Running {
+        task_inner.task_status = TaskStatus::Ready;
+        drop(task_inner);
+        // push back to ready queue
+        super::add_task(task);
+    } else {
+        // 如果任务是Sleeping状态，不要重新加入就绪队列
+        drop(task_inner);
+    }
+
+    // jump to schedule cycle
+    schedule(task_cx_ptr);
+}
+
+/// 阻塞当前任务并切换到下一个任务
+pub fn block_current_and_run_next() {
+    let task = take_current_task().unwrap();
+
+    let mut task_inner = task.inner_exclusive_access();
+    let task_cx_ptr = &mut task_inner.task_cx as *mut _;
+    task_inner.task_status = TaskStatus::Sleeping;
     drop(task_inner);
 
-    // push back to ready queue
-    super::add_task(task);
+    // 不将任务加入就绪队列，让它保持阻塞状态
+    // 任务将通过wakeup_task函数被唤醒
 
     // jump to schedule cycle
     schedule(task_cx_ptr);

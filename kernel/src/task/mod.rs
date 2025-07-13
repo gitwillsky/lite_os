@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    task::{context::TaskContext, task::TaskControlBlock, task_manager::set_init_proc},
+    task::{context::TaskContext, task_manager::set_init_proc},
 };
 
 mod context;
@@ -14,8 +14,8 @@ mod task;
 mod task_manager;
 
 pub use processor::*;
-pub use task_manager::add_task;
-pub use task::FileDescriptor;
+pub use task_manager::{add_task, wakeup_task};
+pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
 
 global_asm!(include_str!("switch.S"));
 
@@ -30,7 +30,7 @@ unsafe extern "C" {
 
 pub fn init() {
     let elf_data = get_app_data_by_name("initproc").expect("Failed to get init proc data");
-    let init_proc = TaskControlBlock::new(elf_data.as_slice());
+    let init_proc = task::TaskControlBlock::new(elf_data.as_slice());
     match init_proc {
         Ok(tcb) => set_init_proc(Arc::new(tcb)),
         Err(e) => panic!("Failed to create init proc: {:?}", e),

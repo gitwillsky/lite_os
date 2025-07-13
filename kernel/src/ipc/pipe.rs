@@ -1,7 +1,8 @@
-use alloc::{sync::Arc, vec::Vec, collections::VecDeque};
+use alloc::{sync::{Arc, Weak}, vec::Vec, collections::VecDeque};
 use crate::{
     sync::UPSafeCell,
     fs::{FileSystemError, inode::{Inode, InodeType}},
+    task::{TaskControlBlock, current_task, block_current_and_run_next, wakeup_task},
 };
 
 /// 管道缓冲区大小
@@ -15,6 +16,10 @@ pub struct Pipe {
     read_closed: UPSafeCell<bool>,
     /// 写端是否关闭  
     write_closed: UPSafeCell<bool>,
+    /// 等待读取的任务队列
+    read_wait_queue: UPSafeCell<Vec<Weak<TaskControlBlock>>>,
+    /// 等待写入的任务队列
+    write_wait_queue: UPSafeCell<Vec<Weak<TaskControlBlock>>>,
 }
 
 impl Pipe {
@@ -24,17 +29,59 @@ impl Pipe {
             buffer: UPSafeCell::new(VecDeque::with_capacity(PIPE_BUF_SIZE)),
             read_closed: UPSafeCell::new(false),
             write_closed: UPSafeCell::new(false),
+            read_wait_queue: UPSafeCell::new(Vec::new()),
+            write_wait_queue: UPSafeCell::new(Vec::new()),
         }
     }
 
     /// 关闭读端
     pub fn close_read(&self) {
         *self.read_closed.exclusive_access() = true;
+        // 唤醒所有等待写入的任务
+        self.wakeup_write_waiters();
     }
 
     /// 关闭写端
     pub fn close_write(&self) {
         *self.write_closed.exclusive_access() = true;
+        // 唤醒所有等待读取的任务
+        self.wakeup_read_waiters();
+    }
+
+    /// 将当前任务添加到读等待队列
+    fn add_read_waiter(&self, task: Weak<TaskControlBlock>) {
+        self.read_wait_queue.exclusive_access().push(task);
+    }
+
+    /// 将当前任务添加到写等待队列
+    fn add_write_waiter(&self, task: Weak<TaskControlBlock>) {
+        self.write_wait_queue.exclusive_access().push(task);
+    }
+
+    /// 唤醒所有等待读取的任务
+    fn wakeup_read_waiters(&self) {
+        let mut waiters = self.read_wait_queue.exclusive_access();
+        waiters.retain(|weak_task| {
+            if let Some(task) = weak_task.upgrade() {
+                wakeup_task(task);
+                false // 从等待队列中移除
+            } else {
+                false // 任务已经被回收，从队列中移除
+            }
+        });
+    }
+
+    /// 唤醒所有等待写入的任务
+    fn wakeup_write_waiters(&self) {
+        let mut waiters = self.write_wait_queue.exclusive_access();
+        waiters.retain(|weak_task| {
+            if let Some(task) = weak_task.upgrade() {
+                wakeup_task(task);
+                false // 从等待队列中移除
+            } else {
+                false // 任务已经被回收，从队列中移除
+            }
+        });
     }
 
     /// 检查是否可以读取
@@ -49,51 +96,99 @@ impl Pipe {
         buffer.len() < PIPE_BUF_SIZE && !*self.read_closed.exclusive_access()
     }
 
-    /// 从管道读取数据
+    /// 从管道读取数据（阻塞式）
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, FileSystemError> {
-        let mut buffer = self.buffer.exclusive_access();
-        let write_closed = *self.write_closed.exclusive_access();
-        
-        if buffer.is_empty() {
-            if write_closed {
+        loop {
+            let mut buffer = self.buffer.exclusive_access();
+            let write_closed = *self.write_closed.exclusive_access();
+            
+            if !buffer.is_empty() {
+                // 有数据可读，立即返回
+                let read_len = buf.len().min(buffer.len());
+                for i in 0..read_len {
+                    buf[i] = buffer.pop_front().unwrap();
+                }
+                
+                // 唤醒等待写入的任务（缓冲区有空间了）
+                drop(buffer);
+                self.wakeup_write_waiters();
+                
+                return Ok(read_len);
+            } else if write_closed {
                 // 写端关闭且无数据，返回EOF
                 return Ok(0);
             } else {
-                // 无数据且写端未关闭，应该阻塞，这里返回错误表示需要重试
-                return Err(FileSystemError::IoError);
+                // 无数据且写端未关闭，需要阻塞等待
+                drop(buffer);
+                
+                if let Some(current) = current_task() {
+                    // 将当前任务添加到等待队列
+                    self.add_read_waiter(Arc::downgrade(&current));
+                    
+                    // 阻塞当前任务
+                    block_current_and_run_next();
+                    
+                    // 任务被唤醒后继续循环检查
+                } else {
+                    return Err(FileSystemError::IoError);
+                }
             }
         }
-
-        let read_len = buf.len().min(buffer.len());
-        for i in 0..read_len {
-            buf[i] = buffer.pop_front().unwrap();
-        }
-        
-        Ok(read_len)
     }
 
-    /// 向管道写入数据
+    /// 向管道写入数据（阻塞式）
     pub fn write(&self, buf: &[u8]) -> Result<usize, FileSystemError> {
-        let mut buffer = self.buffer.exclusive_access();
-        let read_closed = *self.read_closed.exclusive_access();
-        
-        if read_closed {
-            // 读端关闭，写入失败 (SIGPIPE)
-            return Err(FileSystemError::IoError);
-        }
-
-        let available_space = PIPE_BUF_SIZE - buffer.len();
-        if available_space == 0 {
-            // 缓冲区满，应该阻塞，这里返回错误表示需要重试
-            return Err(FileSystemError::IoError);
-        }
-
-        let write_len = buf.len().min(available_space);
-        for i in 0..write_len {
-            buffer.push_back(buf[i]);
+        if buf.is_empty() {
+            return Ok(0);
         }
         
-        Ok(write_len)
+        let mut total_written = 0;
+        let mut remaining = buf;
+        
+        while !remaining.is_empty() {
+            let mut buffer = self.buffer.exclusive_access();
+            let read_closed = *self.read_closed.exclusive_access();
+            
+            if read_closed {
+                // 读端关闭，写入失败 (SIGPIPE)
+                return Err(FileSystemError::PermissionDenied);
+            }
+            
+            let available_space = PIPE_BUF_SIZE - buffer.len();
+            if available_space > 0 {
+                // 有空间可写
+                let write_len = remaining.len().min(available_space);
+                for i in 0..write_len {
+                    buffer.push_back(remaining[i]);
+                }
+                
+                total_written += write_len;
+                remaining = &remaining[write_len..];
+                
+                // 唤醒等待读取的任务（有新数据了）
+                drop(buffer);
+                self.wakeup_read_waiters();
+                
+                // 如果还有数据要写但缓冲区满了，继续循环阻塞
+            } else {
+                // 缓冲区满，需要阻塞等待
+                drop(buffer);
+                
+                if let Some(current) = current_task() {
+                    // 将当前任务添加到等待队列
+                    self.add_write_waiter(Arc::downgrade(&current));
+                    
+                    // 阻塞当前任务
+                    block_current_and_run_next();
+                    
+                    // 任务被唤醒后继续循环检查
+                } else {
+                    break; // 无法获取当前任务，退出循环
+                }
+            }
+        }
+        
+        Ok(total_written)
     }
 }
 
