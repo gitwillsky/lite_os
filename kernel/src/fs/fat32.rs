@@ -779,7 +779,10 @@ impl Inode for FAT32Inode {
             let mut cluster_data = vec![0u8; bytes_per_cluster as usize];
             self.fs()
                 .read_cluster(current_cluster, &mut cluster_data)
-                .map_err(|_| FileSystemError::IoError)?;
+                .map_err(|e| {
+                    debug!("[FAT32] read_cluster failed for cluster {}: {:?}", current_cluster, e);
+                    FileSystemError::IoError
+                })?;
 
             let copy_start = cluster_offset as usize;
             let copy_size = (bytes_per_cluster as usize - copy_start).min(read_size - bytes_read);

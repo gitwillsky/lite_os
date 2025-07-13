@@ -172,6 +172,7 @@ impl VirtIOBlockDevice {
         }
 
         if block_id >= self.capacity as usize {
+            debug!("[VIRTIO_BLK] Block {} exceeds capacity {}", block_id, self.capacity);
             return Err(BlockError::InvalidBlock);
         }
 
@@ -266,16 +267,30 @@ impl VirtIOBlockDevice {
         // 检查状态
         match status[0] {
             VIRTIO_BLK_S_OK => Ok(()),
-            VIRTIO_BLK_S_IOERR => Err(BlockError::IoError),
-            VIRTIO_BLK_S_UNSUPP => Err(BlockError::DeviceError),
-            _ => Err(BlockError::DeviceError),
+            VIRTIO_BLK_S_IOERR => {
+                debug!("[VIRTIO_BLK] Device reported I/O error for block {}", block_id);
+                Err(BlockError::IoError)
+            },
+            VIRTIO_BLK_S_UNSUPP => {
+                debug!("[VIRTIO_BLK] Device reported unsupported operation for block {}", block_id);
+                Err(BlockError::DeviceError)
+            },
+            _ => {
+                debug!("[VIRTIO_BLK] Device reported unknown status {} for block {}", status[0], block_id);
+                Err(BlockError::DeviceError)
+            },
         }
     }
 }
 
 impl BlockDevice for VirtIOBlockDevice {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        debug!("[VIRTIO_BLK] Reading block {} (capacity: {})", block_id, self.capacity);
         self.perform_io(false, block_id, buf)
+            .map_err(|e| {
+                debug!("[VIRTIO_BLK] read_block failed for block {}: {:?}", block_id, e);
+                e
+            })
     }
 
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
