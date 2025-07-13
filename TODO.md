@@ -113,12 +113,14 @@
 - [x] 实现管道的读写操作
 - [x] 支持管道的阻塞和非阻塞模式
 - [x] 实现管道的引用计数和自动清理
-- [ ] 添加命名管道（FIFO）支持
+- [x] 添加命名管道（FIFO）支持
 
 **新增文件**：
 
 - `kernel/src/ipc/pipe.rs`
 - `kernel/src/ipc/mod.rs`
+- `user/src/bin/fifo_test.rs` - 命名管道测试程序
+- `user/src/bin/simple_fifo_test.rs` - 简单命名管道测试
 
 #### 3. 标准流重定向支持 ✅ **已完成**
 

@@ -6,6 +6,7 @@ pub enum InodeType {
     Directory,
     SymLink,
     Device,
+    Fifo,  // Named pipe (FIFO)
 }
 
 pub trait Inode: Send + Sync {

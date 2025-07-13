@@ -28,6 +28,7 @@ const SYSCALL_PIPE: usize = 59;
 const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
 const SYSCALL_FLOCK: usize = 143;
+const SYSCALL_MKFIFO: usize = 506;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -220,6 +221,13 @@ pub fn mkdir(path: &str) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
     syscall(SYSCALL_MKDIR, [null_terminated_path.as_ptr() as usize, 0, 0])
+}
+
+/// 创建命名管道（FIFO）
+pub fn mkfifo(path: &str, mode: u32) -> isize {
+    let mut null_terminated_path = String::from(path);
+    null_terminated_path.push('\0');
+    syscall(SYSCALL_MKFIFO, [null_terminated_path.as_ptr() as usize, mode as usize, 0])
 }
 
 /// 删除文件或目录

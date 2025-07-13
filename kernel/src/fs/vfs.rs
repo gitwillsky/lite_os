@@ -4,6 +4,7 @@ use spin::Mutex;
 use crate::task;
 
 use super::{FileSystem, FileSystemError, Inode};
+use crate::ipc::{open_fifo};
 
 pub struct VirtualFileSystem {
     filesystems: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
@@ -92,6 +93,11 @@ impl VirtualFileSystem {
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
+        
+        // First check if this is a named pipe (FIFO)
+        if let Ok(fifo) = open_fifo(&abs_path) {
+            return Ok(fifo as Arc<dyn Inode>);
+        }
         
         if abs_path == "/" {
             let root_fs = self.root_fs.lock();

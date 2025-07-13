@@ -5,7 +5,7 @@ use crate::{
     fs::{vfs::get_vfs, FileSystemError, LockType, LockOp, LockError, get_file_lock_manager},
     memory::page_table::translated_byte_buffer,
     task::{current_user_token, suspend_current_and_run_next, current_task, FileDescriptor},
-    ipc::create_pipe,
+    ipc::{create_pipe, create_fifo},
 };
 
 const STD_OUT: usize = 1;
@@ -537,5 +537,26 @@ pub fn sys_flock(fd: usize, operation: i32) -> isize {
         }
     } else {
         -1
+    }
+}
+
+/// 创建命名管道（FIFO）
+pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
+    let token = current_user_token();
+    let path_str = translated_c_string(token, path);
+    let _ = mode; // Mode parameter is currently ignored
+    
+    match create_fifo(&path_str) {
+        Ok(_) => 0,
+        Err(e) => {
+            match e {
+                FileSystemError::AlreadyExists => -17, // EEXIST
+                FileSystemError::PermissionDenied => -13, // EACCES
+                FileSystemError::NotFound => -2, // ENOENT (parent directory not found)
+                FileSystemError::NotDirectory => -20, // ENOTDIR
+                FileSystemError::NoSpace => -28, // ENOSPC
+                _ => -1, // Generic error
+            }
+        }
     }
 }

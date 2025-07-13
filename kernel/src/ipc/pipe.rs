@@ -1,9 +1,10 @@
-use alloc::{sync::{Arc, Weak}, vec::Vec, collections::VecDeque};
+use alloc::{sync::{Arc, Weak}, vec::Vec, collections::{VecDeque, BTreeMap}, string::{String, ToString}};
 use crate::{
     sync::UPSafeCell,
     fs::{FileSystemError, inode::{Inode, InodeType}},
     task::{TaskControlBlock, current_task, block_current_and_run_next, wakeup_task},
 };
+use spin::Mutex;
 
 /// 管道缓冲区大小
 const PIPE_BUF_SIZE: usize = 4096;
@@ -86,21 +87,24 @@ impl Pipe {
 
     /// 检查是否可以读取
     pub fn can_read(&self) -> bool {
+        let write_closed = *self.write_closed.exclusive_access();
         let buffer = self.buffer.exclusive_access();
-        !buffer.is_empty() || *self.write_closed.exclusive_access()
+        !buffer.is_empty() || write_closed
     }
 
     /// 检查是否可以写入
     pub fn can_write(&self) -> bool {
+        let read_closed = *self.read_closed.exclusive_access();
         let buffer = self.buffer.exclusive_access();
-        buffer.len() < PIPE_BUF_SIZE && !*self.read_closed.exclusive_access()
+        buffer.len() < PIPE_BUF_SIZE && !read_closed
     }
 
     /// 从管道读取数据（阻塞式）
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         loop {
-            let mut buffer = self.buffer.exclusive_access();
+            // 先检查写端状态，避免借用冲突
             let write_closed = *self.write_closed.exclusive_access();
+            let mut buffer = self.buffer.exclusive_access();
 
             if !buffer.is_empty() {
                 // 有数据可读，立即返回
@@ -146,8 +150,9 @@ impl Pipe {
         let mut remaining = buf;
 
         while !remaining.is_empty() {
-            let mut buffer = self.buffer.exclusive_access();
+            // 先检查读端状态，避免借用冲突
             let read_closed = *self.read_closed.exclusive_access();
+            let mut buffer = self.buffer.exclusive_access();
 
             if read_closed {
                 // 读端关闭，写入失败 (SIGPIPE)
@@ -336,4 +341,267 @@ pub fn create_pipe() -> (Arc<PipeReadEnd>, Arc<PipeWriteEnd>) {
     let read_end = Arc::new(PipeReadEnd::new(pipe.clone()));
     let write_end = Arc::new(PipeWriteEnd::new(pipe));
     (read_end, write_end)
+}
+
+/// Named Pipe (FIFO) implementation
+pub struct NamedPipe {
+    pipe: Arc<Pipe>,
+    /// Number of read handles currently open
+    read_count: UPSafeCell<usize>,
+    /// Number of write handles currently open
+    write_count: UPSafeCell<usize>,
+}
+
+impl NamedPipe {
+    pub fn new() -> Self {
+        Self {
+            pipe: Arc::new(Pipe::new()),
+            read_count: UPSafeCell::new(0),
+            write_count: UPSafeCell::new(0),
+        }
+    }
+
+    /// Open for reading - blocks until a writer is available if needed
+    pub fn open_read(self: &Arc<Self>) -> Arc<FifoReadHandle> {
+        *self.read_count.exclusive_access() += 1;
+        Arc::new(FifoReadHandle::new(self.pipe.clone(), Arc::downgrade(self)))
+    }
+
+    /// Open for writing - blocks until a reader is available if needed
+    pub fn open_write(self: &Arc<Self>) -> Arc<FifoWriteHandle> {
+        *self.write_count.exclusive_access() += 1;
+        Arc::new(FifoWriteHandle::new(self.pipe.clone(), Arc::downgrade(self)))
+    }
+
+    fn close_reader(&self) {
+        let mut count = self.read_count.exclusive_access();
+        if *count > 0 {
+            *count -= 1;
+            if *count == 0 {
+                self.pipe.close_read();
+            }
+        }
+    }
+
+    fn close_writer(&self) {
+        let mut count = self.write_count.exclusive_access();
+        if *count > 0 {
+            *count -= 1;
+            if *count == 0 {
+                self.pipe.close_write();
+            }
+        }
+    }
+}
+
+impl Inode for NamedPipe {
+    fn inode_type(&self) -> InodeType {
+        InodeType::Fifo
+    }
+
+    fn size(&self) -> u64 {
+        0 // FIFOs don't have a fixed size
+    }
+
+    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+        // For FIFO, reading through the inode interface uses the pipe directly
+        self.pipe.read(buf)
+    }
+
+    fn write_at(&self, _offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+        // For FIFO, writing through the inode interface uses the pipe directly
+        self.pipe.write(buf)
+    }
+
+    fn list_dir(&self) -> Result<Vec<String>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn find_child(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn remove(&self, _name: &str) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+        Err(FileSystemError::PermissionDenied)
+    }
+
+    fn sync(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+}
+
+/// FIFO read handle
+pub struct FifoReadHandle {
+    pipe: Arc<Pipe>,
+    fifo: Weak<NamedPipe>,
+}
+
+impl FifoReadHandle {
+    fn new(pipe: Arc<Pipe>, fifo: Weak<NamedPipe>) -> Self {
+        Self { pipe, fifo }
+    }
+}
+
+impl Inode for FifoReadHandle {
+    fn inode_type(&self) -> InodeType {
+        InodeType::Fifo
+    }
+
+    fn size(&self) -> u64 {
+        0
+    }
+
+    fn read_at(&self, _offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+        self.pipe.read(buf)
+    }
+
+    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+        Err(FileSystemError::PermissionDenied)
+    }
+
+    fn list_dir(&self) -> Result<Vec<String>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn find_child(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn remove(&self, _name: &str) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+        Err(FileSystemError::PermissionDenied)
+    }
+
+    fn sync(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+}
+
+impl Drop for FifoReadHandle {
+    fn drop(&mut self) {
+        if let Some(fifo) = self.fifo.upgrade() {
+            fifo.close_reader();
+        }
+    }
+}
+
+/// FIFO write handle
+pub struct FifoWriteHandle {
+    pipe: Arc<Pipe>,
+    fifo: Weak<NamedPipe>,
+}
+
+impl FifoWriteHandle {
+    fn new(pipe: Arc<Pipe>, fifo: Weak<NamedPipe>) -> Self {
+        Self { pipe, fifo }
+    }
+}
+
+impl Inode for FifoWriteHandle {
+    fn inode_type(&self) -> InodeType {
+        InodeType::Fifo
+    }
+
+    fn size(&self) -> u64 {
+        0
+    }
+
+    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, FileSystemError> {
+        Err(FileSystemError::PermissionDenied)
+    }
+
+    fn write_at(&self, _offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+        self.pipe.write(buf)
+    }
+
+    fn list_dir(&self) -> Result<Vec<String>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn find_child(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn remove(&self, _name: &str) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+
+    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+        Err(FileSystemError::PermissionDenied)
+    }
+
+    fn sync(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+}
+
+impl Drop for FifoWriteHandle {
+    fn drop(&mut self) {
+        if let Some(fifo) = self.fifo.upgrade() {
+            fifo.close_writer();
+        }
+    }
+}
+
+/// Global FIFO registry to manage named pipes by path
+static FIFO_REGISTRY: Mutex<BTreeMap<String, Arc<NamedPipe>>> = Mutex::new(BTreeMap::new());
+
+/// Create a new named pipe (FIFO) at the given path
+pub fn create_fifo(path: &str) -> Result<Arc<NamedPipe>, FileSystemError> {
+    let mut registry = FIFO_REGISTRY.lock();
+    
+    if registry.contains_key(path) {
+        return Err(FileSystemError::AlreadyExists);
+    }
+    
+    let fifo = Arc::new(NamedPipe::new());
+    registry.insert(path.to_string(), fifo.clone());
+    Ok(fifo)
+}
+
+/// Open an existing named pipe
+pub fn open_fifo(path: &str) -> Result<Arc<NamedPipe>, FileSystemError> {
+    let registry = FIFO_REGISTRY.lock();
+    registry.get(path)
+        .map(|fifo| fifo.clone())
+        .ok_or(FileSystemError::NotFound)
+}
+
+/// Remove a named pipe from the registry
+pub fn remove_fifo(path: &str) -> Result<(), FileSystemError> {
+    let mut registry = FIFO_REGISTRY.lock();
+    registry.remove(path)
+        .map(|_| ())
+        .ok_or(FileSystemError::NotFound)
 }
