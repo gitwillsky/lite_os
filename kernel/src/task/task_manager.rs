@@ -67,7 +67,7 @@ impl TaskManager {
     pub fn new() -> Self {
         // 创建40个空的优先级队列
         let priority_queues: [VecDeque<Arc<TaskControlBlock>>; 40] = core::array::from_fn(|_| VecDeque::new());
-        
+
         Self {
             scheduling_policy: SchedulingPolicy::CFS, // 默认使用CFS
             ready_queue: VecDeque::new(),
@@ -103,14 +103,14 @@ impl TaskManager {
                 let task_inner = task.inner_exclusive_access();
                 let task_vruntime = task_inner.vruntime;
                 drop(task_inner);
-                
+
                 // 如果任务的vruntime太小，将其设置为当前最小值
                 if task_vruntime < self.min_vruntime {
                     let mut task_inner = task.inner_exclusive_access();
                     task_inner.vruntime = self.min_vruntime;
                     drop(task_inner);
                 }
-                
+
                 self.cfs_queue.push(CFSTask::new(task));
             }
         }
@@ -145,7 +145,7 @@ impl TaskManager {
     /// 更新任务的运行时间统计
     pub fn update_task_runtime(&mut self, task: &Arc<TaskControlBlock>, runtime_us: u64) {
         let mut task_inner = task.inner_exclusive_access();
-        
+
         match self.scheduling_policy {
             SchedulingPolicy::CFS => {
                 task_inner.update_vruntime(runtime_us);
@@ -201,14 +201,14 @@ impl TaskManager {
                 }
             }
         }
-        
+
         // 检查初始进程
         if let Some(ref init_proc) = self.init_proc {
             if init_proc.get_pid() == pid {
                 return Some(init_proc.clone());
             }
         }
-        
+
         None
     }
 }
@@ -276,7 +276,7 @@ pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
             return Some(current);
         }
     }
-    
+
     // 搜索任务管理器中的任务
     TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
 }

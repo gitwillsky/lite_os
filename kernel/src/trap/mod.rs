@@ -84,15 +84,22 @@ pub fn trap_handler() {
                 }
                 Exception::InstructionPageFault => {
                     // 检查是否是信号处理函数返回
-                    let cx = task::current_trap_context();
-                    if cx.sepc == 0 {
+                    let sepc = {
+                        let cx = task::current_trap_context();
+                        cx.sepc
+                    }; // cx借用在这里结束
+
+                    if sepc == 0 {
                         // 这是信号处理函数返回，自动调用sigreturn
                         debug!("[trap_handler] Signal handler return detected, calling sigreturn");
-                        let ret = syscall::sys_sigreturn();
-                        cx.x[10] = ret as usize;
-                        return; // 不调用trap_return，因为sigreturn已经修改了上下文
+                        if syscall::sys_sigreturn() == 0 {
+                            trap_return();
+                        } else {
+                            error!("[kernel] sigreturn failed, killing process.");
+                            exit_current_and_run_next(-4);
+                        }
                     }
-                    
+
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     panic!("Instruction Page Fault, VA:{:#x}", stval);

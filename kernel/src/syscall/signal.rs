@@ -1,8 +1,11 @@
+use crate::memory::page_table::translated_byte_buffer;
 use crate::task::{
     current_task, current_user_token,
-    signal::{Signal, SignalSet, SignalDisposition, SignalAction, SignalError, send_signal_to_process, SignalDelivery},
+    signal::{
+        Signal, SignalAction, SignalDelivery, SignalDisposition, SignalError, SignalSet,
+        send_signal_to_process,
+    },
 };
-use crate::memory::page_table::translated_byte_buffer;
 
 /// 信号掩码操作常量
 pub const SIG_BLOCK: i32 = 0;
@@ -10,8 +13,8 @@ pub const SIG_UNBLOCK: i32 = 1;
 pub const SIG_SETMASK: i32 = 2;
 
 /// 特殊信号处理器值
-pub const SIG_DFL: usize = 0;  // 默认动作
-pub const SIG_IGN: usize = 1;  // 忽略信号
+pub const SIG_DFL: usize = 0; // 默认动作
+pub const SIG_IGN: usize = 1; // 忽略信号
 
 /// kill系统调用 - 向指定进程发送信号
 pub fn sys_kill(pid: usize, sig: u32) -> isize {
@@ -139,9 +142,7 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
                     core::mem::size_of::<SigAction>(),
                 );
                 if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<SigAction>() {
-                    let new_sigaction = unsafe {
-                        *(buffers[0].as_ptr() as *const SigAction)
-                    };
+                    let new_sigaction = unsafe { *(buffers[0].as_ptr() as *const SigAction) };
 
                     let new_action = match new_sigaction.sa_handler {
                         SIG_DFL => signal.default_action(),
@@ -190,11 +191,8 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
                 )
             };
 
-            let mut buffers = translated_byte_buffer(
-                token,
-                oldset as *mut u8,
-                core::mem::size_of::<u64>(),
-            );
+            let mut buffers =
+                translated_byte_buffer(token, oldset as *mut u8, core::mem::size_of::<u64>());
             if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<u64>() {
                 buffers[0].copy_from_slice(old_mask_bytes);
             } else {
@@ -204,15 +202,10 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
 
         // 如果set不为空，设置新的信号掩码
         if !set.is_null() {
-            let buffers = translated_byte_buffer(
-                token,
-                set as *const u8,
-                core::mem::size_of::<u64>(),
-            );
+            let buffers =
+                translated_byte_buffer(token, set as *const u8, core::mem::size_of::<u64>());
             if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<u64>() {
-                let new_mask_raw = unsafe {
-                    *(buffers[0].as_ptr() as *const u64)
-                };
+                let new_mask_raw = unsafe { *(buffers[0].as_ptr() as *const u64) };
                 let new_mask = SignalSet::from_raw(new_mask_raw);
 
                 match how {
@@ -246,13 +239,11 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
 /// sigreturn系统调用 - 从信号处理函数返回
 pub fn sys_sigreturn() -> isize {
     if let Some(task) = current_task() {
-        let inner = task.inner_exclusive_access();
-        let trap_cx = inner.get_trap_cx();
-        
+        let trap_cx = task.inner_exclusive_access().get_trap_cx();
+
         // 调用信号处理引擎的sigreturn方法
         let success = SignalDelivery::sigreturn(&task, trap_cx);
-        drop(inner);
-        
+
         if success {
             0 // 成功返回
         } else {
