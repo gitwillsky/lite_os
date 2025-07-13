@@ -205,6 +205,34 @@ impl TaskControlBlock {
         );
         Ok(())
     }
+    
+    /// Execute a new program with arguments and environment variables
+    pub fn exec_with_args(
+        &self, 
+        elf_data: &[u8], 
+        args: &[String], 
+        envs: &[String]
+    ) -> Result<(), Box<dyn Error>> {
+        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf_with_args(elf_data, args, envs)?;
+        let trap_cx_ppn = memory_set
+            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
+            .unwrap()
+            .ppn();
+        let mut inner = self.inner_exclusive_access();
+        inner.trap_cx_ppn = trap_cx_ppn;
+        inner.memory_set = memory_set;
+        // 重置信号状态（exec时应该重置信号处理器）
+        inner.signal_state.reset_for_exec();
+        let trap_cx = inner.get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entrypoint,
+            user_stack_top,
+            KERNEL_SPACE.wait().lock().token(),
+            self.kernel_stack.get_top(),
+            trap_handler as usize,
+        );
+        Ok(())
+    }
 
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         let mut parent_inner = self.inner_exclusive_access();

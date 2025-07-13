@@ -9,6 +9,7 @@ const SYSCALL_YIELD: usize = 124;
 const SYSCALL_GETPID: usize = 172;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
+const SYSCALL_EXECVE: usize = 222;
 const SYSCALL_WAIT: usize = 260;
 const SYSCALL_SHUTDOWN: usize = 110;
 
@@ -88,6 +89,58 @@ pub fn exec(path: &str) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
     syscall(SYSCALL_EXEC, [null_terminated_path.as_ptr() as usize, 0, 0])
+}
+
+/// 功能：执行新程序，支持参数和环境变量传递
+/// 参数：
+/// - path: 程序路径
+/// - argv: 参数数组
+/// - envp: 环境变量数组
+/// 返回值：如果执行成功则返回 0，如果执行失败则返回 -1
+pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
+    use alloc::vec::Vec;
+    
+    let mut null_terminated_path = String::from(path);
+    null_terminated_path.push('\0');
+    
+    // Build null-terminated argument strings
+    let mut arg_strings: Vec<String> = Vec::new();
+    for arg in argv {
+        let mut s = String::from(*arg);
+        s.push('\0');
+        arg_strings.push(s);
+    }
+    
+    // Build null-terminated environment strings  
+    let mut env_strings: Vec<String> = Vec::new();
+    for env in envp {
+        let mut s = String::from(*env);
+        s.push('\0');
+        env_strings.push(s);
+    }
+    
+    // Build argv pointer array
+    let mut argv_ptrs: Vec<*const u8> = Vec::new();
+    for arg_str in &arg_strings {
+        argv_ptrs.push(arg_str.as_ptr());
+    }
+    argv_ptrs.push(core::ptr::null()); // Null terminator
+    
+    // Build envp pointer array
+    let mut envp_ptrs: Vec<*const u8> = Vec::new();
+    for env_str in &env_strings {
+        envp_ptrs.push(env_str.as_ptr());
+    }
+    envp_ptrs.push(core::ptr::null()); // Null terminator
+    
+    syscall(
+        SYSCALL_EXECVE, 
+        [
+            null_terminated_path.as_ptr() as usize,
+            argv_ptrs.as_ptr() as usize,
+            envp_ptrs.as_ptr() as usize,
+        ]
+    )
 }
 
 /// 功能：当前进程主动让出 CPU 的执行权

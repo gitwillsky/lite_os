@@ -1,8 +1,8 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec, string::{String, ToString}};
 
 use crate::{
     loader::get_app_data_by_name,
-    memory::page_table::{translated_ref_mut, translated_str},
+    memory::page_table::{translated_ref_mut, translated_str, translated_byte_buffer},
     task::{
         self, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next, set_scheduling_policy, get_scheduling_policy, SchedulingPolicy,
@@ -151,6 +151,96 @@ pub fn sys_sched_getscheduler(pid: i32) -> isize {
         SchedulingPolicy::RoundRobin => 1,
         SchedulingPolicy::Priority => 2,
         SchedulingPolicy::CFS => 3,
+    }
+}
+
+/// Execute a program with arguments and environment variables
+pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
+    let token = current_user_token();
+    let path_str = translated_str(token, path);
+    
+    // Parse argv
+    let mut args = Vec::new();
+    if !argv.is_null() {
+        let mut i = 0;
+        loop {
+            let arg_ptr_addr = argv as usize + i * core::mem::size_of::<*const u8>();
+            let buffers = translated_byte_buffer(token, arg_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
+            if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
+                break;
+            }
+            
+            let arg_ptr = usize::from_le_bytes([
+                buffers[0][0], buffers[0][1], buffers[0][2], buffers[0][3],
+                buffers[0][4], buffers[0][5], buffers[0][6], buffers[0][7],
+            ]);
+            
+            if arg_ptr == 0 {
+                break;
+            }
+            
+            let arg_str = translated_str(token, arg_ptr as *const u8);
+            args.push(arg_str);
+            i += 1;
+            
+            // Prevent infinite loops
+            if i > 1024 {
+                return -1;
+            }
+        }
+    }
+    
+    // Parse envp
+    let mut envs = Vec::new();
+    if !envp.is_null() {
+        let mut i = 0;
+        loop {
+            let env_ptr_addr = envp as usize + i * core::mem::size_of::<*const u8>();
+            let buffers = translated_byte_buffer(token, env_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
+            if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
+                break;
+            }
+            
+            let env_ptr = usize::from_le_bytes([
+                buffers[0][0], buffers[0][1], buffers[0][2], buffers[0][3],
+                buffers[0][4], buffers[0][5], buffers[0][6], buffers[0][7],
+            ]);
+            
+            if env_ptr == 0 {
+                break;
+            }
+            
+            let env_str = translated_str(token, env_ptr as *const u8);
+            envs.push(env_str);
+            i += 1;
+            
+            // Prevent infinite loops
+            if i > 1024 {
+                return -1;
+            }
+        }
+    }
+    
+    // Set default arguments if none provided
+    if args.is_empty() {
+        args.push(path_str.clone());
+    }
+    
+    // Set default environment if none provided
+    if envs.is_empty() {
+        envs.push("PATH=/bin:/usr/bin".to_string());
+        envs.push("HOME=/".to_string());
+        envs.push("USER=root".to_string());
+    }
+    
+    if let Some(elf_data) = get_app_data_by_name(&path_str) {
+        let task = current_task().unwrap();
+        match task.exec_with_args(&elf_data, &args, &envs) {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
+    } else {
+        -1
     }
 }
 

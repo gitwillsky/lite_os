@@ -1,6 +1,6 @@
 use core::{arch::asm, error::Error, ops::Range};
 
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec, string::String};
 use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
@@ -337,6 +337,245 @@ impl MemorySet {
         let entry_point = elf.header.pt2.entry_point() as usize;
 
         Ok((memory_set, user_stack_top, entry_point))
+    }
+
+    /// Create a new memory set from ELF data with argument support
+    pub fn from_elf_with_args(
+        elf_data: &[u8], 
+        args: &[String], 
+        envs: &[String]
+    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
+        let mut memory_set = MemorySet::new();
+
+        memory_set.map_trampoline();
+
+        let elf = xmas_elf::ElfFile::new(elf_data)?;
+        let elf_header = elf.header;
+        let magic = elf_header.pt1.magic;
+        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
+        let ph_count = elf_header.pt2.ph_count();
+
+        let mut max_mapped_vpn = VirtualPageNumber::from(0);
+
+        for i in 0..ph_count {
+            let ph = elf.program_header(i)?;
+            if ph.get_type()? != xmas_elf::program::Type::Load {
+                continue;
+            }
+            let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
+            let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+
+            let mut map_perm = MapPermission::U;
+            let ph_flags = ph.flags();
+            if ph_flags.is_execute() {
+                map_perm |= MapPermission::X
+            }
+            if ph_flags.is_read() {
+                map_perm |= MapPermission::R
+            }
+            if ph_flags.is_write() {
+                map_perm |= MapPermission::W
+            }
+            let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+
+            // 记录实际映射的最大页面号
+            max_mapped_vpn = max_mapped_vpn
+                .as_usize()
+                .max(map_area.vpn_range.end.as_usize())
+                .into();
+
+            memory_set.push(
+                map_area,
+                Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+            );
+        }
+
+        let max_end_va: VirtualAddress = max_mapped_vpn.into();
+        let mut user_stack_bottom: usize = max_end_va.into();
+        // guard page
+        user_stack_bottom += config::PAGE_SIZE;
+        let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
+
+        memory_set.push(
+            MapArea::new(
+                user_stack_bottom.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+
+        // used in sbrk
+        memory_set.push(
+            MapArea::new(
+                user_stack_top.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+
+        memory_set.push(
+            MapArea::new(
+                config::TRAP_CONTEXT.into(),
+                config::TRAMPOLINE.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+
+        let entry_point = elf.header.pt2.entry_point() as usize;
+
+        // Build argc/argv/envp on the stack
+        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
+
+        Ok((memory_set, actual_stack_top, entry_point))
+    }
+
+    /// Build argc/argv/envp layout on user stack
+    fn build_arg_stack(
+        &self, 
+        stack_top: usize, 
+        args: &[String], 
+        envs: &[String]
+    ) -> Result<usize, Box<dyn Error>> {
+        let mut stack_ptr = stack_top;
+        
+        // Calculate total space needed for strings
+        let mut total_string_size = 0;
+        for arg in args {
+            total_string_size += arg.len() + 1; // +1 for null terminator
+        }
+        for env in envs {
+            total_string_size += env.len() + 1; // +1 for null terminator
+        }
+        
+        // Align to 8 bytes boundary for arguments
+        total_string_size = (total_string_size + 7) & !7;
+        
+        // Space for pointers: argc + argv[] + envp[] + padding
+        let argc = args.len();
+        let pointer_space = core::mem::size_of::<usize>() * (1 + argc + 1 + envs.len() + 1);
+        let pointer_space_aligned = (pointer_space + 7) & !7;
+        
+        // Move stack pointer down to accommodate everything
+        stack_ptr -= total_string_size + pointer_space_aligned;
+        stack_ptr &= !7; // Align to 8 bytes
+        
+        let string_area_start = stack_ptr + pointer_space_aligned;
+        let mut string_ptr = string_area_start;
+        let mut argv_ptrs = Vec::new();
+        let mut envp_ptrs = Vec::new();
+        
+        // Write argument strings and collect pointers
+        for arg in args {
+            argv_ptrs.push(string_ptr);
+            self.write_string_to_user_stack(string_ptr, arg)?;
+            string_ptr += arg.len() + 1;
+        }
+        
+        // Write environment strings and collect pointers
+        for env in envs {
+            envp_ptrs.push(string_ptr);
+            self.write_string_to_user_stack(string_ptr, env)?;
+            string_ptr += env.len() + 1;
+        }
+        
+        // Write argc/argv/envp structure
+        let mut ptr_writer = stack_ptr;
+        
+        // Write argc
+        self.write_usize_to_user_stack(ptr_writer, argc)?;
+        ptr_writer += core::mem::size_of::<usize>();
+        
+        // Write argv pointers
+        for &arg_ptr in &argv_ptrs {
+            self.write_usize_to_user_stack(ptr_writer, arg_ptr)?;
+            ptr_writer += core::mem::size_of::<usize>();
+        }
+        // Null terminator for argv
+        self.write_usize_to_user_stack(ptr_writer, 0)?;
+        ptr_writer += core::mem::size_of::<usize>();
+        
+        // Write envp pointers
+        for &env_ptr in &envp_ptrs {
+            self.write_usize_to_user_stack(ptr_writer, env_ptr)?;
+            ptr_writer += core::mem::size_of::<usize>();
+        }
+        // Null terminator for envp
+        self.write_usize_to_user_stack(ptr_writer, 0)?;
+        
+        Ok(stack_ptr)
+    }
+    
+    /// Write a string to user stack memory
+    fn write_string_to_user_stack(&self, addr: usize, s: &str) -> Result<(), Box<dyn Error>> {
+        let vpn_start = VirtualAddress::from(addr).floor();
+        let vpn_end = VirtualAddress::from(addr + s.len() + 1).floor();
+        
+        for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
+            let vpn = VirtualPageNumber::from_vpn(vpn);
+            if let Some(pte) = self.translate(vpn) {
+                let ppn = pte.ppn();
+                let page_bytes = ppn.get_bytes_array_mut();
+                
+                let page_start = vpn.as_usize() * config::PAGE_SIZE;
+                let page_end = page_start + config::PAGE_SIZE;
+                
+                let str_start = addr.max(page_start);
+                let str_end = (addr + s.len()).min(page_end);
+                
+                if str_start < str_end {
+                    let page_offset = str_start - page_start;
+                    let str_offset = str_start - addr;
+                    let copy_len = str_end - str_start;
+                    
+                    page_bytes[page_offset..page_offset + copy_len]
+                        .copy_from_slice(&s.as_bytes()[str_offset..str_offset + copy_len]);
+                }
+                
+                // Write null terminator if this page contains the end
+                if addr + s.len() >= page_start && addr + s.len() < page_end {
+                    let null_offset = (addr + s.len()) - page_start;
+                    page_bytes[null_offset] = 0;
+                }
+            }
+        }
+        Ok(())
+    }
+    
+    /// Write a usize value to user stack memory
+    fn write_usize_to_user_stack(&self, addr: usize, value: usize) -> Result<(), Box<dyn Error>> {
+        let bytes = value.to_le_bytes();
+        let vpn_start = VirtualAddress::from(addr).floor();
+        let vpn_end = VirtualAddress::from(addr + core::mem::size_of::<usize>() - 1).floor();
+        
+        for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
+            let vpn = VirtualPageNumber::from_vpn(vpn);
+            if let Some(pte) = self.translate(vpn) {
+                let ppn = pte.ppn();
+                let page_bytes = ppn.get_bytes_array_mut();
+                
+                let page_start = vpn.as_usize() * config::PAGE_SIZE;
+                let page_end = page_start + config::PAGE_SIZE;
+                
+                let val_start = addr.max(page_start);
+                let val_end = (addr + core::mem::size_of::<usize>()).min(page_end);
+                
+                if val_start < val_end {
+                    let page_offset = val_start - page_start;
+                    let val_offset = val_start - addr;
+                    let copy_len = val_end - val_start;
+                    
+                    page_bytes[page_offset..page_offset + copy_len]
+                        .copy_from_slice(&bytes[val_offset..val_offset + copy_len]);
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn form_existed_user(user_space: &MemorySet) -> Self {
