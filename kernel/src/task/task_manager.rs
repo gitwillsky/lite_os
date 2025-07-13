@@ -1,7 +1,7 @@
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use lazy_static::lazy_static;
 
-use crate::{sync::UPSafeCell, task::task::TaskControlBlock};
+use crate::{sync::UPSafeCell, task::task::{TaskControlBlock, TaskStatus}};
 
 struct TaskManager {
     ready_queue: VecDeque<Arc<TaskControlBlock>>,
@@ -53,4 +53,15 @@ pub fn get_init_proc() -> Option<Arc<TaskControlBlock>> {
         .init_proc
         .as_ref()
         .map(|f| f.clone())
+}
+
+/// 唤醒任务，将其从睡眠状态转为就绪状态
+pub fn wakeup_task(task: Arc<TaskControlBlock>) {
+    let mut inner = task.inner_exclusive_access();
+    if inner.task_status == TaskStatus::Sleeping {
+        inner.task_status = TaskStatus::Ready;
+        drop(inner);
+        // 将任务添加到就绪队列
+        add_task(task);
+    }
 }

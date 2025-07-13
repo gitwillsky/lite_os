@@ -1,59 +1,56 @@
 use alloc::vec::Vec;
-use lazy_static::lazy_static;
 
-unsafe extern "C" {
-    fn _num_app();
-    fn _app_names();
-}
+use crate::fs::vfs::get_vfs;
 
-pub fn get_num_app() -> usize {
-    unsafe { (_num_app as usize as *const usize).read_volatile() }
-}
 
-fn get_app_data(app_id: usize) -> &'static [u8] {
-    let num_app_ptr = _num_app as usize as *const usize;
-    let num_app = get_num_app();
-
-    let app_start = unsafe { core::slice::from_raw_parts(num_app_ptr.add(1), num_app + 1) };
-
-    assert!(app_id < num_app);
-    unsafe {
-        core::slice::from_raw_parts(
-            app_start[app_id] as *const u8,
-            app_start[app_id + 1] - app_start[app_id],
-        )
+/// 从文件系统加载程序二进制文件
+pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
+    debug!("[LOADER] Attempting to load program from: {}", path);
+    match get_vfs().open(path) {
+        Ok(inode) => {
+            let size = inode.size() as usize;
+            debug!("[LOADER] File size: {}", size);
+            if size == 0 {
+                debug!("[LOADER] File size is 0, returning None");
+                return None;
+            }
+            let mut buffer = alloc::vec![0u8; size];
+            match inode.read_at(0, &mut buffer) {
+                Ok(bytes_read) => {
+                    debug!("[LOADER] Successfully read {} bytes", bytes_read);
+                    Some(buffer)
+                },
+                Err(e) => {
+                    debug!("[LOADER] Failed to read file: {:?}", e);
+                    None
+                }
+            }
+        }
+        Err(e) => {
+            debug!("[LOADER] Failed to open file: {:?}", e);
+            None
+        }
     }
 }
 
-pub fn get_app_data_by_name(app_name: &str) -> Option<&'static [u8]> {
-    let app_names = APP_NAMES.as_slice();
-    let app_id = app_names.iter().position(|&name| name == app_name);
-    app_id.map(|id| get_app_data(id))
-}
+/// 标准ELF加载接口 - 从文件系统加载程序
+pub fn get_app_data_by_name(app_name: &str) -> Option<Vec<u8>> {
+    debug!("[LOADER] Looking for app: {}", app_name);
+    // 构造程序文件路径 - 优先尝试ELF文件，再尝试.bin文件
+    let paths = [
+        alloc::format!("/{}", app_name),                 // ELF文件：/initproc
+        alloc::format!("/{}", app_name.to_uppercase()),  // ELF文件：/INITPROC
+        alloc::format!("/{}", app_name.to_lowercase()),  // ELF文件：/initproc
+    ];
 
-lazy_static! {
-    static ref APP_NAMES: Vec<&'static str> = {
-        let num_app = get_num_app();
-        let mut app_names_ptr = _app_names as usize as *const u8;
-        let mut app_names = Vec::new();
-        for _ in 0..num_app {
-            let mut end = app_names_ptr;
-            unsafe {
-                while end.read_volatile() != '\0' as u8 {
-                    end = end.add(1);
-                }
-            }
-            let app_name = unsafe {
-                core::str::from_utf8_unchecked(core::slice::from_raw_parts(
-                    app_names_ptr,
-                    end.offset_from(app_names_ptr) as usize,
-                ))
-            };
-            app_names.push(app_name);
-            unsafe {
-                app_names_ptr = end.add(1);
-            }
+    for path in &paths {
+        debug!("[LOADER] Trying path: {}", path);
+        if let Some(data) = load_program_from_fs(path) {
+            debug!("[LOADER] Successfully loaded from path: {}", path);
+            return Some(data);
         }
-        app_names
-    };
+    }
+
+    debug!("[LOADER] Failed to load app: {}", app_name);
+    None
 }

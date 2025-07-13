@@ -14,6 +14,7 @@ pub enum FrameAllocError {
 
 pub struct FrameTracker {
     pub ppn: PhysicalPageNumber,
+    pub pages: usize,  // Number of pages (1 for single page, >1 for contiguous allocation)
 }
 
 impl FrameTracker {
@@ -22,19 +23,35 @@ impl FrameTracker {
         for byte in bytes_array {
             *byte = 0;
         }
-        Self { ppn }
+        Self { ppn, pages: 1 }
+    }
+
+    pub fn new_contiguous(ppn: PhysicalPageNumber, pages: usize) -> Self {
+        // Clear all pages in the contiguous range
+        for i in 0..pages {
+            let current_ppn = PhysicalPageNumber::from(ppn.as_usize() + i);
+            let bytes_array = current_ppn.get_bytes_array_mut();
+            for byte in bytes_array {
+                *byte = 0;
+            }
+        }
+        Self { ppn, pages }
     }
 }
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
-        let _ = FRAME_ALLOCATOR.wait().lock().dealloc(self.ppn);
+        // For contiguous pages, deallocate each page individually
+        for i in 0..self.pages {
+            let current_ppn = PhysicalPageNumber::from(self.ppn.as_usize() + i);
+            let _ = FRAME_ALLOCATOR.wait().lock().dealloc(current_ppn);
+        }
     }
 }
 
 impl Debug for FrameTracker {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("FrameTracker PPN:{:#x}", self.ppn.as_usize()))
+        f.write_fmt(format_args!("FrameTracker PPN:{:#x} pages:{}", self.ppn.as_usize(), self.pages))
     }
 }
 
@@ -70,10 +87,26 @@ impl StackFrameAllocator {
         }
     }
 
+    pub fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
+        if pages == 0 {
+            return None;
+        }
+
+        // For contiguous allocation, we can only use the continuous range
+        // Cannot use recycled pages as they might not be contiguous
+        if self.current_start_ppn.as_usize() + pages <= self.end_ppn.as_usize() {
+            let start_ppn = self.current_start_ppn;
+            self.current_start_ppn = PhysicalPageNumber::from(self.current_start_ppn.as_usize() + pages);
+            Some(start_ppn)
+        } else {
+            None
+        }
+    }
+
     pub fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
         assert!(
             ppn >= self.start_ppn && ppn < self.end_ppn,
-            "dealloc: 非法ppn={:#x}, 合法区间=[{:#x}, {:#x})",
+            "dealloc: invalid ppn={:#x}, valid range=[{:#x}, {:#x})",
             ppn.as_usize(),
             self.start_ppn.as_usize(),
             self.end_ppn.as_usize()
@@ -93,7 +126,7 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     let end_ppn = end_addr.floor();
     assert!(
         end_ppn.as_usize() > start_ppn.as_usize(),
-        "frame_allocator: 分配区间为0，start_ppn={:#x}, end_ppn={:#x}",
+        "frame_allocator: range is 0, start_ppn={:#x}, end_ppn={:#x}",
         start_ppn.as_usize(),
         end_ppn.as_usize()
     );
@@ -103,6 +136,11 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
 pub fn alloc() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc();
     res.map(|b| FrameTracker::new(b))
+}
+
+pub fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
+    let res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+    res.map(|b| FrameTracker::new_contiguous(b, pages))
 }
 
 pub fn dealloc(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {

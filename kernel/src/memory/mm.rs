@@ -1,6 +1,6 @@
-use core::{arch::asm, ops::Range};
+use core::{arch::asm, error::Error, ops::Range};
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
@@ -205,6 +205,10 @@ impl MemorySet {
         }
     }
 
+    pub fn get_page_table(&self) -> &PageTable {
+        &self.page_table
+    }
+
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }
@@ -247,12 +251,12 @@ impl MemorySet {
         }
     }
 
-    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
+    pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
         let mut memory_set = MemorySet::new();
 
         memory_set.map_trampoline();
 
-        let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
+        let elf = xmas_elf::ElfFile::new(elf_data)?;
         let elf_header = elf.header;
         let magic = elf_header.pt1.magic;
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
@@ -261,8 +265,8 @@ impl MemorySet {
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
 
         for i in 0..ph_count {
-            let ph = elf.program_header(i).unwrap();
-            if ph.get_type().unwrap() != xmas_elf::program::Type::Load {
+            let ph = elf.program_header(i)?;
+            if ph.get_type()? != xmas_elf::program::Type::Load {
                 continue;
             }
             let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
@@ -332,7 +336,7 @@ impl MemorySet {
 
         let entry_point = elf.header.pt2.entry_point() as usize;
 
-        (memory_set, user_stack_top, entry_point)
+        Ok((memory_set, user_stack_top, entry_point))
     }
 
     pub fn form_existed_user(user_space: &MemorySet) -> Self {

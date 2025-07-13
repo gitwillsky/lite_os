@@ -43,6 +43,11 @@ pub fn trap_handler() {
                     timer::set_next_timer_interrupt();
                     suspend_current_and_run_next();
                 }
+                Interrupt::SupervisorExternal => {
+                    // 处理外部中断（包括VirtIO设备中断）
+                    debug!("[trap_handler] External interrupt");
+                    crate::drivers::handle_external_interrupt();
+                }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);
                 }
@@ -54,7 +59,7 @@ pub fn trap_handler() {
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
                 Exception::IllegalInstruction => {
-                    println!("[kernel] IllegalInstruction in application, kernel killed it.");
+                    error!("[kernel] IllegalInstruction in application, kernel killed it.");
                     exit_current_and_run_next(-3);
                 }
                 Exception::Breakpoint => {
@@ -63,7 +68,7 @@ pub fn trap_handler() {
                     // 一个简单（但不完全鲁棒）的判断方法是检查指令的低两位：如果指令的低两位是 11，它是一个 32-bit 或更长的指令。
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
-                    println!("[trap_handler] Breakpoint exception");
+                    debug!("[trap_handler] Breakpoint exception");
                     let cx = task::current_trap_context();
                     cx.sepc += 4;
                 }
@@ -86,7 +91,7 @@ pub fn trap_handler() {
                 | Exception::LoadPageFault
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
-                    println!(
+                    error!(
                         "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, core dumped.",
                         scause_val,
                         stval,
@@ -148,7 +153,7 @@ pub fn trap_return() -> ! {
 
 #[unsafe(no_mangle)]
 pub fn trap_from_kernel() -> ! {
-    println!(
+    error!(
         "[trap_from_kernel] scause={:?}, stval={:#x}, sepc={:#x}",
         scause::read(),
         stval::read(),

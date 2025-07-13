@@ -36,9 +36,10 @@ pub fn sys_fork() -> isize {
 pub fn sys_exec(path: *const u8) -> isize {
     let token = current_user_token();
     let path_str = translated_str(token, path);
+    
     if let Some(elf_data) = get_app_data_by_name(&path_str) {
         let task = current_task().unwrap();
-        task.exec(elf_data);
+        task.exec(&elf_data);
         0
     } else {
         -1
