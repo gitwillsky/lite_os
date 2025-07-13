@@ -171,8 +171,9 @@ impl VirtIOBlockDevice {
             return Err(BlockError::InvalidBlock);
         }
 
-        if block_id >= self.capacity as usize {
-            debug!("[VIRTIO_BLK] Block {} exceeds capacity {}", block_id, self.capacity);
+        if block_id >= (self.capacity * 512 / BLOCK_SIZE as u64) as usize {
+            debug!("[VIRTIO_BLK] Block {} exceeds capacity {} (sectors: {})", 
+                   block_id, (self.capacity * 512 / BLOCK_SIZE as u64), self.capacity);
             return Err(BlockError::InvalidBlock);
         }
 
@@ -208,7 +209,10 @@ impl VirtIOBlockDevice {
         };
 
         // 如果添加失败，返回错误
-        let desc_idx = desc_idx.ok_or(BlockError::DeviceError)?;
+        let desc_idx = desc_idx.ok_or_else(|| {
+            debug!("[VIRTIO_BLK] Failed to add buffer to queue for block {}", block_id);
+            BlockError::DeviceError
+        })?;
 
 
         // 将描述符添加到available ring
@@ -248,6 +252,10 @@ impl VirtIOBlockDevice {
                 let int_status = self.mmio.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
                 debug!("Device status: {:#x}, Interrupt status: {:#x}", device_status, int_status);
 
+                // 强制回收描述符以防止泄漏
+                debug!("[VIRTIO_BLK] Forcibly recycling descriptor {} due to timeout", desc_idx);
+                queue.recycle_descriptors_force(desc_idx);
+                
                 return Err(BlockError::IoError);
             }
 
@@ -261,7 +269,14 @@ impl VirtIOBlockDevice {
         if let Some((id, _len)) = queue.get_used() {
             if id != desc_idx {
                 error!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
+                // 仍然需要回收正确的描述符
+                debug!("[VIRTIO_BLK] Recycling expected descriptor {} due to ID mismatch", desc_idx);
+                queue.recycle_descriptors_force(desc_idx);
             }
+        } else {
+            // 如果get_used失败，强制回收描述符
+            debug!("[VIRTIO_BLK] get_used returned None, force recycling descriptor {}", desc_idx);
+            queue.recycle_descriptors_force(desc_idx);
         }
 
         // 检查状态
@@ -285,7 +300,9 @@ impl VirtIOBlockDevice {
 
 impl BlockDevice for VirtIOBlockDevice {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        debug!("[VIRTIO_BLK] Reading block {} (capacity: {})", block_id, self.capacity);
+        let block_capacity = (self.capacity * 512 / BLOCK_SIZE as u64) as usize;
+        debug!("[VIRTIO_BLK] Reading block {} (block capacity: {}, sector capacity: {})", 
+               block_id, block_capacity, self.capacity);
         self.perform_io(false, block_id, buf)
             .map_err(|e| {
                 debug!("[VIRTIO_BLK] read_block failed for block {}: {:?}", block_id, e);
@@ -304,7 +321,8 @@ impl BlockDevice for VirtIOBlockDevice {
     }
 
     fn num_blocks(&self) -> usize {
-        self.capacity as usize
+        // capacity是512字节扇区数，需要转换为4096字节块数
+        (self.capacity * 512 / BLOCK_SIZE as u64) as usize
     }
 
     fn block_size(&self) -> usize {
