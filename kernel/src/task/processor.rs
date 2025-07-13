@@ -210,8 +210,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     }
 
     inner.children.clear();
-    // 关闭所有打开的文件描述符
-    inner.close_all_fds();
+    // 关闭所有打开的文件描述符并清理文件锁
+    inner.close_all_fds_and_cleanup_locks(pid);
     // deallocate user space
     inner.memory_set.recycle_data_pages();
     drop(inner);

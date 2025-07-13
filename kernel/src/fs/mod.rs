@@ -3,10 +3,12 @@ use alloc::sync::Arc;
 use crate::drivers::BlockDevice;
 
 pub mod fat32;
+pub mod flock;
 pub mod inode;
 pub mod vfs;
 
 pub use fat32::FAT32FileSystem;
+pub use flock::{FileLock, FileLockManager, LockType, LockOp, LockError, get_file_lock_manager};
 pub use inode::{Inode, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

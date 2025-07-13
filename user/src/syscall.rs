@@ -26,6 +26,7 @@ const SYSCALL_LSEEK: usize = 62;
 const SYSCALL_PIPE: usize = 59;
 const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
+const SYSCALL_FLOCK: usize = 143;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -211,6 +212,11 @@ pub fn dup2(oldfd: usize, newfd: usize) -> isize {
     syscall(SYSCALL_DUP2, [oldfd, newfd, 0])
 }
 
+/// 文件锁定
+pub fn flock(fd: usize, operation: i32) -> isize {
+    syscall(SYSCALL_FLOCK, [fd, operation as usize, 0])
+}
+
 /// 设置文件偏移量
 pub fn lseek(fd: usize, offset: isize, whence: usize) -> isize {
     syscall(SYSCALL_LSEEK, [fd, offset as usize, whence])
@@ -322,3 +328,11 @@ pub const SIG_SETMASK: i32 = 2;
 /// 特殊信号处理器值
 pub const SIG_DFL: usize = 0;  // 默认动作
 pub const SIG_IGN: usize = 1;  // 忽略信号
+
+/// 文件锁定操作常量
+pub mod flock_consts {
+    pub const LOCK_SH: i32 = 1;   // 共享锁
+    pub const LOCK_EX: i32 = 2;   // 排他锁
+    pub const LOCK_NB: i32 = 4;   // 非阻塞
+    pub const LOCK_UN: i32 = 8;   // 解锁
+}

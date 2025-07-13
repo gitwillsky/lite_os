@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::{
     arch::sbi,
-    fs::{vfs::get_vfs, FileSystemError},
+    fs::{vfs::get_vfs, FileSystemError, LockType, LockOp, LockError, get_file_lock_manager},
     memory::page_table::translated_byte_buffer,
     task::{current_user_token, suspend_current_and_run_next, current_task, FileDescriptor},
     ipc::create_pipe,
@@ -472,6 +472,68 @@ pub fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
         match task_inner.dup2_fd(oldfd, newfd) {
             Some(fd) => fd as isize,
             None => -9, // EBADF - Bad file descriptor
+        }
+    } else {
+        -1
+    }
+}
+
+/// flock - 对文件进行建议性锁定
+pub fn sys_flock(fd: usize, operation: i32) -> isize {
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_exclusive_access();
+        if let Some(file_desc) = task_inner.get_fd(fd) {
+            let inode = &file_desc.inode;
+            let pid = task.get_pid();
+            
+            // Parse the operation
+            let non_blocking = (operation & (LockOp::NonBlock as i32)) != 0;
+            let operation = operation & 0x7; // Remove LOCK_NB flag
+            
+            let lock_manager = get_file_lock_manager();
+            
+            match operation {
+                8 => { // LOCK_UN - Unlock
+                    match lock_manager.unlock(inode, pid) {
+                        Ok(()) => 0,
+                        Err(LockError::NotLocked) => 0, // Not an error if already unlocked
+                        Err(_) => -1,
+                    }
+                }
+                1 => { // LOCK_SH - Shared lock
+                    match lock_manager.try_lock(inode, LockType::Shared, pid, task.clone(), non_blocking) {
+                        Ok(()) => 0,
+                        Err(LockError::WouldBlock) => {
+                            if non_blocking {
+                                -11 // EAGAIN/EWOULDBLOCK
+                            } else {
+                                // In a real implementation, we would block the process here
+                                // For now, we'll return EAGAIN to indicate blocking would occur
+                                -11
+                            }
+                        }
+                        Err(_) => -1,
+                    }
+                }
+                2 => { // LOCK_EX - Exclusive lock
+                    match lock_manager.try_lock(inode, LockType::Exclusive, pid, task.clone(), non_blocking) {
+                        Ok(()) => 0,
+                        Err(LockError::WouldBlock) => {
+                            if non_blocking {
+                                -11 // EAGAIN/EWOULDBLOCK
+                            } else {
+                                // In a real implementation, we would block the process here
+                                // For now, we'll return EAGAIN to indicate blocking would occur
+                                -11
+                            }
+                        }
+                        Err(_) => -1,
+                    }
+                }
+                _ => -22, // EINVAL - Invalid operation
+            }
+        } else {
+            -9 // EBADF - Bad file descriptor
         }
     } else {
         -1

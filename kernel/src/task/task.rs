@@ -330,6 +330,13 @@ impl TaskControlBlockInner {
         self.fd_table.clear();
     }
 
+    /// 关闭所有文件描述符并清理文件锁（进程退出时调用）
+    pub fn close_all_fds_and_cleanup_locks(&mut self, pid: usize) {
+        // 清理文件锁
+        crate::fs::get_file_lock_manager().remove_process_locks(pid);
+        self.fd_table.clear();
+    }
+
     /// 复制文件描述符（用于 dup 系统调用）
     pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
         if let Some(file_desc) = self.fd_table.get(&fd) {
