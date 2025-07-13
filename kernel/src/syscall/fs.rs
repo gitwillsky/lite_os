@@ -28,14 +28,20 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         }
         _ => {
             if let Some(task) = current_task() {
-                let task_inner = task.inner_exclusive_access();
-                if let Some(file_desc) = task_inner.get_fd(fd) {
+                // Get file descriptor while holding the lock briefly
+                let file_desc = {
+                    let task_inner = task.inner_exclusive_access();
+                    task_inner.get_fd(fd)
+                };
+                
+                if let Some(file_desc) = file_desc {
                     let buffers = translated_byte_buffer(current_user_token(), buf, len);
                     let mut data = Vec::new();
                     for buffer in buffers {
                         data.extend_from_slice(buffer);
                     }
 
+                    // Call write_at without holding any locks on the task
                     match file_desc.write_at(&data) {
                         Ok(bytes_written) => {
                             bytes_written as isize
@@ -79,9 +85,15 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
         }
         _ => {
             if let Some(task) = current_task() {
-                let task_inner = task.inner_exclusive_access();
-                if let Some(file_desc) = task_inner.get_fd(fd) {
+                // Get file descriptor while holding the lock briefly
+                let file_desc = {
+                    let task_inner = task.inner_exclusive_access();
+                    task_inner.get_fd(fd)
+                };
+                
+                if let Some(file_desc) = file_desc {
                     let mut temp_buf = alloc::vec![0u8; len];
+                    // Call read_at without holding any locks on the task
                     match file_desc.read_at(&mut temp_buf) {
                         Ok(bytes_read) => {
                             let buffers = translated_byte_buffer(current_user_token(), buf, bytes_read);
