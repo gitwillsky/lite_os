@@ -87,12 +87,14 @@ def copy_files_to_fs(mount_point):
     # 查找并复制用户程序ELF文件（原始ELF文件，不是.bin）
     user_elfs = []
     for elf_file in glob.glob("target/riscv64gc-unknown-none-elf/release/*"):
+        basename = os.path.basename(elf_file)
         if (os.path.isfile(elf_file) and
             not elf_file.endswith('.d') and
             not elf_file.endswith('.bin') and
             not elf_file.endswith('.json') and
             not elf_file.endswith('.rlib') and
-            '.' not in os.path.basename(elf_file)):
+            not basename.startswith('._') and  # 过滤 macOS AppleDouble 文件
+            '.' not in basename):
             user_elfs.append(elf_file)
 
     if user_elfs:
@@ -105,6 +107,16 @@ def copy_files_to_fs(mount_point):
             print(f"✓ 复制ELF: {os.path.basename(elf_file)} -> {dest_name}")
     else:
         print("⚠ 未找到用户程序ELF文件")
+
+    # 清理 macOS 自动生成的 AppleDouble 文件
+    try:
+        for item in os.listdir(mount_point):
+            if item.startswith('._'):
+                apple_double_path = os.path.join(mount_point, item)
+                os.remove(apple_double_path)
+                print(f"✓ 已删除 AppleDouble 文件: {item}")
+    except Exception as e:
+        print(f"⚠ 清理 AppleDouble 文件时出错: {e}")
 
     # 显示文件系统内容
     print("\n文件系统内容:")

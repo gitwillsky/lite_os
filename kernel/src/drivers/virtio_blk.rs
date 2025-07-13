@@ -103,7 +103,7 @@ impl VirtIOBlockDevice {
         mmio.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER);
 
         // 读取设备特性
-        let device_features = mmio.device_features();
+        // let device_features = mmio.device_features();
 
         // 设置驱动程序特性 (基础功能)
         mmio.set_driver_features(0);
@@ -172,7 +172,7 @@ impl VirtIOBlockDevice {
         }
 
         if block_id >= (self.capacity * 512 / BLOCK_SIZE as u64) as usize {
-            debug!("[VIRTIO_BLK] Block {} exceeds capacity {} (sectors: {})", 
+            debug!("[VIRTIO_BLK] Block {} exceeds capacity {} (sectors: {})",
                    block_id, (self.capacity * 512 / BLOCK_SIZE as u64), self.capacity);
             return Err(BlockError::InvalidBlock);
         }
@@ -255,7 +255,7 @@ impl VirtIOBlockDevice {
                 // 强制回收描述符以防止泄漏
                 debug!("[VIRTIO_BLK] Forcibly recycling descriptor {} due to timeout", desc_idx);
                 queue.recycle_descriptors_force(desc_idx);
-                
+
                 return Err(BlockError::IoError);
             }
 
@@ -301,7 +301,7 @@ impl VirtIOBlockDevice {
 impl BlockDevice for VirtIOBlockDevice {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
         let block_capacity = (self.capacity * 512 / BLOCK_SIZE as u64) as usize;
-        debug!("[VIRTIO_BLK] Reading block {} (block capacity: {}, sector capacity: {})", 
+        debug!("[VIRTIO_BLK] Reading block {} (block capacity: {}, sector capacity: {})",
                block_id, block_capacity, self.capacity);
         self.perform_io(false, block_id, buf)
             .map_err(|e| {
