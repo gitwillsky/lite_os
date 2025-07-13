@@ -15,6 +15,7 @@ mod task_manager;
 
 pub use processor::*;
 pub use task_manager::add_task;
+pub use task::FileDescriptor;
 
 global_asm!(include_str!("switch.S"));
 

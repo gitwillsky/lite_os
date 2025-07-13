@@ -124,6 +124,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     }
 
     inner.children.clear();
+    // 关闭所有打开的文件描述符
+    inner.close_all_fds();
     // deallocate user space
     inner.memory_set.recycle_data_pages();
     drop(inner);

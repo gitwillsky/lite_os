@@ -1,11 +1,10 @@
-use alloc::string::String;
-use alloc::format;
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::{
     arch::sbi,
     fs::{vfs::get_vfs, FileSystemError},
     memory::page_table::translated_byte_buffer,
-    task::{current_user_token, suspend_current_and_run_next, current_task},
+    task::{current_user_token, suspend_current_and_run_next, current_task, FileDescriptor},
 };
 
 const STD_OUT: usize = 1;
@@ -25,9 +24,27 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             len as isize
         }
         _ => {
-            // 支持真实文件写入
-            // 这里可以扩展为支持文件描述符
-            -1
+            if let Some(task) = current_task() {
+                let task_inner = task.inner_exclusive_access();
+                if let Some(file_desc) = task_inner.get_fd(fd) {
+                    let buffers = translated_byte_buffer(current_user_token(), buf, len);
+                    let mut data = Vec::new();
+                    for buffer in buffers {
+                        data.extend_from_slice(buffer);
+                    }
+                    
+                    match file_desc.write_at(&data) {
+                        Ok(bytes_written) => {
+                            bytes_written as isize
+                        }
+                        Err(_) => -1,
+                    }
+                } else {
+                    -9 // EBADF - Bad file descriptor
+                }
+            } else {
+                -1
+            }
         }
     }
 }
@@ -58,9 +75,32 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             }
         }
         _ => {
-            // 支持真实文件读取
-            // 这里可以扩展为支持文件描述符
-            -1
+            if let Some(task) = current_task() {
+                let task_inner = task.inner_exclusive_access();
+                if let Some(file_desc) = task_inner.get_fd(fd) {
+                    let mut temp_buf = alloc::vec![0u8; len];
+                    match file_desc.read_at(&mut temp_buf) {
+                        Ok(bytes_read) => {
+                            let buffers = translated_byte_buffer(current_user_token(), buf, bytes_read);
+                            let mut offset = 0;
+                            for buffer in buffers {
+                                if offset >= bytes_read {
+                                    break;
+                                }
+                                let copy_len = buffer.len().min(bytes_read - offset);
+                                buffer[..copy_len].copy_from_slice(&temp_buf[offset..offset + copy_len]);
+                                offset += copy_len;
+                            }
+                            bytes_read as isize
+                        }
+                        Err(_) => -1,
+                    }
+                } else {
+                    -9 // EBADF - Bad file descriptor
+                }
+            } else {
+                -1
+            }
         }
     }
 }
@@ -71,10 +111,15 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let path_str = translated_c_string(token, path);
     
     match get_vfs().open(&path_str) {
-        Ok(_inode) => {
-            // 返回文件描述符
-            // 这里需要进程文件描述符表的支持
-            3 // 暂时返回固定值
+        Ok(inode) => {
+            if let Some(task) = current_task() {
+                let mut task_inner = task.inner_exclusive_access();
+                let file_desc = Arc::new(FileDescriptor::new(inode, flags));
+                let fd = task_inner.alloc_fd(file_desc);
+                fd as isize
+            } else {
+                -1
+            }
         }
         Err(_) => -1,
     }
@@ -83,10 +128,18 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 /// 关闭文件
 pub fn sys_close(fd: usize) -> isize {
     match fd {
-        STD_IN | STD_OUT => 0,
+        STD_IN | STD_OUT => 0, // 标准流不需要关闭
         _ => {
-            // 关闭文件描述符
-            0
+            if let Some(task) = current_task() {
+                let mut task_inner = task.inner_exclusive_access();
+                if task_inner.close_fd(fd) {
+                    0 // 成功关闭
+                } else {
+                    -9 // EBADF - Bad file descriptor
+                }
+            } else {
+                -1
+            }
         }
     }
 }

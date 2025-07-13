@@ -1,7 +1,7 @@
 use core::{cell::RefMut, error::Error};
 
 use alloc::{
-    boxed::Box, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec
+    boxed::Box, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec, collections::BTreeMap
 };
 
 use crate::{
@@ -16,7 +16,54 @@ use crate::{
         pid::{KernelStack, PidHandle, alloc_pid},
     },
     trap::{TrapContext, trap_handler},
+    fs::inode::Inode,
 };
+
+pub struct FileDescriptor {
+    pub inode: Arc<dyn Inode>,
+    pub offset: UPSafeCell<u64>,
+    pub flags: u32,
+    pub mode: u32,
+}
+
+impl core::fmt::Debug for FileDescriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FileDescriptor")
+            .field("offset", &self.offset)
+            .field("flags", &self.flags)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+impl FileDescriptor {
+    pub fn new(inode: Arc<dyn Inode>, flags: u32) -> Self {
+        Self {
+            inode,
+            offset: UPSafeCell::new(0),
+            flags,
+            mode: 0o644, // Default file mode
+        }
+    }
+    
+    pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, crate::fs::FileSystemError> {
+        let mut offset = self.offset.exclusive_access();
+        let result = self.inode.read_at(*offset, buf);
+        if let Ok(bytes_read) = result {
+            *offset += bytes_read as u64;
+        }
+        result
+    }
+    
+    pub fn write_at(&self, buf: &[u8]) -> Result<usize, crate::fs::FileSystemError> {
+        let mut offset = self.offset.exclusive_access();
+        let result = self.inode.write_at(*offset, buf);
+        if let Ok(bytes_written) = result {
+            *offset += bytes_written as u64;
+        }
+        result
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TaskStatus {
@@ -47,6 +94,10 @@ pub struct TaskControlBlockInner {
     pub exit_code: i32,
     /// 当前工作目录
     pub cwd: String,
+    /// 文件描述符表
+    pub fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
+    /// 下一个可分配的文件描述符
+    pub next_fd: usize,
 }
 
 /// Task Control block structure
@@ -87,6 +138,8 @@ impl TaskControlBlock {
                 children: Vec::new(),
                 exit_code: 0,
                 cwd: "/".to_string(),  // 新进程默认工作目录为根目录
+                fd_table: BTreeMap::new(),
+                next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
             }),
         };
 
@@ -157,6 +210,8 @@ impl TaskControlBlock {
                 children: Vec::new(),
                 exit_code: 0,
                 cwd: parent_inner.cwd.clone(),  // 复制父进程的工作目录
+                fd_table: parent_inner.fd_table.clone(), // 复制父进程的文件描述符表
+                next_fd: parent_inner.next_fd,
             }),
         });
 
@@ -182,5 +237,28 @@ impl TaskControlBlockInner {
 
     pub fn is_zombie(&self) -> bool {
         self.task_status == TaskStatus::Zombie
+    }
+
+    /// 分配新的文件描述符
+    pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> usize {
+        let fd = self.next_fd;
+        self.fd_table.insert(fd, file_desc);
+        self.next_fd += 1;
+        fd
+    }
+
+    /// 根据文件描述符获取FileDescriptor
+    pub fn get_fd(&self, fd: usize) -> Option<Arc<FileDescriptor>> {
+        self.fd_table.get(&fd).cloned()
+    }
+
+    /// 关闭文件描述符
+    pub fn close_fd(&mut self, fd: usize) -> bool {
+        self.fd_table.remove(&fd).is_some()
+    }
+
+    /// 关闭所有文件描述符（进程退出时调用）
+    pub fn close_all_fds(&mut self) {
+        self.fd_table.clear();
     }
 }
