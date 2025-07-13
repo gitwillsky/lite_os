@@ -5,7 +5,7 @@ use crate::{
     memory::page_table::{translated_ref_mut, translated_str},
     task::{
         self, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
+        suspend_current_and_run_next, set_scheduling_policy, get_scheduling_policy, SchedulingPolicy,
     },
 };
 
@@ -78,6 +78,75 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         found_pid as isize
     } else {
         -2
+    }
+}
+
+/// 设置进程的nice值
+pub fn sys_setpriority(which: i32, who: i32, prio: i32) -> isize {
+    // 简化实现：只支持设置当前进程的nice值
+    if which != 0 || who != 0 {
+        return -1; // EPERM
+    }
+    
+    // nice值范围：-20到19
+    if prio < -20 || prio > 19 {
+        return -1; // EINVAL
+    }
+    
+    if let Some(task) = current_task() {
+        let mut inner = task.inner_exclusive_access();
+        inner.set_nice(prio);
+        0
+    } else {
+        -1
+    }
+}
+
+/// 获取进程的nice值
+pub fn sys_getpriority(which: i32, who: i32) -> isize {
+    // 简化实现：只支持获取当前进程的nice值
+    if which != 0 || who != 0 {
+        return -1; // EPERM
+    }
+    
+    if let Some(task) = current_task() {
+        let inner = task.inner_exclusive_access();
+        inner.nice as isize
+    } else {
+        -1
+    }
+}
+
+/// 设置调度策略
+pub fn sys_sched_setscheduler(pid: i32, policy: i32, _param: *const u8) -> isize {
+    // 简化实现：只支持设置全局调度策略，忽略进程参数
+    if pid != 0 {
+        return -1; // 只支持设置当前进程
+    }
+    
+    let scheduling_policy = match policy {
+        0 => SchedulingPolicy::FIFO,
+        1 => SchedulingPolicy::RoundRobin,
+        2 => SchedulingPolicy::Priority,
+        3 => SchedulingPolicy::CFS,
+        _ => return -1, // EINVAL
+    };
+    
+    set_scheduling_policy(scheduling_policy);
+    0
+}
+
+/// 获取调度策略
+pub fn sys_sched_getscheduler(pid: i32) -> isize {
+    if pid != 0 {
+        return -1; // 只支持获取当前进程
+    }
+    
+    match get_scheduling_policy() {
+        SchedulingPolicy::FIFO => 0,
+        SchedulingPolicy::RoundRobin => 1,
+        SchedulingPolicy::Priority => 2,
+        SchedulingPolicy::CFS => 3,
     }
 }
 

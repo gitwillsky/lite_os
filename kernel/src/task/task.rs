@@ -99,6 +99,16 @@ pub struct TaskControlBlockInner {
     pub fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
     /// 下一个可分配的文件描述符
     pub next_fd: usize,
+    /// 进程优先级 (0-139, 0最高优先级，139最低优先级)
+    pub priority: i32,
+    /// nice值 (-20到19, 影响动态优先级计算)
+    pub nice: i32,
+    /// 累计运行时间 (用于CFS调度算法)
+    pub vruntime: u64,
+    /// 上次运行时的时间戳
+    pub last_runtime: u64,
+    /// 动态时间片大小 (微秒)
+    pub time_slice: u64,
 }
 
 /// Task Control block structure
@@ -141,6 +151,11 @@ impl TaskControlBlock {
                 cwd: "/".to_string(),  // 新进程默认工作目录为根目录
                 fd_table: BTreeMap::new(),
                 next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
+                priority: 20,  // 默认优先级 (nice=0 对应的优先级)
+                nice: 0,       // 默认nice值
+                vruntime: 0,   // 初始虚拟运行时间
+                last_runtime: 0,
+                time_slice: 10000, // 默认10ms时间片
             }),
         };
 
@@ -213,6 +228,11 @@ impl TaskControlBlock {
                 cwd: parent_inner.cwd.clone(),  // 复制父进程的工作目录
                 fd_table: parent_inner.fd_table.clone(), // 复制父进程的文件描述符表
                 next_fd: parent_inner.next_fd,
+                priority: parent_inner.priority,  // 继承父进程优先级
+                nice: parent_inner.nice,          // 继承父进程nice值
+                vruntime: 0,                      // 子进程重新开始计算vruntime
+                last_runtime: 0,
+                time_slice: parent_inner.time_slice, // 继承父进程时间片设置
             }),
         });
 
@@ -238,6 +258,46 @@ impl TaskControlBlockInner {
 
     pub fn is_zombie(&self) -> bool {
         self.task_status == TaskStatus::Zombie
+    }
+
+    /// 计算动态优先级 (基于nice值)
+    pub fn get_dynamic_priority(&self) -> i32 {
+        // Linux-like priority calculation: priority = 20 + nice
+        // 范围: 0-39 (nice: -20到19)
+        (20 + self.nice).max(0).min(39)
+    }
+
+    /// 更新虚拟运行时间 (CFS算法核心)
+    pub fn update_vruntime(&mut self, runtime_us: u64) {
+        // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
+        let weight = match self.get_dynamic_priority() {
+            0..=9 => 4,    // 高优先级
+            10..=19 => 2,  // 中等优先级
+            20..=29 => 1,  // 默认优先级
+            _ => 1,        // 低优先级
+        };
+        self.vruntime += runtime_us / weight;
+    }
+
+    /// 计算时间片大小 (基于优先级)
+    pub fn calculate_time_slice(&self) -> u64 {
+        // 基础时间片为10ms，根据优先级调整
+        let base_slice = 10000; // 10ms in microseconds
+        let priority = self.get_dynamic_priority();
+        
+        match priority {
+            0..=9 => base_slice * 2,    // 高优先级：20ms
+            10..=19 => base_slice * 3 / 2, // 中等优先级：15ms
+            20..=29 => base_slice,      // 默认优先级：10ms
+            _ => base_slice / 2,        // 低优先级：5ms
+        }
+    }
+
+    /// 设置nice值并更新优先级
+    pub fn set_nice(&mut self, nice: i32) {
+        self.nice = nice.max(-20).min(19);
+        self.priority = self.get_dynamic_priority();
+        self.time_slice = self.calculate_time_slice();
     }
 
     /// 分配新的文件描述符

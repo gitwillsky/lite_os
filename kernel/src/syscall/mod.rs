@@ -29,6 +29,12 @@ const SYSCALL_PIPE: usize = 59;
 const SYSCALL_DUP: usize = 23;
 const SYSCALL_DUP2: usize = 24;
 
+// 调度相关系统调用
+const SYSCALL_SETPRIORITY: usize = 141;
+const SYSCALL_GETPRIORITY: usize = 140;
+const SYSCALL_SCHED_SETSCHEDULER: usize = 144;
+const SYSCALL_SCHED_GETSCHEDULER: usize = 145;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -54,6 +60,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_PIPE => sys_pipe(args[0] as *mut i32),
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP2 => sys_dup2(args[0], args[1]),
+        
+        // 调度相关系统调用
+        SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
+        SYSCALL_GETPRIORITY => sys_getpriority(args[0] as i32, args[1] as i32),
+        SYSCALL_SCHED_SETSCHEDULER => sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2] as *const u8),
+        SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
         
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
