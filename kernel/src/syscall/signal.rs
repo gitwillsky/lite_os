@@ -17,46 +17,6 @@ pub const SIG_IGN: usize = 1;  // 忽略信号
 pub fn sys_kill(pid: usize, sig: u32) -> isize {
     // 验证信号号是否有效
     if let Some(signal) = Signal::from_u8(sig as u8) {
-        // 特殊处理：进程给自己发送信号
-        let current_pid = if let Some(current) = current_task() {
-            current.get_pid()
-        } else {
-            return -1;
-        };
-        
-        if current_pid == pid {
-            // 自信号处理：延迟信号发送到trap_return时处理
-            // 这样避免在系统调用中持有锁时处理信号
-            
-            // 先获取当前任务，然后释放所有锁
-            if let Some(current) = current_task() {
-                // 只添加信号到待处理队列，不立即处理
-                let mut inner = current.inner_exclusive_access();
-                
-                if signal.is_uncatchable() {
-                    match signal {
-                        Signal::SIGKILL => {
-                            inner.task_status = crate::task::TaskStatus::Zombie;
-                            inner.exit_code = 9;
-                        }
-                        Signal::SIGSTOP => {
-                            inner.task_status = crate::task::TaskStatus::Sleeping;
-                        }
-                        _ => unreachable!(),
-                    }
-                } else {
-                    // 直接操作信号状态，避免嵌套调用send_signal
-                    let mut pending = inner.signal_state.pending.exclusive_access();
-                    pending.add(signal);
-                    drop(pending);
-                }
-                drop(inner);
-                
-                return 0;
-            }
-        }
-        
-        // 其他情况：向其他进程发送信号
         match send_signal_to_process(pid, signal) {
             Ok(()) => 0,
             Err(SignalError::ProcessNotFound) => -1, // ESRCH

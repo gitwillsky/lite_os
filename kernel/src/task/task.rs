@@ -396,9 +396,7 @@ impl TaskControlBlockInner {
 
     /// 发送信号给进程
     pub fn send_signal(&mut self, signal: crate::task::signal::Signal) {
-        // 直接操作信号状态，避免再次借用UPSafeCell
-        let mut pending = self.signal_state.pending.exclusive_access();
-        pending.add(signal);
+        self.signal_state.add_pending_signal(signal);
     }
 
     /// 检查是否有可处理的信号

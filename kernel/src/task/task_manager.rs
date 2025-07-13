@@ -270,13 +270,6 @@ pub fn wakeup_task(task: Arc<TaskControlBlock>) {
 
 /// 根据PID查找任务，包括当前运行的任务
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    // 首先检查当前运行的任务（在访问TASK_MANAGER之前）
-    if let Some(current) = crate::task::current_task() {
-        if current.get_pid() == pid {
-            return Some(current);
-        }
-    }
-    
-    // 然后搜索任务管理器中的任务
+    // 搜索任务管理器中的任务
     TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
 }
