@@ -364,7 +364,92 @@
 
 ### 第三阶段：高级功能（低优先级）
 
-#### 1. 内核态线程支持
+#### 1. 多线程支持（用户态线程）
+
+**目标**：实现完整的用户态多线程支持
+
+**具体任务**：
+
+- [ ] 设计线程控制块 `ThreadControlBlock`
+- [ ] 实现线程创建、销毁、等待机制
+- [ ] 扩展调度器支持线程级调度
+- [ ] 实现线程同步原语（互斥锁、条件变量、信号量、读写锁）
+- [ ] 添加线程相关系统调用（pthread_create、pthread_join等）
+- [ ] 支持线程局部存储（TLS）
+- [ ] 实现线程属性管理
+- [ ] 优化同进程内线程切换性能
+
+**技术要点**：
+
+- **线程数据结构**：
+  ```rust
+  pub struct ThreadControlBlock {
+      pub tid: usize,                    // 线程ID
+      pub pid: usize,                    // 所属进程ID
+      pub kernel_stack: KernelStack,     // 内核栈
+      pub context: TaskContext,          // 上下文
+      pub status: ThreadStatus,          // 线程状态
+      pub priority: i32,                 // 优先级
+      pub start_routine: Option<usize>,  // 线程入口函数
+      pub detached: bool,                // 是否分离状态
+      pub parent_process: Weak<TaskControlBlock>, // 父进程引用
+  }
+  ```
+
+- **调度策略**：
+  - 调度单位从进程改为线程
+  - 同进程内线程共享地址空间
+  - 支持线程组调度，避免单进程多线程垄断CPU
+  - 优化同进程内线程切换（只切换寄存器状态）
+
+- **同步机制**：
+  - 互斥锁（Mutex）：支持递归锁、优先级继承
+  - 条件变量（CondVar）：支持等待和唤醒机制
+  - 信号量（Semaphore）：支持计数信号量
+  - 读写锁（RwLock）：支持多读单写
+
+- **系统调用接口**：
+  - `pthread_create/join/detach/exit/self/yield`
+  - `pthread_mutex_init/destroy/lock/unlock/trylock`
+  - `pthread_cond_init/destroy/wait/signal/broadcast`
+  - `pthread_sem_init/destroy/wait/post/getvalue`
+  - `pthread_rwlock_init/destroy/rdlock/wrlock/unlock`
+  - `pthread_attr_init/destroy/setdetachstate/getdetachstate`
+
+- **内存管理**：
+  - 线程共享进程虚拟地址空间
+  - 每个线程拥有独立的用户栈和内核栈
+  - 支持线程局部存储（TLS）
+  - 线程退出时自动回收资源
+
+- **信号处理**：
+  - 信号发送给进程，由进程内线程处理
+  - 支持线程级信号掩码
+  - 特定信号需要所有线程同时处理
+
+**实施计划**：
+
+1. **阶段1：基础架构**
+   - 实现ThreadControlBlock和基础数据结构
+   - 扩展调度器支持线程调度
+   - 实现基本的创建/销毁机制
+
+2. **阶段2：同步机制**
+   - 实现互斥锁、条件变量
+   - 实现信号量、读写锁
+   - 添加死锁检测机制
+
+3. **阶段3：系统调用**
+   - 实现pthread接口
+   - 添加线程属性管理
+   - 集成信号处理
+
+4. **阶段4：优化**
+   - 性能优化和内存优化
+   - 实现用户态线程库
+   - 添加调试和监控功能
+
+#### 2. 内核态线程支持
 
 **目标**：实现内核态线程（Kernel Threads）支持
 
