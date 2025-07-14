@@ -7,7 +7,7 @@ use crate::{
     sync::UPSafeCell,
     task::{
         __switch,
-        context::TaskContext,
+        TaskContext,
         task::{TaskControlBlock, TaskStatus},
         task_manager::{SchedulingPolicy, get_scheduling_policy},
     },
@@ -35,10 +35,22 @@ pub fn current_user_token() -> usize {
 }
 
 pub fn current_trap_context() -> &'static mut TrapContext {
-    current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .get_trap_cx()
+    if let Some(task) = current_task() {
+        let task_inner = task.inner_exclusive_access();
+        
+        // 检查是否有线程管理器（多线程进程）
+        if let Some(thread_manager) = task_inner.thread_manager.as_ref() {
+            if let Some(current_thread) = thread_manager.get_current_thread() {
+                // 返回当前线程的陷入上下文
+                return current_thread.get_trap_cx();
+            }
+        }
+        
+        // 单线程进程的陷入上下文
+        task_inner.get_trap_cx()
+    } else {
+        panic!("No current task");
+    }
 }
 
 /// 在内核初始化完毕之后，会通过调用 run_tasks 函数来进入 idle 控制流
@@ -106,10 +118,33 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     }
 }
 
+/// 线程级别的调度函数 - 在同一进程内切换线程
+pub fn schedule_thread(current_thread_cx_ptr: *mut TaskContext, next_thread_cx_ptr: *const TaskContext) {
+    unsafe {
+        __switch(current_thread_cx_ptr, next_thread_cx_ptr);
+    }
+}
+
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().unwrap();
 
-    // 计算任务的运行时间
+    // 检查是否有线程管理器（多线程进程）
+    {
+        let mut task_inner = task.inner_exclusive_access();
+        if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+            // 多线程进程的调度
+            if let Some(current_thread) = thread_manager.get_current_thread() {
+                current_thread.set_status(crate::thread::ThreadStatus::Ready);
+                thread_manager.yield_thread();
+            }
+            drop(task_inner);
+            // 将进程重新加入调度队列
+            super::add_task(task);
+            return;
+        }
+    }
+
+    // 单线程进程的原有调度逻辑
     let end_time = get_time_us();
     let mut task_inner = task.inner_exclusive_access();
     let runtime = end_time.saturating_sub(task_inner.last_runtime);
@@ -148,7 +183,24 @@ pub fn suspend_current_and_run_next() {
 pub fn block_current_and_run_next() {
     let task = take_current_task().unwrap();
 
-    // 计算任务的运行时间
+    // 检查是否有线程管理器（多线程进程）
+    {
+        let mut task_inner = task.inner_exclusive_access();
+        if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+            // 多线程进程中的线程阻塞
+            if let Some(current_thread) = thread_manager.get_current_thread() {
+                current_thread.set_status(crate::thread::ThreadStatus::Blocked);
+                // 调度下一个线程
+                thread_manager.schedule_next();
+            }
+            drop(task_inner);
+            // 将进程重新加入调度队列
+            super::add_task(task);
+            return;
+        }
+    }
+
+    // 单线程进程的原有阻塞逻辑
     let end_time = get_time_us();
     let mut task_inner = task.inner_exclusive_access();
     let runtime = end_time.saturating_sub(task_inner.last_runtime);
@@ -179,7 +231,7 @@ pub fn block_current_and_run_next() {
 
 pub const IDLE_PID: usize = 0;
 
-pub fn exit_current_and_run_next(exit_code: i32) {
+pub fn exit_current_and_run_next(exit_code: i32) -> ! {
     let task = take_current_task().unwrap();
 
     let pid = task.get_pid();
@@ -220,6 +272,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
+    loop {}
 }
 
 pub fn current_cwd() -> String {

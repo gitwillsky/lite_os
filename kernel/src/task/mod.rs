@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    task::{context::TaskContext, task_manager::set_init_proc},
+    task::{task_manager::set_init_proc},
 };
 
 mod context;
@@ -13,6 +13,8 @@ mod processor;
 pub mod signal;
 mod task;
 mod task_manager;
+
+pub use context::TaskContext;
 
 pub use processor::*;
 pub use signal::check_and_handle_signals;

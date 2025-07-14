@@ -23,6 +23,7 @@ mod memory;
 mod sync;
 mod syscall;
 mod task;
+mod thread;
 mod timer;
 mod trap;
 
@@ -37,6 +38,7 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     timer::init();
     fs::vfs::init_vfs();
     drivers::init_devices();
+    thread::init_threading();
     task::init();
     task::run_tasks();
 }

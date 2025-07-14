@@ -3,11 +3,13 @@ mod process;
 mod signal;
 mod timer;
 mod dynamic_linking;
+mod thread;
 
 use fs::*;
 use process::*;
 use signal::*;
 use dynamic_linking::*;
+use thread::*;
 
 pub use signal::sys_sigreturn;
 
@@ -71,6 +73,21 @@ const SYSCALL_DLOPEN: usize = 600;
 const SYSCALL_DLSYM: usize = 601;
 const SYSCALL_DLCLOSE: usize = 602;
 
+// 多线程相关系统调用
+const SYSCALL_THREAD_CREATE: usize = 700;
+const SYSCALL_THREAD_EXIT: usize = 701;
+const SYSCALL_THREAD_JOIN: usize = 702;
+const SYSCALL_THREAD_YIELD: usize = 703;
+const SYSCALL_GET_THREAD_ID: usize = 704;
+const SYSCALL_SET_THREAD_LOCAL: usize = 705;
+const SYSCALL_GET_THREAD_LOCAL: usize = 706;
+const SYSCALL_MUTEX_CREATE: usize = 707;
+const SYSCALL_MUTEX_LOCK: usize = 708;
+const SYSCALL_MUTEX_UNLOCK: usize = 709;
+const SYSCALL_CONDVAR_CREATE: usize = 710;
+const SYSCALL_CONDVAR_WAIT: usize = 711;
+const SYSCALL_CONDVAR_NOTIFY: usize = 712;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -132,6 +149,21 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_DLOPEN => sys_dlopen(args[0] as *const u8, args[1] as i32),
         SYSCALL_DLSYM => sys_dlsym(args[0], args[1] as *const u8),
         SYSCALL_DLCLOSE => sys_dlclose(args[0]),
+
+        // 多线程相关系统调用
+        SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1], args[2] as *const ThreadAttr),
+        SYSCALL_THREAD_EXIT => sys_thread_exit(args[0] as i32),
+        SYSCALL_THREAD_JOIN => sys_thread_join(args[0], args[1] as *mut i32),
+        SYSCALL_THREAD_YIELD => sys_thread_yield(),
+        SYSCALL_GET_THREAD_ID => sys_get_thread_id(),
+        SYSCALL_SET_THREAD_LOCAL => sys_set_thread_local(args[0]),
+        SYSCALL_GET_THREAD_LOCAL => sys_get_thread_local(),
+        SYSCALL_MUTEX_CREATE => sys_mutex_create(),
+        SYSCALL_MUTEX_LOCK => sys_mutex_lock(args[0]),
+        SYSCALL_MUTEX_UNLOCK => sys_mutex_unlock(args[0]),
+        SYSCALL_CONDVAR_CREATE => sys_condvar_create(),
+        SYSCALL_CONDVAR_WAIT => sys_condvar_wait(args[0], args[1]),
+        SYSCALL_CONDVAR_NOTIFY => sys_condvar_notify(args[0], args[1] != 0),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

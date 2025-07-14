@@ -18,6 +18,7 @@ use crate::{
     },
     trap::{TrapContext, trap_handler},
     fs::inode::Inode,
+    thread::ThreadManager,
 };
 
 pub struct FileDescriptor {
@@ -122,6 +123,8 @@ pub struct TaskControlBlockInner {
     pub euid: u32,
     /// 有效组ID (用于权限检查)
     pub egid: u32,
+    /// 线程管理器 (用于多线程支持)
+    pub thread_manager: Option<ThreadManager>,
 }
 
 /// Task Control block structure
@@ -174,6 +177,7 @@ impl TaskControlBlock {
                 gid: 0,           // 初始进程为root组
                 euid: 0,          // 有效用户ID初始为root
                 egid: 0,          // 有效组ID初始为root
+                thread_manager: None, // 默认不启用多线程
             }),
         };
 
@@ -286,6 +290,7 @@ impl TaskControlBlock {
                 gid: parent_inner.gid,    // 继承父进程组ID
                 euid: parent_inner.euid,  // 继承父进程有效用户ID
                 egid: parent_inner.egid,  // 继承父进程有效组ID
+                thread_manager: None, // 子进程默认不启用多线程
             }),
         });
 
@@ -293,6 +298,20 @@ impl TaskControlBlock {
         let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
         trap_cx.kernel_sp = kernel_stack_top;
         tcb
+    }
+    
+    /// 初始化线程管理器（为支持多线程进程）
+    pub fn init_thread_manager(&self) {
+        let mut inner = self.inner_exclusive_access();
+        if inner.thread_manager.is_none() {
+            inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self)));
+            info!("Thread manager initialized for process PID {}", self.get_pid());
+        }
+    }
+    
+    /// 检查是否支持多线程
+    pub fn supports_threading(&self) -> bool {
+        self.inner_exclusive_access().thread_manager.is_some()
     }
 }
 
@@ -582,5 +601,22 @@ impl TaskControlBlockInner {
         }
 
         (effective_mode & requested) == requested
+    }
+
+    /// 启用多线程支持
+    pub fn enable_threading(&mut self, task: Arc<TaskControlBlock>) {
+        if self.thread_manager.is_none() {
+            self.thread_manager = Some(ThreadManager::new(task));
+        }
+    }
+
+    /// 获取线程管理器
+    pub fn get_thread_manager(&mut self) -> Option<&mut ThreadManager> {
+        self.thread_manager.as_mut()
+    }
+
+    /// 检查是否启用了多线程
+    pub fn is_threading_enabled(&self) -> bool {
+        self.thread_manager.is_some()
     }
 }
