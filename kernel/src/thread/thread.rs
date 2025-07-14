@@ -6,6 +6,7 @@ use crate::{
         address::{VirtualAddress, PhysicalPageNumber},
     },
     trap::TrapContext,
+    thread::signal::ThreadSignalState,
 };
 
 /// 线程ID类型
@@ -62,6 +63,8 @@ pub struct ThreadControlBlockInner {
     pub thread_arg: usize,
     /// CPU亲和性
     pub cpu_affinity: Option<usize>,
+    /// 线程信号状态
+    pub signal_state: Option<ThreadSignalState>,
 }
 
 /// 线程控制块
@@ -107,6 +110,7 @@ impl ThreadControlBlock {
                 entry_point,
                 thread_arg,
                 cpu_affinity: None,
+                signal_state: Some(ThreadSignalState::new()),
             }),
         };
 

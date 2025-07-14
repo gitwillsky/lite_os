@@ -13,6 +13,7 @@ pub mod frame_allocator;
 pub mod heap_allocator;
 pub mod mm;
 pub mod page_table;
+pub mod thread_safe;
 
 pub use config::*;
 unsafe extern "C" {
@@ -50,6 +51,11 @@ pub fn init() {
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();
+    
+    // 初始化线程安全内存管理器
+    let total_pages = (memory_end_addr.as_usize() - kernel_end_addr.as_usize()) / config::PAGE_SIZE;
+    let max_pages = total_pages / 2; // 允许线程使用一半的可用内存
+    thread_safe::init_thread_safe_memory_manager(max_pages);
 }
 
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {

@@ -5,10 +5,12 @@ use lazy_static::lazy_static;
 pub mod thread;
 pub mod thread_manager;
 pub mod sync;
+pub mod signal;
 
 pub use thread::{ThreadControlBlock, ThreadId, ThreadStatus, ThreadStack};
 pub use thread_manager::{ThreadManager, ThreadStackAllocator, create_thread, exit_thread, join_thread};
 pub use sync::{Mutex, Condvar, RwLock, Semaphore, SyncObjectManager, SyncObjectId};
+pub use signal::{ThreadSignalState, ThreadSignalDelivery, send_signal_to_thread, check_and_handle_thread_signals, inherit_signal_state_for_thread, cleanup_thread_signals};
 
 /// 全局线程ID计数器
 static THREAD_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
