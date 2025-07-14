@@ -81,3 +81,7 @@ make clean
 - Ensure `fs.img` exists before running (use `make create-fs`)
 - FAT32 filesystem must be properly initialized for file operations
 - QEMU requires RISC-V system emulation support
+
+### 代码实现要求
+
+1. 记住：任何时候都不要简化实现

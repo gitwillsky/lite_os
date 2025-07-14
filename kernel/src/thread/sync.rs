@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec, collections::{VecDeque, BTreeMap}};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use crate::{
     sync::UPSafeCell,
-    thread::{ThreadId, ThreadControlBlock},
+    thread::ThreadId,
     task::current_task,
     timer::get_time_us,
 };
@@ -333,7 +333,7 @@ impl Condvar {
     }
 
     /// 等待条件（必须在持有互斥锁时调用）
-    pub fn wait<T>(&self, mutex_guard: MutexGuard<T>) -> MutexGuard<T> {
+    pub fn wait<'a, T>(&self, mutex_guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
         let mutex = mutex_guard.mutex;
         let current_thread_id = mutex.get_current_thread_id();
         
@@ -354,10 +354,10 @@ impl Condvar {
     }
 
     /// 等待条件（带超时）
-    pub fn wait_timeout<T>(&self, mutex_guard: MutexGuard<T>, timeout_us: u64) -> (MutexGuard<T>, bool) {
+    pub fn wait_timeout<'a, T>(&self, mutex_guard: MutexGuard<'a, T>, timeout_us: u64) -> (MutexGuard<'a, T>, bool) {
         let mutex = mutex_guard.mutex;
         let current_thread_id = mutex.get_current_thread_id();
-        let start_time = get_time_us();
+        let _start_time = get_time_us();
         
         // 加入等待队列
         {

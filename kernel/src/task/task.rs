@@ -301,7 +301,7 @@ impl TaskControlBlock {
     }
     
     /// 初始化线程管理器（为支持多线程进程）
-    pub fn init_thread_manager(&self) {
+    pub fn init_thread_manager(self: &Arc<Self>) {
         let mut inner = self.inner_exclusive_access();
         if inner.thread_manager.is_none() {
             inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self)));

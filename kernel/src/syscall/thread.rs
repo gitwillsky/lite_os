@@ -1,9 +1,5 @@
 use crate::{
     task::{current_task, suspend_current_and_run_next},
-    thread::ThreadId,
-    memory::{
-        page_table::translated_byte_buffer,
-    },
 };
 
 /// 线程创建参数结构

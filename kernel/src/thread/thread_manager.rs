@@ -6,11 +6,8 @@ use crate::{
         frame_allocator::alloc,
         config::{KERNEL_STACK_SIZE, USER_STACK_SIZE, PAGE_SIZE},
         address::{VirtualAddress, PhysicalPageNumber, VirtualPageNumber},
-        mm::{MemorySet, MapArea, MapType, MapPermission},
-        page_table::{PageTable, PTEFlags},
+        mm::{MemorySet, MapPermission},
     },
-    trap::TrapContext,
-    timer::get_time_us,
 };
 
 /// 线程栈分配器
@@ -42,18 +39,11 @@ impl ThreadStackAllocator {
         self.next_user_stack_base = VirtualAddress::from(stack_top.as_usize() + PAGE_SIZE);
         
         // 在虚拟地址空间中映射栈区域
-        let start_vpn = VirtualPageNumber::from(stack_base);
-        let end_vpn = VirtualPageNumber::from(stack_top);
-        
-        let map_area = MapArea::new(
-            start_vpn,
-            end_vpn,
-            MapType::Framed,
+        memory_set.insert_framed_area(
+            stack_base,
+            stack_top,
             MapPermission::R | MapPermission::W | MapPermission::U,
         );
-        
-        memory_set.insert_framed_area(map_area)
-            .map_err(|_| "Failed to map user stack")?;
         
         // 记录已分配的栈
         self.allocated_stacks.push((stack_base, self.stack_size));
@@ -69,10 +59,8 @@ impl ThreadStackAllocator {
     ) -> Result<(), &'static str> {
         // 从内存集合中移除栈区域
         let start_vpn = VirtualPageNumber::from(stack.start_va);
-        let end_vpn = VirtualPageNumber::from(stack.end_va);
         
-        memory_set.remove_area_with_start_vpn(start_vpn)
-            .map_err(|_| "Failed to unmap user stack")?;
+        memory_set.remove_area_with_start_vpn(start_vpn);
         
         // 从已分配列表中移除
         self.allocated_stacks.retain(|(base, _)| *base != stack.start_va);
@@ -129,7 +117,7 @@ impl ThreadManager {
     pub fn create_thread(
         &mut self,
         entry_point: usize,
-        stack_size: usize,
+        _stack_size: usize,
         arg: usize,
         joinable: bool,
     ) -> Result<ThreadId, &'static str> {
@@ -223,7 +211,7 @@ impl ThreadManager {
             if target_thread.get_status() == ThreadStatus::Exited {
                 let exit_code = target_thread.get_exit_code();
                 // 清理已退出的线程
-                self.cleanup_thread(target_thread_id);
+                self.cleanup_thread_immediate(target_thread_id);
                 return Ok(exit_code);
             }
             
@@ -303,9 +291,7 @@ impl ThreadManager {
                     drop(target_inner);
                     
                     // 执行线程级别的上下文切换
-                    unsafe {
-                        crate::task::schedule_thread(current_cx_ptr, target_cx_ptr);
-                    }
+                    crate::task::schedule_thread(current_cx_ptr, target_cx_ptr);
                     
                     // 完成上下文切换
                     current_thread.finish_context_switch();
@@ -399,22 +385,24 @@ impl ThreadManager {
 
     /// 分配陷入上下文页面
     fn alloc_trap_context_page(&self, memory_set: &mut MemorySet) -> Result<PhysicalPageNumber, &'static str> {
-        if let Some(frame) = alloc() {
-            // 找一个未使用的虚拟地址来映射陷入上下文
-            // 这里简化处理，实际应该有更好的地址管理
-            let trap_cx_va = VirtualAddress::from(0x10000000usize + self.thread_count * PAGE_SIZE);
-            let trap_cx_vpn = VirtualPageNumber::from(trap_cx_va);
-            
-            // 在页表中建立映射
-            memory_set.page_table.map(
-                trap_cx_vpn,
-                frame.ppn,
-                PTEFlags::R | PTEFlags::W
-            );
-            
-            Ok(frame.ppn)
+        // 找一个未使用的虚拟地址来映射陷入上下文
+        // 使用基于线程数量的偏移来避免冲突
+        let trap_cx_va = VirtualAddress::from(0x10000000usize + self.thread_count * PAGE_SIZE);
+        let end_va = VirtualAddress::from(trap_cx_va.as_usize() + PAGE_SIZE);
+        
+        // 添加到内存集合中
+        memory_set.insert_framed_area(
+            trap_cx_va,
+            end_va,
+            MapPermission::R | MapPermission::W
+        );
+        
+        // 获取映射的物理页号
+        let trap_cx_vpn = VirtualPageNumber::from(trap_cx_va);
+        if let Some(pte) = memory_set.translate(trap_cx_vpn) {
+            Ok(pte.ppn())
         } else {
-            Err("Failed to allocate trap context page")
+            Err("Failed to get trap context page mapping")
         }
     }
 

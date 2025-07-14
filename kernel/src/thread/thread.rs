@@ -4,8 +4,6 @@ use crate::{
     task::TaskContext,
     memory::{
         address::{VirtualAddress, PhysicalPageNumber},
-        page_table::PageTable,
-        mm::MemorySet,
     },
     trap::TrapContext,
 };
@@ -233,14 +231,14 @@ impl ThreadControlBlock {
 
     /// 准备线程切换
     pub fn prepare_context_switch(&self) {
-        let inner = self.inner.exclusive_access();
+        let _inner = self.inner.exclusive_access();
         // 这里可以添加上下文切换前的准备工作
         // 例如保存浮点寄存器状态等
     }
 
     /// 完成线程切换后的清理
     pub fn finish_context_switch(&self) {
-        let inner = self.inner.exclusive_access();
+        let _inner = self.inner.exclusive_access();
         // 这里可以添加上下文切换后的清理工作
         // 例如恢复浮点寄存器状态等
     }

@@ -1,10 +1,5 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
-use alloc::{sync::Arc, vec::Vec, collections::BTreeMap};
-use crate::{
-    sync::UPSafeCell,
-    task::{TaskControlBlock, TaskStatus},
-    memory::mm::MemorySet,
-};
+use crate::sync::UPSafeCell;
 use lazy_static::lazy_static;
 
 pub mod thread;
