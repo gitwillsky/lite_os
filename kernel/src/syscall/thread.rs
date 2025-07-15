@@ -95,6 +95,10 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
             debug!("Thread {} registered to memory manager", thread_id.0);
 
             debug!("sys_thread_create returning thread_id: {}", thread_id.0);
+            
+            // 创建线程成功，直接返回，让正常的trap_return处理返回
+            // 新线程会在后续的调度中被执行
+            
             thread_id.0 as isize
         }
         Err(e) => {

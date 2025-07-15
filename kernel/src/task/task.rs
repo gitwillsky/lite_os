@@ -383,10 +383,16 @@ impl TaskControlBlock {
     /// 初始化线程管理器（为支持多线程进程）
     pub fn init_thread_manager(self: &Arc<Self>) {
         let mut inner = self.inner_exclusive_access();
+        debug!("init_thread_manager called for PID {}, task addr: {:p}, current thread_manager: {}", 
+               self.get_pid(), self.as_ref(), inner.thread_manager.is_some());
         if inner.thread_manager.is_none() {
             let trap_cx_ppn = inner.mm.trap_cx_ppn; // 获取陷入上下文页面号
             inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self), trap_cx_ppn));
-            debug!("Thread manager initialized for process PID {}", self.get_pid());
+            debug!("Thread manager initialized for process PID {}, task addr: {:p}", 
+                   self.get_pid(), self.as_ref());
+        } else {
+            debug!("Thread manager already exists for process PID {}, task addr: {:p}", 
+                   self.get_pid(), self.as_ref());
         }
     }
 

@@ -135,6 +135,7 @@ pub fn schedule_thread(current_thread_cx_ptr: *mut TaskContext, next_thread_cx_p
 }
 
 pub fn suspend_current_and_run_next() {
+    debug!("suspend_current_and_run_next: starting");
     let task = take_current_task().unwrap();
     let end_time = get_time_us();
 
@@ -143,6 +144,8 @@ pub fn suspend_current_and_run_next() {
     let runtime = end_time.saturating_sub(task_inner.sched.last_runtime);
     let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
     let task_status = task_inner.sched.task_status;
+
+    debug!("suspend_current_and_run_next: task_status={:?}", task_status);
 
     // 根据调度策略更新任务统计信息
     match get_scheduling_policy() {
@@ -155,12 +158,26 @@ pub fn suspend_current_and_run_next() {
     }
 
     // 处理多线程进程的线程调度
+    debug!("suspend_current_and_run_next: checking for thread manager, task PID: {}, task addr: {:p}", 
+           task.get_pid(), task.as_ref());
     if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-        // 多线程进程：更新当前线程状态
+        debug!("suspend_current_and_run_next: found thread manager with {} threads", 
+               thread_manager.thread_count());
+        // 多线程进程：更新当前线程状态并调度下一个线程
         if let Some(current_thread) = thread_manager.get_current_thread() {
+            debug!("suspend_current_and_run_next: current thread is {}", current_thread.get_thread_id().0);
             current_thread.set_status(crate::thread::ThreadStatus::Ready);
-            thread_manager.yield_thread();
+            
+            // 将当前线程加入就绪队列
+            thread_manager.add_thread_to_ready_queue(current_thread.get_thread_id());
+            
+            // 调度下一个线程（仅更新状态，不做上下文切换）
+            thread_manager.schedule_next_no_switch();
         }
+        debug!("suspend_current_and_run_next: thread manager stats: {:?}", thread_manager.get_thread_stats());
+    } else {
+        debug!("suspend_current_and_run_next: no thread manager found for task PID: {}, task addr: {:p}", 
+               task.get_pid(), task.as_ref());
     }
 
     // 统一的任务状态处理
@@ -171,6 +188,7 @@ pub fn suspend_current_and_run_next() {
         // 更新任务管理器中的运行时间统计
         super::task_manager::update_task_runtime(&task, runtime);
 
+        debug!("suspend_current_and_run_next: adding task back to ready queue");
         // push back to ready queue
         super::add_task(task);
     } else {
@@ -178,6 +196,7 @@ pub fn suspend_current_and_run_next() {
         drop(task_inner);
     }
 
+    debug!("suspend_current_and_run_next: calling schedule");
     // 所有进程都必须经过统一的调度流程
     schedule(task_cx_ptr);
 }

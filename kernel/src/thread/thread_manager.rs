@@ -496,6 +496,30 @@ impl ThreadManager {
         self.threads.get(&thread_id).cloned()
     }
 
+    /// 添加线程到就绪队列
+    pub fn add_thread_to_ready_queue(&mut self, thread_id: ThreadId) {
+        if !self.ready_queue.contains(&thread_id) {
+            self.ready_queue.push(thread_id);
+        }
+    }
+
+    /// 调度下一个线程（仅更新状态，不做上下文切换）
+    pub fn schedule_next_no_switch(&mut self) {
+        // 简单的轮转调度 + 优先级调度 (FIFO)
+        if !self.ready_queue.is_empty() {
+            let next_thread_id = self.ready_queue.remove(0); // 从队列头部取出，实现FIFO
+            if let Some(thread) = self.threads.get(&next_thread_id) {
+                thread.set_status(ThreadStatus::Running);
+                self.current_thread = Some(next_thread_id);
+                debug!("Thread {} scheduled to run (no context switch)", next_thread_id.0);
+            }
+        } else {
+            // 没有可运行的线程
+            self.current_thread = None;
+            debug!("No threads available to schedule");
+        }
+    }
+
     /// 获取线程统计信息
     pub fn get_thread_stats(&self) -> (usize, usize, usize) {
         (self.thread_count, self.ready_queue.len(), self.blocked_threads.len())
