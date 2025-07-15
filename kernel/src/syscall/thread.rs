@@ -1,14 +1,13 @@
 use crate::{
+    memory::{
+        self,
+        thread_safe::{register_current_thread, unregister_current_thread},
+    },
     task::{current_task, suspend_current_and_run_next},
     thread::{
-        create_thread as kernel_create_thread,
-        exit_thread as kernel_exit_thread,
-        join_thread as kernel_join_thread,
-        get_sync_manager,
-        ThreadId,
-        send_signal_to_thread,
+        ThreadId, create_thread as kernel_create_thread, exit_thread as kernel_exit_thread,
+        get_sync_manager, join_thread as kernel_join_thread, send_signal_to_thread,
     },
-    memory::thread_safe::{register_current_thread, unregister_current_thread},
 };
 
 /// 线程创建参数结构
@@ -25,21 +24,19 @@ fn read_thread_attr_from_user(attr_ptr: *const ThreadAttr) -> Result<ThreadAttr,
     if attr_ptr.is_null() {
         return Err("Null pointer");
     }
-    
+
     // 检查地址是否在用户空间范围内
     let addr = attr_ptr as usize;
     if addr < 0x10000 || addr >= 0x80000000 {
         return Err("Invalid user address");
     }
-    
+
     // 获取当前任务的页表token进行地址转换
     if let Some(current_task) = current_task() {
-        let task_inner = current_task.inner_exclusive_access();
-        let token = task_inner.get_user_token();
-        drop(task_inner);
-        
+        let token = current_task.inner_exclusive_access().get_user_token();
+
         // 使用页表转换安全地读取用户数据
-        let attr_ref = crate::memory::page_table::translated_ref_mut(token, attr_ptr as *mut ThreadAttr);
+        let attr_ref = memory::page_table::translated_ref_mut(token, attr_ptr as *mut ThreadAttr);
         Ok(*attr_ref)
     } else {
         Err("No current task")
@@ -56,14 +53,16 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
         return -1; // 无效的入口点
     }
 
-    // 获取当前任务
-    let current_task = match current_task() {
-        Some(task) => task,
-        None => return -1,
-    };
+    {
+        // 获取当前任务
+        let current_task = match current_task() {
+            Some(task) => task,
+            None => return -1,
+        };
 
-    // 确保当前任务支持多线程
-    current_task.init_thread_manager();
+        // 确保当前任务支持多线程
+        current_task.init_thread_manager();
+    }
 
     // 解析线程属性
     let (stack_size, joinable, priority) = if attr_ptr.is_null() {
@@ -72,10 +71,10 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
         // 从用户空间安全地读取属性
         match read_thread_attr_from_user(attr_ptr) {
             Ok(attr) => {
-                let stack_size = if attr.stack_size > 0 { 
+                let stack_size = if attr.stack_size > 0 {
                     attr.stack_size.max(4096) // 最小4KB栈
-                } else { 
-                    8192 
+                } else {
+                    8192
                 };
                 let joinable = !attr.detached;
                 let priority = attr.priority.max(-20).min(19); // 限制优先级范围
@@ -92,8 +91,7 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
         Ok(thread_id) => {
             // 注册线程到内存管理器
             register_current_thread(thread_id, Some(1024 * 1024)); // 1MB内存限制
-            
-            info!("Created thread {} with entry point {:#x}", thread_id.0, entry_point);
+
             thread_id.0 as isize
         }
         Err(_) => -1,
@@ -110,16 +108,16 @@ pub fn sys_thread_exit(exit_code: i32) -> ! {
             if let Some(current_thread) = thread_manager.get_current_thread() {
                 let thread_id = current_thread.get_thread_id();
                 drop(task_inner);
-                
+
                 // 注销线程的内存管理
                 unregister_current_thread(thread_id);
-                
+
                 // 调用内核线程退出
                 kernel_exit_thread(exit_code);
             }
         }
     }
-    
+
     // 如果没有线程管理器，则退出进程
     crate::task::exit_current_and_run_next(exit_code);
 }
@@ -129,19 +127,19 @@ fn write_exit_code_to_user(exit_code_ptr: *mut i32, exit_code: i32) -> Result<()
     if exit_code_ptr.is_null() {
         return Err("Null pointer");
     }
-    
+
     // 检查地址是否在用户空间范围内
     let addr = exit_code_ptr as usize;
     if addr < 0x10000 || addr >= 0x80000000 {
         return Err("Invalid user address");
     }
-    
+
     // 获取当前任务的页表token进行地址转换
     if let Some(current_task) = current_task() {
         let task_inner = current_task.inner_exclusive_access();
         let token = task_inner.get_user_token();
         drop(task_inner);
-        
+
         // 使用页表转换安全地写入用户数据
         let exit_code_ref = crate::memory::page_table::translated_ref_mut(token, exit_code_ptr);
         *exit_code_ref = exit_code;
@@ -160,22 +158,21 @@ pub fn sys_thread_join(thread_id: usize, exit_code_ptr: *mut i32) -> isize {
     }
 
     let target_thread_id = ThreadId(thread_id);
-    
+
     match kernel_join_thread(target_thread_id) {
         Ok(exit_code) => {
             // 如果提供了退出码指针，将退出码写入用户空间
             if !exit_code_ptr.is_null() {
                 // 安全地写入用户空间
                 match write_exit_code_to_user(exit_code_ptr, exit_code) {
-                    Ok(()) => {},
+                    Ok(()) => {}
                     Err(_) => return -1, // EFAULT
                 }
             }
-            
+
             // 注销线程的内存管理
             unregister_current_thread(target_thread_id);
-            
-            info!("Thread {} joined successfully with exit code {}", thread_id, exit_code);
+
             0 // 成功
         }
         Err(_) => -1, // 失败
@@ -199,7 +196,7 @@ pub fn sys_get_thread_id() -> isize {
             }
         }
     }
-    
+
     // 如果没有线程管理器，返回进程ID
     if let Some(current_task) = current_task() {
         current_task.get_pid() as isize
@@ -288,7 +285,6 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
             drop(sync_manager);
             let guard = mutex.lock();
             let _guard = condvar.wait(guard);
-            debug!("Condvar {} wait completed with mutex {}", condvar_id, mutex_id);
             0
         } else {
             -1
@@ -320,7 +316,6 @@ pub fn sys_condvar_notify(condvar_id: usize, notify_all: bool) -> isize {
 pub fn sys_semaphore_create(initial_count: usize) -> isize {
     let mut sync_manager = get_sync_manager();
     let sem_id = sync_manager.create_semaphore(initial_count);
-    debug!("Created semaphore with ID {} and count {}", sem_id, initial_count);
     sem_id as isize
 }
 
@@ -353,11 +348,11 @@ pub fn sys_semaphore_signal(sem_id: usize) -> isize {
 /// 线程信号发送系统调用
 pub fn sys_thread_kill(thread_id: usize, signal: u32) -> isize {
     use crate::task::signal::Signal;
-    
+
     if let Some(signal_enum) = Signal::from_u8(signal as u8) {
         if let Some(current_task) = current_task() {
             let target_thread_id = ThreadId(thread_id);
-            
+
             match send_signal_to_thread(&current_task, target_thread_id, signal_enum) {
                 Ok(()) => {
                     info!("Signal {} sent to thread {}", signal, thread_id);

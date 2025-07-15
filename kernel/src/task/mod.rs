@@ -19,7 +19,7 @@ pub use context::TaskContext;
 pub use processor::*;
 pub use signal::check_and_handle_signals;
 pub use task_manager::{add_task, wakeup_task, SchedulingPolicy, set_scheduling_policy, get_scheduling_policy};
-pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
+pub use task::{FileDescriptor, TaskControlBlock, TaskControlBlockInner, TaskStatus};
 
 global_asm!(include_str!("switch.S"));
 

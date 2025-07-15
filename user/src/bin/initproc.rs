@@ -12,7 +12,7 @@ fn main() -> i32 {
     // 原进程返回创建的子进程的 Pid，子进程返回 0
     let pid = fork();
     if pid == 0 {
-        exec("user_shell\0");
+        exec("thread_test\0");
     } else {
         loop {
             let mut exit_code: i32 = 0;

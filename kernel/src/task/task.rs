@@ -303,16 +303,16 @@ impl TaskControlBlock {
         trap_cx.kernel_sp = kernel_stack_top;
         tcb
     }
-    
+
     /// 初始化线程管理器（为支持多线程进程）
     pub fn init_thread_manager(self: &Arc<Self>) {
         let mut inner = self.inner_exclusive_access();
         if inner.thread_manager.is_none() {
             inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self)));
-            info!("Thread manager initialized for process PID {}", self.get_pid());
+            debug!("Thread manager initialized for process PID {}", self.get_pid());
         }
     }
-    
+
     /// 检查是否支持多线程
     pub fn supports_threading(&self) -> bool {
         self.inner_exclusive_access().thread_manager.is_some()

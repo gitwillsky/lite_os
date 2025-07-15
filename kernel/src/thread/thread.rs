@@ -90,6 +90,7 @@ impl ThreadControlBlock {
         trap_cx_ppn: PhysicalPageNumber,
         thread_arg: usize,
         joinable: bool,
+        user_token: usize, // 添加用户空间页表token参数
     ) -> Self {
         let kernel_stack_top = kernel_stack_base + kernel_stack_size;
         
@@ -114,32 +115,29 @@ impl ThreadControlBlock {
             }),
         };
 
-        // 初始化陷入上下文
-        tcb.init_trap_context();
+        // 初始化陷入上下文，传入用户页表token
+        tcb.init_trap_context(user_token);
         tcb
     }
 
     /// 初始化陷入上下文
-    fn init_trap_context(&self) {
-        if let Some(parent) = self.parent_process.upgrade() {
-            let parent_inner = parent.inner_exclusive_access();
-            let inner = self.inner.exclusive_access();
-            
-            // 获取线程的陷入上下文页面
-            let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
-            
-            // 初始化陷入上下文
-            *trap_cx = TrapContext::app_init_context(
-                inner.entry_point,
-                inner.user_stack.sp,
-                parent_inner.get_user_token(),
-                inner.kernel_stack_top,
-                crate::trap::trap_handler as usize,
-            );
-            
-            // 设置线程参数 (通过a0寄存器传递)
-            trap_cx.x[10] = inner.thread_arg; // a0 register
-        }
+    fn init_trap_context(&self, user_token: usize) {
+        let inner = self.inner.exclusive_access();
+        
+        // 获取线程的陷入上下文页面
+        let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
+        
+        // 初始化陷入上下文
+        *trap_cx = TrapContext::app_init_context(
+            inner.entry_point,
+            inner.user_stack.sp,
+            user_token, // 使用传入的用户页表token
+            inner.kernel_stack_top,
+            crate::trap::trap_handler as usize,
+        );
+        
+        // 设置线程参数 (通过a0寄存器传递)
+        trap_cx.x[10] = inner.thread_arg; // a0 register
     }
 
     /// 获取线程ID
