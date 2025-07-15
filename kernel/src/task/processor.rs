@@ -37,7 +37,7 @@ pub fn current_user_token() -> usize {
 pub fn current_trap_context() -> &'static mut TrapContext {
     if let Some(task) = current_task() {
         let task_inner = task.inner_exclusive_access();
-        
+
         // 检查是否有线程管理器（多线程进程）
         if let Some(thread_manager) = task_inner.thread_manager.as_ref() {
             if let Some(current_thread) = thread_manager.get_current_thread() {
@@ -45,7 +45,7 @@ pub fn current_trap_context() -> &'static mut TrapContext {
                 return current_thread.get_trap_cx();
             }
         }
-        
+
         // 单线程进程的陷入上下文
         task_inner.get_trap_cx()
     } else {
@@ -85,11 +85,11 @@ pub fn run_tasks() -> ! {
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
-            
+
             // 记录任务开始运行的时间
             let start_time = get_time_us();
             task_inner.last_runtime = start_time;
-            
+
             drop(task_inner);
             processor.current = Some(task);
             drop(processor);
@@ -150,7 +150,7 @@ pub fn suspend_current_and_run_next() {
     let runtime = end_time.saturating_sub(task_inner.last_runtime);
     let task_cx_ptr = &mut task_inner.task_cx as *mut _;
     let task_status = task_inner.task_status;
-    
+
     // 根据调度策略更新任务统计信息
     match get_scheduling_policy() {
         SchedulingPolicy::CFS => {
@@ -160,14 +160,14 @@ pub fn suspend_current_and_run_next() {
             task_inner.last_runtime = runtime;
         }
     }
-    
+
     if task_status == TaskStatus::Running {
         task_inner.task_status = TaskStatus::Ready;
         drop(task_inner);
-        
+
         // 更新任务管理器中的运行时间统计
         super::task_manager::update_task_runtime(&task, runtime);
-        
+
         // push back to ready queue
         super::add_task(task);
     } else {
@@ -206,7 +206,7 @@ pub fn block_current_and_run_next() {
     let runtime = end_time.saturating_sub(task_inner.last_runtime);
     let task_cx_ptr = &mut task_inner.task_cx as *mut _;
     task_inner.task_status = TaskStatus::Sleeping;
-    
+
     // 更新运行时间统计
     match get_scheduling_policy() {
         SchedulingPolicy::CFS => {
@@ -216,7 +216,7 @@ pub fn block_current_and_run_next() {
             task_inner.last_runtime = runtime;
         }
     }
-    
+
     drop(task_inner);
 
     // 更新任务管理器中的运行时间统计
