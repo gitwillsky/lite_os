@@ -308,7 +308,8 @@ impl TaskControlBlock {
     pub fn init_thread_manager(self: &Arc<Self>) {
         let mut inner = self.inner_exclusive_access();
         if inner.thread_manager.is_none() {
-            inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self)));
+            let trap_cx_ppn = inner.trap_cx_ppn; // 获取陷入上下文页面号
+            inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self), trap_cx_ppn));
             debug!("Thread manager initialized for process PID {}", self.get_pid());
         }
     }
@@ -608,9 +609,9 @@ impl TaskControlBlockInner {
     }
 
     /// 启用多线程支持
-    pub fn enable_threading(&mut self, task: Arc<TaskControlBlock>) {
+    pub fn enable_threading(&mut self, task: Arc<TaskControlBlock>, trap_cx_ppn: PhysicalPageNumber) {
         if self.thread_manager.is_none() {
-            self.thread_manager = Some(ThreadManager::new(task));
+            self.thread_manager = Some(ThreadManager::new(task, trap_cx_ppn));
         }
     }
 

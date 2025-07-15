@@ -89,24 +89,37 @@ pub struct ThreadManager {
 
 impl ThreadManager {
     /// 创建新的线程管理器
-    pub fn new(parent_process: Arc<TaskControlBlock>) -> Self {
+    pub fn new(parent_process: Arc<TaskControlBlock>, trap_cx_ppn: PhysicalPageNumber) -> Self {
         let main_thread_id = alloc_thread_id();
 
         // 设置用户栈分配的起始地址（在用户地址空间的高端）
         let initial_stack_base = VirtualAddress::from(0x80000000usize);
         let stack_allocator = ThreadStackAllocator::new(initial_stack_base, USER_STACK_SIZE);
 
-        Self {
+        let mut manager = Self {
             threads: BTreeMap::new(),
             ready_queue: Vec::new(),
             blocked_threads: Vec::new(),
             current_thread: Some(main_thread_id),
             main_thread_id,
-            parent_process,
+            parent_process: parent_process.clone(),
             stack_allocator,
             thread_count: 1, // 主线程
             max_threads: 1024, // 最大线程数限制
-        }
+        };
+        
+        // 为主线程创建线程控制块
+        // 主线程使用进程的原有栈和陷入上下文
+        let main_thread = Arc::new(ThreadControlBlock::new_main_thread(
+            main_thread_id,
+            Arc::downgrade(&parent_process),
+            trap_cx_ppn,
+        ));
+        
+        // 将主线程添加到线程表中
+        manager.threads.insert(main_thread_id, main_thread);
+        
+        manager
     }
 
     /// 创建新线程 (避免double borrow，接受已借用的process_inner)
@@ -628,7 +641,15 @@ pub fn create_thread(
     }
 }
 
-/// 退出线程
+/// 让步当前线程（全局接口）
+pub fn yield_current_thread() {
+    if let Some(current_task) = crate::task::current_task() {
+        let mut task_inner = current_task.inner_exclusive_access();
+        if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+            thread_manager.yield_thread();
+        }
+    }
+}
 pub fn exit_thread(exit_code: i32) {
     if let Some(current_task) = crate::task::current_task() {
         let mut task_inner = current_task.inner_exclusive_access();

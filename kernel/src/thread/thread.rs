@@ -79,6 +79,37 @@ pub struct ThreadControlBlock {
 }
 
 impl ThreadControlBlock {
+    /// 创建主线程（复用进程的现有资源）
+    pub fn new_main_thread(
+        thread_id: ThreadId,
+        parent_process: Weak<crate::task::TaskControlBlock>,
+        trap_cx_ppn: PhysicalPageNumber,
+    ) -> Self {
+        // 主线程使用进程的现有栈和陷入上下文，不需要分配新的资源
+        let inner = ThreadControlBlockInner {
+            status: ThreadStatus::Running,
+            context: crate::task::TaskContext::zero_init(),
+            trap_cx_ppn, // 使用进程的实际陷入上下文页面
+            user_stack: ThreadStack { start_va: VirtualAddress::from(0), end_va: VirtualAddress::from(0), size: 0, sp: 0 }, // 主线程使用进程的现有栈
+            kernel_stack_base: 0, // 使用进程的内核栈
+            kernel_stack_top: 0,
+            exit_code: 0,
+            joinable: false, // 主线程不能被join
+            waiting_threads: Vec::new(),
+            thread_local_data: None,
+            entry_point: 0, // 主线程已经在运行中
+            thread_arg: 0,
+            cpu_affinity: None,
+            signal_state: Some(crate::thread::signal::ThreadSignalState::new()),
+        };
+
+        Self {
+            thread_id,
+            parent_process,
+            inner: crate::sync::UPSafeCell::new(inner),
+        }
+    }
+
     /// 创建新线程
     pub fn new(
         thread_id: ThreadId,

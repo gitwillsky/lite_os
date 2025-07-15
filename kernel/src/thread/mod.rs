@@ -8,7 +8,7 @@ pub mod sync;
 pub mod signal;
 
 pub use thread::{ThreadControlBlock, ThreadId, ThreadStatus, ThreadStack};
-pub use thread_manager::{ThreadManager, ThreadStackAllocator, create_thread, exit_thread, join_thread};
+pub use thread_manager::{ThreadManager, ThreadStackAllocator, create_thread, exit_thread, join_thread, yield_current_thread};
 pub use sync::{Mutex, Condvar, RwLock, Semaphore, SyncObjectManager, SyncObjectId};
 pub use signal::{ThreadSignalState, ThreadSignalDelivery, send_signal_to_thread, check_and_handle_thread_signals, inherit_signal_state_for_thread, cleanup_thread_signals};
 

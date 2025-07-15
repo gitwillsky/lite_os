@@ -181,8 +181,25 @@ pub fn sys_thread_join(thread_id: usize, exit_code_ptr: *mut i32) -> isize {
 
 /// 线程让步系统调用
 pub fn sys_thread_yield() -> isize {
-    // 使用进程级别的让步
-    suspend_current_and_run_next();
+    if let Some(current_task) = current_task() {
+        let task_inner = current_task.inner_exclusive_access();
+        
+        // 检查是否是多线程进程
+        if let Some(_thread_manager) = task_inner.thread_manager.as_ref() {
+            // 多线程进程：在线程间调度，不移除整个进程
+            drop(task_inner);
+            
+            // 使用专门的线程调度函数，而不是进程调度
+            crate::thread::yield_current_thread();
+        } else {
+            // 单线程进程，使用进程级别的让步
+            drop(task_inner);
+            suspend_current_and_run_next();
+        }
+    } else {
+        // 没有当前任务，使用默认调度
+        suspend_current_and_run_next();
+    }
     0
 }
 
