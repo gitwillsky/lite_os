@@ -41,7 +41,13 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::set_next_timer_interrupt();
-                    suspend_current_and_run_next();
+                    // 处理定时器任务（如alarm等）
+                    timer::handle_timer_tasks();
+                    
+                    // 检查是否需要进行调度
+                    if task::should_schedule() {
+                        suspend_current_and_run_next();
+                    }
                 }
                 Interrupt::SupervisorExternal => {
                     // 处理外部中断（包括VirtIO设备中断）
@@ -74,13 +80,26 @@ pub fn trap_handler() {
                 }
                 Exception::UserEnvCall => {
                     let cx = task::current_trap_context();
+                    let syscall_id = cx.x[17];
+                    let args = [cx.x[10], cx.x[11], cx.x[12]];
+                    
+                    // Only debug important syscalls
+                    if syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
+                        debug!("[trap_handler] SystemCall: syscall_id={}, args=[{:#x}, {:#x}, {:#x}]", 
+                               syscall_id, args[0], args[1], args[2]);
+                    }
+                    
                     cx.sepc += 4;
-                    let ret = syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]);
+                    let ret = syscall::syscall(syscall_id, args);
 
                     // sys_exec change the TrapContext, we need reload it
                     let cx = task::current_trap_context();
 
                     cx.x[10] = ret as usize;
+                    
+                    if syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
+                        debug!("[trap_handler] SystemCall completed: syscall_id={}, ret={}", syscall_id, ret);
+                    }
                 }
                 Exception::InstructionPageFault => {
                     // 检查是否是信号处理函数返回
@@ -148,19 +167,24 @@ fn set_user_trap_entry() {
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
     // 在返回用户态之前检查信号
-    if let Some(_task) = task::current_task() {
+    if let Some(task) = task::current_task() {
         let (should_continue, exit_code) = crate::task::check_and_handle_signals();
         if !should_continue {
             if let Some(code) = exit_code {
+                debug!("[trap_return] Exiting due to signal with code: {}", code);
                 exit_current_and_run_next(code);
             }
         }
+    } else {
+        error!("[trap_return] No current task!");
+        panic!("trap_return called with no current task");
     }
 
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;
     let user_satp = task::current_user_token();
+    
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();

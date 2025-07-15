@@ -281,6 +281,9 @@ impl TaskControlBlock {
         inner.mm.memory_set = memory_set;
         // 重置信号状态（exec时应该重置信号处理器）
         inner.signal_state.reset_for_exec();
+        // 重置vruntime以确保公平调度
+        inner.sched.vruntime = 0;
+        debug!("exec: reset vruntime to 0 for PID {}", self.get_pid());
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entrypoint,
@@ -309,6 +312,9 @@ impl TaskControlBlock {
         inner.mm.memory_set = memory_set;
         // 重置信号状态（exec时应该重置信号处理器）
         inner.signal_state.reset_for_exec();
+        // 重置vruntime以确保公平调度
+        inner.sched.vruntime = 0;
+        debug!("exec_with_args: reset vruntime to 0 for PID {}", self.get_pid());
         let trap_cx = inner.get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
             entrypoint,

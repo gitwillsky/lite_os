@@ -44,13 +44,13 @@ fn read_thread_attr_from_user(attr_ptr: *const ThreadAttr) -> Result<ThreadAttr,
 }
 
 /// 创建线程系统调用
-/// args[0]: 线程包装函数地址 (thread_wrapper)
-/// args[1]: 实际线程函数地址
+/// args[0]: 线程包装函数地址 (thread_wrapper) - 用户空间的线程包装器
+/// args[1]: 实际线程函数地址 - 真正要执行的线程函数
 /// args[2]: 线程属性 (可选，为空则使用默认值)
 /// 返回值: 线程ID，或错误码
 pub fn sys_thread_create(entry_point: usize, thread_func: usize, attr_ptr: *const ThreadAttr) -> isize {
-    if entry_point == 0 {
-        return -1; // 无效的入口点
+    if entry_point == 0 || thread_func == 0 {
+        return -1; // 无效的入口点或线程函数
     }
 
     {
@@ -86,10 +86,13 @@ pub fn sys_thread_create(entry_point: usize, thread_func: usize, attr_ptr: *cons
         }
     };
 
-    // 创建线程，传递实际的线程函数地址作为参数
+    // 创建线程：
+    // - entry_point 是用户空间的 thread_wrapper 函数
+    // - thread_func 是实际要执行的线程函数，将作为参数传递给 thread_wrapper
     match kernel_create_thread(entry_point, stack_size, thread_func, joinable) {
         Ok(thread_id) => {
-            debug!("Thread {} created successfully", thread_id.0);
+            debug!("Thread {} created successfully with entry_point={:#x}, thread_func={:#x}", 
+                   thread_id.0, entry_point, thread_func);
             // 注册线程到内存管理器
             register_current_thread(thread_id, Some(1024 * 1024)); // 1MB内存限制
             debug!("Thread {} registered to memory manager", thread_id.0);
@@ -183,9 +186,26 @@ pub fn sys_thread_join(thread_id: usize, exit_code_ptr: *mut i32) -> isize {
             // 注销线程的内存管理
             unregister_current_thread(target_thread_id);
 
+            debug!("sys_thread_join: thread {} joined with exit code {}", thread_id, exit_code);
             0 // 成功
         }
-        Err(_) => -1, // 失败
+        Err(msg) => {
+            if msg == "Join in progress" {
+                // 没有更多线程可以运行，使用进程级别的阻塞
+                debug!("sys_thread_join: thread {} join in progress, blocking process", thread_id);
+                crate::task::block_current_and_run_next();
+                // 当被唤醒后，重新尝试join
+                return sys_thread_join(thread_id, exit_code_ptr);
+            } else if msg == "Join blocked - retry" {
+                // 有其他线程可以运行，继续在当前进程内调度
+                debug!("sys_thread_join: thread {} join blocked, retrying", thread_id);
+                // 直接重新调用join，让线程调度器处理
+                return sys_thread_join(thread_id, exit_code_ptr);
+            } else {
+                debug!("sys_thread_join: thread {} join failed: {}", thread_id, msg);
+                -1 // 其他错误
+            }
+        }
     }
 }
 

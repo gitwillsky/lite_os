@@ -242,6 +242,11 @@ impl ThreadControlBlock {
         self.inner.lock().waiting_threads.push(thread_id);
     }
 
+    /// 获取等待join的线程列表
+    pub fn get_waiting_threads(&self) -> Vec<ThreadId> {
+        self.inner.lock().waiting_threads.clone()
+    }
+
     /// 检查是否可以被join
     pub fn is_joinable(&self) -> bool {
         self.inner.lock().joinable
@@ -250,6 +255,19 @@ impl ThreadControlBlock {
     /// 获取退出码
     pub fn get_exit_code(&self) -> i32 {
         self.inner.lock().exit_code
+    }
+
+    /// 获取任务上下文指针（需要在持有锁的情况下使用）
+    pub fn get_task_cx_ptr(&self) -> *const TaskContext {
+        // 这个方法不安全，因为返回的指针可能在锁释放后失效
+        // 我们需要重新设计这个方法
+        panic!("get_task_cx_ptr is unsafe - use get_task_cx_mut instead");
+    }
+
+    /// 获取任务上下文的可变引用（需要在持有锁的情况下使用）
+    pub fn get_task_cx_mut(&self) -> &mut TaskContext {
+        // 这个方法也不安全，因为需要静态生命周期
+        panic!("get_task_cx_mut needs redesign");
     }
 
     /// 设置线程私有数据

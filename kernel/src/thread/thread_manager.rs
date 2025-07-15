@@ -177,7 +177,7 @@ impl ThreadManager {
     /// 退出当前线程
     pub fn exit_thread(&mut self, exit_code: i32) {
         if let Some(current_id) = self.current_thread {
-            if let Some(thread) = self.threads.get(&current_id) {
+            let waiting_threads = if let Some(thread) = self.threads.get(&current_id) {
                 thread.exit(exit_code);
 
                 // 如果是主线程退出，则终止整个进程
@@ -186,20 +186,37 @@ impl ThreadManager {
                     return;
                 }
 
+                // 获取等待线程列表
+                let waiting_threads = thread.get_waiting_threads();
+                let is_joinable = thread.is_joinable();
+                
                 // 从就绪队列中移除
                 self.ready_queue.retain(|&id| id != current_id);
                 self.blocked_threads.retain(|&id| id != current_id);
 
-                // 立即清理线程资源
-                self.cleanup_thread_immediate(current_id);
-                self.current_thread = None;
-                self.thread_count -= 1;
-
-                // 如果没有更多线程，终止进程
-                if self.thread_count == 0 {
-                    self.terminate_process(0);
-                    return;
+                // 如果线程不是joinable的，立即清理
+                if !is_joinable {
+                    self.cleanup_thread_immediate(current_id);
+                    self.thread_count -= 1;
                 }
+
+                waiting_threads
+            } else {
+                Vec::new()
+            };
+
+            // 唤醒等待这个线程的线程
+            for waiting_thread_id in waiting_threads {
+                debug!("Waking up thread {} that was waiting for thread {}", waiting_thread_id.0, current_id.0);
+                self.wakeup_thread(waiting_thread_id);
+            }
+
+            self.current_thread = None;
+
+            // 如果没有更多线程，终止进程
+            if self.thread_count == 0 {
+                self.terminate_process(0);
+                return;
             }
         }
 
@@ -223,8 +240,10 @@ impl ThreadManager {
             // 如果线程已经退出，直接返回退出码
             if target_thread.get_status() == ThreadStatus::Exited {
                 let exit_code = target_thread.get_exit_code();
-                // 清理已退出的线程
+                // 清理已退出的线程，并减少线程计数
                 self.cleanup_thread_immediate(target_thread_id);
+                self.thread_count -= 1;
+                debug!("Thread {} joined successfully with exit code {}", target_thread_id.0, exit_code);
                 return Ok(exit_code);
             }
 
@@ -239,8 +258,19 @@ impl ThreadManager {
                     self.blocked_threads.push(current_id);
                 }
 
-                // 调度下一个线程 - 传递当前线程ID用于上下文切换
-                self.schedule_next_with_current(current_id);
+                debug!("Thread {} blocked waiting for thread {} to exit", current_id.0, target_thread_id.0);
+
+                // 立即调度下一个线程，而不是返回到进程级调度器
+                self.schedule_next_no_switch();
+                
+                // 如果还有其他线程可以运行，返回错误让系统调用重新执行
+                if self.ready_queue.is_empty() {
+                    // 没有更多线程可以运行，让进程级调度器处理
+                    return Err("Join in progress");
+                } else {
+                    // 有其他线程可以运行，继续在当前进程内调度
+                    return Err("Join blocked - retry");
+                }
             }
         }
 
@@ -471,9 +501,28 @@ impl ThreadManager {
         self.thread_count
     }
 
-    /// 检查是否有活跃线程
+    /// 检查是否有活跃线程（就绪或运行状态）
     pub fn has_active_threads(&self) -> bool {
-        self.thread_count > 0
+        // 检查是否有就绪的线程
+        if !self.ready_queue.is_empty() {
+            debug!("has_active_threads: {} threads in ready queue", self.ready_queue.len());
+            return true;
+        }
+        
+        // 检查是否有当前正在运行的线程
+        if let Some(current_id) = self.current_thread {
+            if let Some(thread) = self.threads.get(&current_id) {
+                let status = thread.get_status();
+                debug!("has_active_threads: current thread {} status: {:?}", current_id.0, status);
+                if status == ThreadStatus::Running || status == ThreadStatus::Ready {
+                    return true;
+                }
+            }
+        }
+        
+        debug!("has_active_threads: no active threads found, ready_queue: {}, current_thread: {:?}", 
+               self.ready_queue.len(), self.current_thread);
+        false
     }
 
     /// 获取就绪线程数量
