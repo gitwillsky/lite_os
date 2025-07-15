@@ -420,6 +420,25 @@ impl Default for ThreadAttr {
     }
 }
 
+/// 线程包装函数 - 实际的线程入口点
+extern "C" fn thread_wrapper() -> ! {
+    // 从 a0 寄存器获取线程函数指针
+    let thread_func: extern "C" fn() -> i32;
+    
+    unsafe {
+        asm!(
+            "mv {}, a0",
+            out(reg) thread_func,
+        );
+    }
+    
+    // 调用实际的线程函数
+    let exit_code = thread_func();
+    
+    // 线程函数执行完毕，退出线程
+    thread_exit(exit_code);
+}
+
 /// 创建新线程
 pub fn thread_create(
     thread_func: extern "C" fn() -> i32,
@@ -430,7 +449,8 @@ pub fn thread_create(
         Some(attr) => attr as *const ThreadAttr as usize,
         None => 0,
     };
-    syscall(SYSCALL_THREAD_CREATE, [thread_func as usize, arg, attr_ptr])
+    // 传递包装函数地址作为入口点，线程函数地址作为参数
+    syscall(SYSCALL_THREAD_CREATE, [thread_wrapper as usize, thread_func as usize, attr_ptr])
 }
 
 /// 退出当前线程

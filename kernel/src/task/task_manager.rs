@@ -217,6 +217,15 @@ impl TaskManager {
                     debug!("CFS fetch_task: fetched task PID: {}, vruntime: {}, status: {:?}", 
                            cfs_task.task.get_pid(), cfs_task.vruntime, 
                            cfs_task.task.inner_exclusive_access().sched.task_status);
+                    
+                    // 添加详细调试：检查任务状态
+                    let task_inner = cfs_task.task.inner_exclusive_access();
+                    debug!("CFS fetch_task: task PID {} details - status: {:?}, has_thread_manager: {}", 
+                           cfs_task.task.get_pid(), 
+                           task_inner.sched.task_status, 
+                           task_inner.thread_manager.is_some());
+                    drop(task_inner);
+                    
                     // 更新全局最小vruntime
                     self.min_vruntime = cfs_task.vruntime;
                     Some(cfs_task.task)

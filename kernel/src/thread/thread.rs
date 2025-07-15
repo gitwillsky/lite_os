@@ -172,10 +172,13 @@ impl ThreadControlBlock {
         
         debug!("Initialized trap context for thread {}", self.thread_id.0);
         
-        // 设置线程参数 (通过a0寄存器传递)
-        trap_cx.x[10] = inner.thread_arg; // a0 register
+        // 设置线程函数参数
+        // a0 寄存器 (x[10]) = 实际的线程函数地址
+        // a1 寄存器 (x[11]) = 线程参数 (当前未使用，设为0)
+        trap_cx.x[10] = inner.thread_arg; // a0 register - 实际线程函数地址
+        trap_cx.x[11] = 0; // a1 register - 线程参数 (暂时未使用)
         
-        debug!("Set thread arg {} for thread {}", inner.thread_arg, self.thread_id.0);
+        debug!("Set thread function address {:#x} in a0 for thread {}", inner.thread_arg, self.thread_id.0);
     }
 
     /// 获取线程ID

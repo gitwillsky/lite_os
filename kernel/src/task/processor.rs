@@ -163,17 +163,18 @@ pub fn suspend_current_and_run_next() {
     if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
         debug!("suspend_current_and_run_next: found thread manager with {} threads", 
                thread_manager.thread_count());
-        // 多线程进程：更新当前线程状态并调度下一个线程
+        // 多线程进程：尝试切换到下一个线程
         if let Some(current_thread) = thread_manager.get_current_thread() {
             debug!("suspend_current_and_run_next: current thread is {}", current_thread.get_thread_id().0);
+            // 设置当前线程状态为就绪
             current_thread.set_status(crate::thread::ThreadStatus::Ready);
-            
             // 将当前线程加入就绪队列
             thread_manager.add_thread_to_ready_queue(current_thread.get_thread_id());
-            
-            // 调度下一个线程（仅更新状态，不做上下文切换）
-            thread_manager.schedule_next_no_switch();
         }
+        
+        // 尝试调度下一个线程
+        thread_manager.schedule_next_no_switch();
+        
         debug!("suspend_current_and_run_next: thread manager stats: {:?}", thread_manager.get_thread_stats());
     } else {
         debug!("suspend_current_and_run_next: no thread manager found for task PID: {}, task addr: {:p}", 
@@ -188,11 +189,19 @@ pub fn suspend_current_and_run_next() {
         // 更新任务管理器中的运行时间统计
         super::task_manager::update_task_runtime(&task, runtime);
 
-        debug!("suspend_current_and_run_next: adding task back to ready queue");
+        debug!("suspend_current_and_run_next: adding task PID {} back to ready queue", task.get_pid());
         // push back to ready queue
         super::add_task(task);
     } else {
         // 如果任务是Sleeping状态，不要重新加入就绪队列
+        debug!("suspend_current_and_run_next: task PID {} has status {:?}, not adding back to queue", 
+               task.get_pid(), task_status);
+        
+        // 特别关注 PID 1
+        if task.get_pid() == 1 {
+            error!("PID 1 is not running! Status: {:?}, this should not happen!", task_status);
+        }
+        
         drop(task_inner);
     }
 

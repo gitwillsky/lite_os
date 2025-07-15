@@ -44,11 +44,11 @@ fn read_thread_attr_from_user(attr_ptr: *const ThreadAttr) -> Result<ThreadAttr,
 }
 
 /// 创建线程系统调用
-/// args[0]: 线程入口点函数地址
-/// args[1]: 线程参数
+/// args[0]: 线程包装函数地址 (thread_wrapper)
+/// args[1]: 实际线程函数地址
 /// args[2]: 线程属性 (可选，为空则使用默认值)
 /// 返回值: 线程ID，或错误码
-pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const ThreadAttr) -> isize {
+pub fn sys_thread_create(entry_point: usize, thread_func: usize, attr_ptr: *const ThreadAttr) -> isize {
     if entry_point == 0 {
         return -1; // 无效的入口点
     }
@@ -86,8 +86,8 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
         }
     };
 
-    // 创建线程
-    match kernel_create_thread(entry_point, stack_size, arg, joinable) {
+    // 创建线程，传递实际的线程函数地址作为参数
+    match kernel_create_thread(entry_point, stack_size, thread_func, joinable) {
         Ok(thread_id) => {
             debug!("Thread {} created successfully", thread_id.0);
             // 注册线程到内存管理器
@@ -191,25 +191,9 @@ pub fn sys_thread_join(thread_id: usize, exit_code_ptr: *mut i32) -> isize {
 
 /// 线程让步系统调用
 pub fn sys_thread_yield() -> isize {
-    if let Some(current_task) = current_task() {
-        let task_inner = current_task.inner_exclusive_access();
-        
-        // 检查是否是多线程进程
-        if let Some(_thread_manager) = task_inner.thread_manager.as_ref() {
-            // 多线程进程：在线程间调度，不移除整个进程
-            drop(task_inner);
-            
-            // 使用专门的线程调度函数，而不是进程调度
-            crate::thread::yield_current_thread();
-        } else {
-            // 单线程进程，使用进程级别的让步
-            drop(task_inner);
-            suspend_current_and_run_next();
-        }
-    } else {
-        // 没有当前任务，使用默认调度
-        suspend_current_and_run_next();
-    }
+    // 对于多线程和单线程进程，都使用相同的进程级让步机制
+    // 线程级别的调度由内核的调度器在适当时机处理
+    suspend_current_and_run_next();
     0
 }
 

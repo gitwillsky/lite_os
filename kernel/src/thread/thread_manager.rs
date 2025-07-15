@@ -520,6 +520,11 @@ impl ThreadManager {
         }
     }
 
+    /// 检查是否有就绪的线程
+    pub fn has_ready_threads(&self) -> bool {
+        !self.ready_queue.is_empty()
+    }
+    
     /// 获取线程统计信息
     pub fn get_thread_stats(&self) -> (usize, usize, usize) {
         (self.thread_count, self.ready_queue.len(), self.blocked_threads.len())
