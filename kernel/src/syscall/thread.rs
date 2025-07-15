@@ -89,12 +89,18 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
     // 创建线程
     match kernel_create_thread(entry_point, stack_size, arg, joinable) {
         Ok(thread_id) => {
+            debug!("Thread {} created successfully", thread_id.0);
             // 注册线程到内存管理器
             register_current_thread(thread_id, Some(1024 * 1024)); // 1MB内存限制
+            debug!("Thread {} registered to memory manager", thread_id.0);
 
+            debug!("sys_thread_create returning thread_id: {}", thread_id.0);
             thread_id.0 as isize
         }
-        Err(_) => -1,
+        Err(e) => {
+            debug!("Thread creation failed: {}", e);
+            -1
+        }
     }
 }
 

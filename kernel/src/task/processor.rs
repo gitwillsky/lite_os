@@ -28,7 +28,10 @@ pub fn current_task() -> Option<Arc<TaskControlBlock>> {
 
 pub fn current_user_token() -> usize {
     if let Some(task) = current_task() {
-        task.inner_exclusive_access().get_user_token()
+        let task_inner = task.inner_exclusive_access();
+        // 对于多线程进程，我们仍然使用进程的用户页表 token
+        // 因为所有线程共享同一个地址空间
+        task_inner.get_user_token()
     } else {
         // 这种情况不应该在正常的用户空间陷入中发生
         // 如果发生了，说明调度逻辑有严重问题

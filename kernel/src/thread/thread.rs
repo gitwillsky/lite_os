@@ -154,8 +154,12 @@ impl ThreadControlBlock {
     fn init_trap_context(&self, user_token: usize) {
         let inner = self.inner.lock();
         
+        debug!("Initializing trap context for thread {}: ppn={:#x}", self.thread_id.0, inner.trap_cx_ppn.as_usize());
+        
         // 获取线程的陷入上下文页面
         let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
+        
+        debug!("Got trap context pointer: {:#x}", trap_cx as *mut _ as usize);
         
         // 初始化陷入上下文
         *trap_cx = TrapContext::app_init_context(
@@ -166,8 +170,12 @@ impl ThreadControlBlock {
             crate::trap::trap_handler as usize,
         );
         
+        debug!("Initialized trap context for thread {}", self.thread_id.0);
+        
         // 设置线程参数 (通过a0寄存器传递)
         trap_cx.x[10] = inner.thread_arg; // a0 register
+        
+        debug!("Set thread arg {} for thread {}", inner.thread_arg, self.thread_id.0);
     }
 
     /// 获取线程ID

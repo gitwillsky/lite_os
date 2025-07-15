@@ -239,9 +239,8 @@ impl ThreadManager {
                     self.blocked_threads.push(current_id);
                 }
 
-                // 调度下一个线程
-                self.current_thread = None;
-                self.schedule_next();
+                // 调度下一个线程 - 传递当前线程ID用于上下文切换
+                self.schedule_next_with_current(current_id);
             }
         }
 
@@ -259,19 +258,50 @@ impl ThreadManager {
         }
     }
 
+    /// 调度下一个线程，并传递当前线程ID用于上下文切换
+    pub fn schedule_next_with_current(&mut self, current_id: ThreadId) {
+        // 简单的轮转调度 + 优先级调度 (FIFO)
+        if !self.ready_queue.is_empty() {
+            let next_thread_id = self.ready_queue.remove(0); // 从队列头部取出，实现FIFO
+            if let Some(thread) = self.threads.get(&next_thread_id) {
+                thread.set_status(ThreadStatus::Running);
+                self.current_thread = Some(next_thread_id);
+
+                // 只有在切换到不同线程时才执行上下文切换
+                if current_id != next_thread_id {
+                    self.context_switch_from_to(current_id, next_thread_id);
+                } else {
+                    // 如果调度到同一个线程，只需要准备和完成切换
+                    thread.prepare_context_switch();
+                    thread.finish_context_switch();
+                }
+            }
+        } else {
+            // 没有可运行的线程
+            self.current_thread = None;
+        }
+    }
+
     /// 调度下一个线程
     pub fn schedule_next(&mut self) {
         let old_current = self.current_thread;
 
-        // 简单的轮转调度 + 优先级调度
-        if let Some(next_thread_id) = self.ready_queue.pop() {
+        // 简单的轮转调度 + 优先级调度 (FIFO)
+        if !self.ready_queue.is_empty() {
+            let next_thread_id = self.ready_queue.remove(0); // 从队列头部取出，实现FIFO
             if let Some(thread) = self.threads.get(&next_thread_id) {
                 thread.set_status(ThreadStatus::Running);
                 self.current_thread = Some(next_thread_id);
 
                 // 只有在切换到不同线程时才执行上下文切换
                 if old_current != Some(next_thread_id) {
-                    self.context_switch_to(next_thread_id);
+                    if let Some(old_id) = old_current {
+                        self.context_switch_from_to(old_id, next_thread_id);
+                    } else {
+                        // 没有旧线程，直接启动新线程
+                        thread.prepare_context_switch();
+                        thread.finish_context_switch();
+                    }
                 } else {
                     // 如果调度到同一个线程，只需要准备和完成切换
                     thread.prepare_context_switch();
@@ -285,36 +315,28 @@ impl ThreadManager {
     }
 
     /// 执行上下文切换
-    fn context_switch_to(&mut self, target_thread_id: ThreadId) {
-        if let Some(current_id) = self.current_thread {
-            if let Some(current_thread) = self.threads.get(&current_id) {
-                if let Some(target_thread) = self.threads.get(&target_thread_id) {
-                    let mut current_inner = current_thread.inner_exclusive_access();
-                    let target_inner = target_thread.inner_exclusive_access();
-
-                    // 准备上下文切换
-                    current_thread.prepare_context_switch();
-                    target_thread.prepare_context_switch();
-
-                    // 获取上下文指针
-                    let current_cx_ptr = current_inner.get_context_ptr();
-                    let target_cx_ptr = &target_inner.context as *const crate::task::TaskContext;
-
-                    drop(current_inner);
-                    drop(target_inner);
-
-                    // 执行线程级别的上下文切换
-                    crate::task::schedule_thread(current_cx_ptr, target_cx_ptr);
-
-                    // 完成上下文切换
-                    current_thread.finish_context_switch();
-                    target_thread.finish_context_switch();
-                }
-            }
-        } else {
-            // 如果没有当前线程，直接设置目标线程为运行状态
+    fn context_switch_from_to(&mut self, current_id: ThreadId, target_thread_id: ThreadId) {
+        if let Some(current_thread) = self.threads.get(&current_id) {
             if let Some(target_thread) = self.threads.get(&target_thread_id) {
+                let mut current_inner = current_thread.inner_exclusive_access();
+                let target_inner = target_thread.inner_exclusive_access();
+
+                // 准备上下文切换
+                current_thread.prepare_context_switch();
                 target_thread.prepare_context_switch();
+
+                // 获取上下文指针
+                let current_cx_ptr = current_inner.get_context_ptr();
+                let target_cx_ptr = &target_inner.context as *const crate::task::TaskContext;
+
+                drop(current_inner);
+                drop(target_inner);
+
+                // 执行线程级别的上下文切换
+                crate::task::schedule_thread(current_cx_ptr, target_cx_ptr);
+
+                // 完成上下文切换
+                current_thread.finish_context_switch();
                 target_thread.finish_context_switch();
             }
         }
@@ -337,22 +359,8 @@ impl ThreadManager {
                 self.ready_queue.push(current_id);
             }
 
-            // 保存当前线程ID用于上下文切换
-            let old_current = self.current_thread;
-            self.current_thread = None;
-
-            // 寻找下一个可运行的线程
-            if let Some(next_thread_id) = self.ready_queue.pop() {
-                if let Some(next_thread) = self.threads.get(&next_thread_id) {
-                    next_thread.set_status(ThreadStatus::Running);
-                    self.current_thread = Some(next_thread_id);
-
-                    // 如果切换到不同的线程，执行上下文切换
-                    if old_current != Some(next_thread_id) {
-                        self.context_switch_to(next_thread_id);
-                    }
-                }
-            }
+            // 调度下一个线程，传递当前线程ID
+            self.schedule_next_with_current(current_id);
         }
     }
 
