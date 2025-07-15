@@ -51,6 +51,12 @@ const SYSCALL_SIGRETURN: usize = 139;
 const SYSCALL_PAUSE: usize = 34;
 const SYSCALL_ALARM: usize = 37;
 
+// 线程相关系统调用
+const SYSCALL_THREAD_CREATE: usize = 700;
+const SYSCALL_THREAD_EXIT: usize = 701;
+const SYSCALL_THREAD_JOIN: usize = 702;
+const SYSCALL_THREAD_YIELD: usize = 703;
+
 /// 系统调用
 ///
 /// # Arguments
@@ -391,6 +397,56 @@ pub fn pause() -> isize {
 /// 设置定时器信号
 pub fn alarm(seconds: u32) -> isize {
     syscall(SYSCALL_ALARM, [seconds as usize, 0, 0])
+}
+
+// 线程相关系统调用
+
+/// 线程属性结构
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ThreadAttr {
+    pub stack_size: usize,
+    pub detached: bool,
+    pub priority: i32,
+}
+
+impl Default for ThreadAttr {
+    fn default() -> Self {
+        ThreadAttr {
+            stack_size: 8192, // 默认8KB栈
+            detached: false,
+            priority: 0,
+        }
+    }
+}
+
+/// 创建新线程
+pub fn thread_create(
+    thread_func: extern "C" fn() -> i32,
+    arg: usize,
+    attr: Option<&ThreadAttr>,
+) -> isize {
+    let attr_ptr = match attr {
+        Some(attr) => attr as *const ThreadAttr as usize,
+        None => 0,
+    };
+    syscall(SYSCALL_THREAD_CREATE, [thread_func as usize, arg, attr_ptr])
+}
+
+/// 退出当前线程
+pub fn thread_exit(exit_code: i32) -> ! {
+    syscall(SYSCALL_THREAD_EXIT, [exit_code as usize, 0, 0]);
+    unreachable!()
+}
+
+/// 等待线程结束
+pub fn thread_join(thread_id: usize) -> isize {
+    syscall(SYSCALL_THREAD_JOIN, [thread_id, 0, 0])
+}
+
+/// 线程让出CPU
+pub fn thread_yield() {
+    syscall(SYSCALL_THREAD_YIELD, [0, 0, 0]);
 }
 
 // 信号常量
