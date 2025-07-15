@@ -78,19 +78,9 @@ pub enum TaskStatus {
     Sleeping,    // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
 }
 
+/// 进程管理相关状态
 #[derive(Debug)]
-pub struct TaskControlBlockInner {
-    /// 进程状态
-    pub task_status: TaskStatus,
-    /// 用户态的 TaskContext
-    pub task_cx: TaskContext,
-    /// 用户态的内存空间
-    pub memory_set: mm::MemorySet,
-    /// 用户态的 TrapContext 的物理页号
-    pub trap_cx_ppn: PhysicalPageNumber,
-    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
-    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
-    pub base_size: usize,
+pub struct ProcessManagement {
     /// 父进程, 子进程有可能在父进程退出时还存活，因此需要弱引用
     pub parent: Option<Weak<TaskControlBlock>>,
     /// 子进程
@@ -99,10 +89,19 @@ pub struct TaskControlBlockInner {
     pub exit_code: i32,
     /// 当前工作目录
     pub cwd: String,
-    /// 文件描述符表
-    pub fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
-    /// 下一个可分配的文件描述符
-    pub next_fd: usize,
+    /// 是否为主线程 (每个进程的第一个任务)
+    pub is_main_thread: bool,
+    /// 线程组ID (TGID) - 对于主线程等于PID，对于其他线程等于主线程PID
+    pub tgid: usize,
+}
+
+/// 调度相关状态
+#[derive(Debug)]
+pub struct SchedulingInfo {
+    /// 进程状态
+    pub task_status: TaskStatus,
+    /// 用户态的 TaskContext
+    pub task_cx: TaskContext,
     /// 进程优先级 (0-139, 0最高优先级，139最低优先级)
     pub priority: i32,
     /// nice值 (-20到19, 影响动态优先级计算)
@@ -113,8 +112,34 @@ pub struct TaskControlBlockInner {
     pub last_runtime: u64,
     /// 动态时间片大小 (微秒)
     pub time_slice: u64,
-    /// 信号状态
-    pub signal_state: SignalState,
+    /// CPU亲和性掩码
+    pub cpu_affinity: u64,
+}
+
+/// 内存管理相关状态
+#[derive(Debug)]
+pub struct MemoryManagement {
+    /// 用户态的内存空间
+    pub memory_set: mm::MemorySet,
+    /// 用户态的 TrapContext 的物理页号
+    pub trap_cx_ppn: PhysicalPageNumber,
+    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
+    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
+    pub base_size: usize,
+}
+
+/// 文件系统相关状态
+#[derive(Debug)]
+pub struct FileSystemInfo {
+    /// 文件描述符表
+    pub fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
+    /// 下一个可分配的文件描述符
+    pub next_fd: usize,
+}
+
+/// 安全相关状态
+#[derive(Debug, Clone)]
+pub struct SecurityInfo {
     /// 用户ID
     pub uid: u32,
     /// 组ID
@@ -123,10 +148,35 @@ pub struct TaskControlBlockInner {
     pub euid: u32,
     /// 有效组ID (用于权限检查)
     pub egid: u32,
-    /// 线程管理器 (用于多线程支持)
-    pub thread_manager: Option<ThreadManager>,
+}
+
+/// 定时器相关状态
+#[derive(Debug)]
+pub struct TimerInfo {
     /// alarm定时器时间 (微秒时间戳)
     pub alarm_time: Option<u64>,
+}
+
+/// 重构后的任务控制块内部结构
+/// 采用Linux内核task_struct的设计理念，按功能模块分组
+#[derive(Debug)]
+pub struct TaskControlBlockInner {
+    /// 进程管理相关
+    pub process: ProcessManagement,
+    /// 调度相关
+    pub sched: SchedulingInfo,
+    /// 内存管理相关
+    pub mm: MemoryManagement,
+    /// 文件系统相关
+    pub files: FileSystemInfo,
+    /// 安全相关
+    pub security: SecurityInfo,
+    /// 信号状态
+    pub signal_state: SignalState,
+    /// 定时器相关
+    pub timer: TimerInfo,
+    /// 线程管理器 (仅主线程拥有)
+    pub thread_manager: Option<ThreadManager>,
 }
 
 /// Task Control block structure
@@ -145,7 +195,8 @@ impl TaskControlBlock {
         let task_status = TaskStatus::Ready;
 
         let pid = alloc_pid();
-        let kernel_stack = KernelStack::new(pid.0);
+        let pid_val = pid.0;
+        let kernel_stack = KernelStack::new(pid_val);
         let kernel_stack_top = kernel_stack.get_top();
 
         // 获取用户空间中TRAP_CONTEXT映射的物理页面
@@ -158,29 +209,44 @@ impl TaskControlBlock {
             pid,
             kernel_stack,
             inner: UPSafeCell::new(TaskControlBlockInner {
-                task_status,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                memory_set,
-                trap_cx_ppn,
-                base_size: user_sp,
-                parent: None,
-                children: Vec::new(),
-                exit_code: 0,
-                cwd: "/".to_string(),  // 新进程默认工作目录为根目录
-                fd_table: BTreeMap::new(),
-                next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
-                priority: 20,  // 默认优先级 (nice=0 对应的优先级)
-                nice: 0,       // 默认nice值
-                vruntime: 0,   // 初始虚拟运行时间
-                last_runtime: 0,
-                time_slice: 10000, // 默认10ms时间片
+                process: ProcessManagement {
+                    parent: None,
+                    children: Vec::new(),
+                    exit_code: 0,
+                    cwd: "/".to_string(),
+                    is_main_thread: true,
+                    tgid: pid_val,
+                },
+                sched: SchedulingInfo {
+                    task_status,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    priority: 20,
+                    nice: 0,
+                    vruntime: 0,
+                    last_runtime: 0,
+                    time_slice: 10000,
+                    cpu_affinity: u64::MAX, // 默认可在所有CPU运行
+                },
+                mm: MemoryManagement {
+                    memory_set,
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                },
+                files: FileSystemInfo {
+                    fd_table: BTreeMap::new(),
+                    next_fd: 3,
+                },
+                security: SecurityInfo {
+                    uid: 0,
+                    gid: 0,
+                    euid: 0,
+                    egid: 0,
+                },
                 signal_state: SignalState::new(),
-                uid: 0,           // 初始进程为root用户
-                gid: 0,           // 初始进程为root组
-                euid: 0,          // 有效用户ID初始为root
-                egid: 0,          // 有效组ID初始为root
-                thread_manager: None, // 默认不启用多线程
-                alarm_time: None, // 初始无alarm
+                timer: TimerInfo {
+                    alarm_time: None,
+                },
+                thread_manager: None,
             }),
         };
 
@@ -212,8 +278,8 @@ impl TaskControlBlock {
             .ppn();
 
         let mut inner = self.inner_exclusive_access();
-        inner.trap_cx_ppn = trap_cx_ppn;
-        inner.memory_set = memory_set;
+        inner.mm.trap_cx_ppn = trap_cx_ppn;
+        inner.mm.memory_set = memory_set;
         // 重置信号状态（exec时应该重置信号处理器）
         inner.signal_state.reset_for_exec();
         let trap_cx = inner.get_trap_cx();
@@ -240,8 +306,8 @@ impl TaskControlBlock {
             .unwrap()
             .ppn();
         let mut inner = self.inner_exclusive_access();
-        inner.trap_cx_ppn = trap_cx_ppn;
-        inner.memory_set = memory_set;
+        inner.mm.trap_cx_ppn = trap_cx_ppn;
+        inner.mm.memory_set = memory_set;
         // 重置信号状态（exec时应该重置信号处理器）
         inner.signal_state.reset_for_exec();
         let trap_cx = inner.get_trap_cx();
@@ -257,7 +323,7 @@ impl TaskControlBlock {
 
     pub fn fork(self: &Arc<Self>) -> Arc<Self> {
         let mut parent_inner = self.inner_exclusive_access();
-        let memory_set = MemorySet::form_existed_user(&parent_inner.memory_set);
+        let memory_set = MemorySet::form_existed_user(&parent_inner.mm.memory_set);
         let trap_cx_ppn = memory_set
             .translate(VirtualAddress::from(TRAP_CONTEXT).into())
             .unwrap()
@@ -265,40 +331,51 @@ impl TaskControlBlock {
 
         // alloc a pid and a kernel stack in kernel space
         let pid = alloc_pid();
-        let kernel_stack = KernelStack::new(pid.0);
+        let pid_val = pid.0;
+        let kernel_stack = KernelStack::new(pid_val);
         let kernel_stack_top = kernel_stack.get_top();
 
         let tcb = Arc::new(TaskControlBlock {
             pid,
             kernel_stack,
             inner: UPSafeCell::new(TaskControlBlockInner {
-                task_status: TaskStatus::Ready,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                memory_set,
-                trap_cx_ppn,
-                base_size: parent_inner.base_size,
-                parent: Some(Arc::downgrade(self)),
-                children: Vec::new(),
-                exit_code: 0,
-                cwd: parent_inner.cwd.clone(),  // 复制父进程的工作目录
-                fd_table: parent_inner.fd_table.clone(), // 复制父进程的文件描述符表
-                next_fd: parent_inner.next_fd,
-                priority: parent_inner.priority,  // 继承父进程优先级
-                nice: parent_inner.nice,          // 继承父进程nice值
-                vruntime: 0,                      // 子进程重新开始计算vruntime
-                last_runtime: 0,
-                time_slice: parent_inner.time_slice, // 继承父进程时间片设置
-                signal_state: parent_inner.signal_state.clone_for_fork(), // 复制信号状态
-                uid: parent_inner.uid,    // 继承父进程用户ID
-                gid: parent_inner.gid,    // 继承父进程组ID
-                euid: parent_inner.euid,  // 继承父进程有效用户ID
-                egid: parent_inner.egid,  // 继承父进程有效组ID
+                process: ProcessManagement {
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    cwd: parent_inner.process.cwd.clone(),
+                    is_main_thread: true,
+                    tgid: pid_val, // 新进程的主线程
+                },
+                sched: SchedulingInfo {
+                    task_status: TaskStatus::Ready,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    priority: parent_inner.sched.priority,
+                    nice: parent_inner.sched.nice,
+                    vruntime: 0,
+                    last_runtime: 0,
+                    time_slice: parent_inner.sched.time_slice,
+                    cpu_affinity: parent_inner.sched.cpu_affinity,
+                },
+                mm: MemoryManagement {
+                    memory_set,
+                    trap_cx_ppn,
+                    base_size: parent_inner.mm.base_size,
+                },
+                files: FileSystemInfo {
+                    fd_table: parent_inner.files.fd_table.clone(),
+                    next_fd: parent_inner.files.next_fd,
+                },
+                security: parent_inner.security.clone(),
+                signal_state: parent_inner.signal_state.clone_for_fork(),
+                timer: TimerInfo {
+                    alarm_time: None, // 子进程不继承父进程的alarm
+                },
                 thread_manager: None, // 子进程默认不启用多线程
-                alarm_time: None, // 子进程不继承父进程的alarm
             }),
         });
 
-        parent_inner.children.push(tcb.clone());
+        parent_inner.process.children.push(tcb.clone());
         let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
         trap_cx.kernel_sp = kernel_stack_top;
         tcb
@@ -308,7 +385,7 @@ impl TaskControlBlock {
     pub fn init_thread_manager(self: &Arc<Self>) {
         let mut inner = self.inner_exclusive_access();
         if inner.thread_manager.is_none() {
-            let trap_cx_ppn = inner.trap_cx_ppn; // 获取陷入上下文页面号
+            let trap_cx_ppn = inner.mm.trap_cx_ppn; // 获取陷入上下文页面号
             inner.thread_manager = Some(crate::thread::ThreadManager::new(Arc::clone(self), trap_cx_ppn));
             debug!("Thread manager initialized for process PID {}", self.get_pid());
         }
@@ -322,26 +399,26 @@ impl TaskControlBlock {
 
 impl TaskControlBlockInner {
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
-        self.trap_cx_ppn.get_mut()
+        self.mm.trap_cx_ppn.get_mut()
     }
 
     pub fn get_user_token(&self) -> usize {
-        self.memory_set.token()
+        self.mm.memory_set.token()
     }
 
     pub fn get_status(&self) -> TaskStatus {
-        self.task_status
+        self.sched.task_status
     }
 
     pub fn is_zombie(&self) -> bool {
-        self.task_status == TaskStatus::Zombie
+        self.sched.task_status == TaskStatus::Zombie
     }
 
     /// 计算动态优先级 (基于nice值)
     pub fn get_dynamic_priority(&self) -> i32 {
         // Linux-like priority calculation: priority = 20 + nice
         // 范围: 0-39 (nice: -20到19)
-        (20 + self.nice).max(0).min(39)
+        (20 + self.sched.nice).max(0).min(39)
     }
 
     /// 更新虚拟运行时间 (CFS算法核心)
@@ -353,7 +430,7 @@ impl TaskControlBlockInner {
             20..=29 => 1,  // 默认优先级
             _ => 1,        // 低优先级
         };
-        self.vruntime += runtime_us / weight;
+        self.sched.vruntime += runtime_us / weight;
     }
 
     /// 计算时间片大小 (基于优先级)
@@ -372,45 +449,45 @@ impl TaskControlBlockInner {
 
     /// 设置nice值并更新优先级
     pub fn set_nice(&mut self, nice: i32) {
-        self.nice = nice.max(-20).min(19);
-        self.priority = self.get_dynamic_priority();
-        self.time_slice = self.calculate_time_slice();
+        self.sched.nice = nice.max(-20).min(19);
+        self.sched.priority = self.get_dynamic_priority();
+        self.sched.time_slice = self.calculate_time_slice();
     }
 
     /// 分配新的文件描述符
     pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> usize {
-        let fd = self.next_fd;
-        self.fd_table.insert(fd, file_desc);
-        self.next_fd += 1;
+        let fd = self.files.next_fd;
+        self.files.fd_table.insert(fd, file_desc);
+        self.files.next_fd += 1;
         fd
     }
 
     /// 根据文件描述符获取FileDescriptor
     pub fn get_fd(&self, fd: usize) -> Option<Arc<FileDescriptor>> {
-        self.fd_table.get(&fd).cloned()
+        self.files.fd_table.get(&fd).cloned()
     }
 
     /// 关闭文件描述符
     pub fn close_fd(&mut self, fd: usize) -> bool {
-        self.fd_table.remove(&fd).is_some()
+        self.files.fd_table.remove(&fd).is_some()
     }
 
     /// 关闭所有文件描述符（进程退出时调用）
     pub fn close_all_fds(&mut self) {
-        self.fd_table.clear();
+        self.files.fd_table.clear();
     }
 
     /// 关闭所有文件描述符并清理文件锁（进程退出时调用）
     pub fn close_all_fds_and_cleanup_locks(&mut self, pid: usize) {
         // 清理文件锁
         crate::fs::get_file_lock_manager().remove_process_locks(pid);
-        self.fd_table.clear();
+        self.files.fd_table.clear();
     }
 
     /// 复制文件描述符（用于 dup 系统调用）
     pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
-        if let Some(file_desc) = self.fd_table.get(&fd) {
-            let new_fd = self.next_fd;
+        if let Some(file_desc) = self.files.fd_table.get(&fd) {
+            let new_fd = self.files.next_fd;
             // 获取当前偏移量值
             let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
             // 创建新的 FileDescriptor，复制当前偏移量
@@ -420,8 +497,8 @@ impl TaskControlBlockInner {
                 flags: file_desc.flags,
                 mode: file_desc.mode,
             });
-            self.fd_table.insert(new_fd, new_file_desc);
-            self.next_fd += 1;
+            self.files.fd_table.insert(new_fd, new_file_desc);
+            self.files.next_fd += 1;
             Some(new_fd)
         } else {
             None
@@ -432,7 +509,7 @@ impl TaskControlBlockInner {
     pub fn dup2_fd(&mut self, oldfd: usize, newfd: usize) -> Option<usize> {
         // 如果 oldfd 和 newfd 相同，则直接返回 newfd（如果 oldfd 有效）
         if oldfd == newfd {
-            return if self.fd_table.contains_key(&oldfd) {
+            return if self.files.fd_table.contains_key(&oldfd) {
                 Some(newfd)
             } else {
                 None
@@ -441,7 +518,7 @@ impl TaskControlBlockInner {
 
         // 首先获取 oldfd 的文件描述符信息
         let (inode, current_offset, flags, mode) = {
-            if let Some(file_desc) = self.fd_table.get(&oldfd) {
+            if let Some(file_desc) = self.files.fd_table.get(&oldfd) {
                 let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
                 (file_desc.inode.clone(), current_offset, file_desc.flags, file_desc.mode)
             } else {
@@ -450,8 +527,8 @@ impl TaskControlBlockInner {
         };
 
         // 如果 newfd 已存在，先关闭它
-        if self.fd_table.contains_key(&newfd) {
-            self.fd_table.remove(&newfd);
+        if self.files.fd_table.contains_key(&newfd) {
+            self.files.fd_table.remove(&newfd);
         }
 
         // 创建新的 FileDescriptor，复制当前偏移量
@@ -461,11 +538,11 @@ impl TaskControlBlockInner {
             flags,
             mode,
         });
-        self.fd_table.insert(newfd, new_file_desc);
+        self.files.fd_table.insert(newfd, new_file_desc);
 
         // 更新 next_fd 以避免与新分配的 fd 冲突
-        if newfd >= self.next_fd {
-            self.next_fd = newfd + 1;
+        if newfd >= self.files.next_fd {
+            self.files.next_fd = newfd + 1;
         }
 
         Some(newfd)
@@ -518,86 +595,86 @@ impl TaskControlBlockInner {
 
     /// 获取用户ID
     pub fn get_uid(&self) -> u32 {
-        self.uid
+        self.security.uid
     }
 
     /// 获取组ID
     pub fn get_gid(&self) -> u32 {
-        self.gid
+        self.security.gid
     }
 
     /// 获取有效用户ID
     pub fn get_euid(&self) -> u32 {
-        self.euid
+        self.security.euid
     }
 
     /// 获取有效组ID
     pub fn get_egid(&self) -> u32 {
-        self.egid
+        self.security.egid
     }
 
     /// 设置用户ID (需要root权限)
     pub fn set_uid(&mut self, uid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意UID
-        if self.euid != 0 && self.euid != uid {
+        if self.security.euid != 0 && self.security.euid != uid {
             return Err(-1); // EPERM
         }
-        self.uid = uid;
-        self.euid = uid;
+        self.security.uid = uid;
+        self.security.euid = uid;
         Ok(())
     }
 
     /// 设置组ID (需要root权限)
     pub fn set_gid(&mut self, gid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意GID
-        if self.euid != 0 && self.egid != gid {
+        if self.security.euid != 0 && self.security.egid != gid {
             return Err(-1); // EPERM
         }
-        self.gid = gid;
-        self.egid = gid;
+        self.security.gid = gid;
+        self.security.egid = gid;
         Ok(())
     }
 
     /// 设置有效用户ID
     pub fn set_euid(&mut self, euid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际UID才允许
-        if self.euid != 0 && euid != self.uid {
+        if self.security.euid != 0 && euid != self.security.uid {
             return Err(-1); // EPERM
         }
-        self.euid = euid;
+        self.security.euid = euid;
         Ok(())
     }
 
     /// 设置有效组ID
     pub fn set_egid(&mut self, egid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际GID才允许
-        if self.euid != 0 && egid != self.gid {
+        if self.security.euid != 0 && egid != self.security.gid {
             return Err(-1); // EPERM
         }
-        self.egid = egid;
+        self.security.egid = egid;
         Ok(())
     }
 
     /// 检查是否为root用户
     pub fn is_root(&self) -> bool {
-        self.euid == 0
+        self.security.euid == 0
     }
 
     /// 检查对文件的访问权限
     pub fn check_file_permission(&self, file_mode: u32, file_uid: u32, file_gid: u32, requested: u32) -> bool {
         // root用户拥有所有权限
-        if self.euid == 0 {
+        if self.security.euid == 0 {
             return true;
         }
 
         let mut effective_mode = 0;
 
         // 检查用户权限
-        if self.euid == file_uid {
+        if self.security.euid == file_uid {
             effective_mode = (file_mode >> 6) & 0o7; // 用户权限位
         }
         // 检查组权限
-        else if self.egid == file_gid {
+        else if self.security.egid == file_gid {
             effective_mode = (file_mode >> 3) & 0o7; // 组权限位
         }
         // 其他用户权限

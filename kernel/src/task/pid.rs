@@ -21,7 +21,7 @@ lazy_static! {
     static ref PID_ALLOCATOR: UPSafeCell<PidAllocator> = UPSafeCell::new(PidAllocator::new());
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PidHandle(pub usize);
 
 impl Drop for PidHandle {

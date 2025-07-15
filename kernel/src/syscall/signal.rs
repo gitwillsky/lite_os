@@ -264,7 +264,7 @@ pub fn sys_pause() -> isize {
         }
 
         // 设置进程为睡眠状态
-        inner.task_status = crate::task::TaskStatus::Sleeping;
+        inner.sched.task_status = crate::task::TaskStatus::Sleeping;
         drop(inner);
 
         // 让出CPU
@@ -286,7 +286,7 @@ pub fn sys_alarm(seconds: u32) -> isize {
         let mut task_inner = current_task.inner_exclusive_access();
         
         // 取消之前的alarm（如果有的话）
-        let remaining_seconds = if let Some(old_alarm_time) = task_inner.alarm_time.take() {
+        let remaining_seconds = if let Some(old_alarm_time) = task_inner.timer.alarm_time.take() {
             let current_time = get_time_us();
             if old_alarm_time > current_time {
                 ((old_alarm_time - current_time) / 1_000_000) as isize
@@ -300,7 +300,7 @@ pub fn sys_alarm(seconds: u32) -> isize {
         // 设置新的alarm
         if seconds > 0 {
             let alarm_time = get_time_us() + (seconds as u64) * 1_000_000; // 转换为微秒
-            task_inner.alarm_time = Some(alarm_time);
+            task_inner.timer.alarm_time = Some(alarm_time);
             
             debug!("Set alarm for {} seconds (at time {})", seconds, alarm_time);
             

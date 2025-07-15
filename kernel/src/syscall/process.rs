@@ -56,7 +56,7 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     let mut inner = task.inner_exclusive_access();
 
     if inner
-        .children
+        .process.children
         .iter()
         .find(|p| pid == -1 || pid as usize == p.get_pid())
         .is_none()
@@ -64,19 +64,19 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         return -1;
     }
 
-    let pair = inner.children.iter().enumerate().find(|(_, t)| {
+    let pair = inner.process.children.iter().enumerate().find(|(_, t)| {
         t.inner_exclusive_access().is_zombie() && (pid == -1 || t.get_pid() == pid as usize)
     });
 
     if let Some((idx, _)) = pair {
-        let child = inner.children.remove(idx);
+        let child = inner.process.children.remove(idx);
         assert_eq!(
             Arc::strong_count(&child),
             1,
             "Leaked Arc reference to child process!"
         );
         let found_pid = child.get_pid();
-        let exit_code = child.inner_exclusive_access().exit_code;
+        let exit_code = child.inner_exclusive_access().process.exit_code;
         let parent_token = inner.get_user_token();
         *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
         found_pid as isize
@@ -115,7 +115,7 @@ pub fn sys_getpriority(which: i32, who: i32) -> isize {
     
     if let Some(task) = current_task() {
         let inner = task.inner_exclusive_access();
-        inner.nice as isize
+        inner.sched.nice as isize
     } else {
         -1
     }

@@ -70,8 +70,8 @@ pub fn run_tasks() -> ! {
                         if let Some(code) = exit_code {
                             // 如果信号要求终止进程，则终止进程
                             let mut inner = task.inner_exclusive_access();
-                            inner.task_status = TaskStatus::Zombie;
-                            inner.exit_code = code;
+                            inner.sched.task_status = TaskStatus::Zombie;
+                            inner.process.exit_code = code;
                             drop(inner);
                             continue;
                         }
@@ -83,12 +83,12 @@ pub fn run_tasks() -> ! {
 
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             let mut task_inner = task.inner_exclusive_access();
-            let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
-            task_inner.task_status = TaskStatus::Running;
+            let next_task_cx_ptr = &task_inner.sched.task_cx as *const TaskContext;
+            task_inner.sched.task_status = TaskStatus::Running;
 
             // 记录任务开始运行的时间
             let start_time = get_time_us();
-            task_inner.last_runtime = start_time;
+            task_inner.sched.last_runtime = start_time;
 
             drop(task_inner);
             processor.current = Some(task);
@@ -125,6 +125,38 @@ pub fn schedule_thread(current_thread_cx_ptr: *mut TaskContext, next_thread_cx_p
     }
 }
 
+/// 在多线程进程中处理线程调度
+fn handle_multithreaded_process(task: &Arc<TaskControlBlock>) -> bool {
+    let mut task_inner = task.inner_exclusive_access();
+    
+    if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+        // 检查是否有可运行的线程
+        if thread_manager.has_active_threads() {
+            // 如果有活跃线程，让线程管理器处理调度
+            if let Some(current_thread) = thread_manager.get_current_thread() {
+                if current_thread.get_status() == crate::thread::ThreadStatus::Running {
+                    // 当前线程仍在运行，直接返回到用户空间
+                    drop(task_inner);
+                    return true;
+                }
+            }
+            
+            // 尝试调度下一个线程
+            thread_manager.schedule_next();
+            drop(task_inner);
+            return true;
+        } else {
+            // 没有活跃线程，进程应该退出
+            task_inner.sched.task_status = TaskStatus::Zombie;
+            task_inner.process.exit_code = 0;
+            drop(task_inner);
+            return false;
+        }
+    }
+    drop(task_inner);
+    false
+}
+
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().unwrap();
 
@@ -147,9 +179,9 @@ pub fn suspend_current_and_run_next() {
     // 单线程进程的原有调度逻辑
     let end_time = get_time_us();
     let mut task_inner = task.inner_exclusive_access();
-    let runtime = end_time.saturating_sub(task_inner.last_runtime);
-    let task_cx_ptr = &mut task_inner.task_cx as *mut _;
-    let task_status = task_inner.task_status;
+    let runtime = end_time.saturating_sub(task_inner.sched.last_runtime);
+    let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
+    let task_status = task_inner.sched.task_status;
 
     // 根据调度策略更新任务统计信息
     match get_scheduling_policy() {
@@ -157,12 +189,12 @@ pub fn suspend_current_and_run_next() {
             task_inner.update_vruntime(runtime);
         },
         _ => {
-            task_inner.last_runtime = runtime;
+            task_inner.sched.last_runtime = runtime;
         }
     }
 
     if task_status == TaskStatus::Running {
-        task_inner.task_status = TaskStatus::Ready;
+        task_inner.sched.task_status = TaskStatus::Ready;
         drop(task_inner);
 
         // 更新任务管理器中的运行时间统计
@@ -203,9 +235,9 @@ pub fn block_current_and_run_next() {
     // 单线程进程的原有阻塞逻辑
     let end_time = get_time_us();
     let mut task_inner = task.inner_exclusive_access();
-    let runtime = end_time.saturating_sub(task_inner.last_runtime);
-    let task_cx_ptr = &mut task_inner.task_cx as *mut _;
-    task_inner.task_status = TaskStatus::Sleeping;
+    let runtime = end_time.saturating_sub(task_inner.sched.last_runtime);
+    let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
+    task_inner.sched.task_status = TaskStatus::Sleeping;
 
     // 更新运行时间统计
     match get_scheduling_policy() {
@@ -213,7 +245,7 @@ pub fn block_current_and_run_next() {
             task_inner.update_vruntime(runtime);
         },
         _ => {
-            task_inner.last_runtime = runtime;
+            task_inner.sched.last_runtime = runtime;
         }
     }
 
@@ -249,23 +281,23 @@ pub fn exit_current_and_run_next(exit_code: i32) -> ! {
 
     let mut inner = task.inner_exclusive_access();
 
-    inner.task_status = TaskStatus::Zombie;
-    inner.exit_code = exit_code;
+    inner.sched.task_status = TaskStatus::Zombie;
+    inner.process.exit_code = exit_code;
 
     {
         let init_proc = super::task_manager::get_init_proc().unwrap();
         let mut init_proc_inner = init_proc.inner_exclusive_access();
-        for child in inner.children.iter() {
-            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
-            init_proc_inner.children.push(child.clone());
+        for child in inner.process.children.iter() {
+            child.inner_exclusive_access().process.parent = Some(Arc::downgrade(&init_proc));
+            init_proc_inner.process.children.push(child.clone());
         }
     }
 
-    inner.children.clear();
+    inner.process.children.clear();
     // 关闭所有打开的文件描述符并清理文件锁
     inner.close_all_fds_and_cleanup_locks(pid);
     // deallocate user space
-    inner.memory_set.recycle_data_pages();
+    inner.mm.memory_set.recycle_data_pages();
     drop(inner);
 
     drop(task);
@@ -277,7 +309,7 @@ pub fn exit_current_and_run_next(exit_code: i32) -> ! {
 
 pub fn current_cwd() -> String {
     current_task()
-        .map(|task| task.inner_exclusive_access().cwd.clone())
+        .map(|task| task.inner_exclusive_access().process.cwd.clone())
         .unwrap_or_else(|| "/".to_string())
 }
 

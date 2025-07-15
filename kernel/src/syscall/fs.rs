@@ -478,7 +478,7 @@ pub fn sys_chdir(path: *const u8) -> isize {
                     // It's a directory, set the current working directory for the current task
                     if let Some(task) = current_task() {
                         let mut task_inner = task.inner_exclusive_access();
-                        task_inner.cwd = absolute_path;
+                        task_inner.process.cwd = absolute_path;
                         0 // Success
                     } else {
                         -1 // No current task
@@ -504,7 +504,7 @@ pub fn sys_getcwd(buf: *mut u8, len: usize) -> isize {
 
     if let Some(task) = current_task() {
         let task_inner = task.inner_exclusive_access();
-        let cwd_bytes = task_inner.cwd.as_bytes();
+        let cwd_bytes = task_inner.process.cwd.as_bytes();
         let copy_len = (cwd_bytes.len() + 1).min(len); // +1 for null terminator
 
         if copy_len == 0 {

@@ -13,7 +13,7 @@ struct CFSTask {
 
 impl CFSTask {
     fn new(task: Arc<TaskControlBlock>) -> Self {
-        let vruntime = task.inner_exclusive_access().vruntime;
+        let vruntime = task.inner_exclusive_access().sched.vruntime;
         Self { task, vruntime }
     }
 }
@@ -48,6 +48,45 @@ pub enum SchedulingPolicy {
     CFS,            // 完全公平调度器
 }
 
+/// 调度器统计信息
+#[derive(Debug, Default, Clone)]
+pub struct SchedulerStats {
+    /// 总任务数
+    pub total_tasks: usize,
+    /// 运行中任务数
+    pub running_tasks: usize,
+    /// 就绪任务数
+    pub ready_tasks: usize,
+    /// 阻塞任务数
+    pub blocked_tasks: usize,
+    /// 调度切换次数
+    pub context_switches: u64,
+    /// 平均时间片利用率
+    pub avg_time_slice_usage: f32,
+}
+
+impl SchedulerStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn inc_context_switches(&mut self) {
+        self.context_switches += 1;
+    }
+
+    pub fn update_task_counts(&mut self, ready: usize, running: usize, blocked: usize) {
+        self.ready_tasks = ready;
+        self.running_tasks = running;
+        self.blocked_tasks = blocked;
+        self.total_tasks = ready + running + blocked;
+    }
+
+    pub fn update_time_slice_usage(&mut self, usage: f32) {
+        // 简单的滑动平均
+        self.avg_time_slice_usage = self.avg_time_slice_usage * 0.9 + usage * 0.1;
+    }
+}
+/// 优化的任务管理器，添加统计信息
 struct TaskManager {
     /// 调度策略
     scheduling_policy: SchedulingPolicy,
@@ -61,6 +100,8 @@ struct TaskManager {
     pub init_proc: Option<Arc<TaskControlBlock>>,
     /// 全局最小vruntime
     min_vruntime: u64,
+    /// 调度统计信息
+    stats: SchedulerStats,
 }
 
 impl TaskManager {
@@ -75,6 +116,7 @@ impl TaskManager {
             cfs_queue: BinaryHeap::new(),
             init_proc: None,
             min_vruntime: 0,
+            stats: SchedulerStats::new(),
         }
     }
 
@@ -101,34 +143,38 @@ impl TaskManager {
             SchedulingPolicy::CFS => {
                 // 更新全局最小vruntime
                 let task_inner = task.inner_exclusive_access();
-                let task_vruntime = task_inner.vruntime;
+                let task_vruntime = task_inner.sched.vruntime;
                 drop(task_inner);
 
                 // 如果任务的vruntime太小，将其设置为当前最小值
                 if task_vruntime < self.min_vruntime {
                     let mut task_inner = task.inner_exclusive_access();
-                    task_inner.vruntime = self.min_vruntime;
+                    task_inner.sched.vruntime = self.min_vruntime;
                     drop(task_inner);
                 }
 
                 self.cfs_queue.push(CFSTask::new(task));
             }
         }
+        // 更新统计信息
+        self.update_stats();
     }
 
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        match self.scheduling_policy {
+        let task = match self.scheduling_policy {
             SchedulingPolicy::FIFO => {
                 self.ready_queue.pop_front()
             },
             SchedulingPolicy::Priority | SchedulingPolicy::RoundRobin => {
                 // 从高优先级到低优先级查找任务
+                let mut result = None;
                 for queue in &mut self.priority_queues {
                     if let Some(task) = queue.pop_front() {
-                        return Some(task);
+                        result = Some(task);
+                        break;
                     }
                 }
-                None
+                result
             },
             SchedulingPolicy::CFS => {
                 if let Some(cfs_task) = self.cfs_queue.pop() {
@@ -139,7 +185,13 @@ impl TaskManager {
                     None
                 }
             }
+        };
+        
+        if task.is_some() {
+            self.stats.inc_context_switches();
         }
+        self.update_stats();
+        task
     }
 
     /// 更新任务的运行时间统计
@@ -149,10 +201,10 @@ impl TaskManager {
         match self.scheduling_policy {
             SchedulingPolicy::CFS => {
                 task_inner.update_vruntime(runtime_us);
-                task_inner.last_runtime = runtime_us;
+                task_inner.sched.last_runtime = runtime_us;
             },
             _ => {
-                task_inner.last_runtime = runtime_us;
+                task_inner.sched.last_runtime = runtime_us;
             }
         }
     }
@@ -211,6 +263,32 @@ impl TaskManager {
 
         None
     }
+    
+    /// 获取调度统计信息
+    pub fn get_stats(&self) -> &SchedulerStats {
+        &self.stats
+    }
+    
+    /// 更新统计信息
+    fn update_stats(&mut self) {
+        let ready = self.ready_task_count();
+        let running = 1; // 简化：假设当前只有一个运行任务
+        let blocked = 0; // 简化：暂时不统计阻塞任务
+        self.stats.update_task_counts(ready, running, blocked);
+    }
+    
+    /// 重置统计信息
+    pub fn reset_stats(&mut self) {
+        self.stats = SchedulerStats::new();
+    }
+    
+    /// 获取调度效率信息
+    pub fn get_efficiency_info(&self) -> (f32, u64, usize) {
+        let avg_usage = self.stats.avg_time_slice_usage;
+        let switches = self.stats.context_switches;
+        let total_tasks = self.stats.total_tasks;
+        (avg_usage, switches, total_tasks)
+    }
 }
 
 lazy_static! {
@@ -252,16 +330,31 @@ pub fn update_task_runtime(task: &Arc<TaskControlBlock>, runtime_us: u64) {
     TASK_MANAGER.exclusive_access().update_task_runtime(task, runtime_us);
 }
 
+/// 获取调度统计信息
+pub fn get_scheduler_stats() -> SchedulerStats {
+    TASK_MANAGER.exclusive_access().get_stats().clone()
+}
+
 /// 获取就绪任务数量
 pub fn ready_task_count() -> usize {
     TASK_MANAGER.exclusive_access().ready_task_count()
 }
 
+/// 重置调度统计信息
+pub fn reset_scheduler_stats() {
+    TASK_MANAGER.exclusive_access().reset_stats();
+}
+
+/// 获取调度效率信息
+pub fn get_scheduler_efficiency() -> (f32, u64, usize) {
+    TASK_MANAGER.exclusive_access().get_efficiency_info()
+}
+
 /// 唤醒任务，将其从睡眠状态转为就绪状态
 pub fn wakeup_task(task: Arc<TaskControlBlock>) {
     let mut inner = task.inner_exclusive_access();
-    if inner.task_status == TaskStatus::Sleeping {
-        inner.task_status = TaskStatus::Ready;
+    if inner.sched.task_status == TaskStatus::Sleeping {
+        inner.sched.task_status = TaskStatus::Ready;
         drop(inner);
         // 将任务添加到就绪队列
         add_task(task);

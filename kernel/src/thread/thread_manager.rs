@@ -141,13 +141,13 @@ impl ThreadManager {
         let kernel_stack = self.alloc_kernel_stack()?;
 
         // 分配用户栈 (使用已借用的process_inner)
-        let user_stack = self.stack_allocator.alloc_user_stack(&mut process_inner.memory_set)
+        let user_stack = self.stack_allocator.alloc_user_stack(&mut process_inner.mm.memory_set)
             .map_err(|_| "Failed to allocate user stack")?;
 
         debug!("Allocated user stack: {:?}", user_stack);
 
         // 分配陷入上下文页面 (使用已借用的process_inner)
-        let trap_cx_ppn = self.alloc_trap_context_page(&mut process_inner.memory_set)?;
+        let trap_cx_ppn = self.alloc_trap_context_page(&mut process_inner.mm.memory_set)?;
 
         // 获取用户页表token (使用已借用的process_inner)
         let user_token = process_inner.get_user_token();
@@ -580,13 +580,13 @@ impl ThreadManager {
             let mut process_inner = self.parent_process.inner_exclusive_access();
             if let Err(e) = self.stack_allocator.dealloc_user_stack(
                 &thread_inner.user_stack,
-                &mut process_inner.memory_set
+                &mut process_inner.mm.memory_set
             ) {
                 warn!("Failed to deallocate user stack for thread {}: {}", thread_id.0, e);
             }
 
             // 释放陷入上下文页面
-            self.dealloc_trap_context_page(thread_inner.trap_cx_ppn, &mut process_inner.memory_set);
+            self.dealloc_trap_context_page(thread_inner.trap_cx_ppn, &mut process_inner.mm.memory_set);
 
             // 释放内核栈
             self.dealloc_kernel_stack(thread_inner.kernel_stack_base);

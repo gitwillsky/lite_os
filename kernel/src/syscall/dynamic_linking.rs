@@ -24,7 +24,7 @@ pub fn sys_dlopen(filename: *const u8, flags: i32) -> isize {
     let task = current_task().unwrap();
     let mut task_inner = task.inner_exclusive_access();
     
-    let base_address = match task_inner.memory_set.load_shared_library(&filename_str) {
+    let base_address = match task_inner.mm.memory_set.load_shared_library(&filename_str) {
         Ok(addr) => addr,
         Err(e) => {
             error!("dlopen: Failed to load library '{}': {}", filename_str, e);
@@ -58,7 +58,7 @@ pub fn sys_dlsym(handle: usize, symbol: *const u8) -> isize {
     
     // Resolve the symbol using the dynamic linker
     let task_inner = task.inner_exclusive_access();
-    if let Some(address) = task_inner.memory_set.resolve_symbol(&symbol_str) {
+    if let Some(address) = task_inner.mm.memory_set.resolve_symbol(&symbol_str) {
         debug!("dlsym: Resolved symbol '{}' to address 0x{:x}", symbol_str, usize::from(address));
         usize::from(address) as isize
     } else {
