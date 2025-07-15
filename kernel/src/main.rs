@@ -20,7 +20,6 @@ mod lang_item;
 
 mod loader;
 mod memory;
-mod sync;
 mod syscall;
 mod task;
 mod thread;

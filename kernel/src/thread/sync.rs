@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, vec::Vec, collections::{VecDeque, BTreeMap}};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use crate::{
-    sync::UPSafeCell,
     thread::ThreadId,
     task::current_task,
     timer::get_time_us,
@@ -98,13 +97,13 @@ pub struct Mutex<T> {
     /// 锁状态 
     locked: AtomicBool,
     /// 当前持有锁的线程
-    owner: UPSafeCell<Option<ThreadId>>,
+    owner: spin::Mutex<Option<ThreadId>>,
     /// 等待队列
-    wait_queue: UPSafeCell<WaitQueue>,
+    wait_queue: spin::Mutex<WaitQueue>,
     /// 保护的数据
-    data: UPSafeCell<T>,
+    data: spin::Mutex<T>,
     /// 递归锁计数（支持递归锁）
-    recursive_count: UPSafeCell<usize>,
+    recursive_count: spin::Mutex<usize>,
 }
 
 impl<T> Mutex<T> {
@@ -113,10 +112,10 @@ impl<T> Mutex<T> {
         Self {
             id: alloc_sync_id(),
             locked: AtomicBool::new(false),
-            owner: UPSafeCell::new(None),
-            wait_queue: UPSafeCell::new(WaitQueue::new()),
-            data: UPSafeCell::new(data),
-            recursive_count: UPSafeCell::new(0),
+            owner: spin::Mutex::new(None),
+            wait_queue: spin::Mutex::new(WaitQueue::new()),
+            data: spin::Mutex::new(data),
+            recursive_count: spin::Mutex::new(0),
         }
     }
 
@@ -137,7 +136,7 @@ impl<T> Mutex<T> {
             
             // 加入等待队列并阻塞
             {
-                let mut wait_queue = self.wait_queue.exclusive_access();
+                let mut wait_queue = self.wait_queue.lock();
                 wait_queue.enqueue(current_thread_id, self.get_thread_priority(current_thread_id));
             }
             
@@ -165,13 +164,13 @@ impl<T> Mutex<T> {
 
     /// 内部尝试加锁实现
     fn try_lock_internal(&self, thread_id: ThreadId) -> bool {
-        let mut owner = self.owner.exclusive_access();
+        let mut owner = self.owner.lock();
         
         // 检查递归锁
         if let Some(current_owner) = *owner {
             if current_owner == thread_id {
                 // 递归锁
-                let mut count = self.recursive_count.exclusive_access();
+                let mut count = self.recursive_count.lock();
                 *count += 1;
                 return true;
             }
@@ -181,7 +180,7 @@ impl<T> Mutex<T> {
         if !self.locked.load(Ordering::Acquire) {
             if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
                 *owner = Some(thread_id);
-                *self.recursive_count.exclusive_access() = 1;
+                *self.recursive_count.lock() = 1;
                 return true;
             }
         }
@@ -192,7 +191,7 @@ impl<T> Mutex<T> {
     /// 解锁
     pub fn unlock(&self) {
         let current_thread_id = self.get_current_thread_id();
-        let mut owner = self.owner.exclusive_access();
+        let mut owner = self.owner.lock();
         
         // 检查是否是锁的拥有者
         if let Some(lock_owner) = *owner {
@@ -204,7 +203,7 @@ impl<T> Mutex<T> {
         }
         
         // 处理递归锁
-        let mut count = self.recursive_count.exclusive_access();
+        let mut count = self.recursive_count.lock();
         *count -= 1;
         
         if *count > 0 {
@@ -229,13 +228,13 @@ impl<T> Mutex<T> {
         F: FnOnce(&mut T) -> R,
     {
         let _guard = self.lock();
-        let mut data = self.data.exclusive_access();
+        let mut data = self.data.lock();
         f(&mut *data)
     }
 
     /// 唤醒下一个等待者
     fn wakeup_next_waiter(&self) {
-        let mut wait_queue = self.wait_queue.exclusive_access();
+        let mut wait_queue = self.wait_queue.lock();
         
         if let Some(thread_id) = wait_queue.dequeue() {
             drop(wait_queue);
@@ -317,7 +316,7 @@ impl<T> Drop for MutexGuard<'_, T> {
 }
 
 impl<T> core::ops::Deref for MutexGuard<'_, T> {
-    type Target = UPSafeCell<T>;
+    type Target = spin::Mutex<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.mutex.data
@@ -329,7 +328,7 @@ impl<T> core::ops::Deref for MutexGuard<'_, T> {
 pub struct Condvar {
     id: SyncObjectId,
     /// 等待队列
-    wait_queue: UPSafeCell<WaitQueue>,
+    wait_queue: spin::Mutex<WaitQueue>,
 }
 
 impl Condvar {
@@ -337,7 +336,7 @@ impl Condvar {
     pub fn new() -> Self {
         Self {
             id: alloc_sync_id(),
-            wait_queue: UPSafeCell::new(WaitQueue::new()),
+            wait_queue: spin::Mutex::new(WaitQueue::new()),
         }
     }
 
@@ -353,7 +352,7 @@ impl Condvar {
         
         // 加入等待队列
         {
-            let mut wait_queue = self.wait_queue.exclusive_access();
+            let mut wait_queue = self.wait_queue.lock();
             wait_queue.enqueue(current_thread_id, mutex.get_thread_priority(current_thread_id));
         }
         
@@ -375,7 +374,7 @@ impl Condvar {
         
         // 加入等待队列
         {
-            let mut wait_queue = self.wait_queue.exclusive_access();
+            let mut wait_queue = self.wait_queue.lock();
             wait_queue.enqueue(current_thread_id, mutex.get_thread_priority(current_thread_id));
         }
         
@@ -387,7 +386,7 @@ impl Condvar {
         
         // 如果超时，从等待队列中移除
         if timed_out {
-            let mut wait_queue = self.wait_queue.exclusive_access();
+            let mut wait_queue = self.wait_queue.lock();
             wait_queue.remove(current_thread_id);
         }
         
@@ -398,7 +397,7 @@ impl Condvar {
 
     /// 通知一个等待的线程
     pub fn notify_one(&self) {
-        let mut wait_queue = self.wait_queue.exclusive_access();
+        let mut wait_queue = self.wait_queue.lock();
         
         if let Some(thread_id) = wait_queue.dequeue() {
             drop(wait_queue);
@@ -408,7 +407,7 @@ impl Condvar {
 
     /// 通知所有等待的线程
     pub fn notify_all(&self) {
-        let mut wait_queue = self.wait_queue.exclusive_access();
+        let mut wait_queue = self.wait_queue.lock();
         let mut threads_to_wakeup = Vec::new();
         
         while let Some(thread_id) = wait_queue.dequeue() {
@@ -516,13 +515,13 @@ pub struct RwLock<T> {
     /// 写者状态
     writer: AtomicBool,
     /// 当前写者线程ID
-    writer_thread: UPSafeCell<Option<ThreadId>>,
+    writer_thread: spin::Mutex<Option<ThreadId>>,
     /// 读者等待队列
-    reader_queue: UPSafeCell<WaitQueue>,
+    reader_queue: spin::Mutex<WaitQueue>,
     /// 写者等待队列
-    writer_queue: UPSafeCell<WaitQueue>,
+    writer_queue: spin::Mutex<WaitQueue>,
     /// 保护的数据
-    data: UPSafeCell<T>,
+    data: spin::Mutex<T>,
 }
 
 impl<T> RwLock<T> {
@@ -532,10 +531,10 @@ impl<T> RwLock<T> {
             id: alloc_sync_id(),
             readers: AtomicUsize::new(0),
             writer: AtomicBool::new(false),
-            writer_thread: UPSafeCell::new(None),
-            reader_queue: UPSafeCell::new(WaitQueue::new()),
-            writer_queue: UPSafeCell::new(WaitQueue::new()),
-            data: UPSafeCell::new(data),
+            writer_thread: spin::Mutex::new(None),
+            reader_queue: spin::Mutex::new(WaitQueue::new()),
+            writer_queue: spin::Mutex::new(WaitQueue::new()),
+            data: spin::Mutex::new(data),
         }
     }
 
@@ -553,14 +552,14 @@ impl<T> RwLock<T> {
             let has_writer = self.writer.load(Ordering::Acquire);
             
             // 如果没有写者且写者队列为空，可以获取读锁
-            if !has_writer && self.writer_queue.exclusive_access().is_empty() {
+            if !has_writer && self.writer_queue.lock().is_empty() {
                 if self.readers.compare_exchange(readers, readers + 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
                     break;
                 }
             } else {
                 // 加入读者等待队列
                 {
-                    let mut reader_queue = self.reader_queue.exclusive_access();
+                    let mut reader_queue = self.reader_queue.lock();
                     reader_queue.enqueue(current_thread_id, self.get_thread_priority(current_thread_id));
                 }
                 
@@ -585,13 +584,13 @@ impl<T> RwLock<T> {
             // 如果没有读者和写者，可以获取写锁
             if readers == 0 && !has_writer {
                 if self.writer.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-                    *self.writer_thread.exclusive_access() = Some(current_thread_id);
+                    *self.writer_thread.lock() = Some(current_thread_id);
                     break;
                 }
             } else {
                 // 加入写者等待队列
                 {
-                    let mut writer_queue = self.writer_queue.exclusive_access();
+                    let mut writer_queue = self.writer_queue.lock();
                     writer_queue.enqueue(current_thread_id, self.get_thread_priority(current_thread_id));
                 }
                 
@@ -617,21 +616,21 @@ impl<T> RwLock<T> {
 
     /// 释放写锁
     fn unlock_write(&self) {
-        *self.writer_thread.exclusive_access() = None;
+        *self.writer_thread.lock() = None;
         self.writer.store(false, Ordering::Release);
         
         // 优先唤醒所有等待的读者
         self.wakeup_all_readers();
         
         // 如果没有读者被唤醒，唤醒下一个写者
-        if self.reader_queue.exclusive_access().is_empty() {
+        if self.reader_queue.lock().is_empty() {
             self.wakeup_next_writer();
         }
     }
 
     /// 唤醒所有等待的读者
     fn wakeup_all_readers(&self) {
-        let mut reader_queue = self.reader_queue.exclusive_access();
+        let mut reader_queue = self.reader_queue.lock();
         let mut threads_to_wakeup = Vec::new();
         
         while let Some(thread_id) = reader_queue.dequeue() {
@@ -647,7 +646,7 @@ impl<T> RwLock<T> {
 
     /// 唤醒下一个等待的写者
     fn wakeup_next_writer(&self) {
-        let mut writer_queue = self.writer_queue.exclusive_access();
+        let mut writer_queue = self.writer_queue.lock();
         
         if let Some(thread_id) = writer_queue.dequeue() {
             drop(writer_queue);
@@ -661,7 +660,7 @@ impl<T> RwLock<T> {
         F: FnOnce(&T) -> R,
     {
         let _guard = self.read();
-        let data = self.data.exclusive_access();
+        let data = self.data.lock();
         f(&*data)
     }
 
@@ -671,7 +670,7 @@ impl<T> RwLock<T> {
         F: FnOnce(&mut T) -> R,
     {
         let _guard = self.write();
-        let mut data = self.data.exclusive_access();
+        let mut data = self.data.lock();
         f(&mut *data)
     }
 
@@ -729,7 +728,7 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
 }
 
 impl<T> core::ops::Deref for RwLockReadGuard<'_, T> {
-    type Target = UPSafeCell<T>;
+    type Target = spin::Mutex<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.rwlock.data
@@ -748,7 +747,7 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
 }
 
 impl<T> core::ops::Deref for RwLockWriteGuard<'_, T> {
-    type Target = UPSafeCell<T>;
+    type Target = spin::Mutex<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.rwlock.data
@@ -762,7 +761,7 @@ pub struct Semaphore {
     /// 信号量计数
     count: AtomicUsize,
     /// 等待队列
-    wait_queue: UPSafeCell<WaitQueue>,
+    wait_queue: spin::Mutex<WaitQueue>,
 }
 
 impl Semaphore {
@@ -771,7 +770,7 @@ impl Semaphore {
         Self {
             id: alloc_sync_id(),
             count: AtomicUsize::new(initial_count),
-            wait_queue: UPSafeCell::new(WaitQueue::new()),
+            wait_queue: spin::Mutex::new(WaitQueue::new()),
         }
     }
 
@@ -792,7 +791,7 @@ impl Semaphore {
                 // 加入等待队列并阻塞
                 let current_thread_id = self.get_current_thread_id();
                 {
-                    let mut wait_queue = self.wait_queue.exclusive_access();
+                    let mut wait_queue = self.wait_queue.lock();
                     wait_queue.enqueue(current_thread_id, self.get_thread_priority(current_thread_id));
                 }
                 
@@ -806,7 +805,7 @@ impl Semaphore {
         self.count.fetch_add(1, Ordering::Release);
         
         // 唤醒一个等待的线程
-        let mut wait_queue = self.wait_queue.exclusive_access();
+        let mut wait_queue = self.wait_queue.lock();
         if let Some(thread_id) = wait_queue.dequeue() {
             drop(wait_queue);
             self.wakeup_thread(thread_id);

@@ -2,7 +2,6 @@ use alloc::{sync::Arc, collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 use crate::{
-    sync::UPSafeCell,
     memory::{
         address::{VirtualAddress, PhysicalPageNumber, VirtualPageNumber},
         frame_allocator::{FrameTracker, alloc, alloc_contiguous},

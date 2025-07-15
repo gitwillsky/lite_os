@@ -1,6 +1,5 @@
 use alloc::{sync::{Arc, Weak}, vec::Vec};
 use crate::{
-    sync::UPSafeCell,
     task::TaskContext,
     memory::{
         address::{VirtualAddress, PhysicalPageNumber},
@@ -75,7 +74,7 @@ pub struct ThreadControlBlock {
     /// 所属进程的TaskControlBlock
     pub parent_process: Weak<crate::task::TaskControlBlock>,
     /// 内部数据
-    inner: UPSafeCell<ThreadControlBlockInner>,
+    inner: spin::Mutex<ThreadControlBlockInner>,
 }
 
 impl ThreadControlBlock {
@@ -106,7 +105,7 @@ impl ThreadControlBlock {
         Self {
             thread_id,
             parent_process,
-            inner: crate::sync::UPSafeCell::new(inner),
+            inner: spin::Mutex::new(inner),
         }
     }
 
@@ -128,7 +127,7 @@ impl ThreadControlBlock {
         let tcb = Self {
             thread_id,
             parent_process,
-            inner: UPSafeCell::new(ThreadControlBlockInner {
+            inner: spin::Mutex::new(ThreadControlBlockInner {
                 status: ThreadStatus::Ready,
                 context: TaskContext::goto_trap_return(kernel_stack_top),
                 trap_cx_ppn,
@@ -153,7 +152,7 @@ impl ThreadControlBlock {
 
     /// 初始化陷入上下文
     fn init_trap_context(&self, user_token: usize) {
-        let inner = self.inner.exclusive_access();
+        let inner = self.inner.lock();
         
         // 获取线程的陷入上下文页面
         let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
@@ -177,23 +176,23 @@ impl ThreadControlBlock {
     }
 
     /// 获取内部数据的独占访问
-    pub fn inner_exclusive_access(&self) -> core::cell::RefMut<'_, ThreadControlBlockInner> {
-        self.inner.exclusive_access()
+    pub fn inner_exclusive_access(&self) -> spin::MutexGuard<'_, ThreadControlBlockInner> {
+        self.inner.lock()
     }
 
     /// 获取线程状态
     pub fn get_status(&self) -> ThreadStatus {
-        self.inner.exclusive_access().status
+        self.inner.lock().status
     }
 
     /// 设置线程状态
     pub fn set_status(&self, status: ThreadStatus) {
-        self.inner.exclusive_access().status = status;
+        self.inner.lock().status = status;
     }
 
     /// 获取陷入上下文
     pub fn get_trap_cx(&self) -> &'static mut TrapContext {
-        self.inner.exclusive_access().trap_cx_ppn.get_mut()
+        self.inner.lock().trap_cx_ppn.get_mut()
     }
 
     /// 获取用户token（页表）
@@ -207,7 +206,7 @@ impl ThreadControlBlock {
 
     /// 线程退出
     pub fn exit(&self, exit_code: i32) {
-        let mut inner = self.inner.exclusive_access();
+        let mut inner = self.inner.lock();
         inner.status = ThreadStatus::Exited;
         inner.exit_code = exit_code;
         
@@ -229,49 +228,49 @@ impl ThreadControlBlock {
 
     /// 加入等待join的线程
     pub fn add_waiting_thread(&self, thread_id: ThreadId) {
-        self.inner.exclusive_access().waiting_threads.push(thread_id);
+        self.inner.lock().waiting_threads.push(thread_id);
     }
 
     /// 检查是否可以被join
     pub fn is_joinable(&self) -> bool {
-        self.inner.exclusive_access().joinable
+        self.inner.lock().joinable
     }
 
     /// 获取退出码
     pub fn get_exit_code(&self) -> i32 {
-        self.inner.exclusive_access().exit_code
+        self.inner.lock().exit_code
     }
 
     /// 设置线程私有数据
     pub fn set_thread_local_data(&self, data: usize) {
-        self.inner.exclusive_access().thread_local_data = Some(data);
+        self.inner.lock().thread_local_data = Some(data);
     }
 
     /// 获取线程私有数据
     pub fn get_thread_local_data(&self) -> Option<usize> {
-        self.inner.exclusive_access().thread_local_data
+        self.inner.lock().thread_local_data
     }
 
     /// 设置CPU亲和性
     pub fn set_cpu_affinity(&self, cpu_id: usize) {
-        self.inner.exclusive_access().cpu_affinity = Some(cpu_id);
+        self.inner.lock().cpu_affinity = Some(cpu_id);
     }
 
     /// 获取CPU亲和性
     pub fn get_cpu_affinity(&self) -> Option<usize> {
-        self.inner.exclusive_access().cpu_affinity
+        self.inner.lock().cpu_affinity
     }
 
     /// 准备线程切换
     pub fn prepare_context_switch(&self) {
-        let _inner = self.inner.exclusive_access();
+        let _inner = self.inner.lock();
         // 这里可以添加上下文切换前的准备工作
         // 例如保存浮点寄存器状态等
     }
 
     /// 完成线程切换后的清理
     pub fn finish_context_switch(&self) {
-        let _inner = self.inner.exclusive_access();
+        let _inner = self.inner.lock();
         // 这里可以添加上下文切换后的清理工作
         // 例如恢复浮点寄存器状态等
     }

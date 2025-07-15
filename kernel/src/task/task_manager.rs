@@ -2,7 +2,7 @@ use alloc::{collections::{vec_deque::VecDeque, binary_heap::BinaryHeap}, sync::A
 use lazy_static::lazy_static;
 use core::cmp::Ordering;
 
-use crate::{sync::UPSafeCell, task::task::{TaskControlBlock, TaskStatus}};
+use crate::task::task::{TaskControlBlock, TaskStatus};
 
 /// CFS调度器中的任务包装器，用于按vruntime排序
 #[derive(Debug)]
@@ -292,24 +292,24 @@ impl TaskManager {
 }
 
 lazy_static! {
-    static ref TASK_MANAGER: UPSafeCell<TaskManager> = UPSafeCell::new(TaskManager::new());
+    static ref TASK_MANAGER: spin::Mutex<TaskManager> = spin::Mutex::new(TaskManager::new());
 }
 
 pub fn add_task(task: Arc<TaskControlBlock>) {
-    TASK_MANAGER.exclusive_access().add_task(task);
+    TASK_MANAGER.lock().add_task(task);
 }
 
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.exclusive_access().fetch_task()
+    TASK_MANAGER.lock().fetch_task()
 }
 
 pub fn set_init_proc(task: Arc<TaskControlBlock>) {
-    TASK_MANAGER.exclusive_access().set_init_proc(task);
+    TASK_MANAGER.lock().set_init_proc(task);
 }
 
 pub fn get_init_proc() -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER
-        .exclusive_access()
+        .lock()
         .init_proc
         .as_ref()
         .map(|f| f.clone())
@@ -317,37 +317,37 @@ pub fn get_init_proc() -> Option<Arc<TaskControlBlock>> {
 
 /// 设置调度策略
 pub fn set_scheduling_policy(policy: SchedulingPolicy) {
-    TASK_MANAGER.exclusive_access().set_scheduling_policy(policy);
+    TASK_MANAGER.lock().set_scheduling_policy(policy);
 }
 
 /// 获取当前调度策略
 pub fn get_scheduling_policy() -> SchedulingPolicy {
-    TASK_MANAGER.exclusive_access().get_scheduling_policy()
+    TASK_MANAGER.lock().get_scheduling_policy()
 }
 
 /// 更新任务运行时间统计
 pub fn update_task_runtime(task: &Arc<TaskControlBlock>, runtime_us: u64) {
-    TASK_MANAGER.exclusive_access().update_task_runtime(task, runtime_us);
+    TASK_MANAGER.lock().update_task_runtime(task, runtime_us);
 }
 
 /// 获取调度统计信息
 pub fn get_scheduler_stats() -> SchedulerStats {
-    TASK_MANAGER.exclusive_access().get_stats().clone()
+    TASK_MANAGER.lock().get_stats().clone()
 }
 
 /// 获取就绪任务数量
 pub fn ready_task_count() -> usize {
-    TASK_MANAGER.exclusive_access().ready_task_count()
+    TASK_MANAGER.lock().ready_task_count()
 }
 
 /// 重置调度统计信息
 pub fn reset_scheduler_stats() {
-    TASK_MANAGER.exclusive_access().reset_stats();
+    TASK_MANAGER.lock().reset_stats();
 }
 
 /// 获取调度效率信息
 pub fn get_scheduler_efficiency() -> (f32, u64, usize) {
-    TASK_MANAGER.exclusive_access().get_efficiency_info()
+    TASK_MANAGER.lock().get_efficiency_info()
 }
 
 /// 唤醒任务，将其从睡眠状态转为就绪状态
@@ -371,5 +371,5 @@ pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
     }
 
     // 搜索任务管理器中的任务
-    TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
+    TASK_MANAGER.lock().find_task_by_pid(pid)
 }

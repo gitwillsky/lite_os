@@ -10,7 +10,6 @@ use crate::{
         address::{PhysicalPageNumber, VirtualAddress},
         mm::{self, MemorySet},
     },
-    sync::UPSafeCell,
     task::{
         context::TaskContext,
         pid::{KernelStack, PidHandle, alloc_pid},
@@ -185,7 +184,7 @@ pub struct TaskControlBlock {
     pub pid: PidHandle,
     pub kernel_stack: KernelStack,
 
-    inner: UPSafeCell<TaskControlBlockInner>,
+    inner: spin::Mutex<TaskControlBlockInner>,
 }
 
 impl TaskControlBlock {
@@ -208,7 +207,7 @@ impl TaskControlBlock {
         let tcb = Self {
             pid,
             kernel_stack,
-            inner: UPSafeCell::new(TaskControlBlockInner {
+            inner: spin::Mutex::new(TaskControlBlockInner {
                 process: ProcessManagement {
                     parent: None,
                     children: Vec::new(),
@@ -266,8 +265,8 @@ impl TaskControlBlock {
         self.pid.0
     }
 
-    pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlockInner> {
-        self.inner.exclusive_access()
+    pub fn inner_exclusive_access(&self) -> spin::MutexGuard<'_, TaskControlBlockInner> {
+        self.inner.lock()
     }
 
     pub fn exec(&self, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
@@ -338,7 +337,7 @@ impl TaskControlBlock {
         let tcb = Arc::new(TaskControlBlock {
             pid,
             kernel_stack,
-            inner: UPSafeCell::new(TaskControlBlockInner {
+            inner: spin::Mutex::new(TaskControlBlockInner {
                 process: ProcessManagement {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),

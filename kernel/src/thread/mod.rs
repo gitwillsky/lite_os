@@ -1,5 +1,4 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::sync::UPSafeCell;
 use lazy_static::lazy_static;
 
 pub mod thread;
@@ -22,7 +21,7 @@ pub fn alloc_thread_id() -> ThreadId {
 
 /// 全局同步对象管理器
 lazy_static! {
-    static ref GLOBAL_SYNC_MANAGER: UPSafeCell<SyncObjectManager> = UPSafeCell::new(SyncObjectManager::new());
+    static ref GLOBAL_SYNC_MANAGER: spin::Mutex<SyncObjectManager> = spin::Mutex::new(SyncObjectManager::new());
 }
 
 /// 初始化多线程系统
@@ -30,12 +29,12 @@ pub fn init_threading() {
     info!("Initializing multi-threading support...");
     
     // 初始化全局同步对象管理器
-    let _sync_manager = GLOBAL_SYNC_MANAGER.exclusive_access();
+    let _sync_manager = GLOBAL_SYNC_MANAGER.lock();
     
     info!("Multi-threading support initialized successfully");
 }
 
 /// 获取全局同步对象管理器
-pub fn get_sync_manager() -> core::cell::RefMut<'static, SyncObjectManager> {
-    GLOBAL_SYNC_MANAGER.exclusive_access()
+pub fn get_sync_manager() -> spin::MutexGuard<'static, SyncObjectManager> {
+    GLOBAL_SYNC_MANAGER.lock()
 }

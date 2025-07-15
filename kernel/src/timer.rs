@@ -1,7 +1,7 @@
 use riscv::register;
 use alloc::{vec::Vec, boxed::Box, collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::{arch::sbi, board, config, sync::UPSafeCell};
+use crate::{arch::sbi, board, config};
 use lazy_static::lazy_static;
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
@@ -30,14 +30,14 @@ struct TimerTask {
 
 /// 定时器任务管理器
 struct TimerTaskManager {
-    tasks: UPSafeCell<BTreeMap<TimerTaskId, TimerTask>>,
+    tasks: spin::Mutex<BTreeMap<TimerTaskId, TimerTask>>,
     next_id: AtomicUsize,
 }
 
 impl TimerTaskManager {
     fn new() -> Self {
         Self {
-            tasks: UPSafeCell::new(BTreeMap::new()),
+            tasks: spin::Mutex::new(BTreeMap::new()),
             next_id: AtomicUsize::new(1),
         }
     }
@@ -57,7 +57,7 @@ impl TimerTaskManager {
             recurring_callback: None,
         };
 
-        let mut tasks = self.tasks.exclusive_access();
+        let mut tasks = self.tasks.lock();
         tasks.insert(id, task);
         drop(tasks);
 
@@ -88,7 +88,7 @@ impl TimerTaskManager {
             recurring_callback: Some(recurring_callback),
         };
 
-        let mut tasks = self.tasks.exclusive_access();
+        let mut tasks = self.tasks.lock();
         tasks.insert(id, task);
         drop(tasks);
 
@@ -99,7 +99,7 @@ impl TimerTaskManager {
 
     /// 取消定时器任务
     fn cancel_timer_task(&self, task_id: TimerTaskId) -> bool {
-        let mut tasks = self.tasks.exclusive_access();
+        let mut tasks = self.tasks.lock();
         let removed = tasks.remove(&task_id).is_some();
         if removed {
             debug!("Cancelled timer task {}", task_id);
@@ -115,7 +115,7 @@ impl TimerTaskManager {
 
         // 查找到期的任务
         {
-            let mut tasks = self.tasks.exclusive_access();
+            let mut tasks = self.tasks.lock();
             let mut to_remove = Vec::new();
 
             for (&task_id, task) in tasks.iter_mut() {
@@ -174,7 +174,7 @@ impl TimerTaskManager {
             };
 
             // 添加新的任务实例
-            let mut tasks = self.tasks.exclusive_access();
+            let mut tasks = self.tasks.lock();
             tasks.insert(new_id, new_task);
             drop(tasks);
 
@@ -184,7 +184,7 @@ impl TimerTaskManager {
 
     /// 获取下一个定时器任务的触发时间
     fn next_timer_time(&self) -> Option<u64> {
-        let tasks = self.tasks.exclusive_access();
+        let tasks = self.tasks.lock();
         tasks.values().map(|task| task.trigger_time).min()
     }
 }

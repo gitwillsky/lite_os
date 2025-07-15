@@ -1,7 +1,6 @@
 use alloc::{sync::Arc, collections::BTreeMap};
 use core::sync::atomic::{AtomicBool, Ordering};
 use crate::{
-    sync::UPSafeCell,
     thread::{ThreadId, ThreadControlBlock},
     task::{
         signal::{
@@ -17,37 +16,37 @@ use crate::{
 #[derive(Debug)]
 pub struct ThreadSignalState {
     /// 线程私有的待处理信号
-    pub pending: UPSafeCell<SignalSet>,
+    pub pending: spin::Mutex<SignalSet>,
     /// 线程私有的信号屏蔽
-    pub blocked: UPSafeCell<SignalSet>,
+    pub blocked: spin::Mutex<SignalSet>,
     /// 线程私有的信号处理器（覆盖进程级别的处理器）
-    pub thread_handlers: UPSafeCell<BTreeMap<Signal, SignalDisposition>>,
+    pub thread_handlers: spin::Mutex<BTreeMap<Signal, SignalDisposition>>,
     /// 是否正在处理信号
-    pub in_signal_handler: UPSafeCell<bool>,
+    pub in_signal_handler: spin::Mutex<bool>,
     /// 保存的信号掩码
-    pub saved_mask: UPSafeCell<Option<SignalSet>>,
+    pub saved_mask: spin::Mutex<Option<SignalSet>>,
     /// 线程是否被信号暂停
     pub signal_suspended: AtomicBool,
     /// 当前正在处理的信号
-    pub current_signal: UPSafeCell<Option<Signal>>,
+    pub current_signal: spin::Mutex<Option<Signal>>,
 }
 
 impl ThreadSignalState {
     pub fn new() -> Self {
         Self {
-            pending: UPSafeCell::new(SignalSet::new()),
-            blocked: UPSafeCell::new(SignalSet::new()),
-            thread_handlers: UPSafeCell::new(BTreeMap::new()),
-            in_signal_handler: UPSafeCell::new(false),
-            saved_mask: UPSafeCell::new(None),
+            pending: spin::Mutex::new(SignalSet::new()),
+            blocked: spin::Mutex::new(SignalSet::new()),
+            thread_handlers: spin::Mutex::new(BTreeMap::new()),
+            in_signal_handler: spin::Mutex::new(false),
+            saved_mask: spin::Mutex::new(None),
             signal_suspended: AtomicBool::new(false),
-            current_signal: UPSafeCell::new(None),
+            current_signal: spin::Mutex::new(None),
         }
     }
 
     /// 向线程发送信号
     pub fn send_signal(&self, signal: Signal) {
-        let mut pending = self.pending.exclusive_access();
+        let mut pending = self.pending.lock();
         pending.add(signal);
         
         // 如果是SIGCONT信号，唤醒被暂停的线程
@@ -60,16 +59,16 @@ impl ThreadSignalState {
 
     /// 检查是否有可投递的信号
     pub fn has_deliverable_signals(&self) -> bool {
-        let pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let pending = self.pending.lock();
+        let blocked = self.blocked.lock();
         
         !pending.difference(&blocked).is_empty()
     }
 
     /// 获取下一个可投递的信号
     pub fn next_deliverable_signal(&self) -> Option<Signal> {
-        let mut pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let mut pending = self.pending.lock();
+        let blocked = self.blocked.lock();
         
         let deliverable = pending.difference(&blocked);
         if let Some(signal) = deliverable.first_signal() {
@@ -91,46 +90,46 @@ impl ThreadSignalState {
 
     /// 设置线程级别的信号处理器
     pub fn set_thread_handler(&self, signal: Signal, disposition: SignalDisposition) {
-        let mut handlers = self.thread_handlers.exclusive_access();
+        let mut handlers = self.thread_handlers.lock();
         handlers.insert(signal, disposition);
         debug!("Thread-level handler set for signal {}", signal as u32);
     }
 
     /// 获取线程级别的信号处理器
     pub fn get_thread_handler(&self, signal: Signal) -> Option<SignalDisposition> {
-        let handlers = self.thread_handlers.exclusive_access();
+        let handlers = self.thread_handlers.lock();
         handlers.get(&signal).cloned()
     }
 
     /// 阻塞信号
     pub fn block_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.union(&signals);
     }
 
     /// 解除阻塞信号
     pub fn unblock_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.difference(&signals);
     }
 
     /// 设置信号掩码
     pub fn set_signal_mask(&self, mask: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = mask;
     }
 
     /// 获取信号掩码
     pub fn get_signal_mask(&self) -> SignalSet {
-        *self.blocked.exclusive_access()
+        *self.blocked.lock()
     }
 
     /// 进入信号处理器
     pub fn enter_signal_handler(&self, signal: Signal, additional_mask: SignalSet) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
-        let mut current_signal = self.current_signal.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
+        let mut current_signal = self.current_signal.lock();
 
         if !*in_handler {
             *saved_mask = Some(*blocked);
@@ -143,10 +142,10 @@ impl ThreadSignalState {
 
     /// 退出信号处理器
     pub fn exit_signal_handler(&self) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
-        let mut current_signal = self.current_signal.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
+        let mut current_signal = self.current_signal.lock();
 
         if let Some(mask) = saved_mask.take() {
             *blocked = mask;
@@ -173,12 +172,12 @@ impl ThreadSignalState {
     /// 继承父线程的信号状态
     pub fn inherit_from_parent(&self, parent_state: &ThreadSignalState) {
         // 继承信号掩码
-        let parent_blocked = *parent_state.blocked.exclusive_access();
-        *self.blocked.exclusive_access() = parent_blocked;
+        let parent_blocked = *parent_state.blocked.lock();
+        *self.blocked.lock() = parent_blocked;
         
         // 继承线程级别的信号处理器
-        let parent_handlers = parent_state.thread_handlers.exclusive_access().clone();
-        *self.thread_handlers.exclusive_access() = parent_handlers;
+        let parent_handlers = parent_state.thread_handlers.lock().clone();
+        *self.thread_handlers.lock() = parent_handlers;
         
         debug!("Thread signal state inherited from parent");
     }
@@ -602,11 +601,11 @@ pub fn cleanup_thread_signals(thread: &Arc<ThreadControlBlock>) {
     
     if let Some(signal_state) = thread_inner.signal_state.take() {
         // 清理待处理的信号
-        let mut pending = signal_state.pending.exclusive_access();
+        let mut pending = signal_state.pending.lock();
         pending.clear();
         
         // 清理线程处理器
-        let mut handlers = signal_state.thread_handlers.exclusive_access();
+        let mut handlers = signal_state.thread_handlers.lock();
         handlers.clear();
         
         debug!("Thread signal state cleaned up for thread {}", thread.thread_id.0);

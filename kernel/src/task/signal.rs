@@ -1,5 +1,4 @@
 use alloc::collections::BTreeMap;
-use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use lazy_static::lazy_static;
 
@@ -7,29 +6,29 @@ use lazy_static::lazy_static;
 #[derive(Debug)]
 struct SigreturnAddrManager {
     /// 每个进程的sigreturn地址
-    sigreturn_addrs: UPSafeCell<BTreeMap<usize, usize>>,
+    sigreturn_addrs: spin::Mutex<BTreeMap<usize, usize>>,
     /// 默认的sigreturn地址
-    default_sigreturn_addr: UPSafeCell<Option<usize>>,
+    default_sigreturn_addr: spin::Mutex<Option<usize>>,
 }
 
 impl SigreturnAddrManager {
     fn new() -> Self {
         Self {
-            sigreturn_addrs: UPSafeCell::new(BTreeMap::new()),
-            default_sigreturn_addr: UPSafeCell::new(None),
+            sigreturn_addrs: spin::Mutex::new(BTreeMap::new()),
+            default_sigreturn_addr: spin::Mutex::new(None),
         }
     }
 
     /// 设置进程的sigreturn地址
     fn set_sigreturn_addr(&self, pid: usize, addr: usize) {
-        let mut addrs = self.sigreturn_addrs.exclusive_access();
+        let mut addrs = self.sigreturn_addrs.lock();
         addrs.insert(pid, addr);
         debug!("Set sigreturn address for PID {}: {:#x}", pid, addr);
     }
 
     /// 设置默认的sigreturn地址
     fn set_default_sigreturn_addr(&self, addr: usize) {
-        let mut default_addr = self.default_sigreturn_addr.exclusive_access();
+        let mut default_addr = self.default_sigreturn_addr.lock();
         *default_addr = Some(addr);
         info!("Set default sigreturn address: {:#x}", addr);
     }
@@ -40,7 +39,7 @@ impl SigreturnAddrManager {
         
         if let Some(current_task) = current_task() {
             let pid = current_task.get_pid();
-            let addrs = self.sigreturn_addrs.exclusive_access();
+            let addrs = self.sigreturn_addrs.lock();
             
             if let Some(&addr) = addrs.get(&pid) {
                 return addr;
@@ -48,13 +47,13 @@ impl SigreturnAddrManager {
         }
         
         // 返回默认地址或固定地址
-        let default_addr = self.default_sigreturn_addr.exclusive_access();
+        let default_addr = self.default_sigreturn_addr.lock();
         default_addr.unwrap_or(0x40000000) // 使用固定的用户空间地址
     }
 
     /// 移除进程的sigreturn地址
     fn remove_sigreturn_addr(&self, pid: usize) {
-        let mut addrs = self.sigreturn_addrs.exclusive_access();
+        let mut addrs = self.sigreturn_addrs.lock();
         addrs.remove(&pid);
     }
 }
@@ -299,46 +298,46 @@ pub struct SignalFrame {
 #[derive(Debug)]
 pub struct SignalState {
     /// Pending signals that haven't been delivered yet
-    pub pending: UPSafeCell<SignalSet>,
+    pub pending: spin::Mutex<SignalSet>,
     /// Signals that are currently blocked
-    pub blocked: UPSafeCell<SignalSet>,
+    pub blocked: spin::Mutex<SignalSet>,
     /// Custom signal handlers
-    pub handlers: UPSafeCell<BTreeMap<Signal, SignalDisposition>>,
+    pub handlers: spin::Mutex<BTreeMap<Signal, SignalDisposition>>,
     /// Whether the process is currently executing a signal handler
-    pub in_signal_handler: UPSafeCell<bool>,
+    pub in_signal_handler: spin::Mutex<bool>,
     /// Saved signal mask when entering signal handler
-    pub saved_mask: UPSafeCell<Option<SignalSet>>,
+    pub saved_mask: spin::Mutex<Option<SignalSet>>,
 }
 
 impl SignalState {
     pub fn new() -> Self {
         SignalState {
-            pending: UPSafeCell::new(SignalSet::new()),
-            blocked: UPSafeCell::new(SignalSet::new()),
-            handlers: UPSafeCell::new(BTreeMap::new()),
-            in_signal_handler: UPSafeCell::new(false),
-            saved_mask: UPSafeCell::new(None),
+            pending: spin::Mutex::new(SignalSet::new()),
+            blocked: spin::Mutex::new(SignalSet::new()),
+            handlers: spin::Mutex::new(BTreeMap::new()),
+            in_signal_handler: spin::Mutex::new(false),
+            saved_mask: spin::Mutex::new(None),
         }
     }
 
     /// Add a signal to the pending set
     pub fn add_pending_signal(&self, signal: Signal) {
-        let mut pending = self.pending.exclusive_access();
+        let mut pending = self.pending.lock();
         pending.add(signal);
     }
 
     /// Check if there are any deliverable signals (pending but not blocked)
     pub fn has_deliverable_signals(&self) -> bool {
-        let pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let pending = self.pending.lock();
+        let blocked = self.blocked.lock();
         
         !pending.difference(&blocked).is_empty()
     }
 
     /// Get the next deliverable signal
     pub fn next_deliverable_signal(&self) -> Option<Signal> {
-        let mut pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let mut pending = self.pending.lock();
+        let blocked = self.blocked.lock();
         
         let deliverable = pending.difference(&blocked);
         if let Some(signal) = deliverable.first_signal() {
@@ -351,13 +350,13 @@ impl SignalState {
 
     /// Set signal handler for a specific signal
     pub fn set_handler(&self, signal: Signal, disposition: SignalDisposition) {
-        let mut handlers = self.handlers.exclusive_access();
+        let mut handlers = self.handlers.lock();
         handlers.insert(signal, disposition);
     }
 
     /// Get signal handler for a specific signal
     pub fn get_handler(&self, signal: Signal) -> SignalDisposition {
-        let handlers = self.handlers.exclusive_access();
+        let handlers = self.handlers.lock();
         handlers.get(&signal).cloned().unwrap_or_else(|| {
             SignalDisposition {
                 action: signal.default_action(),
@@ -369,32 +368,32 @@ impl SignalState {
 
     /// Block a set of signals
     pub fn block_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.union(&signals);
     }
 
     /// Unblock a set of signals
     pub fn unblock_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.difference(&signals);
     }
 
     /// Set the signal mask
     pub fn set_signal_mask(&self, mask: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = mask;
     }
 
     /// Get the current signal mask
     pub fn get_signal_mask(&self) -> SignalSet {
-        *self.blocked.exclusive_access()
+        *self.blocked.lock()
     }
 
     /// Enter signal handler (save current mask and set new mask)
     pub fn enter_signal_handler(&self, additional_mask: SignalSet) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
 
         if !*in_handler {
             *saved_mask = Some(*blocked);
@@ -406,9 +405,9 @@ impl SignalState {
 
     /// Exit signal handler (restore saved mask)
     pub fn exit_signal_handler(&self) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
 
         if let Some(mask) = saved_mask.take() {
             *blocked = mask;
@@ -418,11 +417,11 @@ impl SignalState {
 
     /// Reset signal state for exec
     pub fn reset_for_exec(&self) {
-        let mut pending = self.pending.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
-        let mut handlers = self.handlers.exclusive_access();
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
+        let mut pending = self.pending.lock();
+        let mut blocked = self.blocked.lock();
+        let mut handlers = self.handlers.lock();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
 
         pending.clear();
         blocked.clear();
@@ -433,15 +432,15 @@ impl SignalState {
 
     /// Clone signal state for fork (handlers are inherited, pending signals are not)
     pub fn clone_for_fork(&self) -> Self {
-        let blocked = *self.blocked.exclusive_access();
-        let handlers = self.handlers.exclusive_access().clone();
+        let blocked = *self.blocked.lock();
+        let handlers = self.handlers.lock().clone();
 
         SignalState {
-            pending: UPSafeCell::new(SignalSet::new()), // Pending signals not inherited
-            blocked: UPSafeCell::new(blocked),
-            handlers: UPSafeCell::new(handlers),
-            in_signal_handler: UPSafeCell::new(false),
-            saved_mask: UPSafeCell::new(None),
+            pending: spin::Mutex::new(SignalSet::new()), // Pending signals not inherited
+            blocked: spin::Mutex::new(blocked),
+            handlers: spin::Mutex::new(handlers),
+            in_signal_handler: spin::Mutex::new(false),
+            saved_mask: spin::Mutex::new(None),
         }
     }
 }

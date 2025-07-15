@@ -6,19 +6,18 @@ use crate::{
         KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
         mm::MapPermission,
     },
-    sync::UPSafeCell,
 };
 
 pub fn alloc_pid() -> PidHandle {
-    PID_ALLOCATOR.exclusive_access().alloc()
+    PID_ALLOCATOR.lock().alloc()
 }
 
 pub fn dealloc_pid(pid: PidHandle) {
-    PID_ALLOCATOR.exclusive_access().dealloc(pid.0);
+    PID_ALLOCATOR.lock().dealloc(pid.0);
 }
 
 lazy_static! {
-    static ref PID_ALLOCATOR: UPSafeCell<PidAllocator> = UPSafeCell::new(PidAllocator::new());
+    static ref PID_ALLOCATOR: spin::Mutex<PidAllocator> = spin::Mutex::new(PidAllocator::new());
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +25,7 @@ pub struct PidHandle(pub usize);
 
 impl Drop for PidHandle {
     fn drop(&mut self) {
-        PID_ALLOCATOR.exclusive_access().dealloc(self.0);
+        PID_ALLOCATOR.lock().dealloc(self.0);
     }
 }
 
