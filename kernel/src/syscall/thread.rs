@@ -13,11 +13,37 @@ use crate::{
 
 /// 线程创建参数结构
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ThreadAttr {
     pub stack_size: usize,
     pub detached: bool,
     pub priority: i32,
+}
+
+/// 从用户空间安全读取线程属性
+fn read_thread_attr_from_user(attr_ptr: *const ThreadAttr) -> Result<ThreadAttr, &'static str> {
+    if attr_ptr.is_null() {
+        return Err("Null pointer");
+    }
+    
+    // 检查地址是否在用户空间范围内
+    let addr = attr_ptr as usize;
+    if addr < 0x10000 || addr >= 0x80000000 {
+        return Err("Invalid user address");
+    }
+    
+    // 获取当前任务的页表token进行地址转换
+    if let Some(current_task) = current_task() {
+        let task_inner = current_task.inner_exclusive_access();
+        let token = task_inner.get_user_token();
+        drop(task_inner);
+        
+        // 使用页表转换安全地读取用户数据
+        let attr_ref = crate::memory::page_table::translated_ref_mut(token, attr_ptr as *mut ThreadAttr);
+        Ok(*attr_ref)
+    } else {
+        Err("No current task")
+    }
 }
 
 /// 创建线程系统调用
@@ -40,12 +66,25 @@ pub fn sys_thread_create(entry_point: usize, arg: usize, attr_ptr: *const Thread
     current_task.init_thread_manager();
 
     // 解析线程属性
-    let (stack_size, joinable, _priority) = if attr_ptr.is_null() {
+    let (stack_size, joinable, priority) = if attr_ptr.is_null() {
         (8192, true, 0) // 默认值：8KB栈，可join，默认优先级
     } else {
-        // 这里应该从用户空间安全地读取属性
-        // 简化处理，使用默认值
-        (8192, true, 0)
+        // 从用户空间安全地读取属性
+        match read_thread_attr_from_user(attr_ptr) {
+            Ok(attr) => {
+                let stack_size = if attr.stack_size > 0 { 
+                    attr.stack_size.max(4096) // 最小4KB栈
+                } else { 
+                    8192 
+                };
+                let joinable = !attr.detached;
+                let priority = attr.priority.max(-20).min(19); // 限制优先级范围
+                (stack_size, joinable, priority)
+            }
+            Err(_) => {
+                return -1; // 无效的属性指针
+            }
+        }
     };
 
     // 创建线程
@@ -85,6 +124,33 @@ pub fn sys_thread_exit(exit_code: i32) -> ! {
     crate::task::exit_current_and_run_next(exit_code);
 }
 
+/// 安全地将退出码写入用户空间
+fn write_exit_code_to_user(exit_code_ptr: *mut i32, exit_code: i32) -> Result<(), &'static str> {
+    if exit_code_ptr.is_null() {
+        return Err("Null pointer");
+    }
+    
+    // 检查地址是否在用户空间范围内
+    let addr = exit_code_ptr as usize;
+    if addr < 0x10000 || addr >= 0x80000000 {
+        return Err("Invalid user address");
+    }
+    
+    // 获取当前任务的页表token进行地址转换
+    if let Some(current_task) = current_task() {
+        let task_inner = current_task.inner_exclusive_access();
+        let token = task_inner.get_user_token();
+        drop(task_inner);
+        
+        // 使用页表转换安全地写入用户数据
+        let exit_code_ref = crate::memory::page_table::translated_ref_mut(token, exit_code_ptr);
+        *exit_code_ref = exit_code;
+        Ok(())
+    } else {
+        Err("No current task")
+    }
+}
+
 /// 等待线程结束系统调用
 /// args[0]: 目标线程ID
 /// args[1]: 接收退出码的指针 (可选)
@@ -99,10 +165,10 @@ pub fn sys_thread_join(thread_id: usize, exit_code_ptr: *mut i32) -> isize {
         Ok(exit_code) => {
             // 如果提供了退出码指针，将退出码写入用户空间
             if !exit_code_ptr.is_null() {
-                // 这里应该安全地写入用户空间
-                // 简化处理，假设指针有效
-                unsafe {
-                    *exit_code_ptr = exit_code;
+                // 安全地写入用户空间
+                match write_exit_code_to_user(exit_code_ptr, exit_code) {
+                    Ok(()) => {},
+                    Err(_) => return -1, // EFAULT
                 }
             }
             

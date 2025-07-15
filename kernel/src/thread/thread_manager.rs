@@ -377,10 +377,25 @@ impl ThreadManager {
     }
 
     /// 释放内核栈
-    fn dealloc_kernel_stack(&self, _kernel_stack_base: usize) {
-        // 这里应该释放内核栈页面
-        // 由于当前的frame_allocator没有提供按地址释放的接口
-        // 这里暂时留空，实际实现需要扩展frame_allocator
+    fn dealloc_kernel_stack(&self, kernel_stack_base: usize) {
+        use crate::memory::address::PhysicalAddress;
+        use crate::memory::frame_allocator::dealloc;
+        
+        // 将内核栈基地址转换为物理页号
+        let kernel_stack_pa = PhysicalAddress::from(kernel_stack_base);
+        let kernel_stack_ppn = kernel_stack_pa.ceil();
+        
+        // 释放内核栈页面
+        match dealloc(kernel_stack_ppn) {
+            Ok(()) => {
+                debug!("Kernel stack deallocated: base={:#x}, ppn={:#x}", 
+                       kernel_stack_base, kernel_stack_ppn.as_usize());
+            }
+            Err(e) => {
+                warn!("Failed to deallocate kernel stack: base={:#x}, error={:?}", 
+                      kernel_stack_base, e);
+            }
+        }
     }
 
     /// 分配陷入上下文页面
@@ -407,9 +422,27 @@ impl ThreadManager {
     }
 
     /// 释放陷入上下文页面
-    fn dealloc_trap_context_page(&self, _ppn: PhysicalPageNumber, _memory_set: &mut MemorySet) {
-        // 这里应该取消页表映射并释放物理页面
-        // 暂时留空
+    fn dealloc_trap_context_page(&self, ppn: PhysicalPageNumber, memory_set: &mut MemorySet) {
+        use crate::memory::frame_allocator::dealloc;
+        use crate::memory::address::VirtualAddress;
+        
+        // 计算对应的虚拟地址
+        let trap_cx_va = VirtualAddress::from(0x10000000usize + self.thread_count * PAGE_SIZE);
+        let trap_cx_vpn = VirtualPageNumber::from(trap_cx_va);
+        
+        // 从内存集合中移除映射
+        memory_set.remove_area_with_start_vpn(trap_cx_vpn);
+        
+        // 释放物理页面
+        match dealloc(ppn) {
+            Ok(()) => {
+                debug!("Trap context page deallocated: ppn={:#x}", ppn.as_usize());
+            }
+            Err(e) => {
+                warn!("Failed to deallocate trap context page: ppn={:#x}, error={:?}", 
+                      ppn.as_usize(), e);
+            }
+        }
     }
 
     /// 获取线程数量

@@ -193,7 +193,7 @@ impl ThreadSafeMemoryManager {
                 let region_guard = region.lock();
                 let page_count = region_guard.page_count();
                 drop(region_guard);
-                
+
                 // 更新统计信息
                 self.global_allocated_pages.fetch_sub(page_count, Ordering::SeqCst);
             }
@@ -246,10 +246,10 @@ impl ThreadSafeMemoryManager {
 
         // 创建内存区域
         let mut region = ThreadMemoryRegion::new(
-            start_va, 
-            self.align_up_to_page(end_va), 
-            permission, 
-            region_type, 
+            start_va,
+            self.align_up_to_page(end_va),
+            permission,
+            region_type,
             shared
         );
 
@@ -290,7 +290,7 @@ impl ThreadSafeMemoryManager {
         // 更新全局分配计数
         self.global_allocated_pages.fetch_add(page_count, Ordering::SeqCst);
 
-        debug!("Allocated {} pages for thread {} (type: {:?}, shared: {})", 
+        debug!("Allocated {} pages for thread {} (type: {:?}, shared: {})",
                page_count, thread_id.0, region_type, shared);
 
         Ok(region_arc)
@@ -303,7 +303,7 @@ impl ThreadSafeMemoryManager {
         start_va: VirtualAddress,
     ) -> Result<(), &'static str> {
         let mut regions = self.thread_regions.write();
-        
+
         if let Some(thread_regions) = regions.get_mut(&thread_id) {
             if let Some(pos) = thread_regions.iter().position(|region| {
                 let region_guard = region.lock();
@@ -311,7 +311,7 @@ impl ThreadSafeMemoryManager {
             }) {
                 let region = thread_regions.remove(pos);
                 let region_guard = region.lock();
-                
+
                 let page_count = region_guard.page_count();
                 let region_type = region_guard.region_type;
                 drop(region_guard);
@@ -327,7 +327,7 @@ impl ThreadSafeMemoryManager {
                 // 更新全局分配计数
                 self.global_allocated_pages.fetch_sub(page_count, Ordering::SeqCst);
 
-                debug!("Deallocated {} pages for thread {} at address {:#x}", 
+                debug!("Deallocated {} pages for thread {} at address {:#x}",
                        page_count, thread_id.0, start_va.as_usize());
 
                 return Ok(());
@@ -344,7 +344,7 @@ impl ThreadSafeMemoryManager {
         stack_size: usize,
     ) -> Result<(VirtualAddress, VirtualAddress), &'static str> {
         let aligned_size = self.align_up_to_page_size(stack_size);
-        
+
         // 计算栈的虚拟地址（在用户地址空间高端）
         let stack_base = VirtualAddress::from(0x70000000usize + thread_id.0 * 0x10000000);
         let stack_top = VirtualAddress::from(stack_base.as_usize() + aligned_size);
@@ -370,7 +370,7 @@ impl ThreadSafeMemoryManager {
     ) -> Result<usize, &'static str> {
         let aligned_size = self.align_up_to_page_size(size);
         let shared_id = self.shared_id_allocator.fetch_add(1, Ordering::SeqCst);
-        
+
         // 计算共享内存的虚拟地址
         let shared_base = VirtualAddress::from(0x40000000usize + shared_id * aligned_size);
         let shared_end = VirtualAddress::from(shared_base.as_usize() + aligned_size);
@@ -385,7 +385,7 @@ impl ThreadSafeMemoryManager {
         );
 
         let page_count = aligned_size / PAGE_SIZE;
-        
+
         // 分配物理页面
         for _ in 0..page_count {
             if let Some(frame) = alloc() {
@@ -396,7 +396,7 @@ impl ThreadSafeMemoryManager {
         }
 
         let region_arc = Arc::new(Mutex::new(region));
-        
+
         // 添加到共享区域列表
         {
             let mut shared_regions = self.shared_regions.write();
@@ -435,7 +435,7 @@ impl ThreadSafeMemoryManager {
                 thread_regions.push(region_arc);
             }
 
-            debug!("Mapped shared memory {} to thread {} at address {:#x}", 
+            debug!("Mapped shared memory {} to thread {} at address {:#x}",
                    shared_id, thread_id.0, thread_va.as_usize());
 
             Ok(())
@@ -455,7 +455,7 @@ impl ThreadSafeMemoryManager {
         let allocated = self.global_allocated_pages.load(Ordering::SeqCst);
         let shared_count = self.shared_regions.read().len();
         let thread_count = self.thread_stats.read().len();
-        
+
         (allocated, shared_count, thread_count)
     }
 
@@ -466,24 +466,211 @@ impl ThreadSafeMemoryManager {
         debug!("Set memory limit for thread {} to {} bytes", thread_id.0, limit);
     }
 
-    /// 内存碎片整理（简单实现）
+    /// 内存碎片整理
     pub fn defragment(&self) -> usize {
-        // 这里可以实现内存碎片整理逻辑
-        // 当前只是一个占位符实现
         let mut compacted_pages = 0;
-        
-        // 遍历所有线程的内存区域，查找可以合并的相邻区域
-        let regions = self.thread_regions.read();
-        for (_thread_id, thread_regions) in regions.iter() {
-            for region in thread_regions {
-                let _region_guard = region.lock();
-                // 这里可以实现具体的整理逻辑
-                compacted_pages += 1;
+        let mut threads_to_compact = Vec::new();
+
+        // 收集需要整理的线程列表
+        {
+            let regions = self.thread_regions.read();
+            for (&thread_id, thread_regions) in regions.iter() {
+                let mut thread_memory_regions = Vec::new();
+                for region in thread_regions {
+                    thread_memory_regions.push(region.clone());
+                }
+                threads_to_compact.push((thread_id, thread_memory_regions));
             }
         }
-        
+
+        // 对每个线程进行内存整理
+        for (thread_id, thread_regions) in threads_to_compact {
+            compacted_pages += self.defragment_thread_memory(thread_id, &thread_regions);
+        }
+
+        // 整理共享内存
+        compacted_pages += self.defragment_shared_memory();
+
         info!("Memory defragmentation completed, compacted {} pages", compacted_pages);
         compacted_pages
+    }
+
+    /// 整理单个线程的内存
+    fn defragment_thread_memory(&self, thread_id: ThreadId, regions: &[Arc<Mutex<ThreadMemoryRegion>>]) -> usize {
+        let mut compacted = 0;
+        let mut regions_to_merge = Vec::new();
+
+        // 按地址排序内存区域
+        let mut sorted_regions: Vec<_> = regions.iter()
+            .map(|r| (r.lock().start_va, r.clone()))
+            .collect();
+        sorted_regions.sort_by_key(|(addr, _)| addr.as_usize());
+
+        // 查找相邻的同类型区域
+        let mut i = 0;
+        while i < sorted_regions.len() - 1 {
+            let current_region = sorted_regions[i].1.lock();
+            let next_region = sorted_regions[i + 1].1.lock();
+
+            // 检查是否可以合并
+            if current_region.end_va == next_region.start_va
+                && current_region.permission == next_region.permission
+                && current_region.region_type == next_region.region_type
+                && !current_region.shared && !next_region.shared {
+
+                // 记录需要合并的区域
+                regions_to_merge.push((i, i + 1));
+                compacted += 1;
+
+                debug!("Found mergeable regions for thread {}: {:#x}-{:#x} and {:#x}-{:#x}",
+                       thread_id.0,
+                       current_region.start_va.as_usize(),
+                       current_region.end_va.as_usize(),
+                       next_region.start_va.as_usize(),
+                       next_region.end_va.as_usize());
+            }
+
+            drop(current_region);
+            drop(next_region);
+            i += 1;
+        }
+
+        // 执行合并 - 完整实现内存区域合并
+        if !regions_to_merge.is_empty() {
+            let mut thread_regions = self.thread_regions.write();
+            if let Some(thread_region_list) = thread_regions.get_mut(&thread_id) {
+                // 反向遍历合并列表，避免索引变化的问题
+                for &(idx1, idx2) in regions_to_merge.iter().rev() {
+                    if idx1 < sorted_regions.len() && idx2 < sorted_regions.len() {
+                        let region1 = &sorted_regions[idx1].1;
+                        let region2 = &sorted_regions[idx2].1;
+                        
+                        // 执行实际的区域合并
+                        if self.merge_memory_regions(thread_id, region1.clone(), region2.clone()) {
+                            // 从线程区域列表中移除被合并的区域
+                            thread_region_list.retain(|r| {
+                                let r_ptr = Arc::as_ptr(r);
+                                let r1_ptr = Arc::as_ptr(region1);
+                                let r2_ptr = Arc::as_ptr(region2);
+                                r_ptr != r1_ptr && r_ptr != r2_ptr
+                            });
+                            
+                            // 将合并后的区域（region1）添加回列表
+                            thread_region_list.push(region1.clone());
+                            
+                            debug!("Successfully merged memory regions {} and {} for thread {}", 
+                                   idx1, idx2, thread_id.0);
+                        }
+                    }
+                }
+            }
+        }
+
+        compacted
+    }
+
+    /// 合并两个相邻的内存区域
+    fn merge_memory_regions(
+        &self,
+        thread_id: ThreadId,
+        region1: Arc<Mutex<ThreadMemoryRegion>>,
+        region2: Arc<Mutex<ThreadMemoryRegion>>,
+    ) -> bool {
+        // 获取两个区域的锁，确保按地址顺序锁定避免死锁
+        let (first_region, second_region) = {
+            let r1_guard = region1.lock();
+            let r2_guard = region2.lock();
+            
+            if r1_guard.start_va.as_usize() < r2_guard.start_va.as_usize() {
+                drop(r1_guard);
+                drop(r2_guard);
+                (region1.clone(), region2.clone())
+            } else {
+                drop(r1_guard);
+                drop(r2_guard);
+                (region2.clone(), region1.clone())
+            }
+        };
+
+        let mut first_guard = first_region.lock();
+        let mut second_guard = second_region.lock();
+
+        // 验证区域可以合并
+        if first_guard.end_va != second_guard.start_va
+            || first_guard.permission != second_guard.permission
+            || first_guard.region_type != second_guard.region_type
+            || first_guard.shared || second_guard.shared {
+            return false;
+        }
+
+        // 执行合并：扩展第一个区域的结束地址
+        first_guard.end_va = second_guard.end_va;
+
+        // 合并物理页面
+        let mut second_frames = Vec::new();
+        core::mem::swap(&mut second_frames, &mut second_guard.frames);
+        first_guard.frames.extend(second_frames);
+
+        // 更新统计信息
+        let merged_pages = second_guard.page_count();
+        {
+            let mut stats = self.thread_stats.write();
+            if let Some(thread_stats) = stats.get_mut(&thread_id) {
+                // 第二个区域的页面数量已经包含在第一个区域中了，所以这里不需要更新页面统计
+                debug!("Merged {} pages from region 2 into region 1 for thread {}", 
+                       merged_pages, thread_id.0);
+            }
+        }
+
+        // 清空第二个区域（准备销毁）
+        second_guard.frames.clear();
+
+        info!("Successfully merged memory regions for thread {}: {:#x}-{:#x} + {:#x}-{:#x} = {:#x}-{:#x}",
+              thread_id.0,
+              first_guard.start_va.as_usize(),
+              second_guard.start_va.as_usize(),
+              second_guard.start_va.as_usize(),
+              second_guard.end_va.as_usize(),
+              first_guard.start_va.as_usize(),
+              first_guard.end_va.as_usize());
+
+        true
+    }
+
+    /// 整理共享内存
+    fn defragment_shared_memory(&self) -> usize {
+        let mut compacted = 0;
+        let shared_regions = self.shared_regions.read();
+
+        let mut unused_shared_regions = Vec::new();
+
+        // 查找未使用的共享内存区域
+        for (&shared_id, region) in shared_regions.iter() {
+            let region_guard = region.lock();
+            if region_guard.ref_count() <= 1 {
+                unused_shared_regions.push(shared_id);
+                compacted += region_guard.page_count();
+            }
+        }
+
+        drop(shared_regions);
+
+        // 清理未使用的共享内存区域
+        if !unused_shared_regions.is_empty() {
+            let mut shared_regions = self.shared_regions.write();
+            for shared_id in unused_shared_regions {
+                if let Some(region) = shared_regions.remove(&shared_id) {
+                    let region_guard = region.lock();
+                    let page_count = region_guard.page_count();
+                    drop(region_guard);
+
+                    self.global_allocated_pages.fetch_sub(page_count, Ordering::SeqCst);
+                    debug!("Removed unused shared memory region {}", shared_id);
+                }
+            }
+        }
+
+        compacted
     }
 
     /// 内存屏障 - 确保内存操作的顺序性
@@ -567,18 +754,18 @@ pub fn apply_preallocation_policy(
     policy: &MemoryPreallocationPolicy,
 ) -> Result<(), &'static str> {
     let manager = get_thread_safe_memory_manager();
-    
+
     // 预分配栈
     if policy.stack_pages > 0 {
         manager.allocate_thread_stack(thread_id, policy.stack_pages * PAGE_SIZE)?;
     }
-    
+
     // 预分配堆（如果需要）
     if policy.heap_pages > 0 {
         let heap_size = policy.heap_pages * PAGE_SIZE;
         let heap_base = VirtualAddress::from(0x60000000usize + thread_id.0 * 0x10000000);
         let heap_top = VirtualAddress::from(heap_base.as_usize() + heap_size);
-        
+
         manager.allocate_region(
             thread_id,
             heap_base,
@@ -588,9 +775,9 @@ pub fn apply_preallocation_policy(
             false,
         )?;
     }
-    
-    debug!("Applied memory preallocation policy for thread {}: stack={} pages, heap={} pages", 
+
+    debug!("Applied memory preallocation policy for thread {}: stack={} pages, heap={} pages",
            thread_id.0, policy.stack_pages, policy.heap_pages);
-    
+
     Ok(())
 }

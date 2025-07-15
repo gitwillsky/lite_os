@@ -125,6 +125,8 @@ pub struct TaskControlBlockInner {
     pub egid: u32,
     /// 线程管理器 (用于多线程支持)
     pub thread_manager: Option<ThreadManager>,
+    /// alarm定时器时间 (微秒时间戳)
+    pub alarm_time: Option<u64>,
 }
 
 /// Task Control block structure
@@ -178,6 +180,7 @@ impl TaskControlBlock {
                 euid: 0,          // 有效用户ID初始为root
                 egid: 0,          // 有效组ID初始为root
                 thread_manager: None, // 默认不启用多线程
+                alarm_time: None, // 初始无alarm
             }),
         };
 
@@ -291,6 +294,7 @@ impl TaskControlBlock {
                 euid: parent_inner.euid,  // 继承父进程有效用户ID
                 egid: parent_inner.egid,  // 继承父进程有效组ID
                 thread_manager: None, // 子进程默认不启用多线程
+                alarm_time: None, // 子进程不继承父进程的alarm
             }),
         });
 

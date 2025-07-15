@@ -279,7 +279,45 @@ pub fn sys_pause() -> isize {
 
 /// alarm系统调用 - 设置定时器信号
 pub fn sys_alarm(seconds: u32) -> isize {
-    // 简化实现：直接返回0
-    // 在实际实现中，这应该设置一个定时器，在指定时间后发送SIGALRM信号
-    0
+    use crate::timer::get_time_us;
+    use crate::task::signal::Signal;
+    
+    if let Some(current_task) = current_task() {
+        let mut task_inner = current_task.inner_exclusive_access();
+        
+        // 取消之前的alarm（如果有的话）
+        let remaining_seconds = if let Some(old_alarm_time) = task_inner.alarm_time.take() {
+            let current_time = get_time_us();
+            if old_alarm_time > current_time {
+                ((old_alarm_time - current_time) / 1_000_000) as isize
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        
+        // 设置新的alarm
+        if seconds > 0 {
+            let alarm_time = get_time_us() + (seconds as u64) * 1_000_000; // 转换为微秒
+            task_inner.alarm_time = Some(alarm_time);
+            
+            debug!("Set alarm for {} seconds (at time {})", seconds, alarm_time);
+            
+            // 启动定时器任务
+            crate::timer::add_timer_task(alarm_time, move || {
+                // 定时器回调：发送SIGALRM信号
+                if let Some(task) = crate::task::current_task() {
+                    let mut inner = task.inner_exclusive_access();
+                    inner.send_signal(Signal::SIGALRM);
+                    info!("SIGALRM sent to process PID {}", task.get_pid());
+                }
+            });
+        }
+        
+        drop(task_inner);
+        remaining_seconds
+    } else {
+        -1 // 无当前任务
+    }
 }

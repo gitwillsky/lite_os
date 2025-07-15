@@ -17,7 +17,7 @@ use super::{address::VirtualPageNumber, page_table::PageTable};
 
 bitflags! {
     // PTE Flags 的子集
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct MapPermission: u8 {
         const R = 1 << 1; // 可读
         const W = 1 << 2; // 可写

@@ -1,6 +1,67 @@
 use alloc::collections::BTreeMap;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use lazy_static::lazy_static;
+
+/// sigreturn地址管理器
+#[derive(Debug)]
+struct SigreturnAddrManager {
+    /// 每个进程的sigreturn地址
+    sigreturn_addrs: UPSafeCell<BTreeMap<usize, usize>>,
+    /// 默认的sigreturn地址
+    default_sigreturn_addr: UPSafeCell<Option<usize>>,
+}
+
+impl SigreturnAddrManager {
+    fn new() -> Self {
+        Self {
+            sigreturn_addrs: UPSafeCell::new(BTreeMap::new()),
+            default_sigreturn_addr: UPSafeCell::new(None),
+        }
+    }
+
+    /// 设置进程的sigreturn地址
+    fn set_sigreturn_addr(&self, pid: usize, addr: usize) {
+        let mut addrs = self.sigreturn_addrs.exclusive_access();
+        addrs.insert(pid, addr);
+        debug!("Set sigreturn address for PID {}: {:#x}", pid, addr);
+    }
+
+    /// 设置默认的sigreturn地址
+    fn set_default_sigreturn_addr(&self, addr: usize) {
+        let mut default_addr = self.default_sigreturn_addr.exclusive_access();
+        *default_addr = Some(addr);
+        info!("Set default sigreturn address: {:#x}", addr);
+    }
+
+    /// 获取当前进程的sigreturn地址
+    fn get_sigreturn_addr(&self) -> usize {
+        use crate::task::current_task;
+        
+        if let Some(current_task) = current_task() {
+            let pid = current_task.get_pid();
+            let addrs = self.sigreturn_addrs.exclusive_access();
+            
+            if let Some(&addr) = addrs.get(&pid) {
+                return addr;
+            }
+        }
+        
+        // 返回默认地址或固定地址
+        let default_addr = self.default_sigreturn_addr.exclusive_access();
+        default_addr.unwrap_or(0x40000000) // 使用固定的用户空间地址
+    }
+
+    /// 移除进程的sigreturn地址
+    fn remove_sigreturn_addr(&self, pid: usize) {
+        let mut addrs = self.sigreturn_addrs.exclusive_access();
+        addrs.remove(&pid);
+    }
+}
+
+lazy_static! {
+    static ref SIGRETURN_ADDR_MANAGER: SigreturnAddrManager = SigreturnAddrManager::new();
+}
 
 /// Standard POSIX signals
 #[repr(u8)]
@@ -613,14 +674,8 @@ impl SignalDelivery {
 
     /// 获取sigreturn系统调用的地址
     fn get_sigreturn_addr() -> usize {
-        // 获取用户空间sigreturn函数的地址
-        // 这个地址应该从用户程序的符号表中获取
-        // 为了简化，我们可以让用户程序在初始化时通过系统调用告诉内核这个地址
-        // 或者使用一个固定的约定地址
-        
-        // 临时解决方案：返回一个特殊值，让信号处理函数直接返回到用户程序的正常流程
-        // 而不是尝试调用sigreturn
-        0 // 这会导致地址为0，触发异常，我们可以在异常处理中识别并处理
+        // 使用全局sigreturn地址管理器
+        SIGRETURN_ADDR_MANAGER.get_sigreturn_addr()
     }
 
     /// 从信号处理函数返回
@@ -755,4 +810,19 @@ pub fn check_and_handle_signals() -> (bool, Option<i32>) {
     } else {
         (true, None)
     }
+}
+
+/// 设置进程的sigreturn地址（系统调用接口）
+pub fn set_sigreturn_addr(pid: usize, addr: usize) {
+    SIGRETURN_ADDR_MANAGER.set_sigreturn_addr(pid, addr);
+}
+
+/// 设置默认的sigreturn地址
+pub fn set_default_sigreturn_addr(addr: usize) {
+    SIGRETURN_ADDR_MANAGER.set_default_sigreturn_addr(addr);
+}
+
+/// 移除进程的sigreturn地址
+pub fn remove_sigreturn_addr(pid: usize) {
+    SIGRETURN_ADDR_MANAGER.remove_sigreturn_addr(pid);
 }
