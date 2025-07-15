@@ -27,10 +27,17 @@ pub fn current_task() -> Option<Arc<TaskControlBlock>> {
 }
 
 pub fn current_user_token() -> usize {
-    current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .get_user_token()
+    if let Some(task) = current_task() {
+        task.inner_exclusive_access().get_user_token()
+    } else {
+        // 这种情况不应该在正常的用户空间陷入中发生
+        // 如果发生了，说明调度逻辑有严重问题
+        error!("current_user_token() called with no current task - this indicates a serious scheduling bug!");
+        
+        // 记录调用栈以便调试
+        // 在生产环境中，这应该是一个严重错误
+        panic!("No current task when getting user token");
+    }
 }
 
 pub fn current_trap_context() -> &'static mut TrapContext {
@@ -124,59 +131,11 @@ pub fn schedule_thread(current_thread_cx_ptr: *mut TaskContext, next_thread_cx_p
     }
 }
 
-/// 在多线程进程中处理线程调度
-fn handle_multithreaded_process(task: &Arc<TaskControlBlock>) -> bool {
-    let mut task_inner = task.inner_exclusive_access();
-    
-    if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-        // 检查是否有可运行的线程
-        if thread_manager.has_active_threads() {
-            // 如果有活跃线程，让线程管理器处理调度
-            if let Some(current_thread) = thread_manager.get_current_thread() {
-                if current_thread.get_status() == crate::thread::ThreadStatus::Running {
-                    // 当前线程仍在运行，直接返回到用户空间
-                    drop(task_inner);
-                    return true;
-                }
-            }
-            
-            // 尝试调度下一个线程
-            thread_manager.schedule_next();
-            drop(task_inner);
-            return true;
-        } else {
-            // 没有活跃线程，进程应该退出
-            task_inner.sched.task_status = TaskStatus::Zombie;
-            task_inner.process.exit_code = 0;
-            drop(task_inner);
-            return false;
-        }
-    }
-    drop(task_inner);
-    false
-}
-
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().unwrap();
-
-    // 检查是否有线程管理器（多线程进程）
-    {
-        let mut task_inner = task.inner_exclusive_access();
-        if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-            // 多线程进程的调度
-            if let Some(current_thread) = thread_manager.get_current_thread() {
-                current_thread.set_status(crate::thread::ThreadStatus::Ready);
-                thread_manager.yield_thread();
-            }
-            drop(task_inner);
-            // 将进程重新加入调度队列
-            super::add_task(task);
-            return;
-        }
-    }
-
-    // 单线程进程的原有调度逻辑
     let end_time = get_time_us();
+
+    // 统一处理运行时间统计
     let mut task_inner = task.inner_exclusive_access();
     let runtime = end_time.saturating_sub(task_inner.sched.last_runtime);
     let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
@@ -192,6 +151,16 @@ pub fn suspend_current_and_run_next() {
         }
     }
 
+    // 处理多线程进程的线程调度
+    if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+        // 多线程进程：更新当前线程状态
+        if let Some(current_thread) = thread_manager.get_current_thread() {
+            current_thread.set_status(crate::thread::ThreadStatus::Ready);
+            thread_manager.yield_thread();
+        }
+    }
+
+    // 统一的任务状态处理
     if task_status == TaskStatus::Running {
         task_inner.sched.task_status = TaskStatus::Ready;
         drop(task_inner);
@@ -206,37 +175,30 @@ pub fn suspend_current_and_run_next() {
         drop(task_inner);
     }
 
-    // jump to schedule cycle
+    // 所有进程都必须经过统一的调度流程
     schedule(task_cx_ptr);
 }
 
 /// 阻塞当前任务并切换到下一个任务
 pub fn block_current_and_run_next() {
     let task = take_current_task().unwrap();
-
-    // 检查是否有线程管理器（多线程进程）
-    {
-        let mut task_inner = task.inner_exclusive_access();
-        if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-            // 多线程进程中的线程阻塞
-            if let Some(current_thread) = thread_manager.get_current_thread() {
-                current_thread.set_status(crate::thread::ThreadStatus::Blocked);
-                // 调度下一个线程
-                thread_manager.schedule_next();
-            }
-            drop(task_inner);
-            // 将进程重新加入调度队列
-            super::add_task(task);
-            return;
-        }
-    }
-
-    // 单线程进程的原有阻塞逻辑
     let end_time = get_time_us();
+
+    // 统一处理运行时间统计
     let mut task_inner = task.inner_exclusive_access();
     let runtime = end_time.saturating_sub(task_inner.sched.last_runtime);
     let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
     task_inner.sched.task_status = TaskStatus::Sleeping;
+
+    // 处理多线程进程的线程调度
+    if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
+        // 多线程进程中的线程阻塞
+        if let Some(current_thread) = thread_manager.get_current_thread() {
+            current_thread.set_status(crate::thread::ThreadStatus::Blocked);
+            // 调度下一个线程
+            thread_manager.schedule_next();
+        }
+    }
 
     // 更新运行时间统计
     match get_scheduling_policy() {
@@ -253,10 +215,19 @@ pub fn block_current_and_run_next() {
     // 更新任务管理器中的运行时间统计
     super::task_manager::update_task_runtime(&task, runtime);
 
-    // 不将任务加入就绪队列，让它保持阻塞状态
-    // 任务将通过wakeup_task函数被唤醒
+    // 对于多线程进程，如果还有活跃线程，重新加入队列
+    // 对于单线程进程，不加入队列（保持阻塞状态）
+    {
+        let task_inner = task.inner_exclusive_access();
+        if let Some(thread_manager) = task_inner.thread_manager.as_ref() {
+            if thread_manager.has_active_threads() {
+                drop(task_inner);
+                super::add_task(task);
+            }
+        }
+    }
 
-    // jump to schedule cycle
+    // 所有进程都必须经过统一的调度流程
     schedule(task_cx_ptr);
 }
 
