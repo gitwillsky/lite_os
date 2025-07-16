@@ -123,7 +123,7 @@ impl ThreadControlBlock {
         user_token: usize, // 添加用户空间页表token参数
     ) -> Self {
         let kernel_stack_top = kernel_stack_base + kernel_stack_size;
-        
+
         let tcb = Self {
             thread_id,
             parent_process,
@@ -153,14 +153,14 @@ impl ThreadControlBlock {
     /// 初始化陷入上下文
     fn init_trap_context(&self, user_token: usize) {
         let inner = self.inner.lock();
-        
+
         debug!("Initializing trap context for thread {}: ppn={:#x}", self.thread_id.0, inner.trap_cx_ppn.as_usize());
-        
+
         // 获取线程的陷入上下文页面
         let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
-        
+
         debug!("Got trap context pointer: {:#x}", trap_cx as *mut _ as usize);
-        
+
         // 初始化陷入上下文
         *trap_cx = TrapContext::app_init_context(
             inner.entry_point,
@@ -169,16 +169,18 @@ impl ThreadControlBlock {
             inner.kernel_stack_top,
             crate::trap::trap_handler as usize,
         );
-        
+
         debug!("Initialized trap context for thread {}", self.thread_id.0);
-        
+
         // 设置线程函数参数
-        // a0 寄存器 (x[10]) = 实际的线程函数地址
-        // a1 寄存器 (x[11]) = 线程参数 (当前未使用，设为0)
-        trap_cx.x[10] = inner.thread_arg; // a0 register - 实际线程函数地址
-        trap_cx.x[11] = 0; // a1 register - 线程参数 (暂时未使用)
-        
-        debug!("Set thread function address {:#x} in a0 for thread {}", inner.thread_arg, self.thread_id.0);
+        // 线程函数地址需要保存到不会被系统调用覆盖的寄存器中
+        // 我们使用 s0 寄存器 (x[8]) 来保存线程函数地址，因为它是被调用者保存的寄存器
+        // 在用户空间的 thread_wrapper 中需要相应地从 s0 寄存器获取函数地址
+        trap_cx.x[8] = inner.thread_arg; // s0 register - 线程函数地址
+        trap_cx.x[10] = 0; // a0 register - 初始化为0
+        trap_cx.x[11] = 0; // a1 register - 初始化为0
+
+        debug!("Set thread function address {:#x} in s0 for thread {}", inner.thread_arg, self.thread_id.0);
     }
 
     /// 获取线程ID
@@ -220,12 +222,12 @@ impl ThreadControlBlock {
         let mut inner = self.inner.lock();
         inner.status = ThreadStatus::Exited;
         inner.exit_code = exit_code;
-        
+
         // 记录等待join的线程，用于后续唤醒
         let waiting_threads = inner.waiting_threads.clone();
         inner.waiting_threads.clear();
         drop(inner);
-        
+
         // 唤醒等待join的线程
         for waiting_thread_id in waiting_threads {
             if let Some(parent) = self.parent_process.upgrade() {

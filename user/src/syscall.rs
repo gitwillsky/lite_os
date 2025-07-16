@@ -118,10 +118,10 @@ pub fn exec(path: &str) -> isize {
 /// 返回值：如果执行成功则返回 0，如果执行失败则返回 -1
 pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
     use alloc::vec::Vec;
-    
+
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    
+
     // Build null-terminated argument strings
     let mut arg_strings: Vec<String> = Vec::new();
     for arg in argv {
@@ -129,31 +129,31 @@ pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
         s.push('\0');
         arg_strings.push(s);
     }
-    
-    // Build null-terminated environment strings  
+
+    // Build null-terminated environment strings
     let mut env_strings: Vec<String> = Vec::new();
     for env in envp {
         let mut s = String::from(*env);
         s.push('\0');
         env_strings.push(s);
     }
-    
+
     // Build argv pointer array
     let mut argv_ptrs: Vec<*const u8> = Vec::new();
     for arg_str in &arg_strings {
         argv_ptrs.push(arg_str.as_ptr());
     }
     argv_ptrs.push(core::ptr::null()); // Null terminator
-    
+
     // Build envp pointer array
     let mut envp_ptrs: Vec<*const u8> = Vec::new();
     for env_str in &env_strings {
         envp_ptrs.push(env_str.as_ptr());
     }
     envp_ptrs.push(core::ptr::null()); // Null terminator
-    
+
     syscall(
-        SYSCALL_EXECVE, 
+        SYSCALL_EXECVE,
         [
             null_terminated_path.as_ptr() as usize,
             argv_ptrs.as_ptr() as usize,
@@ -422,19 +422,20 @@ impl Default for ThreadAttr {
 
 /// 线程包装函数 - 实际的线程入口点
 extern "C" fn thread_wrapper() -> ! {
-    // 从 a0 寄存器获取线程函数指针
+    // 从 s0 寄存器获取线程函数指针
+    // s0 寄存器是被调用者保存的寄存器，不会被系统调用覆盖
     let thread_func: extern "C" fn() -> i32;
-    
+
     unsafe {
         asm!(
-            "mv {}, a0",
+            "mv {}, s0",
             out(reg) thread_func,
         );
     }
-    
+
     // 调用实际的线程函数
     let exit_code = thread_func();
-    
+
     // 线程函数执行完毕，退出线程
     thread_exit(exit_code);
 }
@@ -504,7 +505,7 @@ pub mod signals {
     pub const SIGIO: u32 = 29;
     pub const SIGPWR: u32 = 30;
     pub const SIGSYS: u32 = 31;
-    
+
     /// sigaction标志常量
     pub const SA_NOCLDSTOP: u32 = 1;
     pub const SA_NOCLDWAIT: u32 = 2;

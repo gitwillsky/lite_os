@@ -171,6 +171,15 @@ impl ThreadManager {
         self.ready_queue.push(thread_id);
         self.thread_count += 1;
 
+        // 如果当前没有运行的线程，立即调度新创建的线程
+        if self.current_thread.is_none() {
+            self.schedule_next_no_switch();
+            debug!("Scheduled new thread {} immediately", thread_id.0);
+        } else {
+            debug!("Thread {} added to ready queue, current thread: {:?}",
+                   thread_id.0, self.current_thread);
+        }
+
         Ok(thread_id)
     }
 

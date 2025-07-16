@@ -166,7 +166,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_CONDVAR_NOTIFY => sys_condvar_notify(args[0], args[1] != 0),
 
         _ => {
-            println!("syscall: invalid syscall_id: {}", syscall_id);
+            debug!("syscall: invalid syscall_id: {}", syscall_id);
             -1
         }
     }

@@ -91,17 +91,34 @@ pub fn sys_thread_create(entry_point: usize, thread_func: usize, attr_ptr: *cons
     // - thread_func 是实际要执行的线程函数，将作为参数传递给 thread_wrapper
     match kernel_create_thread(entry_point, stack_size, thread_func, joinable) {
         Ok(thread_id) => {
-            debug!("Thread {} created successfully with entry_point={:#x}, thread_func={:#x}", 
+            debug!("Thread {} created successfully with entry_point={:#x}, thread_func={:#x}",
                    thread_id.0, entry_point, thread_func);
             // 注册线程到内存管理器
             register_current_thread(thread_id, Some(1024 * 1024)); // 1MB内存限制
             debug!("Thread {} registered to memory manager", thread_id.0);
 
+            // 重要：将进程重新添加到任务调度器中，以便新线程能够被调度
+            // 这是因为线程调度是在进程调度的基础上进行的
+            if let Some(current_task) = current_task() {
+                let pid = current_task.get_pid(); // 提前获取PID
+                // 确保进程处于就绪状态
+                {
+                    let mut inner = current_task.inner_exclusive_access();
+                    if inner.sched.task_status != crate::task::TaskStatus::Running {
+                        inner.sched.task_status = crate::task::TaskStatus::Ready;
+                    }
+                }
+                // 将进程添加到任务调度器中（如果还没有的话）
+                crate::task::add_task(current_task);
+                debug!("Process PID {} re-added to task scheduler for new thread {}",
+                       pid, thread_id.0);
+            }
+
             debug!("sys_thread_create returning thread_id: {}", thread_id.0);
-            
+
             // 创建线程成功，直接返回，让正常的trap_return处理返回
             // 新线程会在后续的调度中被执行
-            
+
             thread_id.0 as isize
         }
         Err(e) => {
