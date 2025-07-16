@@ -136,23 +136,15 @@ impl TaskManager {
 
     /// 将任务添加到相应的调度队列
     pub fn add_task(&mut self, task: Arc<TaskControlBlock>) {
-        let task_pid = task.get_pid();
-        let task_status = task.inner_exclusive_access().sched.task_status;
-        debug!("add_task: Adding task PID: {}, status: {:?}, policy: {:?}",
-               task_pid, task_status, self.scheduling_policy);
 
         match self.scheduling_policy {
             SchedulingPolicy::FIFO => {
                 self.ready_queue.push_back(task);
-                debug!("add_task: Added task PID: {} to FIFO queue, new size: {}",
-                       task_pid, self.ready_queue.len());
             },
             SchedulingPolicy::Priority | SchedulingPolicy::RoundRobin => {
                 let priority = task.inner_exclusive_access().get_dynamic_priority() as usize;
                 let priority = priority.min(39); // 确保不越界
                 self.priority_queues[priority].push_back(task);
-                debug!("add_task: Added task PID: {} to priority queue {}, new size: {}",
-                       task_pid, priority, self.priority_queues[priority].len());
             },
             SchedulingPolicy::CFS => {
                 // 读取最新的 vruntime
@@ -179,10 +171,7 @@ impl TaskManager {
 
                 // 创建 CFSTask 时会使用最新的 vruntime
                 let cfs_task = CFSTask::new(task);
-                let cfs_vruntime = cfs_task.vruntime;
                 self.cfs_queue.push(cfs_task);
-                debug!("add_task: Added task PID: {} to CFS queue with vruntime: {}, new size: {}",
-                       task_pid, cfs_vruntime, self.cfs_queue.len());
             }
         }
         // 更新统计信息
@@ -192,10 +181,7 @@ impl TaskManager {
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         let task = match self.scheduling_policy {
             SchedulingPolicy::FIFO => {
-                debug!("FIFO fetch_task: ready_queue size: {}", self.ready_queue.len());
                 if let Some(task) = self.ready_queue.pop_front() {
-                    debug!("FIFO fetch_task: fetched task PID: {}, status: {:?}",
-                           task.get_pid(), task.inner_exclusive_access().sched.task_status);
                     Some(task)
                 } else {
                     debug!("FIFO fetch_task: no tasks available");
@@ -205,11 +191,8 @@ impl TaskManager {
             SchedulingPolicy::Priority | SchedulingPolicy::RoundRobin => {
                 // 从高优先级到低优先级查找任务
                 let mut result = None;
-                for (i, queue) in self.priority_queues.iter_mut().enumerate() {
-                    debug!("Priority fetch_task: queue {} size: {}", i, queue.len());
+                for (_i, queue) in self.priority_queues.iter_mut().enumerate() {
                     if let Some(task) = queue.pop_front() {
-                        debug!("Priority fetch_task: fetched task PID: {} from queue {}, status: {:?}",
-                               task.get_pid(), i, task.inner_exclusive_access().sched.task_status);
                         result = Some(task);
                         break;
                     }
@@ -220,18 +203,9 @@ impl TaskManager {
                 result
             },
             SchedulingPolicy::CFS => {
-                debug!("CFS fetch_task: cfs_queue size: {}", self.cfs_queue.len());
                 if let Some(cfs_task) = self.cfs_queue.pop() {
-                    debug!("CFS fetch_task: fetched task PID: {}, vruntime: {}, status: {:?}",
-                           cfs_task.task.get_pid(), cfs_task.vruntime,
-                           cfs_task.task.inner_exclusive_access().sched.task_status);
-
                     // 添加详细调试：检查任务状态
                     let task_inner = cfs_task.task.inner_exclusive_access();
-                    debug!("CFS fetch_task: task PID {} details - status: {:?}, has_thread_manager: {}",
-                           cfs_task.task.get_pid(),
-                           task_inner.sched.task_status,
-                           task_inner.thread_manager.is_some());
                     drop(task_inner);
 
                     // 不需要更新全局最小vruntime，因为它会随着任务的执行自然增长

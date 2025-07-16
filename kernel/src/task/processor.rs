@@ -135,7 +135,6 @@ pub fn schedule_thread(current_thread_cx_ptr: *mut TaskContext, next_thread_cx_p
 }
 
 pub fn suspend_current_and_run_next() {
-    debug!("suspend_current_and_run_next: starting");
     let task = take_current_task().unwrap();
     let end_time = get_time_us();
 
@@ -156,14 +155,9 @@ pub fn suspend_current_and_run_next() {
     }
 
     // 处理多线程进程的线程调度
-    debug!("suspend_current_and_run_next: checking for thread manager, task PID: {}, task addr: {:p}",
-           task.get_pid(), task.as_ref());
     if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-        debug!("suspend_current_and_run_next: found thread manager with {} threads",
-               thread_manager.thread_count());
         // 多线程进程：尝试切换到下一个线程
         if let Some(current_thread) = thread_manager.get_current_thread() {
-            debug!("suspend_current_and_run_next: current thread is {}", current_thread.get_thread_id().0);
             // 设置当前线程状态为就绪
             current_thread.set_status(crate::thread::ThreadStatus::Ready);
             // 将当前线程加入就绪队列
@@ -173,7 +167,6 @@ pub fn suspend_current_and_run_next() {
         // 尝试调度下一个线程
         thread_manager.schedule_next_no_switch();
 
-        debug!("suspend_current_and_run_next: thread manager stats: {:?}", thread_manager.get_thread_stats());
     } else {
         debug!("suspend_current_and_run_next: no thread manager found for task PID: {}, task addr: {:p}",
                task.get_pid(), task.as_ref());
@@ -187,23 +180,13 @@ pub fn suspend_current_and_run_next() {
         // 更新任务管理器中的运行时间统计
         super::task_manager::update_task_runtime(&task, runtime);
 
-        debug!("suspend_current_and_run_next: adding task PID {} back to ready queue", task.get_pid());
         // push back to ready queue
         super::add_task(task);
     } else {
         // 如果任务是Sleeping状态，不要重新加入就绪队列
-        debug!("suspend_current_and_run_next: task PID {} has status {:?}, not adding back to queue",
-               task.get_pid(), task_status);
-
-        // 特别关注 PID 1
-        if task.get_pid() == 1 {
-            error!("PID 1 is not running! Status: {:?}, this should not happen!", task_status);
-        }
-
         drop(task_inner);
     }
 
-    debug!("suspend_current_and_run_next: calling schedule");
     // 所有进程都必须经过统一的调度流程
     schedule(task_cx_ptr);
 }
@@ -349,26 +332,26 @@ static mut CURRENT_TIME_SLICE: u64 = 10000; // 默认10ms时间片
 /// 返回true表示当前任务的时间片已耗尽，需要调度
 pub fn should_schedule() -> bool {
     let current_time = get_time_us();
-    
+
     // 获取上次调度时间
     let last_schedule_time = unsafe { LAST_SCHEDULE_TIME };
     let time_slice_duration = unsafe { CURRENT_TIME_SLICE };
-    
+
     // 如果是第一次调用或者时间片已耗尽
     if last_schedule_time == 0 || (current_time >= last_schedule_time + time_slice_duration) {
         // 更新最后调度时间
         unsafe { LAST_SCHEDULE_TIME = current_time; }
-        
+
         // 动态调整时间片（基于当前任务的优先级）
         if let Some(task) = current_task() {
             let task_inner = task.inner_exclusive_access();
             let new_time_slice = task_inner.calculate_time_slice();
             unsafe { CURRENT_TIME_SLICE = new_time_slice; }
             drop(task_inner);
-            
-            debug!("Time slice expired for PID {}, new time slice: {}μs", 
+
+            debug!("Time slice expired for PID {}, new time slice: {}μs",
                    task.get_pid(), new_time_slice);
-            
+
             true
         } else {
             false
