@@ -36,7 +36,12 @@ pub fn init() {
     let elf_data = get_app_data_by_name("initproc").expect("Failed to get init proc data");
     let init_proc = task::TaskControlBlock::new(elf_data.as_slice());
     match init_proc {
-        Ok(tcb) => set_init_proc(Arc::new(tcb)),
+        Ok(tcb) => {
+            let init_proc_arc = Arc::new(tcb);
+            // 为初始进程初始化线程管理器，因为它可能需要创建线程
+            init_proc_arc.init_thread_manager();
+            set_init_proc(init_proc_arc);
+        },
         Err(e) => panic!("Failed to create init proc: {:?}", e),
     }
 }

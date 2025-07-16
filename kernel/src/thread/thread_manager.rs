@@ -107,7 +107,7 @@ impl ThreadManager {
             thread_count: 1, // 主线程
             max_threads: 1024, // 最大线程数限制
         };
-        
+
         // 为主线程创建线程控制块
         // 主线程使用进程的原有栈和陷入上下文
         let main_thread = Arc::new(ThreadControlBlock::new_main_thread(
@@ -115,10 +115,10 @@ impl ThreadManager {
             Arc::downgrade(&parent_process),
             trap_cx_ppn,
         ));
-        
+
         // 将主线程添加到线程表中
         manager.threads.insert(main_thread_id, main_thread);
-        
+
         manager
     }
 
@@ -189,7 +189,7 @@ impl ThreadManager {
                 // 获取等待线程列表
                 let waiting_threads = thread.get_waiting_threads();
                 let is_joinable = thread.is_joinable();
-                
+
                 // 从就绪队列中移除
                 self.ready_queue.retain(|&id| id != current_id);
                 self.blocked_threads.retain(|&id| id != current_id);
@@ -262,7 +262,7 @@ impl ThreadManager {
 
                 // 立即调度下一个线程，而不是返回到进程级调度器
                 self.schedule_next_no_switch();
-                
+
                 // 如果还有其他线程可以运行，返回错误让系统调用重新执行
                 if self.ready_queue.is_empty() {
                     // 没有更多线程可以运行，让进程级调度器处理
@@ -508,7 +508,7 @@ impl ThreadManager {
             debug!("has_active_threads: {} threads in ready queue", self.ready_queue.len());
             return true;
         }
-        
+
         // 检查是否有当前正在运行的线程
         if let Some(current_id) = self.current_thread {
             if let Some(thread) = self.threads.get(&current_id) {
@@ -519,8 +519,8 @@ impl ThreadManager {
                 }
             }
         }
-        
-        debug!("has_active_threads: no active threads found, ready_queue: {}, current_thread: {:?}", 
+
+        debug!("has_active_threads: no active threads found, ready_queue: {}, current_thread: {:?}",
                self.ready_queue.len(), self.current_thread);
         false
     }
@@ -560,7 +560,6 @@ impl ThreadManager {
             if let Some(thread) = self.threads.get(&next_thread_id) {
                 thread.set_status(ThreadStatus::Running);
                 self.current_thread = Some(next_thread_id);
-                debug!("Thread {} scheduled to run (no context switch)", next_thread_id.0);
             }
         } else {
             // 没有可运行的线程
@@ -573,7 +572,7 @@ impl ThreadManager {
     pub fn has_ready_threads(&self) -> bool {
         !self.ready_queue.is_empty()
     }
-    
+
     /// 获取线程统计信息
     pub fn get_thread_stats(&self) -> (usize, usize, usize) {
         (self.thread_count, self.ready_queue.len(), self.blocked_threads.len())

@@ -144,7 +144,7 @@ pub fn suspend_current_and_run_next() {
     let task_cx_ptr = &mut task_inner.sched.task_cx as *mut _;
     let task_status = task_inner.sched.task_status;
 
-    // 根据调度策略更新任务统计信息
+    // 更新运行时间统计
     match get_scheduling_policy() {
         SchedulingPolicy::CFS => {
             task_inner.update_vruntime(runtime);
@@ -166,10 +166,12 @@ pub fn suspend_current_and_run_next() {
 
         // 尝试调度下一个线程
         thread_manager.schedule_next_no_switch();
-
     } else {
-        debug!("suspend_current_and_run_next: no thread manager found for task PID: {}, task addr: {:p}",
-               task.get_pid(), task.as_ref());
+        // 对于单线程进程或系统任务（如PID 0），不需要线程管理器
+        // 这是正常情况，不需要打印调试信息
+        if task.get_pid() != IDLE_PID {
+            debug!("suspend_current_and_run_next: single-threaded task PID: {}", task.get_pid());
+        }
     }
 
     // 统一的任务状态处理
@@ -210,6 +212,12 @@ pub fn block_current_and_run_next() {
             // 调度下一个线程
             thread_manager.schedule_next();
         }
+    } else {
+        // 对于单线程进程，直接阻塞整个进程
+        // 这是正常情况，不需要特殊处理
+        if task.get_pid() != IDLE_PID {
+            debug!("block_current_and_run_next: single-threaded task PID: {}", task.get_pid());
+        }
     }
 
     // 更新运行时间统计
@@ -237,6 +245,7 @@ pub fn block_current_and_run_next() {
                 super::add_task(task);
             }
         }
+        // 对于单线程进程，不重新加入队列，保持阻塞状态
     }
 
     // 所有进程都必须经过统一的调度流程
@@ -348,9 +357,6 @@ pub fn should_schedule() -> bool {
             let new_time_slice = task_inner.calculate_time_slice();
             unsafe { CURRENT_TIME_SLICE = new_time_slice; }
             drop(task_inner);
-
-            debug!("Time slice expired for PID {}, new time slice: {}μs",
-                   task.get_pid(), new_time_slice);
 
             true
         } else {
