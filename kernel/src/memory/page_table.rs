@@ -53,6 +53,13 @@ impl PageTableEntry {
         ppn_val.into()
     }
 
+    /// 设置页表项的物理页号，保持标志位不变
+    pub fn set_ppn(&mut self, ppn: PhysicalPageNumber) {
+        let flags_val = self.0 & ((1 << PTE_FLAGS_WIDTH) - 1);
+        let ppn_val = usize::from(ppn);
+        self.0 = (ppn_val << PTE_FLAGS_WIDTH) | flags_val;
+    }
+
     pub fn is_valid(&self) -> bool {
         self.flags().contains(PTEFlags::V)
     }
@@ -131,7 +138,7 @@ impl PageTable {
         result
     }
 
-    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
+    pub fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
 
         let mut ppn = self.root_ppn;

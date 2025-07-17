@@ -12,16 +12,15 @@ static mut GLOBAL_COUNTER: usize = 0;
 
 /// Thread function 1: Counter
 extern "C" fn counter_thread() -> i32 {
-    // 立即输出调试信息
+    // 简单的输出，不使用复杂的内联汇编
+    let msg = b"COUNTER_THREAD_STARTED\n";
     unsafe {
         use core::arch::asm;
-        // 直接使用系统调用输出消息
-        let msg = b"COUNTER_THREAD_STARTED\n";
         asm!(
             "li a7, 64",           // sys_write
             "li a0, 1",            // stdout
-            "mv a1, {msg}",        // message
-            "li a2, 23",           // length
+            "mv a1, {msg}",        // message pointer
+            "li a2, 23",           // message length
             "ecall",
             msg = in(reg) msg.as_ptr(),
             lateout("x10") _,
@@ -84,6 +83,9 @@ extern "C" fn priority_thread() -> i32 {
 pub fn main() -> i32 {
     println!("=== Multithreaded Test Program ===");
     println!("Main process PID: {}", getpid());
+
+    // 调试：显示函数地址
+    println!("DEBUG: counter_thread address: {:#x}", counter_thread as usize);
 
     // Test 1: Basic thread creation and join
     println!("\n--- Test 1: Basic Thread Creation ---");

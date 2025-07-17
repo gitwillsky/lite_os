@@ -35,9 +35,6 @@ pub fn trap_handler() -> ! {
     let stval = stval::read();
     let sepc = sepc::read();
 
-    debug!("[trap_handler] Trap occurred: cause={:?}, stval={:#x}, sepc={:#x}",
-           scause.cause(), stval, sepc);
-
     match scause.cause() {
         Trap::Interrupt(code) => {
             if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -87,14 +84,56 @@ pub fn trap_handler() -> ! {
                         let syscall_id = cx.x[17];
                         let args = [cx.x[10], cx.x[11], cx.x[12]];
 
-                        // Only debug important syscalls
-                        if syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
+                        // 特殊情况：如果syscall_id为0，输出更多调试信息
+                        if syscall_id == 0 {
+                            debug!("[trap_handler] UNEXPECTED UserEnvCall with syscall_id=0!");
+                            debug!("[trap_handler] Full register state:");
+                            debug!("[trap_handler]   x[17] (a7): {:#x}", cx.x[17]);
+                            debug!("[trap_handler]   x[10] (a0): {:#x}", cx.x[10]);
+                            debug!("[trap_handler]   x[11] (a1): {:#x}", cx.x[11]);
+                            debug!("[trap_handler]   x[12] (a2): {:#x}", cx.x[12]);
+                            debug!("[trap_handler]   sepc: {:#x}", cx.sepc);
+                            debug!("[trap_handler]   sstatus: {:#x}", cx.sstatus.bits());
+                        }
+
+                        // Only debug important syscalls and invalid syscalls
+                        if syscall_id == 0 || syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
                             debug!("[trap_handler] SystemCall: syscall_id={}, args=[{:#x}, {:#x}, {:#x}]",
                                    syscall_id, args[0], args[1], args[2]);
+                            if syscall_id == 0 {
+                                debug!("[trap_handler] INVALID syscall_id=0! sepc={:#x}, sp={:#x}", cx.sepc, cx.x[2]);
+
+                                // 检查sepc地址的内存映射
+                                if let Some(task) = crate::task::current_task() {
+                                    let inner = task.inner_exclusive_access();
+                                    let memory_set = &inner.mm.memory_set;
+                                    let sepc_va = crate::memory::address::VirtualAddress::from(cx.sepc);
+                                    // 使用页面对齐的地址
+                                    let sepc_page_aligned = crate::memory::address::VirtualAddress::from(cx.sepc & !0xfff);
+                                    let sepc_vpn = crate::memory::address::VirtualPageNumber::from(sepc_page_aligned);
+
+                                    if let Some(pte) = memory_set.translate(sepc_vpn) {
+                                        debug!("[trap_handler] sepc {:#x} (page {:#x}) is mapped to ppn {:#x}, flags: {:?}",
+                                               cx.sepc, sepc_vpn.as_usize(), pte.ppn().as_usize(), pte.flags());
+                                    } else {
+                                        debug!("[trap_handler] sepc {:#x} (page {:#x}) is NOT mapped!",
+                                               cx.sepc, sepc_vpn.as_usize());
+                                    }
+                                }
+                            }
+                            if syscall_id == 64 {
+                                debug!("[trap_handler] write syscall: fd={}, buf={:#x}, len={}", args[0], args[1], args[2]);
+                                debug!("[trap_handler] before write: s1={:#x}", cx.x[9]);
+                            }
                         }
 
                         cx.sepc += 4;
                         let ret = syscall::syscall(syscall_id, args);
+
+                        // 系统调用完成后的调试信息
+                        if syscall_id == 64 {
+                            debug!("[trap_handler] write syscall completed: ret={}, s1 after={:#x}", ret, cx.x[9]);
+                        }
 
                         // sys_exec change the TrapContext, we need reload it
                         let cx = task::current_trap_context();
@@ -171,8 +210,6 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
-    debug!("[trap_return] Called, about to return to user space");
-
     // 在返回用户态之前检查信号
     if let Some(task) = task::current_task() {
         let (should_continue, exit_code) = crate::task::check_and_handle_signals();
@@ -194,47 +231,40 @@ pub fn trap_return() -> ! {
 
     // 检查trap context状态
     let trap_cx = task::current_trap_context();
-    debug!("[trap_return] Final trap context check - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
-           trap_cx.sepc, trap_cx.x[2], trap_cx.x[8]);
 
-    // 验证返回地址是否在合理范围内并且页面已映射
-    if let Some(current_task) = task::current_task() {
-        let task_inner = current_task.inner_exclusive_access();
-        let memory_set = &task_inner.mm.memory_set;
+    // // 验证返回地址是否在合理范围内并且页面已映射
+    // if let Some(current_task) = task::current_task() {
+    //     let task_inner = current_task.inner_exclusive_access();
+    //     let memory_set = &task_inner.mm.memory_set;
 
-        // 检查 sepc (程序计数器) 的页面映射
-        let sepc_addr = trap_cx.sepc & !0xfff; // 页面对齐
-        let sepc_vpn = crate::memory::address::VirtualPageNumber::from(crate::memory::address::VirtualAddress::from(sepc_addr));
-        if let Some(pte) = memory_set.translate(sepc_vpn) {
-            debug!("[trap_return] sepc {:#x} (page {:#x}) is mapped to ppn {:#x}, flags: {:?}",
-                   trap_cx.sepc, sepc_addr, pte.ppn().as_usize(), pte.flags());
-        } else {
-            error!("[trap_return] ERROR: sepc {:#x} (page {:#x}) is NOT mapped!", trap_cx.sepc, sepc_addr);
-        }
+    //     // 检查 sepc (程序计数器) 的页面映射
+    //     let sepc_addr = trap_cx.sepc & !0xfff; // 页面对齐
+    //     let sepc_vpn = crate::memory::address::VirtualPageNumber::from(crate::memory::address::VirtualAddress::from(sepc_addr));
+    //     if let Some(pte) = memory_set.translate(sepc_vpn) {
+    //         debug!("[trap_return] sepc {:#x} (page {:#x}) is mapped to ppn {:#x}, flags: {:?}",
+    //                trap_cx.sepc, sepc_addr, pte.ppn().as_usize(), pte.flags());
+    //     } else {
+    //         panic!("[trap_return] ERROR: sepc {:#x} (page {:#x}) is NOT mapped!", trap_cx.sepc, sepc_addr);
+    //     }
 
-        // 检查栈指针的页面映射
-        let sp_addr = trap_cx.x[2] & !0xfff; // 页面对齐
-        let sp_vpn = crate::memory::address::VirtualPageNumber::from(crate::memory::address::VirtualAddress::from(sp_addr));
-        if let Some(pte) = memory_set.translate(sp_vpn) {
-            debug!("[trap_return] sp {:#x} (page {:#x}) is mapped to ppn {:#x}, flags: {:?}",
-                   trap_cx.x[2], sp_addr, pte.ppn().as_usize(), pte.flags());
-        } else {
-            error!("[trap_return] ERROR: sp {:#x} (page {:#x}) is NOT mapped!", trap_cx.x[2], sp_addr);
-        }
+    //     // 检查栈指针的页面映射
+    //     let sp_addr = trap_cx.x[2] & !0xfff; // 页面对齐
+    //     let sp_vpn = crate::memory::address::VirtualPageNumber::from(crate::memory::address::VirtualAddress::from(sp_addr));
+    //     if let Some(pte) = memory_set.translate(sp_vpn) {
+    //         debug!("[trap_return] sp {:#x} (page {:#x}) is mapped to ppn {:#x}, flags: {:?}",
+    //                trap_cx.x[2], sp_addr, pte.ppn().as_usize(), pte.flags());
+    //     } else {
+    //         panic!("[trap_return] ERROR: sp {:#x} (page {:#x}) is NOT mapped!", trap_cx.x[2], sp_addr);
+    //     }
 
-        drop(task_inner);
-    }
+    //     drop(task_inner);
+    // }
 
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
-
-    debug!("[trap_return] About to execute assembly: restore_va={:#x}, trap_cx_ptr={:#x}, user_satp={:#x}",
-           restore_va, trap_cx_ptr, user_satp);
-    debug!("[trap_return] Final check - will jump to sepc={:#x} with sp={:#x}",
-           trap_cx.sepc, trap_cx.x[2]);
 
     unsafe {
         asm!(

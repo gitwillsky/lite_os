@@ -423,27 +423,20 @@ impl Default for ThreadAttr {
 
 /// 线程包装函数 - 实际的线程入口点
 extern "C" fn thread_wrapper() -> ! {
-    // 立即输出一条消息确认我们到达了这里
-    println!("=== THREAD WRAPPER ENTRY ===");
+    // 暂时跳过write系统调用，直接测试线程函数调用
 
-    // 从 s0 寄存器获取线程函数指针
-    // s0 寄存器是被调用者保存的寄存器，不会被系统调用覆盖
+    // 从 s1 寄存器获取线程函数指针
     let thread_func: extern "C" fn() -> i32;
 
     unsafe {
         asm!(
-            "mv {}, s0",
+            "mv {}, s1",
             out(reg) thread_func,
         );
     }
 
-    // 添加调试信息
-    println!("Thread wrapper started, thread_func address: {:#x}", thread_func as usize);
-
     // 调用实际的线程函数
     let exit_code = thread_func();
-
-    println!("Thread function returned with exit code: {}", exit_code);
 
     // 线程函数执行完毕，退出线程
     thread_exit(exit_code);
@@ -459,6 +452,11 @@ pub fn thread_create(
         Some(attr) => attr as *const ThreadAttr as usize,
         None => 0,
     };
+
+    // 调试输出：显示传递给系统调用的参数
+    println!("DEBUG: thread_create calling syscall with args: wrapper={:#x}, func={:#x}, attr={:#x}",
+             thread_wrapper as usize, thread_func as usize, attr_ptr);
+
     // 传递包装函数地址作为入口点，线程函数地址作为参数
     syscall(SYSCALL_THREAD_CREATE, [thread_wrapper as usize, thread_func as usize, attr_ptr])
 }

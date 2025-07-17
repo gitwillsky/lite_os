@@ -166,7 +166,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_CONDVAR_NOTIFY => sys_condvar_notify(args[0], args[1] != 0),
 
         _ => {
-            debug!("syscall: invalid syscall_id: {}", syscall_id);
+            error!("syscall: invalid syscall_id: {}, context info:", syscall_id);
+            error!("  args: [{:#x}, {:#x}, {:#x}]", args[0], args[1], args[2]);
+            if let Some(task) = crate::task::current_task() {
+                error!("  current task PID: {}", task.get_pid());
+                let inner = task.inner_exclusive_access();
+                let trap_cx = inner.get_trap_cx();
+                error!("  trap context - sepc: {:#x}, sp: {:#x}, registers:", trap_cx.sepc, trap_cx.x[2]);
+                error!("    x[17] (syscall_id): {:#x}", trap_cx.x[17]);
+                error!("    x[10] (arg0): {:#x}", trap_cx.x[10]);
+                error!("    x[11] (arg1): {:#x}", trap_cx.x[11]);
+                error!("    x[12] (arg2): {:#x}", trap_cx.x[12]);
+            }
+            panic!("syscall: invalid syscall_id: {}", syscall_id);
             -1
         }
     }

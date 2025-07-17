@@ -155,6 +155,7 @@ impl ThreadControlBlock {
         let inner = self.inner.lock();
 
         debug!("Initializing trap context for thread {}: ppn={:#x}", self.thread_id.0, inner.trap_cx_ppn.as_usize());
+        debug!("Thread {} entry_point parameter: {:#x}", self.thread_id.0, inner.entry_point);
 
         // 获取线程的陷入上下文页面
         let trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
@@ -174,13 +175,30 @@ impl ThreadControlBlock {
 
         // 设置线程函数参数
         // 线程函数地址需要保存到不会被系统调用覆盖的寄存器中
-        // 我们使用 s0 寄存器 (x[8]) 来保存线程函数地址，因为它是被调用者保存的寄存器
-        // 在用户空间的 thread_wrapper 中需要相应地从 s0 寄存器获取函数地址
-        trap_cx.x[8] = inner.thread_arg; // s0 register - 线程函数地址
+        // 我们使用 s1 寄存器 (x[9]) 来保存线程函数地址，因为它是被调用者保存的寄存器
+        // 在用户空间的 thread_wrapper 中需要相应地从 s1 寄存器获取函数地址
+        trap_cx.x[9] = inner.thread_arg; // s1 register - 线程函数地址
         trap_cx.x[10] = 0; // a0 register - 初始化为0
         trap_cx.x[11] = 0; // a1 register - 初始化为0
 
-        debug!("Set thread function address {:#x} in s0 for thread {}", inner.thread_arg, self.thread_id.0);
+        debug!("Set thread function address {:#x} in s1 for thread {}", inner.thread_arg, self.thread_id.0);
+
+        // 详细验证陷入上下文
+        debug!("Thread {} trap context verification:", self.thread_id.0);
+        debug!("  sepc: {:#x}", trap_cx.sepc);
+        debug!("  sp (x[2]): {:#x}", trap_cx.x[2]);
+        debug!("  s1 (x[9]): {:#x}", trap_cx.x[9]);
+        debug!("  kernel_sp: {:#x}", trap_cx.kernel_sp);
+        debug!("  kernel_satp: {:#x}", trap_cx.kernel_satp);
+        debug!("  trap_handler: {:#x}", trap_cx.trap_handler);
+
+        // 验证关键地址的合理性
+        if trap_cx.sepc < 0x10000 || trap_cx.sepc > 0x100000 {
+            error!("WARNING: Thread {} has suspicious sepc: {:#x}", self.thread_id.0, trap_cx.sepc);
+        }
+        if trap_cx.x[2] < 0x80000000 || trap_cx.x[2] > 0x90000000 {
+            error!("WARNING: Thread {} has suspicious sp: {:#x}", self.thread_id.0, trap_cx.x[2]);
+        }
     }
 
     /// 获取线程ID
@@ -331,8 +349,8 @@ impl ThreadControlBlock {
         let thread_trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
 
         debug!("Loading trap context for thread {}", self.thread_id.0);
-        debug!("Thread trap context - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
-               thread_trap_cx.sepc, thread_trap_cx.x[2], thread_trap_cx.x[8]);
+        debug!("Thread trap context - sepc: {:#x}, sp: {:#x}, s1: {:#x}",
+               thread_trap_cx.sepc, thread_trap_cx.x[2], thread_trap_cx.x[9]);
 
         // 手动复制TrapContext的字段
         process_trap_cx.x = thread_trap_cx.x;
@@ -342,8 +360,8 @@ impl ThreadControlBlock {
         process_trap_cx.kernel_sp = thread_trap_cx.kernel_sp;
         process_trap_cx.trap_handler = thread_trap_cx.trap_handler;
 
-        debug!("Process trap context after loading - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
-               process_trap_cx.sepc, process_trap_cx.x[2], process_trap_cx.x[8]);
+        debug!("Process trap context after loading - sepc: {:#x}, sp: {:#x}, s1: {:#x}",
+               process_trap_cx.sepc, process_trap_cx.x[2], process_trap_cx.x[9]);
     }
 }
 

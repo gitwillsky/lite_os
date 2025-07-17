@@ -197,6 +197,19 @@ pub fn suspend_current_and_run_next() {
                 task_inner.mm.trap_cx_ppn = new_thread_trap_cx_ppn;
                 debug!("Updated process trap context ppn to thread {}'s ppn: {:#x}",
                        new_thread.get_thread_id().0, new_thread_trap_cx_ppn.as_usize());
+
+                // 关键修复：更新页表映射，让TRAP_CONTEXT虚拟地址映射到新线程的陷入上下文页面
+                use crate::memory::{TRAP_CONTEXT, address::{VirtualAddress, VirtualPageNumber}};
+                let trap_cx_vpn = VirtualPageNumber::from(VirtualAddress::from(TRAP_CONTEXT));
+
+                // 在页表中重新映射TRAP_CONTEXT地址到新线程的陷入上下文页面
+                if let Some(mut pte) = task_inner.mm.memory_set.get_pte_mut(trap_cx_vpn) {
+                    pte.set_ppn(new_thread_trap_cx_ppn);
+                    debug!("Remapped TRAP_CONTEXT {:#x} to thread {}'s trap context ppn {:#x}",
+                           TRAP_CONTEXT, new_thread.get_thread_id().0, new_thread_trap_cx_ppn.as_usize());
+                } else {
+                    error!("Failed to find TRAP_CONTEXT page table entry!");
+                }
             }
 
             let trap_cx = task_inner.mm.trap_cx_ppn.get_mut::<TrapContext>();
@@ -212,13 +225,14 @@ pub fn suspend_current_and_run_next() {
             task_inner.sched.task_status = TaskStatus::Running;
             drop(task_inner);
 
-            // 将当前任务重新设置为当前执行的任务
+                        // 将当前任务重新设置为当前执行的任务
             let mut processor = PROCESSOR.lock();
-            processor.current = Some(task);
+            processor.current = Some(task.clone());
             drop(processor);
 
-            debug!("Thread context loaded, task status set to Running, skipping further scheduling");
-            // 直接返回，跳过调度步骤，让当前trap处理流程返回到用户空间
+                        debug!("Thread context loaded, task status set to Running, returning to user space");
+            // 线程切换完成，陷入上下文已经正确设置
+            // 直接返回，让trap_handler正常结束并调用trap_return()返回用户空间
             return;
         } else {
             // 如果没有可用线程，这个进程应该被阻塞
