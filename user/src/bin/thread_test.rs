@@ -12,6 +12,25 @@ static mut GLOBAL_COUNTER: usize = 0;
 
 /// Thread function 1: Counter
 extern "C" fn counter_thread() -> i32 {
+    // 立即输出调试信息
+    unsafe {
+        use core::arch::asm;
+        // 直接使用系统调用输出消息
+        let msg = b"COUNTER_THREAD_STARTED\n";
+        asm!(
+            "li a7, 64",           // sys_write
+            "li a0, 1",            // stdout
+            "mv a1, {msg}",        // message
+            "li a2, 23",           // length
+            "ecall",
+            msg = in(reg) msg.as_ptr(),
+            lateout("x10") _,
+            lateout("x11") _,
+            lateout("x12") _,
+            lateout("x17") _,
+        );
+    }
+
     println!("Counter thread started!");
     for i in 0..5 {
         unsafe {

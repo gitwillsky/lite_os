@@ -31,15 +31,33 @@ impl ThreadStackAllocator {
         let stack_base = self.next_user_stack_base;
         let stack_top = VirtualAddress::from(stack_base.as_usize() + self.stack_size);
 
+        debug!("Thread stack range: {:#x} - {:#x} (size: {})",
+               stack_base.as_usize(), stack_top.as_usize(), self.stack_size);
+
         // 更新下一个栈的基地址（留出一个页面作为保护）
         self.next_user_stack_base = VirtualAddress::from(stack_top.as_usize() + PAGE_SIZE);
 
         // 在虚拟地址空间中映射栈区域
+        debug!("Mapping thread stack area: {:#x} - {:#x} with permissions R|W|U",
+               stack_base.as_usize(), stack_top.as_usize());
+
         memory_set.insert_framed_area(
             stack_base,
             stack_top,
             MapPermission::R | MapPermission::W | MapPermission::U,
         );
+
+        debug!("Thread stack mapping completed");
+
+        // 验证映射是否成功
+        let test_vpn = VirtualPageNumber::from(stack_base);
+        if let Some(pte) = memory_set.translate(test_vpn) {
+            debug!("Verification: stack base {:#x} is mapped to ppn {:#x}, flags: {:?}",
+                   stack_base.as_usize(), pte.ppn().as_usize(), pte.flags());
+        } else {
+            error!("ERROR: Failed to verify stack mapping for {:#x}", stack_base.as_usize());
+            return Err("Stack mapping verification failed");
+        }
 
         // 记录已分配的栈
         self.allocated_stacks.push((stack_base, self.stack_size));

@@ -187,6 +187,18 @@ pub fn suspend_current_and_run_next() {
 
                 // 如果选择了新线程，加载其trap context并直接返回用户空间
         if let Some(new_thread) = new_thread {
+            // 重要：更新进程的陷入上下文页面映射，让它指向新线程的陷入上下文
+            {
+                let new_thread_inner = new_thread.inner_exclusive_access();
+                let new_thread_trap_cx_ppn = new_thread_inner.trap_cx_ppn;
+                drop(new_thread_inner);
+
+                // 更新进程的陷入上下文页面映射
+                task_inner.mm.trap_cx_ppn = new_thread_trap_cx_ppn;
+                debug!("Updated process trap context ppn to thread {}'s ppn: {:#x}",
+                       new_thread.get_thread_id().0, new_thread_trap_cx_ppn.as_usize());
+            }
+
             let trap_cx = task_inner.mm.trap_cx_ppn.get_mut::<TrapContext>();
             new_thread.load_trap_context(trap_cx);
             debug!("Switched to thread {} in process PID {}",

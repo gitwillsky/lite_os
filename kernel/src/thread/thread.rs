@@ -329,6 +329,11 @@ impl ThreadControlBlock {
     pub fn load_trap_context(&self, process_trap_cx: &mut TrapContext) {
         let inner = self.inner.lock();
         let thread_trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
+
+        debug!("Loading trap context for thread {}", self.thread_id.0);
+        debug!("Thread trap context - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
+               thread_trap_cx.sepc, thread_trap_cx.x[2], thread_trap_cx.x[8]);
+
         // 手动复制TrapContext的字段
         process_trap_cx.x = thread_trap_cx.x;
         process_trap_cx.sstatus = thread_trap_cx.sstatus;
@@ -336,6 +341,9 @@ impl ThreadControlBlock {
         process_trap_cx.kernel_satp = thread_trap_cx.kernel_satp;
         process_trap_cx.kernel_sp = thread_trap_cx.kernel_sp;
         process_trap_cx.trap_handler = thread_trap_cx.trap_handler;
+
+        debug!("Process trap context after loading - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
+               process_trap_cx.sepc, process_trap_cx.x[2], process_trap_cx.x[8]);
     }
 }
 
@@ -379,7 +387,7 @@ impl ThreadStack {
             start_va,
             end_va,
             size,
-            sp: end_va.as_usize(), // 栈从高地址向低地址增长
+            sp: end_va.as_usize() - 8, // 栈从高地址向低地址增长，指向最后一个有效的8字节对齐地址
         }
     }
 
