@@ -423,17 +423,20 @@ impl Default for ThreadAttr {
 
 /// 线程包装函数 - 实际的线程入口点
 extern "C" fn thread_wrapper() -> ! {
-    // 暂时跳过write系统调用，直接测试线程函数调用
-
-    // 从 s1 寄存器获取线程函数指针
-    let thread_func: extern "C" fn() -> i32;
+    // 从 s1 寄存器获取线程函数地址
+    let thread_func_addr: usize;
 
     unsafe {
         asm!(
             "mv {}, s1",
-            out(reg) thread_func,
+            out(reg) thread_func_addr,
         );
     }
+
+    // 将地址转换为函数指针
+    let thread_func: extern "C" fn() -> i32 = unsafe {
+        core::mem::transmute(thread_func_addr)
+    };
 
     // 调用实际的线程函数
     let exit_code = thread_func();

@@ -230,9 +230,15 @@ pub fn suspend_current_and_run_next() {
             processor.current = Some(task.clone());
             drop(processor);
 
-                        debug!("Thread context loaded, task status set to Running, returning to user space");
+                        debug!("Thread context loaded, task status set to Running, scheduling to continue execution");
             // 线程切换完成，陷入上下文已经正确设置
-            // 直接返回，让trap_handler正常结束并调用trap_return()返回用户空间
+            // 但仍需要经过正常的调度流程来返回用户空间
+
+            // 重新加入调度队列，确保正常的调度流程
+            super::add_task(task);
+
+            // 继续执行调度
+            schedule(task_cx_ptr);
             return;
         } else {
             // 如果没有可用线程，这个进程应该被阻塞
