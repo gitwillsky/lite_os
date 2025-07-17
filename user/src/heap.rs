@@ -46,19 +46,16 @@ impl KernelHeapAllocator {
 
     /// 扩展堆大小
     fn expand_heap(&self, size: usize) -> bool {
-        unsafe {
             // 页对齐大小
             let page_size = 4096;
             let aligned_size = (size + page_size - 1) & !(page_size - 1);
 
             let old_brk = sbrk(aligned_size as isize);
             if old_brk > 0 {
-                HEAP_END = (old_brk as usize) + aligned_size;
                 true
             } else {
                 false
             }
-        }
     }
 
     /// 分配内存
@@ -85,9 +82,11 @@ impl KernelHeapAllocator {
             // 从堆顶分配
             let ptr = HEAP_START as *mut u8;
             *(ptr as *mut usize) = aligned_size; // 存储大小信息
+            let result_ptr = ptr.add(core::mem::size_of::<usize>());
             HEAP_START += total_size;
 
-            ptr.add(core::mem::size_of::<usize>())
+
+            result_ptr
         }
     }
 
@@ -96,11 +95,13 @@ impl KernelHeapAllocator {
         unsafe {
             let mut current = FREE_LIST;
             let mut prev: *mut FreeBlock = null_mut();
+            let total_size = size + core::mem::size_of::<usize>(); // 需要的总大小
 
             while !current.is_null() {
                 let block = &mut *current;
 
-                if block.size >= size {
+                if block.size >= total_size {
+
                     // 找到合适的块
                     if prev.is_null() {
                         FREE_LIST = block.next;
@@ -109,14 +110,16 @@ impl KernelHeapAllocator {
                     }
 
                     // 如果块太大，分割它
-                    if block.size > size + core::mem::size_of::<FreeBlock>() {
-                        let new_block = (current as *mut u8).add(size) as *mut FreeBlock;
-                        (*new_block).size = block.size - size;
+                    if block.size > total_size + core::mem::size_of::<FreeBlock>() {
+                        let new_block = (current as *mut u8).add(total_size) as *mut FreeBlock;
+                        (*new_block).size = block.size - total_size;
                         (*new_block).next = FREE_LIST;
                         FREE_LIST = new_block;
                     }
 
-                    return Some(current as *mut u8);
+                    // 在分配的块前面存储大小信息，保持与alloc_memory一致
+                    *(current as *mut usize) = size;
+                    return Some((current as *mut u8).add(core::mem::size_of::<usize>()));
                 }
 
                 prev = current;
@@ -134,13 +137,13 @@ impl KernelHeapAllocator {
         }
 
         unsafe {
-            // 获取块的大小信息
+            // 获取块的大小信息，ptr指向的是用户数据，size存储在ptr-8位置
             let size_ptr = ptr.sub(core::mem::size_of::<usize>()) as *mut usize;
             let size = *size_ptr;
 
-            // 将块添加到空闲链表
-            let block = ptr.sub(core::mem::size_of::<usize>()) as *mut FreeBlock;
-            (*block).size = size;
+            // 将块添加到空闲链表，block指向包含size信息的完整块
+            let block = size_ptr as *mut FreeBlock;
+            (*block).size = size + core::mem::size_of::<usize>(); // 存储包含size头部的总大小
             (*block).next = FREE_LIST;
             FREE_LIST = block;
         }
@@ -162,12 +165,7 @@ unsafe impl GlobalAlloc for KernelHeapAllocator {
 
         let ptr = self.alloc_memory(layout.size());
         if ptr.is_null() {
-            // 分配失败，添加调试信息
-            unsafe {
-                let heap_start = HEAP_START;
-                let heap_end = HEAP_END;
-                println!("Heap allocation failed: size={}, heap_start={:#x}, heap_end={:#x}", layout.size(), heap_start, heap_end);
-            }
+            panic!("alloc failed");
         }
         ptr
     }
