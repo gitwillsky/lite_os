@@ -10,20 +10,7 @@ LiteOS is a Rust-based operating system for RISC-V 64-bit architecture with a th
 2. **Kernel** (S-Mode): Core OS with memory management, process control, filesystem, and drivers
 3. **User Space**: Applications and interactive shell
 
-## Build Commands
-
-```bash
-# Build entire project (user → bootloader → kernel)
-make build
-
-# Create filesystem image (64MB FAT32)
-make create-fs
-
-# Clean all build artifacts
-make clean
-```
-
-你不要自己执行 make run 命令，由我来执行
+你不要自己执行 make 命令，由我来执行
 
 ## Architecture
 
