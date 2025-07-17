@@ -39,19 +39,30 @@ unsafe impl GlobalAlloc for HybridAllocator {
             return;
         }
 
-        // Use SLAB allocator for small objects (<=2KB)
-        if layout.size() <= 2048 {
-            if let Some(non_null_ptr) = NonNull::new(ptr) {
-                if SLAB_ALLOCATOR.dealloc(non_null_ptr, layout).is_ok() {
-                    return;
-                }
-            }
-            // Fall back to buddy allocator if SLAB dealloc fails
+        // Determine which allocator owns this pointer by address range
+        if Self::is_buddy_ptr(ptr) {
+            // Pointer is in buddy allocator's memory range
             unsafe { BUDDY_ALLOCATOR.dealloc(ptr, layout); }
         } else {
-            // Use buddy allocator for large objects
-            unsafe { BUDDY_ALLOCATOR.dealloc(ptr, layout); }
+            // Try SLAB allocator for other addresses
+            if let Some(non_null_ptr) = NonNull::new(ptr) {
+                if SLAB_ALLOCATOR.dealloc(non_null_ptr, layout).is_err() {
+                    // This shouldn't happen - pointer doesn't belong to either allocator
+                    panic!("Invalid pointer in dealloc: {:p}", ptr);
+                }
+            }
         }
+    }
+}
+
+impl HybridAllocator {
+    /// Check if a pointer belongs to the buddy allocator's memory range
+    fn is_buddy_ptr(ptr: *mut u8) -> bool {
+        let addr = ptr as usize;
+        let heap_start = unsafe { addr_of_mut!(KERNEL_HEAP_MEMORY) as usize };
+        let heap_end = heap_start + config::MAX_HEAP_SIZE;
+        
+        addr >= heap_start && addr < heap_end
     }
 }
 
