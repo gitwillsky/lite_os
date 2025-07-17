@@ -401,10 +401,12 @@ impl SlabCache {
     unsafe fn deallocate_slab(&mut self, slab_ptr: NonNull<Slab>) {
         // The slab frame will be automatically deallocated when the FrameTracker is dropped
         // We just need to ensure the slab is properly dropped
-        let slab = &mut *slab_ptr.as_ptr();
-        
-        // Manually drop the slab to run its destructor
-        core::ptr::drop_in_place(slab);
+        unsafe {
+            let slab = &mut *slab_ptr.as_ptr();
+            
+            // Manually drop the slab to run its destructor
+            core::ptr::drop_in_place(slab);
+        }
         
         // The _slab_frame field will be automatically deallocated when dropped
         self.total_slabs -= 1;

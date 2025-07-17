@@ -1,5 +1,6 @@
 use core::arch::asm;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 // 系统调用ID定义
 const SYSCALL_READ: usize = 63;
@@ -41,6 +42,12 @@ const SYSCALL_GETEUID: usize = 107;
 const SYSCALL_GETEGID: usize = 108;
 const SYSCALL_SETEUID: usize = 148;
 const SYSCALL_SETEGID: usize = 149;
+
+// 内存管理系统调用
+const SYSCALL_BRK: usize = 214;
+const SYSCALL_SBRK: usize = 215;
+const SYSCALL_MMAP: usize = 223;
+const SYSCALL_MUNMAP: usize = 216;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -111,8 +118,6 @@ pub fn exec(path: &str) -> isize {
 /// - envp: 环境变量数组
 /// 返回值：如果执行成功则返回 0，如果执行失败则返回 -1
 pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
-    use alloc::vec::Vec;
-    
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
     
@@ -391,6 +396,36 @@ pub fn pause() -> isize {
 /// 设置定时器信号
 pub fn alarm(seconds: u32) -> isize {
     syscall(SYSCALL_ALARM, [seconds as usize, 0, 0])
+}
+
+/// 内存管理系统调用
+
+/// 调整程序的数据段大小（堆管理）
+pub fn brk(new_brk: usize) -> isize {
+    syscall(SYSCALL_BRK, [new_brk, 0, 0])
+}
+
+/// 相对调整程序的数据段大小
+pub fn sbrk(increment: isize) -> isize {
+    syscall(SYSCALL_SBRK, [increment as usize, 0, 0])
+}
+
+/// 创建内存映射
+pub fn mmap(addr: usize, length: usize, prot: i32) -> isize {
+    syscall(SYSCALL_MMAP, [addr, length, prot as usize])
+}
+
+/// 解除内存映射
+pub fn munmap(addr: usize, length: usize) -> isize {
+    syscall(SYSCALL_MUNMAP, [addr, length, 0])
+}
+
+/// 内存保护标志
+pub mod mmap_flags {
+    pub const PROT_READ: i32 = 1;
+    pub const PROT_WRITE: i32 = 2;
+    pub const PROT_EXEC: i32 = 4;
+    pub const PROT_NONE: i32 = 0;
 }
 
 // 信号常量

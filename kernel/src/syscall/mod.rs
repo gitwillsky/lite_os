@@ -3,11 +3,14 @@ mod process;
 mod signal;
 mod timer;
 mod dynamic_linking;
+mod memory;
+mod errno;
 
 use fs::*;
 use process::*;
 use signal::*;
 use dynamic_linking::*;
+use memory::*;
 
 pub use signal::sys_sigreturn;
 
@@ -71,6 +74,12 @@ const SYSCALL_DLOPEN: usize = 600;
 const SYSCALL_DLSYM: usize = 601;
 const SYSCALL_DLCLOSE: usize = 602;
 
+// 内存管理系统调用
+const SYSCALL_BRK: usize = 214;
+const SYSCALL_SBRK: usize = 215;
+const SYSCALL_MMAP: usize = 223;
+const SYSCALL_MUNMAP: usize = 216;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -132,6 +141,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_DLOPEN => sys_dlopen(args[0] as *const u8, args[1] as i32),
         SYSCALL_DLSYM => sys_dlsym(args[0], args[1] as *const u8),
         SYSCALL_DLCLOSE => sys_dlclose(args[0]),
+
+        // 内存管理系统调用
+        SYSCALL_BRK => sys_brk(args[0]),
+        SYSCALL_SBRK => sys_sbrk(args[0] as isize),
+        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, 0, -1, 0),
+        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

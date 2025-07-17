@@ -122,6 +122,10 @@ pub struct TaskControlBlockInner {
     pub euid: u32,
     /// 有效组ID (用于权限检查)
     pub egid: u32,
+    /// 用户程序堆的基地址
+    pub heap_base: usize,
+    /// 用户程序堆的顶部地址
+    pub heap_top: usize,
 }
 
 /// Task Control block structure
@@ -174,6 +178,8 @@ impl TaskControlBlock {
                 gid: 0,           // 初始进程为root组
                 euid: 0,          // 有效用户ID初始为root
                 egid: 0,          // 有效组ID初始为root
+                heap_base: 0,     // 堆基地址初始为0
+                heap_top: 0,      // 堆顶地址初始为0
             }),
         };
 
@@ -286,6 +292,8 @@ impl TaskControlBlock {
                 gid: parent_inner.gid,    // 继承父进程组ID
                 euid: parent_inner.euid,  // 继承父进程有效用户ID
                 egid: parent_inner.egid,  // 继承父进程有效组ID
+                heap_base: parent_inner.heap_base,  // 继承父进程堆基地址
+                heap_top: parent_inner.heap_top,    // 继承父进程堆顶地址
             }),
         });
 
