@@ -37,6 +37,8 @@ pub struct Slab {
     free_count: usize,
     /// Frame tracker for memory management
     _frame: FrameTracker,
+    /// Frame tracker for the slab structure itself
+    _slab_frame: Option<FrameTracker>,
     /// Next slab in the cache list (using raw pointer to avoid Vec)
     next: Option<NonNull<Slab>>,
 }
@@ -114,6 +116,7 @@ impl Slab {
             free_head: None,
             free_count: 0,
             _frame: frame,
+            _slab_frame: None,
             next: None,
         };
 
@@ -194,6 +197,8 @@ pub struct SlabCache {
     object_size: usize,
     /// Head of partial slabs list (slabs with free objects)
     partial_head: Option<NonNull<Slab>>,
+    /// Head of full slabs list (slabs with no free objects)
+    full_head: Option<NonNull<Slab>>,
     /// Head of empty slabs list (slabs with all objects free)
     empty_head: Option<NonNull<Slab>>,
     /// Statistics
@@ -207,6 +212,7 @@ impl SlabCache {
         SlabCache {
             object_size,
             partial_head: None,
+            full_head: None,
             empty_head: None,
             total_slabs: 0,
             total_allocated: 0,
@@ -222,10 +228,11 @@ impl SlabCache {
                 if let Some(ptr) = slab.alloc() {
                     self.total_allocated += 1;
 
-                    // If slab becomes full, remove it from partial list
+                    // If slab becomes full, move it to full list
                     if slab.is_full() {
                         self.partial_head = slab.next;
-                        slab.next = None;
+                        slab.next = self.full_head;
+                        self.full_head = Some(partial_ptr);
                     }
 
                     return Ok(ptr);
@@ -242,12 +249,13 @@ impl SlabCache {
                 if let Some(ptr) = slab.alloc() {
                     self.total_allocated += 1;
 
-                    // Move to partial list if not full
-                    if !slab.is_full() {
+                    // Move to appropriate list based on fullness
+                    if slab.is_full() {
+                        slab.next = self.full_head;
+                        self.full_head = Some(empty_ptr);
+                    } else {
                         slab.next = self.partial_head;
                         self.partial_head = Some(empty_ptr);
-                    } else {
-                        slab.next = None;
                     }
 
                     return Ok(ptr);
@@ -261,37 +269,36 @@ impl SlabCache {
 
     /// Create a new slab and allocate from it
     fn create_and_alloc_new_slab(&mut self) -> Result<NonNull<u8>, SlabError> {
-        let mut new_slab = Slab::new(self.object_size)?;
+        // Allocate a frame for the slab structure itself
+        let slab_frame = frame_alloc().ok_or(SlabError::OutOfMemory)?;
+        let slab_ptr = NonNull::new(slab_frame.ppn.get_bytes_array_mut().as_mut_ptr() as *mut Slab)
+            .ok_or(SlabError::OutOfMemory)?;
 
-        if let Some(ptr) = new_slab.alloc() {
-            self.total_allocated += 1;
-            self.total_slabs += 1;
+        // Initialize the slab structure in place
+        unsafe {
+            let slab = &mut *slab_ptr.as_ptr();
+            *slab = Slab::new(self.object_size)?;
+            
+            // Store the frame tracker in the slab for proper cleanup
+            slab._slab_frame = Some(slab_frame);
+            
+            if let Some(ptr) = slab.alloc() {
+                self.total_allocated += 1;
+                self.total_slabs += 1;
 
-            // Allocate memory for the slab using frame allocator
-            let slab_frame = frame_alloc().ok_or(SlabError::OutOfMemory)?;
-            let slab_ptr = NonNull::new(slab_frame.ppn.get_bytes_array_mut().as_mut_ptr() as *mut Slab)
-                .ok_or(SlabError::OutOfMemory)?;
-
-            unsafe {
-                // Move slab to allocated memory
-                core::ptr::write(slab_ptr.as_ptr(), new_slab);
-                let slab = &mut *slab_ptr.as_ptr();
-
-                // Add to partial list if not full
-                if !slab.is_full() {
+                // Add to appropriate list based on fullness
+                if slab.is_full() {
+                    slab.next = self.full_head;
+                    self.full_head = Some(slab_ptr);
+                } else {
                     slab.next = self.partial_head;
                     self.partial_head = Some(slab_ptr);
-                } else {
-                    slab.next = None;
                 }
+
+                Ok(ptr)
+            } else {
+                Err(SlabError::OutOfMemory)
             }
-
-            // Don't forget the frame
-            core::mem::forget(slab_frame);
-
-            Ok(ptr)
-        } else {
-            Err(SlabError::OutOfMemory)
         }
     }
 
@@ -303,31 +310,40 @@ impl SlabCache {
             unsafe {
                 let slab = &mut *slab_ptr.as_ptr();
                 if self.ptr_in_slab(ptr, slab) {
-                    let _was_full = slab.is_full();
                     slab.dealloc(ptr)?;
 
                     // If slab becomes empty, move it to empty list
                     if slab.is_empty() {
-                        // Remove from partial list manually to avoid borrowing issues
-                        let mut prev: Option<NonNull<Slab>> = None;
-                        let mut curr = self.partial_head;
-
-                        while let Some(curr_ptr) = curr {
-                            if curr_ptr == slab_ptr {
-                                if let Some(prev_ptr) = prev {
-                                    (*prev_ptr.as_ptr()).next = slab.next;
-                                } else {
-                                    self.partial_head = slab.next;
-                                }
-                                break;
-                            }
-                            prev = Some(curr_ptr);
-                            curr = (*curr_ptr.as_ptr()).next;
-                        }
-
-                        // Add to empty list
+                        Self::remove_slab_from_list(slab_ptr, &mut self.partial_head);
                         slab.next = self.empty_head;
                         self.empty_head = Some(slab_ptr);
+                        self.cleanup_empty_slabs();
+                    }
+
+                    return Ok(());
+                }
+                current = slab.next;
+            }
+        }
+
+        // Search in full slabs
+        let mut current = self.full_head;
+        while let Some(slab_ptr) = current {
+            unsafe {
+                let slab = &mut *slab_ptr.as_ptr();
+                if self.ptr_in_slab(ptr, slab) {
+                    slab.dealloc(ptr)?;
+
+                    // Full slab now has free space, move to partial list
+                    Self::remove_slab_from_list(slab_ptr, &mut self.full_head);
+                    
+                    if slab.is_empty() {
+                        slab.next = self.empty_head;
+                        self.empty_head = Some(slab_ptr);
+                        self.cleanup_empty_slabs();
+                    } else {
+                        slab.next = self.partial_head;
+                        self.partial_head = Some(slab_ptr);
                     }
 
                     return Ok(());
@@ -354,7 +370,7 @@ impl SlabCache {
 
 
     /// Remove a slab from a linked list
-    fn remove_slab_from_list(&mut self, target: NonNull<Slab>, head: &mut Option<NonNull<Slab>>) {
+    fn remove_slab_from_list(target: NonNull<Slab>, head: &mut Option<NonNull<Slab>>) {
         unsafe {
             if let Some(head_ptr) = *head {
                 if head_ptr == target {
@@ -379,6 +395,49 @@ impl SlabCache {
     /// Check if a pointer belongs to a specific slab - 使用更安全的方式
     fn ptr_in_slab(&self, ptr: NonNull<u8>, slab: &Slab) -> bool {
         slab.get_object_index(ptr).is_ok()
+    }
+
+    /// Safely deallocate a slab structure that was allocated manually
+    unsafe fn deallocate_slab(&mut self, slab_ptr: NonNull<Slab>) {
+        // The slab frame will be automatically deallocated when the FrameTracker is dropped
+        // We just need to ensure the slab is properly dropped
+        let slab = &mut *slab_ptr.as_ptr();
+        
+        // Manually drop the slab to run its destructor
+        core::ptr::drop_in_place(slab);
+        
+        // The _slab_frame field will be automatically deallocated when dropped
+        self.total_slabs -= 1;
+    }
+
+    /// Clean up excess empty slabs to prevent memory waste
+    fn cleanup_empty_slabs(&mut self) {
+        const MAX_EMPTY_SLABS: usize = 2; // Keep at most 2 empty slabs per cache
+        
+        let mut empty_count = 0;
+        let mut current = self.empty_head;
+        
+        // Count empty slabs
+        while let Some(slab_ptr) = current {
+            unsafe {
+                empty_count += 1;
+                current = (*slab_ptr.as_ptr()).next;
+            }
+        }
+        
+        // If we have too many empty slabs, remove some
+        if empty_count > MAX_EMPTY_SLABS {
+            let to_remove = empty_count - MAX_EMPTY_SLABS;
+            
+            for _ in 0..to_remove {
+                if let Some(slab_ptr) = self.empty_head {
+                    unsafe {
+                        self.empty_head = (*slab_ptr.as_ptr()).next;
+                        self.deallocate_slab(slab_ptr);
+                    }
+                }
+            }
+        }
     }
 }
 
