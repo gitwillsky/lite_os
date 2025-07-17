@@ -38,8 +38,6 @@ pub fn init() {
     match init_proc {
         Ok(tcb) => {
             let init_proc_arc = Arc::new(tcb);
-            // 为初始进程初始化线程管理器，因为它可能需要创建线程
-            init_proc_arc.init_thread_manager();
             set_init_proc(init_proc_arc);
         },
         Err(e) => panic!("Failed to create init proc: {:?}", e),

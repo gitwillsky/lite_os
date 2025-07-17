@@ -43,7 +43,7 @@ pub fn trap_handler() {
                     timer::set_next_timer_interrupt();
                     // 处理定时器任务（如alarm等）
                     timer::handle_timer_tasks();
-                    
+
                     // 检查是否需要进行调度
                     if task::should_schedule() {
                         suspend_current_and_run_next();
@@ -82,13 +82,13 @@ pub fn trap_handler() {
                     let cx = task::current_trap_context();
                     let syscall_id = cx.x[17];
                     let args = [cx.x[10], cx.x[11], cx.x[12]];
-                    
+
                     // Only debug important syscalls
                     if syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
-                        debug!("[trap_handler] SystemCall: syscall_id={}, args=[{:#x}, {:#x}, {:#x}]", 
+                        debug!("[trap_handler] SystemCall: syscall_id={}, args=[{:#x}, {:#x}, {:#x}]",
                                syscall_id, args[0], args[1], args[2]);
                     }
-                    
+
                     cx.sepc += 4;
                     let ret = syscall::syscall(syscall_id, args);
 
@@ -96,7 +96,7 @@ pub fn trap_handler() {
                     let cx = task::current_trap_context();
 
                     cx.x[10] = ret as usize;
-                    
+
                     if syscall_id == 64 || syscall_id == 700 || syscall_id == 702 || syscall_id == 703 {
                         debug!("[trap_handler] SystemCall completed: syscall_id={}, ret={}", syscall_id, ret);
                     }
@@ -166,6 +166,8 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
+    debug!("[trap_return] Called, about to return to user space");
+
     // 在返回用户态之前检查信号
     if let Some(task) = task::current_task() {
         let (should_continue, exit_code) = crate::task::check_and_handle_signals();
@@ -184,7 +186,12 @@ pub fn trap_return() -> ! {
 
     let trap_cx_ptr = TRAP_CONTEXT;
     let user_satp = task::current_user_token();
-    
+
+    // 检查trap context状态
+    let trap_cx = task::current_trap_context();
+    debug!("[trap_return] Final trap context check - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
+           trap_cx.sepc, trap_cx.x[2], trap_cx.x[8]);
+
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();

@@ -2,13 +2,13 @@
 #![feature(linkage)]
 #![feature(alloc_error_handler)]
 
-pub mod syscall;
 #[macro_use]
 pub mod console;
 
 #[macro_use]
 extern crate alloc;
 
+pub mod syscall;
 mod lang_item;
 
 use core::ptr::addr_of_mut;

@@ -1,6 +1,7 @@
 use core::arch::asm;
 use alloc::string::String;
 
+
 // 系统调用ID定义
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
@@ -422,6 +423,9 @@ impl Default for ThreadAttr {
 
 /// 线程包装函数 - 实际的线程入口点
 extern "C" fn thread_wrapper() -> ! {
+    // 立即输出一条消息确认我们到达了这里
+    println!("=== THREAD WRAPPER ENTRY ===");
+
     // 从 s0 寄存器获取线程函数指针
     // s0 寄存器是被调用者保存的寄存器，不会被系统调用覆盖
     let thread_func: extern "C" fn() -> i32;
@@ -433,8 +437,13 @@ extern "C" fn thread_wrapper() -> ! {
         );
     }
 
+    // 添加调试信息
+    println!("Thread wrapper started, thread_func address: {:#x}", thread_func as usize);
+
     // 调用实际的线程函数
     let exit_code = thread_func();
+
+    println!("Thread function returned with exit code: {}", exit_code);
 
     // 线程函数执行完毕，退出线程
     thread_exit(exit_code);

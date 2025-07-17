@@ -12,6 +12,7 @@ static mut GLOBAL_COUNTER: usize = 0;
 
 /// Thread function 1: Counter
 extern "C" fn counter_thread() -> i32 {
+    println!("Counter thread started!");
     for i in 0..5 {
         unsafe {
             GLOBAL_COUNTER += 1;

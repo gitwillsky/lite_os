@@ -60,6 +60,12 @@ pub fn sys_thread_create(entry_point: usize, thread_func: usize, attr_ptr: *cons
             None => return -1,
         };
 
+        // 检查是否是空闲进程，空闲进程不应该创建线程
+        if current_task.get_pid() == 0 {
+            debug!("Idle process (PID 0) cannot create threads");
+            return -1;
+        }
+
         // 确保当前任务支持多线程
         current_task.init_thread_manager();
     }

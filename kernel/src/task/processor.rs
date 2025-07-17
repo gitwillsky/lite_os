@@ -156,16 +156,63 @@ pub fn suspend_current_and_run_next() {
 
     // 处理多线程进程的线程调度
     if let Some(thread_manager) = task_inner.thread_manager.as_mut() {
-        // 多线程进程：尝试切换到下一个线程
-        if let Some(current_thread) = thread_manager.get_current_thread() {
-            // 设置当前线程状态为就绪
-            current_thread.set_status(crate::thread::ThreadStatus::Ready);
-            // 将当前线程加入就绪队列
-            thread_manager.add_thread_to_ready_queue(current_thread.get_thread_id());
+        // 获取当前正在运行的线程
+        let current_thread = thread_manager.get_current_thread().map(|t| t.clone());
+
+                        // 如果有当前线程，设置其状态
+        if let Some(current_thread) = &current_thread {
+            // 设置当前线程状态为就绪（除非它是被阻塞的）
+            if current_thread.get_status() == crate::thread::ThreadStatus::Running {
+                current_thread.set_status(crate::thread::ThreadStatus::Ready);
+                // 将当前线程重新加入就绪队列
+                thread_manager.add_thread_to_ready_queue(current_thread.get_thread_id());
+            }
         }
 
         // 尝试调度下一个线程
         thread_manager.schedule_next_no_switch();
+
+        // 获取新选择的线程
+        let new_thread = thread_manager.get_current_thread().map(|t| t.clone());
+
+        // 释放thread_manager的借用
+        drop(thread_manager);
+
+        // 现在可以安全地访问task_inner的其他字段
+        if let Some(current_thread) = current_thread {
+            // 保存当前线程的trap context
+            let trap_cx = task_inner.mm.trap_cx_ppn.get_mut::<TrapContext>();
+            current_thread.save_trap_context(trap_cx);
+        }
+
+                // 如果选择了新线程，加载其trap context并直接返回用户空间
+        if let Some(new_thread) = new_thread {
+            let trap_cx = task_inner.mm.trap_cx_ppn.get_mut::<TrapContext>();
+            new_thread.load_trap_context(trap_cx);
+            debug!("Switched to thread {} in process PID {}",
+                   new_thread.get_thread_id().0, task.get_pid());
+
+            // 检查trap context状态
+            debug!("Loaded thread context - sepc: {:#x}, sp: {:#x}, s0: {:#x}",
+                   trap_cx.sepc, trap_cx.x[2], trap_cx.x[8]);
+
+                                    // 确保当前任务保持运行状态，以便新线程能够执行
+            task_inner.sched.task_status = TaskStatus::Running;
+            drop(task_inner);
+
+            // 将当前任务重新设置为当前执行的任务
+            let mut processor = PROCESSOR.lock();
+            processor.current = Some(task);
+            drop(processor);
+
+            debug!("Thread context loaded, task status set to Running, skipping further scheduling");
+            // 直接返回，跳过调度步骤，让当前trap处理流程返回到用户空间
+            return;
+        } else {
+            // 如果没有可用线程，这个进程应该被阻塞
+            debug!("No threads available in process PID {}, marking as sleeping", task.get_pid());
+            task_inner.sched.task_status = TaskStatus::Sleeping;
+        }
     } else {
         // 对于单线程进程或系统任务（如PID 0），不需要线程管理器
         // 这是正常情况，不需要打印调试信息

@@ -305,6 +305,38 @@ impl ThreadControlBlock {
         // 这里可以添加上下文切换后的清理工作
         // 例如恢复浮点寄存器状态等
     }
+
+    /// 获取线程的陷入上下文
+    pub fn get_trap_context(&self) -> *mut TrapContext {
+        let inner = self.inner.lock();
+        inner.trap_cx_ppn.get_mut::<TrapContext>()
+    }
+
+    /// 保存trap context到线程的私有trap context中
+    pub fn save_trap_context(&self, process_trap_cx: &TrapContext) {
+        let inner = self.inner.lock();
+        let thread_trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
+        // 手动复制TrapContext的字段
+        thread_trap_cx.x = process_trap_cx.x;
+        thread_trap_cx.sstatus = process_trap_cx.sstatus;
+        thread_trap_cx.sepc = process_trap_cx.sepc;
+        thread_trap_cx.kernel_satp = process_trap_cx.kernel_satp;
+        thread_trap_cx.kernel_sp = process_trap_cx.kernel_sp;
+        thread_trap_cx.trap_handler = process_trap_cx.trap_handler;
+    }
+
+    /// 从线程的私有trap context加载到进程的trap context中
+    pub fn load_trap_context(&self, process_trap_cx: &mut TrapContext) {
+        let inner = self.inner.lock();
+        let thread_trap_cx = inner.trap_cx_ppn.get_mut::<TrapContext>();
+        // 手动复制TrapContext的字段
+        process_trap_cx.x = thread_trap_cx.x;
+        process_trap_cx.sstatus = thread_trap_cx.sstatus;
+        process_trap_cx.sepc = thread_trap_cx.sepc;
+        process_trap_cx.kernel_satp = thread_trap_cx.kernel_satp;
+        process_trap_cx.kernel_sp = thread_trap_cx.kernel_sp;
+        process_trap_cx.trap_handler = thread_trap_cx.trap_handler;
+    }
 }
 
 impl ThreadControlBlockInner {
