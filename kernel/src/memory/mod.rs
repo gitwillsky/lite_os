@@ -13,6 +13,7 @@ pub mod frame_allocator;
 pub mod heap_allocator;
 pub mod mm;
 pub mod page_table;
+pub mod slab_allocator;
 
 pub use config::*;
 unsafe extern "C" {
@@ -47,6 +48,9 @@ pub fn init() {
 
     heap_allocator::init();
     frame_allocator::init(kernel_end_addr, memory_end_addr);
+    
+    // Initialize SLAB allocator after frame allocator is ready
+    heap_allocator::init_slab();
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();

@@ -10,7 +10,10 @@ LiteOS is a Rust-based operating system for RISC-V 64-bit architecture with a th
 2. **Kernel** (S-Mode): Core OS with memory management, process control, filesystem, and drivers
 3. **User Space**: Applications and interactive shell
 
-你不要自己执行 make 命令，由我来执行
+记住：
+1. 你不要自己执行 make 命令，由我来执行
+2. 任何时候都不要简化实现，mock 数据
+
 
 ## Architecture
 
