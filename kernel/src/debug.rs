@@ -74,9 +74,8 @@ static mut SYMBOL_TABLE: Option<SymbolTable> = None;
 pub fn init_symbol_table() {
     let mut table = SymbolTable::new();
     
-    // 添加一些重要的内核符号
+    // 添加基本的内存段信息
     unsafe extern "C" {
-        fn kmain();
         fn stext();
         fn etext();
         fn sdata();
@@ -86,21 +85,16 @@ pub fn init_symbol_table() {
     }
     
     unsafe {
-        // 添加主要函数
-        table.add_symbol(String::from("kmain"), kmain as *const () as usize, 0x1000);
-        
         // 添加内存段
         table.add_symbol(String::from(".text"), stext as *const () as usize, etext as usize - stext as usize);
         table.add_symbol(String::from(".data"), sdata as *const () as usize, edata as usize - sdata as usize);
         table.add_symbol(String::from(".bss"), sbss as *const () as usize, ebss as usize - sbss as usize);
         
-        // 添加一些运行时可以获取的函数地址
-        table.add_symbol(String::from("frame_alloc"), crate::memory::frame_allocator::alloc as *const () as usize, 0x50);
-        table.add_symbol(String::from("memory::init"), crate::memory::init as *const () as usize, 0x100);
-        table.add_symbol(String::from("task::init"), crate::task::init as *const () as usize, 0x100);
-        
         SYMBOL_TABLE = Some(table);
     }
+    
+    // 解析ELF符号表来添加详细的函数符号
+    try_parse_debug_info();
 }
 
 /// 获取符号表引用
@@ -120,10 +114,140 @@ pub fn format_address(addr: usize) -> String {
     }
 }
 
-/// 尝试从 ELF 调试信息中解析更多符号
-/// 这是一个简化版本，实际实现可能需要解析 DWARF 调试信息
+/// ELF64 符号表项 (24 bytes on 64-bit)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct ElfSymbol {
+    name: u32,      // Symbol name (string table index) - 4 bytes
+    info: u8,       // Symbol type and binding - 1 byte  
+    other: u8,      // Symbol visibility - 1 byte
+    shndx: u16,     // Section index - 2 bytes
+    value: u64,     // Symbol value (address) - 8 bytes
+    size: u64,      // Symbol size - 8 bytes
+}
+
+/// 使用内联汇编获取符号地址，避免PC相对寻址问题
+#[inline(never)]
+unsafe fn get_symbol_addresses() -> (usize, usize, usize, usize) {
+    let mut ssymtab_addr: usize;
+    let mut esymtab_addr: usize;
+    let mut sstrtab_addr: usize;
+    let mut estrtab_addr: usize;
+    
+    // 使用内联汇编加载绝对地址
+    core::arch::asm!(
+        "lui {ssymtab}, %hi(ssymtab)",
+        "addi {ssymtab}, {ssymtab}, %lo(ssymtab)",
+        "lui {esymtab}, %hi(esymtab)", 
+        "addi {esymtab}, {esymtab}, %lo(esymtab)",
+        "lui {sstrtab}, %hi(sstrtab)",
+        "addi {sstrtab}, {sstrtab}, %lo(sstrtab)",
+        "lui {estrtab}, %hi(estrtab)",
+        "addi {estrtab}, {estrtab}, %lo(estrtab)",
+        ssymtab = out(reg) ssymtab_addr,
+        esymtab = out(reg) esymtab_addr,
+        sstrtab = out(reg) sstrtab_addr,
+        estrtab = out(reg) estrtab_addr,
+        options(pure, nomem, nostack)
+    );
+    
+    (ssymtab_addr, esymtab_addr, sstrtab_addr, estrtab_addr)
+}
+
+/// 解析内核ELF符号表
 pub fn try_parse_debug_info() {
-    // 这里可以添加更复杂的调试信息解析逻辑
-    // 比如解析 .symtab, .debug_info 等段
-    warn!("Debug info parsing not yet implemented");
+    info!("Parsing kernel ELF symbol table...");
+    
+    unsafe {
+        let (symtab_start, symtab_end, strtab_start, strtab_end) = get_symbol_addresses();
+        
+        debug!("Symbol table: {:#x} - {:#x} (size: {})", 
+               symtab_start, symtab_end, symtab_end - symtab_start);
+        debug!("String table: {:#x} - {:#x} (size: {})", 
+               strtab_start, strtab_end, strtab_end - strtab_start);
+               
+        if symtab_end > symtab_start && strtab_end > strtab_start {
+            parse_symbol_table(symtab_start, symtab_end, strtab_start, strtab_end);
+        } else {
+            warn!("No valid symbol table found, using minimal symbols only");
+        }
+    }
+}
+
+/// 解析符号表并添加到全局符号表
+unsafe fn parse_symbol_table(
+    symtab_start: usize,
+    symtab_end: usize,
+    strtab_start: usize,
+    strtab_end: usize,
+) {
+    let symtab_size = symtab_end - symtab_start;
+    let symbol_count = symtab_size / core::mem::size_of::<ElfSymbol>();
+    
+    info!("Found {} symbols in symbol table", symbol_count);
+    
+    // 获取当前的符号表，如果不存在则创建新的
+    let table_ptr = core::ptr::addr_of_mut!(SYMBOL_TABLE);
+    unsafe {
+        if let Some(table) = &mut *table_ptr {
+            let symbols = unsafe {
+                core::slice::from_raw_parts(
+                    symtab_start as *const ElfSymbol,
+                    symbol_count
+                )
+            };
+            
+            let strtab = unsafe {
+                core::slice::from_raw_parts(
+                    strtab_start as *const u8,
+                    strtab_end - strtab_start
+                )
+            };
+            
+            let mut added_count = 0;
+            
+            for symbol in symbols {
+                // 只处理函数和对象符号
+                let symbol_type = symbol.info & 0xf;
+                if symbol_type == 1 || symbol_type == 2 { // STT_OBJECT or STT_FUNC
+                    if let Some(name) = unsafe { get_symbol_name(strtab, symbol.name as usize) } {
+                        // 过滤掉一些不需要的符号
+                        if !name.is_empty() && 
+                           !name.starts_with('.') && 
+                           !name.starts_with('_') &&
+                           symbol.value > 0 {
+                            table.add_symbol(name, symbol.value as usize, symbol.size as usize);
+                            added_count += 1;
+                        }
+                    }
+                }
+            }
+            
+            info!("Added {} symbols from ELF symbol table", added_count);
+        }
+    }
+}
+
+/// 从字符串表中获取符号名称
+unsafe fn get_symbol_name(strtab: &[u8], offset: usize) -> Option<String> {
+    if offset >= strtab.len() {
+        return None;
+    }
+    
+    // 查找以null结尾的字符串
+    let mut end = offset;
+    while end < strtab.len() && strtab[end] != 0 {
+        end += 1;
+    }
+    
+    if end > offset {
+        // 将字节转换为字符串
+        if let Ok(name) = core::str::from_utf8(&strtab[offset..end]) {
+            Some(String::from(name))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }

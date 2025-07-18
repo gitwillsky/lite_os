@@ -22,6 +22,20 @@ SECTIONS {
         . = ALIGN(4K);
         *(.text .text.*)
     }
+    
+    /* 保留调试信息段 - 紧跟在text段之后以避免重定位范围问题 */
+    .symtab : {
+        ssymtab = .;
+        *(.symtab)
+        esymtab = .;
+    }
+    
+    .strtab : {
+        sstrtab = .;
+        *(.strtab)
+        estrtab = .;
+    }
+    
     . = ALIGN(4K);
     etext = .;
 
@@ -66,5 +80,10 @@ SECTIONS {
     /DISCARD/ : {
         /* 丢弃语言异常处理的栈展开信息 */
         *(.eh_frame)
+        /* 暂时丢弃较大的调试段以避免链接器范围问题 */
+        *(.debug_info)
+        *(.debug_info.*)
+        *(.debug_line)
+        *(.debug_line.*)
     }
 }
