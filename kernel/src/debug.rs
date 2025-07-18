@@ -1,5 +1,11 @@
 use alloc::{format, string::String, vec::Vec};
 
+
+// 包含构建时生成的符号文件
+include!(concat!(env!("OUT_DIR"), "/symbols.rs"));
+
+
+
 /// 符号信息结构
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -74,7 +80,7 @@ static mut SYMBOL_TABLE: Option<SymbolTable> = None;
 pub fn init_symbol_table() {
     info!("Initializing symbol table...");
     let mut table = SymbolTable::new();
-    
+
     // 添加基本的内存段信息
     unsafe extern "C" {
         fn stext();
@@ -84,27 +90,27 @@ pub fn init_symbol_table() {
         fn sbss();
         fn ebss();
     }
-    
+
     unsafe {
         // 添加内存段
         table.add_symbol(String::from(".text"), stext as *const () as usize, etext as usize - stext as usize);
         table.add_symbol(String::from(".data"), sdata as *const () as usize, edata as usize - sdata as usize);
         table.add_symbol(String::from(".bss"), sbss as *const () as usize, ebss as usize - sbss as usize);
-        
+
         SYMBOL_TABLE = Some(table);
     }
-    
+
     info!("Basic symbol table created, parsing ELF symbols...");
-    
+
     // 解析ELF符号表来添加详细的函数符号
     try_parse_debug_info();
-    
+
     info!("Symbol table initialization complete");
 }
 
 /// 获取符号表引用
 pub fn get_symbol_table() -> Option<&'static SymbolTable> {
-    unsafe { 
+    unsafe {
         let ptr = core::ptr::addr_of!(SYMBOL_TABLE);
         (*ptr).as_ref()
     }
@@ -123,10 +129,10 @@ pub fn format_address(addr: usize) -> String {
 /// 加载构建时生成的符号信息
 pub fn try_parse_debug_info() {
     info!("Loading kernel symbol information...");
-    
+
     // 使用构建时生成的符号信息，避免RISC-V重定位问题
     load_build_time_symbols();
-    
+
     info!("Symbol information loaded successfully");
 }
 
@@ -140,7 +146,4 @@ fn load_build_time_symbols() {
         }
     }
 }
-
-// 包含构建时生成的符号文件
-include!(concat!(env!("OUT_DIR"), "/symbols.rs"));
 
