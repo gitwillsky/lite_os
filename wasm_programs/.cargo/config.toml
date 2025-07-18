@@ -1,0 +1,10 @@
+[build]
+target = "wasm32-wasip1"
+
+[target.wasm32-wasip1]
+rustflags = [
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--export-memory", 
+    "-C", "target-feature=+bulk-memory",
+    "-C", "opt-level=s",
+]

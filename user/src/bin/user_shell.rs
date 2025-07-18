@@ -6,7 +6,7 @@ extern crate alloc;
 #[macro_use]
 extern crate user_lib;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use user_lib::{exec, fork, read, wait_pid, yield_, open, close, dup2};
 
@@ -104,6 +104,8 @@ fn main() -> i32 {
                         handle_cd_command(&line);
                     } else if line.starts_with("pwd") {
                         handle_pwd_command(&line);
+                    } else if line.starts_with("help") {
+                        handle_help_command(&line);
                     } else {
                         // 执行外部程序，支持重定向
                         execute_command_with_redirection(&line);
@@ -187,12 +189,69 @@ fn parse_command_with_redirection(line: &str) -> (String, Option<String>, Option
     (command, output_file, input_file)
 }
 
+// 检查是否为 WASM 文件
+fn is_wasm_file(filename: &str) -> bool {
+    filename.ends_with(".wasm")
+}
+
+// 检查文件是否存在（简化版本）
+fn file_exists(filename: &str) -> bool {
+    let fd = open(filename, 0); // O_RDONLY
+    if fd >= 0 {
+        close(fd as usize);
+        true
+    } else {
+        false
+    }
+}
+
 // 执行带重定向的命令
 fn execute_command_with_redirection(line: &str) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
     
     if command.is_empty() {
         return;
+    }
+    
+    // 检查是否为直接执行 WASM 文件
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    if !parts.is_empty() {
+        let first_part = parts[0];
+        
+        // 如果命令是 .wasm 文件，自动使用 wasm_runtime 执行
+        if is_wasm_file(first_part) {
+            if file_exists(first_part) {
+                // 构造新的命令：wasm_runtime <wasm_file> [args...]
+                let mut wasm_command = String::from("wasm_runtime ");
+                wasm_command.push_str(&command);
+                execute_wasm_command(&wasm_command, output_file, input_file);
+                return;
+            } else {
+                println!("shell: {}: No such file or directory", first_part);
+                return;
+            }
+        }
+        
+        // 如果命令以 ./ 开头且是 .wasm 文件，也自动使用 wasm_runtime
+        if first_part.starts_with("./") && is_wasm_file(first_part) {
+            let wasm_file = &first_part[2..]; // 去掉 "./"
+            if file_exists(wasm_file) {
+                let mut wasm_command = String::from("wasm_runtime ");
+                wasm_command.push_str(wasm_file);
+                
+                // 添加其他参数
+                for i in 1..parts.len() {
+                    wasm_command.push(' ');
+                    wasm_command.push_str(parts[i]);
+                }
+                
+                execute_wasm_command(&wasm_command, output_file, input_file);
+                return;
+            } else {
+                println!("shell: {}: No such file or directory", wasm_file);
+                return;
+            }
+        }
     }
     
     let mut cmd_with_null = command.clone();
@@ -249,6 +308,64 @@ fn execute_command_with_redirection(line: &str) {
         assert_eq!(pid, exit_pid);
         if exit_code != 0 {
             println!("Shell: Process {} exited with code {}", pid, exit_code);
+        }
+    }
+}
+
+// 执行 WASM 命令（通过 wasm_runtime）
+fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_file: Option<String>) {
+    let mut cmd_with_null = wasm_command.to_string();
+    cmd_with_null.push('\0');
+    
+    let pid = fork();
+    if pid == 0 {
+        // 子进程：设置重定向并执行 WASM 运行时
+        
+        // 设置输入重定向
+        if let Some(input_filename) = input_file {
+            let mut input_filename_with_null = input_filename;
+            input_filename_with_null.push('\0');
+            let input_fd = open(input_filename_with_null.as_str(), 0);
+            if input_fd < 0 {
+                println!("shell: {}: No such file or directory", input_filename_with_null.trim_end_matches('\0'));
+                return;
+            }
+            if dup2(input_fd as usize, 0) < 0 {
+                println!("shell: failed to redirect input");
+                close(input_fd as usize);
+                return;
+            }
+            close(input_fd as usize);
+        }
+        
+        // 设置输出重定向
+        if let Some(output_filename) = output_file {
+            let mut output_filename_with_null = output_filename;
+            output_filename_with_null.push('\0');
+            let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
+            if output_fd < 0 {
+                println!("shell: failed to create output file: {}", output_filename_with_null.trim_end_matches('\0'));
+                return;
+            }
+            if dup2(output_fd as usize, 1) < 0 {
+                println!("shell: failed to redirect output");
+                close(output_fd as usize);
+                return;
+            }
+            close(output_fd as usize);
+        }
+        
+        // 执行 WASM 运行时
+        if exec(cmd_with_null.as_str()) == -1 {
+            println!("wasm_runtime not found - please ensure wasm_runtime is in the filesystem");
+        }
+    } else {
+        // 父进程：等待子进程完成
+        let mut exit_code: i32 = 0;
+        let exit_pid = wait_pid(pid as usize, &mut exit_code);
+        assert_eq!(pid, exit_pid);
+        if exit_code != 0 {
+            println!("Shell: WASM process {} exited with code {}", pid, exit_code);
         }
     }
 }
@@ -355,4 +472,47 @@ fn handle_pwd_command(_line: &str) {
     } else {
         println!("pwd: Cannot get current directory");
     }
+}
+
+fn handle_help_command(_line: &str) {
+    println!("LiteOS Shell - Built-in Commands:");
+    println!("================================");
+    println!("");
+    println!("File Operations:");
+    println!("  ls [dir]           - List directory contents");
+    println!("  cat <file>         - Display file contents");
+    println!("  mkdir <dir>        - Create directory");
+    println!("  rm <file>          - Remove file");
+    println!("  pwd                - Print working directory");
+    println!("  cd [dir]           - Change directory");
+    println!("");
+    println!("Program Execution:");
+    println!("  <program>          - Execute ELF binary");
+    println!("  <file>.wasm        - Execute WASM program (auto-detected)");
+    println!("  ./<file>.wasm      - Execute WASM program with relative path");
+    println!("  wasm_runtime <file>.wasm - Execute WASM program explicitly");
+    println!("");
+    println!("I/O Redirection:");
+    println!("  <command> > file   - Redirect output to file");
+    println!("  <command> < file   - Redirect input from file");
+    println!("");
+    println!("Examples:");
+    println!("  hello_wasm.wasm              - Run Rust WASM test program");
+    println!("  ./math_test.wasm             - Run math operations test");
+    println!("  wasi_test.wasm > output.txt  - Run WASI test, save output");
+    println!("  file_test.wasm               - Run file operations test");
+    println!("");
+    println!("Available WASM Programs:");
+    println!("  hello_wasm.wasm    - Basic Rust WASM hello world");
+    println!("  wasi_test.wasm     - Comprehensive WASI functionality test");
+    println!("  math_test.wasm     - Mathematical operations test");
+    println!("  file_test.wasm     - File I/O operations test");
+    println!("  simple.wasm        - Minimal WASM (returns 42)");
+    println!("  hello.wasm         - Simple hello message");
+    println!("");
+    println!("Other Commands:");
+    println!("  help               - Show this help message");
+    println!("");
+    println!("Note: WASM files are automatically detected and executed");
+    println!("      through the wasm_runtime when run directly.");
 }

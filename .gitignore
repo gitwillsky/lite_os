@@ -3,3 +3,4 @@ target/
 link_app.S
 *.img
 virtio-drivers/
+*.wasm

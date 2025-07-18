@@ -29,7 +29,7 @@ gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'
 
 create-fs:
-	python3 create_fs.py
+	python3 create_fs.py create
 
 addr2line:
 	@llvm-addr2line -e target/riscv64gc-unknown-none-elf/debug/kernel -f -p $(ADDR)
