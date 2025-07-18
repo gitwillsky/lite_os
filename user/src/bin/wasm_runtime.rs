@@ -6,19 +6,19 @@ extern crate user_lib;
 extern crate alloc;
 
 mod wasm_runtime {
-    pub mod wasi;
     pub mod engine;
     pub mod filesystem;
     pub mod process;
     pub mod runtime;
+    pub mod wasi;
 }
 
-use user_lib::*;
-use wasm_runtime::runtime::WasmRuntimeService;
-use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec;
+use alloc::vec::Vec;
+use user_lib::*;
+use wasm_runtime::runtime::WasmRuntimeService;
 
 /// 运行时参数结构
 #[derive(Debug)]
@@ -31,67 +31,118 @@ pub struct RuntimeArgs {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // 使用改进的参数解析，支持从环境中获取真实参数
     let args = parse_real_runtime_args();
-    wasm_runtime_main(args)
+    if let Some(args) = args {
+        wasm_runtime_main(args)
+    } else {
+        println!("Error: No WASM file specified");
+        println!("Usage: wasm_runtime <wasm_file> [args...]");
+        1
+    }
 }
 
 /// 解析真实的运行时参数
-/// 通过环境变量和预定义配置获取参数
-fn parse_real_runtime_args() -> RuntimeArgs {
-    // 从当前工作目录或预定义位置查找WASM文件
-    let wasm_file = find_wasm_file_in_environment();
-    let (program_name, wasm_args) = parse_execution_context();
+/// 通过命令行参数获取WASM文件名和参数
+fn parse_real_runtime_args() -> Option<RuntimeArgs> {
+    // 解析命令行参数
+    let (program_name, wasm_file, wasm_args) = parse_command_line_args();
+    if wasm_file.is_empty() {
+        return None;
+    }
     let env_vars = get_real_environment_variables();
 
-    RuntimeArgs {
+    Some(RuntimeArgs {
         program_name,
         wasm_file,
         wasm_args,
         env_vars,
-    }
+    })
 }
 
-/// 在环境中查找WASM文件
-fn find_wasm_file_in_environment() -> String {
-    use wasm_runtime::filesystem::FileSystem;
-
-    // 尝试查找的WASM文件路径
-    let candidates = [
-        "hello.wasm",
-        "test.wasm",
-        "example.wasm",
-        "/hello.wasm",
-        "/test.wasm",
-    ];
-
-    for &candidate in &candidates {
-        if FileSystem::file_exists(candidate) {
-            println!("Found WASM file: {}", candidate);
-            return candidate.to_string();
-        }
-    }
-
-    // 如果没有找到，使用默认名称
-    println!("No WASM file found, using default: hello.wasm");
-    "hello.wasm".to_string()
-}
-
-/// 解析执行上下文
-fn parse_execution_context() -> (String, Vec<String>) {
+/// 解析命令行参数
+/// 从execve传递的参数中获取WASM文件名和参数
+fn parse_command_line_args() -> (String, String, Vec<String>) {
     use user_lib::*;
 
     // 获取当前进程信息
     let pid = getpid();
     let program_name = alloc::format!("wasm_runtime[{}]", pid);
 
-    // 基于进程ID生成测试参数（模拟实际参数传递）
-    let wasm_args = vec![
-        alloc::format!("--pid={}", pid),
-        "--mode=interactive".to_string(),
-    ];
+    // 获取真实的命令行参数
+    // 我们需要实现一个函数来获取传递给进程的argc/argv
+    let (wasm_file, wasm_args) = get_process_arguments();
 
-    (program_name, wasm_args)
+    if wasm_file.is_empty() {
+        println!("Error: No WASM file specified");
+        println!("Usage: wasm_runtime <wasm_file> [args...]");
+        // 返回空字符串，让主函数处理错误
+        return (program_name, String::new(), vec![]);
+    }
+
+    println!("Parsed WASM file from arguments: {}", wasm_file);
+
+    (program_name, wasm_file, wasm_args)
+}
+
+/// 获取进程的命令行参数
+/// 返回 (wasm_file, args)
+fn get_process_arguments() -> (String, Vec<String>) {
+    use user_lib::*;
+
+    // 使用新的系统调用获取命令行参数
+    let mut argc = 0usize;
+    let mut argv_buf = [0u8; 1024];
+
+    let result = get_args(&mut argc, &mut argv_buf);
+    if result > 0 && argc > 1 {
+        // 解析argv_buf中的参数
+        let mut args = Vec::new();
+        let mut offset = 0;
+
+        for _ in 0..argc {
+            if offset >= argv_buf.len() {
+                break;
+            }
+
+            // 找到下一个null终止符
+            let arg_end = argv_buf[offset..]
+                .iter()
+                .position(|&x| x == 0)
+                .unwrap_or(argv_buf.len() - offset);
+
+            if arg_end > 0 {
+                if let Ok(arg_str) = core::str::from_utf8(&argv_buf[offset..offset + arg_end]) {
+                    args.push(arg_str.to_string());
+                }
+            }
+
+            offset += arg_end + 1;
+        }
+
+        // 第一个参数通常是程序名，第二个参数应该是WASM文件名
+        if args.len() > 1 {
+            let wasm_file = args[1].clone();
+            let wasm_args = if args.len() > 2 {
+                args[2..].to_vec()
+            } else {
+                vec![]
+            };
+
+            println!("Parsed {} arguments from system call:", argc);
+            for (i, arg) in args.iter().enumerate() {
+                println!("  argv[{}] = {}", i, arg);
+            }
+
+            return (wasm_file, wasm_args);
+        }
+    }
+
+    println!(
+        "Failed to get arguments via system call, argc={}, result={}",
+        argc, result
+    );
+
+    (String::new(), vec![])
 }
 
 /// 获取真实的环境变量

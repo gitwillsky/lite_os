@@ -8,7 +8,7 @@ extern crate user_lib;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{exec, fork, read, wait_pid, yield_, open, close, dup2};
+use user_lib::{exec, execve, fork, read, wait_pid, yield_, open, close, dup2};
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
@@ -314,8 +314,14 @@ fn execute_command_with_redirection(line: &str) {
 
 // 执行 WASM 命令（通过 wasm_runtime）
 fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_file: Option<String>) {
-    let mut cmd_with_null = wasm_command.to_string();
-    cmd_with_null.push('\0');
+    // 解析命令和参数
+    let parts: Vec<&str> = wasm_command.split_whitespace().collect();
+    if parts.is_empty() {
+        return;
+    }
+    
+    let program = parts[0]; // "wasm_runtime"
+    let args: Vec<&str> = parts.iter().map(|&s| s).collect();
     
     let pid = fork();
     if pid == 0 {
@@ -355,8 +361,9 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
             close(output_fd as usize);
         }
         
-        // 执行 WASM 运行时
-        if exec(cmd_with_null.as_str()) == -1 {
+        // 执行 WASM 运行时 - 使用 execve 来传递参数
+        let empty_env: Vec<&str> = vec![];
+        if execve(program, &args, &empty_env) == -1 {
             println!("wasm_runtime not found - please ensure wasm_runtime is in the filesystem");
         }
     } else {

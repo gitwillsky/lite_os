@@ -38,9 +38,9 @@ def create_fat32_filesystem(filename, size_mb=128):
 
         # macOS 使用 hdiutil
         if os.uname().sysname == 'Darwin':
-            # 在macOS上挂载FAT32映像
+            # 在macOS上挂载FAT32映像，允许写入
             result = subprocess.run(['hdiutil', 'attach', '-mountpoint', mount_point,
-                                   '-nobrowse', '-quiet', filename],
+                                   '-nobrowse', '-quiet', '-readwrite', filename],
                                   capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"✗ 挂载失败: {result.stderr}")
@@ -191,7 +191,7 @@ def list_fs_contents(filename):
         # 挂载文件系统
         if os.uname().sysname == 'Darwin':
             result = subprocess.run(['hdiutil', 'attach', '-mountpoint', mount_point,
-                                   '-nobrowse', '-quiet', filename],
+                                   '-nobrowse', '-quiet', '-readwrite', filename],
                                   capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"✗ 挂载失败: {result.stderr}")
@@ -255,7 +255,7 @@ def add_files_to_fs(filename, files):
         # 挂载文件系统
         if os.uname().sysname == 'Darwin':
             result = subprocess.run(['hdiutil', 'attach', '-mountpoint', mount_point,
-                                   '-nobrowse', '-quiet', filename],
+                                   '-nobrowse', '-quiet', '-readwrite', filename],
                                   capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"✗ 挂载失败: {result.stderr}")

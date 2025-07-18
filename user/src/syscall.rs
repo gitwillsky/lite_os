@@ -32,6 +32,7 @@ const SYSCALL_FLOCK: usize = 143;
 const SYSCALL_MKFIFO: usize = 506;
 const SYSCALL_CHMOD: usize = 507;
 const SYSCALL_CHOWN: usize = 508;
+const SYSCALL_GET_ARGS: usize = 509;
 
 // 权限相关系统调用
 const SYSCALL_GETUID: usize = 102;
@@ -324,6 +325,12 @@ pub fn chdir(path: &str) -> isize {
 /// 获取当前工作目录
 pub fn getcwd(buf: &mut [u8]) -> isize {
     syscall(SYSCALL_GETCWD, [buf.as_mut_ptr() as usize, buf.len(), 0])
+}
+
+/// 获取进程启动时的命令行参数
+/// 返回: 参数个数，如果出错则返回负数
+pub fn get_args(argc_buf: &mut usize, argv_buf: &mut [u8]) -> isize {
+    syscall(SYSCALL_GET_ARGS, [argc_buf as *mut usize as usize, argv_buf.as_mut_ptr() as usize, argv_buf.len()])
 }
 
 /// 复制文件描述符
