@@ -31,7 +31,7 @@ done
 # 添加所有源码内的kernel模块函数
 rust-nm --print-size --radix=x --defined-only --demangle "$KERNEL_PATH" | grep -E " [Tt] " | \
     grep "kernel::" | \
-    grep -v "closure" | grep -v "drop_in_place" | grep -v "fmt::" | \
+    # grep -v "closure" | grep -v "drop_in_place" | grep -v "fmt::" | \
     while read addr size type name; do
     addr_hex="0x$addr"
     size_dec=$((0x$size))

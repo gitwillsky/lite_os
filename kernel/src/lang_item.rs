@@ -16,7 +16,7 @@ fn is_panic_function(addr: usize) -> bool {
     if let Some(table) = debug::get_symbol_table() {
         if let Some(symbol) = table.find_symbol(addr) {
             let name = &symbol.name;
-            
+
             // 过滤掉panic处理机制相关的函数
             return name.contains("rust_begin_unwind") ||
                    name.contains("OUTLINED_FUNCTION") ||
@@ -26,7 +26,7 @@ fn is_panic_function(addr: usize) -> bool {
                    name.starts_with("_RNvCsgdvzLFu2dVu_7___rustc17rust_begin_unwind");
         }
     }
-    
+
     false
 }
 
@@ -35,91 +35,91 @@ fn print_stack_trace() {
     error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     error!("                    KERNEL STACK TRACE");
     error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    
+
     // 获取当前寄存器状态
     let mut fp: usize;
     let mut ra: usize;
     let mut sp: usize;
-    
+
     unsafe {
         // 获取帧指针、返回地址和栈指针
         core::arch::asm!("mv {}, s0", out(reg) fp);
         core::arch::asm!("mv {}, ra", out(reg) ra);
         core::arch::asm!("mv {}, sp", out(reg) sp);
     }
-    
+
     error!("Register State:");
     error!("  RA (Return Address): {:#x}", ra);
     error!("  FP (Frame Pointer):  {:#x}", fp);
     error!("  SP (Stack Pointer):  {:#x}", sp);
     error!("");
     error!("Call Stack:");
-    
+
     let mut depth = 0;
     const MAX_DEPTH: usize = 15;
-    
+
     // 首先打印当前的返回地址（跳过panic处理函数）
     if ra != 0 && !is_panic_function(ra) {
         error!("  #{}: {}", depth, debug::format_address(ra));
         depth += 1;
     }
-    
+
     // 进行栈回溯
     while depth < MAX_DEPTH && fp != 0 {
         // 检查帧指针是否在合理范围内
         if fp < 0x80000000 || fp >= 0x90000000 {
             break;
         }
-        
+
         // 确保对齐
         if fp % 8 != 0 {
             break;
         }
-        
+
         // 尝试安全地读取栈帧数据
         let (saved_ra, saved_fp) = unsafe {
             // 在 RISC-V 中，标准的栈帧布局：
-            // fp-8: 保存的 ra (返回地址)  
+            // fp-8: 保存的 ra (返回地址)
             // fp-16: 保存的 fp (上一个帧指针)
-            
+
             // 使用更保守的方法读取内存
             let ra_ptr = (fp - 8) as *const usize;
             let fp_ptr = (fp - 16) as *const usize;
-            
+
             // 检查指针是否在合理范围内
             let saved_ra = if fp >= 16 && ra_ptr as usize >= 0x80000000 {
                 core::ptr::read_volatile(ra_ptr)
             } else {
                 0
             };
-            
+
             let saved_fp = if fp >= 16 && fp_ptr as usize >= 0x80000000 {
                 core::ptr::read_volatile(fp_ptr)
             } else {
                 0
             };
-            
+
             (saved_ra, saved_fp)
         };
-        
+
         // 验证返回地址是否合理（跳过panic处理函数）
         if saved_ra > 0x80000000 && saved_ra < 0x90000000 && !is_panic_function(saved_ra) {
             error!("  #{}: {}", depth, debug::format_address(saved_ra));
         }
-        
+
         // 验证帧指针并防止无限循环
         if saved_fp == 0 || saved_fp <= fp || saved_fp >= 0x90000000 {
             break;
         }
-        
+
         fp = saved_fp;
-        
+
         depth += 1;
     }
-    
+
     if depth <= 1 {
         error!("  (limited stack trace - frame pointers may not be available)");
-        
+
         // 作为备选方案，尝试打印栈内容
         error!("");
         error!("Stack Memory Analysis:");
@@ -135,7 +135,7 @@ fn print_stack_trace() {
             }
         }
     }
-    
+
     error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 }
 #[panic_handler]
@@ -162,7 +162,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
     } else {
         error!("[Kernel] Panic: {}", info.message());
     }
-    
+
     // 打印堆栈跟踪
     print_stack_trace();
 
