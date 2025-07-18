@@ -17,3 +17,11 @@ bitflags = "2.9.1"
 xmas-elf = "0.10.0"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 elfloader = { version = "0.16.0", default-features = false }
+
+[profile.dev]
+debug = 2
+strip = false
+
+[profile.release]
+debug = 2
+strip = false

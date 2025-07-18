@@ -72,6 +72,7 @@ static mut SYMBOL_TABLE: Option<SymbolTable> = None;
 
 /// 初始化符号表
 pub fn init_symbol_table() {
+    info!("Initializing symbol table...");
     let mut table = SymbolTable::new();
     
     // 添加基本的内存段信息
@@ -93,8 +94,12 @@ pub fn init_symbol_table() {
         SYMBOL_TABLE = Some(table);
     }
     
+    info!("Basic symbol table created, parsing ELF symbols...");
+    
     // 解析ELF符号表来添加详细的函数符号
     try_parse_debug_info();
+    
+    info!("Symbol table initialization complete");
 }
 
 /// 获取符号表引用
@@ -126,78 +131,67 @@ struct ElfSymbol {
     size: u64,      // Symbol size - 8 bytes
 }
 
-/// 使用内联汇编获取符号地址，避免PC相对寻址问题
-#[inline(never)]
-unsafe fn get_symbol_addresses() -> (usize, usize, usize, usize) {
-    let mut ssymtab_addr: usize;
-    let mut esymtab_addr: usize;
-    let mut sstrtab_addr: usize;
-    let mut estrtab_addr: usize;
-    
-    // 使用内联汇编加载绝对地址
-    unsafe {
-        core::arch::asm!(
-            "lui {ssymtab}, %hi(ssymtab)",
-            "addi {ssymtab}, {ssymtab}, %lo(ssymtab)",
-            "lui {esymtab}, %hi(esymtab)", 
-            "addi {esymtab}, {esymtab}, %lo(esymtab)",
-            "lui {sstrtab}, %hi(sstrtab)",
-            "addi {sstrtab}, {sstrtab}, %lo(sstrtab)",
-            "lui {estrtab}, %hi(estrtab)",
-            "addi {estrtab}, {estrtab}, %lo(estrtab)",
-            ssymtab = out(reg) ssymtab_addr,
-            esymtab = out(reg) esymtab_addr,
-            sstrtab = out(reg) sstrtab_addr,
-            estrtab = out(reg) estrtab_addr,
-            options(pure, nomem, nostack)
-        );
+/// 获取符号地址，使用链接器符号
+fn get_symbol_addresses() -> (usize, usize, usize, usize) {
+    unsafe extern "C" {
+        fn ssymtab();
+        fn esymtab();
+        fn sstrtab();
+        fn estrtab();
     }
     
-    (ssymtab_addr, esymtab_addr, sstrtab_addr, estrtab_addr)
+    unsafe {
+        let ssymtab_addr = ssymtab as *const () as usize;
+        let esymtab_addr = esymtab as *const () as usize;
+        let sstrtab_addr = sstrtab as *const () as usize;
+        let estrtab_addr = estrtab as *const () as usize;
+        
+        (ssymtab_addr, esymtab_addr, sstrtab_addr, estrtab_addr)
+    }
 }
 
 /// 解析内核ELF符号表
 pub fn try_parse_debug_info() {
     info!("Parsing kernel ELF symbol table...");
     
-    unsafe {
-        let (symtab_start, symtab_end, strtab_start, strtab_end) = get_symbol_addresses();
-        
-        debug!("Symbol table: {:#x} - {:#x} (size: {})", 
-               symtab_start, symtab_end, symtab_end - symtab_start);
-        debug!("String table: {:#x} - {:#x} (size: {})", 
-               strtab_start, strtab_end, strtab_end - strtab_start);
-        
-        // 验证地址范围和对齐
-        let symtab_size = symtab_end.wrapping_sub(symtab_start);
-        let strtab_size = strtab_end.wrapping_sub(strtab_start);
-        
-        if symtab_start == 0 || strtab_start == 0 {
-            warn!("Symbol or string table has null address");
-            return;
-        }
-        
-        if symtab_size == 0 || strtab_size == 0 {
-            warn!("Symbol or string table has zero size");
-            return;
-        }
-        
-        if symtab_size > (isize::MAX as usize) || strtab_size > (isize::MAX as usize) {
-            warn!("Symbol or string table size exceeds isize::MAX");
-            return;
-        }
-        
-        // 检查符号表指针是否正确对齐
-        if symtab_start % core::mem::align_of::<ElfSymbol>() != 0 {
-            warn!("Symbol table not properly aligned");
-            return;
-        }
-               
-        if symtab_end > symtab_start && strtab_end > strtab_start {
+    let (symtab_start, symtab_end, strtab_start, strtab_end) = get_symbol_addresses();
+    
+    info!("Symbol table: {:#x} - {:#x} (size: {})", 
+           symtab_start, symtab_end, symtab_end.wrapping_sub(symtab_start));
+    info!("String table: {:#x} - {:#x} (size: {})", 
+           strtab_start, strtab_end, strtab_end.wrapping_sub(strtab_start));
+    
+    // 验证地址范围和对齐
+    let symtab_size = symtab_end.wrapping_sub(symtab_start);
+    let strtab_size = strtab_end.wrapping_sub(strtab_start);
+    
+    if symtab_start == 0 || strtab_start == 0 {
+        warn!("Symbol or string table has null address");
+        return;
+    }
+    
+    if symtab_size == 0 || strtab_size == 0 {
+        warn!("Symbol or string table has zero size");
+        return;
+    }
+    
+    if symtab_size > (isize::MAX as usize) || strtab_size > (isize::MAX as usize) {
+        warn!("Symbol or string table size exceeds isize::MAX");
+        return;
+    }
+    
+    // 检查符号表指针是否正确对齐
+    if symtab_start % core::mem::align_of::<ElfSymbol>() != 0 {
+        warn!("Symbol table not properly aligned");
+        return;
+    }
+           
+    if symtab_end > symtab_start && strtab_end > strtab_start {
+        unsafe {
             parse_symbol_table(symtab_start, symtab_end, strtab_start, strtab_end);
-        } else {
-            warn!("No valid symbol table found, using minimal symbols only");
         }
+    } else {
+        warn!("No valid symbol table found, using minimal symbols only");
     }
 }
 
@@ -223,53 +217,59 @@ unsafe fn parse_symbol_table(
     
     // 获取当前的符号表，如果不存在则创建新的
     let table_ptr = core::ptr::addr_of_mut!(SYMBOL_TABLE);
-    if let Some(table) = &mut *table_ptr {
-        // 安全地创建符号表切片
-        let symbols = core::slice::from_raw_parts(
-            symtab_start as *const ElfSymbol,
-            symbol_count
-        );
-        
-        // 安全地创建字符串表切片，添加额外检查
-        let strtab = if strtab_start.checked_add(strtab_size).is_some() && strtab_size > 0 {
-            core::slice::from_raw_parts(
-                strtab_start as *const u8,
-                strtab_size
-            )
-        } else {
-            warn!("Invalid string table bounds");
-            return;
-        };
-        
-        let mut added_count = 0;
-        let mut processed_count = 0;
-        
-        for symbol in symbols.iter().take(1000) { // 限制处理前1000个符号以避免过长的处理时间
-            processed_count += 1;
+    unsafe {
+        if let Some(table) = &mut *table_ptr {
+            // 安全地创建符号表切片
+            let symbols = unsafe {
+                core::slice::from_raw_parts(
+                    symtab_start as *const ElfSymbol,
+                    symbol_count
+                )
+            };
             
-            // 只处理函数和对象符号
-            let symbol_type = symbol.info & 0xf;
-            if symbol_type == 1 || symbol_type == 2 { // STT_OBJECT or STT_FUNC
-                if let Some(name) = get_symbol_name(strtab, symbol.name as usize) {
-                    // 过滤掉一些不需要的符号
-                    if !name.is_empty() && 
-                       !name.starts_with('.') && 
-                       !name.starts_with('_') &&
-                       symbol.value > 0 && 
-                       name.len() < 256 { // 限制符号名称长度
-                        table.add_symbol(name, symbol.value as usize, symbol.size as usize);
-                        added_count += 1;
-                        
-                        // 限制添加的符号数量以避免内存过度使用
-                        if added_count >= 100 {
-                            break;
+            // 安全地创建字符串表切片，添加额外检查
+            let strtab = if strtab_start.checked_add(strtab_size).is_some() && strtab_size > 0 {
+                unsafe {
+                    core::slice::from_raw_parts(
+                        strtab_start as *const u8,
+                        strtab_size
+                    )
+                }
+            } else {
+                warn!("Invalid string table bounds");
+                return;
+            };
+            
+            let mut added_count = 0;
+            let mut processed_count = 0;
+            
+            for symbol in symbols.iter().take(1000) { // 限制处理前1000个符号以避免过长的处理时间
+                processed_count += 1;
+                
+                // 只处理函数和对象符号
+                let symbol_type = symbol.info & 0xf;
+                if symbol_type == 1 || symbol_type == 2 { // STT_OBJECT or STT_FUNC
+                    if let Some(name) = get_symbol_name(strtab, symbol.name as usize) {
+                        // 过滤掉一些不需要的符号
+                        if !name.is_empty() && 
+                           !name.starts_with('.') && 
+                           !name.starts_with('_') &&
+                           symbol.value > 0 && 
+                           name.len() < 256 { // 限制符号名称长度
+                            table.add_symbol(name, symbol.value as usize, symbol.size as usize);
+                            added_count += 1;
+                            
+                            // 限制添加的符号数量以避免内存过度使用
+                            if added_count >= 100 {
+                                break;
+                            }
                         }
                     }
                 }
             }
+            
+            info!("Processed {} symbols, added {} symbols from ELF symbol table", processed_count, added_count);
         }
-        
-        info!("Processed {} symbols, added {} symbols from ELF symbol table", processed_count, added_count);
     }
 }
 
