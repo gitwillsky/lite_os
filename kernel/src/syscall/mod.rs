@@ -43,6 +43,7 @@ const SYSCALL_FLOCK: usize = 143;
 const SYSCALL_MKFIFO: usize = 506;
 const SYSCALL_CHMOD: usize = 507;
 const SYSCALL_CHOWN: usize = 508;
+const SYSCALL_GET_ARGS: usize = 509;
 
 // 调度相关系统调用
 const SYSCALL_SETPRIORITY: usize = 141;
@@ -111,6 +112,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_MKFIFO => sys_mkfifo(args[0] as *const u8, args[1] as u32),
         SYSCALL_CHMOD => sys_chmod(args[0] as *const u8, args[1] as u32),
         SYSCALL_CHOWN => sys_chown(args[0] as *const u8, args[1] as u32, args[2] as u32),
+        SYSCALL_GET_ARGS => sys_get_args(args[0] as *mut usize, args[1] as *mut u8, args[2]),
 
         // 调度相关系统调用
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),

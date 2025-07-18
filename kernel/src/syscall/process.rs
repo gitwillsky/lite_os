@@ -244,6 +244,55 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
     }
 }
 
+pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> isize {
+    let current_task = current_task().unwrap();
+    let token = current_user_token();
+    
+    // Get the arguments from the current task
+    let task_inner = current_task.inner_exclusive_access();
+    let args = &task_inner.args;
+    
+    if args.is_empty() {
+        return 0;
+    }
+    
+    // Write argc to user buffer
+    if !argc_buf.is_null() {
+        let argc_ptr = translated_ref_mut(token, argc_buf);
+        *argc_ptr = args.len();
+    }
+    
+    // Write argv strings to user buffer
+    if !argv_buf.is_null() && buf_len > 0 {
+        let mut offset = 0;
+        
+        for arg in args.iter() {
+            let arg_bytes = arg.as_bytes();
+            let needed_space = arg_bytes.len() + 1; // +1 for null terminator
+            
+            if offset + needed_space > buf_len {
+                return -1; // Buffer too small
+            }
+            
+            // Copy argument string
+            let mut buffers = translated_byte_buffer(token, (argv_buf as usize + offset) as *const u8, arg_bytes.len());
+            if !buffers.is_empty() && buffers[0].len() >= arg_bytes.len() {
+                buffers[0][..arg_bytes.len()].copy_from_slice(arg_bytes);
+                
+                // Add null terminator
+                let mut null_buffers = translated_byte_buffer(token, (argv_buf as usize + offset + arg_bytes.len()) as *const u8, 1);
+                if !null_buffers.is_empty() && !null_buffers[0].is_empty() {
+                    null_buffers[0][0] = 0;
+                }
+            }
+            
+            offset += needed_space;
+        }
+    }
+    
+    args.len() as isize
+}
+
 pub fn sys_shutdown() -> ! {
     crate::arch::sbi::shutdown();
     unreachable!();

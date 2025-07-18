@@ -126,6 +126,10 @@ pub struct TaskControlBlockInner {
     pub heap_base: usize,
     /// 用户程序堆的顶部地址
     pub heap_top: usize,
+    /// 进程启动时的命令行参数
+    pub args: Vec<String>,
+    /// 进程启动时的环境变量
+    pub envs: Vec<String>,
 }
 
 /// Task Control block structure
@@ -180,6 +184,8 @@ impl TaskControlBlock {
                 egid: 0,          // 有效组ID初始为root
                 heap_base: 0,     // 堆基地址初始为0
                 heap_top: 0,      // 堆顶地址初始为0
+                args: Vec::new(), // 初始化空的参数列表
+                envs: Vec::new(), // 初始化空的环境变量列表
             }),
         };
 
@@ -251,6 +257,11 @@ impl TaskControlBlock {
             self.kernel_stack.get_top(),
             trap_handler as usize,
         );
+        
+        // 保存命令行参数和环境变量
+        inner.args = args.to_vec();
+        inner.envs = envs.to_vec();
+        
         Ok(())
     }
 
@@ -294,6 +305,8 @@ impl TaskControlBlock {
                 egid: parent_inner.egid,  // 继承父进程有效组ID
                 heap_base: parent_inner.heap_base,  // 继承父进程堆基地址
                 heap_top: parent_inner.heap_top,    // 继承父进程堆顶地址
+                args: parent_inner.args.clone(),     // 继承父进程的命令行参数
+                envs: parent_inner.envs.clone(),     // 继承父进程的环境变量
             }),
         });
 
