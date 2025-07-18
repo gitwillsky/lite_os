@@ -160,10 +160,7 @@ impl VirtualAddress {
 
 impl From<PhysicalPageNumber> for PhysicalAddress {
     fn from(ppn: PhysicalPageNumber) -> Self {
-        // 检查乘法溢出
-        let addr = ppn.0.checked_mul(config::PAGE_SIZE)
-            .expect(&format!("PPN to PA conversion overflow: PPN={:#x}, PAGE_SIZE={:#x}", ppn.0, config::PAGE_SIZE));
-
+        let addr = ppn.0 * config::PAGE_SIZE;
         PhysicalAddress(addr)
     }
 }

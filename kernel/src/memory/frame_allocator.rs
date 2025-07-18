@@ -108,18 +108,18 @@ impl StackFrameAllocator {
         if ppn < self.start_ppn || ppn >= self.end_ppn {
             return Err(FrameAllocError::OutOfRange);
         }
-        
+
         // 检查是否试图释放未分配的页面
         // 如果 ppn >= current_start_ppn，说明这个页面还没有被分配过
         if ppn >= self.current_start_ppn {
             return Err(FrameAllocError::OutOfRange);
         }
-        
+
         // 检查重复释放 - 这是一个原子操作在单线程环境下
         if self.recycled_ppns.contains(&ppn) {
             return Err(FrameAllocError::Duplicate);
         }
-        
+
         // 安全地添加到回收列表
         self.recycled_ppns.push(ppn);
         Ok(())
@@ -128,24 +128,22 @@ impl StackFrameAllocator {
 
 pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     debug!("frame_allocator::init: start_addr={:#x}, end_addr={:#x}", start_addr.as_usize(), end_addr.as_usize());
-    
+
     let start_ppn = start_addr.ceil();
     let end_ppn = end_addr.floor();
-    
-    debug!("frame_allocator::init: start_ppn={:#x}, end_ppn={:#x}", start_ppn.as_usize(), end_ppn.as_usize());
-    
+
     assert!(
         end_ppn.as_usize() > start_ppn.as_usize(),
         "frame_allocator: range is 0, start_ppn={:#x}, end_ppn={:#x}",
         start_ppn.as_usize(),
         end_ppn.as_usize()
     );
-    
+
     // 验证PPN的合理性
     if start_ppn.as_usize() == 0 {
         panic!("Invalid start PPN: zero page number from address {:#x}", start_addr.as_usize());
     }
-    
+
     FRAME_ALLOCATOR.call_once(|| Mutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
