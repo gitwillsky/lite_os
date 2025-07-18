@@ -65,16 +65,35 @@ impl WasmRuntimeService {
         println!("Environment variables: {} entries", envs.len());
         
         // 1. 读取WASM文件
-        let wasm_data = self.load_wasm_file(wasm_file)?;
+        let wasm_data = match self.load_wasm_file(wasm_file) {
+            Ok(data) => data,
+            Err(e) => {
+                println!("Failed to load WASM file: {}", e);
+                return Err(e);
+            }
+        };
         
         // 2. 加载WASM模块
-        self.engine.load_module(&wasm_data)?;
+        if let Err(e) = self.engine.load_module(&wasm_data) {
+            println!("Failed to load WASM module: {}", e);
+            return Err(e);
+        }
         
         // 3. 设置WASI环境
-        self.setup_wasi_environment(args.to_vec(), envs.to_vec())?;
+        if let Err(e) = self.setup_wasi_environment(args.to_vec(), envs.to_vec()) {
+            println!("Failed to setup WASI environment: {}", e);
+            return Err(e);
+        }
         
         // 4. 执行WASM程序
-        let exit_code = self.run_wasm_program()?;
+        let exit_code = match self.run_wasm_program() {
+            Ok(code) => code,
+            Err(e) => {
+                println!("WASM program execution failed: {}", e);
+                self.stats.error_count += 1;
+                return Err(e);
+            }
+        };
         
         // 5. 更新统计信息
         self.update_stats();

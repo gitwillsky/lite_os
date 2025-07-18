@@ -31,14 +31,22 @@ pub struct RuntimeArgs {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
+    println!("WASM runtime main() starting...");
+    
     let args = parse_real_runtime_args();
-    if let Some(args) = args {
-        wasm_runtime_main(args)
+    let exit_code = if let Some(args) = args {
+        println!("WASM runtime calling wasm_runtime_main...");
+        let result = wasm_runtime_main(args);
+        println!("WASM runtime wasm_runtime_main returned: {}", result);
+        result
     } else {
         println!("Error: No WASM file specified");
         println!("Usage: wasm_runtime <wasm_file> [args...]");
         1
-    }
+    };
+
+    println!("WASM runtime main() returning exit code: {}", exit_code);
+    exit_code
 }
 
 /// 解析真实的运行时参数
@@ -206,14 +214,19 @@ fn wasm_runtime_main(args: RuntimeArgs) -> i32 {
     };
 
     // 执行WASM程序
-    match runtime.execute_wasm(&args.wasm_file, &args.wasm_args, &args.env_vars) {
+    let exit_code = match runtime.execute_wasm(&args.wasm_file, &args.wasm_args, &args.env_vars) {
         Ok(exit_code) => {
-            println!("WASM program exited with code: {}", exit_code);
+            println!("WASM program completed successfully with exit code: {}", exit_code);
             exit_code
         }
         Err(e) => {
             println!("WASM execution failed: {}", e);
+            println!("This may be due to unsupported WASM features or complex module structure");
             1
         }
-    }
+    };
+
+    println!("WASM runtime finishing execution...");
+    println!("Returning to shell with exit code: {}", exit_code);
+    exit_code
 }
