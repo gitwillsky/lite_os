@@ -104,20 +104,25 @@ impl StackFrameAllocator {
     }
 
     pub fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
-        assert!(
-            ppn >= self.start_ppn && ppn < self.end_ppn,
-            "dealloc: invalid ppn={:#x}, valid range=[{:#x}, {:#x})",
-            ppn.as_usize(),
-            self.start_ppn.as_usize(),
-            self.end_ppn.as_usize()
-        );
-        if ppn > self.current_start_ppn && ppn < self.end_ppn {
+        // 验证 PPN 在有效范围内
+        if ppn < self.start_ppn || ppn >= self.end_ppn {
             return Err(FrameAllocError::OutOfRange);
         }
+        
+        // 检查是否试图释放未分配的页面
+        // 如果 ppn >= current_start_ppn，说明这个页面还没有被分配过
+        if ppn >= self.current_start_ppn {
+            return Err(FrameAllocError::OutOfRange);
+        }
+        
+        // 检查重复释放 - 这是一个原子操作在单线程环境下
         if self.recycled_ppns.contains(&ppn) {
             return Err(FrameAllocError::Duplicate);
         }
-        Ok(self.recycled_ppns.push(ppn))
+        
+        // 安全地添加到回收列表
+        self.recycled_ppns.push(ppn);
+        Ok(())
     }
 }
 

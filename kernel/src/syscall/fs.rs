@@ -232,30 +232,65 @@ pub fn sys_close(fd: usize) -> isize {
 
 /// 列出目录
 pub fn sys_listdir(path: *const u8, buf: *mut u8, len: usize) -> isize {
+    // 验证输入参数
+    if buf.is_null() || len == 0 {
+        return -14; // EFAULT
+    }
+    
+    // 限制目录列表的最大长度防止内存溢出
+    const MAX_DIR_LIST_SIZE: usize = 64 * 1024; // 64KB
+    if len > MAX_DIR_LIST_SIZE {
+        return -22; // EINVAL
+    }
+
     let token = current_user_token();
     let path_str = translated_c_string(token, path);
+
+    // 验证路径长度
+    if path_str.len() > 4096 {
+        return -36; // ENAMETOOLONG
+    }
 
     match get_vfs().open(&path_str) {
         Ok(inode) => {
             match inode.list_dir() {
                 Ok(entries) => {
                     let mut result = String::new();
-                    for entry in entries {
-                        result.push_str(&entry);
+                    let mut total_size = 0;
+                    
+                    // 限制条目数量和大小
+                    for (i, entry) in entries.iter().enumerate() {
+                        if i >= 1000 {  // 最多1000个条目
+                            warn!("Directory listing truncated at 1000 entries");
+                            break;
+                        }
+                        
+                        let entry_with_newline = entry.len() + 1;
+                        if total_size + entry_with_newline > MAX_DIR_LIST_SIZE {
+                            warn!("Directory listing truncated due to size limit");
+                            break;
+                        }
+                        
+                        result.push_str(entry);
                         result.push('\n');
+                        total_size += entry_with_newline;
                     }
 
                     let result_bytes = result.as_bytes();
                     let copy_len = result_bytes.len().min(len);
 
-                    let buffers = translated_byte_buffer(token, buf, copy_len);
-                    let mut offset = 0;
-                    for buffer in buffers {
-                        let chunk_len = buffer.len().min(result_bytes.len() - offset);
-                        buffer[..chunk_len].copy_from_slice(&result_bytes[offset..offset + chunk_len]);
-                        offset += chunk_len;
-                        if offset >= result_bytes.len() {
-                            break;
+                    if copy_len > 0 {
+                        let buffers = translated_byte_buffer(token, buf, copy_len);
+                        let mut offset = 0;
+                        for buffer in buffers {
+                            if offset >= result_bytes.len() {
+                                break;
+                            }
+                            let chunk_len = buffer.len().min(result_bytes.len() - offset);
+                            if chunk_len > 0 {
+                                buffer[..chunk_len].copy_from_slice(&result_bytes[offset..offset + chunk_len]);
+                                offset += chunk_len;
+                            }
                         }
                     }
 

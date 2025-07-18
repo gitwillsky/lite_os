@@ -344,9 +344,41 @@ impl DynamicLinker {
 
     /// Resolve a symbol by name
     pub fn resolve_symbol(&self, symbol_name: &str) -> Option<VirtualAddress> {
+        // 验证符号名称安全性
+        if symbol_name.is_empty() || symbol_name.len() > 256 {
+            warn!("Invalid symbol name length: {}", symbol_name.len());
+            return None;
+        }
+        
+        // 检查符号名称是否包含非法字符
+        if symbol_name.contains('\0') || symbol_name.contains('\n') || symbol_name.contains('\r') {
+            warn!("Symbol name contains illegal characters: {}", symbol_name);
+            return None;
+        }
+        
+        // 防止路径遍历攻击
+        if symbol_name.contains("..") || symbol_name.contains('/') || symbol_name.contains('\\') {
+            warn!("Symbol name contains path traversal characters: {}", symbol_name);
+            return None;
+        }
+        
         if let Some((_, symbol)) = self.global_symbols.get(symbol_name) {
-            Some(VirtualAddress::from(symbol.value as usize))
+            // 验证符号地址的合理性
+            let addr = symbol.value as usize;
+            if addr == 0 {
+                warn!("Symbol '{}' has zero address", symbol_name);
+                return None;
+            }
+            
+            // 检查地址是否在合理范围内 (用户空间)
+            if addr < 0x10000 || addr >= 0x8000_0000_0000_0000 {
+                warn!("Symbol '{}' has invalid address: 0x{:x}", symbol_name, addr);
+                return None;
+            }
+            
+            Some(VirtualAddress::from(addr))
         } else {
+            debug!("Symbol '{}' not found in global symbol table", symbol_name);
             None
         }
     }

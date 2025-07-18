@@ -108,15 +108,28 @@ pub fn sys_sbrk(increment: isize) -> isize {
         return current_brk as isize;
     }
     
+    // 检查溢出
     let new_brk = if increment > 0 {
-        current_brk + increment as usize
+        match current_brk.checked_add(increment as usize) {
+            Some(addr) => addr,
+            None => {
+                error!("sys_sbrk: increment overflow");
+                return -ENOMEM;
+            }
+        }
     } else {
-        current_brk - (-increment) as usize
+        match current_brk.checked_sub((-increment) as usize) {
+            Some(addr) => addr,
+            None => {
+                error!("sys_sbrk: decrement underflow");
+                return -EINVAL;
+            }
+        }
     };
     
     let result = sys_brk(new_brk);
-    if result == -EINVAL || result == -ENOMEM {
-        return -1;
+    if result < 0 {
+        return result; // 返回具体的错误码而不是统一的 -1
     }
     
     current_brk as isize

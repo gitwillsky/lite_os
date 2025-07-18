@@ -76,8 +76,33 @@ impl Slab {
 
     /// 获取FreeNode的可变引用
     fn get_free_node_mut(&self, index: usize) -> Result<&mut FreeNode, SlabError> {
+        // 验证索引范围
+        if index >= self.object_count {
+            return Err(SlabError::InvalidPointer);
+        }
+        
         let ptr = self.get_object_ptr(index)?;
+        
+        // 额外的安全检查：确保指针在slab范围内
+        let addr = ptr.as_ptr() as usize;
+        let start_addr = self.start.as_ptr() as usize;
+        let end_addr = start_addr + PAGE_SIZE;
+        
+        if addr < start_addr || addr >= end_addr {
+            return Err(SlabError::InvalidPointer);
+        }
+        
+        // 确保对象大小足够容纳FreeNode
+        if self.object_size < size_of::<FreeNode>() {
+            return Err(SlabError::InvalidLayout);
+        }
+        
         unsafe {
+            // 在转换前再次验证指针对齐
+            if addr % core::mem::align_of::<FreeNode>() != 0 {
+                return Err(SlabError::InvalidPointer);
+            }
+            
             Ok(&mut *(ptr.as_ptr() as *mut FreeNode))
         }
     }

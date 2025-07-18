@@ -156,15 +156,42 @@ pub fn sys_sched_getscheduler(pid: i32) -> isize {
 
 /// Execute a program with arguments and environment variables
 pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
+    // 验证输入参数
+    if path.is_null() {
+        return -14; // EFAULT
+    }
+    
     let token = current_user_token();
     let path_str = translated_str(token, path);
     
-    // Parse argv
+    // 验证路径长度和内容
+    if path_str.is_empty() || path_str.len() > 4096 {
+        return -36; // ENAMETOOLONG
+    }
+    
+    // 检查路径是否包含非法字符
+    if path_str.contains('\0') {
+        return -22; // EINVAL
+    }
+    
+    // Parse argv with strict limits
     let mut args = Vec::new();
+    const MAX_ARGS: usize = 256;  // 限制最大参数数量
+    const MAX_ARG_LEN: usize = 4096;  // 限制单个参数最大长度
+    const MAX_TOTAL_ARG_SIZE: usize = 128 * 1024;  // 限制所有参数总大小
+    let mut total_arg_size = 0;
+    
     if !argv.is_null() {
         let mut i = 0;
         loop {
+            if i >= MAX_ARGS {
+                error!("sys_execve: too many arguments (max {})", MAX_ARGS);
+                return -7; // E2BIG
+            }
+            
             let arg_ptr_addr = argv as usize + i * core::mem::size_of::<*const u8>();
+            
+            // 验证指针地址是否有效
             let buffers = translated_byte_buffer(token, arg_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
             if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
                 break;
@@ -179,23 +206,49 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
                 break;
             }
             
+            // 验证参数指针有效性
+            if arg_ptr < 0x1000 || arg_ptr >= 0x8000_0000_0000_0000 {
+                error!("sys_execve: invalid argument pointer: 0x{:x}", arg_ptr);
+                return -14; // EFAULT
+            }
+            
             let arg_str = translated_str(token, arg_ptr as *const u8);
+            
+            // 验证参数长度
+            if arg_str.len() > MAX_ARG_LEN {
+                error!("sys_execve: argument too long (max {})", MAX_ARG_LEN);
+                return -7; // E2BIG
+            }
+            
+            total_arg_size += arg_str.len() + 1; // +1 for null terminator
+            if total_arg_size > MAX_TOTAL_ARG_SIZE {
+                error!("sys_execve: total argument size too large (max {})", MAX_TOTAL_ARG_SIZE);
+                return -7; // E2BIG
+            }
+            
             args.push(arg_str);
             i += 1;
-            
-            // Prevent infinite loops
-            if i > 1024 {
-                return -1;
-            }
         }
     }
     
-    // Parse envp
+    // Parse envp with strict limits
     let mut envs = Vec::new();
+    const MAX_ENVS: usize = 256;  // 限制最大环境变量数量
+    const MAX_ENV_LEN: usize = 4096;  // 限制单个环境变量最大长度
+    const MAX_TOTAL_ENV_SIZE: usize = 128 * 1024;  // 限制所有环境变量总大小
+    let mut total_env_size = 0;
+    
     if !envp.is_null() {
         let mut i = 0;
         loop {
+            if i >= MAX_ENVS {
+                error!("sys_execve: too many environment variables (max {})", MAX_ENVS);
+                return -7; // E2BIG
+            }
+            
             let env_ptr_addr = envp as usize + i * core::mem::size_of::<*const u8>();
+            
+            // 验证指针地址是否有效
             let buffers = translated_byte_buffer(token, env_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
             if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
                 break;
@@ -210,14 +263,34 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
                 break;
             }
             
+            // 验证环境变量指针有效性
+            if env_ptr < 0x1000 || env_ptr >= 0x8000_0000_0000_0000 {
+                error!("sys_execve: invalid environment pointer: 0x{:x}", env_ptr);
+                return -14; // EFAULT
+            }
+            
             let env_str = translated_str(token, env_ptr as *const u8);
+            
+            // 验证环境变量长度
+            if env_str.len() > MAX_ENV_LEN {
+                error!("sys_execve: environment variable too long (max {})", MAX_ENV_LEN);
+                return -7; // E2BIG
+            }
+            
+            // 验证环境变量格式 (必须包含=)
+            if !env_str.contains('=') {
+                error!("sys_execve: invalid environment variable format: {}", env_str);
+                return -22; // EINVAL
+            }
+            
+            total_env_size += env_str.len() + 1; // +1 for null terminator
+            if total_env_size > MAX_TOTAL_ENV_SIZE {
+                error!("sys_execve: total environment size too large (max {})", MAX_TOTAL_ENV_SIZE);
+                return -7; // E2BIG
+            }
+            
             envs.push(env_str);
             i += 1;
-            
-            // Prevent infinite loops
-            if i > 1024 {
-                return -1;
-            }
         }
     }
     
