@@ -189,6 +189,8 @@ impl TaskControlBlock {
             }),
         };
 
+        panic!("test");
+
         // prepare TrapContext in user space
         let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
@@ -257,11 +259,11 @@ impl TaskControlBlock {
             self.kernel_stack.get_top(),
             trap_handler as usize,
         );
-        
+
         // 保存命令行参数和环境变量
         inner.args = args.to_vec();
         inner.envs = envs.to_vec();
-        
+
         Ok(())
     }
 
