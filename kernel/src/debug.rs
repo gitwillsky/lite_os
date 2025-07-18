@@ -135,21 +135,23 @@ unsafe fn get_symbol_addresses() -> (usize, usize, usize, usize) {
     let mut estrtab_addr: usize;
     
     // 使用内联汇编加载绝对地址
-    core::arch::asm!(
-        "lui {ssymtab}, %hi(ssymtab)",
-        "addi {ssymtab}, {ssymtab}, %lo(ssymtab)",
-        "lui {esymtab}, %hi(esymtab)", 
-        "addi {esymtab}, {esymtab}, %lo(esymtab)",
-        "lui {sstrtab}, %hi(sstrtab)",
-        "addi {sstrtab}, {sstrtab}, %lo(sstrtab)",
-        "lui {estrtab}, %hi(estrtab)",
-        "addi {estrtab}, {estrtab}, %lo(estrtab)",
-        ssymtab = out(reg) ssymtab_addr,
-        esymtab = out(reg) esymtab_addr,
-        sstrtab = out(reg) sstrtab_addr,
-        estrtab = out(reg) estrtab_addr,
-        options(pure, nomem, nostack)
-    );
+    unsafe {
+        core::arch::asm!(
+            "lui {ssymtab}, %hi(ssymtab)",
+            "addi {ssymtab}, {ssymtab}, %lo(ssymtab)",
+            "lui {esymtab}, %hi(esymtab)", 
+            "addi {esymtab}, {esymtab}, %lo(esymtab)",
+            "lui {sstrtab}, %hi(sstrtab)",
+            "addi {sstrtab}, {sstrtab}, %lo(sstrtab)",
+            "lui {estrtab}, %hi(estrtab)",
+            "addi {estrtab}, {estrtab}, %lo(estrtab)",
+            ssymtab = out(reg) ssymtab_addr,
+            esymtab = out(reg) esymtab_addr,
+            sstrtab = out(reg) sstrtab_addr,
+            estrtab = out(reg) estrtab_addr,
+            options(pure, nomem, nostack)
+        );
+    }
     
     (ssymtab_addr, esymtab_addr, sstrtab_addr, estrtab_addr)
 }
@@ -165,6 +167,31 @@ pub fn try_parse_debug_info() {
                symtab_start, symtab_end, symtab_end - symtab_start);
         debug!("String table: {:#x} - {:#x} (size: {})", 
                strtab_start, strtab_end, strtab_end - strtab_start);
+        
+        // 验证地址范围和对齐
+        let symtab_size = symtab_end.wrapping_sub(symtab_start);
+        let strtab_size = strtab_end.wrapping_sub(strtab_start);
+        
+        if symtab_start == 0 || strtab_start == 0 {
+            warn!("Symbol or string table has null address");
+            return;
+        }
+        
+        if symtab_size == 0 || strtab_size == 0 {
+            warn!("Symbol or string table has zero size");
+            return;
+        }
+        
+        if symtab_size > (isize::MAX as usize) || strtab_size > (isize::MAX as usize) {
+            warn!("Symbol or string table size exceeds isize::MAX");
+            return;
+        }
+        
+        // 检查符号表指针是否正确对齐
+        if symtab_start % core::mem::align_of::<ElfSymbol>() != 0 {
+            warn!("Symbol table not properly aligned");
+            return;
+        }
                
         if symtab_end > symtab_start && strtab_end > strtab_start {
             parse_symbol_table(symtab_start, symtab_end, strtab_start, strtab_end);
@@ -182,68 +209,98 @@ unsafe fn parse_symbol_table(
     strtab_end: usize,
 ) {
     let symtab_size = symtab_end - symtab_start;
+    let strtab_size = strtab_end - strtab_start;
     let symbol_count = symtab_size / core::mem::size_of::<ElfSymbol>();
     
     info!("Found {} symbols in symbol table", symbol_count);
+    debug!("String table size: {}", strtab_size);
+    
+    // 验证字符串表的合理性
+    if strtab_size > 10 * 1024 * 1024 { // 限制在10MB以内
+        warn!("String table too large: {} bytes", strtab_size);
+        return;
+    }
     
     // 获取当前的符号表，如果不存在则创建新的
     let table_ptr = core::ptr::addr_of_mut!(SYMBOL_TABLE);
-    unsafe {
-        if let Some(table) = &mut *table_ptr {
-            let symbols = unsafe {
-                core::slice::from_raw_parts(
-                    symtab_start as *const ElfSymbol,
-                    symbol_count
-                )
-            };
+    if let Some(table) = &mut *table_ptr {
+        // 安全地创建符号表切片
+        let symbols = core::slice::from_raw_parts(
+            symtab_start as *const ElfSymbol,
+            symbol_count
+        );
+        
+        // 安全地创建字符串表切片，添加额外检查
+        let strtab = if strtab_start.checked_add(strtab_size).is_some() && strtab_size > 0 {
+            core::slice::from_raw_parts(
+                strtab_start as *const u8,
+                strtab_size
+            )
+        } else {
+            warn!("Invalid string table bounds");
+            return;
+        };
+        
+        let mut added_count = 0;
+        let mut processed_count = 0;
+        
+        for symbol in symbols.iter().take(1000) { // 限制处理前1000个符号以避免过长的处理时间
+            processed_count += 1;
             
-            let strtab = unsafe {
-                core::slice::from_raw_parts(
-                    strtab_start as *const u8,
-                    strtab_end - strtab_start
-                )
-            };
-            
-            let mut added_count = 0;
-            
-            for symbol in symbols {
-                // 只处理函数和对象符号
-                let symbol_type = symbol.info & 0xf;
-                if symbol_type == 1 || symbol_type == 2 { // STT_OBJECT or STT_FUNC
-                    if let Some(name) = unsafe { get_symbol_name(strtab, symbol.name as usize) } {
-                        // 过滤掉一些不需要的符号
-                        if !name.is_empty() && 
-                           !name.starts_with('.') && 
-                           !name.starts_with('_') &&
-                           symbol.value > 0 {
-                            table.add_symbol(name, symbol.value as usize, symbol.size as usize);
-                            added_count += 1;
+            // 只处理函数和对象符号
+            let symbol_type = symbol.info & 0xf;
+            if symbol_type == 1 || symbol_type == 2 { // STT_OBJECT or STT_FUNC
+                if let Some(name) = get_symbol_name(strtab, symbol.name as usize) {
+                    // 过滤掉一些不需要的符号
+                    if !name.is_empty() && 
+                       !name.starts_with('.') && 
+                       !name.starts_with('_') &&
+                       symbol.value > 0 && 
+                       name.len() < 256 { // 限制符号名称长度
+                        table.add_symbol(name, symbol.value as usize, symbol.size as usize);
+                        added_count += 1;
+                        
+                        // 限制添加的符号数量以避免内存过度使用
+                        if added_count >= 100 {
+                            break;
                         }
                     }
                 }
             }
-            
-            info!("Added {} symbols from ELF symbol table", added_count);
         }
+        
+        info!("Processed {} symbols, added {} symbols from ELF symbol table", processed_count, added_count);
     }
 }
 
 /// 从字符串表中获取符号名称
-unsafe fn get_symbol_name(strtab: &[u8], offset: usize) -> Option<String> {
-    if offset >= strtab.len() {
+fn get_symbol_name(strtab: &[u8], offset: usize) -> Option<String> {
+    // 检查偏移是否在合理范围内
+    if offset >= strtab.len() || offset == 0 {
         return None;
     }
     
+    // 限制搜索长度，避免无限循环
+    let max_search_len = core::cmp::min(strtab.len() - offset, 256);
+    
     // 查找以null结尾的字符串
     let mut end = offset;
-    while end < strtab.len() && strtab[end] != 0 {
+    let search_end = offset + max_search_len;
+    
+    while end < search_end && end < strtab.len() && strtab[end] != 0 {
         end += 1;
     }
     
-    if end > offset {
+    // 确保找到了null终止符
+    if end < strtab.len() && strtab[end] == 0 && end > offset {
         // 将字节转换为字符串
         if let Ok(name) = core::str::from_utf8(&strtab[offset..end]) {
-            Some(String::from(name))
+            // 过滤掉非打印字符和过长的名称
+            if name.chars().all(|c| c.is_ascii_graphic() || c == '_') && name.len() < 128 {
+                Some(String::from(name))
+            } else {
+                None
+            }
         } else {
             None
         }
