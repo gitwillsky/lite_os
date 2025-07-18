@@ -10,6 +10,26 @@ use crate::debug;
 
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
 
+/// 判断地址是否属于panic处理相关的函数
+fn is_panic_function(addr: usize) -> bool {
+    // 获取符号名称并检查是否为panic处理函数
+    if let Some(table) = debug::get_symbol_table() {
+        if let Some(symbol) = table.find_symbol(addr) {
+            let name = &symbol.name;
+            
+            // 过滤掉panic处理机制相关的函数
+            return name.contains("rust_begin_unwind") ||
+                   name.contains("OUTLINED_FUNCTION") ||
+                   name.contains("panic_impl") ||
+                   name.contains("panic_handler") ||
+                   name.contains("rust_panic") ||
+                   name.starts_with("_RNvCsgdvzLFu2dVu_7___rustc17rust_begin_unwind");
+        }
+    }
+    
+    false
+}
+
 /// 简单的堆栈回溯实现
 fn print_stack_trace() {
     error!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -38,8 +58,8 @@ fn print_stack_trace() {
     let mut depth = 0;
     const MAX_DEPTH: usize = 15;
     
-    // 首先打印当前的返回地址
-    if ra != 0 {
+    // 首先打印当前的返回地址（跳过panic处理函数）
+    if ra != 0 && !is_panic_function(ra) {
         error!("  #{}: {}", depth, debug::format_address(ra));
         depth += 1;
     }
@@ -82,8 +102,8 @@ fn print_stack_trace() {
             (saved_ra, saved_fp)
         };
         
-        // 验证返回地址是否合理
-        if saved_ra > 0x80000000 && saved_ra < 0x90000000 {
+        // 验证返回地址是否合理（跳过panic处理函数）
+        if saved_ra > 0x80000000 && saved_ra < 0x90000000 && !is_panic_function(saved_ra) {
             error!("  #{}: {}", depth, debug::format_address(saved_ra));
         }
         
