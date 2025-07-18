@@ -8,24 +8,39 @@ use user_lib::{exec, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // fork 后子进程也会返回 pid （相当于是克隆了父进程）
-    // 原进程返回创建的子进程的 Pid，子进程返回 0
+    let mut shell_pid = None;
+
+    // Start initial shell
+    spawn_shell(&mut shell_pid);
+
+    // Main process reaping loop
+    loop {
+        let mut exit_code: i32 = 0;
+        let exited_pid = wait(&mut exit_code);
+
+        if exited_pid == -1 {
+            yield_();
+            continue;
+        }
+
+        // Check if the shell exited
+        if let Some(current_shell_pid) = shell_pid {
+            if exited_pid as usize == current_shell_pid {
+                shell_pid = None;
+                spawn_shell(&mut shell_pid);
+            }
+        }
+    }
+}
+
+fn spawn_shell(shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
         exec("user_shell\0");
+        user_lib::exit(1);
+    } else if pid > 0 {
+        *shell_pid = Some(pid as usize);
     } else {
-        loop {
-            let mut exit_code: i32 = 0;
-            let pid = wait(&mut exit_code);
-            if pid == -1 {
-                yield_();
-                continue;
-            }
-            println!(
-                "initproc: child process {} exited with code {}",
-                pid, exit_code
-            );
-        }
+        println!("initproc: failed to fork shell process");
     }
-    0
 }

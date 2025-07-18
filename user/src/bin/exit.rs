@@ -8,7 +8,6 @@ use user_lib::shutdown;
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    println!("Shutting down...");
     shutdown();
     0
 }
