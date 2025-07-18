@@ -77,9 +77,17 @@ impl StackFrameAllocator {
 
     pub fn alloc(&mut self) -> Option<PhysicalPageNumber> {
         if let Some(ppn) = self.recycled_ppns.pop() {
+            // Never return PPN 0 from recycled pages
+            if ppn.as_usize() == 0 {
+                panic!("Frame allocator recycled PPN 0, this should never happen");
+            }
             Some(ppn)
         } else if self.current_start_ppn < self.end_ppn {
             let current = self.current_start_ppn;
+            // Never return PPN 0 from allocation
+            if current.as_usize() == 0 {
+                panic!("Frame allocator current_start_ppn is 0, this should never happen");
+            }
             self.current_start_ppn = current.add_one();
             Some(current)
         } else {
@@ -96,6 +104,10 @@ impl StackFrameAllocator {
         // Cannot use recycled pages as they might not be contiguous
         if self.current_start_ppn.as_usize() + pages <= self.end_ppn.as_usize() {
             let start_ppn = self.current_start_ppn;
+            // Never return PPN 0 from contiguous allocation
+            if start_ppn.as_usize() == 0 {
+                panic!("Frame allocator current_start_ppn is 0, this should never happen");
+            }
             self.current_start_ppn = PhysicalPageNumber::from(self.current_start_ppn.as_usize() + pages);
             Some(start_ppn)
         } else {

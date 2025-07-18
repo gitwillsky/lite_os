@@ -68,7 +68,7 @@ impl MapArea {
 
         loop {
             let src = &data[start..len.min(start + config::PAGE_SIZE)];
-            let pte = page_table.translate(current_vpn).unwrap();
+            let pte = page_table.translate(current_vpn).expect("Page table entry not found during data copy");
             let ppn = pte.ppn();
             let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
             dst.copy_from_slice(src);
@@ -608,8 +608,8 @@ impl MemorySet {
 
             for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
-                let src_ppn = user_space.translate(vpn).unwrap().ppn();
-                let dst_ppn = memory_set.translate(vpn).unwrap().ppn();
+                let src_ppn = user_space.translate(vpn).expect("Source page table entry not found during clone").ppn();
+                let dst_ppn = memory_set.translate(vpn).expect("Destination page table entry not found during clone").ppn();
                 dst_ppn
                     .get_bytes_array_mut()
                     .copy_from_slice(&src_ppn.get_bytes_array_mut());

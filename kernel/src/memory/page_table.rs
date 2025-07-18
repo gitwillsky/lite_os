@@ -165,15 +165,25 @@ impl PageTable {
     }
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
-        self.find_pte(vpn).map(|pte| *pte)
+        self.find_pte(vpn).and_then(|pte| {
+            if pte.is_valid() {
+                Some(*pte)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
-        self.find_pte(va.clone().floor()).map(|pte| {
-            let aligned_pa: PhysicalAddress = pte.ppn().into();
-            let offset = va.page_offset();
-            let aligned_pa_usize: usize = aligned_pa.into();
-            (aligned_pa_usize + offset).into()
+        self.find_pte(va.clone().floor()).and_then(|pte| {
+            if pte.is_valid() {
+                let aligned_pa: PhysicalAddress = pte.ppn().into();
+                let offset = va.page_offset();
+                let aligned_pa_usize: usize = aligned_pa.into();
+                Some((aligned_pa_usize + offset).into())
+            } else {
+                None
+            }
         })
     }
 }
@@ -187,7 +197,9 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     while start < end {
         let start_va = VirtualAddress::from(start);
         let vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let ppn = page_table.translate(vpn)
+            .expect("Page table entry not found in translated_byte_buffer")
+            .ppn();
         let next_vpn = vpn.next();
         let mut end_va: VirtualAddress = next_vpn.into();
         end_va = end_va.min(VirtualAddress::from(end));
@@ -207,7 +219,9 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     let mut va = ptr as usize;
     loop {
         let v_addr: VirtualAddress = va.into();
-        let ch: u8 = *(page_table.translate_va(v_addr).unwrap().get_mut());
+        let ch: u8 = *(page_table.translate_va(v_addr)
+            .expect("Page table entry not found in translated_str")
+            .get_mut());
         if ch == 0 {
             break;
         } else {
@@ -226,6 +240,6 @@ where
     let va = ptr as usize;
     page_table
         .translate_va(VirtualAddress::from(va))
-        .unwrap()
+        .expect("Page table entry not found in translated_ref_mut")
         .get_mut()
 }

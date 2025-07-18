@@ -191,13 +191,13 @@ impl PhysicalPageNumber {
         let ptr = pa.0 as *mut u8;
 
         // 更详细的验证和调试信息
-        if ptr.is_null() {
+        if ptr.is_null() || pa.0 == 0 || self.0 == 0 {
+            error!("ERROR: Attempting to access invalid physical page");
+            error!("  PPN: {:#x}", self.0);
+            error!("  PA: {:#x}", pa.0);
+            error!("  PTR: {:p}", ptr);
+            error!("  This indicates a bug in frame allocation or page table management");
             panic!("Physical address pointer is null (PPN: {:#x}, PA: {:#x})", self.0, pa.0);
-        }
-
-        // 检查地址是否在合理的物理内存范围内
-        if pa.0 == 0 {
-            panic!("Attempting to access physical address 0 (PPN: {:#x})", self.0);
         }
 
         // 检查页面大小
