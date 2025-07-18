@@ -22,20 +22,6 @@ SECTIONS {
         . = ALIGN(4K);
         *(.text .text.*)
     }
-    
-    /* 保留调试信息段 - 紧跟在text段之后以避免重定位范围问题 */
-    .symtab : {
-        ssymtab = .;
-        *(.symtab)
-        esymtab = .;
-    }
-    
-    .strtab : {
-        sstrtab = .;
-        *(.strtab)
-        estrtab = .;
-    }
-    
     . = ALIGN(4K);
     etext = .;
 

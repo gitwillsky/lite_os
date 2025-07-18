@@ -8,8 +8,4 @@ rustflags = [
     "link-arg=-Tkernel/linker.ld",
     "-C",
     "force-frame-pointers=yes",
-    "-C",
-    "link-arg=--emit-relocs",
-    "-C", 
-    "link-arg=-g",
 ]
