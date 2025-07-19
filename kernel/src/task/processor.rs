@@ -1,10 +1,14 @@
-use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use core::{
+    ops::DerefMut,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use lazy_static::lazy_static;
 use riscv::asm::wfi;
-use core::{
-    sync::atomic::{AtomicU64, Ordering},
-    ops::DerefMut,
-};
 
 use crate::{
     arch::sbi::shutdown,
@@ -15,8 +19,8 @@ use crate::{
         task::{TaskControlBlock, TaskStatus},
         task_manager::{SchedulingPolicy, get_scheduling_policy},
     },
-    trap::TrapContext,
     timer::get_time_us,
+    trap::TrapContext,
 };
 
 lazy_static! {
@@ -27,7 +31,7 @@ lazy_static! {
 static LAST_DEBUG_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub const IDLE_PID: usize = 0;
-const DEBUG_INTERVAL_US: u64 = 5_000_000; // 5秒调试间隔
+const DEBUG_INTERVAL_US: u64 = 1_000_000; // 1秒调试间隔
 
 // ===== 公共接口函数 =====
 
@@ -105,6 +109,8 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().unwrap();
     let end_time = get_time_us();
+    // 调试信息输出
+    print_debug_info_if_needed(end_time, &task);
 
     let (task_cx_ptr, runtime, should_readd) = {
         let mut task_inner = task.inner_exclusive_access();
@@ -114,9 +120,6 @@ pub fn suspend_current_and_run_next() {
 
         // 更新运行时间统计
         update_task_runtime_stats(&mut task_inner, runtime);
-
-        // 调试信息输出
-        print_debug_info_if_needed(end_time, &task);
 
         let should_readd = task_status == TaskStatus::Running;
         if should_readd {
@@ -172,7 +175,10 @@ pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
 
     // 检查是否是idle进程
     if pid == IDLE_PID {
-        debug!("[kernel] Idle process exit with exit_code {} ...", exit_code);
+        debug!(
+            "[kernel] Idle process exit with exit_code {} ...",
+            exit_code
+        );
         shutdown();
     }
 
@@ -190,7 +196,10 @@ pub fn exit_task_without_schedule(task: Arc<TaskControlBlock>, exit_code: i32) {
 
     // 检查是否是idle进程
     if pid == IDLE_PID {
-        debug!("[kernel] Idle process exit with exit_code {} ...", exit_code);
+        debug!(
+            "[kernel] Idle process exit with exit_code {} ...",
+            exit_code
+        );
         shutdown();
     }
 
@@ -246,11 +255,14 @@ fn execute_task(mut processor: impl DerefMut<Target = Processor>, task: Arc<Task
 }
 
 /// 更新任务运行时间统计
-fn update_task_runtime_stats(task_inner: &mut crate::task::task::TaskControlBlockInner, runtime: u64) {
+fn update_task_runtime_stats(
+    task_inner: &mut crate::task::task::TaskControlBlockInner,
+    runtime: u64,
+) {
     match get_scheduling_policy() {
         SchedulingPolicy::CFS => {
             task_inner.update_vruntime(runtime);
-        },
+        }
         _ => {
             task_inner.last_runtime = runtime;
         }
@@ -261,12 +273,15 @@ fn update_task_runtime_stats(task_inner: &mut crate::task::task::TaskControlBloc
 fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
     let last_time = LAST_DEBUG_TIME.load(Ordering::Relaxed);
     if current_time.saturating_sub(last_time) >= DEBUG_INTERVAL_US {
-        if LAST_DEBUG_TIME.compare_exchange_weak(
-            last_time,
-            current_time,
-            Ordering::Relaxed,
-            Ordering::Relaxed
-        ).is_ok() {
+        if LAST_DEBUG_TIME
+            .compare_exchange_weak(
+                last_time,
+                current_time,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
             debug!(
                 "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, ready_tasks:{}, time:{}us",
                 task.get_pid(),
@@ -295,7 +310,10 @@ fn handle_task_exit(task: &Arc<TaskControlBlock>, exit_code: i32) {
 }
 
 /// 将子进程重新父化给init进程
-fn reparent_children_to_init(task: &Arc<TaskControlBlock>, inner: &mut crate::task::task::TaskControlBlockInner) {
+fn reparent_children_to_init(
+    task: &Arc<TaskControlBlock>,
+    inner: &mut crate::task::task::TaskControlBlockInner,
+) {
     let Some(init_proc) = super::task_manager::get_init_proc() else {
         warn!("No init process found for reparenting");
         return;
@@ -308,7 +326,9 @@ fn reparent_children_to_init(task: &Arc<TaskControlBlock>, inner: &mut crate::ta
     }
 
     // 收集需要重新父化的子进程，避免自引用和重复借用
-    let children_to_reparent: Vec<_> = inner.children.iter()
+    let children_to_reparent: Vec<_> = inner
+        .children
+        .iter()
         .filter(|child| !Arc::ptr_eq(child, &init_proc))
         .cloned()
         .collect();
@@ -333,7 +353,8 @@ fn reparent_children_to_init(task: &Arc<TaskControlBlock>, inner: &mut crate::ta
 fn check_and_remove_current_task(task: &Arc<TaskControlBlock>) -> bool {
     let is_current_task = {
         let processor = PROCESSOR.exclusive_access();
-        processor.current()
+        processor
+            .current()
             .map(|current| Arc::ptr_eq(&current, task))
             .unwrap_or(false)
     };

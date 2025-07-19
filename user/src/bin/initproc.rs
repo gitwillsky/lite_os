@@ -4,7 +4,7 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{exec, fork, wait, yield_};
+use user_lib::{exec, execve, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -15,6 +15,7 @@ fn main() -> i32 {
 
     // Main process reaping loop
     loop {
+        println!("initproc: waiting for shell process");
         let mut exit_code: i32 = 0;
         let exited_pid = wait(&mut exit_code);
 
@@ -36,7 +37,7 @@ fn main() -> i32 {
 fn spawn_shell(shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
-        exec("test");
+        execve("wasm_runtime", &["wasm_runtime", "math_test.wasm"], &[]);
         user_lib::exit(1);
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);
