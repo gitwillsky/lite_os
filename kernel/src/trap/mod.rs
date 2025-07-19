@@ -89,9 +89,8 @@ pub fn trap_handler() {
                         cx.sepc
                     }; // cx借用在这里结束
 
-                    if sepc == 0 {
+                    if sepc == task::SIG_RETURN_ADDR {
                         // 这是信号处理函数返回，自动调用sigreturn
-                        debug!("[trap_handler] Signal handler return detected, calling sigreturn");
                         if syscall::sys_sigreturn() == 0 {
                             trap_return();
                         } else {
@@ -102,7 +101,8 @@ pub fn trap_handler() {
 
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
-                    panic!("Instruction Page Fault, VA:{:#x}", stval);
+                    error!("Instruction Page Fault, VA:{:#x}", stval);
+                    exit_current_and_run_next(-5);
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault

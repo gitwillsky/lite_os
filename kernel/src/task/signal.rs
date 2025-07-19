@@ -1,6 +1,6 @@
-use alloc::collections::BTreeMap;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use alloc::collections::BTreeMap;
 
 /// Standard POSIX signals
 #[repr(u8)]
@@ -84,7 +84,10 @@ impl Signal {
 
     /// Returns true if this signal stops the process by default
     pub fn is_stop_signal(&self) -> bool {
-        matches!(self, Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU)
+        matches!(
+            self,
+            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
+        )
     }
 
     /// Returns true if this signal continues a stopped process
@@ -96,7 +99,9 @@ impl Signal {
     pub fn default_action(&self) -> SignalAction {
         match self {
             Signal::SIGCHLD | Signal::SIGURG | Signal::SIGWINCH => SignalAction::Ignore,
-            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => SignalAction::Stop,
+            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => {
+                SignalAction::Stop
+            }
             Signal::SIGCONT => SignalAction::Continue,
             _ => SignalAction::Terminate,
         }
@@ -152,7 +157,7 @@ impl SignalSet {
         if self.0 == 0 {
             return None;
         }
-        
+
         let first_bit = self.0.trailing_zeros() as u8 + 1;
         Signal::from_u8(first_bit)
     }
@@ -204,8 +209,8 @@ pub type SignalHandlerFn = extern "C" fn(i32);
 #[derive(Debug, Clone)]
 pub struct SignalDisposition {
     pub action: SignalAction,
-    pub mask: SignalSet,      // Additional signals to block during handler
-    pub flags: u32,           // SA_* flags
+    pub mask: SignalSet, // Additional signals to block during handler
+    pub flags: u32,      // SA_* flags
 }
 
 impl Default for SignalDisposition {
@@ -270,7 +275,7 @@ impl SignalState {
     pub fn has_deliverable_signals(&self) -> bool {
         let pending = self.pending.exclusive_access();
         let blocked = self.blocked.exclusive_access();
-        
+
         !pending.difference(&blocked).is_empty()
     }
 
@@ -278,7 +283,7 @@ impl SignalState {
     pub fn next_deliverable_signal(&self) -> Option<Signal> {
         let mut pending = self.pending.exclusive_access();
         let blocked = self.blocked.exclusive_access();
-        
+
         let deliverable = pending.difference(&blocked);
         if let Some(signal) = deliverable.first_signal() {
             pending.remove(signal);
@@ -297,13 +302,14 @@ impl SignalState {
     /// Get signal handler for a specific signal
     pub fn get_handler(&self, signal: Signal) -> SignalDisposition {
         let handlers = self.handlers.exclusive_access();
-        handlers.get(&signal).cloned().unwrap_or_else(|| {
-            SignalDisposition {
+        handlers
+            .get(&signal)
+            .cloned()
+            .unwrap_or_else(|| SignalDisposition {
                 action: signal.default_action(),
                 mask: SignalSet::new(),
                 flags: 0,
-            }
-        })
+            })
     }
 
     /// Block a set of signals
@@ -415,8 +421,8 @@ pub const SA_RESETHAND: u32 = 0x80000000;
 pub const SA_ONSTACK: u32 = 0x08000000;
 
 /// Special signal handler values
-pub const SIG_DFL: usize = 0;  // Default action
-pub const SIG_IGN: usize = 1;  // Ignore signal
+pub const SIG_DFL: usize = 0; // Default action
+pub const SIG_IGN: usize = 1; // Ignore signal
 
 /// Helper function to get uncatchable signals mask
 pub fn uncatchable_signals() -> SignalSet {
@@ -436,6 +442,8 @@ pub fn stop_signals() -> SignalSet {
     set
 }
 
+pub const SIG_RETURN_ADDR: usize = 0;
+
 /// Signal delivery engine
 pub struct SignalDelivery;
 
@@ -451,14 +459,14 @@ impl SignalDelivery {
             let inner = task.inner_exclusive_access();
             inner.next_signal()
         }; // inner在这里被drop
-        
+
         if let Some(signal) = signal {
             // 获取trap context，由于get_trap_cx返回'static引用，可以安全释放锁
             let trap_cx = {
                 let inner = task.inner_exclusive_access();
                 inner.get_trap_cx()
             }; // inner在这里被drop
-            
+
             // 处理信号时不持有任何锁
             Self::deliver_signal(task, signal, trap_cx)
         } else {
@@ -471,11 +479,11 @@ impl SignalDelivery {
         trap_cx: &mut TrapContext,
     ) -> (bool, Option<i32>) {
         let inner = task.inner_exclusive_access();
-        
+
         // 检查是否有待处理的信号
         if let Some(signal) = inner.next_signal() {
             drop(inner); // 释放锁，避免在处理信号时持有锁
-            
+
             // 处理信号
             Self::deliver_signal(task, signal, trap_cx)
         } else {
@@ -501,7 +509,11 @@ impl SignalDelivery {
             }
             SignalAction::Terminate => {
                 // 终止进程
-                info!("Signal {} terminates process PID {}", signal as u32, task.get_pid());
+                info!(
+                    "Signal {} terminates process PID {}",
+                    signal as u32,
+                    task.get_pid()
+                );
                 (false, Some(signal as i32))
             }
             SignalAction::Stop => {
@@ -509,7 +521,11 @@ impl SignalDelivery {
                 let mut inner = task.inner_exclusive_access();
                 inner.task_status = crate::task::TaskStatus::Sleeping;
                 drop(inner);
-                info!("Signal {} stops process PID {}", signal as u32, task.get_pid());
+                info!(
+                    "Signal {} stops process PID {}",
+                    signal as u32,
+                    task.get_pid()
+                );
                 (true, None)
             }
             SignalAction::Continue => {
@@ -517,16 +533,24 @@ impl SignalDelivery {
                 let mut inner = task.inner_exclusive_access();
                 if inner.task_status == crate::task::TaskStatus::Sleeping {
                     inner.task_status = crate::task::TaskStatus::Ready;
-                    info!("Signal {} continues process PID {}", signal as u32, task.get_pid());
+                    info!(
+                        "Signal {} continues process PID {}",
+                        signal as u32,
+                        task.get_pid()
+                    );
                 }
                 drop(inner);
                 (true, None)
             }
             SignalAction::Handler(handler_addr) => {
                 // 执行用户自定义信号处理函数
-                info!("Signal {} executing handler at {:#x} for PID {}", 
-                      signal as u32, handler_addr, task.get_pid());
-                
+                debug!(
+                    "Signal {} executing handler at {:#x} for PID {}",
+                    signal as u32,
+                    handler_addr,
+                    task.get_pid()
+                );
+
                 // 检查SA_RESETHAND标志，如果设置了，处理完后重置为默认行为
                 if (handler.flags & SA_RESETHAND) != 0 {
                     let inner = task.inner_exclusive_access();
@@ -538,7 +562,7 @@ impl SignalDelivery {
                     inner.set_signal_handler(signal, default_disposition);
                     drop(inner);
                 }
-                
+
                 Self::setup_signal_handler(task, signal, handler_addr, &handler, trap_cx);
                 (true, None)
             }
@@ -564,32 +588,35 @@ impl SignalDelivery {
 
         // 获取用户栈指针
         let user_sp = trap_cx.x[2]; // sp is x[2] in RISC-V
-        
+
         // 在用户栈上分配信号帧空间（栈向下增长）
         let signal_frame_size = core::mem::size_of::<SignalFrame>();
         let aligned_size = (signal_frame_size + 15) & !15; // 16字节对齐
         let signal_frame_addr = user_sp - aligned_size;
-        
+
         // 将信号帧写入用户栈和设置信号处理环境
         {
             let inner = task.inner_exclusive_access();
             let token = inner.get_user_token();
-            
+
             // 检查地址是否在用户空间范围内
             // 用户栈通常在较低地址，检查是否在合理范围内
             if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
-                warn!("Signal frame address out of range: {:#x}", signal_frame_addr);
+                warn!(
+                    "Signal frame address out of range: {:#x}",
+                    signal_frame_addr
+                );
                 return;
             }
-            
+
             // 使用页表转换安全地写入信号帧
             let frame_ptr = signal_frame_addr as *mut SignalFrame;
             let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr);
             *frame_ref = signal_frame;
-            
+
             // 进入信号处理器前，保存当前信号掩码并设置新的掩码
             inner.signal_state.enter_signal_handler(handler_info.mask);
-            
+
             // 如果设置了 SA_NODEFER 标志，不自动阻塞当前信号
             if (handler_info.flags & crate::task::signal::SA_NODEFER) == 0 {
                 let mut current_signal_mask = SignalSet::new();
@@ -597,18 +624,20 @@ impl SignalDelivery {
                 inner.signal_state.block_signals(current_signal_mask);
             }
         }
-        
+
         // 修改trap context，设置信号处理函数执行环境
         trap_cx.sepc = handler_addr; // 设置程序计数器到信号处理函数
         trap_cx.x[2] = signal_frame_addr; // 更新栈指针，为信号帧留出空间
         trap_cx.x[10] = signal as usize; // a0寄存器传递信号号码
-        
+
         // 设置返回地址寄存器（ra），指向sigreturn调用
         // 这样当信号处理函数返回时，会自动调用sigreturn
         trap_cx.x[1] = Self::get_sigreturn_addr();
-        
-        debug!("Signal {} handler setup: pc={:#x}, sp={:#x}, frame={:#x}", 
-               signal as u32, handler_addr, signal_frame_addr, signal_frame_addr);
+
+        debug!(
+            "Signal {} handler setup: pc={:#x}, sp={:#x}, frame={:#x}",
+            signal as u32, handler_addr, signal_frame_addr, signal_frame_addr
+        );
     }
 
     /// 获取sigreturn系统调用的地址
@@ -617,89 +646,94 @@ impl SignalDelivery {
         // 这个地址应该从用户程序的符号表中获取
         // 为了简化，我们可以让用户程序在初始化时通过系统调用告诉内核这个地址
         // 或者使用一个固定的约定地址
-        
+
         // 临时解决方案：返回一个特殊值，让信号处理函数直接返回到用户程序的正常流程
         // 而不是尝试调用sigreturn
-        0 // 这会导致地址为0，触发异常，我们可以在异常处理中识别并处理
+        SIG_RETURN_ADDR // 这会导致地址为0，触发异常，我们可以在异常处理中识别并处理
     }
 
     /// 从信号处理函数返回
     pub fn sigreturn(task: &crate::task::TaskControlBlock, trap_cx: &mut TrapContext) -> bool {
         // 从用户栈恢复信号帧
         let user_sp = trap_cx.x[2];
-        
+
         // 计算信号帧的地址
         // 由于我们在setup时对齐了地址，这里需要找回原始的帧地址
         let signal_frame_size = core::mem::size_of::<SignalFrame>();
         let aligned_size = (signal_frame_size + 15) & !15; // 16字节对齐
         let signal_frame_addr = user_sp; // 当前sp就指向信号帧
-        
-        debug!("Sigreturn: sp={:#x}, frame_addr={:#x}, frame_size={}", 
-               user_sp, signal_frame_addr, aligned_size);
-        
+
+        debug!(
+            "Sigreturn: sp={:#x}, frame_addr={:#x}, frame_size={}",
+            user_sp, signal_frame_addr, aligned_size
+        );
+
         // 检查地址有效性
         if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
             error!("Invalid signal frame address: {:#x}", signal_frame_addr);
             return false;
         }
-        
+
         // 使用页表转换安全地读取信号帧
         let inner = task.inner_exclusive_access();
         let token = inner.get_user_token();
         drop(inner);
-        
+
         let signal_frame = {
             let frame_ptr = signal_frame_addr as *const SignalFrame;
-            let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr as *mut SignalFrame);
+            let frame_ref =
+                crate::memory::page_table::translated_ref_mut(token, frame_ptr as *mut SignalFrame);
             *frame_ref
         };
-        
+
         // 验证信号帧的有效性
         if signal_frame.signal == 0 || signal_frame.signal > 31 {
             error!("Invalid signal number in frame: {}", signal_frame.signal);
             return false;
         }
-        
+
         // 恢复寄存器状态
         trap_cx.x = signal_frame.regs;
         trap_cx.sepc = signal_frame.pc;
-        
+
         // 完整恢复 sstatus 寄存器状态
         let mut current_sstatus = riscv::register::sstatus::read();
         let saved_bits = signal_frame.status;
-        
+
         // 恢复关键的状态位
         if (saved_bits & (1 << 8)) != 0 {
             current_sstatus.set_spp(riscv::register::sstatus::SPP::Supervisor);
         } else {
             current_sstatus.set_spp(riscv::register::sstatus::SPP::User);
         }
-        
+
         if (saved_bits & (1 << 5)) != 0 {
             current_sstatus.set_spie(true);
         } else {
             current_sstatus.set_spie(false);
         }
-        
+
         if (saved_bits & (1 << 1)) != 0 {
             current_sstatus.set_sie(true);
         } else {
             current_sstatus.set_sie(false);
         }
-        
+
         trap_cx.sstatus = current_sstatus;
-        
+
         // 恢复信号掩码和信号处理状态
         let inner = task.inner_exclusive_access();
         inner.signal_state.exit_signal_handler();
         drop(inner);
-        
+
         // 恢复栈指针到信号帧之前的位置
         trap_cx.x[2] = signal_frame.regs[2]; // 恢复原始的栈指针
-        
-        debug!("Signal {} sigreturn completed: pc={:#x}, sp={:#x}", 
-               signal_frame.signal, trap_cx.sepc, trap_cx.x[2]);
-        
+
+        debug!(
+            "Signal {} sigreturn completed: pc={:#x}, sp={:#x}",
+            signal_frame.signal, trap_cx.sepc, trap_cx.x[2]
+        );
+
         true
     }
 }
@@ -707,10 +741,10 @@ impl SignalDelivery {
 /// 全局函数：向指定进程发送信号
 pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), SignalError> {
     use crate::task::task_manager::find_task_by_pid;
-    
+
     if let Some(task) = find_task_by_pid(target_pid) {
         let mut inner = task.inner_exclusive_access();
-        
+
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {
             // SIGKILL和SIGSTOP不能被阻塞或忽略
@@ -728,7 +762,7 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
             // 普通信号加入待处理队列
             inner.send_signal(signal);
         }
-        
+
         Ok(())
     } else {
         Err(SignalError::ProcessNotFound)
@@ -738,14 +772,14 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
 /// 检查当前进程是否有待处理的信号，如果有则处理
 pub fn check_and_handle_signals() -> (bool, Option<i32>) {
     use crate::task::current_task;
-    
+
     if let Some(task) = current_task() {
         // 先检查是否有待处理的信号
         let has_signals = {
             let inner = task.inner_exclusive_access();
             inner.has_pending_signals()
         }; // inner在这里被drop
-        
+
         if has_signals {
             // 分别获取trap_cx和处理信号，避免同时持有锁
             SignalDelivery::handle_signals_safe(&task)

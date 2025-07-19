@@ -323,6 +323,10 @@ impl MemorySet {
                     }
                     let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
 
+                    // Add debug logging for memory mapping
+                    debug!("[ELF LOADER] Mapping segment: VA range 0x{:x}-0x{:x}, perms: {:?}, file_size: 0x{:x}, mem_size: 0x{:x}",
+                           ph.virtual_addr(), ph.virtual_addr() + ph.mem_size(), map_perm, ph.file_size(), ph.mem_size());
+
                     // 记录实际映射的最大页面号
                     max_mapped_vpn = max_mapped_vpn
                         .as_usize()

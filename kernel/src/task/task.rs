@@ -189,8 +189,6 @@ impl TaskControlBlock {
             }),
         };
 
-        panic!("test");
-
         // prepare TrapContext in user space
         let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
         *trap_cx = TrapContext::app_init_context(
