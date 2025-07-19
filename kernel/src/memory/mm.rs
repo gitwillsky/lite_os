@@ -1,15 +1,15 @@
 use core::{arch::asm, error::Error, ops::Range};
 
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec, string::String};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
 use crate::memory::{
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
+    dynamic_linker::DynamicLinker,
     frame_allocator::{FrameTracker, alloc},
     page_table::{PTEFlags, PageTableEntry},
     strampoline,
-    dynamic_linker::DynamicLinker,
 };
 
 use super::config;
@@ -68,7 +68,9 @@ impl MapArea {
 
         loop {
             let src = &data[start..len.min(start + config::PAGE_SIZE)];
-            let pte = page_table.translate(current_vpn).expect("Page table entry not found during data copy");
+            let pte = page_table
+                .translate(current_vpn)
+                .expect("Page table entry not found during data copy");
             let ppn = pte.ppn();
             let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
             dst.copy_from_slice(src);
@@ -259,16 +261,18 @@ impl MemorySet {
     }
 
     /// Create a memory set from ELF data with dynamic linking support
-    pub fn from_elf_with_dynamic_linking(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
+    pub fn from_elf_with_dynamic_linking(
+        elf_data: &[u8],
+    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
         Self::from_elf_internal(elf_data, &[], &[], true)
     }
 
     /// Internal ELF loading implementation with optional dynamic linking support
     fn from_elf_internal(
-        elf_data: &[u8], 
-        args: &[String], 
+        elf_data: &[u8],
+        args: &[String],
         envs: &[String],
-        enable_dynamic_linking: bool
+        enable_dynamic_linking: bool,
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
         let mut memory_set = MemorySet::new();
 
@@ -280,18 +284,18 @@ impl MemorySet {
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
 
         // Check if this is a dynamically linked executable
-        let is_dynamic = elf_header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject ||
-                        elf.find_section_by_name(".dynamic").is_some();
+        let is_dynamic = elf_header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject
+            || elf.find_section_by_name(".dynamic").is_some();
 
         if enable_dynamic_linking && is_dynamic {
             info!("Loading dynamically linked ELF executable");
-            
+
             // Initialize dynamic linker
             let mut dynamic_linker = DynamicLinker::new();
-            
+
             // Parse dynamic linking information
             dynamic_linker.parse_dynamic_elf(&elf, VirtualAddress::from(0))?;
-            
+
             memory_set.dynamic_linker = Some(dynamic_linker);
         }
 
@@ -303,12 +307,13 @@ impl MemorySet {
         // Process program headers
         for i in 0..ph_count {
             let ph = elf.program_header(i)?;
-            
+
             match ph.get_type()? {
                 xmas_elf::program::Type::Load => {
                     // Load regular segments
                     let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
-                    let end_va: VirtualAddress = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+                    let end_va: VirtualAddress =
+                        ((ph.virtual_addr() + ph.mem_size()) as usize).into();
 
                     let mut map_perm = MapPermission::U;
                     let ph_flags = ph.flags();
@@ -323,10 +328,6 @@ impl MemorySet {
                     }
                     let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
 
-                    // Add debug logging for memory mapping
-                    debug!("[ELF LOADER] Mapping segment: VA range 0x{:x}-0x{:x}, perms: {:?}, file_size: 0x{:x}, mem_size: 0x{:x}",
-                           ph.virtual_addr(), ph.virtual_addr() + ph.mem_size(), map_perm, ph.file_size(), ph.mem_size());
-
                     // 记录实际映射的最大页面号
                     max_mapped_vpn = max_mapped_vpn
                         .as_usize()
@@ -335,7 +336,10 @@ impl MemorySet {
 
                     memory_set.push(
                         map_area,
-                        Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                        Some(
+                            &elf.input
+                                [ph.offset() as usize..(ph.offset() + ph.file_size()) as usize],
+                        ),
                     );
                 }
                 xmas_elf::program::Type::Dynamic => {
@@ -362,12 +366,12 @@ impl MemorySet {
                 plt_address = Some(VirtualAddress::from(plt_section.address() as usize));
                 debug!("Found PLT section at 0x{:x}", plt_section.address());
             }
-            
+
             if let Some(got_section) = elf.find_section_by_name(".got") {
                 got_address = Some(VirtualAddress::from(got_section.address() as usize));
                 debug!("Found GOT section at 0x{:x}", got_section.address());
             }
-            
+
             // Setup PLT if both PLT and GOT are present
             if let (Some(plt_addr), Some(got_addr)) = (plt_address, got_address) {
                 if let Some(ref mut linker) = memory_set.dynamic_linker {
@@ -443,31 +447,31 @@ impl MemorySet {
 
     /// Create a new memory set from ELF data with argument support
     pub fn from_elf_with_args(
-        elf_data: &[u8], 
-        args: &[String], 
-        envs: &[String]
+        elf_data: &[u8],
+        args: &[String],
+        envs: &[String],
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
         Self::from_elf_internal(elf_data, args, envs, false)
     }
 
     /// Create a new memory set from ELF data with arguments and dynamic linking support
     pub fn from_elf_with_args_and_dynamic_linking(
-        elf_data: &[u8], 
-        args: &[String], 
-        envs: &[String]
+        elf_data: &[u8],
+        args: &[String],
+        envs: &[String],
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
         Self::from_elf_internal(elf_data, args, envs, true)
     }
 
     /// Build argc/argv/envp layout on user stack
     fn build_arg_stack(
-        &self, 
-        stack_top: usize, 
-        args: &[String], 
-        envs: &[String]
+        &self,
+        stack_top: usize,
+        args: &[String],
+        envs: &[String],
     ) -> Result<usize, Box<dyn Error>> {
         let mut stack_ptr = stack_top;
-        
+
         // Calculate total space needed for strings
         let mut total_string_size = 0;
         for arg in args {
@@ -476,45 +480,45 @@ impl MemorySet {
         for env in envs {
             total_string_size += env.len() + 1; // +1 for null terminator
         }
-        
+
         // Align to 8 bytes boundary for arguments
         total_string_size = (total_string_size + 7) & !7;
-        
+
         // Space for pointers: argc + argv[] + envp[] + padding
         let argc = args.len();
         let pointer_space = core::mem::size_of::<usize>() * (1 + argc + 1 + envs.len() + 1);
         let pointer_space_aligned = (pointer_space + 7) & !7;
-        
+
         // Move stack pointer down to accommodate everything
         stack_ptr -= total_string_size + pointer_space_aligned;
         stack_ptr &= !7; // Align to 8 bytes
-        
+
         let string_area_start = stack_ptr + pointer_space_aligned;
         let mut string_ptr = string_area_start;
         let mut argv_ptrs = Vec::new();
         let mut envp_ptrs = Vec::new();
-        
+
         // Write argument strings and collect pointers
         for arg in args {
             argv_ptrs.push(string_ptr);
             self.write_string_to_user_stack(string_ptr, arg)?;
             string_ptr += arg.len() + 1;
         }
-        
+
         // Write environment strings and collect pointers
         for env in envs {
             envp_ptrs.push(string_ptr);
             self.write_string_to_user_stack(string_ptr, env)?;
             string_ptr += env.len() + 1;
         }
-        
+
         // Write argc/argv/envp structure
         let mut ptr_writer = stack_ptr;
-        
+
         // Write argc
         self.write_usize_to_user_stack(ptr_writer, argc)?;
         ptr_writer += core::mem::size_of::<usize>();
-        
+
         // Write argv pointers
         for &arg_ptr in &argv_ptrs {
             self.write_usize_to_user_stack(ptr_writer, arg_ptr)?;
@@ -523,7 +527,7 @@ impl MemorySet {
         // Null terminator for argv
         self.write_usize_to_user_stack(ptr_writer, 0)?;
         ptr_writer += core::mem::size_of::<usize>();
-        
+
         // Write envp pointers
         for &env_ptr in &envp_ptrs {
             self.write_usize_to_user_stack(ptr_writer, env_ptr)?;
@@ -531,36 +535,36 @@ impl MemorySet {
         }
         // Null terminator for envp
         self.write_usize_to_user_stack(ptr_writer, 0)?;
-        
+
         Ok(stack_ptr)
     }
-    
+
     /// Write a string to user stack memory
     fn write_string_to_user_stack(&self, addr: usize, s: &str) -> Result<(), Box<dyn Error>> {
         let vpn_start = VirtualAddress::from(addr).floor();
         let vpn_end = VirtualAddress::from(addr + s.len() + 1).floor();
-        
+
         for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             if let Some(pte) = self.translate(vpn) {
                 let ppn = pte.ppn();
                 let page_bytes = ppn.get_bytes_array_mut();
-                
+
                 let page_start = vpn.as_usize() * config::PAGE_SIZE;
                 let page_end = page_start + config::PAGE_SIZE;
-                
+
                 let str_start = addr.max(page_start);
                 let str_end = (addr + s.len()).min(page_end);
-                
+
                 if str_start < str_end {
                     let page_offset = str_start - page_start;
                     let str_offset = str_start - addr;
                     let copy_len = str_end - str_start;
-                    
+
                     page_bytes[page_offset..page_offset + copy_len]
                         .copy_from_slice(&s.as_bytes()[str_offset..str_offset + copy_len]);
                 }
-                
+
                 // Write null terminator if this page contains the end
                 if addr + s.len() >= page_start && addr + s.len() < page_end {
                     let null_offset = (addr + s.len()) - page_start;
@@ -570,30 +574,30 @@ impl MemorySet {
         }
         Ok(())
     }
-    
+
     /// Write a usize value to user stack memory
     fn write_usize_to_user_stack(&self, addr: usize, value: usize) -> Result<(), Box<dyn Error>> {
         let bytes = value.to_le_bytes();
         let vpn_start = VirtualAddress::from(addr).floor();
         let vpn_end = VirtualAddress::from(addr + core::mem::size_of::<usize>() - 1).floor();
-        
+
         for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             if let Some(pte) = self.translate(vpn) {
                 let ppn = pte.ppn();
                 let page_bytes = ppn.get_bytes_array_mut();
-                
+
                 let page_start = vpn.as_usize() * config::PAGE_SIZE;
                 let page_end = page_start + config::PAGE_SIZE;
-                
+
                 let val_start = addr.max(page_start);
                 let val_end = (addr + core::mem::size_of::<usize>()).min(page_end);
-                
+
                 if val_start < val_end {
                     let page_offset = val_start - page_start;
                     let val_offset = val_start - addr;
                     let copy_len = val_end - val_start;
-                    
+
                     page_bytes[page_offset..page_offset + copy_len]
                         .copy_from_slice(&bytes[val_offset..val_offset + copy_len]);
                 }
@@ -612,8 +616,14 @@ impl MemorySet {
 
             for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
-                let src_ppn = user_space.translate(vpn).expect("Source page table entry not found during clone").ppn();
-                let dst_ppn = memory_set.translate(vpn).expect("Destination page table entry not found during clone").ppn();
+                let src_ppn = user_space
+                    .translate(vpn)
+                    .expect("Source page table entry not found during clone")
+                    .ppn();
+                let dst_ppn = memory_set
+                    .translate(vpn)
+                    .expect("Destination page table entry not found during clone")
+                    .ppn();
                 dst_ppn
                     .get_bytes_array_mut()
                     .copy_from_slice(&src_ppn.get_bytes_array_mut());
@@ -637,11 +647,14 @@ impl MemorySet {
     }
 
     /// Load a shared library at runtime
-    pub fn load_shared_library(&mut self, library_name: &str) -> Result<VirtualAddress, Box<dyn Error>> {
+    pub fn load_shared_library(
+        &mut self,
+        library_name: &str,
+    ) -> Result<VirtualAddress, Box<dyn Error>> {
         if self.dynamic_linker.is_none() {
             return Err("Dynamic linker not initialized".into());
         }
-        
+
         // Take the linker temporarily to avoid double borrow
         if let Some(mut linker) = self.dynamic_linker.take() {
             let result = linker.load_shared_library(self, library_name);
