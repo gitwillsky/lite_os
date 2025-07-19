@@ -119,25 +119,37 @@ impl TaskManager {
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         match self.scheduling_policy {
             SchedulingPolicy::FIFO => {
-                self.ready_queue.pop_front()
+                // Filter out zombie tasks from FIFO queue
+                while let Some(task) = self.ready_queue.pop_front() {
+                    if !task.inner_exclusive_access().is_zombie() {
+                        return Some(task);
+                    }
+                    // Skip zombie tasks - they should not be scheduled
+                }
+                None
             },
             SchedulingPolicy::Priority | SchedulingPolicy::RoundRobin => {
                 // 从高优先级到低优先级查找任务
                 for queue in &mut self.priority_queues {
-                    if let Some(task) = queue.pop_front() {
-                        return Some(task);
+                    while let Some(task) = queue.pop_front() {
+                        if !task.inner_exclusive_access().is_zombie() {
+                            return Some(task);
+                        }
+                        // Skip zombie tasks - they should not be scheduled
                     }
                 }
                 None
             },
             SchedulingPolicy::CFS => {
-                if let Some(cfs_task) = self.cfs_queue.pop() {
-                    // 更新全局最小vruntime
-                    self.min_vruntime = cfs_task.vruntime;
-                    Some(cfs_task.task)
-                } else {
-                    None
+                while let Some(cfs_task) = self.cfs_queue.pop() {
+                    if !cfs_task.task.inner_exclusive_access().is_zombie() {
+                        // 更新全局最小vruntime
+                        self.min_vruntime = cfs_task.vruntime;
+                        return Some(cfs_task.task);
+                    }
+                    // Skip zombie tasks - they should not be scheduled
                 }
+                None
             }
         }
     }
