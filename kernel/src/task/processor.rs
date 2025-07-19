@@ -48,7 +48,7 @@ pub fn current_task() -> Option<Arc<TaskControlBlock>> {
 /// 获取当前任务的用户空间页表令牌
 pub fn current_user_token() -> usize {
     current_task()
-        .unwrap()
+        .expect("No current task when getting user token")
         .inner_exclusive_access()
         .get_user_token()
 }
@@ -56,7 +56,7 @@ pub fn current_user_token() -> usize {
 /// 获取当前任务的陷阱上下文
 pub fn current_trap_context() -> &'static mut TrapContext {
     current_task()
-        .unwrap()
+        .expect("No current task when getting trap context")
         .inner_exclusive_access()
         .get_trap_cx()
 }
@@ -107,7 +107,7 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 
 /// 挂起当前任务并运行下一个任务
 pub fn suspend_current_and_run_next() {
-    let task = take_current_task().unwrap();
+    let task = take_current_task().expect("No current task to suspend");
     let end_time = get_time_us();
     // 调试信息输出
     print_debug_info_if_needed(end_time, &task);
@@ -140,7 +140,7 @@ pub fn suspend_current_and_run_next() {
 
 /// 阻塞当前任务并切换到下一个任务
 pub fn block_current_and_run_next() {
-    let task = take_current_task().unwrap();
+    let task = take_current_task().expect("No current task to block");
     let end_time = get_time_us();
 
     let (task_cx_ptr, runtime) = {
@@ -163,7 +163,7 @@ pub fn block_current_and_run_next() {
 
 /// 退出当前任务并运行下一个任务
 pub fn exit_current_and_run_next(exit_code: i32) {
-    let task = take_current_task().unwrap();
+    let task = take_current_task().expect("No current task to exit");
     exit_task_and_run_next(task, exit_code);
 }
 

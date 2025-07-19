@@ -148,10 +148,17 @@ pub fn trap_return() -> ! {
         }
     }
 
+    // 确保仍有当前任务存在，如果没有则调度到下一个任务
+    let user_satp = if let Some(_) = task::current_task() {
+        task::current_user_token()
+    } else {
+        // 没有当前任务，调度到下一个任务
+        task::run_tasks();
+    };
+
     set_user_trap_entry();
 
     let trap_cx_ptr = TRAP_CONTEXT;
-    let user_satp = task::current_user_token();
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
