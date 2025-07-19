@@ -31,7 +31,7 @@ lazy_static! {
 static LAST_DEBUG_TIME: AtomicU64 = AtomicU64::new(0);
 
 pub const IDLE_PID: usize = 0;
-const DEBUG_INTERVAL_US: u64 = 1_000_000; // 1秒调试间隔
+const DEBUG_INTERVAL_US: u64 = 5_000_000; // 5秒调试间隔
 
 // ===== 公共接口函数 =====
 
@@ -160,8 +160,6 @@ pub fn block_current_and_run_next() {
     // 不将任务加入就绪队列，让它保持阻塞状态
     schedule(task_cx_ptr);
 }
-
-// ===== 任务退出相关函数 =====
 
 /// 退出当前任务并运行下一个任务
 pub fn exit_current_and_run_next(exit_code: i32) {

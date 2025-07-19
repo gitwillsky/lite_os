@@ -18,7 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{self, exit_current_and_run_next, exit_task_and_run_next, suspend_current_and_run_next},
+    task::{self, exit_current_and_run_next, exit_task_and_run_next, exit_task_without_schedule, suspend_current_and_run_next},
     timer,
 };
 
@@ -63,8 +63,8 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     error!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    if let Some(task) = exception_task {
-                        exit_task_and_run_next(task, -3);
+                    if let Some(task) = exception_task.clone() {
+                        exit_task_without_schedule(task, -2);
                     }
                 }
                 Exception::Breakpoint => {
@@ -89,29 +89,11 @@ pub fn trap_handler() {
                     cx.x[10] = ret as usize;
                 }
                 Exception::InstructionPageFault => {
-                    // 检查是否是信号处理函数返回
-                    let sepc = {
-                        let cx = task::current_trap_context();
-                        cx.sepc
-                    }; // cx借用在这里结束
-
-                    if sepc == task::SIG_RETURN_ADDR {
-                        // 这是信号处理函数返回，自动调用sigreturn
-                        if syscall::sys_sigreturn() == 0 {
-                            trap_return();
-                        } else {
-                            error!("[kernel] sigreturn failed, killing process.");
-                            if let Some(task) = exception_task.clone() {
-                                exit_task_and_run_next(task, -4);
-                            }
-                        }
-                    }
-
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     error!("Instruction Page Fault, VA:{:#x}", stval);
                     if let Some(task) = exception_task.clone() {
-                        exit_task_and_run_next(task, -5);
+                        exit_task_without_schedule(task, -5);
                     }
                 }
                 Exception::LoadFault
@@ -124,9 +106,6 @@ pub fn trap_handler() {
                         stval,
                         task::current_trap_context().sepc,
                     );
-                    if let Some(task) = exception_task.clone() {
-                        exit_task_and_run_next(task, -2);
-                    }
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);
