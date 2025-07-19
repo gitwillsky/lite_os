@@ -193,7 +193,10 @@ pub const IDLE_PID: usize = 0;
 
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().unwrap();
+    exit_task_and_run_next(task, exit_code);
+}
 
+pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
     let pid = task.get_pid();
     if pid == IDLE_PID {
         debug!(
@@ -205,6 +208,20 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         } else {
             shutdown()
         }
+    }
+
+    // 如果要退出的任务就是当前任务，直接从处理器中移除
+    let is_current_task = {
+        let processor = PROCESSOR.exclusive_access();
+        if let Some(current) = processor.current() {
+            Arc::ptr_eq(&current, &task)
+        } else {
+            false
+        }
+    };
+
+    if is_current_task {
+        take_current_task();
     }
 
     let mut inner = task.inner_exclusive_access();
@@ -232,6 +249,59 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
+}
+
+/// 无需调度切换的任务退出，用于信号处理等场景
+pub fn exit_task_without_schedule(task: Arc<TaskControlBlock>, exit_code: i32) {
+    let pid = task.get_pid();
+    if pid == IDLE_PID {
+        debug!(
+            "[kernel] Idle process exit with exit_code {} ...",
+            exit_code
+        );
+        if exit_code != 0 {
+            shutdown()
+        } else {
+            shutdown()
+        }
+    }
+
+    // 如果要退出的任务就是当前任务，从处理器中移除
+    let is_current_task = {
+        let processor = PROCESSOR.exclusive_access();
+        if let Some(current) = processor.current() {
+            Arc::ptr_eq(&current, &task)
+        } else {
+            false
+        }
+    };
+
+    if is_current_task {
+        take_current_task();
+    }
+
+    let mut inner = task.inner_exclusive_access();
+
+    inner.task_status = TaskStatus::Zombie;
+    inner.exit_code = exit_code;
+
+    {
+        let init_proc = super::task_manager::get_init_proc().unwrap();
+        let mut init_proc_inner = init_proc.inner_exclusive_access();
+        for child in inner.children.iter() {
+            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
+            init_proc_inner.children.push(child.clone());
+        }
+    }
+
+    inner.children.clear();
+    // 关闭所有打开的文件描述符并清理文件锁
+    inner.close_all_fds_and_cleanup_locks(pid);
+    // deallocate user space
+    inner.memory_set.recycle_data_pages();
+    drop(inner);
+
+    // 不调用 schedule，因为可能不在目标任务的上下文中
 }
 
 pub fn current_cwd() -> String {

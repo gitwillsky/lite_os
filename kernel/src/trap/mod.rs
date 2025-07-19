@@ -18,7 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{self, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{self, exit_current_and_run_next, exit_task_and_run_next, suspend_current_and_run_next},
     timer,
 };
 
@@ -35,6 +35,9 @@ pub fn trap_handler() {
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
     let stval = stval::read();
+
+    // 保存触发异常/中断的任务，避免在处理过程中任务切换导致退出错误的任务
+    let exception_task = task::current_task();
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -60,7 +63,9 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     error!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    exit_current_and_run_next(-3);
+                    if let Some(task) = exception_task {
+                        exit_task_and_run_next(task, -3);
+                    }
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -95,14 +100,18 @@ pub fn trap_handler() {
                             trap_return();
                         } else {
                             error!("[kernel] sigreturn failed, killing process.");
-                            exit_current_and_run_next(-4);
+                            if let Some(task) = exception_task.clone() {
+                                exit_task_and_run_next(task, -4);
+                            }
                         }
                     }
 
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     error!("Instruction Page Fault, VA:{:#x}", stval);
-                    exit_current_and_run_next(-5);
+                    if let Some(task) = exception_task.clone() {
+                        exit_task_and_run_next(task, -5);
+                    }
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
@@ -114,7 +123,9 @@ pub fn trap_handler() {
                         stval,
                         task::current_trap_context().sepc,
                     );
-                    exit_current_and_run_next(-2);
+                    if let Some(task) = exception_task.clone() {
+                        exit_task_and_run_next(task, -2);
+                    }
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);
@@ -148,11 +159,11 @@ fn set_user_trap_entry() {
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
     // 在返回用户态之前检查信号
-    if let Some(_task) = task::current_task() {
+    if let Some(task) = task::current_task() {
         let (should_continue, exit_code) = crate::task::check_and_handle_signals();
         if !should_continue {
             if let Some(code) = exit_code {
-                exit_current_and_run_next(code);
+                exit_task_and_run_next(task, code);
             }
         }
     }
