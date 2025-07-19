@@ -38,7 +38,7 @@ struct PidAllocator {
 impl PidAllocator {
     pub fn new() -> Self {
         Self {
-            current: 0,
+            current: 1, // 从 PID 1 开始分配，保留 PID 0 给 idle 进程
             recycled: Vec::new(),
         }
     }

@@ -78,13 +78,14 @@ pub fn trap_handler() {
                     cx.sepc += 4;
                 }
                 Exception::UserEnvCall => {
-                    let cx = task::current_trap_context();
-                    cx.sepc += 4;
-                    let ret = syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]);
+                    let ret = {
+                        let cx = task::current_trap_context();
+                        cx.sepc += 4;
+                        syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]])
+                    };
 
                     // sys_exec change the TrapContext, we need reload it
                     let cx = task::current_trap_context();
-
                     cx.x[10] = ret as usize;
                 }
                 Exception::InstructionPageFault => {

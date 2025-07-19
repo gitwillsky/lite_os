@@ -36,7 +36,7 @@ fn main() -> i32 {
 fn spawn_shell(shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
-        exec("user_shell");
+        exec("test");
         user_lib::exit(1);
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);

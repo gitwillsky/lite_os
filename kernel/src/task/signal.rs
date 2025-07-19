@@ -363,17 +363,12 @@ impl SignalState {
 
     /// Reset signal state for exec
     pub fn reset_for_exec(&self) {
-        let mut pending = self.pending.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
-        let mut handlers = self.handlers.exclusive_access();
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-
-        pending.clear();
-        blocked.clear();
-        handlers.clear();
-        *in_handler = false;
-        *saved_mask = None;
+        // Clear all signal state components separately to avoid borrowing conflicts
+        self.pending.exclusive_access().clear();
+        self.blocked.exclusive_access().clear();
+        self.handlers.exclusive_access().clear();
+        *self.in_signal_handler.exclusive_access() = false;
+        *self.saved_mask.exclusive_access() = None;
     }
 
     /// Clone signal state for fork (handlers are inherited, pending signals are not)
@@ -551,19 +546,19 @@ impl SignalDelivery {
                     task.get_pid()
                 );
 
+                Self::setup_signal_handler(task, signal, handler_addr, &handler, trap_cx);
+
                 // 检查SA_RESETHAND标志，如果设置了，处理完后重置为默认行为
+                // 在setup完成后处理，避免嵌套借用
                 if (handler.flags & SA_RESETHAND) != 0 {
-                    let inner = task.inner_exclusive_access();
                     let default_disposition = SignalDisposition {
                         action: signal.default_action(),
                         mask: SignalSet::new(),
                         flags: 0,
                     };
-                    inner.set_signal_handler(signal, default_disposition);
-                    drop(inner);
+                    // 现在可以安全地访问inner，因为setup_signal_handler已经完成
+                    task.inner_exclusive_access().signal_state.set_handler(signal, default_disposition);
                 }
-
-                Self::setup_signal_handler(task, signal, handler_addr, &handler, trap_cx);
                 (true, None)
             }
         }
@@ -594,27 +589,31 @@ impl SignalDelivery {
         let aligned_size = (signal_frame_size + 15) & !15; // 16字节对齐
         let signal_frame_addr = user_sp - aligned_size;
 
-        // 将信号帧写入用户栈和设置信号处理环境
+        // 获取用户页表令牌
+        let token = {
+            let inner = task.inner_exclusive_access();
+            inner.get_user_token()
+        };
+
+        // 检查地址是否在用户空间范围内
+        // 用户栈通常在较低地址，检查是否在合理范围内
+        if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
+            warn!(
+                "Signal frame address out of range: {:#x}",
+                signal_frame_addr
+            );
+            return;
+        }
+
+        // 使用页表转换安全地写入信号帧
+        let frame_ptr = signal_frame_addr as *mut SignalFrame;
+        let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr);
+        *frame_ref = signal_frame;
+
+        // 进入信号处理器前，保存当前信号掩码并设置新的掩码
+        // 避免嵌套借用，使用一次性访问处理所有信号状态操作
         {
             let inner = task.inner_exclusive_access();
-            let token = inner.get_user_token();
-
-            // 检查地址是否在用户空间范围内
-            // 用户栈通常在较低地址，检查是否在合理范围内
-            if signal_frame_addr < 0x10000 || signal_frame_addr >= 0x80000000 {
-                warn!(
-                    "Signal frame address out of range: {:#x}",
-                    signal_frame_addr
-                );
-                return;
-            }
-
-            // 使用页表转换安全地写入信号帧
-            let frame_ptr = signal_frame_addr as *mut SignalFrame;
-            let frame_ref = crate::memory::page_table::translated_ref_mut(token, frame_ptr);
-            *frame_ref = signal_frame;
-
-            // 进入信号处理器前，保存当前信号掩码并设置新的掩码
             inner.signal_state.enter_signal_handler(handler_info.mask);
 
             // 如果设置了 SA_NODEFER 标志，不自动阻塞当前信号
