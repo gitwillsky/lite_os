@@ -1,4 +1,4 @@
-use alloc::{string::{String, ToString}, sync::Arc};
+use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
 use riscv::asm::wfi;
 
@@ -197,6 +197,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 }
 
 pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
+    debug!("1");
     let pid = task.get_pid();
     if pid == IDLE_PID {
         debug!(
@@ -210,31 +211,42 @@ pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
         }
     }
 
-    // 如果要退出的任务就是当前任务，直接从处理器中移除
-    let is_current_task = {
-        let processor = PROCESSOR.exclusive_access();
-        if let Some(current) = processor.current() {
-            Arc::ptr_eq(&current, &task)
-        } else {
-            false
-        }
-    };
-
-    if is_current_task {
-        take_current_task();
-    }
-
+    debug!("2");
+    debug!("Exiting task PID: {}", task.get_pid());
     let mut inner = task.inner_exclusive_access();
 
+    debug!("4");
     inner.task_status = TaskStatus::Zombie;
     inner.exit_code = exit_code;
 
     {
+    debug!("5");
         let init_proc = super::task_manager::get_init_proc().unwrap();
-        let mut init_proc_inner = init_proc.inner_exclusive_access();
-        for child in inner.children.iter() {
-            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
-            init_proc_inner.children.push(child.clone());
+    debug!("6");
+        debug!("Init proc PID: {}", init_proc.get_pid());
+        
+        // 如果退出的任务就是init进程本身，跳过重新父化过程
+        if Arc::ptr_eq(&task, &init_proc) {
+            debug!("Skipping reparenting because the exiting task is init process itself");
+        } else {
+            // 收集需要重新父化的子进程，避免在持有init_proc锁时访问子进程锁
+            let children_to_reparent: Vec<_> = inner.children.iter()
+                .filter(|child| !Arc::ptr_eq(child, &init_proc)) // 避免自引用
+                .cloned()
+                .collect();
+            
+            // 先处理子进程的parent指针
+            for child in &children_to_reparent {
+                child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
+            }
+            
+            // 然后处理init_proc的children列表
+            let mut init_proc_inner = init_proc.inner_exclusive_access();
+        debug!("7");
+            for child in children_to_reparent {
+                init_proc_inner.children.push(child);
+            }
+        debug!("8");
         }
     }
 
@@ -247,6 +259,7 @@ pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
 
     drop(task);
 
+    debug!("3");
     let mut _unused = TaskContext::zero_init();
     schedule(&mut _unused as *mut _);
 }
@@ -287,10 +300,27 @@ pub fn exit_task_without_schedule(task: Arc<TaskControlBlock>, exit_code: i32) {
 
     {
         let init_proc = super::task_manager::get_init_proc().unwrap();
-        let mut init_proc_inner = init_proc.inner_exclusive_access();
-        for child in inner.children.iter() {
-            child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
-            init_proc_inner.children.push(child.clone());
+        
+        // 如果退出的任务就是init进程本身，跳过重新父化过程
+        if Arc::ptr_eq(&task, &init_proc) {
+            debug!("Skipping reparenting because the exiting task is init process itself");
+        } else {
+            // 收集需要重新父化的子进程，避免在持有init_proc锁时访问子进程锁
+            let children_to_reparent: Vec<_> = inner.children.iter()
+                .filter(|child| !Arc::ptr_eq(child, &init_proc)) // 避免自引用
+                .cloned()
+                .collect();
+            
+            // 先处理子进程的parent指针
+            for child in &children_to_reparent {
+                child.inner_exclusive_access().parent = Some(Arc::downgrade(&init_proc));
+            }
+            
+            // 然后处理init_proc的children列表
+            let mut init_proc_inner = init_proc.inner_exclusive_access();
+            for child in children_to_reparent {
+                init_proc_inner.children.push(child);
+            }
         }
     }
 
