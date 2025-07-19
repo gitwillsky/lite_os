@@ -84,12 +84,10 @@ impl VirtIOBlockDevice {
 
         // 探测设备
         if !mmio.probe() {
-            debug!("VirtIO block device probe failed");
             return None;
         }
 
         if mmio.device_id() != VIRTIO_ID_BLOCK {
-            debug!("VirtIO device ID mismatch: expected {}, got {}", VIRTIO_ID_BLOCK, mmio.device_id());
             return None;
         }
 
