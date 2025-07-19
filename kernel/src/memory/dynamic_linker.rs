@@ -16,6 +16,7 @@ pub const GOT_ENTRY_SIZE: usize = 8;  // Size of each GOT entry (64-bit pointers
 
 /// Relocation types for RISC-V 64-bit
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(non_camel_case_types)]
 pub enum RelocationType {
     R_RISCV_64 = 2,          // Direct 64-bit relocation
     R_RISCV_JUMP_SLOT = 5,   // PLT/GOT jump slot
@@ -91,19 +92,19 @@ pub struct GOTEntry {
 pub struct DynamicLinker {
     /// Loaded shared libraries
     pub libraries: BTreeMap<String, SharedLibrary>,
-    
+
     /// Global symbol table (all exported symbols from all libraries)
     pub global_symbols: BTreeMap<String, (String, DynamicSymbol)>, // name -> (library, symbol)
-    
+
     /// PLT entries for the main executable
     pub plt_entries: Vec<PLTEntry>,
-    
+
     /// GOT entries for the main executable
     pub got_entries: Vec<GOTEntry>,
-    
+
     /// Pending relocations to be resolved
     pub pending_relocations: Vec<RelocationEntry>,
-    
+
     /// Dynamic section information
     pub dynamic_info: Option<DynamicInfo>,
 }
@@ -113,7 +114,7 @@ pub struct DynamicLinker {
 pub struct DynamicInfo {
     pub needed_libraries: Vec<String>,   // Required shared libraries
     pub init_function: Option<VirtualAddress>,     // Initialization function
-    pub fini_function: Option<VirtualAddress>,     // Finalization function  
+    pub fini_function: Option<VirtualAddress>,     // Finalization function
     pub init_array: Option<(VirtualAddress, usize)>, // Init function array
     pub fini_array: Option<(VirtualAddress, usize)>, // Fini function array
     pub string_table: Option<VirtualAddress>,      // String table address
@@ -139,9 +140,9 @@ impl DynamicLinker {
     }
 
     /// Parse ELF file and extract dynamic linking information
-    pub fn parse_dynamic_elf(&mut self, elf: &ElfFile, base_address: VirtualAddress) 
+    pub fn parse_dynamic_elf(&mut self, elf: &ElfFile, base_address: VirtualAddress)
         -> Result<(), Box<dyn Error>> {
-        
+
         // Extract dynamic section information
         if let Some(dynamic_section) = elf.find_section_by_name(".dynamic") {
             self.parse_dynamic_section(elf, dynamic_section, base_address)?;
@@ -159,9 +160,9 @@ impl DynamicLinker {
     }
 
     /// Parse the dynamic section to extract library dependencies and other info
-    fn parse_dynamic_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress) 
+    fn parse_dynamic_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress)
         -> Result<(), Box<dyn Error>> {
-        
+
         let mut dynamic_info = DynamicInfo {
             needed_libraries: Vec::new(),
             init_function: None,
@@ -222,9 +223,9 @@ impl DynamicLinker {
     }
 
     /// Parse symbol table to extract exported symbols
-    fn parse_symbol_table(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress) 
+    fn parse_symbol_table(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress)
         -> Result<(), Box<dyn Error>> {
-        
+
         if let Ok(SectionData::SymbolTable64(symbols)) = section.get_data(elf) {
             for symbol in symbols {
                 let name = if let Ok(name) = symbol.get_name(elf) {
@@ -275,9 +276,9 @@ impl DynamicLinker {
     }
 
     /// Parse relocation tables (both RELA and PLT relocations)
-    fn parse_relocations(&mut self, elf: &ElfFile, _base_address: VirtualAddress) 
+    fn parse_relocations(&mut self, elf: &ElfFile, _base_address: VirtualAddress)
         -> Result<(), Box<dyn Error>> {
-        
+
         // Parse .rela.dyn section
         if let Some(rela_section) = elf.find_section_by_name(".rela.dyn") {
             self.parse_rela_section(elf, rela_section)?;
@@ -292,13 +293,13 @@ impl DynamicLinker {
     }
 
     /// Parse a RELA section and extract relocation entries
-    fn parse_rela_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader) 
+    fn parse_rela_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader)
         -> Result<(), Box<dyn Error>> {
-        
+
         if let Ok(SectionData::Rela64(relocations)) = section.get_data(elf) {
             for relocation in relocations {
                 let reloc_type = RelocationType::from_u32(relocation.get_type());
-                
+
                 if let Some(reloc_type) = reloc_type {
                     let reloc_entry = RelocationEntry {
                         offset: relocation.get_offset(),
@@ -306,7 +307,7 @@ impl DynamicLinker {
                         reloc_type,
                         addend: relocation.get_addend() as i64,
                     };
-                    
+
                     self.pending_relocations.push(reloc_entry);
                 }
             }
@@ -328,7 +329,7 @@ impl DynamicLinker {
                             while end < raw_data.len() && raw_data[end] != 0 {
                                 end += 1;
                             }
-                            
+
                             if let Ok(string) = core::str::from_utf8(&raw_data[offset..end]) {
                                 return Ok(string.to_string());
                             }
@@ -338,7 +339,7 @@ impl DynamicLinker {
                 }
             }
         }
-        
+
         Err("String not found in string table".into())
     }
 
@@ -349,19 +350,19 @@ impl DynamicLinker {
             warn!("Invalid symbol name length: {}", symbol_name.len());
             return None;
         }
-        
+
         // 检查符号名称是否包含非法字符
         if symbol_name.contains('\0') || symbol_name.contains('\n') || symbol_name.contains('\r') {
             warn!("Symbol name contains illegal characters: {}", symbol_name);
             return None;
         }
-        
+
         // 防止路径遍历攻击
         if symbol_name.contains("..") || symbol_name.contains('/') || symbol_name.contains('\\') {
             warn!("Symbol name contains path traversal characters: {}", symbol_name);
             return None;
         }
-        
+
         if let Some((_, symbol)) = self.global_symbols.get(symbol_name) {
             // 验证符号地址的合理性
             let addr = symbol.value as usize;
@@ -369,13 +370,13 @@ impl DynamicLinker {
                 warn!("Symbol '{}' has zero address", symbol_name);
                 return None;
             }
-            
+
             // 检查地址是否在合理范围内 (用户空间)
             if addr < 0x10000 || addr >= 0x8000_0000_0000_0000 {
                 warn!("Symbol '{}' has invalid address: 0x{:x}", symbol_name, addr);
                 return None;
             }
-            
+
             Some(VirtualAddress::from(addr))
         } else {
             debug!("Symbol '{}' not found in global symbol table", symbol_name);
@@ -384,9 +385,9 @@ impl DynamicLinker {
     }
 
     /// Apply relocations
-    pub fn apply_relocations(&mut self, page_table: &PageTable) 
+    pub fn apply_relocations(&mut self, page_table: &PageTable)
         -> Result<(), Box<dyn Error>> {
-        
+
         for relocation in &self.pending_relocations {
             match relocation.reloc_type {
                 RelocationType::R_RISCV_64 => {
@@ -413,18 +414,18 @@ impl DynamicLinker {
     }
 
     /// Apply direct 64-bit relocation
-    fn apply_direct_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable) 
+    fn apply_direct_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
         -> Result<(), Box<dyn Error>> {
-        
+
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
-        
+
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
-            
+
             // Calculate offset within the page
             let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
-            
+
             // For direct relocations, the value is the symbol value plus addend
             let symbol_value = if relocation.symbol_index == 0 {
                 // STN_UNDEF - use addend only (base-relative)
@@ -433,10 +434,10 @@ impl DynamicLinker {
                 // Look up symbol value (placeholder for now)
                 0
             };
-            
+
             let final_value = (symbol_value as i64 + relocation.addend) as u64;
             let value_bytes = final_value.to_le_bytes();
-            
+
             // Write the 64-bit value
             if page_offset + 8 <= super::config::PAGE_SIZE {
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&value_bytes);
@@ -444,7 +445,7 @@ impl DynamicLinker {
                 // Value spans across page boundary - need to handle carefully
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
                 page_bytes[page_offset..].copy_from_slice(&value_bytes[..first_part_len]);
-                
+
                 // Handle second page if needed
                 let next_vpn = target_vpn.next();
                 if let Some(next_pte) = page_table.translate(next_vpn) {
@@ -455,25 +456,25 @@ impl DynamicLinker {
                 }
             }
         }
-        
-        debug!("Applied direct relocation at offset: 0x{:x}, value: 0x{:x}", 
+
+        debug!("Applied direct relocation at offset: 0x{:x}, value: 0x{:x}",
                    relocation.offset, relocation.addend);
         Ok(())
     }
 
-    /// Apply PLT/GOT jump slot relocation  
-    fn apply_jump_slot_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable) 
+    /// Apply PLT/GOT jump slot relocation
+    fn apply_jump_slot_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
         -> Result<(), Box<dyn Error>> {
-        
+
         // For jump slot relocations, we need to update the GOT entry with the target address
         let got_entry_vpn = VirtualAddress::from(relocation.offset as usize).floor();
-        
+
         if let Some(pte) = page_table.translate(got_entry_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
-            
+
             let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
-            
+
             // Resolve the symbol to get its address
             let symbol_address = if relocation.symbol_index > 0 {
                 // In a real implementation, this would look up the symbol by index
@@ -482,10 +483,10 @@ impl DynamicLinker {
             } else {
                 0u64
             };
-            
+
             let final_address = symbol_address + relocation.addend as u64;
             let address_bytes = final_address.to_le_bytes();
-            
+
             // Write the address to the GOT entry
             if page_offset + 8 <= super::config::PAGE_SIZE {
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&address_bytes);
@@ -493,7 +494,7 @@ impl DynamicLinker {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
                 page_bytes[page_offset..].copy_from_slice(&address_bytes[..first_part_len]);
-                
+
                 let next_vpn = got_entry_vpn.next();
                 if let Some(next_pte) = page_table.translate(next_vpn) {
                     let next_ppn = next_pte.ppn();
@@ -503,30 +504,30 @@ impl DynamicLinker {
                 }
             }
         }
-        
-        debug!("Applied jump slot relocation at GOT offset: 0x{:x}, target: 0x{:x}", 
+
+        debug!("Applied jump slot relocation at GOT offset: 0x{:x}, target: 0x{:x}",
                    relocation.offset, relocation.addend);
         Ok(())
     }
 
     /// Apply base-relative relocation
-    fn apply_relative_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable) 
+    fn apply_relative_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
         -> Result<(), Box<dyn Error>> {
-        
+
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
-        
+
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
-            
+
             let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
-            
+
             // For relative relocations, the value is base address + addend
             // Since we're loaded at virtual address 0, base is 0
             let base_address = 0u64; // In a real implementation, this would be the load base
             let final_value = base_address + relocation.addend as u64;
             let value_bytes = final_value.to_le_bytes();
-            
+
             // Write the value
             if page_offset + 8 <= super::config::PAGE_SIZE {
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&value_bytes);
@@ -534,7 +535,7 @@ impl DynamicLinker {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
                 page_bytes[page_offset..].copy_from_slice(&value_bytes[..first_part_len]);
-                
+
                 let next_vpn = target_vpn.next();
                 if let Some(next_pte) = page_table.translate(next_vpn) {
                     let next_ppn = next_pte.ppn();
@@ -544,26 +545,26 @@ impl DynamicLinker {
                 }
             }
         }
-        
-        debug!("Applied relative relocation at offset: 0x{:x}, value: 0x{:x}", 
+
+        debug!("Applied relative relocation at offset: 0x{:x}, value: 0x{:x}",
                    relocation.offset, relocation.addend);
         Ok(())
     }
 
     /// Apply global data relocation
-    fn apply_global_data_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable) 
+    fn apply_global_data_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
         -> Result<(), Box<dyn Error>> {
-        
+
         // Global data relocations are similar to jump slot relocations
         // but for data symbols instead of function symbols
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
-        
+
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
-            
+
             let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
-            
+
             // Resolve the symbol to get its address
             let symbol_address = if relocation.symbol_index > 0 {
                 // Look up the symbol by index
@@ -572,10 +573,10 @@ impl DynamicLinker {
             } else {
                 0u64
             };
-            
+
             let final_address = symbol_address + relocation.addend as u64;
             let address_bytes = final_address.to_le_bytes();
-            
+
             // Write the address
             if page_offset + 8 <= super::config::PAGE_SIZE {
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&address_bytes);
@@ -583,7 +584,7 @@ impl DynamicLinker {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
                 page_bytes[page_offset..].copy_from_slice(&address_bytes[..first_part_len]);
-                
+
                 let next_vpn = target_vpn.next();
                 if let Some(next_pte) = page_table.translate(next_vpn) {
                     let next_ppn = next_pte.ppn();
@@ -593,19 +594,19 @@ impl DynamicLinker {
                 }
             }
         }
-        
-        debug!("Applied global data relocation at offset: 0x{:x}, target: 0x{:x}", 
+
+        debug!("Applied global data relocation at offset: 0x{:x}, target: 0x{:x}",
                    relocation.offset, relocation.addend);
         Ok(())
     }
 
     /// Initialize PLT entries for lazy binding
-    pub fn setup_plt(&mut self, plt_address: VirtualAddress, got_address: VirtualAddress) 
+    pub fn setup_plt(&mut self, plt_address: VirtualAddress, got_address: VirtualAddress)
         -> Result<(), Box<dyn Error>> {
-        
+
         // Setup PLT resolver stub (first PLT entry)
         // In RISC-V, the PLT[0] entry contains the dynamic linker resolver
-        
+
         // Create a basic PLT[0] entry that jumps to the dynamic linker resolver
         let plt_entry_0 = PLTEntry {
             symbol_name: "_dl_runtime_resolve".to_string(),
@@ -614,55 +615,55 @@ impl DynamicLinker {
             resolved: true,
             target_address: Some(plt_address), // Placeholder - should be resolver address
         };
-        
+
         self.plt_entries.push(plt_entry_0);
-        
+
         // Initialize GOT[0], GOT[1], GOT[2] with special values
         // GOT[0] = address of dynamic structure
         // GOT[1] = link_map object (module ID)
         // GOT[2] = address of dynamic linker resolver
-        
+
         let got_entry_0 = GOTEntry {
             symbol_name: "_DYNAMIC".to_string(),
             address: Some(VirtualAddress::from(0)), // Will be filled later
             relocation: None,
         };
-        
+
         let got_entry_1 = GOTEntry {
             symbol_name: "_link_map".to_string(),
             address: Some(VirtualAddress::from(0)), // Module ID placeholder
             relocation: None,
         };
-        
+
         let got_entry_2 = GOTEntry {
             symbol_name: "_dl_runtime_resolve".to_string(),
             address: Some(plt_address), // Resolver address placeholder
             relocation: None,
         };
-        
+
         self.got_entries.push(got_entry_0);
         self.got_entries.push(got_entry_1);
         self.got_entries.push(got_entry_2);
-        
-        info!("Setting up PLT at 0x{:x}, GOT at 0x{:x}", 
+
+        info!("Setting up PLT at 0x{:x}, GOT at 0x{:x}",
                    usize::from(plt_address), usize::from(got_address));
-        
+
         Ok(())
     }
 
     /// Load a shared library
-    pub fn load_shared_library(&mut self, _memory_set: &mut MemorySet, library_name: &str) 
+    pub fn load_shared_library(&mut self, _memory_set: &mut MemorySet, library_name: &str)
         -> Result<VirtualAddress, Box<dyn Error>> {
-        
+
         // Check if library is already loaded
         if self.libraries.contains_key(library_name) {
             if let Some(lib) = self.libraries.get(library_name) {
                 return Ok(lib.base_address);
             }
         }
-        
+
         info!("Loading shared library: {}", library_name);
-        
+
         // In a real implementation, this would:
         // 1. Find the library file in the filesystem (e.g., /lib, /usr/lib)
         // 2. Load and parse the ELF file
@@ -671,10 +672,10 @@ impl DynamicLinker {
         // 5. Process the library's dynamic section
         // 6. Add library symbols to the global symbol table
         // 7. Process relocations specific to this library
-        
+
         // For now, create a placeholder library entry
         let base_address = VirtualAddress::from(0x60000000 + self.libraries.len() * 0x10000000);
-        
+
         let mut library = SharedLibrary {
             name: library_name.to_string(),
             base_address,
@@ -685,7 +686,7 @@ impl DynamicLinker {
             got_address: None,
             dynamic_section: None,
         };
-        
+
         // Add some placeholder symbols
         let placeholder_symbol = DynamicSymbol {
             name: format!("{}_function", library_name),
@@ -695,21 +696,21 @@ impl DynamicLinker {
             symbol_type: 2, // STT_FUNC
             section_index: 1,
         };
-        
+
         library.symbols.insert(placeholder_symbol.name.clone(), placeholder_symbol.clone());
-        
+
         // Add to global symbol table
         self.global_symbols.insert(
-            placeholder_symbol.name.clone(), 
+            placeholder_symbol.name.clone(),
             (library_name.to_string(), placeholder_symbol)
         );
-        
+
         // Store the library
         self.libraries.insert(library_name.to_string(), library);
-        
-        info!("Loaded shared library '{}' at base address 0x{:x}", 
+
+        info!("Loaded shared library '{}' at base address 0x{:x}",
                    library_name, usize::from(base_address));
-        
+
         Ok(base_address)
     }
 
@@ -725,7 +726,7 @@ impl DynamicLinker {
 
             // Run DT_INIT_ARRAY functions if present
             if let Some((init_array_addr, size)) = dynamic_info.init_array {
-                info!("Running DT_INIT_ARRAY functions at 0x{:x}, size: {}", 
+                info!("Running DT_INIT_ARRAY functions at 0x{:x}, size: {}",
                           usize::from(init_array_addr), size);
                 // In a real implementation, this would iterate and call each function
                 // The array contains function pointers, and we'd call each one
@@ -733,20 +734,20 @@ impl DynamicLinker {
                 debug!("DT_INIT_ARRAY contains {} functions", function_count);
             }
         }
-        
+
         // Run initialization functions for all loaded libraries
         for (name, _library) in &self.libraries {
             debug!("Running initializers for library: {}", name);
             // In a real implementation, each library would have its own init functions
         }
-        
+
         Ok(())
     }
 
     /// Create PLT entry for a symbol that requires lazy binding
     pub fn create_plt_entry(&mut self, symbol_name: &str, got_offset: usize) -> usize {
         let plt_offset = self.plt_entries.len() * PLT_ENTRY_SIZE;
-        
+
         let plt_entry = PLTEntry {
             symbol_name: symbol_name.to_string(),
             got_offset,
@@ -754,12 +755,12 @@ impl DynamicLinker {
             resolved: false,
             target_address: None,
         };
-        
+
         self.plt_entries.push(plt_entry);
-        
-        debug!("Created PLT entry for symbol '{}' at offset 0x{:x}", 
+
+        debug!("Created PLT entry for symbol '{}' at offset 0x{:x}",
                    symbol_name, plt_offset);
-        
+
         plt_offset
     }
 
@@ -768,7 +769,7 @@ impl DynamicLinker {
         // Look up the symbol in the global symbol table
         if let Some((lib_name, symbol)) = self.global_symbols.get(symbol_name) {
             let symbol_address = VirtualAddress::from(symbol.value as usize);
-            
+
             // Update the PLT entry
             for plt_entry in &mut self.plt_entries {
                 if plt_entry.symbol_name == symbol_name {
@@ -777,7 +778,7 @@ impl DynamicLinker {
                     break;
                 }
             }
-            
+
             // Update the corresponding GOT entry
             for got_entry in &mut self.got_entries {
                 if got_entry.symbol_name == symbol_name {
@@ -785,10 +786,10 @@ impl DynamicLinker {
                     break;
                 }
             }
-            
-            debug!("Resolved PLT entry for '{}' from library '{}' to address 0x{:x}", 
+
+            debug!("Resolved PLT entry for '{}' from library '{}' to address 0x{:x}",
                        symbol_name, lib_name, usize::from(symbol_address));
-            
+
             Some(symbol_address)
         } else {
             warn!("Failed to resolve PLT entry for symbol: {}", symbol_name);
