@@ -1078,7 +1078,8 @@ fn main() -> i32 {
     println!("Total tests: {}", total_tests);
     println!("Passed: {}", passed_tests);
     println!("Failed: {}", total_tests - passed_tests);
-    println!("Success rate: {:.1}%", (passed_tests as f32 / total_tests as f32) * 100.0);
+    let success_rate = (passed_tests * 100) / total_tests;
+    println!("Success rate: {}%", success_rate);
 
     if passed_tests == total_tests {
         println!("🎉 All tests passed! LiteOS is working correctly.");

@@ -60,7 +60,6 @@ pub fn trap_handler() {
                 Exception::IllegalInstruction => {
                     error!("[kernel] IllegalInstruction in application, kernel killed it.");
                     exit_current_and_run_next(-2);
-                    return;
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -91,7 +90,6 @@ pub fn trap_handler() {
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     error!("Instruction Page Fault, VA:{:#x}", stval);
                     exit_current_and_run_next(-5);
-                    return;
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
