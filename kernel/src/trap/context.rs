@@ -25,6 +25,8 @@ impl TrapContext {
     ) -> Self {
         let mut sstatus = sstatus::read(); // CSR status
         sstatus.set_spp(SPP::User);
+        // 启用用户态浮点支持
+        sstatus.set_fs(sstatus::FS::Dirty);
 
         let mut cx = Self {
             x: [0; 32],

@@ -32,7 +32,6 @@ mod id;
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     debug!("Kernel main entry, dtb_addr: {:#x}", dtb_addr);
     log::init(config::DEFAULT_LOG_LEVEL);
-
     board::init(dtb_addr);
     trap::init();
     memory::init();
