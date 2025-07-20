@@ -33,11 +33,8 @@ impl Scheduler for PriorityScheduler {
         None
     }
 
-    fn ready_task_count(&self) -> usize {
-        self.priority_queues
-            .iter()
-            .map(|queue| queue.iter().filter(|t| t.is_ready()).count())
-            .sum()
+    fn count(&self) -> usize {
+        self.priority_queues.iter().map(|queue| queue.len()).sum()
     }
 
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {

@@ -16,9 +16,7 @@ mod task_manager;
 pub use processor::*;
 pub use signal::{SIG_RETURN_ADDR, check_and_handle_signals};
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
-pub use task_manager::{
-    SchedulingPolicy, add_task, get_scheduling_policy, set_scheduling_policy, wakeup_task,
-};
+pub use task_manager::{SchedulingPolicy, add_task, get_scheduling_policy, set_scheduling_policy};
 
 global_asm!(include_str!("switch.S"));
 
@@ -31,9 +29,11 @@ unsafe extern "C" {
     );
 }
 
+const INIT_PROC_NAME: &str = "initproc";
+
 pub fn init() {
-    let elf_data = get_app_data_by_name("initproc").expect("Failed to get init proc data");
-    let init_proc = TaskControlBlock::new_with_pid(elf_data.as_slice(), INIT_PID.into());
+    let elf_data = get_app_data_by_name(INIT_PROC_NAME).expect("Failed to get init proc data");
+    let init_proc = TaskControlBlock::new_with_pid(INIT_PROC_NAME, &elf_data, INIT_PID.into());
     match init_proc {
         Ok(init_proc) => {
             add_task(Arc::new(init_proc));

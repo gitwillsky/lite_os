@@ -1,4 +1,5 @@
 use crate::sync::UPSafeCell;
+use crate::task::task_manager::find_task_by_pid;
 use crate::task::TaskControlBlock;
 use crate::trap::TrapContext;
 use alloc::collections::BTreeMap;
@@ -715,8 +716,6 @@ impl SignalDelivery {
 
 /// 全局函数：向指定进程发送信号
 pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), SignalError> {
-    use crate::task::task_manager::find_task_by_pid;
-
     if let Some(task) = find_task_by_pid(target_pid) {
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {

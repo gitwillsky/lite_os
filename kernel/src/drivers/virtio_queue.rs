@@ -296,7 +296,7 @@ impl VirtQueue {
         }
     }
 
-    pub fn get_used(&mut self) -> Option<(u16, u32)> {
+    pub fn used(&mut self) -> Option<(u16, u32)> {
         unsafe {
             let used_idx = (*self.used).idx.load(Ordering::Acquire);
 

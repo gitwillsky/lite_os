@@ -51,7 +51,7 @@ impl FileLockManager {
     }
 
     /// Get a unique identifier for an inode (using memory address as a simple approach)
-    fn get_inode_id(inode: &Arc<dyn super::Inode>) -> usize {
+    fn inode_id(inode: &Arc<dyn super::Inode>) -> usize {
         // Use the Arc's internal pointer to get a unique identifier
         Arc::as_ptr(inode) as *const () as usize
     }
@@ -65,7 +65,7 @@ impl FileLockManager {
         owner_task: Arc<TaskControlBlock>,
         non_blocking: bool,
     ) -> Result<(), LockError> {
-        let inode_id = Self::get_inode_id(inode);
+        let inode_id = Self::inode_id(inode);
         let mut locks = self.locks.lock();
         let inode_locks = locks.entry(inode_id).or_insert_with(Vec::new);
 
@@ -100,7 +100,7 @@ impl FileLockManager {
         inode: &Arc<dyn super::Inode>,
         owner_pid: usize,
     ) -> Result<(), LockError> {
-        let inode_id = Self::get_inode_id(inode);
+        let inode_id = Self::inode_id(inode);
         let mut locks = self.locks.lock();
 
         if let Some(inode_locks) = locks.get_mut(&inode_id) {
@@ -147,8 +147,8 @@ impl FileLockManager {
     }
 
     /// Get information about locks on an inode (for debugging)
-    pub fn get_locks(&self, inode: &Arc<dyn super::Inode>) -> Vec<FileLock> {
-        let inode_id = Self::get_inode_id(inode);
+    pub fn locks(&self, inode: &Arc<dyn super::Inode>) -> Vec<FileLock> {
+        let inode_id = Self::inode_id(inode);
         let locks = self.locks.lock();
         locks.get(&inode_id).cloned().unwrap_or_default()
     }

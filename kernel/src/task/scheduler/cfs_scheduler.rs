@@ -25,8 +25,8 @@ impl Scheduler for CFScheduler {
         self.tasks.pop().map(|cfs_task| cfs_task.0)
     }
 
-    fn ready_task_count(&self) -> usize {
-        self.tasks.iter().filter(|t| t.0.is_ready()).count()
+    fn count(&self) -> usize {
+        self.tasks.len()
     }
 
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {

@@ -79,7 +79,7 @@ impl VirtIOMMIO {
         self.write_reg(VIRTIO_MMIO_STATUS, status);
     }
 
-    pub fn get_status(&self) -> u32 {
+    pub fn status(&self) -> u32 {
         self.read_reg(VIRTIO_MMIO_STATUS)
     }
 

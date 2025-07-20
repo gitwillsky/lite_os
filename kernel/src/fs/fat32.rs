@@ -307,7 +307,7 @@ impl FAT32FileSystem {
         Ok(())
     }
 
-    fn get_next_cluster(&self, cluster: u32) -> u32 {
+    fn next_cluster(&self, cluster: u32) -> u32 {
         let fat_cache = self.fat_cache.lock();
         if cluster as usize >= fat_cache.len() {
             return CLUSTER_EOF;
@@ -451,7 +451,7 @@ impl FAT32FileSystem {
                 }
             }
 
-            current_cluster = self.get_next_cluster(current_cluster);
+            current_cluster = self.next_cluster(current_cluster);
             if current_cluster >= CLUSTER_EOF {
                 break;
             }
@@ -561,7 +561,7 @@ impl FAT32FileSystem {
                 return Ok(());
             }
 
-            let next_cluster = self.get_next_cluster(current_cluster);
+            let next_cluster = self.next_cluster(current_cluster);
             if next_cluster >= CLUSTER_EOF {
                 // Allocate new cluster if needed
                 if let Some(new_cluster) = self.allocate_cluster() {
@@ -813,7 +813,7 @@ impl Inode for FAT32Inode {
 
         // Skip preceding clusters
         while cluster_offset >= bytes_per_cluster {
-            current_cluster = self.fs().get_next_cluster(current_cluster);
+            current_cluster = self.fs().next_cluster(current_cluster);
             if current_cluster >= CLUSTER_EOF {
                 return Ok(0);
             }
@@ -839,7 +839,7 @@ impl Inode for FAT32Inode {
 
             bytes_read += copy_size;
             cluster_offset = 0;
-            current_cluster = self.fs().get_next_cluster(current_cluster);
+            current_cluster = self.fs().next_cluster(current_cluster);
         }
 
         Ok(bytes_read)
@@ -858,7 +858,7 @@ impl Inode for FAT32Inode {
 
         // Skip to the correct starting cluster
         while cluster_offset >= bytes_per_cluster {
-            let next_cluster = fs.get_next_cluster(current_cluster);
+            let next_cluster = fs.next_cluster(current_cluster);
             if next_cluster >= CLUSTER_EOF {
                 // Need to allocate new clusters
                 if let Some(new_cluster) = fs.allocate_cluster() {
@@ -900,7 +900,7 @@ impl Inode for FAT32Inode {
 
             // Move to next cluster if needed
             if bytes_written < buf.len() {
-                let next_cluster = fs.get_next_cluster(current_cluster);
+                let next_cluster = fs.next_cluster(current_cluster);
                 if next_cluster >= CLUSTER_EOF {
                     // Allocate new cluster
                     if let Some(new_cluster) = fs.allocate_cluster() {
@@ -1161,7 +1161,7 @@ impl Inode for FAT32Inode {
                 break;
             }
 
-            current_cluster = fs.get_next_cluster(current_cluster);
+            current_cluster = fs.next_cluster(current_cluster);
             if current_cluster >= CLUSTER_EOF {
                 break;
             }
@@ -1174,7 +1174,7 @@ impl Inode for FAT32Inode {
         // Free the clusters used by the file/directory
         let mut current_cluster = child_cluster;
         while current_cluster < CLUSTER_EOF && current_cluster != 0 {
-            let next_cluster = fs.get_next_cluster(current_cluster);
+            let next_cluster = fs.next_cluster(current_cluster);
             fs.write_fat_entry(current_cluster, CLUSTER_FREE)
                 .map_err(|_| FileSystemError::IoError)?;
             current_cluster = next_cluster;
@@ -1200,21 +1200,21 @@ impl Inode for FAT32Inode {
             cluster_count += 1;
             if cluster_count == needed_clusters {
                 // This is the last cluster we need, truncate the chain here
-                let next_cluster = fs.get_next_cluster(current_cluster);
+                let next_cluster = fs.next_cluster(current_cluster);
                 fs.write_fat_entry(current_cluster, CLUSTER_EOF)
                     .map_err(|_| FileSystemError::IoError)?;
 
                 // Free remaining clusters
                 let mut free_cluster = next_cluster;
                 while free_cluster < CLUSTER_EOF {
-                    let next_free = fs.get_next_cluster(free_cluster);
+                    let next_free = fs.next_cluster(free_cluster);
                     fs.write_fat_entry(free_cluster, CLUSTER_FREE)
                         .map_err(|_| FileSystemError::IoError)?;
                     free_cluster = next_free;
                 }
                 break;
             }
-            current_cluster = fs.get_next_cluster(current_cluster);
+            current_cluster = fs.next_cluster(current_cluster);
         }
 
         // If we need more clusters, allocate them

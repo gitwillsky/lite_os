@@ -9,13 +9,13 @@ const USEC_PER_SEC: u64 = 1000_000;
 
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
-    let time_base_freq = board::get_board_info().time_base_freq;
+    let time_base_freq = board::board_info().time_base_freq;
     current_mtime / time_base_freq / MSEC_PER_SEC
 }
 
 pub fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
-    let time_base_freq = board::get_board_info().time_base_freq;
+    let time_base_freq = board::board_info().time_base_freq;
     current_mtime * USEC_PER_SEC / time_base_freq
 }
 
@@ -28,7 +28,7 @@ pub fn set_next_timer_interrupt() {
 }
 
 pub fn init() {
-    let time_base_freq = board::get_board_info().time_base_freq;
+    let time_base_freq = board::board_info().time_base_freq;
 
     unsafe {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;

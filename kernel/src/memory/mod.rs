@@ -43,7 +43,7 @@ pub static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
 pub fn init() {
     let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
-    let memory_end_addr: PhysicalAddress = board::get_board_info().mem.end.into();
+    let memory_end_addr: PhysicalAddress = board::board_info().mem.end.into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
@@ -63,7 +63,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     memory_set.map_trampoline();
 
     // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
-    let board_info = crate::board::get_board_info();
+    let board_info = crate::board::board_info();
     if board_info.virtio_count > 0 {
         let mut min_addr = usize::MAX;
         let mut max_addr = 0;

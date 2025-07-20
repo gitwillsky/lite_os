@@ -110,7 +110,7 @@ impl VirtIOBlockDevice {
         mmio.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER | VIRTIO_CONFIG_S_FEATURES_OK);
 
         // 验证FEATURES_OK
-        if mmio.get_status() & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
+        if mmio.status() & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             error!("VirtIO block device does not accept features");
             return None;
         }
@@ -264,7 +264,7 @@ impl VirtIOBlockDevice {
         }
 
         // 现在获取结果
-        if let Some((id, _len)) = queue.get_used() {
+        if let Some((id, _len)) = queue.used() {
             if id != desc_idx {
                 error!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
                 // 仍然需要回收正确的描述符

@@ -3,7 +3,7 @@ use core::sync::atomic;
 use alloc::{sync::{Arc, Weak}, vec::Vec, collections::{VecDeque, BTreeMap}, string::{String, ToString}};
 use crate::{
     fs::{FileSystemError, inode::{Inode, InodeType}},
-    task::{TaskControlBlock, current_task, block_current_and_run_next, wakeup_task},
+    task::{TaskControlBlock, current_task, block_current_and_run_next },
 };
 use spin::Mutex;
 
@@ -68,7 +68,7 @@ impl Pipe {
 
         // 在不持有锁的情况下唤醒任务
         for task in tasks_to_wakeup {
-            wakeup_task(task);
+            task.wakeup();
         }
     }
 

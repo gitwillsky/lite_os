@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::board::get_board_info;
+use crate::board::board_info;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
 use crate::fs::{make_filesystem, vfs::vfs};
 
@@ -15,7 +15,7 @@ pub fn init_devices() {
 }
 
 fn scan_virtio_devices() {
-    let board_info = get_board_info();
+    let board_info = board_info();
 
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
@@ -51,7 +51,7 @@ fn init_filesystems() {
     }
 }
 
-pub fn get_block_devices() -> Vec<Arc<dyn BlockDevice>> {
+pub fn block_devices() -> Vec<Arc<dyn BlockDevice>> {
     DEVICES.lock().clone()
 }
 

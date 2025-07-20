@@ -23,6 +23,7 @@ use crate::{
     },
     sync::UPSafeCell,
     task::{
+        add_task,
         context::TaskContext,
         pid::{PidHandle, alloc_pid},
         signal::SignalState,
@@ -290,6 +291,8 @@ impl Sched {
 /// Task Control block structure
 #[derive(Debug)]
 pub struct TaskControlBlock {
+    name: Mutex<String>,
+
     pid: PidHandle,
     /// 进程状态
     pub task_status: Mutex<TaskStatus>,
@@ -331,11 +334,15 @@ pub struct TaskControlBlock {
 }
 
 impl TaskControlBlock {
-    pub fn new(elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::new_with_pid(elf_data, alloc_pid())
+    pub fn new(name: &str, elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::new_with_pid(name, elf_data, alloc_pid())
     }
 
-    pub fn new_with_pid(elf_data: &[u8], pid: PidHandle) -> Result<Self, Box<dyn Error>> {
+    pub fn new_with_pid(
+        name: &str,
+        elf_data: &[u8],
+        pid: PidHandle,
+    ) -> Result<Self, Box<dyn Error>> {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
         let task_status = TaskStatus::Ready;
         let kernel_stack = KernelStack::new();
@@ -343,6 +350,7 @@ impl TaskControlBlock {
         let trap_cx_ppn = memory_set.trap_context_ppn();
 
         let mut tcb = Self {
+            name: Mutex::new(name.to_string()),
             pid,
             task_status: Mutex::new(TaskStatus::Ready),
             mm: Memory {
@@ -389,13 +397,14 @@ impl TaskControlBlock {
         Ok(tcb)
     }
 
-    pub fn exec(&self, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
-        self.exec_with_args(elf_data, None, None)
+    pub fn exec(&self, name: &str, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
+        self.exec_with_args(name, elf_data, None, None)
     }
 
     /// Execute a new program with arguments and environment variables
     pub fn exec_with_args(
         &self,
+        name: &str,
         elf_data: &[u8],
         args: Option<&[String]>,
         envs: Option<&[String]>,
@@ -413,6 +422,7 @@ impl TaskControlBlock {
             kernel_stack_top,
             trap_handler as usize,
         ));
+        *self.name.lock() = name.to_string();
 
         // 重置信号状态（exec时应该重置信号处理器）
         self.signal_state.lock().reset_for_exec();
@@ -450,6 +460,7 @@ impl TaskControlBlock {
         };
 
         let tcb = Arc::new(Self {
+            name: Mutex::new(self.name.lock().clone()),
             pid,
             task_status: Mutex::new(TaskStatus::Ready),
             base_size: self.base_size,
@@ -480,6 +491,10 @@ impl TaskControlBlock {
         self.children.lock().push(tcb.clone());
         tcb.mm.trap_context().kernel_sp = kernel_stack_top;
         tcb
+    }
+
+    pub fn name(&self) -> String {
+        self.name.lock().clone()
     }
 
     pub fn is_zombie(&self) -> bool {
@@ -614,5 +629,23 @@ impl TaskControlBlock {
 
     pub fn parent(&self) -> Option<Arc<TaskControlBlock>> {
         self.parent.lock().as_ref().and_then(|w| w.upgrade())
+    }
+
+    pub fn wakeup(self: &Arc<Self>) {
+        if *self.task_status.lock() == TaskStatus::Sleeping {
+            *self.task_status.lock() = TaskStatus::Ready;
+            add_task(self.clone());
+        }
+    }
+}
+
+// print drop info
+impl Drop for TaskControlBlock {
+    fn drop(&mut self) {
+        debug!(
+            "TaskControlBlock dropped: pid={} name={}",
+            self.pid(),
+            self.name()
+        );
     }
 }

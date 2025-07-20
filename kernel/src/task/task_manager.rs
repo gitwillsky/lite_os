@@ -10,9 +10,13 @@ use spin::{Mutex, RwLock};
 use crate::{
     sync::UPSafeCell,
     task::{
-        pid::INIT_PID, scheduler::{
-            cfs_scheduler::CFScheduler, fifo_scheduler::FIFOScheduler, priority_scheduler::PriorityScheduler, Scheduler
-        }, task::{TaskControlBlock, TaskStatus}
+        current_task,
+        pid::INIT_PID,
+        scheduler::{
+            Scheduler, cfs_scheduler::CFScheduler, fifo_scheduler::FIFOScheduler,
+            priority_scheduler::PriorityScheduler,
+        },
+        task::{TaskControlBlock, TaskStatus},
     },
 };
 
@@ -31,6 +35,8 @@ struct TaskManager {
     scheduler: Mutex<Box<dyn Scheduler>>,
     /// 全局最小vruntime
     min_vruntime: AtomicUsize,
+
+    init_proc: Option<Arc<TaskControlBlock>>,
 }
 
 impl TaskManager {
@@ -39,6 +45,7 @@ impl TaskManager {
             policy: RwLock::new(SchedulingPolicy::CFS), // 默认使用CFS
             scheduler: Mutex::new(Box::new(CFScheduler::new())),
             min_vruntime: AtomicUsize::new(0),
+            init_proc: None,
         }
     }
 
@@ -60,7 +67,14 @@ impl TaskManager {
 
     /// 将任务添加到相应的调度队列
     pub fn add_task(&mut self, task: Arc<TaskControlBlock>) {
+        if task.pid() == INIT_PID {
+            self.init_proc = Some(task.clone());
+        }
         self.scheduler.lock().add_task(task);
+    }
+
+    pub fn init_proc(&self) -> Option<Arc<TaskControlBlock>> {
+        self.init_proc.clone()
     }
 
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
@@ -73,18 +87,25 @@ impl TaskManager {
     }
 
     /// 获取当前调度策略
-    pub fn get_scheduling_policy(&self) -> SchedulingPolicy {
+    pub fn scheduling_policy(&self) -> SchedulingPolicy {
         *self.policy.read()
     }
 
-    /// 统计就绪任务数量
-    pub fn ready_task_count(&self) -> usize {
-        self.scheduler.lock().ready_task_count()
+    /// 统计可调度任务数量
+    pub fn schedulable_task_count(&self) -> usize {
+        self.scheduler.lock().count()
     }
 
-    /// 根据PID查找任务（搜索所有可能的位置）
     pub fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.scheduler.lock().find_task_by_pid(pid)
+        if let Some(task) = current_task().filter(|task| task.pid() == pid) {
+            Some(task.clone())
+        } else if let Some(task) = self.scheduler.lock().find_task_by_pid(pid) {
+            Some(task)
+        } else if let Some(init_proc) = self.init_proc.as_ref().filter(|task| task.pid() == pid) {
+            Some(init_proc.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -100,10 +121,6 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.exclusive_access().fetch_task()
 }
 
-pub fn get_init_proc() -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.exclusive_access().find_task_by_pid(INIT_PID)
-}
-
 /// 设置调度策略
 pub fn set_scheduling_policy(policy: SchedulingPolicy) {
     TASK_MANAGER
@@ -113,25 +130,19 @@ pub fn set_scheduling_policy(policy: SchedulingPolicy) {
 
 /// 获取当前调度策略
 pub fn get_scheduling_policy() -> SchedulingPolicy {
-    TASK_MANAGER.exclusive_access().get_scheduling_policy()
+    TASK_MANAGER.exclusive_access().scheduling_policy()
 }
 
-
-/// 获取就绪任务数量
-pub fn ready_task_count() -> usize {
-    TASK_MANAGER.exclusive_access().ready_task_count()
+/// 获取可调度任务数量
+pub fn schedulable_task_count() -> usize {
+    TASK_MANAGER.exclusive_access().schedulable_task_count()
 }
 
-/// 唤醒任务，将其从睡眠状态转为就绪状态
-pub fn wakeup_task(task: Arc<TaskControlBlock>) {
-    if *task.task_status.lock() == TaskStatus::Sleeping {
-        *task.task_status.lock() = TaskStatus::Ready;
-        // 将任务添加到就绪队列
-        add_task(task);
-    }
+/// 获取init进程
+pub fn init_proc() -> Option<Arc<TaskControlBlock>> {
+    TASK_MANAGER.exclusive_access().init_proc()
 }
 
-/// 根据PID查找任务，包括当前运行的任务
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
 }

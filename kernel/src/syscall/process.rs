@@ -44,7 +44,7 @@ pub fn sys_exec(path: *const u8) -> isize {
 
     if let Some(elf_data) = get_app_data_by_name(&path_str) {
         let task = current_task().unwrap();
-        task.exec(&elf_data);
+        task.exec(&path_str, &elf_data);
         0
     } else {
         -1
@@ -85,12 +85,11 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     if let Some(idx) = zombie_child {
         let child = task.children.lock().remove(idx);
 
-        // 检查Arc引用计数（当前这个变量持有1个引用）
-        // 如果还有其他引用，可能是任务仍在调度器队列中或其他地方被引用
+        // 检查Arc引用计数
         let strong_count = Arc::strong_count(&child);
-        if strong_count > 2 {
+        if strong_count > 1 {
             warn!(
-                "Child process PID {} has {} Arc references, expected 1-2 (current variable + possible scheduler). ",
+                "Child process PID {} has {} Arc references, expected 1. ",
                 child.pid(),
                 strong_count
             );
@@ -367,7 +366,7 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
     if let Some(elf_data) = get_app_data_by_name(&path_str) {
         let task = current_task().unwrap();
-        match task.exec_with_args(&elf_data, Some(&args.as_slice()), Some(&envs.as_slice())) {
+        match task.exec_with_args(&path_str, &elf_data, Some(&args.as_slice()), Some(&envs.as_slice())) {
             Ok(()) => 0,
             Err(_) => -1,
         }

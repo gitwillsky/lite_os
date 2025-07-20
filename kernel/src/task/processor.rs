@@ -184,12 +184,12 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     if let Some(parent) = task.parent() {
         if *parent.task_status.lock() == TaskStatus::Sleeping {
             // 父进程可能在等待子进程，唤醒它
-            task_manager::wakeup_task(parent);
+            parent.wakeup();
         }
     }
 
     // 将进程挂给 init_proc, 等待回收
-    if let Some(init_proc) = task_manager::get_init_proc() {
+    if let Some(init_proc) = task_manager::init_proc() {
         if pid == init_proc.pid() {
             error!("init process exit with exit_code {}", exit_code);
         } else {
@@ -214,11 +214,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
             }
         }
     }
-
-    // 清理资源
-    task.children.lock().clear();
-    task.file.lock().close_all_fds_and_cleanup_locks(pid);
-    task.mm.memory_set.lock().recycle_data_pages();
 
     // 调度到下一个任务
     schedule(&mut *task.mm.task_cx.lock() as *mut _);
@@ -255,9 +250,9 @@ fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
             .is_ok()
         {
             debug!(
-                "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, ready_tasks:{}, time:{}us",
+                "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, schedulable_tasks:{}, time:{}us",
                 task.pid(),
-                super::task_manager::ready_task_count(),
+                super::task_manager::schedulable_task_count(),
                 current_time
             );
         }
