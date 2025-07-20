@@ -18,10 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{
-        self, exit_current_and_run_next, exit_task_and_run_next, exit_task_without_schedule,
-        suspend_current_and_run_next,
-    },
+    task::{self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next},
     timer,
 };
 
@@ -39,9 +36,6 @@ pub fn trap_handler() {
     // 在发生缺页异常时，保存导致问题的虚拟地址
     let stval = stval::read();
 
-    // 保存触发异常/中断的任务，避免在处理过程中任务切换导致退出错误的任务
-    let exception_task = task::current_task().unwrap();
-
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
             match interrupt {
@@ -51,7 +45,6 @@ pub fn trap_handler() {
                 }
                 Interrupt::SupervisorExternal => {
                     // 处理外部中断（包括VirtIO设备中断）
-                    debug!("[trap_handler] External interrupt");
                     crate::drivers::handle_external_interrupt();
                 }
                 _ => {
@@ -66,7 +59,8 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     error!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    exit_task_without_schedule(exception_task.clone(), -2);
+                    exit_current_and_run_next(-2);
+                    return;
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -75,21 +69,29 @@ pub fn trap_handler() {
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
                     debug!("[trap_handler] Breakpoint exception");
-                    let cx = exception_task.mm.trap_context();
+                    let cx = task::current_trap_context();
                     cx.sepc += 4;
                 }
                 Exception::UserEnvCall => {
-                    let cx = exception_task.mm.trap_context();
+                    let cx = task::current_trap_context();
+                    let syscall_id = cx.x[17];
+                    let args = [cx.x[10], cx.x[11], cx.x[12]];
+
+                    if syscall_id == 93 {
+                        debug!("task {} exit with code {}", task::current_task().unwrap().pid(), args[0]);
+                    }
+
                     cx.x[10] = {
                         cx.sepc += 4;
-                        syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize
+                        syscall::syscall(syscall_id, args) as usize
                     };
                 }
                 Exception::InstructionPageFault => {
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     error!("Instruction Page Fault, VA:{:#x}", stval);
-                    exit_task_without_schedule(exception_task.clone(), -5);
+                    exit_current_and_run_next(-5);
+                    return;
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
@@ -133,24 +135,7 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
-    // 在返回用户态之前检查信号
-    if let Some(task) = task::current_task() {
-        let (should_continue, exit_code) = crate::task::check_and_handle_signals();
-        if !should_continue {
-            if let Some(code) = exit_code {
-                exit_task_and_run_next(task, code);
-            }
-        }
-    }
-
-    // 确保仍有当前任务存在，如果没有则调度到下一个任务
-    let user_satp = if let Some(_) = task::current_task() {
-        task::current_user_token()
-    } else {
-        // 没有当前任务，调度到下一个任务
-        task::run_tasks();
-    };
-
+    let user_satp = current_user_token();
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();

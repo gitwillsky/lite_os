@@ -724,7 +724,7 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
             match signal {
                 Signal::SIGKILL => {
                     // 使用专门的函数进行完整的任务清理
-                    crate::task::exit_task_without_schedule(task, 9); // SIGKILL exit code
+                    crate::task::exit_current_and_run_next(9); // SIGKILL exit code
                     return Ok(());
                 }
                 Signal::SIGSTOP => {

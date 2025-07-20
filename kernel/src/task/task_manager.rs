@@ -116,12 +116,6 @@ pub fn get_scheduling_policy() -> SchedulingPolicy {
     TASK_MANAGER.exclusive_access().get_scheduling_policy()
 }
 
-/// 更新任务运行时间统计
-pub fn update_task_runtime(task: &Arc<TaskControlBlock>, runtime_us: u64) {
-    TASK_MANAGER
-        .exclusive_access()
-        .update_task_runtime(task, runtime_us);
-}
 
 /// 获取就绪任务数量
 pub fn ready_task_count() -> usize {

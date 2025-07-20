@@ -78,7 +78,27 @@ pub fn run_tasks() -> ! {
                 continue;
             }
             // 切换到任务
-            execute_task(task);
+            let mut processor = PROCESSOR.exclusive_access();
+
+            let next_task_cx_ptr = {
+                let task_context = task.mm.task_cx.lock();
+                let next_task_cx_ptr = &*task_context as *const TaskContext;
+                *task.task_status.lock() = TaskStatus::Running;
+
+                // 记录任务开始运行的时间
+                let start_time = get_time_us();
+                task.last_runtime.store(start_time, Ordering::Relaxed);
+
+                next_task_cx_ptr
+            };
+            processor.current = Some(task.clone());
+            let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
+            drop(processor);
+
+            // 当前的 run_tasks 函数是 idle 任务，切换到下一个任务
+            unsafe {
+                __switch(idle_task_cx_ptr, next_task_cx_ptr);
+            }
         } else {
             // 没有可运行的任务，让出CPU等待中断
             wfi();
@@ -87,7 +107,7 @@ pub fn run_tasks() -> ! {
 }
 
 /// 调度函数 - 切换到idle控制流
-pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
+fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let idle_task_cx_ptr = {
         let mut processor = PROCESSOR.exclusive_access();
         processor.get_idle_task_cx_ptr()
@@ -144,130 +164,17 @@ pub fn block_current_and_run_next() {
         (task_cx_ptr, runtime)
     };
 
-    // 更新任务管理器中的运行时间统计
-    super::task_manager::update_task_runtime(&task, runtime);
-
-    // 不将任务加入就绪队列，让它保持阻塞状态
     schedule(task_cx_ptr);
 }
 
 /// 退出当前任务并运行下一个任务
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().expect("No current task to exit");
-    exit_task_and_run_next(task, exit_code);
-}
-
-/// 退出指定任务并运行下一个任务
-pub fn exit_task_and_run_next(task: Arc<TaskControlBlock>, exit_code: i32) {
     let pid = task.pid();
-
-    // 检查是否是idle进程
-    if pid == IDLE_PID {
-        debug!(
-            "[kernel] Idle process exit with exit_code {} ...",
-            exit_code
-        );
-        shutdown();
-    }
 
     // 处理任务退出
-    handle_task_exit(&task, exit_code);
-
-    // 调度到下一个任务
-    let mut unused_context = TaskContext::zero_init();
-    schedule(&mut unused_context as *mut _);
-}
-
-/// 无需调度切换的任务退出，用于信号处理等场景
-pub fn exit_task_without_schedule(task: Arc<TaskControlBlock>, exit_code: i32) {
-    let pid = task.pid();
-
-    // 检查是否是idle进程
-    if pid == IDLE_PID {
-        debug!(
-            "[kernel] Idle process exit with exit_code {} ...",
-            exit_code
-        );
-        shutdown();
-    }
-
-    // 如果要退出的任务就是当前任务，从处理器中移除
-    let is_current_task = check_and_remove_current_task(&task);
-
-    // 处理任务退出
-    handle_task_exit(&task, exit_code);
-}
-
-/// 处理任务信号
-fn handle_task_signals(task: &Arc<TaskControlBlock>) {
-    let (should_continue, exit_code) = crate::task::check_and_handle_signals();
-    if !should_continue {
-        if let Some(code) = exit_code {
-            // 如果信号要求终止进程，则终止进程
-            *task.task_status.lock() = TaskStatus::Zombie;
-            task.set_exit_code(code);
-        }
-    }
-}
-
-/// 执行任务切换
-fn execute_task(task: Arc<TaskControlBlock>) {
-    let mut processor = PROCESSOR.exclusive_access();
-    let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-
-    let next_task_cx_ptr = {
-        let task_context = task.mm.task_cx.lock();
-        let next_task_cx_ptr = &*task_context as *const TaskContext;
-        *task.task_status.lock() = TaskStatus::Running;
-
-        // 记录任务开始运行的时间
-        let start_time = get_time_us();
-        task.last_runtime.store(start_time, Ordering::Relaxed);
-
-        next_task_cx_ptr
-    };
-    processor.current = Some(task.clone());
-    drop(processor);
-
-    unsafe {
-        __switch(idle_task_cx_ptr, next_task_cx_ptr);
-    }
-}
-
-/// 更新任务运行时间统计
-fn update_task_runtime_stats(task: &Arc<TaskControlBlock>, runtime: u64) {
-    task.sched.lock().update_vruntime(runtime);
-}
-
-/// 如果需要则打印调试信息（每5秒一次）
-fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
-    let last_time = LAST_DEBUG_TIME.load(Ordering::Relaxed);
-    if current_time.saturating_sub(last_time) >= DEBUG_INTERVAL_US {
-        if LAST_DEBUG_TIME
-            .compare_exchange_weak(
-                last_time,
-                current_time,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .is_ok()
-        {
-            debug!(
-                "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, ready_tasks:{}, time:{}us",
-                task.pid(),
-                super::task_manager::ready_task_count(),
-                current_time
-            );
-        }
-    }
-}
-
-/// 处理任务退出的核心逻辑
-fn handle_task_exit(task: &Arc<TaskControlBlock>, exit_code: i32) {
-    let pid = task.pid();
-
-    *task.task_status.lock() = TaskStatus::Zombie;
     task.set_exit_code(exit_code);
+    *task.task_status.lock() = TaskStatus::Zombie;
 
     // 将进程挂给 init_proc, 等待回收
     if let Some(init_proc) = task_manager::get_init_proc() {
@@ -302,6 +209,49 @@ fn handle_task_exit(task: &Arc<TaskControlBlock>, exit_code: i32) {
     task.children.lock().clear();
     task.file.lock().close_all_fds_and_cleanup_locks(pid);
     task.mm.memory_set.lock().recycle_data_pages();
+
+    // 调度到下一个任务
+    schedule(&mut *task.mm.task_cx.lock() as *mut _);
+}
+
+/// 处理任务信号
+fn handle_task_signals(task: &Arc<TaskControlBlock>) {
+    let (should_continue, exit_code) = crate::task::check_and_handle_signals();
+    if !should_continue {
+        if let Some(code) = exit_code {
+            // 如果信号要求终止进程，则终止进程
+            *task.task_status.lock() = TaskStatus::Zombie;
+            task.set_exit_code(code);
+        }
+    }
+}
+
+/// 更新任务运行时间统计
+fn update_task_runtime_stats(task: &Arc<TaskControlBlock>, runtime: u64) {
+    task.sched.lock().update_vruntime(runtime);
+}
+
+/// 如果需要则打印调试信息（每5秒一次）
+fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
+    let last_time = LAST_DEBUG_TIME.load(Ordering::Relaxed);
+    if current_time.saturating_sub(last_time) >= DEBUG_INTERVAL_US {
+        if LAST_DEBUG_TIME
+            .compare_exchange_weak(
+                last_time,
+                current_time,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            debug!(
+                "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, ready_tasks:{}, time:{}us",
+                task.pid(),
+                super::task_manager::ready_task_count(),
+                current_time
+            );
+        }
+    }
 }
 
 /// 检查并移除当前任务（如果匹配）
