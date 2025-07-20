@@ -433,6 +433,22 @@ impl TaskControlBlock {
         let pid = alloc_pid();
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
+        let file = {
+            let mut file = self.file.lock();
+            Mutex::new(File {
+                fd_table: file.fd_table.clone(),
+                next_fd: file.next_fd,
+            })
+        };
+        let sched = {
+            let sched = self.sched.lock();
+            Mutex::new(Sched {
+                nice: sched.nice,
+                vruntime: 0,
+                priority: sched.priority,
+                time_slice: sched.time_slice,
+            })
+        };
 
         let tcb = Arc::new(Self {
             pid,
@@ -457,16 +473,8 @@ impl TaskControlBlock {
                 heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
             },
-            file: Mutex::new(File {
-                fd_table: self.file.lock().fd_table.clone(),
-                next_fd: self.file.lock().next_fd,
-            }),
-            sched: Mutex::new(Sched {
-                nice: self.sched.lock().nice,
-                vruntime: 0,
-                priority: self.sched.lock().priority,
-                time_slice: self.sched.lock().time_slice,
-            }),
+            file,
+            sched,
             signal_state: Mutex::new(self.signal_state.lock().clone_for_fork()),
         });
 
@@ -506,7 +514,9 @@ impl TaskControlBlock {
     /// 设置用户ID (需要root权限)
     pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意UID
-        if self.euid.load(atomic::Ordering::Relaxed) != 0 && self.euid.load(atomic::Ordering::Relaxed) != uid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0
+            && self.euid.load(atomic::Ordering::Relaxed) != uid
+        {
             return Err(-1); // EPERM
         }
         self.uid.store(uid, atomic::Ordering::Relaxed);
@@ -517,7 +527,9 @@ impl TaskControlBlock {
     /// 设置组ID (需要root权限)
     pub fn set_gid(&self, gid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意GID
-        if self.euid.load(atomic::Ordering::Relaxed) != 0 && self.egid.load(atomic::Ordering::Relaxed) != gid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0
+            && self.egid.load(atomic::Ordering::Relaxed) != gid
+        {
             return Err(-1); // EPERM
         }
         self.gid.store(gid, atomic::Ordering::Relaxed);
@@ -528,7 +540,9 @@ impl TaskControlBlock {
     /// 设置有效用户ID
     pub fn set_euid(&self, euid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际UID才允许
-        if self.euid.load(atomic::Ordering::Relaxed) != 0 && euid != self.uid.load(atomic::Ordering::Relaxed) {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0
+            && euid != self.uid.load(atomic::Ordering::Relaxed)
+        {
             return Err(-1); // EPERM
         }
         self.euid.store(euid, atomic::Ordering::Relaxed);
@@ -538,7 +552,9 @@ impl TaskControlBlock {
     /// 设置有效组ID
     pub fn set_egid(&self, egid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际GID才允许
-        if self.euid.load(atomic::Ordering::Relaxed) != 0 && egid != self.gid.load(atomic::Ordering::Relaxed) {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0
+            && egid != self.gid.load(atomic::Ordering::Relaxed)
+        {
             return Err(-1); // EPERM
         }
         self.egid.store(egid, atomic::Ordering::Relaxed);

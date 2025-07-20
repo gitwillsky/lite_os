@@ -124,7 +124,7 @@ pub fn suspend_current_and_run_next() {
 
     // 如果任务应该重新加入就绪队列
     if should_readd {
-        super::task_manager::update_task_runtime(&task, runtime);
+        task.sched.lock().update_vruntime(runtime);
         super::add_task(task);
     }
 
@@ -227,8 +227,7 @@ fn execute_task(task: Arc<TaskControlBlock>) {
 
         next_task_cx_ptr
     };
-    // 在 __switch 之前设置当前任务，确保 trap_return 能正确获取到当前任务
-    processor.current = Some(task);
+    processor.current = Some(task.clone());
     drop(processor);
 
     unsafe {
