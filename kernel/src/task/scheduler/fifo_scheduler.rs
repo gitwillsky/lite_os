@@ -20,9 +20,9 @@ impl Scheduler for FIFOScheduler {
         self.tasks.push_back(task);
     }
 
-    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+    fn fetch_ready_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         while let Some(task) = self.tasks.pop_front() {
-            if !task.is_zombie() {
+            if task.is_ready() {
                 return Some(task);
             }
         }

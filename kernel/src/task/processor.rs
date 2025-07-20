@@ -77,7 +77,7 @@ pub fn run_tasks() -> ! {
                 handle_task_signals(&task);
                 continue;
             }
-
+            debug!("run_tasks: {:?}", task.pid());
             // 切换到任务
             execute_task(task);
         } else {
@@ -227,6 +227,7 @@ fn execute_task(task: Arc<TaskControlBlock>) {
 
         next_task_cx_ptr
     };
+    // 在 __switch 之前设置当前任务，确保 trap_return 能正确获取到当前任务
     processor.current = Some(task);
     drop(processor);
 

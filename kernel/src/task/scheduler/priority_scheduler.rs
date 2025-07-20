@@ -23,11 +23,11 @@ impl Scheduler for PriorityScheduler {
         self.priority_queues[priority].push_back(task);
     }
 
-    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+    fn fetch_ready_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         // 从高优先级到低优先级查找任务
         for queue in self.priority_queues.iter_mut() {
             while let Some(task) = queue.pop_front() {
-                if !task.is_zombie() {
+                if task.is_ready() {
                     return Some(task);
                 }
             }

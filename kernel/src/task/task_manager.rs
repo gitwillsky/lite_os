@@ -64,7 +64,7 @@ impl TaskManager {
     }
 
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.scheduler.lock().fetch_task()
+        self.scheduler.lock().fetch_ready_task()
     }
 
     /// 更新任务的运行时间统计

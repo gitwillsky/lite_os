@@ -21,9 +21,9 @@ impl Scheduler for CFScheduler {
         self.tasks.push(CFSTask::new(task));
     }
 
-    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+    fn fetch_ready_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         if let Some(cfs_task) = self.tasks.pop() {
-            if !cfs_task.0.is_zombie() {
+            if cfs_task.0.is_ready() {
                 return Some(cfs_task.0);
             }
         }
