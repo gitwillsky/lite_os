@@ -21,32 +21,32 @@ pub trait Inode: Send + Sync {
     fn remove(&self, name: &str) -> Result<(), super::FileSystemError>;
     fn truncate(&self, size: u64) -> Result<(), super::FileSystemError>;
     fn sync(&self) -> Result<(), super::FileSystemError>;
-    
+
     /// 获取文件权限模式（默认实现为0o644）
-    fn get_mode(&self) -> u32 {
+    fn mode(&self) -> u32 {
         0o644
     }
-    
+
     /// 设置文件权限模式（默认实现不做任何操作）
     fn set_mode(&self, _mode: u32) -> Result<(), super::FileSystemError> {
         Ok(())
     }
-    
+
     /// 获取文件拥有者UID（默认实现为0，即root）
-    fn get_uid(&self) -> u32 {
+    fn uid(&self) -> u32 {
         0
     }
-    
+
     /// 设置文件拥有者UID（默认实现不做任何操作）
     fn set_uid(&self, _uid: u32) -> Result<(), super::FileSystemError> {
         Ok(())
     }
-    
+
     /// 获取文件拥有者GID（默认实现为0，即root组）
-    fn get_gid(&self) -> u32 {
+    fn gid(&self) -> u32 {
         0
     }
-    
+
     /// 设置文件拥有者GID（默认实现不做任何操作）
     fn set_gid(&self, _gid: u32) -> Result<(), super::FileSystemError> {
         Ok(())

@@ -1,10 +1,12 @@
+use core::sync::atomic;
+
 use crate::memory::{
+    PAGE_SIZE,
     address::{VirtualAddress, VirtualPageNumber},
     mm::{MapArea, MapPermission, MapType},
-    PAGE_SIZE,
 };
-use crate::task::current_task;
 use crate::syscall::errno::*;
+use crate::task::current_task;
 
 /// 用户程序堆的起始地址（在用户空间的高地址）
 const USER_HEAP_BASE: usize = 0x40000000;
@@ -17,71 +19,67 @@ const USER_HEAP_BASE: usize = 0x40000000;
 /// - 失败：-1
 pub fn sys_brk(new_brk: usize) -> isize {
     let task = current_task().unwrap();
-    let mut task_inner = task.inner_exclusive_access();
-    
+
     // 如果 new_brk 为 0，返回当前堆顶
     if new_brk == 0 {
         // 如果堆还没有初始化，先初始化
-        if task_inner.heap_top == 0 {
-            task_inner.heap_top = USER_HEAP_BASE;
-            task_inner.heap_base = USER_HEAP_BASE;
+        if task.mm.heap_top.load(atomic::Ordering::Relaxed) == 0 {
+            task.mm.heap_top.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+            task.mm.heap_base.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
         }
-        return task_inner.heap_top as isize;
+        return task.mm.heap_top.load(atomic::Ordering::Relaxed) as isize;
     }
-    
+
     // 初始化堆（如果是第一次调用）
-    if task_inner.heap_top == 0 {
-        task_inner.heap_top = USER_HEAP_BASE;
-        task_inner.heap_base = USER_HEAP_BASE;
+    if task.mm.heap_top.load(atomic::Ordering::Relaxed) == 0 {
+        task.mm.heap_top.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+        task.mm.heap_base.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
     }
-    
-    let old_brk = task_inner.heap_top;
-    
+
     // 检查新的堆顶是否小于堆基址
-    if new_brk < task_inner.heap_base {
+    if new_brk < task.mm.heap_base.load(atomic::Ordering::Relaxed) {
         return -EINVAL;
     }
-    
+
     // 检查新的堆顶是否会与栈冲突（简单检查）
     if new_brk > 0x80000000 {
         return -ENOMEM;
     }
-    
-    if new_brk > old_brk {
+
+    if new_brk > task.mm.heap_top.load(atomic::Ordering::Relaxed) {
         // 扩大堆
-        let start_va = VirtualAddress::from(old_brk);
+        let start_va = VirtualAddress::from(task.mm.heap_top.load(atomic::Ordering::Relaxed));
         let end_va = VirtualAddress::from(new_brk);
-        
+
         let map_area = MapArea::new(
             start_va,
             end_va,
             MapType::Framed,
             MapPermission::R | MapPermission::W | MapPermission::U,
         );
-        
+
         // 添加到内存集合
-        task_inner.memory_set.push(map_area, None);
-        
+        task.mm.memory_set.lock().push(map_area, None);
+
         // 刷新页表
         unsafe {
             core::arch::asm!("sfence.vma");
         }
-        
-    } else if new_brk < old_brk {
+    } else if new_brk < task.mm.heap_top.load(atomic::Ordering::Relaxed) {
         // 缩小堆
         let start_va = VirtualAddress::from(new_brk);
-        let end_va = VirtualAddress::from(old_brk);
-        
+        let end_va = VirtualAddress::from(task.mm.heap_top.load(atomic::Ordering::Relaxed));
+
         // 从内存集合中移除区域
-        task_inner.memory_set.remove_area_with_start_vpn(start_va.floor());
-        
+        task.mm.remove_area_with_start_vpn(start_va);
+
         // 刷新页表
         unsafe {
             core::arch::asm!("sfence.vma");
         }
     }
-    
-    task_inner.heap_top = new_brk;
+
+    task.mm.heap_top.store(new_brk, atomic::Ordering::Relaxed);
     new_brk as isize
 }
 
@@ -93,21 +91,19 @@ pub fn sys_brk(new_brk: usize) -> isize {
 /// - 失败：-1
 pub fn sys_sbrk(increment: isize) -> isize {
     let task = current_task().unwrap();
-    let task_inner = task.inner_exclusive_access();
-    
+
     // 初始化堆（如果是第一次调用）
-    let current_brk = if task_inner.heap_top == 0 {
+    let heap_top = task.mm.heap_top.load(atomic::Ordering::Relaxed);
+    let current_brk = if heap_top == 0 {
         USER_HEAP_BASE
     } else {
-        task_inner.heap_top
+        heap_top
     };
-    
-    drop(task_inner);
-    
+
     if increment == 0 {
         return current_brk as isize;
     }
-    
+
     // 检查溢出
     let new_brk = if increment > 0 {
         match current_brk.checked_add(increment as usize) {
@@ -126,12 +122,12 @@ pub fn sys_sbrk(increment: isize) -> isize {
             }
         }
     };
-    
+
     let result = sys_brk(new_brk);
     if result < 0 {
         return result; // 返回具体的错误码而不是统一的 -1
     }
-    
+
     current_brk as isize
 }
 
@@ -158,15 +154,15 @@ pub fn sys_mmap(
     if fd != -1 {
         return -ENOTSUP;
     }
-    
+
     // 检查长度
     if length == 0 {
         return -EINVAL;
     }
-    
+
     // 页对齐长度
     let aligned_length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    
+
     // 转换保护标志
     let mut permissions = MapPermission::U;
     if prot & PROT_READ != 0 {
@@ -178,37 +174,31 @@ pub fn sys_mmap(
     if prot & PROT_EXEC != 0 {
         permissions |= MapPermission::X;
     }
-    
+
     let task = current_task().unwrap();
-    let mut task_inner = task.inner_exclusive_access();
-    
+
     // 找到合适的虚拟地址
     let start_va = if addr == 0 {
         // 自动分配地址
-        find_free_area(&task_inner.memory_set, aligned_length)
+        find_free_area(&task.mm.memory_set.lock(), aligned_length)
     } else {
         // 使用指定地址
         VirtualAddress::from(addr)
     };
-    
+
     let end_va = VirtualAddress::from(usize::from(start_va) + aligned_length);
-    
+
     // 创建映射区域
-    let map_area = MapArea::new(
-        start_va,
-        end_va,
-        MapType::Framed,
-        permissions,
-    );
-    
+    let map_area = MapArea::new(start_va, end_va, MapType::Framed, permissions);
+
     // 添加到内存集合
-    task_inner.memory_set.push(map_area, None);
-    
+    task.mm.memory_set.lock().push(map_area, None);
+
     // 刷新页表
     unsafe {
         core::arch::asm!("sfence.vma");
     }
-    
+
     usize::from(start_va) as isize
 }
 
@@ -223,21 +213,20 @@ pub fn sys_munmap(addr: usize, length: usize) -> isize {
     if length == 0 {
         return -EINVAL;
     }
-    
+
     let start_va = VirtualAddress::from(addr);
     let end_va = VirtualAddress::from(addr + length);
-    
+
     let task = current_task().unwrap();
-    let mut task_inner = task.inner_exclusive_access();
-    
+
     // 从内存集合中移除区域
-    task_inner.memory_set.remove_area_with_start_vpn(start_va.floor());
-    
+    task.mm.remove_area_with_start_vpn(start_va);
+
     // 刷新页表
     unsafe {
         core::arch::asm!("sfence.vma");
     }
-    
+
     0
 }
 
@@ -256,11 +245,11 @@ fn find_free_area(memory_set: &crate::memory::mm::MemorySet, length: usize) -> V
     // 简单实现：从较高地址开始查找
     let mut current_addr = 0x50000000usize;
     let end_addr = 0x80000000usize;
-    
+
     while current_addr + length < end_addr {
         let start_vpn = VirtualAddress::from(current_addr).floor();
         let end_vpn = VirtualAddress::from(current_addr + length).ceil();
-        
+
         // 检查这个区域是否空闲
         let mut is_free = true;
         for vpn in usize::from(start_vpn)..usize::from(end_vpn) {
@@ -269,14 +258,14 @@ fn find_free_area(memory_set: &crate::memory::mm::MemorySet, length: usize) -> V
                 break;
             }
         }
-        
+
         if is_free {
             return VirtualAddress::from(current_addr);
         }
-        
+
         current_addr += PAGE_SIZE;
     }
-    
+
     // 如果没有找到合适的地址，返回错误地址
     VirtualAddress::from(0)
 }

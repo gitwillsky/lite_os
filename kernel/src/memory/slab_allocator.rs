@@ -14,16 +14,15 @@ pub enum SlabError {
     InvalidPointer,
 }
 
-/// Free object list node - 使用更安全的方式
 #[repr(C)]
 struct FreeNode {
-    next: Option<usize>, // 使用索引而不是原始指针
+    next: Option<usize>,
 }
 
 unsafe impl Send for FreeNode {}
 unsafe impl Sync for FreeNode {}
 
-/// SLAB structure containing objects of the same size - 使用链表设计
+/// SLAB structure containing objects of the same size
 pub struct Slab {
     /// Start address of the slab
     start: NonNull<u8>,
@@ -80,29 +79,29 @@ impl Slab {
         if index >= self.object_count {
             return Err(SlabError::InvalidPointer);
         }
-        
+
         let ptr = self.get_object_ptr(index)?;
-        
+
         // 额外的安全检查：确保指针在slab范围内
         let addr = ptr.as_ptr() as usize;
         let start_addr = self.start.as_ptr() as usize;
         let end_addr = start_addr + PAGE_SIZE;
-        
+
         if addr < start_addr || addr >= end_addr {
             return Err(SlabError::InvalidPointer);
         }
-        
+
         // 确保对象大小足够容纳FreeNode
         if self.object_size < size_of::<FreeNode>() {
             return Err(SlabError::InvalidLayout);
         }
-        
+
         unsafe {
             // 在转换前再次验证指针对齐
             if addr % core::mem::align_of::<FreeNode>() != 0 {
                 return Err(SlabError::InvalidPointer);
             }
-            
+
             Ok(&mut *(ptr.as_ptr() as *mut FreeNode))
         }
     }
@@ -303,10 +302,10 @@ impl SlabCache {
         unsafe {
             let slab = &mut *slab_ptr.as_ptr();
             *slab = Slab::new(self.object_size)?;
-            
+
             // Store the frame tracker in the slab for proper cleanup
             slab._slab_frame = Some(slab_frame);
-            
+
             if let Some(ptr) = slab.alloc() {
                 self.total_allocated += 1;
                 self.total_slabs += 1;
@@ -361,7 +360,7 @@ impl SlabCache {
 
                     // Full slab now has free space, move to partial list
                     Self::remove_slab_from_list(slab_ptr, &mut self.full_head);
-                    
+
                     if slab.is_empty() {
                         slab.next = self.empty_head;
                         self.empty_head = Some(slab_ptr);
@@ -428,11 +427,11 @@ impl SlabCache {
         // We just need to ensure the slab is properly dropped
         unsafe {
             let slab = &mut *slab_ptr.as_ptr();
-            
+
             // Manually drop the slab to run its destructor
             core::ptr::drop_in_place(slab);
         }
-        
+
         // The _slab_frame field will be automatically deallocated when dropped
         self.total_slabs -= 1;
     }
@@ -440,10 +439,10 @@ impl SlabCache {
     /// Clean up excess empty slabs to prevent memory waste
     fn cleanup_empty_slabs(&mut self) {
         const MAX_EMPTY_SLABS: usize = 2; // Keep at most 2 empty slabs per cache
-        
+
         let mut empty_count = 0;
         let mut current = self.empty_head;
-        
+
         // Count empty slabs
         while let Some(slab_ptr) = current {
             unsafe {
@@ -451,11 +450,11 @@ impl SlabCache {
                 current = (*slab_ptr.as_ptr()).next;
             }
         }
-        
+
         // If we have too many empty slabs, remove some
         if empty_count > MAX_EMPTY_SLABS {
             let to_remove = empty_count - MAX_EMPTY_SLABS;
-            
+
             for _ in 0..to_remove {
                 if let Some(slab_ptr) = self.empty_head {
                     unsafe {

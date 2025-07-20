@@ -102,7 +102,7 @@ impl FileLockManager {
     ) -> Result<(), LockError> {
         let inode_id = Self::get_inode_id(inode);
         let mut locks = self.locks.lock();
-        
+
         if let Some(inode_locks) = locks.get_mut(&inode_id) {
             inode_locks.retain(|lock| lock.owner_pid != owner_pid);
             if inode_locks.is_empty() {
@@ -169,6 +169,6 @@ static FILE_LOCK_MANAGER: FileLockManager = FileLockManager {
 };
 
 /// Get the global file lock manager
-pub fn get_file_lock_manager() -> &'static FileLockManager {
+pub fn file_lock_manager() -> &'static FileLockManager {
     &FILE_LOCK_MANAGER
 }

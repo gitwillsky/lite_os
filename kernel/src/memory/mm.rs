@@ -218,6 +218,10 @@ impl MemorySet {
         self.page_table.translate(vpn)
     }
 
+    pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
+        self.page_table.translate_va(va)
+    }
+
     pub fn shrink_to(&mut self, start: VirtualAddress, new_end: VirtualAddress) -> bool {
         if let Some(area) = self
             .areas
@@ -254,6 +258,14 @@ impl MemorySet {
             area.unmap(&mut self.page_table);
             self.areas.remove(idx);
         }
+    }
+
+    /// 获取 TrapContext 的物理页号
+    pub fn trap_context_ppn(&self) -> PhysicalPageNumber {
+        self.page_table
+            .translate(VirtualAddress::from(config::TRAP_CONTEXT).into())
+            .expect("TRAP_CONTEXT should be mapped")
+            .ppn()
     }
 
     pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {

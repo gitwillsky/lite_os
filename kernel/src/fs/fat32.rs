@@ -1237,7 +1237,7 @@ impl Inode for FAT32Inode {
     }
 
     /// 获取文件权限模式
-    fn get_mode(&self) -> u32 {
+    fn mode(&self) -> u32 {
         *self.mode.lock()
     }
 
@@ -1248,7 +1248,7 @@ impl Inode for FAT32Inode {
     }
 
     /// 获取文件拥有者UID
-    fn get_uid(&self) -> u32 {
+    fn uid(&self) -> u32 {
         *self.uid.lock()
     }
 
@@ -1259,7 +1259,7 @@ impl Inode for FAT32Inode {
     }
 
     /// 获取文件拥有者GID
-    fn get_gid(&self) -> u32 {
+    fn gid(&self) -> u32 {
         *self.gid.lock()
     }
 

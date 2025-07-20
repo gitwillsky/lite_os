@@ -20,13 +20,13 @@ mod fs;
 mod ipc;
 mod lang_item;
 
-mod loader;
 mod memory;
 mod sync;
 mod syscall;
 mod task;
 mod timer;
 mod trap;
+mod id;
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {

@@ -191,6 +191,6 @@ pub fn init_vfs() {
     VFS_MANAGER.call_once(|| VirtualFileSystem::new());
 }
 
-pub fn get_vfs() -> &'static VirtualFileSystem {
+pub fn vfs() -> &'static VirtualFileSystem {
     VFS_MANAGER.wait()
 }

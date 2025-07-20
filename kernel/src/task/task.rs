@@ -1,23 +1,33 @@
-use core::{cell::RefMut, error::Error, sync::atomic};
-
-use alloc::{
-    boxed::Box, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec, collections::BTreeMap
+use core::{
+    cell::RefMut,
+    error::Error,
+    sync::atomic::{self, AtomicI32, AtomicU32, AtomicU64, AtomicUsize},
 };
 
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use spin::Mutex;
+
 use crate::{
+    fs::inode::Inode,
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::{PhysicalPageNumber, VirtualAddress},
+        kernel_stack::KernelStack,
         mm::{self, MemorySet},
     },
     sync::UPSafeCell,
     task::{
         context::TaskContext,
-        pid::{KernelStack, PidHandle, alloc_pid},
+        pid::{PidHandle, alloc_pid},
         signal::SignalState,
     },
     trap::{TrapContext, trap_handler},
-    fs::inode::Inode,
 };
 
 pub struct FileDescriptor {
@@ -52,7 +62,8 @@ impl FileDescriptor {
         let current_offset = self.offset.load(atomic::Ordering::Relaxed);
         let result = self.inode.read_at(current_offset, buf);
         if let Ok(bytes_read) = result {
-            self.offset.fetch_add(bytes_read as u64, atomic::Ordering::Relaxed);
+            self.offset
+                .fetch_add(bytes_read as u64, atomic::Ordering::Relaxed);
         }
         result
     }
@@ -62,7 +73,8 @@ impl FileDescriptor {
         let current_offset = self.offset.load(atomic::Ordering::Relaxed);
         let result = self.inode.write_at(current_offset, buf);
         if let Ok(bytes_written) = result {
-            self.offset.fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
+            self.offset
+                .fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
         }
         result
     }
@@ -74,306 +86,54 @@ pub enum TaskStatus {
     Running,
     Exited,
     Zombie,
-    Sleeping,    // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
+    Sleeping, // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
 }
 
 #[derive(Debug)]
-pub struct TaskControlBlockInner {
-    /// 进程状态
-    pub task_status: TaskStatus,
-    /// 用户态的 TaskContext
-    pub task_cx: TaskContext,
+pub struct Memory {
     /// 用户态的内存空间
-    pub memory_set: mm::MemorySet,
+    pub memory_set: Mutex<mm::MemorySet>,
+    /// 内核栈
+    kernel_stack: KernelStack,
     /// 用户态的 TrapContext 的物理页号
-    pub trap_cx_ppn: PhysicalPageNumber,
-    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
-    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
-    pub base_size: usize,
-    /// 父进程, 子进程有可能在父进程退出时还存活，因此需要弱引用
-    pub parent: Option<Weak<TaskControlBlock>>,
-    /// 子进程
-    pub children: Vec<Arc<TaskControlBlock>>,
-    /// 子进程退出时，父进程可以获取其退出码
-    pub exit_code: i32,
-    /// 当前工作目录
-    pub cwd: String,
-    /// 文件描述符表
-    pub fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
-    /// 下一个可分配的文件描述符
-    pub next_fd: usize,
-    /// 进程优先级 (0-139, 0最高优先级，139最低优先级)
-    pub priority: i32,
-    /// nice值 (-20到19, 影响动态优先级计算)
-    pub nice: i32,
-    /// 累计运行时间 (用于CFS调度算法)
-    pub vruntime: u64,
-    /// 上次运行时的时间戳
-    pub last_runtime: u64,
-    /// 动态时间片大小 (微秒)
-    pub time_slice: u64,
-    /// 信号状态
-    pub signal_state: SignalState,
-    /// 用户ID
-    pub uid: u32,
-    /// 组ID
-    pub gid: u32,
-    /// 有效用户ID (用于权限检查)
-    pub euid: u32,
-    /// 有效组ID (用于权限检查)
-    pub egid: u32,
+    trap_cx_ppn: Mutex<PhysicalPageNumber>,
     /// 用户程序堆的基地址
-    pub heap_base: usize,
+    pub heap_base: AtomicUsize,
     /// 用户程序堆的顶部地址
-    pub heap_top: usize,
-    /// 进程启动时的命令行参数
-    pub args: Vec<String>,
-    /// 进程启动时的环境变量
-    pub envs: Vec<String>,
+    pub heap_top: AtomicUsize,
+    /// 用户态的 TaskContext
+    pub task_cx: Mutex<TaskContext>,
 }
 
-/// Task Control block structure
+impl Memory {
+    pub fn set_trap_context_ppn(&self, trap_context_ppn: PhysicalPageNumber) {
+        *self.trap_cx_ppn.lock() = trap_context_ppn;
+    }
+
+    pub fn set_trap_context(&self, trap_context: TrapContext) {
+        *self.trap_cx_ppn.lock().get_mut() = trap_context;
+    }
+
+    pub fn trap_context(&self) -> &'static mut TrapContext {
+        self.trap_cx_ppn.lock().get_mut()
+    }
+
+    pub fn remove_area_with_start_vpn(&self, start_va: VirtualAddress) {
+        self.memory_set
+            .lock()
+            .remove_area_with_start_vpn(start_va.floor());
+    }
+}
+
 #[derive(Debug)]
-pub struct TaskControlBlock {
-    pub pid: PidHandle,
-    pub kernel_stack: KernelStack,
-
-    inner: UPSafeCell<TaskControlBlockInner>,
+pub struct File {
+    /// 文件描述符表
+    fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
+    /// 下一个可分配的文件描述符
+    next_fd: usize,
 }
 
-impl TaskControlBlock {
-    pub fn new(elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
-
-        let task_status = TaskStatus::Ready;
-
-        let pid = alloc_pid();
-        let kernel_stack = KernelStack::new(pid.0);
-        let kernel_stack_top = kernel_stack.get_top();
-
-        // 获取用户空间中TRAP_CONTEXT映射的物理页面
-        let trap_cx_ppn = memory_set
-            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
-            .expect("TRAP_CONTEXT should be mapped")
-            .ppn();
-
-        let tcb = Self {
-            pid,
-            kernel_stack,
-            inner: UPSafeCell::new(TaskControlBlockInner {
-                task_status,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                memory_set,
-                trap_cx_ppn,
-                base_size: user_sp,
-                parent: None,
-                children: Vec::new(),
-                exit_code: 0,
-                cwd: "/".to_string(),  // 新进程默认工作目录为根目录
-                fd_table: BTreeMap::new(),
-                next_fd: 3, // 0, 1, 2 reserved for stdin, stdout, stderr
-                priority: 20,  // 默认优先级 (nice=0 对应的优先级)
-                nice: 0,       // 默认nice值
-                vruntime: 0,   // 初始虚拟运行时间
-                last_runtime: 0,
-                time_slice: 10000, // 默认10ms时间片
-                signal_state: SignalState::new(),
-                uid: 0,           // 初始进程为root用户
-                gid: 0,           // 初始进程为root组
-                euid: 0,          // 有效用户ID初始为root
-                egid: 0,          // 有效组ID初始为root
-                heap_base: 0,     // 堆基地址初始为0
-                heap_top: 0,      // 堆顶地址初始为0
-                args: Vec::new(), // 初始化空的参数列表
-                envs: Vec::new(), // 初始化空的环境变量列表
-            }),
-        };
-
-        // prepare TrapContext in user space
-        let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
-        *trap_cx = TrapContext::app_init_context(
-            entry_point,
-            user_sp,
-            KERNEL_SPACE.wait().lock().token(),
-            kernel_stack_top,
-            trap_handler as usize,
-        );
-        Ok(tcb)
-    }
-
-    pub fn get_pid(&self) -> usize {
-        self.pid.0
-    }
-
-    pub fn inner_exclusive_access(&self) -> RefMut<'_, TaskControlBlockInner> {
-        self.inner.exclusive_access()
-    }
-
-    pub fn exec(&self, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
-        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data)?;
-        let trap_cx_ppn = memory_set
-            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
-            .unwrap()
-            .ppn();
-
-        let mut inner = self.inner_exclusive_access();
-        inner.trap_cx_ppn = trap_cx_ppn;
-        inner.memory_set = memory_set;
-        // 重置信号状态（exec时应该重置信号处理器）
-        inner.signal_state.reset_for_exec();
-        let trap_cx = inner.get_trap_cx();
-        *trap_cx = TrapContext::app_init_context(
-            entrypoint,
-            user_stack_top,
-            KERNEL_SPACE.wait().lock().token(),
-            self.kernel_stack.get_top(),
-            trap_handler as usize,
-        );
-        Ok(())
-    }
-
-    /// Execute a new program with arguments and environment variables
-    pub fn exec_with_args(
-        &self,
-        elf_data: &[u8],
-        args: &[String],
-        envs: &[String]
-    ) -> Result<(), Box<dyn Error>> {
-        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf_with_args(elf_data, args, envs)?;
-        let trap_cx_ppn = memory_set
-            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
-            .unwrap()
-            .ppn();
-        let mut inner = self.inner_exclusive_access();
-        inner.trap_cx_ppn = trap_cx_ppn;
-        inner.memory_set = memory_set;
-        // 重置信号状态（exec时应该重置信号处理器）
-        inner.signal_state.reset_for_exec();
-        let trap_cx = inner.get_trap_cx();
-        *trap_cx = TrapContext::app_init_context(
-            entrypoint,
-            user_stack_top,
-            KERNEL_SPACE.wait().lock().token(),
-            self.kernel_stack.get_top(),
-            trap_handler as usize,
-        );
-
-        // 保存命令行参数和环境变量
-        inner.args = args.to_vec();
-        inner.envs = envs.to_vec();
-
-        Ok(())
-    }
-
-    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
-        let mut parent_inner = self.inner_exclusive_access();
-        let memory_set = MemorySet::form_existed_user(&parent_inner.memory_set);
-        let trap_cx_ppn = memory_set
-            .translate(VirtualAddress::from(TRAP_CONTEXT).into())
-            .unwrap()
-            .ppn();
-
-        // alloc a pid and a kernel stack in kernel space
-        let pid = alloc_pid();
-        let kernel_stack = KernelStack::new(pid.0);
-        let kernel_stack_top = kernel_stack.get_top();
-
-        let tcb = Arc::new(TaskControlBlock {
-            pid,
-            kernel_stack,
-            inner: UPSafeCell::new(TaskControlBlockInner {
-                task_status: TaskStatus::Ready,
-                task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                memory_set,
-                trap_cx_ppn,
-                base_size: parent_inner.base_size,
-                parent: Some(Arc::downgrade(self)),
-                children: Vec::new(),
-                exit_code: 0,
-                cwd: parent_inner.cwd.clone(),  // 复制父进程的工作目录
-                fd_table: parent_inner.fd_table.clone(), // 复制父进程的文件描述符表
-                next_fd: parent_inner.next_fd,
-                priority: parent_inner.priority,  // 继承父进程优先级
-                nice: parent_inner.nice,          // 继承父进程nice值
-                vruntime: 0,                      // 子进程重新开始计算vruntime
-                last_runtime: 0,
-                time_slice: parent_inner.time_slice, // 继承父进程时间片设置
-                signal_state: parent_inner.signal_state.clone_for_fork(), // 复制信号状态
-                uid: parent_inner.uid,    // 继承父进程用户ID
-                gid: parent_inner.gid,    // 继承父进程组ID
-                euid: parent_inner.euid,  // 继承父进程有效用户ID
-                egid: parent_inner.egid,  // 继承父进程有效组ID
-                heap_base: parent_inner.heap_base,  // 继承父进程堆基地址
-                heap_top: parent_inner.heap_top,    // 继承父进程堆顶地址
-                args: parent_inner.args.clone(),     // 继承父进程的命令行参数
-                envs: parent_inner.envs.clone(),     // 继承父进程的环境变量
-            }),
-        });
-
-        parent_inner.children.push(tcb.clone());
-        let trap_cx = tcb.inner_exclusive_access().get_trap_cx();
-        trap_cx.kernel_sp = kernel_stack_top;
-        tcb
-    }
-}
-
-impl TaskControlBlockInner {
-    pub fn get_trap_cx(&self) -> &'static mut TrapContext {
-        self.trap_cx_ppn.get_mut()
-    }
-
-    pub fn get_user_token(&self) -> usize {
-        self.memory_set.token()
-    }
-
-    pub fn get_status(&self) -> TaskStatus {
-        self.task_status
-    }
-
-    pub fn is_zombie(&self) -> bool {
-        self.task_status == TaskStatus::Zombie
-    }
-
-    /// 计算动态优先级 (基于nice值)
-    pub fn get_dynamic_priority(&self) -> i32 {
-        // Linux-like priority calculation: priority = 20 + nice
-        // 范围: 0-39 (nice: -20到19)
-        (20 + self.nice).max(0).min(39)
-    }
-
-    /// 更新虚拟运行时间 (CFS算法核心)
-    pub fn update_vruntime(&mut self, runtime_us: u64) {
-        // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
-        let weight = match self.get_dynamic_priority() {
-            0..=9 => 4,    // 高优先级
-            10..=19 => 2,  // 中等优先级
-            20..=29 => 1,  // 默认优先级
-            _ => 1,        // 低优先级
-        };
-        self.vruntime += runtime_us / weight;
-    }
-
-    /// 计算时间片大小 (基于优先级)
-    pub fn calculate_time_slice(&self) -> u64 {
-        // 基础时间片为10ms，根据优先级调整
-        let base_slice = 10000; // 10ms in microseconds
-        let priority = self.get_dynamic_priority();
-
-        match priority {
-            0..=9 => base_slice * 2,    // 高优先级：20ms
-            10..=19 => base_slice * 3 / 2, // 中等优先级：15ms
-            20..=29 => base_slice,      // 默认优先级：10ms
-            _ => base_slice / 2,        // 低优先级：5ms
-        }
-    }
-
-    /// 设置nice值并更新优先级
-    pub fn set_nice(&mut self, nice: i32) {
-        self.nice = nice.max(-20).min(19);
-        self.priority = self.get_dynamic_priority();
-        self.time_slice = self.calculate_time_slice();
-    }
-
+impl File {
     /// 分配新的文件描述符
     pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> usize {
         let fd = self.next_fd;
@@ -383,7 +143,7 @@ impl TaskControlBlockInner {
     }
 
     /// 根据文件描述符获取FileDescriptor
-    pub fn get_fd(&self, fd: usize) -> Option<Arc<FileDescriptor>> {
+    pub fn fd(&self, fd: usize) -> Option<Arc<FileDescriptor>> {
         self.fd_table.get(&fd).cloned()
     }
 
@@ -400,7 +160,7 @@ impl TaskControlBlockInner {
     /// 关闭所有文件描述符并清理文件锁（进程退出时调用）
     pub fn close_all_fds_and_cleanup_locks(&mut self, pid: usize) {
         // 清理文件锁
-        crate::fs::get_file_lock_manager().remove_process_locks(pid);
+        crate::fs::file_lock_manager().remove_process_locks(pid);
         self.fd_table.clear();
     }
 
@@ -440,7 +200,12 @@ impl TaskControlBlockInner {
         let (inode, current_offset, flags, mode) = {
             if let Some(file_desc) = self.fd_table.get(&oldfd) {
                 let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
-                (file_desc.inode.clone(), current_offset, file_desc.flags, file_desc.mode)
+                (
+                    file_desc.inode.clone(),
+                    current_offset,
+                    file_desc.flags,
+                    file_desc.mode,
+                )
             } else {
                 return None;
             }
@@ -467,134 +232,345 @@ impl TaskControlBlockInner {
 
         Some(newfd)
     }
+}
 
-    /// 发送信号给进程
-    pub fn send_signal(&mut self, signal: crate::task::signal::Signal) {
-        self.signal_state.add_pending_signal(signal);
+#[derive(Debug)]
+pub struct Sched {
+    /// nice值 (-20到19, 影响动态优先级计算)
+    pub nice: i32,
+    /// 累计运行时间 (用于CFS调度算法)
+    pub vruntime: u64,
+    /// 进程优先级 (0-139, 0最高优先级，139最低优先级)
+    pub priority: i32,
+    /// 动态时间片大小 (微秒)
+    pub time_slice: u64,
+}
+
+impl Sched {
+    /// 计算动态优先级 (基于nice值)
+    pub fn get_dynamic_priority(&self) -> i32 {
+        // Linux-like priority calculation: priority = 20 + nice
+        // 范围: 0-39 (nice: -20到19)
+        (20 + self.nice).max(0).min(39)
     }
 
-    /// 检查是否有可处理的信号
-    pub fn has_pending_signals(&self) -> bool {
-        self.signal_state.has_deliverable_signals()
+    /// 更新虚拟运行时间 (CFS算法核心)
+    pub fn update_vruntime(&mut self, runtime_us: u64) {
+        // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
+        let weight = match self.get_dynamic_priority() {
+            0..=9 => 4,   // 高优先级
+            10..=19 => 2, // 中等优先级
+            20..=29 => 1, // 默认优先级
+            _ => 1,       // 低优先级
+        };
+        self.vruntime += runtime_us / weight;
     }
 
-    /// 获取下一个待处理的信号
-    pub fn next_signal(&self) -> Option<crate::task::signal::Signal> {
-        self.signal_state.next_deliverable_signal()
+    /// 计算时间片大小 (基于优先级)
+    pub fn calculate_time_slice(&self) -> u64 {
+        // 基础时间片为10ms，根据优先级调整
+        let base_slice = 10000; // 10ms in microseconds
+        let priority = self.get_dynamic_priority();
+
+        match priority {
+            0..=9 => base_slice * 2,       // 高优先级：20ms
+            10..=19 => base_slice * 3 / 2, // 中等优先级：15ms
+            20..=29 => base_slice,         // 默认优先级：10ms
+            _ => base_slice / 2,           // 低优先级：5ms
+        }
     }
 
-    /// 设置信号处理器
-    pub fn set_signal_handler(&self, signal: crate::task::signal::Signal, handler: crate::task::signal::SignalDisposition) {
-        self.signal_state.set_handler(signal, handler);
+    /// 设置nice值并更新优先级
+    pub fn set_nice(&mut self, nice: i32) {
+        self.nice = nice.max(-20).min(19);
+        self.priority = self.get_dynamic_priority();
+        self.time_slice = self.calculate_time_slice();
+    }
+}
+
+/// Task Control block structure
+#[derive(Debug)]
+pub struct TaskControlBlock {
+    pid: PidHandle,
+    /// 进程状态
+    pub task_status: Mutex<TaskStatus>,
+
+    pub mm: Memory,
+    pub file: Mutex<File>,
+    pub sched: Mutex<Sched>,
+    /// 信号状态
+    pub signal_state: Mutex<SignalState>,
+
+    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
+    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
+    base_size: usize,
+    /// 父进程, 子进程有可能在父进程退出时还存活，因此需要弱引用
+    parent: Mutex<Option<Weak<TaskControlBlock>>>,
+    /// 子进程
+    pub children: Mutex<Vec<Arc<TaskControlBlock>>>,
+    /// 子进程退出时，父进程可以获取其退出码
+    exit_code: AtomicI32,
+    /// 当前工作目录
+    pub cwd: Mutex<String>,
+
+    /// 上次运行时的时间戳
+    pub last_runtime: AtomicU64,
+
+    /// 用户ID
+    pub uid: AtomicU32,
+    /// 组ID
+    pub gid: AtomicU32,
+    /// 有效用户ID (用于权限检查)
+    pub euid: AtomicU32,
+    /// 有效组ID (用于权限检查)
+    pub egid: AtomicU32,
+
+    /// 进程启动时的命令行参数
+    pub args: Mutex<Option<Vec<String>>>,
+    /// 进程启动时的环境变量
+    pub envs: Mutex<Option<Vec<String>>>,
+}
+
+impl TaskControlBlock {
+    pub fn new(elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::new_with_pid(elf_data, alloc_pid())
     }
 
-    /// 获取信号处理器
-    pub fn get_signal_handler(&self, signal: crate::task::signal::Signal) -> crate::task::signal::SignalDisposition {
-        self.signal_state.get_handler(signal)
+    pub fn new_with_pid(elf_data: &[u8], pid: PidHandle) -> Result<Self, Box<dyn Error>> {
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
+        let task_status = TaskStatus::Ready;
+        let kernel_stack = KernelStack::new();
+        let kernel_stack_top = kernel_stack.get_top();
+        let trap_cx_ppn = memory_set.trap_context_ppn();
+
+        let mut tcb = Self {
+            pid,
+            task_status: Mutex::new(TaskStatus::Ready),
+            mm: Memory {
+                memory_set: Mutex::new(memory_set),
+                kernel_stack,
+                trap_cx_ppn: Mutex::new(trap_cx_ppn),
+                heap_base: AtomicUsize::new(user_sp),
+                heap_top: AtomicUsize::new(0),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
+            },
+            file: Mutex::new(File {
+                fd_table: BTreeMap::new(),
+                next_fd: 3,
+            }),
+            sched: Mutex::new(Sched {
+                nice: 0,
+                vruntime: 0,
+                priority: 20,
+                time_slice: 10000,
+            }),
+            signal_state: Mutex::new(SignalState::new()),
+            base_size: user_sp,
+            parent: Mutex::new(None),
+            children: Mutex::new(Vec::new()),
+            exit_code: AtomicI32::new(0),
+            cwd: Mutex::new("/".to_string()), // 新进程默认工作目录为根目录
+            last_runtime: AtomicU64::new(0),
+            args: Mutex::new(None), // 初始化空的参数列表
+            envs: Mutex::new(None), // 初始化空的环境变量列表
+            uid: AtomicU32::new(0),
+            gid: AtomicU32::new(0),
+            euid: AtomicU32::new(0),
+            egid: AtomicU32::new(0),
+        };
+
+        // prepare TrapContext in user space
+        tcb.mm.set_trap_context(TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.wait().lock().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        ));
+        Ok(tcb)
     }
 
-    /// 设置信号掩码
-    pub fn set_signal_mask(&self, mask: crate::task::signal::SignalSet) {
-        self.signal_state.set_signal_mask(mask);
+    pub fn exec(&self, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
+        self.exec_with_args(elf_data, None, None)
     }
 
-    /// 获取信号掩码
-    pub fn get_signal_mask(&self) -> crate::task::signal::SignalSet {
-        self.signal_state.get_signal_mask()
+    /// Execute a new program with arguments and environment variables
+    pub fn exec_with_args(
+        &self,
+        elf_data: &[u8],
+        args: Option<&[String]>,
+        envs: Option<&[String]>,
+    ) -> Result<(), Box<dyn Error>> {
+        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data)?;
+
+        let kernel_stack_top = self.mm.kernel_stack.get_top();
+
+        self.mm.set_trap_context_ppn(memory_set.trap_context_ppn());
+        *self.mm.memory_set.lock() = memory_set;
+        self.mm.set_trap_context(TrapContext::app_init_context(
+            entrypoint,
+            user_stack_top,
+            KERNEL_SPACE.wait().lock().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        ));
+
+        // 重置信号状态（exec时应该重置信号处理器）
+        self.signal_state.lock().reset_for_exec();
+
+        // 保存命令行参数和环境变量
+        *self.args.lock() = args.map(|args| args.to_vec());
+        *self.envs.lock() = envs.map(|envs| envs.to_vec());
+
+        Ok(())
     }
 
-    /// 阻塞信号
-    pub fn block_signals(&self, signals: crate::task::signal::SignalSet) {
-        self.signal_state.block_signals(signals);
+    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
+        let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock());
+        let trap_cx_ppn = memory_set.trap_context_ppn();
+
+        // alloc a pid and a kernel stack in kernel space
+        let pid = alloc_pid();
+        let kernel_stack = KernelStack::new();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        let tcb = Arc::new(Self {
+            pid,
+            task_status: Mutex::new(TaskStatus::Ready),
+            base_size: self.base_size,
+            parent: Mutex::new(Some(Arc::downgrade(self))),
+            children: Mutex::new(Vec::new()),
+            exit_code: AtomicI32::new(0),
+            cwd: Mutex::new(self.cwd.lock().clone()),
+            last_runtime: AtomicU64::new(0),
+            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
+            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
+            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
+            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
+            args: Mutex::new(self.args.lock().clone()),
+            envs: Mutex::new(self.envs.lock().clone()),
+            mm: Memory {
+                memory_set: Mutex::new(memory_set),
+                kernel_stack,
+                trap_cx_ppn: Mutex::new(trap_cx_ppn),
+                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
+                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
+            },
+            file: Mutex::new(File {
+                fd_table: self.file.lock().fd_table.clone(),
+                next_fd: self.file.lock().next_fd,
+            }),
+            sched: Mutex::new(Sched {
+                nice: self.sched.lock().nice,
+                vruntime: 0,
+                priority: self.sched.lock().priority,
+                time_slice: self.sched.lock().time_slice,
+            }),
+            signal_state: Mutex::new(self.signal_state.lock().clone_for_fork()),
+        });
+
+        self.children.lock().push(tcb.clone());
+        tcb.mm.trap_context().kernel_sp = kernel_stack_top;
+        tcb
     }
 
-    /// 解除阻塞信号
-    pub fn unblock_signals(&self, signals: crate::task::signal::SignalSet) {
-        self.signal_state.unblock_signals(signals);
+    pub fn is_zombie(&self) -> bool {
+        *self.task_status.lock() == TaskStatus::Zombie
+    }
+
+    pub fn is_ready(&self) -> bool {
+        *self.task_status.lock() == TaskStatus::Ready
     }
 
     /// 获取用户ID
-    pub fn get_uid(&self) -> u32 {
-        self.uid
+    pub fn uid(&self) -> u32 {
+        self.uid.load(atomic::Ordering::Relaxed)
     }
 
     /// 获取组ID
-    pub fn get_gid(&self) -> u32 {
-        self.gid
+    pub fn gid(&self) -> u32 {
+        self.gid.load(atomic::Ordering::Relaxed)
     }
 
     /// 获取有效用户ID
-    pub fn get_euid(&self) -> u32 {
-        self.euid
+    pub fn euid(&self) -> u32 {
+        self.euid.load(atomic::Ordering::Relaxed)
     }
 
     /// 获取有效组ID
-    pub fn get_egid(&self) -> u32 {
-        self.egid
+    pub fn egid(&self) -> u32 {
+        self.egid.load(atomic::Ordering::Relaxed)
     }
 
     /// 设置用户ID (需要root权限)
-    pub fn set_uid(&mut self, uid: u32) -> Result<(), i32> {
+    pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意UID
-        if self.euid != 0 && self.euid != uid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0 && self.euid.load(atomic::Ordering::Relaxed) != uid {
             return Err(-1); // EPERM
         }
-        self.uid = uid;
-        self.euid = uid;
+        self.uid.store(uid, atomic::Ordering::Relaxed);
+        self.euid.store(uid, atomic::Ordering::Relaxed);
         Ok(())
     }
 
     /// 设置组ID (需要root权限)
-    pub fn set_gid(&mut self, gid: u32) -> Result<(), i32> {
+    pub fn set_gid(&self, gid: u32) -> Result<(), i32> {
         // 只有root用户可以设置任意GID
-        if self.euid != 0 && self.egid != gid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0 && self.egid.load(atomic::Ordering::Relaxed) != gid {
             return Err(-1); // EPERM
         }
-        self.gid = gid;
-        self.egid = gid;
+        self.gid.store(gid, atomic::Ordering::Relaxed);
+        self.egid.store(gid, atomic::Ordering::Relaxed);
         Ok(())
     }
 
     /// 设置有效用户ID
-    pub fn set_euid(&mut self, euid: u32) -> Result<(), i32> {
+    pub fn set_euid(&self, euid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际UID才允许
-        if self.euid != 0 && euid != self.uid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0 && euid != self.uid.load(atomic::Ordering::Relaxed) {
             return Err(-1); // EPERM
         }
-        self.euid = euid;
+        self.euid.store(euid, atomic::Ordering::Relaxed);
         Ok(())
     }
 
     /// 设置有效组ID
-    pub fn set_egid(&mut self, egid: u32) -> Result<(), i32> {
+    pub fn set_egid(&self, egid: u32) -> Result<(), i32> {
         // 只有root用户或设置为实际GID才允许
-        if self.euid != 0 && egid != self.gid {
+        if self.euid.load(atomic::Ordering::Relaxed) != 0 && egid != self.gid.load(atomic::Ordering::Relaxed) {
             return Err(-1); // EPERM
         }
-        self.egid = egid;
+        self.egid.store(egid, atomic::Ordering::Relaxed);
         Ok(())
     }
 
     /// 检查是否为root用户
     pub fn is_root(&self) -> bool {
-        self.euid == 0
+        self.euid.load(atomic::Ordering::Relaxed) == 0
     }
 
     /// 检查对文件的访问权限
-    pub fn check_file_permission(&self, file_mode: u32, file_uid: u32, file_gid: u32, requested: u32) -> bool {
+    pub fn check_file_permission(
+        &self,
+        file_mode: u32,
+        file_uid: u32,
+        file_gid: u32,
+        requested: u32,
+    ) -> bool {
         // root用户拥有所有权限
-        if self.euid == 0 {
+        if self.euid.load(atomic::Ordering::Relaxed) == 0 {
             return true;
         }
 
         let mut effective_mode = 0;
 
         // 检查用户权限
-        if self.euid == file_uid {
+        if self.euid.load(atomic::Ordering::Relaxed) == file_uid {
             effective_mode = (file_mode >> 6) & 0o7; // 用户权限位
         }
         // 检查组权限
-        else if self.egid == file_gid {
+        else if self.egid.load(atomic::Ordering::Relaxed) == file_gid {
             effective_mode = (file_mode >> 3) & 0o7; // 组权限位
         }
         // 其他用户权限
@@ -603,5 +579,25 @@ impl TaskControlBlockInner {
         }
 
         (effective_mode & requested) == requested
+    }
+
+    pub fn pid(&self) -> usize {
+        self.pid.0
+    }
+
+    pub fn set_exit_code(&self, exit_code: i32) {
+        self.exit_code.store(exit_code, atomic::Ordering::Relaxed);
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code.load(atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_parent(&self, parent: Weak<TaskControlBlock>) {
+        *self.parent.lock() = Some(parent);
+    }
+
+    pub fn parent(&self) -> Option<Arc<TaskControlBlock>> {
+        self.parent.lock().as_ref().and_then(|w| w.upgrade())
     }
 }

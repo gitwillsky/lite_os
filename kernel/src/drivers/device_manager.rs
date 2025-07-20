@@ -4,7 +4,7 @@ use spin::Mutex;
 
 use crate::board::get_board_info;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
-use crate::fs::{make_filesystem, vfs::get_vfs};
+use crate::fs::{make_filesystem, vfs::vfs};
 
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 
@@ -41,7 +41,7 @@ fn init_filesystems() {
     if let Some(fs) = make_filesystem(device) {
 
         // Mount to root directory
-        if let Err(e) = get_vfs().mount("/", fs) {
+        if let Err(e) = vfs().mount("/", fs) {
             error!("[device] File system mount failed: {:?}", e);
         } else {
             debug!("[device] File system mounted successfully");

@@ -1,4 +1,5 @@
 use crate::sync::UPSafeCell;
+use crate::task::TaskControlBlock;
 use crate::trap::TrapContext;
 use alloc::collections::BTreeMap;
 
@@ -448,37 +449,23 @@ impl SignalDelivery {
     /// should_continue: true表示进程应该继续执行，false表示进程应该退出
     /// exit_code: 如果should_continue为false，则为进程退出码
     /// 安全处理信号，避免循环借用
-    pub fn handle_signals_safe(task: &crate::task::TaskControlBlock) -> (bool, Option<i32>) {
+    pub fn handle_signals_safe(task: &TaskControlBlock) -> (bool, Option<i32>) {
         // 获取待处理的信号
-        let signal = {
-            let inner = task.inner_exclusive_access();
-            inner.next_signal()
-        }; // inner在这里被drop
+        let signal = task.signal_state.lock().next_deliverable_signal();
 
         if let Some(signal) = signal {
-            // 获取trap context，由于get_trap_cx返回'static引用，可以安全释放锁
-            let trap_cx = {
-                let inner = task.inner_exclusive_access();
-                inner.get_trap_cx()
-            }; // inner在这里被drop
-
-            // 处理信号时不持有任何锁
-            Self::deliver_signal(task, signal, trap_cx)
+            Self::deliver_signal(task, signal, task.mm.trap_context())
         } else {
             (true, None)
         }
     }
 
     pub fn handle_signals(
-        task: &crate::task::TaskControlBlock,
+        task: &TaskControlBlock,
         trap_cx: &mut TrapContext,
     ) -> (bool, Option<i32>) {
-        let inner = task.inner_exclusive_access();
-
         // 检查是否有待处理的信号
-        if let Some(signal) = inner.next_signal() {
-            drop(inner); // 释放锁，避免在处理信号时持有锁
-
+        if let Some(signal) = task.signal_state.lock().next_deliverable_signal() {
             // 处理信号
             Self::deliver_signal(task, signal, trap_cx)
         } else {
@@ -492,9 +479,7 @@ impl SignalDelivery {
         signal: Signal,
         trap_cx: &mut TrapContext,
     ) -> (bool, Option<i32>) {
-        let inner = task.inner_exclusive_access();
-        let handler = inner.get_signal_handler(signal);
-        drop(inner);
+        let handler = task.signal_state.lock().get_handler(signal);
 
         match handler.action {
             SignalAction::Ignore => {
@@ -507,34 +492,30 @@ impl SignalDelivery {
                 info!(
                     "Signal {} terminates process PID {}",
                     signal as u32,
-                    task.get_pid()
+                    task.pid()
                 );
                 (false, Some(signal as i32))
             }
             SignalAction::Stop => {
                 // 暂停进程（设置为sleeping状态）
-                let mut inner = task.inner_exclusive_access();
-                inner.task_status = crate::task::TaskStatus::Sleeping;
-                drop(inner);
+                *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
                 info!(
                     "Signal {} stops process PID {}",
                     signal as u32,
-                    task.get_pid()
+                    task.pid()
                 );
                 (true, None)
             }
             SignalAction::Continue => {
                 // 继续进程（如果进程正在睡眠状态）
-                let mut inner = task.inner_exclusive_access();
-                if inner.task_status == crate::task::TaskStatus::Sleeping {
-                    inner.task_status = crate::task::TaskStatus::Ready;
+                if *task.task_status.lock() == crate::task::TaskStatus::Sleeping {
+                    *task.task_status.lock() = crate::task::TaskStatus::Ready;
                     info!(
                         "Signal {} continues process PID {}",
                         signal as u32,
-                        task.get_pid()
+                        task.pid()
                     );
                 }
-                drop(inner);
                 (true, None)
             }
             SignalAction::Handler(handler_addr) => {
@@ -543,7 +524,7 @@ impl SignalDelivery {
                     "Signal {} executing handler at {:#x} for PID {}",
                     signal as u32,
                     handler_addr,
-                    task.get_pid()
+                    task.pid()
                 );
 
                 Self::setup_signal_handler(task, signal, handler_addr, &handler, trap_cx);
@@ -556,8 +537,9 @@ impl SignalDelivery {
                         mask: SignalSet::new(),
                         flags: 0,
                     };
-                    // 现在可以安全地访问inner，因为setup_signal_handler已经完成
-                    task.inner_exclusive_access().signal_state.set_handler(signal, default_disposition);
+                    task.signal_state
+                        .lock()
+                        .set_handler(signal, default_disposition);
                 }
                 (true, None)
             }
@@ -590,10 +572,7 @@ impl SignalDelivery {
         let signal_frame_addr = user_sp - aligned_size;
 
         // 获取用户页表令牌
-        let token = {
-            let inner = task.inner_exclusive_access();
-            inner.get_user_token()
-        };
+        let token = { task.mm.memory_set.lock().token() };
 
         // 检查地址是否在用户空间范围内
         // 用户栈通常在较低地址，检查是否在合理范围内
@@ -613,14 +592,15 @@ impl SignalDelivery {
         // 进入信号处理器前，保存当前信号掩码并设置新的掩码
         // 避免嵌套借用，使用一次性访问处理所有信号状态操作
         {
-            let inner = task.inner_exclusive_access();
-            inner.signal_state.enter_signal_handler(handler_info.mask);
+            task.signal_state
+                .lock()
+                .enter_signal_handler(handler_info.mask);
 
             // 如果设置了 SA_NODEFER 标志，不自动阻塞当前信号
             if (handler_info.flags & crate::task::signal::SA_NODEFER) == 0 {
                 let mut current_signal_mask = SignalSet::new();
                 current_signal_mask.add(signal);
-                inner.signal_state.block_signals(current_signal_mask);
+                task.signal_state.lock().block_signals(current_signal_mask);
             }
         }
 
@@ -674,9 +654,7 @@ impl SignalDelivery {
         }
 
         // 使用页表转换安全地读取信号帧
-        let inner = task.inner_exclusive_access();
-        let token = inner.get_user_token();
-        drop(inner);
+        let token = task.mm.memory_set.lock().token();
 
         let signal_frame = {
             let frame_ptr = signal_frame_addr as *const SignalFrame;
@@ -721,9 +699,7 @@ impl SignalDelivery {
         trap_cx.sstatus = current_sstatus;
 
         // 恢复信号掩码和信号处理状态
-        let inner = task.inner_exclusive_access();
-        inner.signal_state.exit_signal_handler();
-        drop(inner);
+        task.signal_state.lock().exit_signal_handler();
 
         // 恢复栈指针到信号帧之前的位置
         trap_cx.x[2] = signal_frame.regs[2]; // 恢复原始的栈指针
@@ -742,26 +718,23 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
     use crate::task::task_manager::find_task_by_pid;
 
     if let Some(task) = find_task_by_pid(target_pid) {
-        let mut inner = task.inner_exclusive_access();
-
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {
             // SIGKILL和SIGSTOP不能被阻塞或忽略
             match signal {
                 Signal::SIGKILL => {
-                    drop(inner);
                     // 使用专门的函数进行完整的任务清理
                     crate::task::exit_task_without_schedule(task, 9); // SIGKILL exit code
                     return Ok(());
                 }
                 Signal::SIGSTOP => {
-                    inner.task_status = crate::task::TaskStatus::Sleeping;
+                    *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
                 }
                 _ => unreachable!(),
             }
         } else {
             // 普通信号加入待处理队列
-            inner.send_signal(signal);
+            task.signal_state.lock().add_pending_signal(signal);
         }
 
         Ok(())
@@ -776,10 +749,7 @@ pub fn check_and_handle_signals() -> (bool, Option<i32>) {
 
     if let Some(task) = current_task() {
         // 先检查是否有待处理的信号
-        let has_signals = {
-            let inner = task.inner_exclusive_access();
-            inner.has_pending_signals()
-        }; // inner在这里被drop
+        let has_signals = task.signal_state.lock().has_deliverable_signals();
 
         if has_signals {
             // 分别获取trap_cx和处理信号，避免同时持有锁

@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
-use crate::fs::vfs::get_vfs;
+use crate::fs::vfs::vfs;
 
 
 /// 从文件系统加载程序二进制文件
 pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
     debug!("[LOADER] Attempting to load program from: {}", path);
-    match get_vfs().open(path) {
+    match vfs().open(path) {
         Ok(inode) => {
             let size = inode.size() as usize;
             debug!("[LOADER] File size: {}", size);
