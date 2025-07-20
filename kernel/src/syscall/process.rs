@@ -322,7 +322,8 @@ pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> 
 
     // Get the arguments from the current task
     let args = current_task.args.lock();
-    let args = args.as_ref().unwrap();
+    let default_args = Vec::new();
+    let args = args.as_ref().unwrap_or(&default_args);
 
     if args.is_empty() {
         return 0;

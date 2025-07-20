@@ -18,7 +18,10 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{self, exit_current_and_run_next, exit_task_and_run_next, exit_task_without_schedule, suspend_current_and_run_next},
+    task::{
+        self, exit_current_and_run_next, exit_task_and_run_next, exit_task_without_schedule,
+        suspend_current_and_run_next,
+    },
     timer,
 };
 
@@ -37,7 +40,7 @@ pub fn trap_handler() {
     let stval = stval::read();
 
     // 保存触发异常/中断的任务，避免在处理过程中任务切换导致退出错误的任务
-    let exception_task = task::current_task();
+    let exception_task = task::current_task().unwrap();
 
     if let Trap::Interrupt(code) = interrupt_type {
         if let Ok(interrupt) = Interrupt::from_number(code) {
@@ -63,9 +66,7 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     error!("[kernel] IllegalInstruction in application, kernel killed it.");
-                    if let Some(task) = exception_task.clone() {
-                        exit_task_without_schedule(task, -2);
-                    }
+                    exit_task_without_schedule(exception_task.clone(), -2);
                 }
                 Exception::Breakpoint => {
                     // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
@@ -74,27 +75,21 @@ pub fn trap_handler() {
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
                     debug!("[trap_handler] Breakpoint exception");
-                    let cx = task::current_trap_context();
+                    let cx = exception_task.mm.trap_context();
                     cx.sepc += 4;
                 }
                 Exception::UserEnvCall => {
-                    let ret = {
-                        let cx = task::current_trap_context();
+                    let cx = exception_task.mm.trap_context();
+                    cx.x[10] = {
                         cx.sepc += 4;
-                        syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]])
+                        syscall::syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize
                     };
-
-                    // sys_exec change the TrapContext, we need reload it
-                    let cx = task::current_trap_context();
-                    cx.x[10] = ret as usize;
                 }
                 Exception::InstructionPageFault => {
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
                     error!("Instruction Page Fault, VA:{:#x}", stval);
-                    if let Some(task) = exception_task.clone() {
-                        exit_task_without_schedule(task, -5);
-                    }
+                    exit_task_without_schedule(exception_task.clone(), -5);
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
@@ -156,20 +151,20 @@ pub fn trap_return() -> ! {
         task::run_tasks();
     };
 
-    set_user_trap_entry();
-
-    let trap_cx_ptr = TRAP_CONTEXT;
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
+
+    set_user_trap_entry();
+
     unsafe {
         asm!(
             "fence.i",
             "jr {restore_va}",
             restore_va = in(reg) restore_va,
-            in("x10") trap_cx_ptr,
+            in("x10") TRAP_CONTEXT,
             in("x11") user_satp,
             options(noreturn)
         )
