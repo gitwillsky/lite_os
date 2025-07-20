@@ -1,7 +1,7 @@
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
 use spin::Mutex;
 
-use crate::task::{scheduler::Scheduler, TaskControlBlock};
+use crate::task::{TaskControlBlock, scheduler::Scheduler};
 
 pub struct PriorityScheduler {
     /// 多级优先级队列 (0-39)
@@ -23,11 +23,11 @@ impl Scheduler for PriorityScheduler {
         self.priority_queues[priority].push_back(task);
     }
 
-    fn fetch_ready_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         // 从高优先级到低优先级查找任务
         for queue in self.priority_queues.iter_mut() {
-            while let Some(task) = queue.pop_front() {
-                if task.is_ready() {
+            if let Some(task) = queue.pop_front() {
+                if !task.is_zombie() {
                     return Some(task);
                 }
             }
@@ -36,14 +36,16 @@ impl Scheduler for PriorityScheduler {
     }
 
     fn ready_task_count(&self) -> usize {
-        self.priority_queues.iter().map(|queue| {
-            queue.iter().filter(|t| t.is_ready()).count()
-        }).sum()
+        self.priority_queues
+            .iter()
+            .map(|queue| queue.iter().filter(|t| t.is_ready()).count())
+            .sum()
     }
 
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.priority_queues.iter().find(|queue| {
-            queue.iter().find(|t| t.pid() == pid).is_some()
-        }).map(|queue| queue.iter().find(|t| t.pid() == pid).unwrap().clone())
+        self.priority_queues
+            .iter()
+            .find(|queue| queue.iter().find(|t| t.pid() == pid).is_some())
+            .map(|queue| queue.iter().find(|t| t.pid() == pid).unwrap().clone())
     }
 }

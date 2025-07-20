@@ -20,9 +20,9 @@ impl Scheduler for FIFOScheduler {
         self.tasks.push_back(task);
     }
 
-    fn fetch_ready_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        while let Some(task) = self.tasks.pop_front() {
-            if task.is_ready() {
+    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+        if let Some(task) = self.tasks.pop_front() {
+            if !task.is_zombie() {
                 return Some(task);
             }
         }
@@ -34,6 +34,9 @@ impl Scheduler for FIFOScheduler {
     }
 
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.tasks.iter().find(|t| t.pid() == pid).map(|t| t.clone())
+        self.tasks
+            .iter()
+            .find(|t| t.pid() == pid)
+            .map(|t| t.clone())
     }
 }

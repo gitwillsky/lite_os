@@ -84,7 +84,6 @@ impl FileDescriptor {
 pub enum TaskStatus {
     Ready,
     Running,
-    Exited,
     Zombie,
     Sleeping, // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
 }

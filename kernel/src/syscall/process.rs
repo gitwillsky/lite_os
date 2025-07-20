@@ -87,7 +87,7 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             // Log warning if there are additional references, but don't panic
             // This can happen if the child is still in task scheduler queues
             if strong_count > 1 {
-                warn!("Child process PID {} has {} Arc references, expected 1. This may indicate the process is still in scheduling queues.", child.pid(), strong_count);
+                warn!("Child process PID {} has {} Arc references, expected 1. ", child.pid(), strong_count);
             }
 
             let found_pid = child.pid();

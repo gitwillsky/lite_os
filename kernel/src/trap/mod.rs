@@ -58,7 +58,16 @@ pub fn trap_handler() {
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
                 Exception::IllegalInstruction => {
-                    error!("[kernel] IllegalInstruction in application, kernel killed it.");
+                    let sepc = task::current_trap_context().sepc;
+                    error!("[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.", sepc);
+                    
+                    // 读取出错的指令 (前4字节)
+                    unsafe {
+                        let instruction_ptr = sepc as *const u32;
+                        let instruction = core::ptr::read_volatile(instruction_ptr);
+                        error!("[kernel] Illegal instruction bytes: {:#010x}", instruction);
+                    }
+                    
                     exit_current_and_run_next(-2);
                 }
                 Exception::Breakpoint => {
