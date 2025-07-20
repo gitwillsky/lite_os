@@ -33,8 +33,14 @@ unsafe extern "C" {
 
 pub fn init() {
     let elf_data = get_app_data_by_name("initproc").expect("Failed to get init proc data");
-    let init_proc = task::TaskControlBlock::new_with_pid(elf_data.as_slice(), INIT_PID.into());
-    if init_proc.is_err() {
-        panic!("Failed to create init proc");
+    let init_proc = TaskControlBlock::new_with_pid(elf_data.as_slice(), INIT_PID.into());
+    match init_proc {
+        Ok(init_proc) => {
+            add_task(Arc::new(init_proc));
+            debug!("init proc created");
+        }
+        Err(e) => {
+            panic!("Failed to create init proc: {}", e);
+        }
     }
 }
