@@ -77,7 +77,6 @@ pub fn run_tasks() -> ! {
                 handle_task_signals(&task);
                 continue;
             }
-            debug!("run_tasks: {:?}", task.pid());
             // 切换到任务
             execute_task(task);
         } else {
