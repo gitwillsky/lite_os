@@ -8,10 +8,8 @@ resolver = "3"
 panic = "abort"
 opt-level = "s"
 lto = "fat"
-debug = true  # 保留调试符号
 
 [profile.dev]
 panic = "abort"
 opt-level = "s"
-debug = true  # 保留调试符号
 debug-assertions = true

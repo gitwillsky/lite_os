@@ -63,18 +63,6 @@ SECTIONS {
 
     ekernel = .;
 
-    /* 保留调试信息段用于符号提取 */
-    .debug_info 0 : { *(.debug_info .debug_info.*) }
-    .debug_abbrev 0 : { *(.debug_abbrev) }
-    .debug_line 0 : { *(.debug_line .debug_line.*) }
-    .debug_str 0 : { *(.debug_str) }
-    .debug_loc 0 : { *(.debug_loc) }
-    .debug_ranges 0 : { *(.debug_ranges) }
-    .debug_frame 0 : { *(.debug_frame) }
-    .debug_pubnames 0 : { *(.debug_pubnames) }
-    .debug_pubtypes 0 : { *(.debug_pubtypes) }
-    .debug_aranges 0 : { *(.debug_aranges) }
-
     /DISCARD/ : {
         /* 只丢弃异常处理信息 */
         *(.eh_frame)

@@ -7,10 +7,6 @@ build-user:
 
 build-kernel:
 	cd kernel && cargo build  && cd -
-	@echo "Updating kernel symbols..."
-	@if [ -f kernel/update_symbols.sh ]; then \
-		kernel/update_symbols.sh target/riscv64gc-unknown-none-elf/debug/kernel target/riscv64gc-unknown-none-elf/debug/build/kernel-*/out/symbols.rs; \
-	fi
 
 build-bootloader:
 	cd bootloader && cargo build --release && cd -

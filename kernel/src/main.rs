@@ -13,7 +13,6 @@ mod console;
 mod log;
 
 mod board;
-mod debug;
 mod drivers;
 mod entry;
 mod fs;
@@ -35,7 +34,6 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     board::init(dtb_addr);
     trap::init();
     memory::init();
-    debug::init_symbol_table();
     timer::init();
     fs::vfs::init_vfs();
     drivers::init_devices();

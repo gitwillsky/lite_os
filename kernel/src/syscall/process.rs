@@ -1,13 +1,16 @@
-use alloc::{sync::Arc, vec::Vec, string::ToString};
+use alloc::{string::ToString, sync::Arc, vec::Vec};
 
 use crate::{
     memory::page_table::{translated_byte_buffer, translated_ref_mut, translated_str},
     task::{
-        self, block_current_and_run_next, current_task, current_user_token, exit_current_and_run_next, get_scheduling_policy, loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next, SchedulingPolicy, TaskStatus
+        self, SchedulingPolicy, TaskStatus, block_current_and_run_next, current_task,
+        current_user_token, exit_current_and_run_next, get_scheduling_policy,
+        loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next,
     },
 };
 
 pub fn sys_exit(exit_code: i32) -> ! {
+    debug!("sys_exit: exit_code={}", exit_code);
     exit_current_and_run_next(exit_code);
     unreachable!()
 }
@@ -49,61 +52,63 @@ pub fn sys_exec(path: *const u8) -> isize {
 }
 
 pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    loop {
-        let task = current_task().unwrap();
+    let task = current_task().unwrap();
 
-        // 检查是否有指定的子进程
-        let has_target_child = {
-            let children = task.children.lock();
-            if pid == -1 {
-                !children.is_empty()
-            } else {
-                children.iter().any(|child| child.pid() == pid as usize)
-            }
-        };
-
-        // 如果没有目标子进程，直接返回错误
-        if !has_target_child {
-            return -1; // ECHILD
+    // 检查是否有指定的子进程
+    let has_target_child = {
+        let children = task.children.lock();
+        if pid == -1 {
+            !children.is_empty()
+        } else {
+            children.iter().any(|child| child.pid() == pid as usize)
         }
+    };
 
-        // 查找已退出的子进程
-        let zombie_child = {
-            let children = task.children.lock();
-            children.iter().enumerate().find_map(|(idx, child)| {
-                if child.is_zombie() && (pid == -1 || child.pid() == pid as usize) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-        };
-
-        // 如果找到已退出的子进程，返回其信息
-        if let Some(idx) = zombie_child {
-            let child = task.children.lock().remove(idx);
-            
-            // 检查Arc引用计数（当前这个变量持有1个引用）
-            // 如果还有其他引用，可能是任务仍在调度器队列中或其他地方被引用
-            let strong_count = Arc::strong_count(&child);
-            if strong_count > 2 {
-                warn!("Child process PID {} has {} Arc references, expected 1-2 (current variable + possible scheduler). ", child.pid(), strong_count);
-            }
-
-            let found_pid = child.pid();
-            let exit_code = child.exit_code();
-
-            // 写入退出码到用户空间
-            if !exit_code_ptr.is_null() {
-                let parent_token = task.mm.memory_set.lock().token();
-                *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
-            }
-
-            return found_pid as isize;
-        }
-
-        block_current_and_run_next();
+    // 如果没有目标子进程，直接返回错误
+    if !has_target_child {
+        return -1; // ECHILD
     }
+
+    // 查找已退出的子进程
+    let zombie_child = {
+        let children = task.children.lock();
+        children.iter().enumerate().find_map(|(idx, child)| {
+            if child.is_zombie() && (pid == -1 || child.pid() == pid as usize) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+    };
+
+    // 如果找到已退出的子进程，返回其信息
+    if let Some(idx) = zombie_child {
+        let child = task.children.lock().remove(idx);
+
+        // 检查Arc引用计数（当前这个变量持有1个引用）
+        // 如果还有其他引用，可能是任务仍在调度器队列中或其他地方被引用
+        let strong_count = Arc::strong_count(&child);
+        if strong_count > 2 {
+            warn!(
+                "Child process PID {} has {} Arc references, expected 1-2 (current variable + possible scheduler). ",
+                child.pid(),
+                strong_count
+            );
+        }
+
+        let found_pid = child.pid();
+        let exit_code = child.exit_code();
+
+        // 写入退出码到用户空间
+        if !exit_code_ptr.is_null() {
+            let parent_token = task.mm.memory_set.lock().token();
+            *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
+        }
+
+        return found_pid as isize;
+    }
+
+    -2
 }
 
 /// 设置进程的nice值
@@ -195,9 +200,9 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
     // Parse argv with strict limits
     let mut args = Vec::new();
-    const MAX_ARGS: usize = 256;  // 限制最大参数数量
-    const MAX_ARG_LEN: usize = 4096;  // 限制单个参数最大长度
-    const MAX_TOTAL_ARG_SIZE: usize = 128 * 1024;  // 限制所有参数总大小
+    const MAX_ARGS: usize = 256; // 限制最大参数数量
+    const MAX_ARG_LEN: usize = 4096; // 限制单个参数最大长度
+    const MAX_TOTAL_ARG_SIZE: usize = 128 * 1024; // 限制所有参数总大小
     let mut total_arg_size = 0;
 
     if !argv.is_null() {
@@ -211,14 +216,24 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
             let arg_ptr_addr = argv as usize + i * core::mem::size_of::<*const u8>();
 
             // 验证指针地址是否有效
-            let buffers = translated_byte_buffer(token, arg_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
+            let buffers = translated_byte_buffer(
+                token,
+                arg_ptr_addr as *const u8,
+                core::mem::size_of::<*const u8>(),
+            );
             if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
                 break;
             }
 
             let arg_ptr = usize::from_le_bytes([
-                buffers[0][0], buffers[0][1], buffers[0][2], buffers[0][3],
-                buffers[0][4], buffers[0][5], buffers[0][6], buffers[0][7],
+                buffers[0][0],
+                buffers[0][1],
+                buffers[0][2],
+                buffers[0][3],
+                buffers[0][4],
+                buffers[0][5],
+                buffers[0][6],
+                buffers[0][7],
             ]);
 
             if arg_ptr == 0 {
@@ -241,7 +256,10 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
             total_arg_size += arg_str.len() + 1; // +1 for null terminator
             if total_arg_size > MAX_TOTAL_ARG_SIZE {
-                error!("sys_execve: total argument size too large (max {})", MAX_TOTAL_ARG_SIZE);
+                error!(
+                    "sys_execve: total argument size too large (max {})",
+                    MAX_TOTAL_ARG_SIZE
+                );
                 return -7; // E2BIG
             }
 
@@ -252,30 +270,43 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
     // Parse envp with strict limits
     let mut envs = Vec::new();
-    const MAX_ENVS: usize = 256;  // 限制最大环境变量数量
-    const MAX_ENV_LEN: usize = 4096;  // 限制单个环境变量最大长度
-    const MAX_TOTAL_ENV_SIZE: usize = 128 * 1024;  // 限制所有环境变量总大小
+    const MAX_ENVS: usize = 256; // 限制最大环境变量数量
+    const MAX_ENV_LEN: usize = 4096; // 限制单个环境变量最大长度
+    const MAX_TOTAL_ENV_SIZE: usize = 128 * 1024; // 限制所有环境变量总大小
     let mut total_env_size = 0;
 
     if !envp.is_null() {
         let mut i = 0;
         loop {
             if i >= MAX_ENVS {
-                error!("sys_execve: too many environment variables (max {})", MAX_ENVS);
+                error!(
+                    "sys_execve: too many environment variables (max {})",
+                    MAX_ENVS
+                );
                 return -7; // E2BIG
             }
 
             let env_ptr_addr = envp as usize + i * core::mem::size_of::<*const u8>();
 
             // 验证指针地址是否有效
-            let buffers = translated_byte_buffer(token, env_ptr_addr as *const u8, core::mem::size_of::<*const u8>());
+            let buffers = translated_byte_buffer(
+                token,
+                env_ptr_addr as *const u8,
+                core::mem::size_of::<*const u8>(),
+            );
             if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
                 break;
             }
 
             let env_ptr = usize::from_le_bytes([
-                buffers[0][0], buffers[0][1], buffers[0][2], buffers[0][3],
-                buffers[0][4], buffers[0][5], buffers[0][6], buffers[0][7],
+                buffers[0][0],
+                buffers[0][1],
+                buffers[0][2],
+                buffers[0][3],
+                buffers[0][4],
+                buffers[0][5],
+                buffers[0][6],
+                buffers[0][7],
             ]);
 
             if env_ptr == 0 {
@@ -292,19 +323,28 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
             // 验证环境变量长度
             if env_str.len() > MAX_ENV_LEN {
-                error!("sys_execve: environment variable too long (max {})", MAX_ENV_LEN);
+                error!(
+                    "sys_execve: environment variable too long (max {})",
+                    MAX_ENV_LEN
+                );
                 return -7; // E2BIG
             }
 
             // 验证环境变量格式 (必须包含=)
             if !env_str.contains('=') {
-                error!("sys_execve: invalid environment variable format: {}", env_str);
+                error!(
+                    "sys_execve: invalid environment variable format: {}",
+                    env_str
+                );
                 return -22; // EINVAL
             }
 
             total_env_size += env_str.len() + 1; // +1 for null terminator
             if total_env_size > MAX_TOTAL_ENV_SIZE {
-                error!("sys_execve: total environment size too large (max {})", MAX_TOTAL_ENV_SIZE);
+                error!(
+                    "sys_execve: total environment size too large (max {})",
+                    MAX_TOTAL_ENV_SIZE
+                );
                 return -7; // E2BIG
             }
 
@@ -368,12 +408,20 @@ pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> 
             }
 
             // Copy argument string
-            let mut buffers = translated_byte_buffer(token, (argv_buf as usize + offset) as *const u8, arg_bytes.len());
+            let mut buffers = translated_byte_buffer(
+                token,
+                (argv_buf as usize + offset) as *const u8,
+                arg_bytes.len(),
+            );
             if !buffers.is_empty() && buffers[0].len() >= arg_bytes.len() {
                 buffers[0][..arg_bytes.len()].copy_from_slice(arg_bytes);
 
                 // Add null terminator
-                let mut null_buffers = translated_byte_buffer(token, (argv_buf as usize + offset + arg_bytes.len()) as *const u8, 1);
+                let mut null_buffers = translated_byte_buffer(
+                    token,
+                    (argv_buf as usize + offset + arg_bytes.len()) as *const u8,
+                    1,
+                );
                 if !null_buffers.is_empty() && !null_buffers[0].is_empty() {
                     null_buffers[0][0] = 0;
                 }
