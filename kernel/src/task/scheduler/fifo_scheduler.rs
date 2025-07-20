@@ -21,12 +21,7 @@ impl Scheduler for FIFOScheduler {
     }
 
     fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        if let Some(task) = self.tasks.pop_front() {
-            if !task.is_zombie() {
-                return Some(task);
-            }
-        }
-        None
+        self.tasks.pop_front().map(|task| task)
     }
 
     fn ready_task_count(&self) -> usize {

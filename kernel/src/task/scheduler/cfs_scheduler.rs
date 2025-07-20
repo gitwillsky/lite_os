@@ -22,12 +22,7 @@ impl Scheduler for CFScheduler {
     }
 
     fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        if let Some(cfs_task) = self.tasks.pop() {
-            if !cfs_task.0.is_zombie() {
-                return Some(cfs_task.0);
-            }
-        }
-        None
+        self.tasks.pop().map(|cfs_task| cfs_task.0)
     }
 
     fn ready_task_count(&self) -> usize {
@@ -35,7 +30,10 @@ impl Scheduler for CFScheduler {
     }
 
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.tasks.iter().find(|t| t.0.pid() == pid).map(|t| t.0.clone())
+        self.tasks
+            .iter()
+            .find(|t| t.0.pid() == pid)
+            .map(|t| t.0.clone())
     }
 }
 

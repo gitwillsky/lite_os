@@ -72,6 +72,10 @@ pub fn current_cwd() -> String {
 pub fn run_tasks() -> ! {
     loop {
         if let Some(task) = task_manager::fetch_task() {
+            if task.is_zombie() {
+                continue;
+            }
+
             // 处理信号检查
             if task.signal_state.lock().has_deliverable_signals() {
                 handle_task_signals(&task);

@@ -27,9 +27,7 @@ impl Scheduler for PriorityScheduler {
         // 从高优先级到低优先级查找任务
         for queue in self.priority_queues.iter_mut() {
             if let Some(task) = queue.pop_front() {
-                if !task.is_zombie() {
-                    return Some(task);
-                }
+                return Some(task);
             }
         }
         None
