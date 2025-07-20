@@ -82,12 +82,12 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
         // 如果找到已退出的子进程，返回其信息
         if let Some(idx) = zombie_child {
             let child = task.children.lock().remove(idx);
+            
+            // 检查Arc引用计数（当前这个变量持有1个引用）
+            // 如果还有其他引用，可能是任务仍在调度器队列中或其他地方被引用
             let strong_count = Arc::strong_count(&child);
-
-            // Log warning if there are additional references, but don't panic
-            // This can happen if the child is still in task scheduler queues
-            if strong_count > 1 {
-                warn!("Child process PID {} has {} Arc references, expected 1. ", child.pid(), strong_count);
+            if strong_count > 2 {
+                warn!("Child process PID {} has {} Arc references, expected 1-2 (current variable + possible scheduler). ", child.pid(), strong_count);
             }
 
             let found_pid = child.pid();
