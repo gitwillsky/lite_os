@@ -181,8 +181,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         if pid == init_proc.pid() {
             error!("init process exit with exit_code {}", exit_code);
         } else {
-            // 先处理子进程的 parent 指针
-            task.set_parent(Arc::downgrade(&init_proc.clone()));
             // 收集需要重新父化的子进程
             let mut children_to_reparent: Vec<_> = task
                 .children
