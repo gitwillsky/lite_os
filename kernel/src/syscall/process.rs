@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec, string::ToString};
 use crate::{
     memory::page_table::{translated_byte_buffer, translated_ref_mut, translated_str},
     task::{
-        self, current_task, current_user_token, exit_current_and_run_next, get_scheduling_policy, loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next, SchedulingPolicy
+        self, block_current_and_run_next, current_task, current_user_token, exit_current_and_run_next, get_scheduling_policy, loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next, SchedulingPolicy, TaskStatus
     },
 };
 
@@ -49,40 +49,60 @@ pub fn sys_exec(path: *const u8) -> isize {
 }
 
 pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
-    let task = current_task().unwrap();
+    loop {
+        let task = current_task().unwrap();
 
-    if task
-        .children
-        .lock()
-        .iter()
-        .find(|p| pid == -1 || pid as usize == p.pid())
-        .is_none()
-    {
-        return -1;
-    }
+        // 检查是否有指定的子进程
+        let has_target_child = {
+            let children = task.children.lock();
+            if pid == -1 {
+                !children.is_empty()
+            } else {
+                children.iter().any(|child| child.pid() == pid as usize)
+            }
+        };
 
-    let children = task.children.lock();
-    let pair = children.iter().enumerate().find(|(_, t)| {
-        t.is_zombie() && (pid == -1 || t.pid() == pid as usize)
-    });
-
-    if let Some((idx, _)) = pair {
-        let child = task.children.lock().remove(idx);
-        let strong_count = Arc::strong_count(&child);
-
-        // Log warning if there are additional references, but don't panic
-        // This can happen if the child is still in task scheduler queues
-        if strong_count > 1 {
-            warn!("Child process PID {} has {} Arc references, expected 1. This may indicate the process is still in scheduling queues.", child.pid(), strong_count);
+        // 如果没有目标子进程，直接返回错误
+        if !has_target_child {
+            return -1; // ECHILD
         }
 
-        let found_pid = child.pid();
-        let exit_code = child.exit_code();
-        let parent_token = task.mm.memory_set.lock().token();
-        *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
-        found_pid as isize
-    } else {
-        -2
+        // 查找已退出的子进程
+        let zombie_child = {
+            let children = task.children.lock();
+            children.iter().enumerate().find_map(|(idx, child)| {
+                if child.is_zombie() && (pid == -1 || child.pid() == pid as usize) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+        };
+
+        // 如果找到已退出的子进程，返回其信息
+        if let Some(idx) = zombie_child {
+            let child = task.children.lock().remove(idx);
+            let strong_count = Arc::strong_count(&child);
+
+            // Log warning if there are additional references, but don't panic
+            // This can happen if the child is still in task scheduler queues
+            if strong_count > 1 {
+                warn!("Child process PID {} has {} Arc references, expected 1. This may indicate the process is still in scheduling queues.", child.pid(), strong_count);
+            }
+
+            let found_pid = child.pid();
+            let exit_code = child.exit_code();
+
+            // 写入退出码到用户空间
+            if !exit_code_ptr.is_null() {
+                let parent_token = task.mm.memory_set.lock().token();
+                *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
+            }
+
+            return found_pid as isize;
+        }
+
+        block_current_and_run_next();
     }
 }
 

@@ -176,6 +176,14 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     task.set_exit_code(exit_code);
     *task.task_status.lock() = TaskStatus::Zombie;
 
+    // 唤醒等待的父进程
+    if let Some(parent) = task.parent() {
+        if *parent.task_status.lock() == TaskStatus::Sleeping {
+            // 父进程可能在等待子进程，唤醒它
+            task_manager::wakeup_task(parent);
+        }
+    }
+
     // 将进程挂给 init_proc, 等待回收
     if let Some(init_proc) = task_manager::get_init_proc() {
         if pid == init_proc.pid() {
