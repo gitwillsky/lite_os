@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
+
 use super::{virtio_mmio::*, virtio_queue::*};
 
 // VirtIO Console 设备ID
@@ -198,7 +199,6 @@ impl VirtIOConsoleDevice {
             debug!("[VirtIO Console] Single port console - no control messages needed");
         }
 
-        debug!("[VirtIO Console] Device initialization complete, returning device");
         Some(device)
     }
 
@@ -349,15 +349,14 @@ static VIRTIO_CONSOLE: Once<Option<Mutex<VirtIOConsoleDevice>>> = Once::new();
 
 /// 初始化VirtIO Console设备
 pub fn init_virtio_console(base_addr: usize) -> bool {
-    debug!("[VirtIO Console] Starting init_virtio_console at {:#x}", base_addr);
+    debug!(
+        "[VirtIO Console] Starting init_virtio_console at {:#x}",
+        base_addr
+    );
     if let Some(device) = VirtIOConsoleDevice::new(base_addr) {
-        debug!("[VirtIO Console] Device created, setting up global instance");
         VIRTIO_CONSOLE.call_once(|| Some(Mutex::new(device)));
-        info!("[VirtIO Console] Global console device initialized successfully");
-        debug!("[VirtIO Console] init_virtio_console returning true");
         true
     } else {
-        debug!("[VirtIO Console] Device creation failed");
         false
     }
 }

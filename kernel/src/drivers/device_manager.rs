@@ -22,21 +22,13 @@ fn scan_virtio_devices() {
             let base_addr = virtio_dev.base_addr;
 
             // 首先尝试初始化VirtIO Console设备
-            debug!("[device] About to call init_virtio_console for {:#x}", base_addr);
             if init_virtio_console(base_addr) {
                 debug!("[device] VirtIO Console initialized at {:#x}", base_addr);
-                debug!("[device] Continuing to process next device after Console");
             } else {
-                debug!("[device] VirtIO Console init failed, trying Block device at {:#x}", base_addr);
                 if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-                    debug!("[device] Block device created");
                     DEVICES.lock().push(device);
-                    debug!("[device] Block device added to list");
-                } else {
-                    debug!("[device] No device found at {:#x}", base_addr);
                 }
             }
-            debug!("[device] Finished processing device at {:#x}", base_addr);
         }
     }
 }
