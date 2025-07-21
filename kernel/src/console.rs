@@ -2,15 +2,20 @@ use crate::arch::sbi;
 use crate::drivers::{virtio_console_write, is_virtio_console_available};
 
 fn print_str(s: &str) {
-    // 优先使用VirtIO Console，如果不可用则回退到SBI
+    // 优先使用VirtIO Console，如果不可用或失败则回退到SBI
     if is_virtio_console_available() {
-        let _ = virtio_console_write(s.as_bytes());
-        return;
+        match virtio_console_write(s.as_bytes()) {
+            Ok(_) => return,
+            Err(msg) => {
+                msg.as_bytes().iter().for_each(|b| {
+                    let _ = sbi::console_putchar(*b as usize);
+                });
+            }
+        }
     }
 
-    // 回退到SBI输出（逐字节）
-    for c in s.bytes() {
-        let _ = sbi::console_putchar(c as usize);
+    for byte in s.bytes() {
+        let _ = sbi::console_putchar(byte as usize);
     }
 }
 

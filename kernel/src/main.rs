@@ -38,5 +38,6 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     fs::vfs::init_vfs();
     drivers::init_devices();
     task::init();
+    print!("你好");
     task::run_tasks();
 }

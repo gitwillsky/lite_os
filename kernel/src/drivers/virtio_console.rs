@@ -62,12 +62,52 @@ impl VirtIOConsoleDevice {
     pub fn new(base_addr: usize) -> Option<Self> {
         let mmio_region = VirtIOMMIO::new(base_addr);
 
+        // 探测设备
+        if !mmio_region.probe() {
+            return None;
+        }
+
         // 检查设备ID
         if mmio_region.device_id() != VIRTIO_ID_CONSOLE {
             return None;
         }
 
         info!("[VirtIO Console] Found console device at {:#x}", base_addr);
+
+        // 重置设备
+        mmio_region.set_status(0);
+
+        // 设置ACKNOWLEDGE标志
+        mmio_region.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE);
+
+        // 设置DRIVER标志
+        mmio_region.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER);
+
+        // 读取设备特性
+        let device_features = mmio_region.device_features();
+        let multiport = (device_features & (1 << VIRTIO_CONSOLE_F_MULTIPORT)) != 0;
+
+        debug!(
+            "[VirtIO Console] Features: multiport={}, emerg_write={}",
+            multiport,
+            (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0
+        );
+
+        // 协商特性 - 为了稳定性，先禁用多端口
+        let driver_features = 0u32; // 只使用基础功能
+        mmio_region.set_driver_features(driver_features);
+
+        // 设置FEATURES_OK标志
+        mmio_region.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER | VIRTIO_CONFIG_S_FEATURES_OK);
+
+        // 验证FEATURES_OK
+        if mmio_region.status() & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
+            error!("[VirtIO Console] Device does not accept features");
+            return None;
+        }
+
+        // 设置页面大小
+        mmio_region.set_guest_page_size(4096);
 
         // 获取设备配置
         let config = unsafe {
@@ -78,24 +118,6 @@ impl VirtIOConsoleDevice {
             "[VirtIO Console] Config: cols={}, rows={}, max_ports={}",
             config.cols, config.rows, config.max_nr_ports
         );
-
-        // 检查多端口特性
-        let device_features = mmio_region.device_features();
-        let multiport = (device_features & (1 << VIRTIO_CONSOLE_F_MULTIPORT)) != 0;
-
-        debug!(
-            "[VirtIO Console] Features: multiport={}, emerg_write={}",
-            multiport,
-            (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0
-        );
-
-        // 协商特性 - 为了稳定性，先禁用多端口，只启用紧急写入
-        let mut driver_features = 0u32;
-        if (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0 {
-            driver_features |= 1 << VIRTIO_CONSOLE_F_EMERG_WRITE;
-            debug!("[VirtIO Console] Enabling emergency write feature");
-        }
-        mmio_region.set_driver_features(driver_features);
 
         // 强制设置为单端口模式以避免控制消息复杂性
         let multiport = false;
@@ -114,7 +136,9 @@ impl VirtIOConsoleDevice {
         mmio_region.set_queue_align(4096);
         let rx_queue_pfn = receive_queue.lock().physical_address().as_usize() >> 12;
         mmio_region.set_queue_pfn(rx_queue_pfn as u32);
-        mmio_region.set_queue_ready(1);
+        
+        // 设置队列就绪标志 - 这是关键修复
+        mmio_region.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
 
         // 初始化发送队列 (queue 1)
         mmio_region.select_queue(TRANSMITQ_PORT0 as u32);
@@ -129,7 +153,9 @@ impl VirtIOConsoleDevice {
         mmio_region.set_queue_align(4096);
         let tx_queue_pfn = transmit_queue.lock().physical_address().as_usize() >> 12;
         mmio_region.set_queue_pfn(tx_queue_pfn as u32);
-        mmio_region.set_queue_ready(1);
+        
+        // 设置队列就绪标志 - 这是关键修复
+        mmio_region.write_reg(VIRTIO_MMIO_QUEUE_READY, 1);
 
         // 如果支持多端口，初始化控制队列
         let (control_queue, control_receive_queue) = if multiport {
@@ -164,10 +190,7 @@ impl VirtIOConsoleDevice {
             (None, None)
         };
 
-        // 设置页面大小
-        mmio_region.set_guest_page_size(4096);
-
-        // 设置状态为驱动OK
+        // 设置DRIVER_OK标志 - 最后一步
         mmio_region.set_status(
             VIRTIO_CONFIG_S_ACKNOWLEDGE
                 | VIRTIO_CONFIG_S_DRIVER
@@ -224,16 +247,53 @@ impl VirtIOConsoleDevice {
         // 通知设备
         self.mmio_base.notify_queue(TRANSMITQ_PORT0 as u32);
 
-        // 等待传输完成
-        while transmit_queue.used().is_none() {
-            core::hint::spin_loop();
+        // 等待完成 - 参考virtio_blk实现，先检查中断状态
+        const MAX_ATTEMPTS: usize = 1000;
+        let mut attempts = MAX_ATTEMPTS;
+
+        loop {
+            // 检查设备中断状态
+            let int_status = self.mmio_base.read_reg(VIRTIO_MMIO_INTERRUPT_STATUS);
+            if int_status & VIRTIO_MMIO_INT_VRING != 0 {
+                // 发现used buffer中断，确认中断并处理
+                self.mmio_base.write_reg(VIRTIO_MMIO_INTERRUPT_ACK, VIRTIO_MMIO_INT_VRING);
+                break;
+            }
+
+            // 直接检查used ring索引是否更新
+            let used_idx = unsafe {
+                core::ptr::read_volatile(&(*transmit_queue.used).idx as *const core::sync::atomic::AtomicU16 as *const u16)
+            };
+
+            if used_idx != transmit_queue.last_used_idx {
+                break;
+            }
+
+            attempts -= 1;
+            if attempts == 0 {
+                debug!("[VirtIO Console] Write operation timed out after {} attempts", MAX_ATTEMPTS);
+                // 强制回收描述符以防止泄漏
+                transmit_queue.recycle_descriptors_force(head_desc);
+                return Err("VirtIO Console write timeout");
+            }
+
+            // 稍微增加延迟
+            for _ in 0..100 {
+                core::hint::spin_loop();
+            }
         }
 
-        // 处理已使用的描述符
-        if let Some((used_desc, _len)) = transmit_queue.used() {
-            transmit_queue.recycle_descriptors_force(used_desc);
+        // 现在获取结果 - 参考virtio_blk，即使used()返回None也不报错
+        if let Some((id, _len)) = transmit_queue.used() {
+            if id != head_desc {
+                debug!("[VirtIO Console] Descriptor ID mismatch: expected {}, got {}", head_desc, id);
+                transmit_queue.recycle_descriptors_force(head_desc);
+            }
+        } else {
+            // 如果get_used失败，强制回收描述符但不报错（参考virtio_blk）
+            transmit_queue.recycle_descriptors_force(head_desc);
         }
-
+        
         Ok(())
     }
 
@@ -349,10 +409,6 @@ static VIRTIO_CONSOLE: Once<Option<Mutex<VirtIOConsoleDevice>>> = Once::new();
 
 /// 初始化VirtIO Console设备
 pub fn init_virtio_console(base_addr: usize) -> bool {
-    debug!(
-        "[VirtIO Console] Starting init_virtio_console at {:#x}",
-        base_addr
-    );
     if let Some(device) = VirtIOConsoleDevice::new(base_addr) {
         VIRTIO_CONSOLE.call_once(|| Some(Mutex::new(device)));
         true

@@ -23,7 +23,7 @@ fn scan_virtio_devices() {
 
             // 首先尝试初始化VirtIO Console设备
             if init_virtio_console(base_addr) {
-                debug!("[device] VirtIO Console initialized at {:#x}", base_addr);
+                // VirtIO Console已初始化，避免调试输出引起循环依赖
             } else {
                 if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                     DEVICES.lock().push(device);
