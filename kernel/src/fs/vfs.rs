@@ -92,11 +92,39 @@ impl VirtualFileSystem {
     }
 
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.open_with_flags(path, 0)
+    }
+
+    pub fn open_with_flags(&self, path: &str, flags: u32) -> Result<Arc<dyn Inode>, FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
+
+        // Extract access mode from flags
+        const O_RDONLY: u32 = 0o0;
+        const O_WRONLY: u32 = 0o1;
+        const O_RDWR: u32 = 0o2;
+        let access_mode = flags & 0o3;
 
         // First check if this is a named pipe (FIFO)
         if let Ok(fifo) = open_fifo(&abs_path) {
-            return Ok(fifo as Arc<dyn Inode>);
+            match access_mode {
+                O_RDONLY => {
+                    // Return a read handle for the FIFO
+                    return Ok(fifo.open_read() as Arc<dyn Inode>);
+                }
+                O_WRONLY => {
+                    // Return a write handle for the FIFO
+                    return Ok(fifo.open_write() as Arc<dyn Inode>);
+                }
+                O_RDWR => {
+                    // For read-write mode, return the FIFO itself (implementation dependent)
+                    // In most systems, FIFOs don't support O_RDWR, but we'll allow it
+                    return Ok(fifo as Arc<dyn Inode>);
+                }
+                _ => {
+                    // Default to read-only
+                    return Ok(fifo.open_read() as Arc<dyn Inode>);
+                }
+            }
         }
 
         if abs_path == "/" {

@@ -133,7 +133,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let has_trunc = (flags & O_TRUNC) != 0;
 
     // 尝试打开现有文件
-    let inode_result = vfs().open(&path_str);
+    let inode_result = vfs().open_with_flags(&path_str, flags);
 
     let inode = match inode_result {
         Ok(inode) => {

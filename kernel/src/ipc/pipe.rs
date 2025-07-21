@@ -27,6 +27,10 @@ struct PipeInner {
     read_wait_queue: Vec<Weak<TaskControlBlock>>,
     /// 等待写入的任务队列
     write_wait_queue: Vec<Weak<TaskControlBlock>>,
+    /// 等待写入器连接的读取器队列（用于FIFO）
+    read_open_wait_queue: Vec<Weak<TaskControlBlock>>,
+    /// 等待读取器连接的写入器队列（用于FIFO）
+    write_open_wait_queue: Vec<Weak<TaskControlBlock>>,
 }
 
 impl Pipe {
@@ -39,6 +43,8 @@ impl Pipe {
                 write_closed: false,
                 read_wait_queue: Vec::new(),
                 write_wait_queue: Vec::new(),
+                read_open_wait_queue: Vec::new(),
+                write_open_wait_queue: Vec::new(),
             }),
         }
     }
@@ -57,6 +63,20 @@ impl Pipe {
         inner.write_closed = true;
         // 唤醒所有等待读取的任务
         Self::wakeup_waiters(&mut inner.read_wait_queue);
+    }
+
+    /// 通知有新的写入器连接（用于FIFO）
+    pub fn notify_writer_connected(&self) {
+        let mut inner = self.inner.lock();
+        // 唤醒所有等待写入器连接的读取器
+        Self::wakeup_waiters(&mut inner.read_open_wait_queue);
+    }
+
+    /// 通知有新的读取器连接（用于FIFO）
+    pub fn notify_reader_connected(&self) {
+        let mut inner = self.inner.lock();
+        // 唤醒所有等待读取器连接的写入器
+        Self::wakeup_waiters(&mut inner.write_open_wait_queue);
     }
 
     /// 唤醒等待队列中的任务
@@ -130,6 +150,113 @@ impl Pipe {
                 let mut inner = self.inner.lock();
 
                 if inner.read_closed {
+                    // 读端关闭，写入失败 (SIGPIPE)
+                    Some(Err(FileSystemError::PermissionDenied))
+                } else {
+                    let available_space = PIPE_BUF_SIZE - inner.buffer.len();
+                    if available_space > 0 {
+                        // 有空间可写
+                        let write_len = remaining.len().min(available_space);
+                        for i in 0..write_len {
+                            inner.buffer.push_back(remaining[i]);
+                        }
+
+                        total_written += write_len;
+                        remaining = &remaining[write_len..];
+
+                        // 唤醒等待读取的任务
+                        Self::wakeup_waiters(&mut inner.read_wait_queue);
+
+                        Some(Ok(()))
+                    } else {
+                        // 缓冲区满，需要阻塞等待
+                        if let Some(current) = current_task() {
+                            inner.write_wait_queue.push(Arc::downgrade(&current));
+                            None // 表示需要阻塞
+                        } else {
+                            Some(Err(FileSystemError::IoError))
+                        }
+                    }
+                }
+            };
+
+            match write_result {
+                Some(Ok(())) => continue, // 继续写入剩余数据
+                Some(Err(e)) => return Err(e),
+                None => {
+                    // 需要阻塞等待
+                    block_current_and_run_next();
+                    // 任务被唤醒后继续循环检查
+                }
+            }
+        }
+
+        Ok(total_written)
+    }
+
+    /// FIFO读取方法，需要检查写入器连接状态
+    pub fn fifo_read(&self, buf: &mut [u8], has_writers: bool) -> Result<usize, FileSystemError> {
+        loop {
+            // 尝试读取数据
+            let read_result = {
+                let mut inner = self.inner.lock();
+
+                if !inner.buffer.is_empty() {
+                    // 有数据可读
+                    let read_len = buf.len().min(inner.buffer.len());
+                    for i in 0..read_len {
+                        buf[i] = inner.buffer.pop_front().unwrap();
+                    }
+
+                    // 唤醒等待写入的任务
+                    Self::wakeup_waiters(&mut inner.write_wait_queue);
+
+                    Some(Ok(read_len))
+                } else if inner.write_closed || !has_writers {
+                    // 写端关闭且无数据，或者没有写入器连接，返回EOF
+                    Some(Ok(0))
+                } else {
+                    // 无数据且写端未关闭，需要阻塞等待
+                    if let Some(current) = current_task() {
+                        inner.read_wait_queue.push(Arc::downgrade(&current));
+                        None // 表示需要阻塞
+                    } else {
+                        Some(Err(FileSystemError::IoError))
+                    }
+                }
+            };
+
+            match read_result {
+                Some(result) => return result,
+                None => {
+                    // 需要阻塞等待
+                    block_current_and_run_next();
+                    // 任务被唤醒后继续循环检查
+                }
+            }
+        }
+    }
+
+    /// FIFO写入方法，需要检查读取器连接状态
+    pub fn fifo_write(&self, buf: &[u8], has_readers: bool) -> Result<usize, FileSystemError> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        if !has_readers {
+            // 没有读取器连接，写入失败 (SIGPIPE)
+            return Err(FileSystemError::PermissionDenied);
+        }
+
+        let mut total_written = 0;
+        let mut remaining = buf;
+
+        while !remaining.is_empty() {
+            // 尝试写入数据
+            let write_result = {
+                let mut inner = self.inner.lock();
+
+                if inner.read_closed || !has_readers {
                     // 读端关闭，写入失败 (SIGPIPE)
                     Some(Err(FileSystemError::PermissionDenied))
                 } else {
@@ -342,12 +469,16 @@ impl NamedPipe {
     /// Open for reading - blocks until a writer is available if needed
     pub fn open_read(self: &Arc<Self>) -> Arc<FifoReadHandle> {
         self.read_count.fetch_add(1, atomic::Ordering::Relaxed);
+        // 通知管道有新的读取器连接
+        self.pipe.notify_reader_connected();
         Arc::new(FifoReadHandle::new(self.pipe.clone(), Arc::downgrade(self)))
     }
 
     /// Open for writing - blocks until a reader is available if needed
     pub fn open_write(self: &Arc<Self>) -> Arc<FifoWriteHandle> {
         self.write_count.fetch_add(1, atomic::Ordering::Relaxed);
+        // 通知管道有新的写入器连接
+        self.pipe.notify_writer_connected();
         Arc::new(FifoWriteHandle::new(self.pipe.clone(), Arc::downgrade(self)))
     }
 
@@ -438,7 +569,13 @@ impl Inode for FifoReadHandle {
     }
 
     fn read_at(&self, _offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
-        self.pipe.read(buf)
+        // 检查是否有写入器连接
+        let has_writers = if let Some(fifo) = self.fifo.upgrade() {
+            fifo.write_count.load(atomic::Ordering::Acquire) > 0
+        } else {
+            false
+        };
+        self.pipe.fifo_read(buf, has_writers)
     }
 
     fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
@@ -508,7 +645,13 @@ impl Inode for FifoWriteHandle {
     }
 
     fn write_at(&self, _offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
-        self.pipe.write(buf)
+        // 检查是否有读取器连接
+        let has_readers = if let Some(fifo) = self.fifo.upgrade() {
+            fifo.read_count.load(atomic::Ordering::Acquire) > 0
+        } else {
+            false
+        };
+        self.pipe.fifo_write(buf, has_readers)
     }
 
     fn list_dir(&self) -> Result<Vec<String>, FileSystemError> {
