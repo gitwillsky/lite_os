@@ -73,7 +73,7 @@ impl VirtIOConsoleDevice {
             core::ptr::read_volatile((base_addr + VIRTIO_MMIO_CONFIG) as *const VirtIOConsoleConfig)
         };
 
-        info!(
+        debug!(
             "[VirtIO Console] Config: cols={}, rows={}, max_ports={}",
             config.cols, config.rows, config.max_nr_ports
         );
@@ -82,21 +82,23 @@ impl VirtIOConsoleDevice {
         let device_features = mmio_region.device_features();
         let multiport = (device_features & (1 << VIRTIO_CONSOLE_F_MULTIPORT)) != 0;
 
-        info!(
+        debug!(
             "[VirtIO Console] Features: multiport={}, emerg_write={}",
             multiport,
             (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0
         );
 
-        // 协商特性 - 启用多端口和紧急写入
+        // 协商特性 - 为了稳定性，先禁用多端口，只启用紧急写入
         let mut driver_features = 0u32;
-        if multiport {
-            driver_features |= 1 << VIRTIO_CONSOLE_F_MULTIPORT;
-        }
         if (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0 {
             driver_features |= 1 << VIRTIO_CONSOLE_F_EMERG_WRITE;
+            debug!("[VirtIO Console] Enabling emergency write feature");
         }
         mmio_region.set_driver_features(driver_features);
+
+        // 强制设置为单端口模式以避免控制消息复杂性
+        let multiport = false;
+        debug!("[VirtIO Console] Using single-port mode for stability");
 
         // 初始化接收队列 (queue 0)
         mmio_region.select_queue(RECEIVEQ_PORT0 as u32);
@@ -196,6 +198,7 @@ impl VirtIOConsoleDevice {
             debug!("[VirtIO Console] Single port console - no control messages needed");
         }
 
+        debug!("[VirtIO Console] Device initialization complete, returning device");
         Some(device)
     }
 
@@ -346,11 +349,15 @@ static VIRTIO_CONSOLE: Once<Option<Mutex<VirtIOConsoleDevice>>> = Once::new();
 
 /// 初始化VirtIO Console设备
 pub fn init_virtio_console(base_addr: usize) -> bool {
+    debug!("[VirtIO Console] Starting init_virtio_console at {:#x}", base_addr);
     if let Some(device) = VirtIOConsoleDevice::new(base_addr) {
+        debug!("[VirtIO Console] Device created, setting up global instance");
         VIRTIO_CONSOLE.call_once(|| Some(Mutex::new(device)));
-        info!("[VirtIO Console] Device created successfully");
+        info!("[VirtIO Console] Global console device initialized successfully");
+        debug!("[VirtIO Console] init_virtio_console returning true");
         true
     } else {
+        debug!("[VirtIO Console] Device creation failed");
         false
     }
 }
