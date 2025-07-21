@@ -18,7 +18,7 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next},
+    task::{self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, SIG_RETURN_ADDR},
     timer,
 };
 
@@ -41,12 +41,12 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::set_next_timer_interrupt();
-                    
+
                     // Check and handle pending signals before task switch
                     if !check_signals_and_maybe_exit() {
                         return; // Process was terminated by signal
                     }
-                    
+
                     suspend_current_and_run_next();
                 }
                 Interrupt::SupervisorExternal => {
@@ -91,7 +91,7 @@ pub fn trap_handler() {
                         cx.sepc += 4;
                         syscall::syscall(syscall_id, args) as usize
                     };
-                    
+
                     // Check and handle pending signals after syscall
                     if !check_signals_and_maybe_exit() {
                         return; // Process was terminated by signal
@@ -100,8 +100,26 @@ pub fn trap_handler() {
                 Exception::InstructionPageFault => {
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
                     // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
-                    error!("Instruction Page Fault, VA:{:#x}", stval);
-                    exit_current_and_run_next(-5);
+
+                    // 检查是否是信号处理函数返回时的特殊情况 (地址为0)
+                    if stval == SIG_RETURN_ADDR {
+                        // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
+                        debug!("Signal handler return detected (VA=0), calling sigreturn");
+                        let task = task::current_task().expect("No current task");
+                        let mut cx = task::current_trap_context();
+
+                        use crate::task::signal::SignalDelivery;
+                        if SignalDelivery::sigreturn(&task, cx) {
+                            debug!("Sigreturn successful, continuing execution");
+                            // 成功恢复，继续执行
+                        } else {
+                            error!("Sigreturn failed, terminating process");
+                            exit_current_and_run_next(-5);
+                        }
+                    } else {
+                        error!("Instruction Page Fault, VA:{:#x}", stval);
+                        exit_current_and_run_next(-5);
+                    }
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
@@ -122,10 +140,10 @@ pub fn trap_handler() {
             panic!("Invalid exception code: {:?}", code);
         }
     }
-    
+
     // Check and handle pending signals before returning to user space
     check_signals_and_maybe_exit();
-    
+
     trap_return();
 }
 
