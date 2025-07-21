@@ -1,27 +1,6 @@
 use crate::arch::sbi;
-use crate::drivers::{virtio_console_write, is_virtio_console_available};
 
 fn print_str(s: &str) {
-    // 优先使用VirtIO Console，如果不可用或失败则回退到SBI
-    if is_virtio_console_available() {
-        match virtio_console_write(s.as_bytes()) {
-            Ok(_) => return,
-            Err(msg) => {
-                msg.as_bytes().iter().for_each(|b| {
-                    let _ = sbi::console_putchar(*b as usize);
-                });
-            }
-        }
-    }
-
-    "fallback to sbi::console_putchar".as_bytes().iter().for_each(|b| {
-        let _ = sbi::console_putchar(*b as usize);
-    });
-
-    print_str_legacy(s);
-}
-
-pub fn print_str_legacy(s: &str) {
     for byte in s.bytes() {
         let _ = sbi::console_putchar(byte as usize);
     }

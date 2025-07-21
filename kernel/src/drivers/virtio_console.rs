@@ -2,8 +2,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-use crate::console::print_str_legacy;
-
 use super::{virtio_mmio::*, virtio_queue::*};
 
 // VirtIO Console 设备ID
@@ -269,7 +267,6 @@ impl VirtIOConsoleDevice {
             // 检查是否有完成的操作
             if let Some((id, _len)) = transmit_queue.used() {
                 if id == head_desc {
-                    print_str_legacy("[VirtIO Console] Write completed successfully");
                     return Ok(());
                 } else {
                     // ID不匹配，强制回收并报错
@@ -285,12 +282,8 @@ impl VirtIOConsoleDevice {
             attempts += 1;
         }
 
-        // 超时处理：非阻塞式，假设写入最终会完成
-        print_str_legacy("[VirtIO Console] Write operation timeout, assuming eventual completion");
-
-        // 不回收描述符，让设备最终完成操作
-        // transmit_queue.recycle_descriptors_force(head_desc);
-
+        // 超时处理：写入设备可能较慢，但不应该阻塞系统
+        // 不强制回收描述符，让设备有机会完成操作
         Ok(()) // 返回成功，避免系统卡死
     }
 
@@ -334,7 +327,7 @@ impl VirtIOConsoleDevice {
                 self.mmio_base.notify_queue(RECEIVEQ_PORT0 as u32);
                 core::mem::forget(rx_buffer);
             }
-            
+
             Ok(0) // 非阻塞读取
         }
     }
@@ -392,13 +385,13 @@ impl VirtIOConsoleDevice {
                 if let Some((used_desc, len)) = queue.used() {
                     queue.recycle_descriptors_force(used_desc);
                 } else {
-                    print_str_legacy("[VirtIO Console] Control message timeout");
+                    error!("[VirtIO Console] Control message timeout");
                 }
             } else {
-                print_str_legacy("[VirtIO Console] Failed to add control message to queue");
+                error!("[VirtIO Console] Failed to add control message to queue");
             }
         } else {
-            print_str_legacy("[VirtIO Console] No control queue available");
+            error!("[VirtIO Console] No control queue available");
         }
     }
 
@@ -408,12 +401,12 @@ impl VirtIOConsoleDevice {
 
         if interrupt_status & VIRTIO_MMIO_INT_VRING != 0 {
             // 队列中断
-            print_str_legacy("[VirtIO Console] Queue interrupt received");
+            debug!("[VirtIO Console] Queue interrupt received");
         }
 
         if interrupt_status & VIRTIO_MMIO_INT_CONFIG != 0 {
             // 配置变更中断
-            print_str_legacy("[VirtIO Console] Configuration change interrupt");
+            debug!("[VirtIO Console] Configuration change interrupt");
 
             // 重新读取配置 - 直接从MMIO寄存器读取
             let config_addr = self.mmio_base.read_reg(VIRTIO_MMIO_CONFIG / 4);
@@ -446,13 +439,9 @@ pub fn virtio_console_write(data: &[u8]) -> Result<(), &'static str> {
 
     let console_guard = VIRTIO_CONSOLE.wait();
     if let Some(console_arc) = console_guard.as_ref() {
-        // 使用try_lock避免死锁，如果锁被占用则快速失败
-        if let Some(mut console) = console_arc.try_lock() {
-            console.write(data)
-        } else {
-            print_str_legacy("[VirtIO Console] Write skipped - device busy");
-            Ok(()) // 非阻塞式，避免卡死
-        }
+        // 使用普通lock，因为write方法内部已经有超时保护
+        let mut console = console_arc.lock();
+        console.write(data)
     } else {
         Err("VirtIO Console not initialized")
     }
@@ -466,13 +455,9 @@ pub fn virtio_console_read(buffer: &mut [u8]) -> Result<usize, &'static str> {
 
     let console_guard = VIRTIO_CONSOLE.wait();
     if let Some(console_arc) = console_guard.as_ref() {
-        // 使用try_lock避免死锁
-        if let Some(mut console) = console_arc.try_lock() {
-            console.read(buffer)
-        } else {
-            print_str_legacy("[VirtIO Console] Read skipped - device busy");
-            Ok(0) // 非阻塞式
-        }
+        // 使用普通lock，读操作本身就是非阻塞的
+        let mut console = console_arc.lock();
+        console.read(buffer)
     } else {
         Err("VirtIO Console not initialized")
     }
@@ -482,11 +467,11 @@ pub fn virtio_console_read(buffer: &mut [u8]) -> Result<usize, &'static str> {
 pub fn virtio_console_has_input() -> bool {
     let console_guard = VIRTIO_CONSOLE.wait();
     if let Some(console_arc) = console_guard.as_ref() {
-        // 使用try_lock避免死锁
+        // 对于状态检查，使用try_lock是合理的
         if let Some(console) = console_arc.try_lock() {
             console.has_input()
         } else {
-            false // 如果锁被占用，假设没有输入
+            false // 如果设备忙，假设没有输入
         }
     } else {
         false

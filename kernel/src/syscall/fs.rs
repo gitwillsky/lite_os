@@ -18,13 +18,30 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     match fd {
         STD_OUT => {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
+            let mut total_written = 0;
+            
             for buffer in buffers {
+                // 优先尝试使用VirtIO Console
+                if crate::drivers::is_virtio_console_available() {
+                    match crate::drivers::virtio_console_write(buffer) {
+                        Ok(()) => {
+                            total_written += buffer.len();
+                            continue;
+                        }
+                        Err(_) => {
+                            warn!("[syscall] VirtIO Console write failed, falling back to SBI");
+                        }
+                    }
+                }
+                
+                // 回退到SBI输出
                 let s = core::str::from_utf8(buffer).unwrap();
                 for c in s.bytes() {
                     sbi::console_putchar(c as usize);
                 }
+                total_written += buffer.len();
             }
-            len as isize
+            total_written as isize
         }
         _ => {
             if let Some(task) = current_task() {
@@ -67,21 +84,29 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                 if crate::drivers::is_virtio_console_available() {
                     let mut temp_buf = [0u8; 1];
                     match crate::drivers::virtio_console_read(&mut temp_buf) {
-                        Ok(1) => break temp_buf[0] as isize,
+                        Ok(1) => {
+                            // 成功读取到一个字符
+                            break temp_buf[0] as isize;
+                        }
                         Ok(0) => {
-                            // VirtIO Console无数据，检查是否有待处理输入
+                            // VirtIO Console无数据可读
                             if crate::drivers::virtio_console_has_input() {
-                                // 有输入但读取失败，可能需要重试
-                                continue;
+                                // 有输入信号但读取返回0，可能需要重试一次
+                                let mut retry_buf = [0u8; 1];
+                                if let Ok(1) = crate::drivers::virtio_console_read(&mut retry_buf) {
+                                    break retry_buf[0] as isize;
+                                }
                             }
+                            // 没有数据，继续到SBI方式
                         }
                         Ok(_) => {
-                            // 读取了多个字节，这在单字符读取中不应该发生
+                            // 读取了多个字节，在单字符读取模式下不应该发生
                             warn!("[syscall] Unexpected read length from VirtIO Console");
+                            // 继续到SBI方式作为安全回退
                         }
-                        Err(_) => {
-                            // VirtIO读取失败，回退到SBI
-                            warn!("[syscall] VirtIO Console read failed, falling back to SBI");
+                        Err(e) => {
+                            // VirtIO读取失败，记录错误并回退到SBI
+                            debug!("[syscall] VirtIO Console read error: {}, using SBI fallback", e);
                         }
                     }
                 }
@@ -89,6 +114,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                 // 回退到SBI输入
                 let c = sbi::console_getchar();
                 if c == -1 {
+                    // SBI无输入，暂停当前任务等待输入
                     suspend_current_and_run_next();
                     continue;
                 } else {
