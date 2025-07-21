@@ -41,6 +41,12 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::set_next_timer_interrupt();
+                    
+                    // Check and handle pending signals before task switch
+                    if !check_signals_and_maybe_exit() {
+                        return; // Process was terminated by signal
+                    }
+                    
                     suspend_current_and_run_next();
                 }
                 Interrupt::SupervisorExternal => {
@@ -85,6 +91,11 @@ pub fn trap_handler() {
                         cx.sepc += 4;
                         syscall::syscall(syscall_id, args) as usize
                     };
+                    
+                    // Check and handle pending signals after syscall
+                    if !check_signals_and_maybe_exit() {
+                        return; // Process was terminated by signal
+                    }
                 }
                 Exception::InstructionPageFault => {
                     // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
@@ -111,7 +122,23 @@ pub fn trap_handler() {
             panic!("Invalid exception code: {:?}", code);
         }
     }
+    
+    // Check and handle pending signals before returning to user space
+    check_signals_and_maybe_exit();
+    
     trap_return();
+}
+
+/// Helper function to check and handle pending signals
+/// Returns true if execution should continue, false if process should exit
+fn check_signals_and_maybe_exit() -> bool {
+    let (should_continue, exit_code) = task::check_and_handle_signals();
+    if !should_continue {
+        if let Some(code) = exit_code {
+            exit_current_and_run_next(code);
+        }
+    }
+    should_continue
 }
 
 fn set_kernel_trap_entry() {

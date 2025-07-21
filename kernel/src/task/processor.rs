@@ -176,6 +176,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     task.set_exit_code(exit_code);
     *task.task_status.lock() = TaskStatus::Zombie;
 
+    // 关闭所有文件描述符并清理文件锁
+    task.file.lock().close_all_fds_and_cleanup_locks(pid);
+
     // 将进程挂给 init_proc, 等待回收
     if let Some(init_proc) = task_manager::init_proc() {
         if pid == init_proc.pid() {
