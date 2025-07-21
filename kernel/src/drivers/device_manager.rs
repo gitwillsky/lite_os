@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::board::board_info;
-use crate::drivers::{BlockDevice, VirtIOBlockDevice};
+use crate::drivers::{BlockDevice, VirtIOBlockDevice, init_virtio_console};
 use crate::fs::{make_filesystem, vfs::vfs};
 
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
@@ -21,7 +21,10 @@ fn scan_virtio_devices() {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
 
-            if let Some(device) = VirtIOBlockDevice::new(base_addr) {
+            // 首先尝试初始化VirtIO Console设备
+            if init_virtio_console(base_addr) {
+                info!("[device] VirtIO Console initialized at {:#x}", base_addr);
+            } else if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                 DEVICES.lock().push(device);
             }
         }
@@ -39,7 +42,6 @@ fn init_filesystems() {
     let device = devices[0].clone();
 
     if let Some(fs) = make_filesystem(device) {
-
         // Mount to root directory
         if let Err(e) = vfs().mount("/", fs) {
             error!("[device] File system mount failed: {:?}", e);

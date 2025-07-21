@@ -1,6 +1,14 @@
 use crate::arch::sbi;
+use crate::drivers::{virtio_console_write, is_virtio_console_available};
 
 fn print_str(s: &str) {
+    // 优先使用VirtIO Console，如果不可用则回退到SBI
+    if is_virtio_console_available() {
+        let _ = virtio_console_write(s.as_bytes());
+        return;
+    }
+
+    // 回退到SBI输出（逐字节）
     for c in s.bytes() {
         let _ = sbi::console_putchar(c as usize);
     }

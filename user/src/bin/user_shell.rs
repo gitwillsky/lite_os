@@ -80,6 +80,12 @@ fn string_display_width(s: &str) -> usize {
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     let mut line: String = String::new();
+    // print welcome message
+    println!("欢迎使用LiteOS Shell!");
+    println!("================================");
+    println!("输入 'help' 查看可用命令");
+    println!("");
+
     print!("$");
     loop {
         let c = get_char();
@@ -129,7 +135,7 @@ fn main() -> i32 {
                     // 计算要删除的字符的显示宽度
                     let current_pos = 1 + string_display_width(&line); // position after removal
                     let char_width = char_display_width(removed_char, current_pos);
-                    
+
                     // 退格删除相应数量的字符
                     for _ in 0..char_width {
                         print!("{} {}", BS as char, BS as char);
@@ -150,10 +156,10 @@ fn parse_command_with_redirection(line: &str) -> (String, Option<String>, Option
     let mut command = String::new();
     let mut output_file = None;
     let mut input_file = None;
-    
+
     let parts: Vec<&str> = line.split_whitespace().collect();
     let mut i = 0;
-    
+
     while i < parts.len() {
         match parts[i] {
             ">" => {
@@ -185,7 +191,7 @@ fn parse_command_with_redirection(line: &str) -> (String, Option<String>, Option
             }
         }
     }
-    
+
     (command, output_file, input_file)
 }
 
@@ -208,16 +214,16 @@ fn file_exists(filename: &str) -> bool {
 // 执行带重定向的命令
 fn execute_command_with_redirection(line: &str) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
-    
+
     if command.is_empty() {
         return;
     }
-    
+
     // 检查是否为直接执行 WASM 文件
     let parts: Vec<&str> = command.split_whitespace().collect();
     if !parts.is_empty() {
         let first_part = parts[0];
-        
+
         // 如果命令是 .wasm 文件，自动使用 wasm_runtime 执行
         if is_wasm_file(first_part) {
             if file_exists(first_part) {
@@ -231,20 +237,20 @@ fn execute_command_with_redirection(line: &str) {
                 return;
             }
         }
-        
+
         // 如果命令以 ./ 开头且是 .wasm 文件，也自动使用 wasm_runtime
         if first_part.starts_with("./") && is_wasm_file(first_part) {
             let wasm_file = &first_part[2..]; // 去掉 "./"
             if file_exists(wasm_file) {
                 let mut wasm_command = String::from("wasm_runtime ");
                 wasm_command.push_str(wasm_file);
-                
+
                 // 添加其他参数
                 for i in 1..parts.len() {
                     wasm_command.push(' ');
                     wasm_command.push_str(parts[i]);
                 }
-                
+
                 execute_wasm_command(&wasm_command, output_file, input_file);
                 return;
             } else {
@@ -253,14 +259,14 @@ fn execute_command_with_redirection(line: &str) {
             }
         }
     }
-    
+
     let mut cmd_with_null = command.clone();
     cmd_with_null.push('\0');
-    
+
     let pid = fork();
     if pid == 0 {
         // 子进程：设置重定向并执行命令
-        
+
         // 设置输入重定向
         if let Some(input_filename) = input_file {
             let mut input_filename_with_null = input_filename;
@@ -278,7 +284,7 @@ fn execute_command_with_redirection(line: &str) {
             }
             close(input_fd as usize);
         }
-        
+
         // 设置输出重定向
         if let Some(output_filename) = output_file {
             let mut output_filename_with_null = output_filename;
@@ -296,7 +302,7 @@ fn execute_command_with_redirection(line: &str) {
             }
             close(output_fd as usize);
         }
-        
+
         // 执行命令
         if exec(cmd_with_null.as_str()) == -1 {
             println!("command not found: {}", command);
@@ -319,14 +325,14 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
     if parts.is_empty() {
         return;
     }
-    
+
     let program = parts[0]; // "wasm_runtime"
     let args: Vec<&str> = parts.iter().map(|&s| s).collect();
-    
+
     let pid = fork();
     if pid == 0 {
         // 子进程：设置重定向并执行 WASM 运行时
-        
+
         // 设置输入重定向
         if let Some(input_filename) = input_file {
             let mut input_filename_with_null = input_filename;
@@ -343,7 +349,7 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
             }
             close(input_fd as usize);
         }
-        
+
         // 设置输出重定向
         if let Some(output_filename) = output_file {
             let mut output_filename_with_null = output_filename;
@@ -360,7 +366,7 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
             }
             close(output_fd as usize);
         }
-        
+
         // 执行 WASM 运行时 - 使用 execve 来传递参数
         let empty_env: Vec<&str> = vec![];
         if execve(program, &args, &empty_env) == -1 {
@@ -383,7 +389,7 @@ fn handle_ls_command(line: &str) {
     } else {
         "."  // Use current directory instead of root
     };
-    
+
     let mut buf = [0u8; 1024];
     let len = user_lib::listdir(path, &mut buf);
     if len >= 0 {
@@ -400,7 +406,7 @@ fn handle_cat_command(line: &str) {
         println!("cat: missing file operand");
         return;
     }
-    
+
     let path = parts[1];
     let mut buf = [0u8; 4096];
     let len = user_lib::read_file(path, &mut buf);
@@ -418,7 +424,7 @@ fn handle_mkdir_command(line: &str) {
         println!("mkdir: missing operand");
         return;
     }
-    
+
     let path = parts[1];
     let result = user_lib::mkdir(path);
     match result {
@@ -438,7 +444,7 @@ fn handle_rm_command(line: &str) {
         println!("rm: missing operand");
         return;
     }
-    
+
     let path = parts[1];
     if user_lib::remove(path) == 0 {
         println!("'{}' removed", path);
@@ -454,7 +460,7 @@ fn handle_cd_command(line: &str) {
     } else {
         parts[1]
     };
-    
+
     let result = user_lib::chdir(path);
     match result {
         0 => {}, // Success, no output needed

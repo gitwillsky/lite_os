@@ -61,7 +61,32 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             }
             assert_eq!(len, 1, "Only support len = 1 in sys_read!");
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
+            
             let ch = loop {
+                // 优先尝试从VirtIO Console读取
+                if crate::drivers::is_virtio_console_available() {
+                    let mut temp_buf = [0u8; 1];
+                    match crate::drivers::virtio_console_read(&mut temp_buf) {
+                        Ok(1) => break temp_buf[0] as isize,
+                        Ok(0) => {
+                            // VirtIO Console无数据，检查是否有待处理输入
+                            if crate::drivers::virtio_console_has_input() {
+                                // 有输入但读取失败，可能需要重试
+                                continue;
+                            }
+                        }
+                        Ok(_) => {
+                            // 读取了多个字节，这在单字符读取中不应该发生
+                            warn!("[syscall] Unexpected read length from VirtIO Console");
+                        }
+                        Err(_) => {
+                            // VirtIO读取失败，回退到SBI
+                            warn!("[syscall] VirtIO Console read failed, falling back to SBI");
+                        }
+                    }
+                }
+                
+                // 回退到SBI输入
                 let c = sbi::console_getchar();
                 if c == -1 {
                     suspend_current_and_run_next();
@@ -70,6 +95,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                     break c;
                 }
             };
+            
             let user_buf = buffers.into_iter().next().unwrap();
             if !user_buf.is_empty() {
                 user_buf[0] = ch as u8;

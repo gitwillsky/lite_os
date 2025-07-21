@@ -32,6 +32,10 @@ pub const VIRTIO_CONFIG_S_FAILED: u32 = 128;
 // 设备类型
 pub const VIRTIO_ID_BLOCK: u32 = 2;
 
+// 中断状态标志
+pub const VIRTIO_MMIO_INT_VRING: u32 = 1;
+pub const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
+
 // 常量
 pub const VIRTIO_MMIO_MAGIC: u32 = 0x74726976;
 pub const VIRTIO_VERSION: u32 = 1;
