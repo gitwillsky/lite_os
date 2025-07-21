@@ -289,7 +289,6 @@ impl Sched {
 }
 
 /// Task Control block structure
-#[derive(Debug)]
 pub struct TaskControlBlock {
     name: Mutex<String>,
 
@@ -639,13 +638,28 @@ impl TaskControlBlock {
     }
 }
 
-// print drop info
-impl Drop for TaskControlBlock {
-    fn drop(&mut self) {
-        debug!(
-            "TaskControlBlock dropped: pid={} name={}",
+impl core::fmt::Debug for TaskControlBlock {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            r#"
+            TaskControlBlock {{
+                pid: {},
+                name: {},
+                parent: {:?},
+                children: {:?},
+                exit_code: {},
+                task_status: {:?}
+            }}"#,
             self.pid(),
-            self.name()
-        );
+            self.name(),
+            self.parent().map(|parent| parent.name()),
+            self.children
+                .lock()
+                .iter()
+                .collect::<Vec<_>>(),
+            self.exit_code(),
+            self.task_status.lock()
+        )
     }
 }

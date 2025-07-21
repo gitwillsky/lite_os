@@ -14,7 +14,7 @@ use crate::{
     arch::sbi::shutdown,
     sync::UPSafeCell,
     task::{
-        __switch,
+        __switch, add_task,
         context::TaskContext,
         task::{TaskControlBlock, TaskStatus},
         task_manager::{self, SchedulingPolicy, get_scheduling_policy},
@@ -132,12 +132,10 @@ pub fn suspend_current_and_run_next() {
     let (task_cx_ptr, runtime, should_readd) = {
         let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
         let task_cx_ptr = &mut *task.mm.task_cx.lock() as *mut _;
-        let task_status = *task.task_status.lock();
 
-        // 更新运行时间统计
         update_task_runtime_stats(&task, runtime);
 
-        let should_readd = task_status == TaskStatus::Running;
+        let should_readd = *task.task_status.lock() == TaskStatus::Running;
         if should_readd {
             *task.task_status.lock() = TaskStatus::Ready;
         }
@@ -147,8 +145,7 @@ pub fn suspend_current_and_run_next() {
 
     // 如果任务应该重新加入就绪队列
     if should_readd {
-        task.sched.lock().update_vruntime(runtime);
-        super::add_task(task);
+        add_task(task);
     }
 
     schedule(task_cx_ptr);
@@ -161,7 +158,6 @@ pub fn block_current_and_run_next() {
 
     let (task_cx_ptr, runtime) = {
         let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
-        *task.task_status.lock() = TaskStatus::Sleeping;
         update_task_runtime_stats(&task, runtime);
         let task_cx_ptr = &mut *task.mm.task_cx.lock() as *mut _;
 
@@ -179,14 +175,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // 处理任务退出
     task.set_exit_code(exit_code);
     *task.task_status.lock() = TaskStatus::Zombie;
-
-    // 唤醒等待的父进程
-    if let Some(parent) = task.parent() {
-        if *parent.task_status.lock() == TaskStatus::Sleeping {
-            // 父进程可能在等待子进程，唤醒它
-            parent.wakeup();
-        }
-    }
 
     // 将进程挂给 init_proc, 等待回收
     if let Some(init_proc) = task_manager::init_proc() {
@@ -212,6 +200,14 @@ pub fn exit_current_and_run_next(exit_code: i32) {
                     init_proc_children.push(child);
                 }
             }
+        }
+    }
+
+    // 唤醒等待的父进程
+    if let Some(parent) = task.parent() {
+        if *parent.task_status.lock() == TaskStatus::Sleeping {
+            // 父进程可能在等待子进程，唤醒它
+            parent.wakeup();
         }
     }
 
@@ -250,8 +246,8 @@ fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
             .is_ok()
         {
             debug!(
-                "[SCHED DEBUG] Kernel alive - scheduling task PID:{}, schedulable_tasks:{}, time:{}us",
-                task.pid(),
+                "[SCHED DEBUG] Kernel alive - scheduling task: {:?}, schedulable_tasks:{}, time:{}us",
+                &task,
                 super::task_manager::schedulable_task_count(),
                 current_time
             );

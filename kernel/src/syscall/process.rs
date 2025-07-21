@@ -85,16 +85,6 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     if let Some(idx) = zombie_child {
         let child = task.children.lock().remove(idx);
 
-        // 检查Arc引用计数
-        let strong_count = Arc::strong_count(&child);
-        if strong_count > 1 {
-            warn!(
-                "Child process PID {} has {} Arc references, expected 1. ",
-                child.pid(),
-                strong_count
-            );
-        }
-
         let found_pid = child.pid();
         let exit_code = child.exit_code();
 
