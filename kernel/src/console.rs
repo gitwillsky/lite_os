@@ -14,6 +14,14 @@ fn print_str(s: &str) {
         }
     }
 
+    "fallback to sbi::console_putchar".as_bytes().iter().for_each(|b| {
+        let _ = sbi::console_putchar(*b as usize);
+    });
+
+    print_str_legacy(s);
+}
+
+pub fn print_str_legacy(s: &str) {
     for byte in s.bytes() {
         let _ = sbi::console_putchar(byte as usize);
     }
