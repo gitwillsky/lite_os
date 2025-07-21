@@ -1,10 +1,12 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use alloc::format;
 use spin::Mutex;
 
 use crate::board::board_info;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice, init_virtio_console};
 use crate::fs::{make_filesystem, vfs::vfs};
+use crate::console::print_str_legacy;
 
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 
@@ -23,10 +25,12 @@ fn scan_virtio_devices() {
 
             // 首先尝试初始化VirtIO Console设备
             if init_virtio_console(base_addr) {
-                // VirtIO Console已初始化，避免调试输出引起循环依赖
+                // VirtIO Console已初始化，添加调试信息
+                print_str_legacy(&format!("[device] VirtIO Console initialized at {:#x}\n", base_addr));
             } else {
                 if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                     DEVICES.lock().push(device);
+                    print_str_legacy(&format!("[device] VirtIO Block device initialized at {:#x}\n", base_addr));
                 }
             }
         }
