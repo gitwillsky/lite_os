@@ -365,10 +365,6 @@ impl FAT32FileSystem {
             block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
 
             self.device.write_block(block_num as usize, &block_data)?;
-            debug!(
-                "[FAT32] Updated FAT {} entry for cluster {} with value {:#x}",
-                fat_num, cluster, value
-            );
         }
 
         Ok(())
@@ -1108,37 +1104,80 @@ impl Inode for FAT32Inode {
             fs.read_cluster(current_cluster, &mut cluster_data)
                 .map_err(|_| FileSystemError::IoError)?;
 
-            let entries = fs.read_directory_entries(current_cluster)?;
+            // Process entries directly from raw cluster data to maintain proper indexing
+            let mut lfn_cache: Vec<usize> = Vec::new();
 
-            for i in 0..entries.len() {
-                if entries[i].name.to_lowercase() == name.to_lowercase() {
-                    child_cluster = (entries[i].entry.first_cluster_high as u32) << 16
-                        | entries[i].entry.first_cluster_low as u32;
-                    found = true;
+            for (chunk_idx, chunk) in cluster_data.chunks_exact(32).enumerate() {
+                let attr = chunk[11];
+                let is_lfn = attr & ATTR_LONG_NAME == ATTR_LONG_NAME;
 
-                    // Find the range of entries to delete
-                    let mut start_index = i;
-                    while start_index > 0 {
-                        let order = cluster_data[(start_index - 1) * 32];
-                        if order & 0x40 != 0 {
-                            start_index -= 1;
-                            break;
-                        }
-                        if cluster_data[(start_index - 1) * 32 + 11] & ATTR_LONG_NAME
-                            != ATTR_LONG_NAME
-                        {
-                            break;
-                        }
-                        start_index -= 1;
+                if chunk[0] == 0x00 {
+                    break; // End of directory entries
+                }
+                if chunk[0] == 0xE5 {
+                    lfn_cache.clear();
+                    continue; // Skip deleted entries
+                }
+
+                if is_lfn {
+                    // This is a long filename entry
+                    lfn_cache.push(chunk_idx);
+                } else {
+                    // This is a short filename entry
+                    let entry = unsafe {
+                        core::ptr::read_unaligned(chunk.as_ptr() as *const DirectoryEntry)
+                    };
+
+                    if entry.attr & ATTR_VOLUME_ID != 0 {
+                        lfn_cache.clear();
+                        continue;
                     }
 
-                    for j in start_index..=i {
-                        cluster_data[j * 32] = 0xE5;
+                    // Check if this matches the file we want to delete
+                    let entry_name = if !lfn_cache.is_empty() {
+                        // Reconstruct long filename from LFN entries
+                        lfn_cache.sort_by_key(|&idx| {
+                            let order = cluster_data[idx * 32];
+                            order & 0x1F
+                        });
+                        let mut long_name_utf16: Vec<u16> = Vec::new();
+                        for &lfn_idx in &lfn_cache {
+                            let lfn_chunk = &cluster_data[lfn_idx * 32..lfn_idx * 32 + 32];
+                            let lfn_entry = unsafe {
+                                core::ptr::read_unaligned(lfn_chunk.as_ptr() as *const LongFileNameEntry)
+                            };
+                            unsafe {
+                                let name1 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name1));
+                                long_name_utf16.extend_from_slice(&name1);
+                                let name2 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name2));
+                                long_name_utf16.extend_from_slice(&name2);
+                                let name3 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name3));
+                                long_name_utf16.extend_from_slice(&name3);
+                            }
+                        }
+                        let null_pos = long_name_utf16.iter().position(|&c| c == 0).unwrap_or(long_name_utf16.len());
+                        long_name_utf16.truncate(null_pos);
+                        String::from_utf16_lossy(&long_name_utf16)
+                    } else {
+                        FAT32Inode::entry_name_to_string(&entry)
+                    };
+
+                    if entry_name.to_lowercase() == name.to_lowercase() {
+                        child_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
+                        found = true;
+
+                        // Mark all related entries as deleted (LFN entries + SFN entry)
+                        for &lfn_idx in &lfn_cache {
+                            cluster_data[lfn_idx * 32] = 0xE5;
+                        }
+                        cluster_data[chunk_idx * 32] = 0xE5; // Mark SFN entry as deleted
+
+                        fs.write_cluster(current_cluster, &cluster_data)
+                            .map_err(|_| FileSystemError::IoError)?;
+                        break;
                     }
 
-                    fs.write_cluster(current_cluster, &cluster_data)
-                        .map_err(|_| FileSystemError::IoError)?;
-                    break;
+                    lfn_cache.clear();
                 }
             }
 

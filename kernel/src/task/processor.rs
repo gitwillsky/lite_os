@@ -127,7 +127,7 @@ pub fn suspend_current_and_run_next() {
     let task = take_current_task().expect("No current task to suspend");
     let end_time = get_time_us();
     // 调试信息输出
-    print_debug_info_if_needed(end_time, &task);
+    // print_debug_info_if_needed(end_time, &task);
 
     let (task_cx_ptr, runtime, should_readd) = {
         let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
