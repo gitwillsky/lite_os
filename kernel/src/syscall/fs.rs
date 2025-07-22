@@ -20,37 +20,12 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             let mut total_written = 0;
             
-            debug!("[syscall] sys_write to stdout: {} bytes", len);
-            
             for buffer in buffers {
-                // 双重输出策略：VirtIO Console用于设备通信，SBI确保终端可见性
-                let mut virtio_success = false;
-                
-                if crate::drivers::is_virtio_console_available() {
-                    match crate::drivers::virtio_console_write(buffer) {
-                        Ok(()) => {
-                            virtio_success = true;
-                            debug!("[syscall] VirtIO Console write successful");
-                        }
-                        Err(e) => {
-                            warn!("[syscall] VirtIO Console write failed: {}", e);
-                        }
-                    }
-                }
-                
-                // 总是输出到SBI以确保用户能看到输出
-                // 这样VirtIO Console和终端输出都能工作
+                // 直接使用SBI输出，简单可靠
                 let s = core::str::from_utf8(buffer).unwrap();
                 for c in s.bytes() {
                     sbi::console_putchar(c as usize);
                 }
-                
-                if virtio_success {
-                    debug!("[syscall] Output sent to both VirtIO Console and terminal");
-                } else {
-                    debug!("[syscall] Output sent to terminal via SBI");
-                }
-                
                 total_written += buffer.len();
             }
             total_written as isize
@@ -92,34 +67,13 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             
             let ch = loop {
-                // 优先尝试从VirtIO Console读取
-                if crate::drivers::is_virtio_console_available() {
-                    let mut temp_buf = [0u8; 1];
-                    match crate::drivers::virtio_console_read(&mut temp_buf) {
-                        Ok(1) => {
-                            debug!("[syscall] VirtIO Console read successful");
-                            break temp_buf[0] as isize;
-                        }
-                        Ok(0) => {
-                            // VirtIO Console无数据，继续到SBI
-                        }
-                        Ok(_) => {
-                            warn!("[syscall] Unexpected read length from VirtIO Console");
-                        }
-                        Err(e) => {
-                            debug!("[syscall] VirtIO Console read error: {}", e);
-                        }
-                    }
-                }
-                
-                // 回退到SBI输入
+                // 直接使用SBI输入，简单可靠
                 let c = sbi::console_getchar();
                 if c == -1 {
                     // SBI无输入，暂停当前任务等待输入
                     suspend_current_and_run_next();
                     continue;
                 } else {
-                    debug!("[syscall] Got input from SBI: {}", c);
                     break c;
                 }
             };

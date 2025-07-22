@@ -4,7 +4,7 @@ use alloc::format;
 use spin::Mutex;
 
 use crate::board::board_info;
-use crate::drivers::{BlockDevice, VirtIOBlockDevice, init_virtio_console};
+use crate::drivers::{BlockDevice, VirtIOBlockDevice};
 use crate::fs::{make_filesystem, vfs::vfs};
 
 static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
@@ -25,17 +25,12 @@ fn scan_virtio_devices() {
             let base_addr = virtio_dev.base_addr;
             debug!("[device] Scanning VirtIO device {} at {:#x}", i, base_addr);
 
-            // 首先尝试初始化VirtIO Console设备
-            if init_virtio_console(base_addr) {
-                // VirtIO Console已初始化，添加调试信息
-                debug!("[device] VirtIO Console initialized at {:#x}", base_addr);
+            // 只初始化VirtIO Block设备，忽略其他设备
+            if let Some(device) = VirtIOBlockDevice::new(base_addr) {
+                DEVICES.lock().push(device);
+                debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
             } else {
-                if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-                    DEVICES.lock().push(device);
-                    debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
-                } else {
-                    debug!("[device] Unknown VirtIO device at {:#x}", base_addr);
-                }
+                debug!("[device] Skipping non-block VirtIO device at {:#x}", base_addr);
             }
         }
     }

@@ -15,7 +15,7 @@ run-with-timeout: build-kernel
 	sleep 12 && killall qemu-system-riscv64 & \
 	qemu-system-riscv64 \
 	-machine virt \
-	-serial chardev:char0 \
+	-nographic \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
@@ -24,15 +24,12 @@ run-with-timeout: build-kernel
 	-device virtio-gpu-device \
 	-device virtio-mouse-device \
 	-device virtio-net-device,netdev=net0 \
-	-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
-	-device virtio-serial,id=virtio-serial0 \
-	-chardev stdio,id=char0,mux=on \
-	-device virtconsole,chardev=char0
+	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
 run: build-kernel
 	qemu-system-riscv64 \
 	-machine virt \
-	-serial chardev:char0 \
+	-nographic \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
@@ -41,10 +38,7 @@ run: build-kernel
 	-device virtio-gpu-device \
 	-device virtio-mouse-device \
 	-device virtio-net-device,netdev=net0 \
-	-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
-	-device virtio-serial,id=virtio-serial0 \
-	-chardev stdio,id=char0,mux=on \
-	-device virtconsole,chardev=char0
+	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
 run-gdb: build-kernel
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -S -s
