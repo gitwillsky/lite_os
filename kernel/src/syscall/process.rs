@@ -417,6 +417,9 @@ pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> 
 
             offset += needed_space;
         }
+        
+        // Return the total number of bytes written to the buffer
+        return offset as isize;
     }
 
     args.len() as isize

@@ -6,16 +6,16 @@ extern crate alloc;
 #[macro_use]
 extern crate user_lib;
 
+use alloc::collections::VecDeque;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::collections::VecDeque;
-use user_lib::{exec, execve, fork, read, wait_pid, yield_, open, close, dup2, chdir};
+use user_lib::{chdir, close, dup2, exec, execve, fork, open, pipe, read, wait_pid, yield_};
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
 const DL: u8 = b'\x7f'; // DEL
 const BS: u8 = b'\x08'; // BACKSPACE
-const TAB: u8 = b'\t';  // TAB
+const TAB: u8 = b'\t'; // TAB
 const ESC: u8 = b'\x1b'; // ESCAPE
 
 // ANSI escape sequences for arrow keys
@@ -40,7 +40,9 @@ impl CommandHistory {
     }
 
     fn add_command(&mut self, command: String) {
-        if !command.is_empty() && (self.commands.is_empty() || self.commands.back() != Some(&command)) {
+        if !command.is_empty()
+            && (self.commands.is_empty() || self.commands.back() != Some(&command))
+        {
             if self.commands.len() >= self.max_size {
                 self.commands.pop_front();
             }
@@ -116,39 +118,6 @@ fn clear_line_and_redraw(prompt: &str, line: &str) {
     print!("{}{}", prompt, line);
 }
 
-fn read_line(buf: &mut [u8]) -> usize {
-    let mut i = 0;
-    while i < buf.len() {
-        let mut byte = [0u8; 1];
-        if read(0, &mut byte) <= 0 {
-            // 如果没有输入，可以稍微等待一下，避免CPU空转
-            // 在更高级的实现中，这里应该是阻塞或yield
-            continue;
-        }
-
-        let c = byte[0];
-        match c {
-            CR | LF => {
-                print!("\n");
-                break;
-            }
-            BS | DL => {
-                if i > 0 {
-                    i -= 1;
-                    // 在控制台上实现退格效果
-                    print!("\x08 \x08");
-                }
-            }
-            _ => {
-                buf[i] = c;
-                i += 1;
-                print!("{}", c as char);
-            }
-        }
-    }
-    i
-}
-
 // 计算字符在屏幕上的显示宽度
 fn char_display_width(c: char, cursor_pos: usize) -> usize {
     match c {
@@ -192,13 +161,15 @@ fn main() -> i32 {
                 // 处理escape sequences
                 if let Some(seq) = detect_escape_sequence() {
                     match seq {
-                        [b'[', b'A', _] => { // 上箭头
+                        [b'[', b'A', _] => {
+                            // 上箭头
                             if let Some(prev_cmd) = history.get_previous() {
                                 line = prev_cmd.clone();
                                 clear_line_and_redraw("$ ", &line);
                             }
                         }
-                        [b'[', b'B', _] => { // 下箭头
+                        [b'[', b'B', _] => {
+                            // 下箭头
                             if let Some(next_cmd) = history.get_next() {
                                 line = next_cmd.clone();
                                 clear_line_and_redraw("$ ", &line);
@@ -231,8 +202,15 @@ fn main() -> i32 {
                     } else if line.starts_with("help") {
                         handle_help_command(&line);
                     } else {
-                        // 执行外部程序，支持重定向和PATH查找
-                        execute_command_with_redirection(&line);
+                        // 检查是否包含管道
+                        if has_pipe(&line) {
+                            // 执行管道命令
+                            let commands = parse_pipeline(&line);
+                            execute_pipeline(commands);
+                        } else {
+                            // 执行外部程序，支持重定向和PATH查找
+                            execute_command_with_redirection(&line);
+                        }
                     }
                     line.clear();
                 }
@@ -267,6 +245,19 @@ fn main() -> i32 {
         }
     }
     0
+}
+
+// 检查命令行是否包含管道
+fn has_pipe(line: &str) -> bool {
+    line.contains('|')
+}
+
+// 解析管道命令
+fn parse_pipeline(line: &str) -> Vec<String> {
+    line.split('|')
+        .map(|cmd| cmd.trim().to_string())
+        .filter(|cmd| !cmd.is_empty())
+        .collect()
 }
 
 // 解析命令和重定向
@@ -356,6 +347,114 @@ fn find_in_path(command: &str) -> Option<String> {
     None
 }
 
+// 执行管道命令
+fn execute_pipeline(commands: Vec<String>) {
+    if commands.is_empty() {
+        return;
+    }
+
+    if commands.len() == 1 {
+        // 单个命令，直接执行
+        execute_command_with_redirection(&commands[0]);
+        return;
+    }
+
+    let mut pipes: Vec<[i32; 2]> = Vec::new();
+    let mut pids: Vec<isize> = Vec::new();
+
+    // 创建所需的管道
+    for _ in 0..(commands.len() - 1) {
+        let mut pipefd = [0i32; 2];
+        if pipe(&mut pipefd) == -1 {
+            println!("shell: failed to create pipe");
+            return;
+        }
+        pipes.push(pipefd);
+    }
+
+    // 执行每个命令
+    for (i, command) in commands.iter().enumerate() {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        let first_part = parts[0];
+
+        // 使用PATH查找命令
+        let executable_path = if let Some(path) = find_in_path(first_part) {
+            path
+        } else {
+            println!("shell: {}: command not found", first_part);
+            continue;
+        };
+
+        // 构造参数数组 for execve
+        let mut args: Vec<&str> = Vec::new();
+        args.push(first_part); // 程序名作为 argv[0] (不是完整路径)
+        for j in 1..parts.len() {
+            args.push(parts[j]); // 添加其余参数
+        }
+        
+        // 环境变量（暂时为空）
+        let empty_env: Vec<&str> = vec![];
+
+        let pid = fork();
+        if pid == 0 {
+            // 子进程
+
+            // 设置输入端
+            if i > 0 {
+                // 不是第一个命令，从前一个管道读取输入
+                if dup2(pipes[i - 1][0] as usize, 0) < 0 {
+                    println!("shell: failed to redirect input");
+                    return;
+                }
+            }
+
+            // 设置输出端
+            if i < commands.len() - 1 {
+                // 不是最后一个命令，输出到下一个管道
+                if dup2(pipes[i][1] as usize, 1) < 0 {
+                    println!("shell: failed to redirect output");
+                    return;
+                }
+            }
+
+            // 关闭所有管道文件描述符
+            for pipefd in &pipes {
+                close(pipefd[0] as usize);
+                close(pipefd[1] as usize);
+            }
+
+            // 执行命令
+            if execve(&executable_path, &args, &empty_env) == -1 {
+                println!("command not found: {}", first_part);
+            }
+        } else if pid > 0 {
+            // 父进程
+            pids.push(pid);
+        } else {
+            println!("shell: failed to fork");
+        }
+    }
+
+    // 父进程关闭所有管道文件描述符
+    for pipefd in &pipes {
+        close(pipefd[0] as usize);
+        close(pipefd[1] as usize);
+    }
+
+    // 等待所有子进程完成
+    for pid in pids {
+        let mut exit_code: i32 = 0;
+        let exit_pid = wait_pid(pid as usize, &mut exit_code);
+        if exit_pid != pid {
+            println!("shell: warning: unexpected process exit");
+        }
+    }
+}
+
 // 执行带重定向的命令
 fn execute_command_with_redirection(line: &str) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
@@ -415,16 +514,15 @@ fn execute_command_with_redirection(line: &str) {
         return;
     };
 
-    // 构造带完整路径的命令
-    let mut full_command = String::from(&executable_path);
-    // 添加其余参数
+    // 构造参数数组 for execve
+    let mut args: Vec<&str> = Vec::new();
+    args.push(first_part); // 程序名作为 argv[0] (不是完整路径)
     for i in 1..parts.len() {
-        full_command.push(' ');
-        full_command.push_str(parts[i]);
+        args.push(parts[i]); // 添加其余参数
     }
-
-    let mut cmd_with_null = full_command.clone();
-    cmd_with_null.push('\0');
+    
+    // 环境变量（暂时为空）
+    let empty_env: Vec<&str> = vec![];
 
     let pid = fork();
     if pid == 0 {
@@ -436,7 +534,10 @@ fn execute_command_with_redirection(line: &str) {
             input_filename_with_null.push('\0');
             let input_fd = open(input_filename_with_null.as_str(), 0);
             if input_fd < 0 {
-                println!("shell: {}: No such file or directory", input_filename_with_null.trim_end_matches('\0'));
+                println!(
+                    "shell: {}: No such file or directory",
+                    input_filename_with_null.trim_end_matches('\0')
+                );
                 return;
             }
             // 重定向 stdin (fd 0) 到输入文件
@@ -454,7 +555,10 @@ fn execute_command_with_redirection(line: &str) {
             output_filename_with_null.push('\0');
             let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
             if output_fd < 0 {
-                println!("shell: failed to create output file: {}", output_filename_with_null.trim_end_matches('\0'));
+                println!(
+                    "shell: failed to create output file: {}",
+                    output_filename_with_null.trim_end_matches('\0')
+                );
                 return;
             }
             // 重定向 stdout (fd 1) 到输出文件
@@ -466,8 +570,8 @@ fn execute_command_with_redirection(line: &str) {
             close(output_fd as usize);
         }
 
-        // 执行命令
-        if exec(cmd_with_null.as_str()) == -1 {
+        // 使用 execve 执行命令
+        if execve(&executable_path, &args, &empty_env) == -1 {
             println!("command not found: {}", first_part);
         }
     } else {
@@ -479,7 +583,11 @@ fn execute_command_with_redirection(line: &str) {
 }
 
 // 执行 WASM 命令（通过 wasm_runtime）
-fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_file: Option<String>) {
+fn execute_wasm_command(
+    wasm_command: &str,
+    output_file: Option<String>,
+    input_file: Option<String>,
+) {
     // 解析命令和参数
     let parts: Vec<&str> = wasm_command.split_whitespace().collect();
     if parts.is_empty() {
@@ -499,7 +607,10 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
             input_filename_with_null.push('\0');
             let input_fd = open(input_filename_with_null.as_str(), 0);
             if input_fd < 0 {
-                println!("shell: {}: No such file or directory", input_filename_with_null.trim_end_matches('\0'));
+                println!(
+                    "shell: {}: No such file or directory",
+                    input_filename_with_null.trim_end_matches('\0')
+                );
                 return;
             }
             if dup2(input_fd as usize, 0) < 0 {
@@ -516,7 +627,10 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
             output_filename_with_null.push('\0');
             let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
             if output_fd < 0 {
-                println!("shell: failed to create output file: {}", output_filename_with_null.trim_end_matches('\0'));
+                println!(
+                    "shell: failed to create output file: {}",
+                    output_filename_with_null.trim_end_matches('\0')
+                );
                 return;
             }
             if dup2(output_fd as usize, 1) < 0 {
@@ -546,14 +660,14 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
 fn handle_cd_command(line: &str) {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let path = if parts.len() < 2 {
-        "/"  // Default to root directory if no path specified
+        "/" // Default to root directory if no path specified
     } else {
         parts[1]
     };
 
     let result = chdir(path);
     match result {
-        0 => {}, // Success, no output needed
+        0 => {} // Success, no output needed
         -2 => println!("cd: {}: No such file or directory", path),
         -13 => println!("cd: {}: Permission denied", path),
         -20 => println!("cd: {}: Not a directory", path),
@@ -587,6 +701,10 @@ fn handle_help_command(_line: &str) {
     println!("  <command> > file   - Redirect output to file");
     println!("  <command> < file   - Redirect input from file");
     println!("");
+    println!("Pipes:");
+    println!("  <cmd1> | <cmd2>    - Pipe output of cmd1 to input of cmd2");
+    println!("  <cmd1> | <cmd2> | <cmd3> - Chain multiple commands");
+    println!("");
     println!("PATH Search Order:");
     println!("  1. /bin/           - System binaries");
     println!("  2. /usr/bin/       - User binaries");
@@ -598,5 +716,7 @@ fn handle_help_command(_line: &str) {
     println!("  mkdir testdir      - Create directory");
     println!("  hello_wasm.wasm    - Run WASM program");
     println!("  ls > files.txt     - Save directory listing");
+    println!("  ls | cat           - List files and display through cat");
+    println!("  echo hello | cat   - Echo text and pipe to cat");
     println!("");
 }
