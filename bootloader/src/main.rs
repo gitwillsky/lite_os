@@ -230,7 +230,8 @@ extern "C" fn fast_handler(
                     } else {
                         match a7 {
                             legacy::LEGACY_CONSOLE_PUTCHAR => {
-                                print!("{}", ctx.a0() as u8 as char);
+                                let uart = uart16550::UART.lock();
+                                uart.get().write(&[ctx.a0() as u8]);
                                 ret.error = 0;
                                 ret.value = a1;
                             }
