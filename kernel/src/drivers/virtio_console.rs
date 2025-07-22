@@ -6,6 +6,8 @@ use super::{virtio_mmio::*, virtio_queue::*};
 
 // VirtIO Console 设备ID
 pub const VIRTIO_ID_CONSOLE: u32 = 3;
+// VirtIO Serial 设备ID (Console 通过 Serial 实现)
+pub const VIRTIO_ID_SERIAL: u32 = 4;
 
 // VirtIO Console 特性位
 pub const VIRTIO_CONSOLE_F_SIZE: u32 = 0;
@@ -47,7 +49,8 @@ pub struct VirtIOConsoleControl {
 }
 
 pub struct VirtIOConsoleDevice {
-    mmio_base: VirtIOMMIO,
+    mmio_base: Arc<VirtIOMMIO>,
+    base_addr: usize,
     receive_queue: Arc<Mutex<VirtQueue>>,
     transmit_queue: Arc<Mutex<VirtQueue>>,
     control_queue: Option<Arc<Mutex<VirtQueue>>>,
@@ -63,11 +66,16 @@ impl VirtIOConsoleDevice {
 
         // 探测设备
         if !mmio_region.probe() {
+            debug!("[VirtIO Console] MMIO probe failed at {:#x}", base_addr);
             return None;
         }
 
-        // 检查设备ID
-        if mmio_region.device_id() != VIRTIO_ID_CONSOLE {
+        let device_id = mmio_region.device_id();
+        debug!("[VirtIO Console] Device ID at {:#x}: {}", base_addr, device_id);
+
+        // 检查设备ID - 支持直接的 Console 设备和 Serial 设备
+        if device_id != VIRTIO_ID_CONSOLE && device_id != VIRTIO_ID_SERIAL {
+            debug!("[VirtIO Console] Not a console/serial device (ID: {}, expected: {} or {})", device_id, VIRTIO_ID_CONSOLE, VIRTIO_ID_SERIAL);
             return None;
         }
 
@@ -92,8 +100,21 @@ impl VirtIOConsoleDevice {
             (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0
         );
 
-        // 协商特性 - 为了稳定性，先禁用多端口
-        let driver_features = 0u32; // 只使用基础功能
+        // 协商特性 - 启用紧急写入特性以确保输出正常工作
+        let mut driver_features = 0u32;
+        
+        // 如果设备支持紧急写入，我们启用它
+        if (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0 {
+            driver_features |= 1 << VIRTIO_CONSOLE_F_EMERG_WRITE;
+            debug!("[VirtIO Console] Enabling emergency write feature");
+        }
+        
+        // 暂时禁用多端口以简化实现
+        // if multiport {
+        //     driver_features |= 1 << VIRTIO_CONSOLE_F_MULTIPORT;
+        // }
+        
+        debug!("[VirtIO Console] Driver features: {:#x}", driver_features);
         mmio_region.set_driver_features(driver_features);
 
         // 设置FEATURES_OK标志
@@ -127,6 +148,12 @@ impl VirtIOConsoleDevice {
         // 初始化接收队列 (queue 0)
         mmio_region.select_queue(RECEIVEQ_PORT0 as u32);
         let rx_queue_size = mmio_region.queue_max_size();
+        debug!("[VirtIO Console] RX queue max size: {}", rx_queue_size);
+
+        if rx_queue_size == 0 {
+            error!("[VirtIO Console] Invalid RX queue size, device may not support queue 0");
+            return None;
+        }
 
         let receive_queue = Arc::new(Mutex::new(VirtQueue::new(
             rx_queue_size as u16,
@@ -141,16 +168,24 @@ impl VirtIOConsoleDevice {
         // 初始化发送队列 (queue 1)
         mmio_region.select_queue(TRANSMITQ_PORT0 as u32);
         let tx_queue_size = mmio_region.queue_max_size();
+        debug!("[VirtIO Console] TX queue max size: {}", tx_queue_size);
 
-        let transmit_queue = Arc::new(Mutex::new(VirtQueue::new(
-            tx_queue_size as u16,
-            TRANSMITQ_PORT0 as usize,
-        )?));
-
-        mmio_region.set_queue_size(tx_queue_size);
-        mmio_region.set_queue_align(4096);
-        let tx_queue_pfn = transmit_queue.lock().physical_address().as_usize() >> 12;
-        mmio_region.set_queue_pfn(tx_queue_pfn as u32);
+        let transmit_queue = if tx_queue_size == 0 {
+            warn!("[VirtIO Console] Queue 1 not available, using shared queue for VirtIO Serial mode");
+            Arc::clone(&receive_queue)
+        } else {
+            let tq = Arc::new(Mutex::new(VirtQueue::new(
+                tx_queue_size as u16,
+                TRANSMITQ_PORT0 as usize,
+            )?));
+            
+            mmio_region.set_queue_size(tx_queue_size);
+            mmio_region.set_queue_align(4096);
+            let tx_queue_pfn = tq.lock().physical_address().as_usize() >> 12;
+            mmio_region.set_queue_pfn(tx_queue_pfn as u32);
+            
+            tq
+        };
 
         // 如果支持多端口，初始化控制队列
         let (control_queue, control_receive_queue) = if multiport {
@@ -200,8 +235,10 @@ impl VirtIOConsoleDevice {
                 | VIRTIO_CONFIG_S_DRIVER_OK,
         );
 
+        let mmio_base_arc = Arc::new(mmio_region);
         let mut device = Self {
-            mmio_base: mmio_region,
+            mmio_base: mmio_base_arc,
+            base_addr,
             receive_queue,
             transmit_queue,
             control_queue,
@@ -226,7 +263,7 @@ impl VirtIOConsoleDevice {
             // 对于单端口模式，预先设置接收缓冲区
             let receive_queue_clone = Arc::clone(&device.receive_queue);
             let mut rx_queue = receive_queue_clone.lock();
-            device.setup_receive_buffer(&mut rx_queue);
+            device.setup_receive_buffers(&mut rx_queue);
             drop(rx_queue); // 释放锁
         }
 
@@ -242,6 +279,11 @@ impl VirtIOConsoleDevice {
 
         debug!("[VirtIO Console] Writing {} bytes: {:?}", data.len(), 
                core::str::from_utf8(data).unwrap_or("<invalid utf8>"));
+
+        // 如果支持紧急写入，优先使用它来确保输出
+        if self.supports_emergency_write() {
+            return self.emergency_write(data);
+        }
 
         let mut transmit_queue = self.transmit_queue.lock();
 
@@ -269,11 +311,35 @@ impl VirtIOConsoleDevice {
         // 通知设备
         self.mmio_base.notify_queue(TRANSMITQ_PORT0 as u32);
 
-        // 对于VirtIO Console，直接假设写入成功
-        // 这是因为QEMU的VirtIO Serial配置可能不完全兼容标准VirtIO Console
-        // 数据已经被设备接收，只是没有完成回复
-        debug!("[VirtIO Console] Write submitted to device, assuming success");
-        Ok(())
+        // 等待设备处理完成，但使用合理的超时
+        const MAX_WAIT_CYCLES: usize = 1000;
+        let mut cycles = 0;
+        
+        loop {
+            // 检查是否有完成的操作
+            if let Some((id, _len)) = transmit_queue.used() {
+                if id == head_desc {
+                    debug!("[VirtIO Console] Write completed successfully after {} cycles", cycles);
+                    return Ok(());
+                } else {
+                    // 意外的描述符ID，强制回收
+                    transmit_queue.recycle_descriptors_force(id);
+                    debug!("[VirtIO Console] Recycled unexpected descriptor {}", id);
+                }
+            }
+            
+            // 简短等待
+            for _ in 0..10 {
+                core::hint::spin_loop();
+            }
+            
+            cycles += 1;
+            if cycles >= MAX_WAIT_CYCLES {
+                // 超时了，但不要失败 - VirtIO Console可能在后台工作
+                debug!("[VirtIO Console] Write timeout after {} cycles, but data submitted", cycles);
+                return Ok(());
+            }
+        }
     }
 
     /// 从控制台读取数据
@@ -285,29 +351,96 @@ impl VirtIOConsoleDevice {
         let mut receive_queue = self.receive_queue.lock();
 
         // 检查是否有完成的接收操作
-        if let Some((_used_desc, len)) = receive_queue.used() {
+        if let Some((used_desc, len)) = receive_queue.used() {
             let read_len = core::cmp::min(len as usize, buffer.len());
-
-            // 注意：当前实现的限制是我们无法直接访问接收的数据
-            // 这需要更复杂的内存管理来跟踪接收缓冲区
-            // 目前返回接收的字节数，实际数据读取需要其他机制
-
+            
+            // TODO: 实现从设备缓冲区读取实际数据
+            // 当前限制：需要跟踪接收缓冲区的内存位置
+            debug!("[VirtIO Console] Received {} bytes from device, descriptor {}", len, used_desc);
+            
+            // 只在接收队列为空时才设置新缓冲区
+            if receive_queue.num_free == receive_queue.size {
+                debug!("[VirtIO Console] Setting up new receive buffers after queue empty");
+                self.setup_receive_buffers(&mut receive_queue);
+            }
+            
             Ok(read_len)
         } else {
+            // 只在真正需要时设置接收缓冲区
+            if receive_queue.num_free == receive_queue.size {
+                debug!("[VirtIO Console] No receive buffers, setting up new ones");
+                self.setup_receive_buffers(&mut receive_queue);
+            }
             Ok(0) // 非阻塞读取，没有数据
         }
     }
 
     /// 为接收队列设置缓冲区
-    fn setup_receive_buffer(&mut self, receive_queue: &mut spin::MutexGuard<VirtQueue>) {
-        // 简化的接收缓冲区设置，暂时不分配实际的接收缓冲区
-        // 这避免了内存泄漏问题，实际的输入处理需要中断机制支持
-        debug!("[VirtIO Console] Receive buffer setup - simplified implementation");
+    fn setup_receive_buffer(&self, receive_queue: &mut spin::MutexGuard<VirtQueue>) {
+        // 实际的接收缓冲区设置
+        const RX_BUFFER_SIZE: usize = 256;
+        let mut rx_buffer = alloc::vec![0u8; RX_BUFFER_SIZE];
+        let inputs: [&[u8]; 0] = [];
+        let mut outputs = [rx_buffer.as_mut_slice()];
+        
+        if let Some(head_desc) = receive_queue.add_buffer(&inputs, &mut outputs) {
+            receive_queue.add_to_avail(head_desc);
+            self.mmio_base.notify_queue(RECEIVEQ_PORT0 as u32);
+            // 注意：这里故意使用forget来避免释放缓冲区
+            // 设备会使用这个缓冲区来写入接收到的数据
+            core::mem::forget(rx_buffer);
+            debug!("[VirtIO Console] Set up receive buffer of {} bytes", RX_BUFFER_SIZE);
+        } else {
+            error!("[VirtIO Console] Failed to set up receive buffer");
+        }
+    }
+    
+    /// 为接收队列设置多个缓冲区
+    fn setup_receive_buffers(&self, receive_queue: &mut spin::MutexGuard<VirtQueue>) {
+        // 设置多个接收缓冲区以提高性能
+        for i in 0..4 {
+            if receive_queue.num_free < 1 {
+                debug!("[VirtIO Console] No more free descriptors for receive buffer {}", i);
+                break;
+            }
+            self.setup_receive_buffer(receive_queue);
+        }
     }
 
     /// 检查是否有输入数据可读
     pub fn has_input(&self) -> bool {
         self.receive_queue.lock().used().is_some()
+    }
+
+    /// 检查是否支持紧急写入功能
+    fn supports_emergency_write(&self) -> bool {
+        // 检查设备是否协商了紧急写入特性
+        let device_features = self.mmio_base.device_features();
+        (device_features & (1 << VIRTIO_CONSOLE_F_EMERG_WRITE)) != 0
+    }
+
+    /// 紧急写入功能 - 直接写入到配置空间的紧急写入寄存器
+    fn emergency_write(&self, data: &[u8]) -> Result<(), &'static str> {
+        debug!("[VirtIO Console] Using emergency write for {} bytes", data.len());
+        
+        // VirtIO Console的紧急写入功能允许直接写入单个字符到配置空间
+        // 紧急写入寄存器位于配置空间偏移12 (emerg_wr字段)
+        for &byte in data {
+            // 计算紧急写入寄存器的MMIO地址
+            let emerg_write_addr = self.base_addr + VIRTIO_MMIO_CONFIG + 12; // emerg_wr字段偏移
+            
+            unsafe {
+                core::ptr::write_volatile(emerg_write_addr as *mut u32, byte as u32);
+            }
+            
+            // 短暂延迟确保字符被设备处理
+            for _ in 0..10 {
+                core::hint::spin_loop();
+            }
+        }
+        
+        debug!("[VirtIO Console] Emergency write completed");
+        Ok(())
     }
 
     /// 获取控制台配置信息

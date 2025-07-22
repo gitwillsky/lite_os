@@ -158,7 +158,7 @@ impl BoardInfo {
                         current_virtio_reg = Some(reg_range);
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
                         if let (Some(range), Some(irq)) = (current_virtio_reg.as_ref(), current_virtio_irq) {
-                            if ans.virtio_count < 8 {
+                            if ans.virtio_count < 20 {
                                 ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
                                     base_addr: range.start,
                                     size: range.end - range.start,
@@ -185,7 +185,7 @@ impl BoardInfo {
                         current_virtio_irq = Some(bytes_to_u32(first_4_bytes));
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
                         if let (Some(range), Some(irq)) = (current_virtio_reg.as_ref(), current_virtio_irq) {
-                            if ans.virtio_count < 8 {
+                            if ans.virtio_count < 20 {
                                 ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
                                     base_addr: range.start,
                                     size: range.end - range.start,

@@ -18,9 +18,12 @@ pub fn init_devices() {
 fn scan_virtio_devices() {
     let board_info = board_info();
 
+    debug!("[device] Found {} VirtIO devices", board_info.virtio_count);
+    
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
+            debug!("[device] Scanning VirtIO device {} at {:#x}", i, base_addr);
 
             // 首先尝试初始化VirtIO Console设备
             if init_virtio_console(base_addr) {
@@ -30,6 +33,8 @@ fn scan_virtio_devices() {
                 if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                     DEVICES.lock().push(device);
                     debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
+                } else {
+                    debug!("[device] Unknown VirtIO device at {:#x}", base_addr);
                 }
             }
         }
