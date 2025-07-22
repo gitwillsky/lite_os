@@ -20,18 +20,24 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             let mut total_written = 0;
             
+            debug!("[syscall] sys_write to stdout: {} bytes", len);
+            
             for buffer in buffers {
                 // 优先尝试使用VirtIO Console
                 if crate::drivers::is_virtio_console_available() {
+                    debug!("[syscall] VirtIO Console available, attempting write");
                     match crate::drivers::virtio_console_write(buffer) {
                         Ok(()) => {
+                            debug!("[syscall] VirtIO Console write successful");
                             total_written += buffer.len();
                             continue;
                         }
-                        Err(_) => {
-                            warn!("[syscall] VirtIO Console write failed, falling back to SBI");
+                        Err(e) => {
+                            warn!("[syscall] VirtIO Console write failed: {}, falling back to SBI", e);
                         }
                     }
+                } else {
+                    debug!("[syscall] VirtIO Console not available, using SBI");
                 }
                 
                 // 回退到SBI输出

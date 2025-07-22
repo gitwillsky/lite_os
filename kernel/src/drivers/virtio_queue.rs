@@ -67,8 +67,11 @@ pub struct VirtQueue {
 impl VirtQueue {
     pub fn new(size: u16, queue_token: usize) -> Option<Self> {
         if size == 0 || size & (size - 1) != 0 {
+            error!("[VirtQueue] Invalid queue size: {} (must be power of 2)", size);
             return None; // 队列大小必须是2的幂
         }
+
+        debug!("[VirtQueue] Creating queue with size={}, token={}", size, queue_token);
 
         // 计算需要的内存大小 - 严格按照VirtIO规范进行对齐
         let desc_size = size_of::<VirtqDesc>() * size as usize;
@@ -87,6 +90,7 @@ impl VirtQueue {
 
         // 分配足够的连续页面
         let pages_needed = (total_size + 4095) / 4096;
+        debug!("[VirtQueue] Allocating {} pages for queue", pages_needed);
         let frame_tracker = frame_allocator::alloc_contiguous(pages_needed)?;
 
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
@@ -123,6 +127,7 @@ impl VirtQueue {
             (*used).idx = AtomicU16::new(0);
         }
 
+        debug!("[VirtQueue] Successfully created queue: size={}, num_free={}", size, size);
         Some(VirtQueue {
             size,
             desc,
@@ -213,9 +218,14 @@ impl VirtQueue {
     }
 
     pub fn add_buffer(&mut self, inputs: &[&[u8]], outputs: &mut [&mut [u8]]) -> Option<u16> {
-        if self.num_free < (inputs.len() + outputs.len()) as u16 {
+        let total_needed = (inputs.len() + outputs.len()) as u16;
+        if total_needed == 0 {
+            return None;
+        }
+
+        if self.num_free < total_needed {
             error!("[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
-                   inputs.len() + outputs.len(), self.num_free);
+                   total_needed, self.num_free);
             return None;
         }
 
