@@ -5,14 +5,23 @@ use spin::Mutex;
 
 use crate::board::board_info;
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
+use crate::drivers::hal::{Device, DeviceType, BasicInterruptController, InterruptController};
 use crate::fs::{make_filesystem, vfs::vfs};
 
-static DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
+static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
+static HAL_DEVICES: Mutex<Vec<Arc<dyn Device>>> = Mutex::new(Vec::new());
+static INTERRUPT_CONTROLLER: Mutex<Option<BasicInterruptController>> = Mutex::new(None);
 
 pub fn init_devices() {
+    init_interrupt_controller();
     scan_virtio_devices();
-
     init_filesystems();
+}
+
+fn init_interrupt_controller() {
+    let mut controller = INTERRUPT_CONTROLLER.lock();
+    *controller = Some(BasicInterruptController::new());
+    debug!("[HAL] Interrupt controller initialized");
 }
 
 fn scan_virtio_devices() {
@@ -25,9 +34,14 @@ fn scan_virtio_devices() {
             let base_addr = virtio_dev.base_addr;
             debug!("[device] Scanning VirtIO device {} at {:#x}", i, base_addr);
 
-            // 只初始化VirtIO Block设备，忽略其他设备
             if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-                DEVICES.lock().push(device);
+                // 同时存储为BlockDevice和HAL Device
+                let block_device = device.clone() as Arc<dyn BlockDevice>;
+                let hal_device = device as Arc<dyn Device>;
+                
+                BLOCK_DEVICES.lock().push(block_device);
+                HAL_DEVICES.lock().push(hal_device);
+                
                 debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
             } else {
                 debug!("[device] Skipping non-block VirtIO device at {:#x}", base_addr);
@@ -36,15 +50,16 @@ fn scan_virtio_devices() {
     }
 }
 
+
 fn init_filesystems() {
-    let devices = DEVICES.lock();
-    if devices.is_empty() {
+    let block_devices = block_devices();
+    if block_devices.is_empty() {
         error!("[device]: No block devices found");
         return;
     }
 
     // Use the first block device as root file system
-    let device = devices[0].clone();
+    let device = block_devices[0].clone();
 
     if let Some(fs) = make_filesystem(device) {
         // Mount to root directory
@@ -59,12 +74,30 @@ fn init_filesystems() {
 }
 
 pub fn block_devices() -> Vec<Arc<dyn BlockDevice>> {
-    DEVICES.lock().clone()
+    BLOCK_DEVICES.lock().clone()
+}
+
+pub fn hal_devices() -> Vec<Arc<dyn Device>> {
+    HAL_DEVICES.lock().clone()
+}
+
+pub fn with_interrupt_controller<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&BasicInterruptController) -> R,
+{
+    let controller = INTERRUPT_CONTROLLER.lock();
+    controller.as_ref().map(f)
 }
 
 pub fn handle_external_interrupt() {
-    // 简单的VirtIO中断处理 - 遍历所有设备检查中断状态
     debug!("[device] Handling external interrupt");
-    // 这里可以添加具体的设备中断处理逻辑
-    // 由于当前使用轮询方式，暂时不需要复杂的中断处理
+    
+    if let Some(controller) = INTERRUPT_CONTROLLER.lock().as_ref() {
+        let pending = controller.pending_interrupts();
+        for vector in pending {
+            if let Err(e) = controller.handle_interrupt(vector) {
+                debug!("[HAL] Failed to handle interrupt {}: {}", vector, e);
+            }
+        }
+    }
 }
