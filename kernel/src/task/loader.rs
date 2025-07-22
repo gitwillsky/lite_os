@@ -2,7 +2,6 @@ use alloc::vec::Vec;
 
 use crate::fs::vfs::vfs;
 
-
 /// 从文件系统加载程序二进制文件
 pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
     debug!("[LOADER] Attempting to load program from: {}", path);
@@ -19,7 +18,7 @@ pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
                 Ok(bytes_read) => {
                     debug!("[LOADER] Successfully read {} bytes", bytes_read);
                     Some(buffer)
-                },
+                }
                 Err(e) => {
                     debug!("[LOADER] Failed to read file: {:?}", e);
                     None
@@ -36,19 +35,10 @@ pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
 /// 标准ELF加载接口 - 从文件系统加载程序
 pub fn get_app_data_by_name(app_name: &str) -> Option<Vec<u8>> {
     debug!("[LOADER] Looking for app: {}", app_name);
-    // 构造程序文件路径 - 优先尝试ELF文件，再尝试.bin文件
-    let paths = [
-        alloc::format!("/{}", app_name),                 // ELF文件：/initproc
-        alloc::format!("/{}", app_name.to_uppercase()),  // ELF文件：/INITPROC
-        alloc::format!("/{}", app_name.to_lowercase()),  // ELF文件：/initproc
-    ];
 
-    for path in &paths {
-        debug!("[LOADER] Trying path: {}", path);
-        if let Some(data) = load_program_from_fs(path) {
-            debug!("[LOADER] Successfully loaded from path: {}", path);
-            return Some(data);
-        }
+    if let Some(data) = load_program_from_fs(app_name) {
+        debug!("[LOADER] Successfully loaded from path: {}", app_name);
+        return Some(data);
     }
 
     debug!("[LOADER] Failed to load app: {}", app_name);

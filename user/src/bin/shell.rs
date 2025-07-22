@@ -8,13 +8,75 @@ extern crate user_lib;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{exec, execve, fork, read, wait_pid, yield_, open, close, dup2};
+use alloc::collections::VecDeque;
+use user_lib::{exec, execve, fork, read, wait_pid, yield_, open, close, dup2, chdir};
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
 const DL: u8 = b'\x7f'; // DEL
 const BS: u8 = b'\x08'; // BACKSPACE
 const TAB: u8 = b'\t';  // TAB
+const ESC: u8 = b'\x1b'; // ESCAPE
+
+// ANSI escape sequences for arrow keys
+const ARROW_UP: [u8; 3] = [ESC, b'[', b'A'];
+const ARROW_DOWN: [u8; 3] = [ESC, b'[', b'B'];
+const ARROW_RIGHT: [u8; 3] = [ESC, b'[', b'C'];
+const ARROW_LEFT: [u8; 3] = [ESC, b'[', b'D'];
+
+struct CommandHistory {
+    commands: VecDeque<String>,
+    current_index: isize,
+    max_size: usize,
+}
+
+impl CommandHistory {
+    fn new(max_size: usize) -> Self {
+        CommandHistory {
+            commands: VecDeque::new(),
+            current_index: -1,
+            max_size,
+        }
+    }
+
+    fn add_command(&mut self, command: String) {
+        if !command.is_empty() && (self.commands.is_empty() || self.commands.back() != Some(&command)) {
+            if self.commands.len() >= self.max_size {
+                self.commands.pop_front();
+            }
+            self.commands.push_back(command);
+        }
+        self.current_index = -1; // Reset to current (no history browsing)
+    }
+
+    fn get_previous(&mut self) -> Option<&String> {
+        if self.commands.is_empty() {
+            return None;
+        }
+
+        if self.current_index == -1 {
+            self.current_index = self.commands.len() as isize - 1;
+        } else if self.current_index > 0 {
+            self.current_index -= 1;
+        }
+
+        self.commands.get(self.current_index as usize)
+    }
+
+    fn get_next(&mut self) -> Option<&String> {
+        if self.current_index == -1 {
+            return None;
+        }
+
+        self.current_index += 1;
+        if self.current_index >= self.commands.len() as isize {
+            self.current_index = -1;
+            return None;
+        }
+
+        self.commands.get(self.current_index as usize)
+    }
+}
 
 fn get_char() -> u8 {
     let mut byte = [0u8; 1];
@@ -22,6 +84,36 @@ fn get_char() -> u8 {
         return 0;
     }
     byte[0]
+}
+
+// 检测ANSI escape sequence
+fn detect_escape_sequence() -> Option<[u8; 3]> {
+    let first = get_char();
+    if first == 0 {
+        return None;
+    }
+
+    let second = get_char();
+    if second == 0 {
+        return None;
+    }
+
+    let third = get_char();
+    if third == 0 {
+        return None;
+    }
+
+    Some([first, second, third])
+}
+
+// 清除当前行并重新显示
+fn clear_line_and_redraw(prompt: &str, line: &str) {
+    // 移动光标到行首
+    print!("\r");
+    // 清除整行
+    print!("\x1b[K");
+    // 重新显示提示符和内容
+    print!("{}{}", prompt, line);
 }
 
 fn read_line(buf: &mut [u8]) -> usize {
@@ -80,13 +172,15 @@ fn string_display_width(s: &str) -> usize {
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     let mut line: String = String::new();
+    let mut history = CommandHistory::new(100); // 保存最多100条历史命令
+
     // print welcome message
-    println!("欢迎使用LiteOS Shell!");
+    println!("欢迎使用LiteOS Enhanced Shell!");
     println!("================================");
     println!("输入 'help' 查看可用命令");
     println!("");
 
-    print!("$");
+    print!("$ ");
     loop {
         let c = get_char();
         match c {
@@ -94,35 +188,59 @@ fn main() -> i32 {
                 yield_();
                 continue;
             }
+            ESC => {
+                // 处理escape sequences
+                if let Some(seq) = detect_escape_sequence() {
+                    match seq {
+                        [b'[', b'A', _] => { // 上箭头
+                            if let Some(prev_cmd) = history.get_previous() {
+                                line = prev_cmd.clone();
+                                clear_line_and_redraw("$ ", &line);
+                            }
+                        }
+                        [b'[', b'B', _] => { // 下箭头
+                            if let Some(next_cmd) = history.get_next() {
+                                line = next_cmd.clone();
+                                clear_line_and_redraw("$ ", &line);
+                            } else {
+                                line.clear();
+                                clear_line_and_redraw("$ ", &line);
+                            }
+                        }
+                        [b'[', b'C', _] => { // 右箭头 (暂时忽略)
+                            // TODO: 实现光标移动
+                        }
+                        [b'[', b'D', _] => { // 左箭头 (暂时忽略)
+                            // TODO: 实现光标移动
+                        }
+                        _ => {
+                            // 忽略其他escape sequences
+                        }
+                    }
+                }
+            }
             CR | LF => {
                 println!("");
                 if !line.is_empty() {
-                    // 处理内置命令
-                    if line.starts_with("ls") {
-                        handle_ls_command(&line);
-                    } else if line.starts_with("cat") {
-                        handle_cat_command(&line);
-                    } else if line.starts_with("mkdir") {
-                        handle_mkdir_command(&line);
-                    } else if line.starts_with("rm") {
-                        handle_rm_command(&line);
-                    } else if line.starts_with("cd") {
+                    // 将命令添加到历史中
+                    history.add_command(line.clone());
+
+                    // 只处理必需的内置命令
+                    if line.starts_with("cd") {
                         handle_cd_command(&line);
-                    } else if line.starts_with("pwd") {
-                        handle_pwd_command(&line);
                     } else if line.starts_with("help") {
                         handle_help_command(&line);
                     } else {
-                        // 执行外部程序，支持重定向
+                        // 执行外部程序，支持重定向和PATH查找
                         execute_command_with_redirection(&line);
                     }
                     line.clear();
                 }
-                print!("$");
+                print!("$ ");
             }
             TAB => {
                 // 处理Tab字符 - 扩展为空格直到下一个tab stop
-                let current_pos = 1 + string_display_width(&line); // 1 for '$' prompt
+                let current_pos = 2 + string_display_width(&line); // 2 for '$ ' prompt
                 let spaces_to_add = 8 - (current_pos % 8);
                 for _ in 0..spaces_to_add {
                     print!(" ");
@@ -133,7 +251,7 @@ fn main() -> i32 {
                 if line.len() > 0 {
                     let removed_char = line.pop().unwrap();
                     // 计算要删除的字符的显示宽度
-                    let current_pos = 1 + string_display_width(&line); // position after removal
+                    let current_pos = 2 + string_display_width(&line); // position after removal, 2 for '$ ' prompt
                     let char_width = char_display_width(removed_char, current_pos);
 
                     // 退格删除相应数量的字符
@@ -211,6 +329,33 @@ fn file_exists(filename: &str) -> bool {
     }
 }
 
+// 在PATH中查找可执行文件
+fn find_in_path(command: &str) -> Option<String> {
+    // 如果命令包含路径分隔符，直接返回
+    if command.contains('/') {
+        if file_exists(command) {
+            return Some(String::from(command));
+        } else {
+            return None;
+        }
+    }
+
+    // 定义PATH目录列表（简化版本）
+    let path_dirs = ["/bin", "/usr/bin", "."];
+
+    for dir in &path_dirs {
+        let mut full_path = String::from(*dir);
+        full_path.push('/');
+        full_path.push_str(command);
+
+        if file_exists(&full_path) {
+            return Some(full_path);
+        }
+    }
+
+    None
+}
+
 // 执行带重定向的命令
 fn execute_command_with_redirection(line: &str) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
@@ -219,48 +364,66 @@ fn execute_command_with_redirection(line: &str) {
         return;
     }
 
-    // 检查是否为直接执行 WASM 文件
+    // 解析命令和参数
     let parts: Vec<&str> = command.split_whitespace().collect();
-    if !parts.is_empty() {
-        let first_part = parts[0];
+    if parts.is_empty() {
+        return;
+    }
 
-        // 如果命令是 .wasm 文件，自动使用 wasm_runtime 执行
-        if is_wasm_file(first_part) {
-            if file_exists(first_part) {
-                // 构造新的命令：wasm_runtime <wasm_file> [args...]
-                let mut wasm_command = String::from("wasm_runtime ");
-                wasm_command.push_str(&command);
-                execute_wasm_command(&wasm_command, output_file, input_file);
-                return;
-            } else {
-                println!("shell: {}: No such file or directory", first_part);
-                return;
-            }
-        }
+    let first_part = parts[0];
 
-        // 如果命令以 ./ 开头且是 .wasm 文件，也自动使用 wasm_runtime
-        if first_part.starts_with("./") && is_wasm_file(first_part) {
-            let wasm_file = &first_part[2..]; // 去掉 "./"
-            if file_exists(wasm_file) {
-                let mut wasm_command = String::from("wasm_runtime ");
-                wasm_command.push_str(wasm_file);
-
-                // 添加其他参数
-                for i in 1..parts.len() {
-                    wasm_command.push(' ');
-                    wasm_command.push_str(parts[i]);
-                }
-
-                execute_wasm_command(&wasm_command, output_file, input_file);
-                return;
-            } else {
-                println!("shell: {}: No such file or directory", wasm_file);
-                return;
-            }
+    // 检查是否为直接执行 WASM 文件
+    if is_wasm_file(first_part) {
+        if file_exists(first_part) {
+            // 构造新的命令：wasm_runtime <wasm_file> [args...]
+            let mut wasm_command = String::from("wasm_runtime ");
+            wasm_command.push_str(&command);
+            execute_wasm_command(&wasm_command, output_file, input_file);
+            return;
+        } else {
+            println!("shell: {}: No such file or directory", first_part);
+            return;
         }
     }
 
-    let mut cmd_with_null = command.clone();
+    // 如果命令以 ./ 开头且是 .wasm 文件，也自动使用 wasm_runtime
+    if first_part.starts_with("./") && is_wasm_file(first_part) {
+        let wasm_file = &first_part[2..]; // 去掉 "./"
+        if file_exists(wasm_file) {
+            let mut wasm_command = String::from("wasm_runtime ");
+            wasm_command.push_str(wasm_file);
+
+            // 添加其他参数
+            for i in 1..parts.len() {
+                wasm_command.push(' ');
+                wasm_command.push_str(parts[i]);
+            }
+
+            execute_wasm_command(&wasm_command, output_file, input_file);
+            return;
+        } else {
+            println!("shell: {}: No such file or directory", wasm_file);
+            return;
+        }
+    }
+
+    // 使用PATH查找命令
+    let executable_path = if let Some(path) = find_in_path(first_part) {
+        path
+    } else {
+        println!("shell: {}: command not found", first_part);
+        return;
+    };
+
+    // 构造带完整路径的命令
+    let mut full_command = String::from(&executable_path);
+    // 添加其余参数
+    for i in 1..parts.len() {
+        full_command.push(' ');
+        full_command.push_str(parts[i]);
+    }
+
+    let mut cmd_with_null = full_command.clone();
     cmd_with_null.push('\0');
 
     let pid = fork();
@@ -305,16 +468,13 @@ fn execute_command_with_redirection(line: &str) {
 
         // 执行命令
         if exec(cmd_with_null.as_str()) == -1 {
-            println!("command not found: {}", command);
+            println!("command not found: {}", first_part);
         }
     } else {
         // 父进程：等待子进程完成
         let mut exit_code: i32 = 0;
         let exit_pid = wait_pid(pid as usize, &mut exit_code);
         assert_eq!(pid, exit_pid);
-        if exit_code != 0 {
-            println!("Shell: Process {} exited with code {}", pid, exit_code);
-        }
     }
 }
 
@@ -383,76 +543,6 @@ fn execute_wasm_command(wasm_command: &str, output_file: Option<String>, input_f
     }
 }
 
-fn handle_ls_command(line: &str) {
-    let path = if line.len() > 2 {
-        line[2..].trim()
-    } else {
-        "."  // Use current directory instead of root
-    };
-
-    let mut buf = [0u8; 1024];
-    let len = user_lib::listdir(path, &mut buf);
-    if len >= 0 {
-        let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
-        print!("{}", contents);
-    } else {
-        println!("ls: cannot access '{}': No such file or directory", path);
-    }
-}
-
-fn handle_cat_command(line: &str) {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 {
-        println!("cat: missing file operand");
-        return;
-    }
-
-    let path = parts[1];
-    let mut buf = [0u8; 4096];
-    let len = user_lib::read_file(path, &mut buf);
-    if len >= 0 {
-        let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
-        print!("{}", contents);
-    } else {
-        println!("cat: {}: No such file or directory", path);
-    }
-}
-
-fn handle_mkdir_command(line: &str) {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 {
-        println!("mkdir: missing operand");
-        return;
-    }
-
-    let path = parts[1];
-    let result = user_lib::mkdir(path);
-    match result {
-        0 => println!("Directory '{}' created", path),
-        -17 => println!("mkdir: cannot create directory '{}': File exists", path),
-        -13 => println!("mkdir: cannot create directory '{}': Permission denied", path),
-        -2 => println!("mkdir: cannot create directory '{}': No such file or directory", path),
-        -20 => println!("mkdir: cannot create directory '{}': Not a directory", path),
-        -28 => println!("mkdir: cannot create directory '{}': No space left on device", path),
-        _ => println!("mkdir: cannot create directory '{}': Unknown error ({})", path, result),
-    }
-}
-
-fn handle_rm_command(line: &str) {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 {
-        println!("rm: missing operand");
-        return;
-    }
-
-    let path = parts[1];
-    if user_lib::remove(path) == 0 {
-        println!("'{}' removed", path);
-    } else {
-        println!("rm: cannot remove '{}': No such file or directory", path);
-    }
-}
-
 fn handle_cd_command(line: &str) {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let path = if parts.len() < 2 {
@@ -461,7 +551,7 @@ fn handle_cd_command(line: &str) {
         parts[1]
     };
 
-    let result = user_lib::chdir(path);
+    let result = chdir(path);
     match result {
         0 => {}, // Success, no output needed
         -2 => println!("cd: {}: No such file or directory", path),
@@ -471,36 +561,24 @@ fn handle_cd_command(line: &str) {
     }
 }
 
-fn handle_pwd_command(_line: &str) {
-    let mut buf = [0u8; 256];
-    let result = user_lib::getcwd(&mut buf);
-    if result > 0 {
-        // Find the null terminator or use the returned length
-        let len = result as usize - 1; // Subtract 1 for null terminator
-        if let Ok(cwd) = core::str::from_utf8(&buf[..len]) {
-            println!("{}", cwd);
-        } else {
-            println!("pwd: Invalid UTF-8 in current directory path");
-        }
-    } else {
-        println!("pwd: Cannot get current directory");
-    }
-}
-
 fn handle_help_command(_line: &str) {
-    println!("LiteOS Shell - Built-in Commands:");
-    println!("================================");
+    println!("LiteOS Shell - Enhanced Unix-like Shell");
+    println!("======================================");
     println!("");
-    println!("File Operations:");
+    println!("Built-in Commands:");
+    println!("  cd [dir]           - Change directory");
+    println!("  help               - Show this help message");
+    println!("  exit [code]        - Exit shell with optional exit code");
+    println!("");
+    println!("External Programs (via PATH):");
     println!("  ls [dir]           - List directory contents");
     println!("  cat <file>         - Display file contents");
     println!("  mkdir <dir>        - Create directory");
     println!("  rm <file>          - Remove file");
     println!("  pwd                - Print working directory");
-    println!("  cd [dir]           - Change directory");
+    println!("  <program>          - Execute any program in PATH");
     println!("");
-    println!("Program Execution:");
-    println!("  <program>          - Execute ELF binary");
+    println!("WASM Programs:");
     println!("  <file>.wasm        - Execute WASM program (auto-detected)");
     println!("  ./<file>.wasm      - Execute WASM program with relative path");
     println!("  wasm_runtime <file>.wasm - Execute WASM program explicitly");
@@ -509,23 +587,16 @@ fn handle_help_command(_line: &str) {
     println!("  <command> > file   - Redirect output to file");
     println!("  <command> < file   - Redirect input from file");
     println!("");
+    println!("PATH Search Order:");
+    println!("  1. /bin/           - System binaries");
+    println!("  2. /usr/bin/       - User binaries");
+    println!("  3. ./              - Current directory");
+    println!("");
     println!("Examples:");
-    println!("  hello_wasm.wasm              - Run Rust WASM test program");
-    println!("  ./math_test.wasm             - Run math operations test");
-    println!("  wasi_test.wasm > output.txt  - Run WASI test, save output");
-    println!("  file_test.wasm               - Run file operations test");
+    println!("  ls /               - List root directory");
+    println!("  cat README.txt     - Display file contents");
+    println!("  mkdir testdir      - Create directory");
+    println!("  hello_wasm.wasm    - Run WASM program");
+    println!("  ls > files.txt     - Save directory listing");
     println!("");
-    println!("Available WASM Programs:");
-    println!("  hello_wasm.wasm    - Basic Rust WASM hello world");
-    println!("  wasi_test.wasm     - Comprehensive WASI functionality test");
-    println!("  math_test.wasm     - Mathematical operations test");
-    println!("  file_test.wasm     - File I/O operations test");
-    println!("  simple.wasm        - Minimal WASM (returns 42)");
-    println!("  hello.wasm         - Simple hello message");
-    println!("");
-    println!("Other Commands:");
-    println!("  help               - Show this help message");
-    println!("");
-    println!("Note: WASM files are automatically detected and executed");
-    println!("      through the wasm_runtime when run directly.");
 }

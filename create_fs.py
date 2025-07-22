@@ -77,34 +77,11 @@ def create_fat32_filesystem(filename, size_mb=128):
 def copy_files_to_fs(mount_point):
     """复制文件到已挂载的文件系统"""
 
-    # 创建测试文件
-    with open(os.path.join(mount_point, 'hello.txt'), 'w') as f:
-        f.write('Hello from FAT32 filesystem!\n')
+    # 创建标准Unix目录结构
+    bin_dir = os.path.join(mount_point, 'bin')
 
-    with open(os.path.join(mount_point, 'test.txt'), 'w') as f:
-        f.write('This is a test file\n')
-
-    with open(os.path.join(mount_point, 'README.md'), 'w') as f:
-        f.write('''# LiteOS File System
-
-This is the LiteOS FAT32 filesystem containing:
-
-## User Programs (ELF)
-- Native RISC-V 64-bit ELF binaries
-- Run directly: ./program_name
-
-## WASM Programs (.wasm)
-- WebAssembly modules for the WASM runtime
-- Run with: ./wasm_runtime program_name.wasm
-
-## Test Files
-- hello.txt: Test file for file I/O operations
-- test.txt: Another test file
-
-Have fun exploring LiteOS!
-''')
-
-    print("✓ 测试文件已创建")
+    # 创建目录
+    os.makedirs(bin_dir, exist_ok=True)
 
     # 查找并复制用户程序ELF文件（原始ELF文件，不是.bin）
     user_elfs = []
@@ -119,14 +96,25 @@ Have fun exploring LiteOS!
             '.' not in basename):
             user_elfs.append(elf_file)
 
+    # 定义哪些命令应该放在 /bin/ 目录下
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'initproc', 'wasm_runtime']
+
     if user_elfs:
         print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")
 
         for elf_file in user_elfs:
-            dest_name = os.path.basename(elf_file)
-            dest_path = os.path.join(mount_point, dest_name)
-            shutil.copy2(elf_file, dest_path)
-            print(f"✓ 复制ELF: {os.path.basename(elf_file)} -> {dest_name}")
+            basename = os.path.basename(elf_file)
+
+            # 系统命令放在 /bin/ 目录下
+            if basename in bin_commands:
+                dest_path = os.path.join(bin_dir, basename)
+                shutil.copy2(elf_file, dest_path)
+                print(f"✓ 复制ELF: {basename} -> /bin/{basename}")
+            # 其他程序放在根目录
+            else:
+                dest_path = os.path.join(mount_point, basename)
+                shutil.copy2(elf_file, dest_path)
+                print(f"✓ 复制ELF: {basename} -> {basename}")
     else:
         print("⚠ 未找到用户程序ELF文件")
 

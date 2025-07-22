@@ -32,7 +32,7 @@ pub struct RuntimeArgs {
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     println!("WASM runtime main() starting...");
-    
+
     let args = parse_real_runtime_args();
     let exit_code = if let Some(args) = args {
         println!("WASM runtime calling wasm_runtime_main...");

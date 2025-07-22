@@ -29,7 +29,7 @@ unsafe extern "C" {
     );
 }
 
-const INIT_PROC_NAME: &str = "initproc";
+const INIT_PROC_NAME: &str = "/bin/initproc";
 
 pub fn init() {
     let elf_data = get_app_data_by_name(INIT_PROC_NAME).expect("Failed to get init proc data");

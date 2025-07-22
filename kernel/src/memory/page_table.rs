@@ -106,7 +106,7 @@ impl PageTable {
     }
 
     fn new_pte(&mut self, flags: Option<PTEFlags>) -> PageTableEntry {
-        let frame = alloc().unwrap();
+        let frame = alloc().expect("can not alloc new frame to create PageTableEntry");
         let ppn = frame.ppn;
         self.entries.push(frame);
         PageTableEntry::new(ppn, flags.unwrap_or(PTEFlags::V))

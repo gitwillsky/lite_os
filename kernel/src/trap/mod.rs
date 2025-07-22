@@ -83,10 +83,6 @@ pub fn trap_handler() {
                     let syscall_id = cx.x[17];
                     let args = [cx.x[10], cx.x[11], cx.x[12]];
 
-                    if syscall_id == 93 {
-                        debug!("task {} exit with code {}", task::current_task().unwrap().pid(), args[0]);
-                    }
-
                     cx.x[10] = {
                         cx.sepc += 4;
                         syscall::syscall(syscall_id, args) as usize

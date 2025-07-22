@@ -24,19 +24,20 @@ fn main() -> i32 {
         }
 
         // Check if the shell exited
-        if let Some(current_shell_pid) = shell_pid {
-            if exited_pid as usize == current_shell_pid {
-                shell_pid = None;
-                spawn_shell(&mut shell_pid);
-            }
-        }
+        // if let Some(current_shell_pid) = shell_pid {
+        //     if exited_pid as usize == current_shell_pid {
+        //         shell_pid = None;
+        //         spawn_shell(&mut shell_pid);
+        //     }
+        // }
     }
 }
 
 fn spawn_shell(shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
-        exit(exec("user_shell") as i32);
+        let exit_code = exec("/bin/shell") as i32;
+        exit(exit_code);
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);
     } else {
