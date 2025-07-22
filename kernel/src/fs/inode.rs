@@ -1,12 +1,13 @@
 use alloc::{string::String, sync::Arc, vec::Vec};
 
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InodeType {
-    File,
-    Directory,
-    SymLink,
-    Device,
-    Fifo,  // Named pipe (FIFO)
+    File = 0,
+    Directory = 1,
+    SymLink = 2,
+    Device = 3,
+    Fifo = 4,  // Named pipe (FIFO)
 }
 
 pub trait Inode: Send + Sync {

@@ -33,6 +33,7 @@ pub trait FileSystem: Send + Sync {
     fn sync(&self) -> Result<(), FileSystemError>;
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FileStat {
     pub size: u64,

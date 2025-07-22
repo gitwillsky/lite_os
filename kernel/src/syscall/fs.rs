@@ -4,9 +4,9 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::{
     arch::sbi,
-    fs::{FileSystemError, LockError, LockOp, LockType, file_lock_manager, vfs::vfs},
+    fs::{FileSystemError, LockError, LockOp, LockType, file_lock_manager, vfs::vfs, FileStat, InodeType},
     ipc::{create_fifo, create_pipe},
-    memory::page_table::translated_byte_buffer,
+    memory::page_table::{translated_byte_buffer, translated_ref_mut},
     task::{FileDescriptor, current_task, current_user_token, suspend_current_and_run_next},
 };
 
@@ -422,8 +422,31 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
 
     match vfs().open(&path_str) {
         Ok(inode) => {
-            // 这里需要根据实际的stat结构体来填充
-            // 暂时返回成功
+            // Create FileStat from inode information
+            let size = inode.size();
+            let file_type = inode.inode_type();
+            let mode = inode.mode();
+            let uid = inode.uid();
+            let gid = inode.gid();
+            
+            // debug!("[STAT] path: {}, size: {}, type: {:?}, mode: 0o{:o}, uid: {}, gid: {}", 
+            //        path_str, size, file_type, mode, uid, gid);
+            
+            let file_stat = FileStat {
+                size,
+                file_type,
+                mode,
+                nlink: 1, // Simple implementation
+                uid,
+                gid,
+                atime: 0, // Not implemented yet
+                mtime: 0, // Not implemented yet  
+                ctime: 0, // Not implemented yet
+            };
+
+            // Get mutable reference to user buffer and copy the stat
+            let user_stat = translated_ref_mut(token, stat_buf as *mut FileStat);
+            *user_stat = file_stat;
             0
         }
         Err(_) => -1,
