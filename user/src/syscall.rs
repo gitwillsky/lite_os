@@ -104,6 +104,12 @@ const SYSCALL_GET_PROCESS_LIST: usize = 700;
 const SYSCALL_GET_PROCESS_INFO: usize = 701;
 const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 
+// 时间相关系统调用
+const SYSCALL_GET_TIME_MS: usize = 800;
+const SYSCALL_GET_TIME_US: usize = 801;
+const SYSCALL_GET_TIME_NS: usize = 802;
+const SYSCALL_NANOSLEEP: usize = 101;
+
 /// 系统调用
 ///
 /// # Arguments
@@ -572,4 +578,65 @@ pub fn get_process_info(pid: u32, info: &mut ProcessInfo) -> isize {
 /// 返回值：成功返回0，失败返回-1
 pub fn get_system_stats(stats: &mut SystemStats) -> isize {
     syscall(SYSCALL_GET_SYSTEM_STATS, [stats as *mut SystemStats as usize, 0, 0])
+}
+
+// 时间相关结构体和函数
+
+/// POSIX timespec 结构体
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TimeSpec {
+    pub tv_sec: u64,  // 秒
+    pub tv_nsec: u64, // 纳秒
+}
+
+/// 获取当前时间（毫秒）
+pub fn get_time_ms() -> isize {
+    syscall(SYSCALL_GET_TIME_MS, [0, 0, 0])
+}
+
+/// 获取当前时间（微秒）
+pub fn get_time_us() -> isize {
+    syscall(SYSCALL_GET_TIME_US, [0, 0, 0])
+}
+
+/// 获取当前时间（纳秒）
+pub fn get_time_ns() -> isize {
+    syscall(SYSCALL_GET_TIME_NS, [0, 0, 0])
+}
+
+/// POSIX nanosleep - 高精度睡眠
+/// 参数：
+/// - req: 要睡眠的时间
+/// - rem: 如果被信号中断，剩余时间（可以为null）
+/// 返回值：成功返回0，失败返回-1
+pub fn nanosleep(req: &TimeSpec, rem: *mut TimeSpec) -> isize {
+    syscall(SYSCALL_NANOSLEEP, [req as *const TimeSpec as usize, rem as usize, 0])
+}
+
+/// 毫秒级睡眠（便利函数）
+pub fn sleep_ms(ms: u64) -> isize {
+    let req = TimeSpec {
+        tv_sec: ms / 1000,
+        tv_nsec: (ms % 1000) * 1_000_000,
+    };
+    nanosleep(&req, core::ptr::null_mut())
+}
+
+/// 微秒级睡眠（便利函数）
+pub fn sleep_us(us: u64) -> isize {
+    let req = TimeSpec {
+        tv_sec: us / 1_000_000,
+        tv_nsec: (us % 1_000_000) * 1000,
+    };
+    nanosleep(&req, core::ptr::null_mut())
+}
+
+/// 秒级睡眠（便利函数）
+pub fn sleep(seconds: u64) -> isize {
+    let req = TimeSpec {
+        tv_sec: seconds,
+        tv_nsec: 0,
+    };
+    nanosleep(&req, core::ptr::null_mut())
 }

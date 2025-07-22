@@ -9,6 +9,7 @@ mod errno;
 use fs::*;
 use process::*;
 use signal::*;
+use timer::*;
 use dynamic_linking::*;
 use memory::*;
 
@@ -86,6 +87,12 @@ const SYSCALL_GET_PROCESS_LIST: usize = 700;
 const SYSCALL_GET_PROCESS_INFO: usize = 701;
 const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 
+// 时间相关系统调用
+const SYSCALL_GET_TIME_MS: usize = 800;
+const SYSCALL_GET_TIME_US: usize = 801;
+const SYSCALL_GET_TIME_NS: usize = 802;
+const SYSCALL_NANOSLEEP: usize = 101;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -159,6 +166,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),
         SYSCALL_GET_PROCESS_INFO => sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo),
         SYSCALL_GET_SYSTEM_STATS => sys_get_system_stats(args[0] as *mut SystemStats),
+
+        // 时间相关系统调用
+        SYSCALL_GET_TIME_MS => sys_get_time_msec(),
+        SYSCALL_GET_TIME_US => sys_get_time_us(),
+        SYSCALL_GET_TIME_NS => sys_get_time_ns(),
+        SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

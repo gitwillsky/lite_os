@@ -48,6 +48,9 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::set_next_timer_interrupt();
+                    
+                    // 检查并唤醒到期的睡眠任务
+                    timer::check_and_wakeup_sleeping_tasks();
 
                     // Check and handle pending signals before task switch
                     if !check_signals_and_maybe_exit() {
