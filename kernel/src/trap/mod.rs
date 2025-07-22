@@ -18,7 +18,10 @@ use riscv::{
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
-    task::{self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, SIG_RETURN_ADDR},
+    task::{
+        self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, 
+        SIG_RETURN_ADDR, mark_kernel_entry, mark_kernel_exit,
+    },
     timer,
 };
 
@@ -31,6 +34,10 @@ pub fn init() {
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
     set_kernel_trap_entry();
+    
+    // 标记进入内核态
+    mark_kernel_entry();
+    
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
@@ -139,6 +146,9 @@ pub fn trap_handler() {
 
     // Check and handle pending signals before returning to user space
     check_signals_and_maybe_exit();
+
+    // 标记退出内核态
+    mark_kernel_exit();
 
     trap_return();
 }

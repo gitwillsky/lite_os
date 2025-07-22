@@ -34,4 +34,8 @@ impl Scheduler for FIFOScheduler {
             .find(|t| t.pid() == pid)
             .map(|t| t.clone())
     }
+
+    fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+        self.tasks.iter().cloned().collect()
+    }
 }

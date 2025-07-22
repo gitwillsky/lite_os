@@ -11,4 +11,5 @@ pub trait Scheduler: Send {
     fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>>;
     fn count(&self) -> usize;
     fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>>;
+    fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>>;
 }

@@ -97,7 +97,7 @@ def copy_files_to_fs(mount_point):
             user_elfs.append(elf_file)
 
     # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'initproc', 'wasm_runtime']
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'initproc', 'wasm_runtime', 'top']
 
     if user_elfs:
         print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")

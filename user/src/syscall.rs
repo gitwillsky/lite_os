@@ -2,6 +2,46 @@ use core::arch::asm;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// 进程信息结构体（与内核中的定义保持一致）
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
+    pub status: u32,     // 0=Ready, 1=Running, 2=Zombie, 3=Sleeping
+    pub priority: i32,
+    pub nice: i32,
+    pub vruntime: u64,
+    pub heap_base: usize,
+    pub heap_top: usize,
+    pub last_runtime: u64,
+    pub total_cpu_time: u64,  // 总CPU时间（微秒）
+    pub cpu_percent: u32,     // CPU使用率百分比（0-10000，支持两位小数）
+    pub name: [u8; 32],       // 进程名（固定长度，以0结尾）
+}
+
+/// 系统统计信息结构体（与内核中的定义保持一致）
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SystemStats {
+    pub total_processes: u32,
+    pub running_processes: u32,
+    pub sleeping_processes: u32,
+    pub zombie_processes: u32,
+    pub total_memory: usize,
+    pub used_memory: usize,
+    pub free_memory: usize,
+    pub system_uptime: u64,      // 系统运行时间（微秒）
+    pub cpu_user_time: u64,      // 用户态CPU时间（微秒）
+    pub cpu_system_time: u64,    // 系统态CPU时间（微秒）
+    pub cpu_idle_time: u64,      // 空闲CPU时间（微秒）
+    pub cpu_usage_percent: u32,  // 总CPU使用率百分比（0-10000）
+}
+
 // 系统调用ID定义
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
@@ -58,6 +98,11 @@ const SYSCALL_SIGPROCMASK: usize = 135;
 const SYSCALL_SIGRETURN: usize = 139;
 const SYSCALL_PAUSE: usize = 34;
 const SYSCALL_ALARM: usize = 37;
+
+// 进程监控系统调用
+const SYSCALL_GET_PROCESS_LIST: usize = 700;
+const SYSCALL_GET_PROCESS_INFO: usize = 701;
+const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 
 /// 系统调用
 ///
@@ -496,4 +541,35 @@ pub mod flock_consts {
     pub const LOCK_EX: i32 = 2;   // 排他锁
     pub const LOCK_NB: i32 = 4;   // 非阻塞
     pub const LOCK_UN: i32 = 8;   // 解锁
+}
+
+/// 获取进程列表
+/// 参数：
+/// - pids: 进程ID数组缓冲区
+/// - max_count: 缓冲区最大容量
+/// 返回值：实际进程数量
+pub fn get_process_list(pids: &mut [u32]) -> isize {
+    syscall(SYSCALL_GET_PROCESS_LIST, [pids.as_mut_ptr() as usize, pids.len(), 0])
+}
+
+/// 获取所有进程ID的数量
+pub fn get_process_count() -> isize {
+    syscall(SYSCALL_GET_PROCESS_LIST, [0, 0, 0])
+}
+
+/// 获取特定进程的详细信息
+/// 参数：
+/// - pid: 进程ID
+/// - info: 用于存储进程信息的结构体
+/// 返回值：成功返回0，失败返回-1
+pub fn get_process_info(pid: u32, info: &mut ProcessInfo) -> isize {
+    syscall(SYSCALL_GET_PROCESS_INFO, [pid as usize, info as *mut ProcessInfo as usize, 0])
+}
+
+/// 获取系统统计信息
+/// 参数：
+/// - stats: 用于存储系统统计信息的结构体
+/// 返回值：成功返回0，失败返回-1
+pub fn get_system_stats(stats: &mut SystemStats) -> isize {
+    syscall(SYSCALL_GET_SYSTEM_STATS, [stats as *mut SystemStats as usize, 0, 0])
 }

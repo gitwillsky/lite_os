@@ -81,6 +81,11 @@ const SYSCALL_SBRK: usize = 215;
 const SYSCALL_MMAP: usize = 223;
 const SYSCALL_MUNMAP: usize = 216;
 
+// 进程监控系统调用
+const SYSCALL_GET_PROCESS_LIST: usize = 700;
+const SYSCALL_GET_PROCESS_INFO: usize = 701;
+const SYSCALL_GET_SYSTEM_STATS: usize = 702;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -149,6 +154,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_SBRK => sys_sbrk(args[0] as isize),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, 0, -1, 0),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
+
+        // 进程监控系统调用
+        SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),
+        SYSCALL_GET_PROCESS_INFO => sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo),
+        SYSCALL_GET_SYSTEM_STATS => sys_get_system_stats(args[0] as *mut SystemStats),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

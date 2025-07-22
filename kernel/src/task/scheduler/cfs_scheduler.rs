@@ -35,6 +35,10 @@ impl Scheduler for CFScheduler {
             .find(|t| t.0.pid() == pid)
             .map(|t| t.0.clone())
     }
+
+    fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+        self.tasks.iter().map(|cfs_task| cfs_task.0.clone()).collect()
+    }
 }
 
 /// CFS调度器中的任务包装器，用于按vruntime排序

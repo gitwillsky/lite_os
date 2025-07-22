@@ -136,6 +136,28 @@ impl StackFrameAllocator {
         self.recycled_ppns.push(ppn);
         Ok(())
     }
+
+    /// 获取内存统计信息
+    pub fn get_memory_stats(&self) -> (usize, usize, usize) {
+        let total_pages = self.end_ppn.as_usize() - self.start_ppn.as_usize();
+        let allocated_pages = self.current_start_ppn.as_usize() - self.start_ppn.as_usize() - self.recycled_ppns.len();
+        let free_pages = total_pages - allocated_pages;
+        
+        // 返回页数
+        (total_pages, allocated_pages, free_pages)
+    }
+
+    /// 获取内存统计信息（以字节为单位）
+    pub fn get_memory_stats_bytes(&self) -> (usize, usize, usize) {
+        let (total_pages, allocated_pages, free_pages) = self.get_memory_stats();
+        let page_size = 4096; // RISC-V页面大小为4KB
+        
+        (
+            total_pages * page_size,
+            allocated_pages * page_size,
+            free_pages * page_size,
+        )
+    }
 }
 
 pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
@@ -171,4 +193,10 @@ pub fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
 
 pub fn dealloc(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
     FRAME_ALLOCATOR.wait().lock().dealloc(ppn)
+}
+
+/// 获取系统内存统计信息（以字节为单位）
+/// 返回值：(总内存, 已用内存, 可用内存)
+pub fn get_memory_stats() -> (usize, usize, usize) {
+    FRAME_ALLOCATOR.wait().lock().get_memory_stats_bytes()
 }

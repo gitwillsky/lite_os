@@ -16,7 +16,7 @@ mod task_manager;
 pub use processor::*;
 pub use signal::{SIG_RETURN_ADDR, check_and_handle_signals};
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
-pub use task_manager::{SchedulingPolicy, add_task, get_scheduling_policy, set_scheduling_policy};
+pub use task_manager::{SchedulingPolicy, add_task, get_scheduling_policy, set_scheduling_policy, get_all_tasks, find_task_by_pid};
 
 global_asm!(include_str!("switch.S"));
 

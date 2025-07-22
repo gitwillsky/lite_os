@@ -2,6 +2,7 @@ use alloc::{
     boxed::Box,
     collections::{binary_heap::BinaryHeap, vec_deque::VecDeque},
     sync::Arc,
+    vec::Vec,
 };
 use core::{cmp::Ordering, sync::atomic::AtomicUsize};
 use lazy_static::lazy_static;
@@ -107,6 +108,27 @@ impl TaskManager {
             None
         }
     }
+
+    /// 获取所有任务列表（包括调度器中的、当前运行的和init进程）
+    pub fn get_all_tasks(&self) -> Vec<Arc<TaskControlBlock>> {
+        let mut all_tasks = self.scheduler.lock().get_all_tasks();
+        
+        // 添加当前运行的任务（如果不在调度器队列中）
+        if let Some(current) = current_task() {
+            if !all_tasks.iter().any(|task| task.pid() == current.pid()) {
+                all_tasks.push(current);
+            }
+        }
+        
+        // 添加init进程（如果不在其他列表中）
+        if let Some(init_proc) = &self.init_proc {
+            if !all_tasks.iter().any(|task| task.pid() == init_proc.pid()) {
+                all_tasks.push(init_proc.clone());
+            }
+        }
+        
+        all_tasks
+    }
 }
 
 lazy_static! {
@@ -145,4 +167,9 @@ pub fn init_proc() -> Option<Arc<TaskControlBlock>> {
 
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.exclusive_access().find_task_by_pid(pid)
+}
+
+/// 获取所有任务的列表
+pub fn get_all_tasks() -> Vec<Arc<TaskControlBlock>> {
+    TASK_MANAGER.exclusive_access().get_all_tasks()
 }

@@ -46,7 +46,7 @@ run-gdb: build-kernel
 clean:
 	cargo clean
 
-build: clean build-user build-kernel build-bootloader create-fs
+build: build-user build-kernel build-bootloader create-fs
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'

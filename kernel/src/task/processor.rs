@@ -232,7 +232,56 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) {
 
 /// 更新任务运行时间统计
 fn update_task_runtime_stats(task: &Arc<TaskControlBlock>, runtime: u64) {
+    // 更新调度器的虚拟运行时间
     task.sched.lock().update_vruntime(runtime);
+    
+    // 注意：不在这里更新CPU时间统计，避免与 mark_kernel_entry/exit 重复计算
+    // 用户态/内核态时间的详细统计由 mark_kernel_entry/exit 函数负责
+    // 这里只更新调度器需要的虚拟运行时间
+}
+
+/// 标记进程进入内核态
+pub fn mark_kernel_entry() {
+    if let Some(task) = current_task() {
+        let current_time = get_time_us();
+        let mut in_kernel = task.in_kernel_mode.lock();
+        
+        // 如果之前在用户态，计算用户态时间
+        if !*in_kernel {
+            let last_runtime = task.last_runtime.load(Ordering::Relaxed);
+            if current_time > last_runtime {
+                let user_time = current_time - last_runtime;
+                task.user_cpu_time.fetch_add(user_time, Ordering::Relaxed);
+                task.total_cpu_time.fetch_add(user_time, Ordering::Relaxed);
+            }
+            
+            // 记录进入内核态的时间
+            task.kernel_enter_time.store(current_time, Ordering::Relaxed);
+            *in_kernel = true;
+        }
+    }
+}
+
+/// 标记进程退出内核态
+pub fn mark_kernel_exit() {
+    if let Some(task) = current_task() {
+        let current_time = get_time_us();
+        let mut in_kernel = task.in_kernel_mode.lock();
+        
+        // 如果之前在内核态，计算内核态时间
+        if *in_kernel {
+            let kernel_enter_time = task.kernel_enter_time.load(Ordering::Relaxed);
+            if current_time > kernel_enter_time {
+                let kernel_time = current_time - kernel_enter_time;
+                task.kernel_cpu_time.fetch_add(kernel_time, Ordering::Relaxed);
+                task.total_cpu_time.fetch_add(kernel_time, Ordering::Relaxed);
+            }
+            
+            // 更新最后运行时间为退出内核态的时间
+            task.last_runtime.store(current_time, Ordering::Relaxed);
+            *in_kernel = false;
+        }
+    }
 }
 
 /// 如果需要则打印调试信息（每5秒一次）

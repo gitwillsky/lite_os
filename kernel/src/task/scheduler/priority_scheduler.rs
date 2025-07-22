@@ -43,4 +43,12 @@ impl Scheduler for PriorityScheduler {
             .find(|queue| queue.iter().find(|t| t.pid() == pid).is_some())
             .map(|queue| queue.iter().find(|t| t.pid() == pid).unwrap().clone())
     }
+
+    fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+        let mut tasks = alloc::vec::Vec::new();
+        for queue in &self.priority_queues {
+            tasks.extend(queue.iter().cloned());
+        }
+        tasks
+    }
 }

@@ -316,6 +316,18 @@ pub struct TaskControlBlock {
 
     /// 上次运行时的时间戳
     pub last_runtime: AtomicU64,
+    /// 总CPU运行时间（微秒）
+    pub total_cpu_time: AtomicU64,
+    /// 用户态CPU时间（微秒）
+    pub user_cpu_time: AtomicU64,
+    /// 系统态CPU时间（微秒）
+    pub kernel_cpu_time: AtomicU64,
+    /// 进程创建时间戳（微秒）
+    pub creation_time: AtomicU64,
+    /// 进入内核态的时间戳（用于区分用户态/内核态时间）
+    pub kernel_enter_time: AtomicU64,
+    /// 是否在内核态运行
+    pub in_kernel_mode: spin::Mutex<bool>,
 
     /// 用户ID
     pub uid: AtomicU32,
@@ -377,6 +389,12 @@ impl TaskControlBlock {
             exit_code: AtomicI32::new(0),
             cwd: Mutex::new("/".to_string()), // 新进程默认工作目录为根目录
             last_runtime: AtomicU64::new(0),
+            total_cpu_time: AtomicU64::new(0),
+            user_cpu_time: AtomicU64::new(0),
+            kernel_cpu_time: AtomicU64::new(0),
+            creation_time: AtomicU64::new(crate::timer::get_time_us()),
+            kernel_enter_time: AtomicU64::new(0),
+            in_kernel_mode: spin::Mutex::new(false),
             args: Mutex::new(None), // 初始化空的参数列表
             envs: Mutex::new(None), // 初始化空的环境变量列表
             uid: AtomicU32::new(0),
@@ -468,6 +486,12 @@ impl TaskControlBlock {
             exit_code: AtomicI32::new(0),
             cwd: Mutex::new(self.cwd.lock().clone()),
             last_runtime: AtomicU64::new(0),
+            total_cpu_time: AtomicU64::new(0),
+            user_cpu_time: AtomicU64::new(0),
+            kernel_cpu_time: AtomicU64::new(0),
+            creation_time: AtomicU64::new(crate::timer::get_time_us()),
+            kernel_enter_time: AtomicU64::new(0),
+            in_kernel_mode: spin::Mutex::new(false),
             uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
             gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
             euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
