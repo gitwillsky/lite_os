@@ -43,13 +43,13 @@ pub fn set_next_timer_interrupt() {
 // 将任务加入睡眠队列
 pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
     let mut sleeping_tasks = SLEEPING_TASKS.lock();
-    
+
     // 避免时间冲突：如果已存在相同时间，则递增1纳秒
     let mut actual_wake_time = wake_time_ns;
     while sleeping_tasks.contains_key(&actual_wake_time) {
         actual_wake_time += 1;
     }
-    
+
     sleeping_tasks.insert(actual_wake_time, task);
 }
 
@@ -58,11 +58,11 @@ pub fn check_and_wakeup_sleeping_tasks() {
     // 尝试获取锁，如果失败说明其他地方正在使用，直接返回避免死锁
     if let Some(mut sleeping_tasks) = SLEEPING_TASKS.try_lock() {
         let current_time = get_time_ns();
-        
+
         // 收集需要唤醒的任务
         let mut tasks_to_wakeup = alloc::vec::Vec::new();
         let mut keys_to_remove = alloc::vec::Vec::new();
-        
+
         for (&wake_time, task) in sleeping_tasks.iter() {
             if wake_time <= current_time {
                 tasks_to_wakeup.push(task.clone());
@@ -72,15 +72,15 @@ pub fn check_and_wakeup_sleeping_tasks() {
                 break;
             }
         }
-        
+
         // 从睡眠队列中移除
         for key in keys_to_remove {
             sleeping_tasks.remove(&key);
         }
-        
+
         // 释放锁后再唤醒任务
         drop(sleeping_tasks);
-        
+
         // 唤醒任务
         for task in tasks_to_wakeup {
             crate::task::add_task(task);
@@ -93,7 +93,8 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     if nanoseconds == 0 {
         return 0;
     }
-    
+
+        debug!("1");
     // 对于非常短的睡眠，直接使用yield循环
     if nanoseconds < 1000000 { // 小于1毫秒
         let loops = nanoseconds / 10000; // 大约每10微秒yield一次
@@ -102,17 +103,19 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
         }
         return 0;
     }
-    
+
+        debug!("2");
     if let Some(current_task) = crate::task::current_task() {
         let wake_time = get_time_ns() + nanoseconds;
-        
+
         // 将当前任务加入睡眠队列
         add_sleeping_task(current_task, wake_time);
-        
+
+        debug!("3");
         // 让出CPU，等待被唤醒
         crate::task::suspend_current_and_run_next();
     }
-    
+
     0
 }
 
