@@ -7,6 +7,29 @@ import shutil
 import argparse
 import sys
 
+def cleanup_apple_double_files(directory):
+    """递归删除所有 ._ 开头的 AppleDouble 文件"""
+    deleted_count = 0
+    try:
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                if file.startswith('._'):
+                    apple_double_path = os.path.join(root, file)
+                    try:
+                        os.remove(apple_double_path)
+                        print(f"✓ 已删除 AppleDouble 文件: {os.path.relpath(apple_double_path, directory)}")
+                        deleted_count += 1
+                    except Exception as e:
+                        print(f"⚠ 删除 {file} 时出错: {e}")
+        
+        if deleted_count == 0:
+            print("✓ 未发现 AppleDouble 文件")
+        else:
+            print(f"✓ 总共删除了 {deleted_count} 个 AppleDouble 文件")
+            
+    except Exception as e:
+        print(f"⚠ 清理 AppleDouble 文件时出错: {e}")
+
 def create_fat32_filesystem(filename, size_mb=128):
     """使用系统工具创建FAT32文件系统并挂载复制文件"""
 
@@ -150,14 +173,7 @@ def copy_files_to_fs(mount_point):
             print(f"✓ 复制简单WASM: {os.path.basename(wasm_file)} -> {dest_name}")
 
     # 清理 macOS 自动生成的 AppleDouble 文件
-    try:
-        for item in os.listdir(mount_point):
-            if item.startswith('._'):
-                apple_double_path = os.path.join(mount_point, item)
-                os.remove(apple_double_path)
-                print(f"✓ 已删除 AppleDouble 文件: {item}")
-    except Exception as e:
-        print(f"⚠ 清理 AppleDouble 文件时出错: {e}")
+    cleanup_apple_double_files(mount_point)
 
     # 显示文件系统内容
     print("\n文件系统内容:")
@@ -263,6 +279,9 @@ def add_files_to_fs(filename, files):
                 print(f"✓ 添加: {src_file} -> {dest_name} ({size} bytes)")
             else:
                 print(f"✗ 文件不存在: {src_file}")
+
+        # 清理添加文件后可能产生的 AppleDouble 文件
+        cleanup_apple_double_files(mount_point)
 
         return True
 
