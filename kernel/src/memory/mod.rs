@@ -55,6 +55,7 @@ pub fn init() {
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();
+    debug!("memory initialized");
 }
 
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
