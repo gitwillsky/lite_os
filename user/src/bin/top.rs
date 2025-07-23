@@ -29,25 +29,8 @@ fn clear_screen() {
     print!("\x1B[2J\x1B[H");
 }
 
-fn display_header() {
-    println!("LiteOS Top - Advanced Process Monitor v3.0");
-    println!("==========================================");
-
-    // 显示当前时间（简化版）
-    println!("System Monitor - Real-time Process Information");
-
-    // 显示当前用户信息
-    let current_uid = getuid();
-    let current_gid = getgid();
-    println!("Running as: UID={}, GID={}", current_uid, current_gid);
-
-    println!("");
-}
-
 // 显示系统统计信息
 fn display_system_stats() {
-    println!("System Overview:");
-
     let mut stats = SystemStats {
         total_processes: 0,
         running_processes: 0,
@@ -64,24 +47,18 @@ fn display_system_stats() {
     };
 
     if get_system_stats(&mut stats) == 0 {
-        println!("  Total processes: {}", stats.total_processes);
         println!(
-            "  Running: {}  Sleeping: {}  Zombie: {}",
-            stats.running_processes, stats.sleeping_processes, stats.zombie_processes
+            "Total: {}  Running: {}  Sleeping: {}  Zombie: {}",
+            stats.total_processes,
+            stats.running_processes,
+            stats.sleeping_processes,
+            stats.zombie_processes
         );
         println!(
-            "  Memory: {}MB total, {}MB used, {}MB free",
+            "Memory: {}MB total, {}MB used, {}MB free",
             stats.total_memory / (1024 * 1024),
             stats.used_memory / (1024 * 1024),
             stats.free_memory / (1024 * 1024)
-        );
-
-        // 显示CPU使用率信息
-        let cpu_percent = stats.cpu_usage_percent as f32 / 100.0;
-        println!(
-            "  CPU: {:.1}% total, {}s uptime",
-            cpu_percent,
-            stats.system_uptime / 1_000_000
         );
 
         if stats.cpu_user_time + stats.cpu_system_time > 0 {
@@ -93,9 +70,14 @@ fn display_system_stats() {
                 / (stats.cpu_user_time + stats.cpu_system_time))
                 as f32
                 / 100.0;
+            // 显示CPU使用率信息
+            let cpu_percent = stats.cpu_usage_percent as f32 / 100.0;
             println!(
-                "  CPU breakdown: {:.1}% user, {:.1}% system",
-                user_percent, system_percent
+                "CPU: {:.1}% total, {}s uptime, {:.1}% user, {:.1}% system",
+                cpu_percent,
+                stats.system_uptime / 1_000_000,
+                user_percent,
+                system_percent
             );
         }
     } else {
@@ -230,9 +212,6 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
         return Err("No processes found or failed to get process count");
     }
 
-    println!("Found {} processes", process_count);
-    println!("");
-
     // 创建缓冲区来存储PIDs
     let mut pids = Vec::with_capacity(process_count as usize);
     for _ in 0..process_count as usize {
@@ -314,10 +293,9 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
     Ok(())
 }
 
-
 // 非阻塞检查键盘输入
 fn check_keyboard_input() -> Option<u8> {
-    use crate::syscall::{fcntl_getfl, fcntl_setfl, open_flags, errno};
+    use crate::syscall::{errno, fcntl_getfl, fcntl_setfl, open_flags};
 
     static mut STDIN_NONBLOCK_SET: bool = false;
 
@@ -338,9 +316,9 @@ fn check_keyboard_input() -> Option<u8> {
 
     // 尝试非阻塞读取
     match read(0, &mut buffer) {
-        1 => Some(buffer[0]),    // 成功读取到一个字符
+        1 => Some(buffer[0]),                            // 成功读取到一个字符
         err if err == -(errno::EAGAIN as isize) => None, // 没有数据可读
-        _ => None,               // 其他错误
+        _ => None,                                       // 其他错误
     }
 }
 
@@ -354,7 +332,6 @@ fn interactive_mode() {
     loop {
         // 清屏并显示内容
         clear_screen();
-        display_header();
         display_system_stats();
 
         // 显示当前设置信息
@@ -366,7 +343,8 @@ fn interactive_mode() {
             SortBy::Status => "Status",
         };
 
-        println!("Settings: Sort by {} {}, Auto-refresh: {}, Interval: {}ms",
+        println!(
+            "Settings: Sort by {} {}, Auto-refresh: {}, Interval: {}ms",
             sort_name,
             if reverse { "(desc)" } else { "(asc)" },
             if auto_refresh { "ON" } else { "OFF" },
@@ -378,7 +356,9 @@ fn interactive_mode() {
         match display_all_processes_sorted(sort_by, reverse) {
             Ok(()) => {
                 println!("");
-                println!("Commands: [p]PID [c]CPU% [m]Memory [v]VRuntime [s]Status [r]Reverse [a]Auto-refresh [q]Quit [h]Help");
+                println!(
+                    "Commands: [p]PID [c]CPU% [m]Memory [v]VRuntime [s]Status [r]Reverse [a]Auto-refresh [q]Quit [h]Help"
+                );
             }
             Err(e) => {
                 println!("Error: {}", e);
@@ -395,7 +375,13 @@ fn interactive_mode() {
             for _ in 0..check_intervals {
                 sleep(100);
                 if let Some(key) = check_keyboard_input() {
-                    if handle_key_input(key, &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                    if handle_key_input(
+                        key,
+                        &mut sort_by,
+                        &mut reverse,
+                        &mut auto_refresh,
+                        &mut refresh_interval,
+                    ) {
                         return; // 退出程序
                     }
                     key_pressed = true;
@@ -409,7 +395,13 @@ fn interactive_mode() {
                 sleep((refresh_interval % 100) as usize);
                 // 再次检查按键
                 if let Some(key) = check_keyboard_input() {
-                    if handle_key_input(key, &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                    if handle_key_input(
+                        key,
+                        &mut sort_by,
+                        &mut reverse,
+                        &mut auto_refresh,
+                        &mut refresh_interval,
+                    ) {
                         return;
                     }
                 }
@@ -418,7 +410,13 @@ fn interactive_mode() {
             // 如果没有自动刷新，则等待按键
             let mut buffer = [0u8; 1];
             if read(0, &mut buffer) == 1 {
-                if handle_key_input(buffer[0], &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                if handle_key_input(
+                    buffer[0],
+                    &mut sort_by,
+                    &mut reverse,
+                    &mut auto_refresh,
+                    &mut refresh_interval,
+                ) {
                     return;
                 }
             }
@@ -432,7 +430,7 @@ fn handle_key_input(
     sort_by: &mut SortBy,
     reverse: &mut bool,
     auto_refresh: &mut bool,
-    refresh_interval: &mut u64
+    refresh_interval: &mut u64,
 ) -> bool {
     match key as char {
         'p' | 'P' => {
@@ -486,7 +484,7 @@ fn handle_key_input(
         'q' | 'Q' => {
             true // 退出程序
         }
-        _ => false // 忽略其他按键
+        _ => false, // 忽略其他按键
     }
 }
 
