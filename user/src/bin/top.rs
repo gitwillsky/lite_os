@@ -134,30 +134,57 @@ fn extract_process_name(name_bytes: &[u8; 32]) -> String {
 
 // 格式化时间戳为可读的日期时间字符串
 fn format_timestamp(unix_timestamp: u64) -> String {
-    // 简化的时间格式化，仅显示基本信息
     // Unix时间戳是从1970-01-01 00:00:00 UTC开始的秒数
     
     // 计算天数、小时、分钟、秒
     let total_seconds = unix_timestamp;
-    let days_since_epoch = total_seconds / 86400; // 86400 = 24 * 60 * 60
+    let mut days_since_epoch = total_seconds / 86400; // 86400 = 24 * 60 * 60
     let seconds_today = total_seconds % 86400;
     
     let hours = seconds_today / 3600;
     let minutes = (seconds_today % 3600) / 60;
     let seconds = seconds_today % 60;
     
-    // 简化的年月日计算（近似）
-    // 1970年是起点，每年大约365.25天
-    let years_since_1970 = days_since_epoch / 365;
-    let year = 1970 + years_since_1970;
+    // 更准确的年月日计算
+    let mut year = 1970u64;
     
-    // 简化的月日计算
-    let days_in_year = days_since_epoch % 365;
-    let month = (days_in_year / 30) + 1; // 简化为每月30天
-    let day = (days_in_year % 30) + 1;
+    // 计算年份
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days_since_epoch >= days_in_year {
+            days_since_epoch -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+    
+    // 计算月份和日期
+    let days_in_months = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    
+    let mut month = 1u64;
+    let mut day = days_since_epoch + 1;
+    
+    for &days_in_month in &days_in_months {
+        if day > days_in_month {
+            day -= days_in_month;
+            month += 1;
+        } else {
+            break;
+        }
+    }
     
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", 
             year, month, day, hours, minutes, seconds)
+}
+
+// 判断是否为闰年
+fn is_leap_year(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 // 显示进程信息

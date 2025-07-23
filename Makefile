@@ -23,6 +23,7 @@ run-with-timeout: build-kernel
 	-device virtio-rng-device \
 	-device virtio-gpu-device \
 	-device virtio-mouse-device \
+	-rtc base=localtime \
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
@@ -30,6 +31,7 @@ run: build-kernel
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \
+	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
