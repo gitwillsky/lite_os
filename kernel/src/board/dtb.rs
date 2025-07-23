@@ -16,6 +16,24 @@ pub struct VirtIODevice {
     pub irq: u32,
 }
 
+/// RTC 设备信息
+#[derive(Debug, Clone, Copy)]
+pub struct RTCDevice {
+    pub base_addr: usize,
+    pub size: usize,
+    pub irq: u32,
+}
+
+impl RTCDevice {
+    pub const fn new() -> Self {
+        Self {
+            base_addr: 0,
+            size: 0,
+            irq: 0,
+        }
+    }
+}
+
 pub struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,
@@ -27,6 +45,7 @@ pub struct BoardInfo {
     pub clint: Range<usize>,
     pub virtio_devices: [Option<VirtIODevice>; 20],
     pub virtio_count: usize,
+    pub rtc_device: Option<RTCDevice>,
 }
 
 impl<const N: usize> Display for StringInLine<N> {
@@ -48,6 +67,9 @@ impl Display for BoardInfo {
         writeln!(f, "Test: {:#x?}", self.test)?;
         writeln!(f, "CLINT: {:#x?}", self.clint)?;
         writeln!(f, "VirtIO Devices: {} found", self.virtio_count)?;
+        if let Some(rtc) = self.rtc_device {
+            writeln!(f, "RTC Device: base={:#x}, size={:#x}, irq={}", rtc.base_addr, rtc.size, rtc.irq)?;
+        }
         for i in 0..self.virtio_count {
             if let Some(dev) = &self.virtio_devices[i] {
                 writeln!(f, "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}", i, dev.base_addr, dev.base_addr + dev.size, dev.irq)?;
@@ -67,6 +89,7 @@ impl BoardInfo {
         const TEST: &str = "test";
         const CLINT: &str = "clint";
         const VIRTIO: &str = "virtio_mmio";
+        const RTC: &str = "rtc";
 
         let mut ans = BoardInfo {
             dtb: dtb_addr..dtb_addr,
@@ -79,11 +102,16 @@ impl BoardInfo {
             time_base_freq: 0,
             virtio_devices: [None; 20],
             virtio_count: 0,
+            rtc_device: None,
         };
 
         // 用于临时存储当前 VirtIO 设备的信息
         let mut current_virtio_reg: Option<Range<usize>> = None;
         let mut current_virtio_irq: Option<u32> = None;
+        
+        // 用于临时存储当前 RTC 设备的信息
+        let mut current_rtc_reg: Option<Range<usize>> = None;
+        let mut current_rtc_irq: Option<u32> = None;
 
         let dtb = unsafe {
             Dtb::from_raw_parts_filtered(dtb_addr as *const u8, |node| {
@@ -107,6 +135,11 @@ impl BoardInfo {
                         current_virtio_reg = None;
                         current_virtio_irq = None;
                         WalkOperation::StepInto
+                    } else if name.starts_with(RTC) {
+                        // 遇到 RTC 设备节点，准备解析
+                        current_rtc_reg = None;
+                        current_rtc_irq = None;
+                        WalkOperation::StepInto
                     } else {
                         WalkOperation::StepOver
                     }
@@ -116,11 +149,16 @@ impl BoardInfo {
                         || name.starts_with(CLINT)
                         || name.starts_with(SERIAL)
                         || name.starts_with(VIRTIO)
+                        || name.starts_with(RTC)
                     {
                         if name.starts_with(VIRTIO) {
                             // SOC 下的 VirtIO 设备
                             current_virtio_reg = None;
                             current_virtio_irq = None;
+                        } else if name.starts_with(RTC) {
+                            // SOC 下的 RTC 设备
+                            current_rtc_reg = None;
+                            current_rtc_irq = None;
                         }
                         WalkOperation::StepInto
                     } else {
@@ -171,6 +209,22 @@ impl BoardInfo {
                         }
                     }
                     WalkOperation::StepOver
+                } else if node.starts_with(RTC) {
+                    // RTC 设备的 reg 属性
+                    if let Some(reg_range) = reg.next() {
+                        current_rtc_reg = Some(reg_range);
+                        // 检查是否同时有 reg 和 irq，如果有则创建设备
+                        if let (Some(range), Some(irq)) = (current_rtc_reg.as_ref(), current_rtc_irq) {
+                            ans.rtc_device = Some(RTCDevice {
+                                base_addr: range.start,
+                                size: range.end - range.start,
+                                irq,
+                            });
+                            current_rtc_reg = None;
+                            current_rtc_irq = None;
+                        }
+                    }
+                    WalkOperation::StepOver
                 } else {
                     WalkOperation::StepOver
                 }
@@ -195,6 +249,21 @@ impl BoardInfo {
                             }
                             current_virtio_reg = None;
                             current_virtio_irq = None;
+                        }
+                    }
+                } else if name == Str::from("interrupts") && node.starts_with(RTC) {
+                    // RTC 设备的中断号
+                    if let Some(first_4_bytes) = value.get(0..4) {
+                        current_rtc_irq = Some(bytes_to_u32(first_4_bytes));
+                        // 检查是否同时有 reg 和 irq，如果有则创建设备
+                        if let (Some(range), Some(irq)) = (current_rtc_reg.as_ref(), current_rtc_irq) {
+                            ans.rtc_device = Some(RTCDevice {
+                                base_addr: range.start,
+                                size: range.end - range.start,
+                                irq,
+                            });
+                            current_rtc_reg = None;
+                            current_rtc_irq = None;
                         }
                     }
                 }

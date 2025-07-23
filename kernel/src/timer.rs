@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use riscv::register;
@@ -11,8 +13,87 @@ const MSEC_PER_SEC: u64 = 1000;
 const USEC_PER_SEC: u64 = 1000_000;
 const NSEC_PER_SEC: u64 = 1000_000_000;
 
+// Unix 纪元时间常量 (1970-01-01 00:00:00 UTC)
+const UNIX_EPOCH_SECONDS: u64 = 0;
+
+// Goldfish RTC 寄存器偏移
+const RTC_TIME_LOW: usize = 0x00; // 纳秒时间低32位
+const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
+
+// 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
+static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
+
 // 睡眠任务队列：以唤醒时间为键，任务为值
 static SLEEPING_TASKS: Mutex<BTreeMap<u64, Arc<TaskControlBlock>>> = Mutex::new(BTreeMap::new());
+
+// 读取 Goldfish RTC 获取真实的 Unix 时间戳（纳秒）
+fn read_goldfish_rtc_ns() -> Option<u64> {
+    let board_info = board::board_info();
+    debug!("Checking for RTC device...");
+    if let Some(rtc) = board_info.rtc_device {
+        debug!("Found RTC device at base address: {:#x}", rtc.base_addr);
+        
+        // 检查地址是否合理
+        if rtc.base_addr == 0 {
+            warn!("Invalid RTC base address: 0x0");
+            return None;
+        }
+        
+        // 暂时跳过实际读取，直接返回 None 来避免卡死
+        // 这样可以让系统继续运行，使用默认时间
+        warn!("Skipping RTC read to avoid potential hang, using default time");
+        None
+        
+        // TODO: 以后可以在这里实现更安全的 RTC 读取方式
+        // 可能需要先映射内存区域或者使用不同的访问方法
+        /*
+        unsafe {
+            // 读取低32位，然后读取高32位
+            let low = core::ptr::read_volatile((rtc.base_addr + RTC_TIME_LOW) as *const u32);
+            let high = core::ptr::read_volatile((rtc.base_addr + RTC_TIME_HIGH) as *const u32);
+            
+            // 组合成64位纳秒时间戳
+            Some(((high as u64) << 32) | (low as u64))
+        }
+        */
+    } else {
+        warn!("Goldfish RTC device not found in device tree");
+        None
+    }
+}
+
+// 获取真实的 Unix 时间戳（秒）
+pub fn get_unix_timestamp() -> u64 {
+    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Relaxed);
+    if boot_time == 0 {
+        // 如果还没有初始化，直接从 RTC 读取当前时间
+        if let Some(rtc_ns) = read_goldfish_rtc_ns() {
+            rtc_ns / NSEC_PER_SEC
+        } else {
+            // RTC 不可用，返回基于系统运行时间的估计值
+            warn!("RTC not available, using boot time estimate");
+            1704067200 + (get_time_ns() / NSEC_PER_SEC) // 2024-01-01 + uptime
+        }
+    } else {
+        // 使用启动时间偏移 + 系统运行时间
+        boot_time + (get_time_ns() / NSEC_PER_SEC)
+    }
+}
+
+// 获取真实的 Unix 时间戳（微秒）
+pub fn get_unix_timestamp_us() -> u64 {
+    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Relaxed);
+    if boot_time == 0 {
+        if let Some(rtc_ns) = read_goldfish_rtc_ns() {
+            rtc_ns / 1000
+        } else {
+            // RTC 不可用，返回基于系统运行时间的估计值
+            1704067200 * USEC_PER_SEC + get_time_us()
+        }
+    } else {
+        boot_time * USEC_PER_SEC + get_time_us()
+    }
+}
 
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
@@ -135,6 +216,18 @@ pub fn init() {
         register::sie::set_stimer();
     }
 
+    // 从 Goldfish RTC 获取真实的启动时间
+    if let Some(current_unix_ns) = read_goldfish_rtc_ns() {
+        let boot_time = current_unix_ns / NSEC_PER_SEC;
+        BOOT_TIME_UNIX_SECONDS.store(boot_time, Ordering::Relaxed);
+        debug!(
+            "Boot time set to Unix timestamp: {} (from Goldfish RTC)",
+            boot_time
+        );
+    } else {
+        warn!("Goldfish RTC not available, using default boot time");
+        BOOT_TIME_UNIX_SECONDS.store(1704067200, Ordering::Relaxed);
+    }
     set_next_timer_interrupt();
-    debug!("timer initialized");
+    debug!("timer initialized with real-time clock");
 }

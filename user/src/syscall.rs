@@ -109,6 +109,8 @@ const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 const SYSCALL_GET_TIME_MS: usize = 800;
 const SYSCALL_GET_TIME_US: usize = 801;
 const SYSCALL_GET_TIME_NS: usize = 802;
+const SYSCALL_TIME: usize = 803;
+const SYSCALL_GETTIMEOFDAY: usize = 804;
 const SYSCALL_NANOSLEEP: usize = 101;
 
 // Watchdog 相关系统调用
@@ -662,6 +664,14 @@ pub struct TimeSpec {
     pub tv_nsec: u64, // 纳秒
 }
 
+/// POSIX timeval 结构体
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TimeVal {
+    pub tv_sec: u64,  // 秒
+    pub tv_usec: u64, // 微秒
+}
+
 /// 获取当前时间（毫秒）
 pub fn get_time_ms() -> isize {
     syscall(SYSCALL_GET_TIME_MS, [0, 0, 0])
@@ -675,6 +685,23 @@ pub fn get_time_us() -> isize {
 /// 获取当前时间（纳秒）
 pub fn get_time_ns() -> isize {
     syscall(SYSCALL_GET_TIME_NS, [0, 0, 0])
+}
+
+/// 获取 Unix 时间戳（秒）
+pub fn time() -> isize {
+    syscall(SYSCALL_TIME, [0, 0, 0])
+}
+
+/// POSIX gettimeofday - 获取当前时间和时区
+pub fn gettimeofday(tv: &mut TimeVal, tz: *mut u8) -> isize {
+    syscall(SYSCALL_GETTIMEOFDAY, [tv as *mut TimeVal as usize, tz as usize, 0])
+}
+
+/// 获取当前时间的便利函数
+pub fn get_current_time() -> TimeVal {
+    let mut tv = TimeVal { tv_sec: 0, tv_usec: 0 };
+    gettimeofday(&mut tv, core::ptr::null_mut());
+    tv
 }
 
 /// POSIX nanosleep - 高精度睡眠

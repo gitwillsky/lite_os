@@ -94,6 +94,8 @@ const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 const SYSCALL_GET_TIME_MS: usize = 800;
 const SYSCALL_GET_TIME_US: usize = 801;
 const SYSCALL_GET_TIME_NS: usize = 802;
+const SYSCALL_TIME: usize = 803;          // Unix 时间戳（秒）
+const SYSCALL_GETTIMEOFDAY: usize = 804;  // POSIX gettimeofday
 const SYSCALL_NANOSLEEP: usize = 101;
 
 // Watchdog 相关系统调用
@@ -183,6 +185,8 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_TIME_MS => sys_get_time_msec(),
         SYSCALL_GET_TIME_US => sys_get_time_us(),
         SYSCALL_GET_TIME_NS => sys_get_time_ns(),
+        SYSCALL_TIME => sys_time(),
+        SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0] as *mut TimeVal, args[1] as *mut u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
 
         // Watchdog 相关系统调用

@@ -31,6 +31,12 @@ fn clear_screen() {
 
 // 显示系统统计信息
 fn display_system_stats() {
+    // 获取并显示当前时间
+    let current_time = get_current_time();
+    let formatted_time = format_timestamp(current_time.tv_sec);
+    println!("LiteOS System Monitor - Current Time: {}", formatted_time);
+    println!("");
+
     let mut stats = SystemStats {
         total_processes: 0,
         running_processes: 0,
@@ -124,6 +130,34 @@ fn extract_process_name(name_bytes: &[u8; 32]) -> String {
         .position(|&b| b == 0)
         .unwrap_or(name_bytes.len());
     String::from_utf8_lossy(&name_bytes[..end_pos]).into_owned()
+}
+
+// 格式化时间戳为可读的日期时间字符串
+fn format_timestamp(unix_timestamp: u64) -> String {
+    // 简化的时间格式化，仅显示基本信息
+    // Unix时间戳是从1970-01-01 00:00:00 UTC开始的秒数
+    
+    // 计算天数、小时、分钟、秒
+    let total_seconds = unix_timestamp;
+    let days_since_epoch = total_seconds / 86400; // 86400 = 24 * 60 * 60
+    let seconds_today = total_seconds % 86400;
+    
+    let hours = seconds_today / 3600;
+    let minutes = (seconds_today % 3600) / 60;
+    let seconds = seconds_today % 60;
+    
+    // 简化的年月日计算（近似）
+    // 1970年是起点，每年大约365.25天
+    let years_since_1970 = days_since_epoch / 365;
+    let year = 1970 + years_since_1970;
+    
+    // 简化的月日计算
+    let days_in_year = days_since_epoch % 365;
+    let month = (days_in_year / 30) + 1; // 简化为每月30天
+    let day = (days_in_year % 30) + 1;
+    
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", 
+            year, month, day, hours, minutes, seconds)
 }
 
 // 显示进程信息
