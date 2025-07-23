@@ -19,7 +19,7 @@ use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
     task::{
-        self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, 
+        self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
         SIG_RETURN_ADDR, mark_kernel_entry, mark_kernel_exit,
     },
     timer,
@@ -34,10 +34,10 @@ pub fn init() {
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
     set_kernel_trap_entry();
-    
+
     // 标记进入内核态
     mark_kernel_entry();
-    
+
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
     // 在发生缺页异常时，保存导致问题的虚拟地址
@@ -48,9 +48,13 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     timer::set_next_timer_interrupt();
-                    
+
+                    // 检查 watchdog 状态
+                    crate::watchdog::check();
+
                     // 检查并唤醒到期的睡眠任务
                     timer::check_and_wakeup_sleeping_tasks();
+
 
                     // Check and handle pending signals before task switch
                     if !check_signals_and_maybe_exit() {

@@ -27,10 +27,6 @@ fn sleep(ms: usize) {
 fn clear_screen() {
     // 发送ANSI清屏序列
     print!("\x1B[2J\x1B[H");
-    // 也尝试用多个换行来清屏（备用方案）
-    for _ in 0..50 {
-        println!("");
-    }
 }
 
 fn display_header() {
@@ -383,7 +379,7 @@ fn interactive_mode() {
             }
         }
 
-        sleep(2000);
+        sleep(20000);
     }
 }
 

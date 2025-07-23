@@ -2,6 +2,7 @@ mod fs;
 mod process;
 mod signal;
 mod timer;
+mod watchdog;
 mod dynamic_linking;
 mod memory;
 mod errno;
@@ -10,6 +11,7 @@ use fs::*;
 use process::*;
 use signal::*;
 use timer::*;
+use watchdog::*;
 use dynamic_linking::*;
 use memory::*;
 
@@ -93,6 +95,14 @@ const SYSCALL_GET_TIME_US: usize = 801;
 const SYSCALL_GET_TIME_NS: usize = 802;
 const SYSCALL_NANOSLEEP: usize = 101;
 
+// Watchdog 相关系统调用
+const SYSCALL_WATCHDOG_CONFIGURE: usize = 900;
+const SYSCALL_WATCHDOG_START: usize = 901;
+const SYSCALL_WATCHDOG_STOP: usize = 902;
+const SYSCALL_WATCHDOG_FEED: usize = 903;
+const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
+const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
+
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
@@ -172,6 +182,14 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_TIME_US => sys_get_time_us(),
         SYSCALL_GET_TIME_NS => sys_get_time_ns(),
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
+
+        // Watchdog 相关系统调用
+        SYSCALL_WATCHDOG_CONFIGURE => sys_watchdog_configure(args[0] as *const crate::watchdog::WatchdogConfig),
+        SYSCALL_WATCHDOG_START => sys_watchdog_start(),
+        SYSCALL_WATCHDOG_STOP => sys_watchdog_stop(),
+        SYSCALL_WATCHDOG_FEED => sys_watchdog_feed(),
+        SYSCALL_WATCHDOG_GET_INFO => sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo),
+        SYSCALL_WATCHDOG_SET_PRESET => sys_watchdog_set_preset(args[0] as u32),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

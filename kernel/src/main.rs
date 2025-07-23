@@ -25,6 +25,7 @@ mod syscall;
 mod task;
 mod timer;
 mod trap;
+mod watchdog;
 mod id;
 
 #[unsafe(no_mangle)]
@@ -35,6 +36,7 @@ extern "C" fn kmain(_hart_id: usize, dtb_addr: usize) -> ! {
     trap::init();
     memory::init();
     timer::init();
+    watchdog::init();
     fs::vfs::init_vfs();
     drivers::init_devices();
     task::init();

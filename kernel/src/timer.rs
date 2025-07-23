@@ -1,6 +1,6 @@
-use riscv::register;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use riscv::register;
 use spin::Mutex;
 
 use crate::{arch::sbi, board, config, task::TaskControlBlock};
@@ -94,9 +94,9 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
         return 0;
     }
 
-        debug!("1");
     // 对于非常短的睡眠，直接使用yield循环
-    if nanoseconds < 1000000 { // 小于1毫秒
+    if nanoseconds < 1000000 {
+        // 小于1毫秒
         let loops = nanoseconds / 10000; // 大约每10微秒yield一次
         for _ in 0..loops.max(1) {
             crate::task::suspend_current_and_run_next();
@@ -104,14 +104,12 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
         return 0;
     }
 
-        debug!("2");
     if let Some(current_task) = crate::task::current_task() {
         let wake_time = get_time_ns() + nanoseconds;
 
         // 将当前任务加入睡眠队列
         add_sleeping_task(current_task, wake_time);
 
-        debug!("3");
         // 让出CPU，等待被唤醒
         crate::task::suspend_current_and_run_next();
     }

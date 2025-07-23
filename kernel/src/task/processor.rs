@@ -71,6 +71,11 @@ pub fn current_cwd() -> String {
 /// 主调度循环 - 在内核初始化完毕之后进入idle控制流
 pub fn run_tasks() -> ! {
     loop {
+        // 在主调度循环中喂狗，表明系统正常运行
+        if let Err(_) = crate::watchdog::feed() {
+            // Watchdog 可能被禁用，这是正常的
+        }
+        
         if let Some(task) = task_manager::fetch_task() {
             if task.is_zombie() {
                 continue;

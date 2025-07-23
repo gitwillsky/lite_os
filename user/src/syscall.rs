@@ -110,6 +110,14 @@ const SYSCALL_GET_TIME_US: usize = 801;
 const SYSCALL_GET_TIME_NS: usize = 802;
 const SYSCALL_NANOSLEEP: usize = 101;
 
+// Watchdog 相关系统调用
+const SYSCALL_WATCHDOG_CONFIGURE: usize = 900;
+const SYSCALL_WATCHDOG_START: usize = 901;
+const SYSCALL_WATCHDOG_STOP: usize = 902;
+const SYSCALL_WATCHDOG_FEED: usize = 903;
+const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
+const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
+
 /// 系统调用
 ///
 /// # Arguments
@@ -639,4 +647,128 @@ pub fn sleep(seconds: u64) -> isize {
         tv_nsec: 0,
     };
     nanosleep(&req, core::ptr::null_mut())
+}
+
+// Watchdog 相关结构体和函数
+
+/// Watchdog 配置结构体
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WatchdogConfig {
+    /// 超时时间（微秒）
+    pub timeout_us: u64,
+    /// 是否启用
+    pub enabled: bool,
+    /// 是否在超时时重启系统
+    pub reboot_on_timeout: bool,
+    /// 预警时间（微秒），在超时前这个时间发出警告
+    pub warning_time_us: u64,
+}
+
+impl Default for WatchdogConfig {
+    fn default() -> Self {
+        Self {
+            timeout_us: 30_000_000, // 30 秒
+            enabled: false,
+            reboot_on_timeout: true,
+            warning_time_us: 5_000_000, // 5 秒预警
+        }
+    }
+}
+
+/// Watchdog 状态
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WatchdogState {
+    Disabled,
+    Active,
+    Warning,
+    Timeout,
+}
+
+/// Watchdog 信息结构体
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WatchdogInfo {
+    pub state: WatchdogState,
+    pub config: WatchdogConfig,
+    pub time_since_feed_us: u64,
+    pub feed_count: u64,
+    pub timeout_count: u64,
+}
+
+/// 配置 watchdog
+pub fn watchdog_configure(config: &WatchdogConfig) -> isize {
+    syscall(SYSCALL_WATCHDOG_CONFIGURE, [config as *const WatchdogConfig as usize, 0, 0])
+}
+
+/// 启动 watchdog
+pub fn watchdog_start() -> isize {
+    syscall(SYSCALL_WATCHDOG_START, [0, 0, 0])
+}
+
+/// 停止 watchdog
+pub fn watchdog_stop() -> isize {
+    syscall(SYSCALL_WATCHDOG_STOP, [0, 0, 0])
+}
+
+/// 喂狗（重置计时器）
+pub fn watchdog_feed() -> isize {
+    syscall(SYSCALL_WATCHDOG_FEED, [0, 0, 0])
+}
+
+/// 获取 watchdog 信息
+pub fn watchdog_get_info(info: &mut WatchdogInfo) -> isize {
+    syscall(SYSCALL_WATCHDOG_GET_INFO, [info as *mut WatchdogInfo as usize, 0, 0])
+}
+
+/// 设置 watchdog 预设配置
+/// preset: 0=开发模式, 1=生产模式, 2=严格模式, 3=测试模式
+pub fn watchdog_set_preset(preset: u32) -> isize {
+    syscall(SYSCALL_WATCHDOG_SET_PRESET, [preset as usize, 0, 0])
+}
+
+/// Watchdog 预设配置模块
+pub mod watchdog_presets {
+    use super::WatchdogConfig;
+
+    /// 开发模式配置（较长超时时间）
+    pub fn development() -> WatchdogConfig {
+        WatchdogConfig {
+            timeout_us: 60_000_000, // 60 秒
+            enabled: true,
+            reboot_on_timeout: false, // 开发时不重启
+            warning_time_us: 10_000_000, // 10 秒预警
+        }
+    }
+
+    /// 生产模式配置（较短超时时间）
+    pub fn production() -> WatchdogConfig {
+        WatchdogConfig {
+            timeout_us: 30_000_000, // 30 秒
+            enabled: true,
+            reboot_on_timeout: true,
+            warning_time_us: 5_000_000, // 5 秒预警
+        }
+    }
+
+    /// 严格模式配置（很短超时时间）
+    pub fn strict() -> WatchdogConfig {
+        WatchdogConfig {
+            timeout_us: 10_000_000, // 10 秒
+            enabled: true,
+            reboot_on_timeout: true,
+            warning_time_us: 2_000_000, // 2 秒预警
+        }
+    }
+
+    /// 测试模式配置（用于测试）
+    pub fn testing() -> WatchdogConfig {
+        WatchdogConfig {
+            timeout_us: 5_000_000, // 5 秒
+            enabled: true,
+            reboot_on_timeout: false,
+            warning_time_us: 1_000_000, // 1 秒预警
+        }
+    }
 }
