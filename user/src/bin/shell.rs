@@ -395,7 +395,7 @@ fn execute_pipeline(commands: Vec<String>) {
         for j in 1..parts.len() {
             args.push(parts[j]); // 添加其余参数
         }
-        
+
         // 环境变量（暂时为空）
         let empty_env: Vec<&str> = vec![];
 
@@ -475,7 +475,7 @@ fn execute_command_with_redirection(line: &str) {
     if is_wasm_file(first_part) {
         if file_exists(first_part) {
             // 构造新的命令：wasm_runtime <wasm_file> [args...]
-            let mut wasm_command = String::from("wasm_runtime ");
+            let mut wasm_command = String::from("/bin/wasm_runtime ");
             wasm_command.push_str(&command);
             execute_wasm_command(&wasm_command, output_file, input_file);
             return;
@@ -489,7 +489,7 @@ fn execute_command_with_redirection(line: &str) {
     if first_part.starts_with("./") && is_wasm_file(first_part) {
         let wasm_file = &first_part[2..]; // 去掉 "./"
         if file_exists(wasm_file) {
-            let mut wasm_command = String::from("wasm_runtime ");
+            let mut wasm_command = String::from("/bin/wasm_runtime ");
             wasm_command.push_str(wasm_file);
 
             // 添加其他参数
@@ -520,7 +520,7 @@ fn execute_command_with_redirection(line: &str) {
     for i in 1..parts.len() {
         args.push(parts[i]); // 添加其余参数
     }
-    
+
     // 环境变量（暂时为空）
     let empty_env: Vec<&str> = vec![];
 
