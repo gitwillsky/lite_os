@@ -17,19 +17,22 @@ static SLEEPING_TASKS: Mutex<BTreeMap<u64, Arc<TaskControlBlock>>> = Mutex::new(
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::board_info().time_base_freq;
-    current_mtime * MSEC_PER_SEC / time_base_freq
+    // 避免溢出：先除后乘
+    (current_mtime / time_base_freq) * MSEC_PER_SEC
 }
 
 pub fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::board_info().time_base_freq;
-    current_mtime * USEC_PER_SEC / time_base_freq
+    // 使用128位运算避免溢出
+    ((current_mtime as u128 * USEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 pub fn get_time_ns() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::board_info().time_base_freq;
-    current_mtime * NSEC_PER_SEC / time_base_freq
+    // 使用128位运算避免溢出
+    ((current_mtime as u128 * NSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 #[inline(always)]
@@ -81,8 +84,9 @@ pub fn check_and_wakeup_sleeping_tasks() {
         // 释放锁后再唤醒任务
         drop(sleeping_tasks);
 
-        // 唤醒任务
         for task in tasks_to_wakeup {
+            // 将任务状态从Sleeping改为Ready
+            *task.task_status.lock() = crate::task::TaskStatus::Ready;
             crate::task::add_task(task);
         }
     }
@@ -94,24 +98,30 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
         return 0;
     }
 
-    // 对于非常短的睡眠，直接使用yield循环
-    if nanoseconds < 1000000 {
-        // 小于1毫秒
-        let loops = nanoseconds / 10000; // 大约每10微秒yield一次
-        for _ in 0..loops.max(1) {
-            crate::task::suspend_current_and_run_next();
-        }
-        return 0;
-    }
+    let start_time = get_time_ns();
 
+    // 无论时间长短，都使用睡眠队列来保证准确性
     if let Some(current_task) = crate::task::current_task() {
-        let wake_time = get_time_ns() + nanoseconds;
+        let wake_time = start_time + nanoseconds;
+
+        // 设置任务状态为睡眠，防止被调度器重新加入就绪队列
+        *current_task.task_status.lock() = crate::task::TaskStatus::Sleeping;
 
         // 将当前任务加入睡眠队列
         add_sleeping_task(current_task, wake_time);
 
-        // 让出CPU，等待被唤醒
-        crate::task::suspend_current_and_run_next();
+        // 让出CPU，等待被唤醒（此时任务状态为Sleeping，不会被重新加入就绪队列）
+        crate::task::block_current_and_run_next();
+
+        // 醒来后检查实际时间
+        let end_time = get_time_ns();
+        let actual_sleep = end_time - start_time;
+    } else {
+        // 如果没有当前任务，使用忙等待（不推荐，但作为备用方案）
+        let start_time = get_time_ns();
+        while get_time_ns() - start_time < nanoseconds {
+            // 忙等待
+        }
     }
 
     0

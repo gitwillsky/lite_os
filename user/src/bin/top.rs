@@ -379,7 +379,7 @@ fn interactive_mode() {
             }
         }
 
-        sleep(20000);
+        sleep(1000);
     }
 }
 
@@ -419,5 +419,6 @@ fn display_basic_info() {
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     interactive_mode();
+
     0
 }
