@@ -14,9 +14,6 @@ extern crate alloc;
 
 pub use syscall::*;
 
-// 设置全局分配器
-#[global_allocator]
-static ALLOCATOR: heap::KernelHeapAllocator = heap::KernelHeapAllocator::new();
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
