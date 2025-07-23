@@ -194,8 +194,6 @@ fn compare_processes(
     sort_by: SortBy,
     reverse: bool,
 ) -> core::cmp::Ordering {
-    use core::cmp::Ordering;
-
     let result = match sort_by {
         SortBy::Pid => a.pid.cmp(&b.pid),
         SortBy::Cpu => b.cpu_percent.cmp(&a.cpu_percent), // CPU使用率默认降序
@@ -316,36 +314,63 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
     Ok(())
 }
 
-// 向后兼容的显示所有进程信息函数（默认按CPU排序）
-fn display_all_processes() -> Result<(), &'static str> {
-    display_all_processes_sorted(SortBy::Cpu, false)
+
+// 非阻塞检查键盘输入
+fn check_keyboard_input() -> Option<u8> {
+    // 注意：目前LiteOS的read实现还不完全支持非阻塞模式
+    // 这个函数使用简化的实现，在真实系统中应该：
+    // 1. 首先设置stdin为非阻塞模式：fcntl(0, F_SETFL, O_NONBLOCK)
+    // 2. 然后调用read，如果返回EAGAIN则表示没有数据
+    let mut buffer = [0u8; 1];
+
+    // 使用 read 系统调用尝试读取
+    // 在完整实现中，这里应该返回EAGAIN错误而不是阻塞
+    match read(0, &mut buffer) {
+        1 => Some(buffer[0]), // 成功读取到一个字符
+        _ => None,            // 没有输入或出错
+    }
 }
 
 // 交互模式主循环（自动刷新，支持键盘控制）
 fn interactive_mode() {
     let mut sort_by = SortBy::Pid; // 默认按PID排序
     let mut reverse = false;
-    let mut should_refresh = true;
+    let mut auto_refresh = true;
+    let mut refresh_interval = 1000; // 1秒刷新间隔
 
-    println!("LiteOS Top - Interactive Mode (Auto-refresh enabled)");
-    println!(
-        "Commands: [a]=Toggle auto-refresh, [c]=CPU%, [m]=Memory, [p]=PID, [v]=VRuntime, [s]=Status, [r]=Reverse, [q]=Quit"
-    );
-    println!("Note: Due to blocking read(), keyboard input may delay auto-refresh.");
-    println!("Press any key to start or wait for auto-refresh...");
+    // 显示初始帮助信息
+    clear_screen();
+    println!("LiteOS Top - Interactive Process Monitor v3.0");
+    println!("==============================================");
     println!("");
+    println!("Interactive Commands:");
+    println!("  [p] - Sort by PID");
+    println!("  [c] - Sort by CPU%");
+    println!("  [m] - Sort by Memory usage");
+    println!("  [v] - Sort by Virtual runtime");
+    println!("  [s] - Sort by Status");
+    println!("  [r] - Reverse sort order");
+    println!("  [a] - Toggle auto-refresh");
+    println!("  [f] - Force refresh now");
+    println!("  [1] - Set refresh to 1 second");
+    println!("  [3] - Set refresh to 3 seconds");
+    println!("  [5] - Set refresh to 5 seconds");
+    println!("  [h] - Show this help");
+    println!("  [q] - Quit");
+    println!("");
+    println!("Press any key to start monitoring...");
+
+    // 等待用户按键开始
+    let mut buffer = [0u8; 1];
+    let _ = read(0, &mut buffer);
 
     loop {
-        // 清屏
+        // 清屏并显示内容
         clear_screen();
-
-        // 显示头部信息
         display_header();
-
-        // 显示系统统计
         display_system_stats();
 
-        // 显示排序和刷新信息
+        // 显示当前设置信息
         let sort_name = match sort_by {
             SortBy::Pid => "PID",
             SortBy::Cpu => "CPU%",
@@ -353,34 +378,164 @@ fn interactive_mode() {
             SortBy::VRuntime => "VRuntime",
             SortBy::Status => "Status",
         };
-        println!(
-            "Sorted by: {} {}",
+
+        println!("Settings: Sort by {} {}, Auto-refresh: {}, Interval: {}ms",
             sort_name,
-            if reverse {
-                "(descending)"
-            } else {
-                "(ascending)"
-            }
+            if reverse { "(desc)" } else { "(asc)" },
+            if auto_refresh { "ON" } else { "OFF" },
+            refresh_interval
         );
         println!("");
 
-        // 显示所有进程信息（带排序）
+        // 显示进程信息
         match display_all_processes_sorted(sort_by, reverse) {
             Ok(()) => {
                 println!("");
-                println!(
-                    "Commands: [a]=Auto-refresh, [c]=CPU%, [m]=Memory, [p]=PID, [v]=VRuntime, [s]=Status, [r]=Reverse, [q]=Quit"
-                );
+                println!("Commands: [p]PID [c]CPU% [m]Memory [v]VRuntime [s]Status [r]Reverse [a]Auto-refresh [q]Quit [h]Help");
             }
             Err(e) => {
                 println!("Error: {}", e);
-                println!("Falling back to basic display...");
                 display_basic_info();
             }
         }
 
-        sleep(1000);
+        // 如果启用自动刷新，则等待指定时间并检查按键
+        if auto_refresh {
+            // 分割等待时间，每100ms检查一次按键
+            let check_intervals = refresh_interval / 100;
+            let mut key_pressed = false;
+
+            for _ in 0..check_intervals {
+                sleep(100);
+                if let Some(key) = check_keyboard_input() {
+                    if handle_key_input(key, &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                        return; // 退出程序
+                    }
+                    key_pressed = true;
+                    break;
+                }
+            }
+
+            // 如果按了键就不等待剩余时间，立即刷新
+            if !key_pressed {
+                // 等待剩余时间
+                sleep((refresh_interval % 100) as usize);
+                // 再次检查按键
+                if let Some(key) = check_keyboard_input() {
+                    if handle_key_input(key, &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                        return;
+                    }
+                }
+            }
+        } else {
+            // 如果没有自动刷新，则等待按键
+            let mut buffer = [0u8; 1];
+            if read(0, &mut buffer) == 1 {
+                if handle_key_input(buffer[0], &mut sort_by, &mut reverse, &mut auto_refresh, &mut refresh_interval) {
+                    return;
+                }
+            }
+        }
     }
+}
+
+// 处理键盘输入
+fn handle_key_input(
+    key: u8,
+    sort_by: &mut SortBy,
+    reverse: &mut bool,
+    auto_refresh: &mut bool,
+    refresh_interval: &mut u64
+) -> bool {
+    match key as char {
+        'p' | 'P' => {
+            *sort_by = SortBy::Pid;
+            false
+        }
+        'c' | 'C' => {
+            *sort_by = SortBy::Cpu;
+            false
+        }
+        'm' | 'M' => {
+            *sort_by = SortBy::Memory;
+            false
+        }
+        'v' | 'V' => {
+            *sort_by = SortBy::VRuntime;
+            false
+        }
+        's' | 'S' => {
+            *sort_by = SortBy::Status;
+            false
+        }
+        'r' | 'R' => {
+            *reverse = !*reverse;
+            false
+        }
+        'a' | 'A' => {
+            *auto_refresh = !*auto_refresh;
+            false
+        }
+        'f' | 'F' => {
+            // 强制刷新，什么都不做，让循环继续
+            false
+        }
+        '1' => {
+            *refresh_interval = 1000; // 1秒
+            false
+        }
+        '3' => {
+            *refresh_interval = 3000; // 3秒
+            false
+        }
+        '5' => {
+            *refresh_interval = 5000; // 5秒
+            false
+        }
+        'h' | 'H' => {
+            show_help();
+            false
+        }
+        'q' | 'Q' => {
+            println!("Exiting top...");
+            true // 退出程序
+        }
+        _ => false // 忽略其他按键
+    }
+}
+
+// 显示帮助信息
+fn show_help() {
+    clear_screen();
+    println!("LiteOS Top - Help");
+    println!("================");
+    println!("");
+    println!("Interactive Commands:");
+    println!("  [p] - Sort by PID (Process ID)");
+    println!("  [c] - Sort by CPU% (CPU usage percentage)");
+    println!("  [m] - Sort by Memory usage (heap size)");
+    println!("  [v] - Sort by Virtual runtime");
+    println!("  [s] - Sort by Status (Ready/Running/Zombie/Sleep)");
+    println!("  [r] - Reverse current sort order");
+    println!("  [a] - Toggle auto-refresh on/off");
+    println!("  [f] - Force refresh display now");
+    println!("  [1] - Set refresh interval to 1 second");
+    println!("  [3] - Set refresh interval to 3 seconds");
+    println!("  [5] - Set refresh interval to 5 seconds");
+    println!("  [h] - Show this help screen");
+    println!("  [q] - Quit the program");
+    println!("");
+    println!("Process Status Codes:");
+    println!("  READY - Process is ready to run");
+    println!("  RUN   - Process is currently running");
+    println!("  ZOMB  - Zombie process (finished but not reaped)");
+    println!("  SLEEP - Process is sleeping/blocked");
+    println!("");
+    println!("Press any key to return to process monitor...");
+
+    // 等待按键
+    let mut buffer = [0u8; 1];
+    let _ = read(0, &mut buffer);
 }
 
 // 基本信息显示（回退方案）
