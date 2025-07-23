@@ -91,6 +91,23 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         );
     }
 
+    // RTC 设备映射
+    if let Some(rtc_dev) = &board_info.rtc_device {
+        debug!(
+            "[init_kernel_space] RTC MMIO: {:#x} - {:#x}",
+            rtc_dev.base_addr, rtc_dev.base_addr + rtc_dev.size
+        );
+        memory_set.push(
+            MapArea::new(
+                rtc_dev.base_addr.into(),
+                (rtc_dev.base_addr + rtc_dev.size).into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+    }
+
     // kernel text section
     let stext_addr = stext as usize;
     let etext_addr = etext as usize;
