@@ -1,7 +1,7 @@
 use core::{
     cell::RefMut,
     error::Error,
-    sync::atomic::{self, AtomicI32, AtomicU32, AtomicU64, AtomicUsize},
+    sync::atomic::{self, AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize},
 };
 
 use alloc::{
@@ -337,6 +337,9 @@ pub struct TaskControlBlock {
     pub euid: AtomicU32,
     /// 有效组ID (用于权限检查)
     pub egid: AtomicU32,
+    
+    /// stdin 非阻塞标志 (用于 fcntl 设置)
+    pub stdin_nonblock: AtomicBool,
 
     /// 进程启动时的命令行参数
     pub args: Mutex<Option<Vec<String>>>,
@@ -401,6 +404,7 @@ impl TaskControlBlock {
             gid: AtomicU32::new(0),
             euid: AtomicU32::new(0),
             egid: AtomicU32::new(0),
+            stdin_nonblock: AtomicBool::new(false),
         };
 
         // prepare TrapContext in user space
@@ -496,6 +500,7 @@ impl TaskControlBlock {
             gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
             euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
             egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
+            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
             mm: Memory {

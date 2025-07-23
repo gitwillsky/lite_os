@@ -317,17 +317,30 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
 
 // 非阻塞检查键盘输入
 fn check_keyboard_input() -> Option<u8> {
-    // 注意：目前LiteOS的read实现还不完全支持非阻塞模式
-    // 这个函数使用简化的实现，在真实系统中应该：
-    // 1. 首先设置stdin为非阻塞模式：fcntl(0, F_SETFL, O_NONBLOCK)
-    // 2. 然后调用read，如果返回EAGAIN则表示没有数据
+    use crate::syscall::{fcntl_getfl, fcntl_setfl, open_flags, errno};
+
+    static mut STDIN_NONBLOCK_SET: bool = false;
+
+    unsafe {
+        if !STDIN_NONBLOCK_SET {
+            // 设置stdin为非阻塞模式
+            let current_flags = fcntl_getfl(0);
+            if current_flags >= 0 {
+                let new_flags = (current_flags as u32) | open_flags::O_NONBLOCK;
+                if fcntl_setfl(0, new_flags) == 0 {
+                    STDIN_NONBLOCK_SET = true;
+                }
+            }
+        }
+    }
+
     let mut buffer = [0u8; 1];
 
-    // 使用 read 系统调用尝试读取
-    // 在完整实现中，这里应该返回EAGAIN错误而不是阻塞
+    // 尝试非阻塞读取
     match read(0, &mut buffer) {
-        1 => Some(buffer[0]), // 成功读取到一个字符
-        _ => None,            // 没有输入或出错
+        1 => Some(buffer[0]),    // 成功读取到一个字符
+        err if err == -(errno::EAGAIN as isize) => None, // 没有数据可读
+        _ => None,               // 其他错误
     }
 }
 
@@ -337,32 +350,6 @@ fn interactive_mode() {
     let mut reverse = false;
     let mut auto_refresh = true;
     let mut refresh_interval = 1000; // 1秒刷新间隔
-
-    // 显示初始帮助信息
-    clear_screen();
-    println!("LiteOS Top - Interactive Process Monitor v3.0");
-    println!("==============================================");
-    println!("");
-    println!("Interactive Commands:");
-    println!("  [p] - Sort by PID");
-    println!("  [c] - Sort by CPU%");
-    println!("  [m] - Sort by Memory usage");
-    println!("  [v] - Sort by Virtual runtime");
-    println!("  [s] - Sort by Status");
-    println!("  [r] - Reverse sort order");
-    println!("  [a] - Toggle auto-refresh");
-    println!("  [f] - Force refresh now");
-    println!("  [1] - Set refresh to 1 second");
-    println!("  [3] - Set refresh to 3 seconds");
-    println!("  [5] - Set refresh to 5 seconds");
-    println!("  [h] - Show this help");
-    println!("  [q] - Quit");
-    println!("");
-    println!("Press any key to start monitoring...");
-
-    // 等待用户按键开始
-    let mut buffer = [0u8; 1];
-    let _ = read(0, &mut buffer);
 
     loop {
         // 清屏并显示内容
@@ -497,7 +484,6 @@ fn handle_key_input(
             false
         }
         'q' | 'Q' => {
-            println!("Exiting top...");
             true // 退出程序
         }
         _ => false // 忽略其他按键

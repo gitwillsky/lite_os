@@ -73,6 +73,7 @@ const SYSCALL_MKFIFO: usize = 506;
 const SYSCALL_CHMOD: usize = 507;
 const SYSCALL_CHOWN: usize = 508;
 const SYSCALL_GET_ARGS: usize = 509;
+const SYSCALL_FCNTL: usize = 25;
 
 // 权限相关系统调用
 const SYSCALL_GETUID: usize = 102;
@@ -407,6 +408,36 @@ pub fn flock(fd: usize, operation: i32) -> isize {
     syscall(SYSCALL_FLOCK, [fd, operation as usize, 0])
 }
 
+/// fcntl - 文件控制操作
+/// 参数：
+/// - fd: 文件描述符
+/// - cmd: fcntl 命令
+/// - arg: 命令参数（可选）
+/// 返回值：根据命令不同返回不同值，错误时返回负数
+pub fn fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
+    syscall(SYSCALL_FCNTL, [fd, cmd as usize, arg])
+}
+
+/// 获取文件状态标志
+pub fn fcntl_getfl(fd: usize) -> isize {
+    fcntl(fd, fcntl_consts::F_GETFL, 0)
+}
+
+/// 设置文件状态标志
+pub fn fcntl_setfl(fd: usize, flags: u32) -> isize {
+    fcntl(fd, fcntl_consts::F_SETFL, flags as usize)
+}
+
+/// 获取文件描述符标志
+pub fn fcntl_getfd(fd: usize) -> isize {
+    fcntl(fd, fcntl_consts::F_GETFD, 0)
+}
+
+/// 设置文件描述符标志
+pub fn fcntl_setfd(fd: usize, flags: i32) -> isize {
+    fcntl(fd, fcntl_consts::F_SETFD, flags as usize)
+}
+
 /// 设置文件偏移量
 pub fn lseek(fd: usize, offset: isize, whence: usize) -> isize {
     syscall(SYSCALL_LSEEK, [fd, offset as usize, whence])
@@ -555,6 +586,39 @@ pub mod flock_consts {
     pub const LOCK_EX: i32 = 2;   // 排他锁
     pub const LOCK_NB: i32 = 4;   // 非阻塞
     pub const LOCK_UN: i32 = 8;   // 解锁
+}
+
+/// fcntl 命令常量
+pub mod fcntl_consts {
+    pub const F_GETFL: i32 = 3;   // 获取文件状态标志
+    pub const F_SETFL: i32 = 4;   // 设置文件状态标志
+    pub const F_GETFD: i32 = 1;   // 获取文件描述符标志
+    pub const F_SETFD: i32 = 2;   // 设置文件描述符标志
+}
+
+/// 文件描述符标志
+pub mod fd_flags {
+    pub const FD_CLOEXEC: i32 = 1; // close-on-exec
+}
+
+/// 文件打开和状态标志常量
+pub mod open_flags {
+    pub const O_RDONLY: u32 = 0o0;    // 只读
+    pub const O_WRONLY: u32 = 0o1;    // 只写
+    pub const O_RDWR: u32 = 0o2;      // 读写
+    pub const O_CREAT: u32 = 0o100;   // 创建文件
+    pub const O_TRUNC: u32 = 0o1000;  // 截断文件
+    pub const O_NONBLOCK: u32 = 0o4000;  // 非阻塞
+    pub const O_APPEND: u32 = 0o2000;    // 追加模式
+}
+
+/// 错误码常量
+pub mod errno {
+    pub const EAGAIN: i32 = 11;       // 资源暂时不可用
+    pub const EWOULDBLOCK: i32 = 11;  // 操作会阻塞（与EAGAIN相同）
+    pub const EBADF: i32 = 9;         // 无效的文件描述符
+    pub const EINVAL: i32 = 22;       // 无效的参数
+    pub const EPERM: i32 = 1;         // 操作不允许
 }
 
 /// 获取进程列表

@@ -66,15 +66,41 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             assert_eq!(len, 1, "Only support len = 1 in sys_read!");
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             
-            let ch = loop {
-                // 直接使用SBI输入，简单可靠
+            // 检查是否设置了非阻塞标志
+            // 对于 stdin，我们需要检查 fd 0 对应的文件描述符
+            let is_nonblock = if let Some(task) = current_task() {
+                // stdin 可能在文件描述符表中，也可能没有
+                // 如果有，检查其标志；如果没有，默认为阻塞模式
+                match task.file.lock().fd(0) {
+                    Some(file_desc) => (file_desc.flags & 0o4000) != 0, // O_NONBLOCK
+                    None => {
+                        // stdin 不在文件描述符表中，检查是否有全局的 stdin 非阻塞标志
+                        // 为简化实现，我们使用任务的临时标志位
+                        task.stdin_nonblock.load(core::sync::atomic::Ordering::Relaxed)
+                    }
+                }
+            } else {
+                false
+            };
+            
+            let ch = if is_nonblock {
+                // 非阻塞模式：如果没有输入则立即返回 EAGAIN
                 let c = sbi::console_getchar();
                 if c == -1 {
-                    // SBI无输入，暂停当前任务等待输入
-                    suspend_current_and_run_next();
-                    continue;
+                    return -11; // EAGAIN
                 } else {
-                    break c;
+                    c
+                }
+            } else {
+                // 阻塞模式：等待输入
+                loop {
+                    let c = sbi::console_getchar();
+                    if c == -1 {
+                        suspend_current_and_run_next();
+                        continue;
+                    } else {
+                        break c;
+                    }
                 }
             };
             
@@ -133,6 +159,8 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
     const O_RDWR: u32 = 0o2;
     const O_CREAT: u32 = 0o100;
     const O_TRUNC: u32 = 0o1000;
+    const O_NONBLOCK: u32 = 0o4000;
+    const O_APPEND: u32 = 0o2000;
 
     // 提取访问模式和文件标志
     let access_mode = flags & 0o3;
@@ -776,5 +804,86 @@ pub fn sys_chown(path: *const u8, uid: u32, gid: u32) -> isize {
             }
         }
         Err(_) => -2, // ENOENT
+    }
+}
+
+/// fcntl - 文件控制操作
+pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
+    // fcntl 命令常量
+    const F_GETFL: i32 = 3;  // 获取文件状态标志
+    const F_SETFL: i32 = 4;  // 设置文件状态标志
+    const F_GETFD: i32 = 1;  // 获取文件描述符标志
+    const F_SETFD: i32 = 2;  // 设置文件描述符标志
+
+    // 文件描述符标志
+    const FD_CLOEXEC: usize = 1; // close-on-exec
+
+    // 文件状态标志（这些可以通过 F_SETFL 修改）
+    const O_NONBLOCK: u32 = 0o4000;
+    const O_APPEND: u32 = 0o2000;
+
+    if let Some(task) = current_task() {
+        // 特殊处理 stdin (fd = 0)
+        if fd == 0 {
+            match cmd {
+                F_GETFL => {
+                    // 检查 stdin 的非阻塞状态
+                    let nonblock = task.stdin_nonblock.load(core::sync::atomic::Ordering::Relaxed);
+                    if nonblock {
+                        O_NONBLOCK as isize
+                    } else {
+                        0
+                    }
+                }
+                F_SETFL => {
+                    // 设置 stdin 的非阻塞状态
+                    let new_flags = arg as u32;
+                    let is_nonblock = (new_flags & O_NONBLOCK) != 0;
+                    task.stdin_nonblock.store(is_nonblock, core::sync::atomic::Ordering::Relaxed);
+                    0
+                }
+                F_GETFD => 0, // stdin 没有特殊的文件描述符标志
+                F_SETFD => 0, // stdin 不允许设置 close-on-exec 等标志
+                _ => -22, // EINVAL - 无效的命令
+            }
+        } else if let Some(file_desc) = task.file.lock().fd(fd) {
+            match cmd {
+                F_GETFL => {
+                    // 返回文件状态标志
+                    file_desc.flags as isize
+                }
+                F_SETFL => {
+                    // 设置文件状态标志（只允许修改某些标志）
+                    let new_flags = arg as u32;
+                    let allowed_flags = O_NONBLOCK | O_APPEND;
+                    
+                    // 保留访问模式和其他不可修改的标志，只更新允许的标志
+                    let access_mode = file_desc.flags & 0o3; // O_RDONLY, O_WRONLY, O_RDWR
+                    let other_flags = file_desc.flags & !allowed_flags;
+                    let updated_flags = access_mode | other_flags | (new_flags & allowed_flags);
+                    
+                    // 使用原子操作更新标志
+                    let file_desc_ptr = Arc::as_ptr(&file_desc) as *const FileDescriptor as *mut FileDescriptor;
+                    unsafe {
+                        (*file_desc_ptr).flags = updated_flags;
+                    }
+                    0
+                }
+                F_GETFD => {
+                    // 获取文件描述符标志 (暂时返回0，因为当前FileDescriptor结构中没有fd_flags字段)
+                    0
+                }
+                F_SETFD => {
+                    // 设置文件描述符标志 (暂时不实现，因为需要修改FileDescriptor结构)
+                    // 在完整实现中，需要在FileDescriptor中添加fd_flags字段
+                    0
+                }
+                _ => -22, // EINVAL - 无效的命令
+            }
+        } else {
+            -9 // EBADF - 无效的文件描述符
+        }
+    } else {
+        -1 // 没有当前任务
     }
 }
