@@ -3,6 +3,9 @@ use spin::Once;
 
 mod dtb;
 
+// 重新导出 RTCDevice 供其他模块使用
+pub use dtb::RTCDevice;
+
 static BOARD_INFO: Once<BoardInfo> = Once::new();
 
 pub fn init(dtb_addr: usize) {

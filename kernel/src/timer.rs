@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, task::TaskControlBlock};
+use crate::{arch::sbi, board, config, task::TaskControlBlock, drivers::GoldfishRTC};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -26,38 +26,57 @@ static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
 // 睡眠任务队列：以唤醒时间为键，任务为值
 static SLEEPING_TASKS: Mutex<BTreeMap<u64, Arc<TaskControlBlock>>> = Mutex::new(BTreeMap::new());
 
-// 读取 Goldfish RTC 获取真实的 Unix 时间戳（纳秒）
-fn read_goldfish_rtc_ns() -> Option<u64> {
+// 全局 RTC 设备实例
+static RTC_DEVICE: Mutex<Option<GoldfishRTC>> = Mutex::new(None);
+
+// 初始化 RTC 设备
+fn init_rtc_device() -> Option<GoldfishRTC> {
     let board_info = board::board_info();
     debug!("Checking for RTC device...");
-    if let Some(rtc) = board_info.rtc_device {
-        debug!("Found RTC device at base address: {:#x}", rtc.base_addr);
+    
+    if let Some(rtc_info) = board_info.rtc_device {
+        debug!("Found RTC device at base address: {:#x}, size: {:#x}", 
+               rtc_info.base_addr, rtc_info.size);
         
         // 检查地址是否合理
-        if rtc.base_addr == 0 {
+        if rtc_info.base_addr == 0 {
             warn!("Invalid RTC base address: 0x0");
             return None;
         }
         
-        // 暂时跳过实际读取，直接返回 None 来避免卡死
-        // 这样可以让系统继续运行，使用默认时间
-        warn!("Skipping RTC read to avoid potential hang, using default time");
-        None
-        
-        // TODO: 以后可以在这里实现更安全的 RTC 读取方式
-        // 可能需要先映射内存区域或者使用不同的访问方法
-        /*
-        unsafe {
-            // 读取低32位，然后读取高32位
-            let low = core::ptr::read_volatile((rtc.base_addr + RTC_TIME_LOW) as *const u32);
-            let high = core::ptr::read_volatile((rtc.base_addr + RTC_TIME_HIGH) as *const u32);
-            
-            // 组合成64位纳秒时间戳
-            Some(((high as u64) << 32) | (low as u64))
+        // 使用 MmioBus 创建 RTC 设备
+        match GoldfishRTC::new(rtc_info) {
+            Ok(rtc) => {
+                debug!("Successfully initialized Goldfish RTC device");
+                Some(rtc)
+            }
+            Err(err) => {
+                warn!("Failed to initialize Goldfish RTC: {:?}", err);
+                None
+            }
         }
-        */
     } else {
         warn!("Goldfish RTC device not found in device tree");
+        None
+    }
+}
+
+// 读取 Goldfish RTC 获取真实的 Unix 时间戳（纳秒）
+fn read_goldfish_rtc_ns() -> Option<u64> {
+    let rtc_guard = RTC_DEVICE.lock();
+    if let Some(rtc) = rtc_guard.as_ref() {
+        match rtc.read_time_ns() {
+            Ok(time_ns) => {
+                debug!("Successfully read RTC time: {} ns", time_ns);
+                Some(time_ns)
+            }
+            Err(err) => {
+                warn!("Failed to read RTC time: {:?}", err);
+                None
+            }
+        }
+    } else {
+        debug!("RTC device not initialized");
         None
     }
 }
@@ -214,6 +233,14 @@ pub fn init() {
     unsafe {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
         register::sie::set_stimer();
+    }
+
+    // 初始化 RTC 设备
+    if let Some(rtc) = init_rtc_device() {
+        *RTC_DEVICE.lock() = Some(rtc);
+        debug!("RTC device initialized successfully");
+    } else {
+        warn!("Failed to initialize RTC device");
     }
 
     // 从 Goldfish RTC 获取真实的启动时间
