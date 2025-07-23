@@ -46,16 +46,19 @@ impl KernelHeapAllocator {
 
     /// 扩展堆大小
     fn expand_heap(&self, size: usize) -> bool {
+        unsafe {
             // 页对齐大小
             let page_size = 4096;
             let aligned_size = (size + page_size - 1) & !(page_size - 1);
 
             let old_brk = sbrk(aligned_size as isize);
             if old_brk > 0 {
+                HEAP_END += aligned_size;
                 true
             } else {
                 false
             }
+        }
     }
 
     /// 分配内存
