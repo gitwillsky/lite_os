@@ -60,12 +60,12 @@ fn detect_escape_sequence() -> Option<Vec<u8>> {
             if third == 0 {
                 return None;
             }
-            
+
             // 检查是否是Delete键等（如3~）
             if third == b'~' {
                 return Some(vec![first, second, third]);
             }
-            
+
             // 其他数字序列，返回目前读到的
             return Some(vec![first, second, third]);
         }
@@ -105,6 +105,24 @@ fn generate_prompt() -> String {
     String::from("$ ")
 }
 
+/// 打印美化的欢迎信息
+fn print_welcome_message() {
+    println!("");
+    println!("╔════════════════════════════════════════════════════════════════╗");
+    println!("║                                                                ║");
+    println!("║        ██╗     ██╗████████╗███████╗ ██████╗ ███████╗           ║");
+    println!("║        ██║     ██║╚══██╔══╝██╔════╝██╔═══██╗██╔════╝           ║");
+    println!("║        ██║     ██║   ██║   █████╗  ██║   ██║███████╗           ║");
+    println!("║        ██║     ██║   ██║   ██╔══╝  ██║   ██║╚════██║           ║");
+    println!("║        ███████╗██║   ██║   ███████╗╚██████╔╝███████║           ║");
+    println!("║        ╚══════╝╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚══════╝           ║");
+    println!("║                                                                ║");
+    println!("║                Enhanced RISC-V Operating System                ║");
+    println!("║                    Advanced Unix-like Shell                    ║");
+    println!("╚════════════════════════════════════════════════════════════════╝");
+    println!("");
+}
+
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     let mut editor = LineEditor::new();
@@ -112,10 +130,7 @@ fn main() -> i32 {
     let mut job_manager = JobManager::new();
 
     // 打印欢迎信息
-    println!("欢迎使用LiteOS Enhanced Shell!");
-    println!("================================");
-    println!("输入 'help' 查看可用命令");
-    println!("");
+    print_welcome_message();
 
     let prompt = generate_prompt();
     print!("{}", prompt);
