@@ -225,10 +225,15 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
 /// 处理任务信号
 fn handle_task_signals(task: &Arc<TaskControlBlock>) {
-    let (should_continue, exit_code) = crate::task::check_and_handle_signals();
+    // 使用安全的信号处理方法，避免获取trap context导致死锁
+    use crate::task::signal::SignalDelivery;
+    
+    let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
+    
     if !should_continue {
         if let Some(code) = exit_code {
-            // 如果信号要求终止进程，则终止进程
+            // 如果信号要求终止进程，则设置为僵尸状态
+            debug!("Task {} terminated by signal with exit code {}", task.pid(), code);
             *task.task_status.lock() = TaskStatus::Zombie;
             task.set_exit_code(code);
         }

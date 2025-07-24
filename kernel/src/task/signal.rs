@@ -1,6 +1,6 @@
 use crate::sync::UPSafeCell;
-use crate::task::task_manager::find_task_by_pid;
 use crate::task::TaskControlBlock;
+use crate::task::task_manager::find_task_by_pid;
 use crate::trap::TrapContext;
 use alloc::collections::BTreeMap;
 
@@ -106,6 +106,34 @@ impl Signal {
             }
             Signal::SIGCONT => SignalAction::Continue,
             _ => SignalAction::Terminate,
+        }
+    }
+
+    /// Returns the default exit code for this signal when it terminates a process
+    pub fn default_exit_code(&self) -> i32 {
+        match self {
+            Signal::SIGKILL => 9,
+            Signal::SIGTERM => 15,
+            Signal::SIGINT => 2,
+            Signal::SIGQUIT => 3,
+            Signal::SIGILL => 4,
+            Signal::SIGTRAP => 5,
+            Signal::SIGABRT => 6,
+            Signal::SIGBUS => 7,
+            Signal::SIGFPE => 8,
+            Signal::SIGSEGV => 11,
+            Signal::SIGPIPE => 13,
+            Signal::SIGALRM => 14,
+            Signal::SIGUSR1 => 10,
+            Signal::SIGUSR2 => 12,
+            Signal::SIGXCPU => 24,
+            Signal::SIGXFSZ => 25,
+            Signal::SIGVTALRM => 26,
+            Signal::SIGPROF => 27,
+            Signal::SIGIO => 29,
+            Signal::SIGPWR => 30,
+            Signal::SIGSYS => 31,
+            _ => (*self as i32), // Use signal number as exit code for others
         }
     }
 }
@@ -254,6 +282,8 @@ pub struct SignalState {
     pub in_signal_handler: UPSafeCell<bool>,
     /// Saved signal mask when entering signal handler
     pub saved_mask: UPSafeCell<Option<SignalSet>>,
+    /// Flag indicating that some signals need trap context for handling
+    pub needs_trap_context_handling: UPSafeCell<bool>,
 }
 
 impl SignalState {
@@ -264,6 +294,7 @@ impl SignalState {
             handlers: UPSafeCell::new(BTreeMap::new()),
             in_signal_handler: UPSafeCell::new(false),
             saved_mask: UPSafeCell::new(None),
+            needs_trap_context_handling: UPSafeCell::new(false),
         }
     }
 
@@ -337,6 +368,16 @@ impl SignalState {
         *self.blocked.exclusive_access()
     }
 
+    /// Set flag indicating that signals need trap context for handling
+    pub fn set_needs_trap_context_handling(&self, needs: bool) {
+        *self.needs_trap_context_handling.exclusive_access() = needs;
+    }
+
+    /// Check if signals need trap context for handling
+    pub fn needs_trap_context_handling(&self) -> bool {
+        *self.needs_trap_context_handling.exclusive_access()
+    }
+
     /// Enter signal handler (save current mask and set new mask)
     pub fn enter_signal_handler(&self, additional_mask: SignalSet) {
         let mut in_handler = self.in_signal_handler.exclusive_access();
@@ -384,6 +425,7 @@ impl SignalState {
             handlers: UPSafeCell::new(handlers),
             in_signal_handler: UPSafeCell::new(false),
             saved_mask: UPSafeCell::new(None),
+            needs_trap_context_handling: UPSafeCell::new(false),
         }
     }
 }
@@ -445,19 +487,74 @@ pub const SIG_RETURN_ADDR: usize = 0;
 pub struct SignalDelivery;
 
 impl SignalDelivery {
-    /// 检查并处理信号
+    /// 安全处理信号，避免死锁
+    /// 这个函数在没有trap context的环境中处理信号
     /// 返回值: (should_continue, exit_code)
-    /// should_continue: true表示进程应该继续执行，false表示进程应该退出
-    /// exit_code: 如果should_continue为false，则为进程退出码
-    /// 安全处理信号，避免循环借用
     pub fn handle_signals_safe(task: &TaskControlBlock) -> (bool, Option<i32>) {
-        // 获取待处理的信号
-        let signal = task.signal_state.lock().next_deliverable_signal();
+        // 循环处理所有待处理的信号
+        loop {
+            let signal = task.signal_state.lock().next_deliverable_signal();
 
-        if let Some(signal) = signal {
-            Self::deliver_signal(task, signal, task.mm.trap_context())
-        } else {
-            (true, None)
+            let Some(signal) = signal else {
+                // 没有更多信号需要处理
+                return (true, None);
+            };
+
+            debug!("Processing signal {} in safe context", signal as u32);
+
+            // 获取信号处理器配置
+            let handler = task.signal_state.lock().get_handler(signal);
+
+            match handler.action {
+                SignalAction::Ignore => {
+                    debug!("Signal {} ignored", signal as u32);
+                    // 继续处理下一个信号
+                    continue;
+                }
+
+                SignalAction::Terminate => {
+                    debug!("Signal {} terminates process", signal as u32);
+                    return (false, Some(signal.default_exit_code()));
+                }
+
+                SignalAction::Stop => {
+                    debug!("Signal {} stops process", signal as u32);
+                    // 更新任务状态为睡眠
+                    *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                    // 停止信号不终止进程，只是挂起
+                    return (true, None);
+                }
+
+                SignalAction::Continue => {
+                    debug!("Signal {} continues process", signal as u32);
+                    // 如果进程被停止，则恢复运行
+                    let mut status = task.task_status.lock();
+                    if *status == crate::task::TaskStatus::Sleeping {
+                        *status = crate::task::TaskStatus::Ready;
+                    }
+                    // 继续处理下一个信号
+                    continue;
+                }
+
+                SignalAction::Handler(handler_addr) => {
+                    debug!("Signal {} has custom handler at {:#x}", signal as u32, handler_addr);
+
+                    // 对于用户自定义处理器，我们需要修改进程的执行上下文
+                    // 但我们不能在这里获取trap_context，因为会导致死锁
+                    // 解决方案：标记信号需要在trap context中处理
+
+                    // 将信号重新加入待处理队列，但设置特殊标记
+                    // 这样在有trap context的地方会重新处理
+                    task.signal_state.lock().add_pending_signal(signal);
+
+                    // 设置一个标记，表示有信号需要在trap context中处理
+                    // 这将在下次进入trap handler时被处理
+                    task.signal_state.lock().set_needs_trap_context_handling(true);
+
+                    // 暂时继续执行，等待在trap handler中处理
+                    return (true, None);
+                }
+            }
         }
     }
 
@@ -500,11 +597,7 @@ impl SignalDelivery {
             SignalAction::Stop => {
                 // 暂停进程（设置为sleeping状态）
                 *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
-                info!(
-                    "Signal {} stops process PID {}",
-                    signal as u32,
-                    task.pid()
-                );
+                info!("Signal {} stops process PID {}", signal as u32, task.pid());
                 (true, None)
             }
             SignalAction::Continue => {
@@ -753,6 +846,40 @@ pub fn check_and_handle_signals() -> (bool, Option<i32>) {
         if has_signals {
             // 分别获取trap_cx和处理信号，避免同时持有锁
             SignalDelivery::handle_signals_safe(&task)
+        } else {
+            (true, None)
+        }
+    } else {
+        (true, None)
+    }
+}
+
+/// 使用外部提供的trap context检查和处理信号
+/// 用于避免在trap handler中重复获取trap context锁
+pub fn check_and_handle_signals_with_cx(trap_cx: &mut crate::trap::TrapContext) -> (bool, Option<i32>) {
+    use crate::task::current_task;
+
+    if let Some(task) = current_task() {
+        // 首先检查是否有需要trap context处理的信号
+        let needs_trap_handling = task.signal_state.lock().needs_trap_context_handling();
+
+        if needs_trap_handling {
+            // 清除标记
+            task.signal_state.lock().set_needs_trap_context_handling(false);
+
+            // 处理需要trap context的信号
+            let result = SignalDelivery::handle_signals(&task, trap_cx);
+            if !result.0 {
+                return result; // 如果信号要求进程退出
+            }
+        }
+
+        // 然后检查是否还有其他待处理的信号
+        let has_signals = task.signal_state.lock().has_deliverable_signals();
+
+        if has_signals {
+            // 处理其他信号
+            SignalDelivery::handle_signals(&task, trap_cx)
         } else {
             (true, None)
         }

@@ -21,12 +21,12 @@ def cleanup_apple_double_files(directory):
                         deleted_count += 1
                     except Exception as e:
                         print(f"⚠ 删除 {file} 时出错: {e}")
-        
+
         if deleted_count == 0:
             print("✓ 未发现 AppleDouble 文件")
         else:
             print(f"✓ 总共删除了 {deleted_count} 个 AppleDouble 文件")
-            
+
     except Exception as e:
         print(f"⚠ 清理 AppleDouble 文件时出错: {e}")
 
@@ -120,7 +120,7 @@ def copy_files_to_fs(mount_point):
             user_elfs.append(elf_file)
 
     # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'initproc', 'wasm_runtime', 'top']
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill']
 
     if user_elfs:
         print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")

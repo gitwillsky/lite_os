@@ -57,8 +57,11 @@ pub fn trap_handler() {
 
 
                     // Check and handle pending signals before task switch
-                    if !check_signals_and_maybe_exit() {
-                        return; // Process was terminated by signal
+                    {
+                        let cx = task::current_trap_context();
+                        if !check_signals_and_maybe_exit_with_cx(cx) {
+                            return; // Process was terminated by signal
+                        }
                     }
 
                     suspend_current_and_run_next();
@@ -102,8 +105,8 @@ pub fn trap_handler() {
                         syscall::syscall(syscall_id, args) as usize
                     };
 
-                    // Check and handle pending signals after syscall
-                    if !check_signals_and_maybe_exit() {
+                    // Check and handle pending signals after syscall using the existing trap context
+                    if !check_signals_and_maybe_exit_with_cx(cx) {
                         return; // Process was terminated by signal
                     }
                 }
@@ -152,7 +155,10 @@ pub fn trap_handler() {
     }
 
     // Check and handle pending signals before returning to user space
-    check_signals_and_maybe_exit();
+    {
+        let cx = task::current_trap_context();
+        check_signals_and_maybe_exit_with_cx(cx);
+    }
 
     // 标记退出内核态
     mark_kernel_exit();
@@ -164,6 +170,18 @@ pub fn trap_handler() {
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit() -> bool {
     let (should_continue, exit_code) = task::check_and_handle_signals();
+    if !should_continue {
+        if let Some(code) = exit_code {
+            exit_current_and_run_next(code);
+        }
+    }
+    should_continue
+}
+
+/// Helper function to check and handle pending signals with existing trap context
+/// Returns true if execution should continue, false if process should exit
+fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
+    let (should_continue, exit_code) = task::check_and_handle_signals_with_cx(trap_cx);
     if !should_continue {
         if let Some(code) = exit_code {
             exit_current_and_run_next(code);

@@ -24,12 +24,12 @@ fn main() -> i32 {
         }
 
         // Check if the shell exited
-        // if let Some(current_shell_pid) = shell_pid {
-        //     if exited_pid as usize == current_shell_pid {
-        //         shell_pid = None;
-        //         spawn_shell(&mut shell_pid);
-        //     }
-        // }
+        if let Some(current_shell_pid) = shell_pid {
+            if exited_pid as usize == current_shell_pid {
+                shell_pid = None;
+                spawn_shell(&mut shell_pid);
+            }
+        }
     }
 }
 
@@ -41,6 +41,6 @@ fn spawn_shell(shell_pid: &mut Option<usize>) {
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);
     } else {
-        println!("initproc: failed to fork shell process");
+        println!("init: failed to fork shell process");
     }
 }

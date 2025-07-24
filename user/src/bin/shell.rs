@@ -426,6 +426,8 @@ fn main() -> i32 {
                         handle_cd_command(line);
                     } else if line.starts_with("help") {
                         handle_help_command(line);
+                    } else if line == "clear" {
+                        print!("\x1b[2J\x1b[H");
                     } else if line == "jobs" {
                         job_manager.list_jobs();
                     } else if line.starts_with("fg") {
