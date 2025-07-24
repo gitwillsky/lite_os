@@ -467,17 +467,14 @@ fn main() -> i32 {
             }
             BS | DL => {
                 // 退格键 - 删除光标前的字符
-                if editor.delete_char_backward() {
-                    let current_prompt = generate_prompt();
-                    editor.redraw_line(&current_prompt);
-                }
+                let current_prompt = generate_prompt();
+                editor.delete_char_backward_optimized(&current_prompt);
             }
             _ => {
                 // 普通字符输入
                 if c >= 32 && c < 127 { // 只处理可打印的ASCII字符
-                    editor.insert_char(c as char);
                     let current_prompt = generate_prompt();
-                    editor.redraw_line(&current_prompt);
+                    editor.insert_char_optimized(c as char, &current_prompt);
                 }
             }
         }

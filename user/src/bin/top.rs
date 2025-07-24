@@ -23,10 +23,26 @@ fn sleep(ms: usize) {
     sleep_ms(ms as u64);
 }
 
-// 清屏函数
+// 清屏函数 - 优化版，减少闪烁
 fn clear_screen() {
-    // 发送ANSI清屏序列
+    // 移动到屏幕左上角，但不清屏
+    print!("\x1B[H");
+}
+
+// 初始化屏幕 - 只在第一次使用
+fn init_screen() {
+    // 清空整个屏幕并移动到左上角
     print!("\x1B[2J\x1B[H");
+    // 隐藏光标以减少闪烁
+    print!("\x1B[?25l");
+}
+
+// 恢复屏幕状态
+fn restore_screen() {
+    // 显示光标
+    print!("\x1B[?25h");
+    // 移动到屏幕底部
+    print!("\x1B[999;1H");
 }
 
 // 显示系统统计信息
@@ -135,19 +151,19 @@ fn extract_process_name(name_bytes: &[u8; 32]) -> String {
 // 格式化时间戳为可读的日期时间字符串
 fn format_timestamp(unix_timestamp: u64) -> String {
     // Unix时间戳是从1970-01-01 00:00:00 UTC开始的秒数
-    
+
     // 计算天数、小时、分钟、秒
     let total_seconds = unix_timestamp;
     let mut days_since_epoch = total_seconds / 86400; // 86400 = 24 * 60 * 60
     let seconds_today = total_seconds % 86400;
-    
+
     let hours = seconds_today / 3600;
     let minutes = (seconds_today % 3600) / 60;
     let seconds = seconds_today % 60;
-    
+
     // 更准确的年月日计算
     let mut year = 1970u64;
-    
+
     // 计算年份
     loop {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
@@ -158,17 +174,17 @@ fn format_timestamp(unix_timestamp: u64) -> String {
             break;
         }
     }
-    
+
     // 计算月份和日期
     let days_in_months = if is_leap_year(year) {
         [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     } else {
         [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     };
-    
+
     let mut month = 1u64;
     let mut day = days_since_epoch + 1;
-    
+
     for &days_in_month in &days_in_months {
         if day > days_in_month {
             day -= days_in_month;
@@ -177,9 +193,11 @@ fn format_timestamp(unix_timestamp: u64) -> String {
             break;
         }
     }
-    
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", 
-            year, month, day, hours, minutes, seconds)
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hours, minutes, seconds
+    )
 }
 
 // 判断是否为闰年
@@ -355,22 +373,14 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
 }
 
 // 非阻塞检查键盘输入
-fn check_keyboard_input() -> Option<u8> {
+fn check_keyboard_input(nonblock: bool) -> Option<u8> {
     use crate::syscall::{errno, fcntl_getfl, fcntl_setfl, open_flags};
 
-    static mut STDIN_NONBLOCK_SET: bool = false;
-
-    unsafe {
-        if !STDIN_NONBLOCK_SET {
-            // 设置stdin为非阻塞模式
-            let current_flags = fcntl_getfl(0);
-            if current_flags >= 0 {
-                let new_flags = (current_flags as u32) | open_flags::O_NONBLOCK;
-                if fcntl_setfl(0, new_flags) == 0 {
-                    STDIN_NONBLOCK_SET = true;
-                }
-            }
-        }
+    // 设置stdin为非阻塞模式
+    let current_flags = fcntl_getfl(0);
+    if current_flags >= 0 {
+        let new_flags = (current_flags as u32) | if nonblock { open_flags::O_NONBLOCK } else { 1 };
+        fcntl_setfl(0, new_flags);
     }
 
     let mut buffer = [0u8; 1];
@@ -389,10 +399,19 @@ fn interactive_mode() {
     let mut reverse = false;
     let mut auto_refresh = true;
     let mut refresh_interval = 1000; // 1秒刷新间隔
+    let mut first_run = true;
 
     loop {
-        // 清屏并显示内容
-        clear_screen();
+        // 第一次运行时初始化屏幕，之后只移动光标
+        if first_run {
+            init_screen();
+            first_run = false;
+        } else {
+            clear_screen();
+            // 清除从光标位置到屏幕末尾的所有内容
+            print!("\x1B[0J");
+        }
+
         display_system_stats();
 
         // 显示当前设置信息
@@ -415,12 +434,7 @@ fn interactive_mode() {
 
         // 显示进程信息
         match display_all_processes_sorted(sort_by, reverse) {
-            Ok(()) => {
-                println!("");
-                println!(
-                    "Commands: [p]PID [c]CPU% [m]Memory [v]VRuntime [s]Status [r]Reverse [a]Auto-refresh [q]Quit [h]Help"
-                );
-            }
+            Ok(()) => {}
             Err(e) => {
                 println!("Error: {}", e);
                 display_basic_info();
@@ -435,7 +449,7 @@ fn interactive_mode() {
 
             for _ in 0..check_intervals {
                 sleep(100);
-                if let Some(key) = check_keyboard_input() {
+                if let Some(key) = check_keyboard_input(true) {
                     if handle_key_input(
                         key,
                         &mut sort_by,
@@ -443,6 +457,7 @@ fn interactive_mode() {
                         &mut auto_refresh,
                         &mut refresh_interval,
                     ) {
+                        restore_screen();
                         return; // 退出程序
                     }
                     key_pressed = true;
@@ -455,7 +470,7 @@ fn interactive_mode() {
                 // 等待剩余时间
                 sleep((refresh_interval % 100) as usize);
                 // 再次检查按键
-                if let Some(key) = check_keyboard_input() {
+                if let Some(key) = check_keyboard_input(true) {
                     if handle_key_input(
                         key,
                         &mut sort_by,
@@ -469,15 +484,15 @@ fn interactive_mode() {
             }
         } else {
             // 如果没有自动刷新，则等待按键
-            let mut buffer = [0u8; 1];
-            if read(0, &mut buffer) == 1 {
+            if let Some(key) = check_keyboard_input(false) {
                 if handle_key_input(
-                    buffer[0],
+                    key,
                     &mut sort_by,
                     &mut reverse,
                     &mut auto_refresh,
                     &mut refresh_interval,
                 ) {
+                    restore_screen();
                     return;
                 }
             }
@@ -552,6 +567,7 @@ fn handle_key_input(
 // 显示帮助信息
 fn show_help() {
     clear_screen();
+    print!("\x1B[0J"); // 清除从光标到屏幕末尾
     println!("LiteOS Top - Help");
     println!("================");
     println!("");

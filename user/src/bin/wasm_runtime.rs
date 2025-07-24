@@ -31,21 +31,15 @@ pub struct RuntimeArgs {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    println!("WASM runtime main() starting...");
-
     let args = parse_real_runtime_args();
     let exit_code = if let Some(args) = args {
-        println!("WASM runtime calling wasm_runtime_main...");
         let result = wasm_runtime_main(args);
-        println!("WASM runtime wasm_runtime_main returned: {}", result);
         result
     } else {
-        println!("Error: No WASM file specified");
         println!("Usage: wasm_runtime <wasm_file> [args...]");
         1
     };
 
-    println!("WASM runtime main() returning exit code: {}", exit_code);
     exit_code
 }
 
@@ -81,13 +75,10 @@ fn parse_command_line_args() -> (String, String, Vec<String>) {
     let (wasm_file, wasm_args) = get_process_arguments();
 
     if wasm_file.is_empty() {
-        println!("Error: No WASM file specified");
         println!("Usage: wasm_runtime <wasm_file> [args...]");
         // 返回空字符串，让主函数处理错误
         return (program_name, String::new(), vec![]);
     }
-
-    println!("Parsed WASM file from arguments: {}", wasm_file);
 
     (program_name, wasm_file, wasm_args)
 }
@@ -189,20 +180,11 @@ fn get_real_environment_variables() -> Vec<String> {
 }
 
 fn wasm_runtime_main(args: RuntimeArgs) -> i32 {
-    println!("LiteOS WASM Runtime v0.2.0");
-    println!("=============================");
-    println!("Leveraging LiteOS System Calls for WASI Implementation");
-    println!("Program: {}", args.program_name);
-
     if args.wasm_file.is_empty() {
         println!("Usage: wasm_runtime <wasm_file> [args...]");
         println!("Example: wasm_runtime hello.wasm arg1 arg2");
         return 1;
     }
-
-    println!("WASM file: {}", args.wasm_file);
-    println!("WASM args: {:?}", args.wasm_args);
-    println!("Environment: {} variables", args.env_vars.len());
 
     // 创建并启动WASM运行时
     let mut runtime = match WasmRuntimeService::new() {
@@ -216,17 +198,13 @@ fn wasm_runtime_main(args: RuntimeArgs) -> i32 {
     // 执行WASM程序
     let exit_code = match runtime.execute_wasm(&args.wasm_file, &args.wasm_args, &args.env_vars) {
         Ok(exit_code) => {
-            println!("WASM program completed successfully with exit code: {}", exit_code);
             exit_code
         }
         Err(e) => {
             println!("WASM execution failed: {}", e);
-            println!("This may be due to unsupported WASM features or complex module structure");
             1
         }
     };
 
-    println!("WASM runtime finishing execution...");
-    println!("Returning to shell with exit code: {}", exit_code);
     exit_code
 }

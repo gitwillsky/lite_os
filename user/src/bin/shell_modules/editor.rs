@@ -167,18 +167,55 @@ impl LineEditor {
         // 移动到行首
         print!("\r");
         // 清除整行
-        print!("\x1b[K");
+        print!("\x1b[2K");
         // 显示提示符和内容
         print!("{}{}", prompt, self.content);
         
-        // 计算需要移动的距离
-        let total_width = prompt.len() + self.display_width;
+        // 计算光标的正确位置并移动
         let cursor_width = prompt.len() + self.cursor_display_width();
+        print!("\r\x1b[{}C", cursor_width);
+    }
+
+    /// 优化的字符插入 - 避免全行重绘
+    pub fn insert_char_optimized(&mut self, c: char, prompt: &str) {
+        let at_end = self.cursor_pos == self.char_count();
+        self.insert_char(c);
         
-        if cursor_width < total_width {
-            // 需要向左移动光标
-            let move_left = total_width - cursor_width;
-            print!("\x1b[{}D", move_left);
+        // 如果在行尾插入，只需要输出字符
+        if at_end {
+            print!("{}", c);
+        } else {
+            // 在中间插入，需要重绘该字符及其后面的内容
+            let cursor_pos = self.cursor_pos;
+            let remaining: String = self.content.chars().skip(cursor_pos - 1).collect();
+            print!("{}", remaining);
+            // 移动光标回到正确位置
+            let move_back = remaining.chars().count() - 1;
+            if move_back > 0 {
+                print!("\x1b[{}D", move_back);
+            }
+        }
+    }
+
+    /// 优化的字符删除 - 避免全行重绘
+    pub fn delete_char_backward_optimized(&mut self, prompt: &str) -> bool {
+        if self.cursor_pos > 0 {
+            let at_end = self.cursor_pos == self.char_count();
+            if self.delete_char_backward() {
+                if at_end {
+                    // 在行尾删除，使用退格+空格+退格
+                    print!("\x08 \x08");
+                } else {
+                    // 在中间删除，重绘从当前位置到行尾的内容
+                    let remaining: String = self.content.chars().skip(self.cursor_pos).collect();
+                    print!("\x08{} \x1b[{}D", remaining, remaining.chars().count() + 1);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         }
     }
 }
