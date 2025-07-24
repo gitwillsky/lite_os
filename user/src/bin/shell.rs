@@ -42,27 +42,40 @@ fn detect_escape_sequence() -> Option<Vec<u8>> {
         return None;
     }
 
-    let second = get_char();
-    if second == 0 {
-        return None;
+    // 检查是否是CSI序列 (ESC[)
+    if first == b'[' {
+        let second = get_char();
+        if second == 0 {
+            return None;
+        }
+
+        // 对于简单的箭头键 (A, B, C, D)，只需要两个字节
+        if matches!(second, b'A' | b'B' | b'C' | b'D' | b'H' | b'F') {
+            return Some(vec![first, second]);
+        }
+
+        // 对于其他序列，可能需要更多字节
+        if second.is_ascii_digit() {
+            let third = get_char();
+            if third == 0 {
+                return None;
+            }
+            
+            // 检查是否是Delete键等（如3~）
+            if third == b'~' {
+                return Some(vec![first, second, third]);
+            }
+            
+            // 其他数字序列，返回目前读到的
+            return Some(vec![first, second, third]);
+        }
+
+        // 其他单字符序列
+        return Some(vec![first, second]);
     }
 
-    let third = get_char();
-    if third == 0 {
-        return None;
-    }
-
-    // 检查是否是4字节序列（如Delete键）
-    if first == b'[' && second == b'3' && third == b'~' {
-        return Some(vec![first, second, third]);
-    }
-
-    // 检查是否需要读取第四个字节
-    if first == b'[' && second.is_ascii_digit() {
-        return Some(vec![first, second, third]);
-    }
-
-    Some(vec![first, second, third])
+    // 非CSI序列，返回单个字符
+    Some(vec![first])
 }
 
 /// 生成包含当前目录的提示符
@@ -167,66 +180,80 @@ fn main() -> i32 {
             ESC => {
                 // 处理escape sequences
                 if let Some(seq) = detect_escape_sequence() {
-                    if seq.len() >= 3 {
-                        match (seq[0], seq[1], seq[2]) {
-                            (b'[', b'A', _) => {
-                                // 上箭头 - 历史记录上一条
-                                if let Some(prev_cmd) = history.get_previous() {
-                                    editor.set_content(prev_cmd.clone());
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
+                    match seq.len() {
+                        2 => {
+                            // 2字节序列（箭头键等）
+                            match (seq[0], seq[1]) {
+                                (b'[', b'A') => {
+                                    // 上箭头 - 历史记录上一条
+                                    if let Some(prev_cmd) = history.get_previous() {
+                                        editor.set_content(prev_cmd.clone());
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                (b'[', b'B') => {
+                                    // 下箭头 - 历史记录下一条
+                                    if let Some(next_cmd) = history.get_next() {
+                                        editor.set_content(next_cmd.clone());
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    } else {
+                                        editor.clear();
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                (b'[', b'C') => {
+                                    // 右箭头 - 光标右移
+                                    if editor.move_cursor_right() {
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                (b'[', b'D') => {
+                                    // 左箭头 - 光标左移
+                                    if editor.move_cursor_left() {
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                (b'[', b'H') => {
+                                    // Home键 - 移动到行首
+                                    if editor.move_cursor_home() {
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                (b'[', b'F') => {
+                                    // End键 - 移动到行尾
+                                    if editor.move_cursor_end() {
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                _ => {
+                                    // 忽略其他2字节序列
                                 }
                             }
-                            (b'[', b'B', _) => {
-                                // 下箭头 - 历史记录下一条
-                                if let Some(next_cmd) = history.get_next() {
-                                    editor.set_content(next_cmd.clone());
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                } else {
-                                    editor.clear();
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
+                        }
+                        3 => {
+                            // 3字节序列（Delete键等）
+                            match (seq[0], seq[1], seq[2]) {
+                                (b'[', b'3', b'~') => {
+                                    // Delete键 - 删除当前字符
+                                    if editor.delete_char_forward() {
+                                        let current_prompt = generate_prompt();
+                                        editor.redraw_line(&current_prompt);
+                                    }
+                                }
+                                _ => {
+                                    // 忽略其他3字节序列
                                 }
                             }
-                            (b'[', b'C', _) => {
-                                // 右箭头 - 光标右移
-                                if editor.move_cursor_right() {
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                }
-                            }
-                            (b'[', b'D', _) => {
-                                // 左箭头 - 光标左移
-                                if editor.move_cursor_left() {
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                }
-                            }
-                            (b'[', b'H', _) => {
-                                // Home键 - 移动到行首
-                                if editor.move_cursor_home() {
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                }
-                            }
-                            (b'[', b'F', _) => {
-                                // End键 - 移动到行尾
-                                if editor.move_cursor_end() {
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                }
-                            }
-                            (b'[', b'3', b'~') => {
-                                // Delete键 - 删除当前字符
-                                if editor.delete_char_forward() {
-                                    let current_prompt = generate_prompt();
-                                    editor.redraw_line(&current_prompt);
-                                }
-                            }
-                            _ => {
-                                // 忽略其他escape sequences
-                            }
+                        }
+                        _ => {
+                            // 忽略其他长度的序列
                         }
                     }
                 }
