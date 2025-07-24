@@ -2,7 +2,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{kill, wait_pid};
+use user_lib::{kill, wait_pid_nb};
 
 /// 作业状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -38,12 +38,12 @@ impl JobManager {
             foreground_job: None,
         }
     }
-    
+
     /// 添加新作业
     pub fn add_job(&mut self, pid: isize, command: String, background: bool) -> usize {
         let job_id = self.next_job_id;
         self.next_job_id += 1;
-        
+
         let job = Job {
             id: job_id,
             pid,
@@ -51,40 +51,30 @@ impl JobManager {
             status: JobStatus::Running,
             background,
         };
-        
+
         if !background {
             self.foreground_job = Some(job_id);
         }
-        
+
         self.jobs.push(job);
         job_id
     }
-    
+
     /// 获取作业
     pub fn get_job(&self, job_id: usize) -> Option<&Job> {
         self.jobs.iter().find(|job| job.id == job_id)
     }
-    
+
     /// 获取可变作业
     pub fn get_job_mut(&mut self, job_id: usize) -> Option<&mut Job> {
         self.jobs.iter_mut().find(|job| job.id == job_id)
     }
-    
+
     /// 根据PID获取作业
     pub fn get_job_by_pid(&mut self, pid: isize) -> Option<&mut Job> {
         self.jobs.iter_mut().find(|job| job.pid == pid)
     }
-    
-    /// 更新作业状态
-    pub fn update_job_status(&mut self, job_id: usize, status: JobStatus) {
-        if let Some(job) = self.get_job_mut(job_id) {
-            job.status = status;
-            if !job.background && (status == JobStatus::Done || status == JobStatus::Terminated) {
-                self.foreground_job = None;
-            }
-        }
-    }
-    
+
     /// 将作业移到前台
     pub fn bring_to_foreground(&mut self, job_id: usize) -> Result<(), String> {
         // 先检查作业是否存在
@@ -109,13 +99,13 @@ impl JobManager {
                 break;
             }
         }
-        
+
         // 设置前台作业
         self.foreground_job = Some(job_id);
         println!("{}", job_command);
         Ok(())
     }
-    
+
     /// 将作业移到后台
     pub fn send_to_background(&mut self, job_id: usize) -> Result<(), String> {
         // 先检查作业是否存在
@@ -140,7 +130,7 @@ impl JobManager {
                 break;
             }
         }
-        
+
         // 更新前台作业状态
         if self.foreground_job == Some(job_id) {
             self.foreground_job = None;
@@ -148,7 +138,7 @@ impl JobManager {
         println!("[{}] {} &", job_id, job_command);
         Ok(())
     }
-    
+
     /// 列出所有作业
     pub fn list_jobs(&self) {
         for job in &self.jobs {
@@ -159,37 +149,38 @@ impl JobManager {
                     JobStatus::Done => "Done",
                     JobStatus::Terminated => "Terminated",
                 };
-                
+
                 let bg_indicator = if job.background { " &" } else { "" };
-                println!("[{}] {} ({}) {}{}", 
-                    job.id, 
-                    job.pid, 
-                    status_str, 
+                println!("[{}] {} ({}) {}{}",
+                    job.id,
+                    job.pid,
+                    status_str,
                     job.command,
                     bg_indicator
                 );
             }
         }
     }
-    
+
     /// 清理已完成的作业
     pub fn cleanup_finished_jobs(&mut self) {
         self.jobs.retain(|job| job.status != JobStatus::Done && job.status != JobStatus::Terminated);
     }
-    
-    /// 检查并更新作业状态
+
+    /// 检查并更新作业状态（非阻塞式）
     pub fn check_job_status(&mut self) {
         for job in &mut self.jobs {
             if job.status == JobStatus::Running {
                 let mut exit_code = 0i32;
-                let result = wait_pid(job.pid as usize, &mut exit_code);
-                
+                // 使用非阻塞的wait_pid_nb
+                let result = wait_pid_nb(job.pid as usize, &mut exit_code);
+
                 if result == job.pid {
                     // 作业已终止
                     job.status = if exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated };
                     if job.background {
-                        println!("[{}] {} {}", 
-                            job.id, 
+                        println!("[{}] {} {}",
+                            job.id,
                             if exit_code == 0 { "Done" } else { "Terminated" },
                             job.command
                         );
@@ -198,10 +189,12 @@ impl JobManager {
                         self.foreground_job = None;
                     }
                 }
+                // 如果result == -2，表示作业还在运行，不做任何操作
+                // 如果result == -1，表示进程不存在（已经被回收）
             }
         }
     }
-    
+
     /// 获取当前前台作业
     pub fn get_foreground_job(&self) -> Option<&Job> {
         if let Some(job_id) = self.foreground_job {
@@ -210,7 +203,7 @@ impl JobManager {
             None
         }
     }
-    
+
     /// 停止前台作业（Ctrl+Z）
     pub fn suspend_foreground_job(&mut self) -> Result<(), String> {
         if let Some(job_id) = self.foreground_job {
@@ -224,7 +217,7 @@ impl JobManager {
                     break;
                 }
             }
-            
+
             // 发送SIGTSTP信号
             if kill(job_pid as usize, 20) == 0 { // SIGTSTP = 20
                 // 更新作业状态
@@ -245,7 +238,7 @@ impl JobManager {
             Err("没有前台作业".to_string())
         }
     }
-    
+
     /// 终止前台作业（Ctrl+C）
     pub fn terminate_foreground_job(&mut self) -> Result<(), String> {
         if let Some(job_id) = self.foreground_job {

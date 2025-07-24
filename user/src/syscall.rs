@@ -275,6 +275,12 @@ pub fn wait_pid(pid: usize, exit_code: *mut i32) -> isize {
     }
 }
 
+/// 非阻塞式等待指定进程结束
+/// 返回值：-1表示进程不存在，-2表示进程还在运行，其他值表示进程已结束
+pub fn wait_pid_nb(pid: usize, exit_code: *mut i32) -> isize {
+    sys_wait(pid as isize, exit_code)
+}
+
 // 文件系统系统调用封装
 
 /// 打开文件

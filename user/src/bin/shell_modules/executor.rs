@@ -229,18 +229,11 @@ pub fn execute_command_with_jobs(
             println!("command not found: {}", first_part);
         }
     } else if pid > 0 {
-        // 父进程：添加作业并等待
+        // 父进程：添加作业
         let job_id = job_manager.add_job(pid, String::from(line), background);
-        
+
         if background {
             println!("[{}] {}", job_id, pid);
-        } else {
-            // 前台作业，等待其完成
-            let mut exit_code: i32 = 0;
-            let exit_pid = wait_pid(pid as usize, &mut exit_code);
-            if exit_pid == pid {
-                job_manager.update_job_status(job_id, if exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated });
-            }
         }
     } else {
         println!("shell: failed to fork");
@@ -314,22 +307,13 @@ pub fn execute_wasm_command_with_jobs(
             println!("wasm_runtime not found - please ensure wasm_runtime is in the filesystem");
         }
     } else if pid > 0 {
-        // 父进程：添加作业并等待
+        // 父进程：添加作业
         let job_id = job_manager.add_job(pid, String::from(wasm_command), background);
-        
+
         if background {
             println!("[{}] {}", job_id, pid);
-        } else {
-            // 前台作业，等待其完成
-            let mut exit_code: i32 = 0;
-            let exit_pid = wait_pid(pid as usize, &mut exit_code);
-            if exit_pid == pid {
-                job_manager.update_job_status(job_id, if exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated });
-                if exit_code != 0 {
-                    println!("Shell: WASM process {} exited with code {}", pid, exit_code);
-                }
-            }
         }
+        // 注意：不在这里等待前台作业，让shell主循环处理作业状态检查
     } else {
         println!("shell: failed to fork");
     }
@@ -441,7 +425,7 @@ pub fn execute_pipeline_with_jobs(
     if !pids.is_empty() {
         let pipeline_command = commands.join(" | ");
         let job_id = job_manager.add_job(pids[0], pipeline_command, background);
-        
+
         if background {
             println!("[{}] {}", job_id, pids[0]);
         }

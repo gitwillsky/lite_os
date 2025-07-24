@@ -809,28 +809,50 @@ impl SignalDelivery {
 
 /// 全局函数：向指定进程发送信号
 pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), SignalError> {
+    debug!("Sending signal {} to PID {}", signal as u32, target_pid);
+    
+    // 先检查所有可能的位置
+    let current = crate::task::current_task();
+    if let Some(ref curr_task) = current {
+        debug!("Current task PID: {}", curr_task.pid());
+    }
+    
+    // 检查所有任务
+    let all_tasks = crate::task::get_all_tasks();
+    debug!("Total tasks available: {}", all_tasks.len());
+    for task in &all_tasks {
+        debug!("Task PID {}: status = {:?}", task.pid(), *task.task_status.lock());
+    }
+    
     if let Some(task) = find_task_by_pid(target_pid) {
+        debug!("Found task with PID {}, status: {:?}", target_pid, *task.task_status.lock());
+        
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {
             // SIGKILL和SIGSTOP不能被阻塞或忽略
             match signal {
                 Signal::SIGKILL => {
+                    info!("Killing process PID {} with SIGKILL", target_pid);
                     // 使用专门的函数进行完整的任务清理
                     crate::task::exit_current_and_run_next(9); // SIGKILL exit code
                     return Ok(());
                 }
                 Signal::SIGSTOP => {
+                    info!("Stopping process PID {} with SIGSTOP", target_pid);
                     *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
                 }
                 _ => unreachable!(),
             }
         } else {
             // 普通信号加入待处理队列
+            debug!("Adding signal {} to pending queue for PID {}", signal as u32, target_pid);
             task.signal_state.lock().add_pending_signal(signal);
         }
 
         Ok(())
     } else {
+        debug!("Process with PID {} not found in any location", target_pid);
+        debug!("Available PIDs: {:?}", all_tasks.iter().map(|t| t.pid()).collect::<alloc::vec::Vec<_>>());
         Err(SignalError::ProcessNotFound)
     }
 }

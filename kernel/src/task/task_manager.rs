@@ -98,35 +98,31 @@ impl TaskManager {
     }
 
     pub fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        if let Some(task) = current_task().filter(|task| task.pid() == pid) {
-            Some(task.clone())
-        } else if let Some(task) = self.scheduler.lock().find_task_by_pid(pid) {
-            Some(task)
-        } else if let Some(init_proc) = self.init_proc.as_ref().filter(|task| task.pid() == pid) {
-            Some(init_proc.clone())
-        } else {
-            None
-        }
+        let all_tasks = self.get_all_tasks();
+        all_tasks.into_iter().find(|task| task.pid() == pid)
     }
 
     /// 获取所有任务列表（包括调度器中的、当前运行的和init进程）
     pub fn get_all_tasks(&self) -> Vec<Arc<TaskControlBlock>> {
         let mut all_tasks = self.scheduler.lock().get_all_tasks();
-        
+
         // 添加当前运行的任务（如果不在调度器队列中）
         if let Some(current) = current_task() {
             if !all_tasks.iter().any(|task| task.pid() == current.pid()) {
                 all_tasks.push(current);
             }
         }
-        
+
         // 添加init进程（如果不在其他列表中）
         if let Some(init_proc) = &self.init_proc {
             if !all_tasks.iter().any(|task| task.pid() == init_proc.pid()) {
                 all_tasks.push(init_proc.clone());
             }
         }
-        
+
+        // 添加睡眠中的任务
+        all_tasks.extend(crate::timer::get_sleeping_tasks());
+
         all_tasks
     }
 }

@@ -11,7 +11,7 @@ mod shell_modules;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use shell_modules::*;
-use user_lib::{read, yield_, getcwd, get_system_stats, get_current_time, SystemStats};
+use user_lib::{SystemStats, get_current_time, get_system_stats, getcwd, read, yield_};
 
 // 控制字符常量
 const LF: u8 = b'\n';
@@ -107,33 +107,6 @@ fn generate_prompt() -> String {
 
 /// 打印美化的欢迎信息
 fn print_welcome_message() {
-    // 获取当前目录
-    let current_dir = {
-        let mut buf = [0u8; 1024];
-        let result = getcwd(&mut buf);
-
-        if result >= 0 {
-            let mut end = 0;
-            for i in 0..buf.len() {
-                if buf[i] == 0 {
-                    end = i;
-                    break;
-                }
-            }
-
-            if end > 0 {
-                if let Ok(path) = core::str::from_utf8(&buf[0..end]) {
-                    String::from(path)
-                } else {
-                    String::from("/")
-                }
-            } else {
-                String::from("/")
-            }
-        } else {
-            String::from("/")
-        }
-    };
     let mut system_stats = SystemStats {
         total_processes: 0,
         running_processes: 0,
@@ -181,17 +154,25 @@ fn print_welcome_message() {
     println!("║  ╚══════╝╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚══════╝                                ║");
     println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
     println!("║ 🕒 Current Time: {:<60} ║", timestamp);
-    println!("║ ⏱️  System Uptime: {:02}h {:02}m {:02}s{:<48} ║",
-             uptime_hours, uptime_minutes, uptime_secs, "");
-    println!("║ 🖥️  CPU Usage: {:3}% | Memory: {:4}/{:4}KB ({:2}%){:<29} ║",
-             cpu_usage,
-             system_stats.used_memory / 1024,
-             system_stats.total_memory / 1024,
-             memory_usage_percent, "");
-    println!("║ 🎯 Processes: {:2} total ({:2} running, {:2} sleeping){:<29} ║",
-             system_stats.total_processes,
-             system_stats.running_processes,
-             system_stats.sleeping_processes, "");
+    println!(
+        "║ ⏱️  System Uptime: {:02}h {:02}m {:02}s{:<48} ║",
+        uptime_hours, uptime_minutes, uptime_secs, ""
+    );
+    println!(
+        "║ 🖥️  CPU Usage: {:3}% | Memory: {:4}/{:4}KB ({:2}%){:<29} ║",
+        cpu_usage,
+        system_stats.used_memory / 1024,
+        system_stats.total_memory / 1024,
+        memory_usage_percent,
+        ""
+    );
+    println!(
+        "║ 🎯 Processes: {:2} total ({:2} running, {:2} sleeping){:<29} ║",
+        system_stats.total_processes,
+        system_stats.running_processes,
+        system_stats.sleeping_processes,
+        ""
+    );
     println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
     println!("║ Features: ✓ Tab Completion ✓ History ✓ Job Control ✓ WASM Runtime             ║");
     println!("║ Commands: help | ls | cd | jobs | <file>.wasm | <cmd> & (background)          ║");
@@ -235,7 +216,10 @@ fn format_unix_timestamp(timestamp: u64) -> String {
     // 计算月份和日期
     let (month, day) = calculate_month_day(days_since_epoch + 1, is_leap_year(year));
 
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", year, month, day, hours, minutes, seconds)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        year, month, day, hours, minutes, seconds
+    )
 }
 
 /// 简单的闰年判断
@@ -297,9 +281,7 @@ fn main() -> i32 {
             CTRL_C => {
                 // Ctrl+C - 终止前台作业或取消当前命令
                 if job_manager.get_foreground_job().is_some() {
-                    if let Err(e) = job_manager.terminate_foreground_job() {
-                        println!("错误: {}", e);
-                    }
+                    let _ = job_manager.terminate_foreground_job();
                 } else {
                     println!("");
                     editor.clear();
@@ -309,14 +291,16 @@ fn main() -> i32 {
             }
             CTRL_Z => {
                 // Ctrl+Z - 挂起前台作业
-                if job_manager.get_foreground_job().is_some() {
-                    if let Err(e) = job_manager.suspend_foreground_job() {
-                        println!("错误: {}", e);
-                    }
+                if let Some(_fg_job) = job_manager.get_foreground_job() {
+                    let _ = job_manager.suspend_foreground_job();
                     let current_prompt = generate_prompt();
                     print!("{}", current_prompt);
                 } else {
-                    // 如果没有前台作业，忽略Ctrl+Z
+                    // 如果没有前台作业，忽略Ctrl+Z但显示信息
+                    println!(""); // 换行
+                    println!("shell: no job to suspend");
+                    let current_prompt = generate_prompt();
+                    print!("{}", current_prompt);
                 }
             }
             CTRL_A => {
@@ -451,7 +435,11 @@ fn main() -> i32 {
                             execute_pipeline_with_jobs(commands, is_background, &mut job_manager);
                         } else {
                             // 执行外部程序，支持重定向和PATH查找
-                            execute_command_with_jobs(&command_line, is_background, &mut job_manager);
+                            execute_command_with_jobs(
+                                &command_line,
+                                is_background,
+                                &mut job_manager,
+                            );
                         }
                     }
                     editor.clear();
@@ -474,7 +462,8 @@ fn main() -> i32 {
             }
             _ => {
                 // 普通字符输入
-                if c >= 32 && c < 127 { // 只处理可打印的ASCII字符
+                if c >= 32 && c < 127 {
+                    // 只处理可打印的ASCII字符
                     let current_prompt = generate_prompt();
                     editor.insert_char_optimized(c as char, &current_prompt);
                 }

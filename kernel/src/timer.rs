@@ -33,17 +33,17 @@ static RTC_DEVICE: Mutex<Option<GoldfishRTC>> = Mutex::new(None);
 fn init_rtc_device() -> Option<GoldfishRTC> {
     let board_info = board::board_info();
     debug!("Checking for RTC device...");
-    
+
     if let Some(rtc_info) = board_info.rtc_device {
-        debug!("Found RTC device at base address: {:#x}, size: {:#x}", 
+        debug!("Found RTC device at base address: {:#x}, size: {:#x}",
                rtc_info.base_addr, rtc_info.size);
-        
+
         // 检查地址是否合理
         if rtc_info.base_addr == 0 {
             warn!("Invalid RTC base address: 0x0");
             return None;
         }
-        
+
         // 使用 MmioBus 创建 RTC 设备
         match GoldfishRTC::new(rtc_info) {
             Ok(rtc) => {
@@ -154,6 +154,11 @@ pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
     }
 
     sleeping_tasks.insert(actual_wake_time, task);
+}
+
+pub fn get_sleeping_tasks() -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+    let sleeping_tasks = SLEEPING_TASKS.lock();
+    sleeping_tasks.values().cloned().collect()
 }
 
 // 检查并唤醒到期的睡眠任务
