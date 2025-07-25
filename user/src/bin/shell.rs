@@ -11,7 +11,7 @@ mod shell_modules;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use shell_modules::*;
-use user_lib::{SystemStats, get_current_time, get_system_stats, getcwd, read, yield_};
+use user_lib::{check_keyboard_input, get_current_time, get_system_stats, getcwd, read, wait_pid, wait_pid_nb, yield_, SystemStats};
 
 // 控制字符常量
 const LF: u8 = b'\n';
@@ -260,19 +260,19 @@ fn main() -> i32 {
     let prompt = generate_prompt();
     print!("{}", prompt);
     loop {
-        let c = get_char();
+        let c = check_keyboard_input(true).unwrap_or(0);
         match c {
             0 => {
                 // 检查作业状态，即使没有输入
                 let foreground_completed = job_manager.check_job_status();
                 job_manager.cleanup_finished_jobs();
-                
+
                 // 如果前台作业完成，打印提示符
                 if foreground_completed {
                     let current_prompt = generate_prompt();
                     print!("{}", current_prompt);
                 }
-                
+
                 yield_();
                 continue;
             }
@@ -454,16 +454,8 @@ fn main() -> i32 {
                     }
                     editor.clear();
                 }
-                // 等待前台作业完成
-                while job_manager.get_foreground_job().is_some() {
-                    job_manager.check_job_status();
-                    job_manager.cleanup_finished_jobs();
-                    if job_manager.get_foreground_job().is_some() {
-                        yield_();
-                    }
-                }
-                
-                // 打印提示符
+                // 清理已完成的作业并显示提示符
+                job_manager.cleanup_finished_jobs();
                 let current_prompt = generate_prompt();
                 print!("{}", current_prompt);
             }
