@@ -313,7 +313,6 @@ pub fn execute_wasm_command_with_jobs(
         if background {
             println!("[{}] {}", job_id, pid);
         }
-        // 注意：不在这里等待前台作业，让shell主循环处理作业状态检查
     } else {
         println!("shell: failed to fork");
     }

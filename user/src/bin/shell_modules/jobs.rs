@@ -168,7 +168,10 @@ impl JobManager {
     }
 
     /// 检查并更新作业状态（非阻塞式）
-    pub fn check_job_status(&mut self) {
+    /// 返回是否有前台作业完成
+    pub fn check_job_status(&mut self) -> bool {
+        let mut foreground_job_completed = false;
+        
         for job in &mut self.jobs {
             if job.status == JobStatus::Running {
                 let mut exit_code = 0i32;
@@ -187,12 +190,15 @@ impl JobManager {
                     }
                     if self.foreground_job == Some(job.id) {
                         self.foreground_job = None;
+                        foreground_job_completed = true;
                     }
                 }
                 // 如果result == -2，表示作业还在运行，不做任何操作
                 // 如果result == -1，表示进程不存在（已经被回收）
             }
         }
+        
+        foreground_job_completed
     }
 
     /// 获取当前前台作业
@@ -202,6 +208,11 @@ impl JobManager {
         } else {
             None
         }
+    }
+
+    /// 设置前台作业
+    pub fn set_foreground_job(&mut self, job_id: Option<usize>) {
+        self.foreground_job = job_id;
     }
 
     /// 停止前台作业（Ctrl+Z）

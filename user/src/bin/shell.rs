@@ -263,6 +263,16 @@ fn main() -> i32 {
         let c = get_char();
         match c {
             0 => {
+                // 检查作业状态，即使没有输入
+                let foreground_completed = job_manager.check_job_status();
+                job_manager.cleanup_finished_jobs();
+                
+                // 如果前台作业完成，打印提示符
+                if foreground_completed {
+                    let current_prompt = generate_prompt();
+                    print!("{}", current_prompt);
+                }
+                
                 yield_();
                 continue;
             }
@@ -444,9 +454,16 @@ fn main() -> i32 {
                     }
                     editor.clear();
                 }
-                // 检查作业状态
-                job_manager.check_job_status();
-                job_manager.cleanup_finished_jobs();
+                // 等待前台作业完成
+                while job_manager.get_foreground_job().is_some() {
+                    job_manager.check_job_status();
+                    job_manager.cleanup_finished_jobs();
+                    if job_manager.get_foreground_job().is_some() {
+                        yield_();
+                    }
+                }
+                
+                // 打印提示符
                 let current_prompt = generate_prompt();
                 print!("{}", current_prompt);
             }
