@@ -488,12 +488,12 @@ impl SlabAllocator {
 
     /// Initialize the SLAB allocator
     pub fn init(&self) {
-        debug!("[SLAB] Initializing SLAB allocator with {} caches", COMMON_SIZES.len());
+        debug!("Initializing SLAB allocator with {} caches", COMMON_SIZES.len());
         for (i, &size) in COMMON_SIZES.iter().enumerate() {
             *self.caches[i].lock() = SlabCache::new(size);
-            debug!("[SLAB] Cache {} initialized for size {}", i, size);
+            debug!("Cache {} initialized for size {}", i, size);
         }
-        debug!("[SLAB] SLAB allocator initialization complete");
+        debug!("SLAB allocator initialization complete");
     }
 
     /// Find the appropriate cache for a given layout
@@ -514,11 +514,11 @@ impl SlabAllocator {
         if let Some(cache_idx) = self.find_cache_index(layout) {
             let result = self.caches[cache_idx].lock().alloc();
             if result.is_err() {
-                debug!("[SLAB] Failed to allocate {} bytes from cache {}", layout.size(), cache_idx);
+                debug!("Failed to allocate {} bytes from cache {}", layout.size(), cache_idx);
             }
             result
         } else {
-            debug!("[SLAB] No suitable cache for layout: size={}, align={}", layout.size(), layout.align());
+            debug!("No suitable cache for layout: size={}, align={}", layout.size(), layout.align());
             Err(SlabError::InvalidLayout)
         }
     }
@@ -528,11 +528,11 @@ impl SlabAllocator {
         if let Some(cache_idx) = self.find_cache_index(layout) {
             let result = self.caches[cache_idx].lock().dealloc(ptr);
             if result.is_err() {
-                debug!("[SLAB] Failed to deallocate ptr {:p} from cache {}", ptr.as_ptr(), cache_idx);
+                debug!("Failed to deallocate ptr {:p} from cache {}", ptr.as_ptr(), cache_idx);
             }
             result
         } else {
-            debug!("[SLAB] No suitable cache for dealloc: size={}, align={}", layout.size(), layout.align());
+            debug!("No suitable cache for dealloc: size={}, align={}", layout.size(), layout.align());
             Err(SlabError::InvalidPointer)
         }
     }

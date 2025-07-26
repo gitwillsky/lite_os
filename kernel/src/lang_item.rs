@@ -43,7 +43,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
             info.message()
         );
     } else {
-        error!("[Kernel] Panic: {}", info.message());
+        error!("Panic: {}", info.message());
     }
 
     // 打印堆栈跟踪

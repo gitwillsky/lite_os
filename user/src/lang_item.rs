@@ -11,7 +11,7 @@ fn panic_handler(info: &PanicInfo) -> ! {
             info.message()
         );
     } else {
-        println!("[User] Panic: {}", info.message());
+        println!("Panic: {}", info.message());
     }
     loop {}
 }

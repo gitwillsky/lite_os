@@ -86,11 +86,11 @@ pub fn init() {
             config::MAX_HEAP_SIZE,
         );
     }
-    debug!("[heap_allocator::init] Buddy allocator initialized");
+    debug!("Buddy allocator initialized");
 }
 
 pub fn init_slab() {
     // Initialize SLAB allocator after frame allocator is ready
     SLAB_ALLOCATOR.init();
-    debug!("[heap_allocator::init_slab] SLAB allocator initialized");
+    debug!("SLAB allocator initialized");
 }

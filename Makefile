@@ -14,6 +14,7 @@ build-bootloader:
 run-with-timeout: build-kernel
 	sleep 12 && killall qemu-system-riscv64 & \
 	qemu-system-riscv64 \
+	-smp 4 \
 	-machine virt \
 	-nographic \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
@@ -29,6 +30,7 @@ run-with-timeout: build-kernel
 
 run: build-kernel
 	qemu-system-riscv64 \
+	-smp 4 \
 	-machine virt \
 	-nographic \
 	-rtc base=localtime \

@@ -19,7 +19,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         STD_OUT => {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             let mut total_written = 0;
-            
+
             for buffer in buffers {
                 // 直接使用SBI输出，简单可靠
                 let s = core::str::from_utf8(buffer).unwrap();
@@ -65,7 +65,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             }
             assert_eq!(len, 1, "Only support len = 1 in sys_read!");
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
-            
+
             // 检查是否设置了非阻塞标志
             // 对于 stdin，我们需要检查 fd 0 对应的文件描述符
             let is_nonblock = if let Some(task) = current_task() {
@@ -82,7 +82,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             } else {
                 false
             };
-            
+
             let ch = if is_nonblock {
                 // 非阻塞模式：如果没有输入则立即返回 EAGAIN
                 let c = sbi::console_getchar();
@@ -103,7 +103,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                     }
                 }
             };
-            
+
             let user_buf = buffers.into_iter().next().unwrap();
             if !user_buf.is_empty() {
                 user_buf[0] = ch as u8;
@@ -190,7 +190,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
             // 创建新文件
             match vfs().create_file(&path_str) {
                 Ok(inode) => {
-                    debug!("[sys_open] File created successfully: {}", path_str);
+                    debug!("File created successfully: {}", path_str);
                     // 设置文件权限（如果文件系统支持的话）
                     let _ = inode.set_mode(file_mode);
                     if let Some(task) = current_task() {
@@ -200,7 +200,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
                     inode
                 }
                 Err(e) => {
-                    debug!("[sys_open] Failed to create file {}: {:?}", path_str, e);
+                    debug!("Failed to create file {}: {:?}", path_str, e);
                     return -1; // 创建失败
                 }
             }
@@ -456,10 +456,10 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
             let mode = inode.mode();
             let uid = inode.uid();
             let gid = inode.gid();
-            
-            // debug!("[STAT] path: {}, size: {}, type: {:?}, mode: 0o{:o}, uid: {}, gid: {}", 
+
+            // debug!("path: {}, size: {}, type: {:?}, mode: 0o{:o}, uid: {}, gid: {}",
             //        path_str, size, file_type, mode, uid, gid);
-            
+
             let file_stat = FileStat {
                 size,
                 file_type,
@@ -468,7 +468,7 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
                 uid,
                 gid,
                 atime: 0, // Not implemented yet
-                mtime: 0, // Not implemented yet  
+                mtime: 0, // Not implemented yet
                 ctime: 0, // Not implemented yet
             };
 
@@ -856,12 +856,12 @@ pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
                     // 设置文件状态标志（只允许修改某些标志）
                     let new_flags = arg as u32;
                     let allowed_flags = O_NONBLOCK | O_APPEND;
-                    
+
                     // 保留访问模式和其他不可修改的标志，只更新允许的标志
                     let access_mode = file_desc.flags & 0o3; // O_RDONLY, O_WRONLY, O_RDWR
                     let other_flags = file_desc.flags & !allowed_flags;
                     let updated_flags = access_mode | other_flags | (new_flags & allowed_flags);
-                    
+
                     // 使用原子操作更新标志
                     let file_desc_ptr = Arc::as_ptr(&file_desc) as *const FileDescriptor as *mut FileDescriptor;
                     unsafe {

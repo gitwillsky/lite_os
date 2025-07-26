@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 
 use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::INIT_PID};
 
-mod context;
+pub mod context;
 pub mod loader;
 mod pid;
 mod processor;

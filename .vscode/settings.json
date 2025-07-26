@@ -1,0 +1,5 @@
+{
+    "rust-analyzer.cfg.setTest": true,
+    "rust-analyzer.cargo.buildScripts.overrideCommand": null,
+    "rust-analyzer.cargo.target": "riscv64gc-unknown-none-elf"
+}

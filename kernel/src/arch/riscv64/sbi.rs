@@ -54,3 +54,26 @@ pub fn console_getchar() -> isize {
     let (_, ch) = sbi_call(0x02, 0, [0; 6]);
     ch
 }
+
+/// Send IPI to multiple harts
+pub fn send_ipi(hart_mask: usize) -> Result<(), isize> {
+    // IPI Extension EID = 0x735049 ("sPI")
+    let (error, _) = sbi_call(0x735049, 0, [hart_mask, 0, 0, 0, 0, 0]);
+    if error == 0 {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+/// Start a hart with the given hart ID and address
+pub fn hart_start(hart_id: usize, start_addr: usize, opaque: usize) -> Result<(), isize> {
+    // HSM (Hart State Management) Extension EID = 0x48534D ("HSM")
+    // FID = 0 (sbi_hart_start)
+    let (error, _) = sbi_call(0x48534D, 0, [hart_id, start_addr, opaque, 0, 0, 0]);
+    if error == 0 {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}

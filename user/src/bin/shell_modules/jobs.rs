@@ -171,7 +171,7 @@ impl JobManager {
     /// 返回是否有前台作业完成
     pub fn check_job_status(&mut self) -> bool {
         let mut foreground_job_completed = false;
-        
+
         for job in &mut self.jobs {
             if job.status == JobStatus::Running {
                 let mut exit_code = 0i32;
@@ -197,7 +197,7 @@ impl JobManager {
                 // 如果result == -1，表示进程不存在（已经被回收）
             }
         }
-        
+
         foreground_job_completed
     }
 

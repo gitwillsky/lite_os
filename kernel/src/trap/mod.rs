@@ -19,7 +19,7 @@ use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
     task::{
-        self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
+        self, current_user_token, current_trap_context, exit_current_and_run_next, suspend_current_and_run_next,
         SIG_RETURN_ADDR, mark_kernel_entry, mark_kernel_exit,
     },
     timer,
@@ -82,7 +82,7 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     let sepc = task::current_trap_context().sepc;
-                    error!("[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.", sepc);
+                    error!("IllegalInstruction in application at PC:{:#x}, kernel killed it.", sepc);
                     exit_current_and_run_next(-2);
                 }
                 Exception::Breakpoint => {
@@ -91,7 +91,7 @@ pub fn trap_handler() {
                     // 一个简单（但不完全鲁棒）的判断方法是检查指令的低两位：如果指令的低两位是 11，它是一个 32-bit 或更长的指令。
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
-                    debug!("[trap_handler] Breakpoint exception");
+                    debug!("Breakpoint exception");
                     let cx = task::current_trap_context();
                     cx.sepc += 4;
                 }

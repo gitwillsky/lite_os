@@ -1,9 +1,9 @@
 //! 命令执行模块
 
+use super::jobs::{JobManager, JobStatus};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use user_lib::{close, dup2, execve, fork, open, pipe, wait_pid};
-use super::jobs::{JobManager, JobStatus};
 
 /// 检查命令行是否包含管道
 pub fn has_pipe(line: &str) -> bool {
@@ -106,11 +106,7 @@ pub fn find_in_path(command: &str) -> Option<String> {
 }
 
 /// 执行带作业控制的命令
-pub fn execute_command_with_jobs(
-    line: &str,
-    background: bool,
-    job_manager: &mut JobManager,
-) {
+pub fn execute_command_with_jobs(line: &str, background: bool, job_manager: &mut JobManager) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
 
     if command.is_empty() {
@@ -131,7 +127,13 @@ pub fn execute_command_with_jobs(
             // 构造新的命令：wasm_runtime <wasm_file> [args...]
             let mut wasm_command = String::from("/bin/wasm_runtime ");
             wasm_command.push_str(&command);
-            execute_wasm_command_with_jobs(&wasm_command, output_file, input_file, background, job_manager);
+            execute_wasm_command_with_jobs(
+                &wasm_command,
+                output_file,
+                input_file,
+                background,
+                job_manager,
+            );
             return;
         } else {
             println!("shell: {}: No such file or directory", first_part);
@@ -152,7 +154,13 @@ pub fn execute_command_with_jobs(
                 wasm_command.push_str(parts[i]);
             }
 
-            execute_wasm_command_with_jobs(&wasm_command, output_file, input_file, background, job_manager);
+            execute_wasm_command_with_jobs(
+                &wasm_command,
+                output_file,
+                input_file,
+                background,
+                job_manager,
+            );
             return;
         } else {
             println!("shell: {}: No such file or directory", wasm_file);
@@ -230,11 +238,7 @@ pub fn execute_command_with_jobs(
         }
     } else if pid > 0 {
         // 父进程：添加作业
-        let job_id = job_manager.add_job(pid, String::from(line), background);
-
-        if background {
-            println!("[{}] {}", job_id, pid);
-        }
+        let _ = job_manager.add_job(pid, String::from(line), background);
     } else {
         println!("shell: failed to fork");
     }
@@ -308,11 +312,7 @@ pub fn execute_wasm_command_with_jobs(
         }
     } else if pid > 0 {
         // 父进程：添加作业
-        let job_id = job_manager.add_job(pid, String::from(wasm_command), background);
-
-        if background {
-            println!("[{}] {}", job_id, pid);
-        }
+        let _ = job_manager.add_job(pid, String::from(wasm_command), background);
     } else {
         println!("shell: failed to fork");
     }
@@ -423,11 +423,7 @@ pub fn execute_pipeline_with_jobs(
     // 添加管道作业（使用第一个进程的PID作为作业代表）
     if !pids.is_empty() {
         let pipeline_command = commands.join(" | ");
-        let job_id = job_manager.add_job(pids[0], pipeline_command, background);
-
-        if background {
-            println!("[{}] {}", job_id, pids[0]);
-        }
+        let _ = job_manager.add_job(pids[0], pipeline_command, background);
     }
 
     // 等待所有子进程完成

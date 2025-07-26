@@ -1,4 +1,4 @@
-use crate::sync::UPSafeCell;
+use crate::sync::SpinLock;
 use crate::task::TaskControlBlock;
 use crate::task::task_manager::find_task_by_pid;
 use crate::trap::TrapContext;
@@ -273,49 +273,49 @@ pub struct SignalFrame {
 #[derive(Debug)]
 pub struct SignalState {
     /// Pending signals that haven't been delivered yet
-    pub pending: UPSafeCell<SignalSet>,
+    pub pending: SpinLock<SignalSet>,
     /// Signals that are currently blocked
-    pub blocked: UPSafeCell<SignalSet>,
+    pub blocked: SpinLock<SignalSet>,
     /// Custom signal handlers
-    pub handlers: UPSafeCell<BTreeMap<Signal, SignalDisposition>>,
+    pub handlers: SpinLock<BTreeMap<Signal, SignalDisposition>>,
     /// Whether the process is currently executing a signal handler
-    pub in_signal_handler: UPSafeCell<bool>,
+    pub in_signal_handler: SpinLock<bool>,
     /// Saved signal mask when entering signal handler
-    pub saved_mask: UPSafeCell<Option<SignalSet>>,
+    pub saved_mask: SpinLock<Option<SignalSet>>,
     /// Flag indicating that some signals need trap context for handling
-    pub needs_trap_context_handling: UPSafeCell<bool>,
+    pub needs_trap_context_handling: SpinLock<bool>,
 }
 
 impl SignalState {
     pub fn new() -> Self {
         SignalState {
-            pending: UPSafeCell::new(SignalSet::new()),
-            blocked: UPSafeCell::new(SignalSet::new()),
-            handlers: UPSafeCell::new(BTreeMap::new()),
-            in_signal_handler: UPSafeCell::new(false),
-            saved_mask: UPSafeCell::new(None),
-            needs_trap_context_handling: UPSafeCell::new(false),
+            pending: SpinLock::new(SignalSet::new()),
+            blocked: SpinLock::new(SignalSet::new()),
+            handlers: SpinLock::new(BTreeMap::new()),
+            in_signal_handler: SpinLock::new(false),
+            saved_mask: SpinLock::new(None),
+            needs_trap_context_handling: SpinLock::new(false),
         }
     }
 
     /// Add a signal to the pending set
     pub fn add_pending_signal(&self, signal: Signal) {
-        let mut pending = self.pending.exclusive_access();
+        let mut pending = self.pending.lock();
         pending.add(signal);
     }
 
     /// Check if there are any deliverable signals (pending but not blocked)
     pub fn has_deliverable_signals(&self) -> bool {
-        let pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let pending = self.pending.lock();
+        let blocked = self.blocked.lock();
 
         !pending.difference(&blocked).is_empty()
     }
 
     /// Get the next deliverable signal
     pub fn next_deliverable_signal(&self) -> Option<Signal> {
-        let mut pending = self.pending.exclusive_access();
-        let blocked = self.blocked.exclusive_access();
+        let mut pending = self.pending.lock();
+        let blocked = self.blocked.lock();
 
         let deliverable = pending.difference(&blocked);
         if let Some(signal) = deliverable.first_signal() {
@@ -328,13 +328,13 @@ impl SignalState {
 
     /// Set signal handler for a specific signal
     pub fn set_handler(&self, signal: Signal, disposition: SignalDisposition) {
-        let mut handlers = self.handlers.exclusive_access();
+        let mut handlers = self.handlers.lock();
         handlers.insert(signal, disposition);
     }
 
     /// Get signal handler for a specific signal
     pub fn get_handler(&self, signal: Signal) -> SignalDisposition {
-        let handlers = self.handlers.exclusive_access();
+        let handlers = self.handlers.lock();
         handlers
             .get(&signal)
             .cloned()
@@ -347,42 +347,42 @@ impl SignalState {
 
     /// Block a set of signals
     pub fn block_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.union(&signals);
     }
 
     /// Unblock a set of signals
     pub fn unblock_signals(&self, signals: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = blocked.difference(&signals);
     }
 
     /// Set the signal mask
     pub fn set_signal_mask(&self, mask: SignalSet) {
-        let mut blocked = self.blocked.exclusive_access();
+        let mut blocked = self.blocked.lock();
         *blocked = mask;
     }
 
     /// Get the current signal mask
     pub fn get_signal_mask(&self) -> SignalSet {
-        *self.blocked.exclusive_access()
+        *self.blocked.lock()
     }
 
     /// Set flag indicating that signals need trap context for handling
     pub fn set_needs_trap_context_handling(&self, needs: bool) {
-        *self.needs_trap_context_handling.exclusive_access() = needs;
+        *self.needs_trap_context_handling.lock() = needs;
     }
 
     /// Check if signals need trap context for handling
     pub fn needs_trap_context_handling(&self) -> bool {
-        *self.needs_trap_context_handling.exclusive_access()
+        *self.needs_trap_context_handling.lock()
     }
 
     /// Enter signal handler (save current mask and set new mask)
     pub fn enter_signal_handler(&self, additional_mask: SignalSet) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
 
         if !*in_handler {
             *saved_mask = Some(*blocked);
@@ -394,9 +394,9 @@ impl SignalState {
 
     /// Exit signal handler (restore saved mask)
     pub fn exit_signal_handler(&self) {
-        let mut in_handler = self.in_signal_handler.exclusive_access();
-        let mut saved_mask = self.saved_mask.exclusive_access();
-        let mut blocked = self.blocked.exclusive_access();
+        let mut in_handler = self.in_signal_handler.lock();
+        let mut saved_mask = self.saved_mask.lock();
+        let mut blocked = self.blocked.lock();
 
         if let Some(mask) = saved_mask.take() {
             *blocked = mask;
@@ -407,25 +407,25 @@ impl SignalState {
     /// Reset signal state for exec
     pub fn reset_for_exec(&self) {
         // Clear all signal state components separately to avoid borrowing conflicts
-        self.pending.exclusive_access().clear();
-        self.blocked.exclusive_access().clear();
-        self.handlers.exclusive_access().clear();
-        *self.in_signal_handler.exclusive_access() = false;
-        *self.saved_mask.exclusive_access() = None;
+        self.pending.lock().clear();
+        self.blocked.lock().clear();
+        self.handlers.lock().clear();
+        *self.in_signal_handler.lock() = false;
+        *self.saved_mask.lock() = None;
     }
 
     /// Clone signal state for fork (handlers are inherited, pending signals are not)
     pub fn clone_for_fork(&self) -> Self {
-        let blocked = *self.blocked.exclusive_access();
-        let handlers = self.handlers.exclusive_access().clone();
+        let blocked = *self.blocked.lock();
+        let handlers = self.handlers.lock().clone();
 
         SignalState {
-            pending: UPSafeCell::new(SignalSet::new()), // Pending signals not inherited
-            blocked: UPSafeCell::new(blocked),
-            handlers: UPSafeCell::new(handlers),
-            in_signal_handler: UPSafeCell::new(false),
-            saved_mask: UPSafeCell::new(None),
-            needs_trap_context_handling: UPSafeCell::new(false),
+            pending: SpinLock::new(SignalSet::new()), // Pending signals not inherited
+            blocked: SpinLock::new(blocked),
+            handlers: SpinLock::new(handlers),
+            in_signal_handler: SpinLock::new(false),
+            saved_mask: SpinLock::new(None),
+            needs_trap_context_handling: SpinLock::new(false),
         }
     }
 }

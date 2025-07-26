@@ -112,7 +112,7 @@ mod editor {
 
         pub fn save(&mut self) -> Result<(), &'static str> {
             let filename = self.filename.as_ref().ok_or("No filename")?;
-            
+
             // 尝试以创建+写入+截断模式打开文件
             let flags = OpenFlags::CREATE | OpenFlags::WRONLY | OpenFlags::TRUNC;
             let fd = open(filename, flags);
@@ -127,7 +127,7 @@ mod editor {
                     close(fd as usize);
                     return Err("Write failed");
                 }
-                
+
                 // 如果不是最后一行，添加换行符
                 if i < self.lines.len() - 1 {
                     let newline_written = write(fd as usize, b"\n");
@@ -137,7 +137,7 @@ mod editor {
                     }
                 }
             }
-            
+
             // 如果文件不为空，在最后添加换行符
             if !self.lines.is_empty() && !self.lines[self.lines.len() - 1].is_empty() {
                 let final_newline = write(fd as usize, b"\n");
@@ -146,7 +146,7 @@ mod editor {
                     return Err("Write final newline failed");
                 }
             }
-            
+
             close(fd as usize);
             self.modified = false;
             Ok(())
@@ -168,12 +168,12 @@ mod editor {
             if row >= self.lines.len() {
                 return;
             }
-            
+
             let line = &mut self.lines[row];
             let byte_idx = line.char_indices().nth(col)
                 .map(|(i, _)| i)
                 .unwrap_or(line.len());
-            
+
             line.insert(byte_idx, ch);
             self.modified = true;
         }
@@ -198,7 +198,7 @@ mod editor {
             let byte_idx = line.char_indices().nth(col)
                 .map(|(i, _)| i)
                 .unwrap_or(line.len());
-            
+
             let new_line = line.split_off(byte_idx);
             self.lines.insert(row + 1, new_line);
             self.modified = true;
@@ -265,7 +265,7 @@ mod editor {
             print!("\x1b[s"); // Save cursor position
             print!("\x1b[999;999H"); // Move to bottom-right
             print!("\x1b[6n"); // Request cursor position
-            
+
             // In a real implementation, we would read the response
             // For now, use common terminal size
             Self { rows: 24, cols: 80 }
@@ -365,7 +365,7 @@ mod editor {
                 } else if ch.is_alphabetic() || ch == '_' {
                     let mut word = String::new();
                     word.push(ch);
-                    
+
                     while let Some(&next_ch) = chars.peek() {
                         if next_ch.is_alphanumeric() || next_ch == '_' {
                             word.push(chars.next().unwrap());
@@ -384,7 +384,7 @@ mod editor {
                 } else if ch.is_ascii_digit() {
                     result.push_str(SyntaxColor::Number.ansi_code());
                     result.push(ch);
-                    
+
                     while let Some(&next_ch) = chars.peek() {
                         if next_ch.is_ascii_digit() || next_ch == '.' {
                             result.push(chars.next().unwrap());
@@ -438,19 +438,19 @@ mod editor {
         fn calculate_render_hash(&self) -> u64 {
             use core::hash::{Hash, Hasher};
             struct SimpleHasher(u64);
-            
+
             impl Hasher for SimpleHasher {
                 fn finish(&self) -> u64 { self.0 }
-                
+
                 fn write(&mut self, bytes: &[u8]) {
                     for &b in bytes {
                         self.0 = self.0.wrapping_mul(31).wrapping_add(b as u64);
                     }
                 }
             }
-            
+
             let mut hasher = SimpleHasher(0);
-            
+
             // Hash relevant state for rendering
             self.cursor.row.hash(&mut hasher);
             self.cursor.col.hash(&mut hasher);
@@ -458,13 +458,13 @@ mod editor {
             self.mode.hash(&mut hasher);
             self.status_message.hash(&mut hasher);
             self.command_buffer.hash(&mut hasher);
-            
+
             // Hash visible buffer content
             let text_rows = self.terminal_size.rows - 2;
             for i in self.scroll_offset..(self.scroll_offset + text_rows).min(self.buffer.line_count()) {
                 self.buffer.lines[i].hash(&mut hasher);
             }
-            
+
             hasher.finish()
         }
 
@@ -517,28 +517,28 @@ mod editor {
 
             let line = &self.buffer.lines[self.cursor.row];
             let chars: Vec<char> = line.chars().collect();
-            
+
             if self.cursor.col == 0 {
                 return;
             }
 
             let mut pos = self.cursor.col.saturating_sub(1);
-            
+
             // Skip current word if we're in the middle of it
             while pos > 0 && chars[pos].is_alphanumeric() {
                 pos -= 1;
             }
-            
+
             // Skip whitespace
             while pos > 0 && chars[pos].is_whitespace() {
                 pos -= 1;
             }
-            
+
             // Find start of word
             while pos > 0 && chars[pos - 1].is_alphanumeric() {
                 pos -= 1;
             }
-            
+
             self.cursor.col = pos;
         }
 
@@ -549,27 +549,27 @@ mod editor {
 
             let line = &self.buffer.lines[self.cursor.row];
             let chars: Vec<char> = line.chars().collect();
-            
+
             if self.cursor.col >= chars.len() {
                 return;
             }
 
             let mut pos = self.cursor.col;
-            
+
             // Skip whitespace
             while pos < chars.len() && chars[pos].is_whitespace() {
                 pos += 1;
             }
-            
+
             // Skip to end of word
             while pos < chars.len() && chars[pos].is_alphanumeric() {
                 pos += 1;
             }
-            
+
             if pos > 0 {
                 pos -= 1;
             }
-            
+
             self.cursor.col = pos;
         }
 
@@ -585,12 +585,12 @@ mod editor {
         // Auto-scroll to keep cursor visible
         fn auto_scroll(&mut self) {
             let text_rows = self.terminal_size.rows.saturating_sub(2);
-            
+
             // Scroll up if cursor is above visible area
             if self.cursor.row < self.scroll_offset {
                 self.scroll_offset = self.cursor.row;
             }
-            
+
             // Scroll down if cursor is below visible area
             if self.cursor.row >= self.scroll_offset + text_rows {
                 self.scroll_offset = self.cursor.row.saturating_sub(text_rows - 1);
@@ -616,7 +616,7 @@ mod editor {
         pub fn insert_char(&mut self, ch: char) {
             self.buffer.insert_char(self.cursor.row, self.cursor.col, ch);
             self.cursor.col += 1;
-            
+
             // Record for undo
             self.undo_stack.push(Command::InsertChar {
                 row: self.cursor.row,
@@ -624,7 +624,7 @@ mod editor {
                 ch,
             });
             self.redo_stack.clear();
-            
+
             // Mark as modified
             self.buffer.modified = true;
         }
@@ -635,7 +635,7 @@ mod editor {
                 if self.cursor.row < self.buffer.lines.len() && self.cursor.col < self.buffer.line_len(self.cursor.row) {
                     let ch = self.buffer.lines[self.cursor.row].chars().nth(self.cursor.col).unwrap();
                     self.buffer.delete_char(self.cursor.row, self.cursor.col);
-                    
+
                     // Record for undo
                     self.undo_stack.push(Command::DeleteChar {
                         row: self.cursor.row,
@@ -649,7 +649,7 @@ mod editor {
                 let current_line = self.buffer.lines[self.cursor.row].clone();
                 self.cursor.row -= 1;
                 self.cursor.col = self.buffer.line_len(self.cursor.row);
-                
+
                 if !current_line.is_empty() {
                     self.buffer.lines[self.cursor.row].push_str(&current_line);
                 }
@@ -662,7 +662,7 @@ mod editor {
             if self.cursor.col < self.buffer.line_len(self.cursor.row) {
                 let ch = self.buffer.lines[self.cursor.row].chars().nth(self.cursor.col).unwrap();
                 self.buffer.delete_char(self.cursor.row, self.cursor.col);
-                
+
                 // Record for undo
                 self.undo_stack.push(Command::DeleteChar {
                     row: self.cursor.row,
@@ -684,14 +684,14 @@ mod editor {
             if self.buffer.line_count() > 1 {
                 let content = self.buffer.lines[self.cursor.row].clone();
                 self.buffer.delete_line(self.cursor.row);
-                
+
                 // Record for undo
                 self.undo_stack.push(Command::DeleteLine {
                     row: self.cursor.row,
                     content,
                 });
                 self.redo_stack.clear();
-                
+
                 if self.cursor.row >= self.buffer.line_count() {
                     self.cursor.row = self.buffer.line_count() - 1;
                 }
@@ -704,15 +704,15 @@ mod editor {
             self.search_term = term.to_string();
             let start_row = self.cursor.row;
             let start_col = if forward { self.cursor.col + 1 } else { self.cursor.col };
-            
+
             let mut found = false;
-            
+
             if forward {
                 // Search forward
                 for row in start_row..self.buffer.line_count() {
                     let line = &self.buffer.lines[row];
                     let search_start = if row == start_row { start_col } else { 0 };
-                    
+
                     if let Some(pos) = line[search_start..].find(term) {
                         self.cursor.row = row;
                         self.cursor.col = search_start + pos;
@@ -725,7 +725,7 @@ mod editor {
                 for row in (0..=start_row).rev() {
                     let line = &self.buffer.lines[row];
                     let search_end = if row == start_row { start_col } else { line.len() };
-                    
+
                     if let Some(pos) = line[..search_end].rfind(term) {
                         self.cursor.row = row;
                         self.cursor.col = pos;
@@ -734,7 +734,7 @@ mod editor {
                     }
                 }
             }
-            
+
             found
         }
 
@@ -751,34 +751,34 @@ mod editor {
 
             // Auto-scroll to keep cursor visible
             self.auto_scroll();
-            
+
             self.hide_cursor();
-            
+
             // Calculate visible lines
             let text_rows = self.terminal_size.rows.saturating_sub(2);
             let line_num_width = self.line_number_width();
             let content_width = self.terminal_size.cols.saturating_sub(line_num_width);
-            
+
             // Render text area
             for i in 0..text_rows {
                 let file_row = self.scroll_offset + i;
                 self.move_cursor(i, 0);
                 self.clear_line();
-                
+
                 // Render line number
                 if self.show_line_numbers {
                     if file_row < self.buffer.line_count() {
-                        print!("\x1b[90m{:width$}\x1b[0m ", 
-                               file_row + 1, 
+                        print!("\x1b[90m{:width$}\x1b[0m ",
+                               file_row + 1,
                                width = line_num_width - 1);
                     } else {
                         print!("{:width$} ", " ", width = line_num_width - 1);
                     }
                 }
-                
+
                 if file_row < self.buffer.line_count() {
                     let line = &self.buffer.lines[file_row];
-                    
+
                     // Highlight current line in visual mode
                     if self.mode == Mode::Visual {
                         if let Some(visual_start) = self.visual_start {
@@ -787,7 +787,7 @@ mod editor {
                             }
                         }
                     }
-                    
+
                     // Apply syntax highlighting and truncate if necessary
                     let highlighted_line = self.highlight_line(line);
                     let display_line = if highlighted_line.len() > content_width {
@@ -796,7 +796,7 @@ mod editor {
                         highlighted_line
                     };
                     print!("{}", display_line);
-                    
+
                     if self.mode == Mode::Visual {
                         print!("\x1b[0m"); // Reset formatting
                     }
@@ -804,40 +804,40 @@ mod editor {
                     print!("\x1b[94m~\x1b[0m"); // Blue tilde for empty lines
                 }
             }
-            
+
             // Render status line
             self.move_cursor(text_rows, 0);
             self.clear_line();
-            
+
             let mode_str = match self.mode {
                 Mode::Normal => "NORMAL",
-                Mode::Insert => "INSERT", 
+                Mode::Insert => "INSERT",
                 Mode::Visual => "VISUAL",
                 Mode::Command => "COMMAND",
             };
-            
-            let filename = self.buffer.filename.as_ref().map(|s| s.as_str()).unwrap_or("[No Name]");
+
+            let filename = self.buffer.filename.as_ref().map(|s| s.as_str()).unwrap_or("");
             let modified = if self.buffer.modified { " [+]" } else { "" };
-            
+
             // Status bar with file info
             let cursor_info = format!("{}:{}", self.cursor.row + 1, self.cursor.col + 1);
             let line_info = format!("{}/{}", self.cursor.row + 1, self.buffer.line_count());
-            let status_text = format!("{} | {}{} | {} | {}", 
+            let status_text = format!("{} | {}{} | {} | {}",
                                     mode_str, filename, modified, cursor_info, line_info);
-            
+
             // Truncate status if too long
             let display_status = if status_text.len() > self.terminal_size.cols {
                 format!("{}...", &status_text[..self.terminal_size.cols.saturating_sub(3)])
             } else {
                 status_text
             };
-            
+
             print!("\x1b[7m{:<width$}\x1b[0m", display_status, width = self.terminal_size.cols);
-            
+
             // Render command line
             self.move_cursor(text_rows + 1, 0);
             self.clear_line();
-            
+
             if self.mode == Mode::Command {
                 print!(":{}", self.command_buffer);
             } else {
@@ -849,7 +849,7 @@ mod editor {
                 };
                 print!("{}", msg);
             }
-            
+
             // Position cursor and show it
             self.update_cursor_position();
             self.show_cursor();
@@ -873,7 +873,7 @@ mod editor {
             } else {
                 (end.row, start.row)
             };
-            
+
             row >= start_row && row <= end_row
         }
 
@@ -1132,20 +1132,20 @@ mod editor {
         // Main event loop
         pub fn run(&mut self) {
             self.initialize();
-            
+
             // Initial render
             self.render();
-            
+
             loop {
                 let ch = getchar();
-                
+
                 match self.mode {
                     Mode::Normal => self.handle_normal_mode(ch),
                     Mode::Insert => self.handle_insert_mode(ch),
                     Mode::Visual => self.handle_visual_mode(ch),
                     Mode::Command => self.handle_command_mode(ch),
                 }
-                
+
                 // Render after each input
                 self.render();
             }
@@ -1178,20 +1178,20 @@ mod editor {
                     self.move_cursor_up();
                     self.enter_insert_mode();
                 }
-                
+
                 // Visual mode
                 b'v' => self.enter_visual_mode(),
-                
+
                 // Command mode
                 b':' => self.enter_command_mode(),
-                
+
                 // Movement - basic
                 b'h' | b'j' | b'k' | b'l' => self.handle_movement(ch),
                 b'w' => self.move_to_word_end(),
                 b'b' => self.move_to_word_start(),
                 b'0' => self.move_to_line_start(),
                 b'$' => self.move_to_line_end(),
-                
+
                 // Movement - extended
                 b'G' => {
                     // Go to last line
@@ -1207,7 +1207,7 @@ mod editor {
                         self.cursor.col = 0;
                     }
                 }
-                
+
                 // Page navigation
                 6 => { // Ctrl+F - Page down
                     let text_rows = self.terminal_size.rows.saturating_sub(2);
@@ -1229,7 +1229,7 @@ mod editor {
                     self.cursor.row = self.cursor.row.saturating_sub(half_page);
                     self.fix_cursor_position();
                 }
-                
+
                 // Editing - basic
                 b'x' => self.delete_char_forward(),
                 b'X' => self.delete_char_backward(),
@@ -1246,7 +1246,7 @@ mod editor {
                         self.move_cursor_left();
                     }
                 }
-                
+
                 // Editing - lines
                 b'd' => {
                     let next_ch = getchar();
@@ -1278,7 +1278,7 @@ mod editor {
                     }
                     self.enter_insert_mode();
                 }
-                
+
                 // Copy/Paste (simplified - no register support yet)
                 b'y' => {
                     let next_ch = getchar();
@@ -1290,7 +1290,7 @@ mod editor {
                 b'p' => {
                     self.status_message = "Paste not implemented yet".to_string();
                 }
-                
+
                 // Search
                 b'/' => {
                     self.enter_command_mode();
@@ -1314,16 +1314,16 @@ mod editor {
                         }
                     }
                 }
-                
+
                 // Undo/Redo
                 b'u' => self.undo(),
                 18 => self.redo(), // Ctrl+R
-                
+
                 // Repeat command (placeholder)
                 b'.' => {
                     self.status_message = "Repeat command not implemented yet".to_string();
                 }
-                
+
                 _ => {}
             }
         }
@@ -1341,7 +1341,7 @@ mod editor {
         fn handle_visual_mode(&mut self, ch: u8) {
             match ch {
                 27 => self.enter_normal_mode(), // ESC
-                
+
                 // Movement
                 b'h' | b'j' | b'k' | b'l' => self.handle_movement(ch),
                 b'w' => self.move_to_word_end(),
@@ -1360,7 +1360,7 @@ mod editor {
                         self.cursor.col = 0;
                     }
                 }
-                
+
                 // Operations
                 b'd' | b'x' => {
                     // Delete selected text (simplified - delete selected lines)
@@ -1370,26 +1370,26 @@ mod editor {
                         } else {
                             (self.cursor.row, start.row)
                         };
-                        
+
                         let deleted_lines = end_row - start_row + 1;
                         for _ in 0..deleted_lines {
                             if start_row < self.buffer.line_count() {
                                 self.buffer.delete_line(start_row);
                             }
                         }
-                        
+
                         if start_row < self.buffer.line_count() {
                             self.cursor.row = start_row;
                         } else if self.buffer.line_count() > 0 {
                             self.cursor.row = self.buffer.line_count() - 1;
                         }
                         self.fix_cursor_position();
-                        
+
                         self.status_message = format!("{} lines deleted", deleted_lines);
                     }
                     self.enter_normal_mode();
                 }
-                
+
                 b'y' => {
                     // Yank selected text (just show message for now)
                     if let Some(start) = self.visual_start {
@@ -1398,13 +1398,13 @@ mod editor {
                         } else {
                             (self.cursor.row, start.row)
                         };
-                        
+
                         let yanked_lines = end_row - start_row + 1;
                         self.status_message = format!("{} lines yanked (paste not implemented yet)", yanked_lines);
                     }
                     self.enter_normal_mode();
                 }
-                
+
                 b'c' => {
                     // Change selected text - delete and enter insert mode
                     if let Some(start) = self.visual_start {
@@ -1413,19 +1413,19 @@ mod editor {
                         } else {
                             (self.cursor.row, start.row)
                         };
-                        
+
                         let deleted_lines = end_row - start_row + 1;
                         for _ in 0..deleted_lines {
                             if start_row < self.buffer.line_count() {
                                 self.buffer.delete_line(start_row);
                             }
                         }
-                        
+
                         // Insert empty line if we deleted everything
                         if self.buffer.line_count() == 0 {
                             self.buffer.lines.push(String::new());
                         }
-                        
+
                         if start_row < self.buffer.line_count() {
                             self.cursor.row = start_row;
                         } else {
@@ -1435,7 +1435,7 @@ mod editor {
                     }
                     self.enter_insert_mode();
                 }
-                
+
                 _ => {}
             }
         }
@@ -1481,15 +1481,15 @@ use editor::*;
 fn get_args() -> Vec<String> {
     let mut argc = 0usize;
     let mut argv_buf = [0u8; 4096];
-    
+
     let result = user_lib::get_args(&mut argc, &mut argv_buf);
     if result < 0 {
         return vec!["vim".to_string()];
     }
-    
+
     let mut args = Vec::new();
     let mut start = 0;
-    
+
     for i in 0..argv_buf.len() {
         if argv_buf[i] == 0 && i > start {
             if let Ok(arg) = core::str::from_utf8(&argv_buf[start..i]) {
@@ -1501,18 +1501,18 @@ fn get_args() -> Vec<String> {
             }
         }
     }
-    
+
     if args.is_empty() {
         args.push("vim".to_string());
     }
-    
+
     args
 }
 
 #[unsafe(no_mangle)]
 pub fn main() -> i32 {
     let args = get_args();
-    
+
     let mut editor = if args.len() > 1 {
         match Editor::from_file(&args[1]) {
             Ok(e) => e,

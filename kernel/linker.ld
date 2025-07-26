@@ -6,8 +6,9 @@ ENTRY(_start)
 /* 程序加载到 opensbi 指定的地址 */
 BASE_ADDRESS = 0x80200000;
 
-/* 定义内核栈大小 */
+/* 定义内核栈大小和最大CPU数量 */
 KERNEL_STACK_SIZE = 16K;
+MAX_CPU_NUM = 8;
 
 SECTIONS {
     . = BASE_ADDRESS;
@@ -55,10 +56,10 @@ SECTIONS {
     . = ALIGN(4K);
     ebss = .;
 
-    /* 为启动栈分配空间 */
+    /* 为每个CPU分配独立的启动栈 */
     . = ALIGN(16);
     boot_stack_bottom = .;
-    . += KERNEL_STACK_SIZE;
+    . += KERNEL_STACK_SIZE * MAX_CPU_NUM;
     boot_stack_top = .;
 
     ekernel = .;

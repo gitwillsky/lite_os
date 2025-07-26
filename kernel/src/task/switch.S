@@ -22,6 +22,8 @@ __switch:
         SAVE_SN %n
         .set n, n + 1
     .endr
+    sd tp, 14*8(a0)
+
     # restore ra & s0~s11 of next execution
     ld ra, 0(a1)
     .set n, 0
@@ -29,6 +31,8 @@ __switch:
         LOAD_SN %n
         .set n, n + 1
     .endr
+    ld tp, 14*8(a1)
+
     # restore kernel stack of next task
     ld sp, 8(a1)
     ret

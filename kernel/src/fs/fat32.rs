@@ -110,16 +110,16 @@ pub struct FAT32FileSystem {
 
 impl FAT32FileSystem {
     pub fn new(device: Arc<dyn BlockDevice>) -> Option<Arc<Self>> {
-        debug!("[FAT32] Attempting to initialize FAT32 filesystem...");
-        debug!("[FAT32] Device block size: {}", device.block_size());
+        debug!("Attempting to initialize FAT32 filesystem...");
+        debug!("Device block size: {}", device.block_size());
 
         // Read full block (4096 bytes) to accommodate VirtIO block size
         let mut block_bytes = vec![0u8; device.block_size()];
         if let Err(e) = device.read_block(0, &mut block_bytes) {
-            error!("[FAT32] Failed to read boot sector: {:?}", e);
+            error!("Failed to read boot sector: {:?}", e);
             return None;
         }
-        debug!("[FAT32] Successfully read boot sector");
+        debug!("Successfully read boot sector");
 
         // Extract the 512-byte boot sector from the full block
         let mut bpb_bytes = [0u8; SECTOR_SIZE];
@@ -137,7 +137,7 @@ impl FAT32FileSystem {
         // Verify FAT32 filesystem
         let bpb_ptr = bpb_bytes.as_ptr();
         let signature = unsafe { core::ptr::read_unaligned(bpb_ptr.add(510) as *const u16) };
-        debug!("[FAT32] Boot signature: {:#x}", signature);
+        debug!("Boot signature: {:#x}", signature);
         if signature != FAT32_SIGNATURE {
             error!(
                 "[FAT32] Invalid boot signature: {:#x} (expected {:#x})",
@@ -148,9 +148,9 @@ impl FAT32FileSystem {
 
         let sectors_per_fat_32 =
             unsafe { core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32) };
-        debug!("[FAT32] Sectors per FAT32: {}", sectors_per_fat_32);
+        debug!("Sectors per FAT32: {}", sectors_per_fat_32);
         if sectors_per_fat_32 == 0 {
-            error!("[FAT32] Not a FAT32 filesystem (sectors_per_fat_32 is 0)");
+            error!("Not a FAT32 filesystem (sectors_per_fat_32 is 0)");
             return None;
         }
 
@@ -165,14 +165,14 @@ impl FAT32FileSystem {
         let sectors_per_cluster = sectors_per_cluster as u32;
         let bytes_per_cluster = sectors_per_cluster * SECTOR_SIZE as u32;
 
-        info!("[FAT32] Filesystem initialized successfully");
-        info!("[FAT32] Reserved sectors: {}", reserved_sectors);
-        info!("[FAT32] Number of FATs: {}", num_fats);
-        info!("[FAT32] Sectors per FAT: {}", sectors_per_fat_32);
-        info!("[FAT32] Sectors per cluster: {}", sectors_per_cluster);
-        info!("[FAT32] Bytes per cluster: {}", bytes_per_cluster);
-        info!("[FAT32] Root directory cluster: {}", root_cluster);
-        info!("[FAT32] Data area start sector: {}", cluster_start_sector);
+        info!("Filesystem initialized successfully");
+        info!("Reserved sectors: {}", reserved_sectors);
+        info!("Number of FATs: {}", num_fats);
+        info!("Sectors per FAT: {}", sectors_per_fat_32);
+        info!("Sectors per cluster: {}", sectors_per_cluster);
+        info!("Bytes per cluster: {}", bytes_per_cluster);
+        info!("Root directory cluster: {}", root_cluster);
+        info!("Data area start sector: {}", cluster_start_sector);
 
         // Load FAT table
         let fat_sectors = sectors_per_fat_32 as usize;
@@ -210,7 +210,7 @@ impl FAT32FileSystem {
         }
 
         // Debug: Show first few FAT entries
-        info!("[FAT32] FAT table loaded with {} entries", fat_cache.len());
+        info!("FAT table loaded with {} entries", fat_cache.len());
 
         Some(Arc::new(FAT32FileSystem {
             device,
@@ -315,18 +315,18 @@ impl FAT32FileSystem {
             );
             if fat_cache[i] == CLUSTER_FREE {
                 fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
-                debug!("[FAT32] Allocated cluster {}", i);
+                debug!("Allocated cluster {}", i);
                 return Some(i as u32);
             }
         }
-        warn!("[FAT32] No free clusters available");
+        warn!("No free clusters available");
         None
     }
 
     fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
         let mut fat_cache = self.fat_cache.lock();
         if cluster as usize >= fat_cache.len() || cluster < 2 {
-            error!("[FAT32] Invalid cluster number for FAT write: {}", cluster);
+            error!("Invalid cluster number for FAT write: {}", cluster);
             return Err(BlockError::InvalidBlock);
         }
 
@@ -357,7 +357,7 @@ impl FAT32FileSystem {
 
             let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
             if block_sector_offset + 4 > device_block_size {
-                error!("[FAT32] FAT entry would exceed block boundary");
+                error!("FAT entry would exceed block boundary");
                 return Err(BlockError::InvalidBlock);
             }
 
@@ -407,11 +407,14 @@ impl FAT32FileSystem {
                         let mut long_name_utf16: Vec<u16> = Vec::new();
                         for lfn in &lfn_cache {
                             unsafe {
-                                let name1 = core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name1));
+                                let name1 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name1));
                                 long_name_utf16.extend_from_slice(&name1);
-                                let name2 = core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name2));
+                                let name2 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name2));
                                 long_name_utf16.extend_from_slice(&name2);
-                                let name3 = core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name3));
+                                let name3 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!((*lfn).name3));
                                 long_name_utf16.extend_from_slice(&name3);
                             }
                         }
@@ -475,8 +478,17 @@ impl FAT32FileSystem {
         Ok(())
     }
 
-    fn create_directory_entry(&self, parent_cluster: u32, name: &str, new_cluster: u32, is_dir: bool) -> Result<(), FileSystemError> {
-        debug!("[FAT32] Creating directory entry: {} (cluster: {}, is_dir: {})", name, new_cluster, is_dir);
+    fn create_directory_entry(
+        &self,
+        parent_cluster: u32,
+        name: &str,
+        new_cluster: u32,
+        is_dir: bool,
+    ) -> Result<(), FileSystemError> {
+        debug!(
+            "Creating directory entry: {} (cluster: {}, is_dir: {})",
+            name, new_cluster, is_dir
+        );
 
         let (sfn, lfn_entries) = self.generate_filename_entries(name);
 
@@ -509,9 +521,8 @@ impl FAT32FileSystem {
                 // Write LFN entries
                 for (i, lfn) in lfn_entries.iter().enumerate() {
                     let offset = (start_index + i) * 32;
-                    let lfn_bytes = unsafe {
-                        core::slice::from_raw_parts(lfn as *const _ as *const u8, 32)
-                    };
+                    let lfn_bytes =
+                        unsafe { core::slice::from_raw_parts(lfn as *const _ as *const u8, 32) };
                     cluster_data[offset..offset + 32].copy_from_slice(lfn_bytes);
                 }
 
@@ -532,9 +543,8 @@ impl FAT32FileSystem {
                     file_size: 0,
                 };
                 let offset = (start_index + lfn_entries.len()) * 32;
-                let entry_bytes = unsafe {
-                    core::slice::from_raw_parts(&entry as *const _ as *const u8, 32)
-                };
+                let entry_bytes =
+                    unsafe { core::slice::from_raw_parts(&entry as *const _ as *const u8, 32) };
                 cluster_data[offset..offset + 32].copy_from_slice(entry_bytes);
 
                 self.write_cluster(current_cluster, &cluster_data)
@@ -558,10 +568,13 @@ impl FAT32FileSystem {
         }
     }
 
-    fn generate_filename_entries(&self, name: &str) -> (ShortFileNameEntry, Vec<LongFileNameEntry>) {
+    fn generate_filename_entries(
+        &self,
+        name: &str,
+    ) -> (ShortFileNameEntry, Vec<LongFileNameEntry>) {
         // 生成唯一的短文件名占位符（简化版本）
-        let mut sfn_name = [0x20u8; 8];  // 用空格填充
-        let sfn_ext = [0x20u8; 3];   // 用空格填充
+        let mut sfn_name = [0x20u8; 8]; // 用空格填充
+        let sfn_ext = [0x20u8; 3]; // 用空格填充
 
         // 使用文件名哈希生成唯一的8.3名称
         let mut hasher = 0u32;
@@ -582,7 +595,10 @@ impl FAT32FileSystem {
             num /= 10;
         }
 
-        let sfn = ShortFileNameEntry { name: sfn_name, ext: sfn_ext };
+        let sfn = ShortFileNameEntry {
+            name: sfn_name,
+            ext: sfn_ext,
+        };
 
         // 生成长文件名条目
         let utf16_name: Vec<u16> = name.encode_utf16().collect();
@@ -679,9 +695,9 @@ impl FileSystem for FAT32FileSystem {
             cluster: self.root_cluster,
             size: Mutex::new(0),
             is_dir: true,
-            mode: Mutex::new(0o755),  // 目录默认权限
-            uid: Mutex::new(0),       // root用户
-            gid: Mutex::new(0),       // root组
+            mode: Mutex::new(0o755), // 目录默认权限
+            uid: Mutex::new(0),      // root用户
+            gid: Mutex::new(0),      // root组
         })
     }
 
@@ -722,9 +738,9 @@ pub struct FAT32Inode {
     cluster: u32,
     size: Mutex<u64>,
     is_dir: bool,
-    mode: Mutex<u32>,   // 文件权限模式
-    uid: Mutex<u32>,    // 文件拥有者UID
-    gid: Mutex<u32>,    // 文件拥有者GID
+    mode: Mutex<u32>, // 文件权限模式
+    uid: Mutex<u32>,  // 文件拥有者UID
+    gid: Mutex<u32>,  // 文件拥有者GID
 }
 
 unsafe impl Send for FAT32Inode {}
@@ -808,7 +824,10 @@ impl Inode for FAT32Inode {
             self.fs()
                 .read_cluster(current_cluster, &mut cluster_data)
                 .map_err(|e| {
-                    debug!("[FAT32] read_cluster failed for cluster {}: {:?}", current_cluster, e);
+                    debug!(
+                        "read_cluster failed for cluster {}: {:?}",
+                        current_cluster, e
+                    );
                     FileSystemError::IoError
                 })?;
 
@@ -929,9 +948,9 @@ impl Inode for FAT32Inode {
             return Err(FileSystemError::NotDirectory);
         }
 
-        debug!("[FAT32] Looking for child: {}", name);
+        debug!("Looking for child: {}", name);
         let entries = self.fs().read_directory_entries(self.cluster)?;
-        debug!("[FAT32] Found {} directory entries", entries.len());
+        debug!("Found {} directory entries", entries.len());
 
         for info in entries {
             if info.entry.attr & ATTR_VOLUME_ID != 0 {
@@ -946,7 +965,7 @@ impl Inode for FAT32Inode {
                 let size = if is_dir { 0 } else { entry.file_size as u64 };
 
                 debug!(
-                    "[FAT32] Found match: {} (cluster: {}, is_dir: {})",
+                    "Found match: {} (cluster: {}, is_dir: {})",
                     info.name, cluster, is_dir
                 );
                 return Ok(Arc::new(FAT32Inode {
@@ -954,14 +973,14 @@ impl Inode for FAT32Inode {
                     cluster,
                     size: Mutex::new(size),
                     is_dir,
-                    mode: Mutex::new(if is_dir { 0o755 } else { 0o644 }),  // 默认权限
-                    uid: Mutex::new(0),       // root用户
-                    gid: Mutex::new(0),       // root组
+                    mode: Mutex::new(if is_dir { 0o755 } else { 0o644 }), // 默认权限
+                    uid: Mutex::new(0),                                   // root用户
+                    gid: Mutex::new(0),                                   // root组
                 }));
             }
         }
 
-        debug!("[FAT32] Child {} not found", name);
+        debug!("Child {} not found", name);
         Err(FileSystemError::NotFound)
     }
 
@@ -992,9 +1011,9 @@ impl Inode for FAT32Inode {
             cluster: new_cluster,
             size: Mutex::new(0),
             is_dir: false,
-            mode: Mutex::new(0o644),  // 文件默认权限
-            uid: Mutex::new(0),       // root用户
-            gid: Mutex::new(0),       // root组
+            mode: Mutex::new(0o644), // 文件默认权限
+            uid: Mutex::new(0),      // root用户
+            gid: Mutex::new(0),      // root组
         }))
     }
 
@@ -1083,9 +1102,9 @@ impl Inode for FAT32Inode {
             cluster: new_cluster,
             size: Mutex::new(0),
             is_dir: true,
-            mode: Mutex::new(0o755),  // 目录默认权限
-            uid: Mutex::new(0),       // root用户
-            gid: Mutex::new(0),       // root组
+            mode: Mutex::new(0o755), // 目录默认权限
+            uid: Mutex::new(0),      // root用户
+            gid: Mutex::new(0),      // root组
         }))
     }
 
@@ -1144,18 +1163,26 @@ impl Inode for FAT32Inode {
                         for &lfn_idx in &lfn_cache {
                             let lfn_chunk = &cluster_data[lfn_idx * 32..lfn_idx * 32 + 32];
                             let lfn_entry = unsafe {
-                                core::ptr::read_unaligned(lfn_chunk.as_ptr() as *const LongFileNameEntry)
+                                core::ptr::read_unaligned(
+                                    lfn_chunk.as_ptr() as *const LongFileNameEntry
+                                )
                             };
                             unsafe {
-                                let name1 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name1));
+                                let name1 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name1));
                                 long_name_utf16.extend_from_slice(&name1);
-                                let name2 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name2));
+                                let name2 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name2));
                                 long_name_utf16.extend_from_slice(&name2);
-                                let name3 = core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name3));
+                                let name3 =
+                                    core::ptr::read_unaligned(core::ptr::addr_of!(lfn_entry.name3));
                                 long_name_utf16.extend_from_slice(&name3);
                             }
                         }
-                        let null_pos = long_name_utf16.iter().position(|&c| c == 0).unwrap_or(long_name_utf16.len());
+                        let null_pos = long_name_utf16
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(long_name_utf16.len());
                         long_name_utf16.truncate(null_pos);
                         String::from_utf16_lossy(&long_name_utf16)
                     } else {
@@ -1163,7 +1190,8 @@ impl Inode for FAT32Inode {
                     };
 
                     if entry_name.to_lowercase() == name.to_lowercase() {
-                        child_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
+                        child_cluster = (entry.first_cluster_high as u32) << 16
+                            | entry.first_cluster_low as u32;
                         found = true;
 
                         // Mark all related entries as deleted (LFN entries + SFN entry)

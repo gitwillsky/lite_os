@@ -21,7 +21,7 @@ use crate::{
         kernel_stack::KernelStack,
         mm::{self, MemorySet},
     },
-    sync::UPSafeCell,
+    sync::SpinLock,
     task::{
         add_task,
         context::TaskContext,
@@ -30,6 +30,54 @@ use crate::{
     },
     trap::{TrapContext, trap_handler},
 };
+
+/// CPU affinity set
+#[derive(Debug, Clone)]
+pub struct CpuSet {
+    pub mask: u64,
+}
+
+impl CpuSet {
+    pub fn new() -> Self {
+        Self { mask: !0u64 } // Default to all CPUs
+    }
+    
+    pub fn from_mask(mask: u64) -> Self {
+        Self { mask }
+    }
+    
+    pub fn is_set(&self, cpu: usize) -> bool {
+        if cpu >= 64 { return false; }
+        (self.mask & (1 << cpu)) != 0
+    }
+    
+    pub fn set(&mut self, cpu: usize) {
+        if cpu < 64 {
+            self.mask |= 1 << cpu;
+        }
+    }
+    
+    pub fn clear(&mut self, cpu: usize) {
+        if cpu < 64 {
+            self.mask &= !(1 << cpu);
+        }
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.mask == 0
+    }
+    
+    pub fn first_cpu(&self) -> Option<usize> {
+        if self.mask == 0 { return None; }
+        Some(self.mask.trailing_zeros() as usize)
+    }
+}
+
+impl Default for CpuSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct FileDescriptor {
     pub inode: Arc<dyn Inode>,
@@ -345,6 +393,13 @@ pub struct TaskControlBlock {
     pub args: Mutex<Option<Vec<String>>>,
     /// 进程启动时的环境变量
     pub envs: Mutex<Option<Vec<String>>>,
+    
+    /// CPU亲和性掩码
+    pub cpu_affinity: crate::sync::SpinLock<CpuSet>,
+    /// 首选CPU ID
+    pub preferred_cpu: AtomicUsize,
+    /// 上次运行的CPU ID
+    pub last_cpu: AtomicUsize,
 }
 
 impl TaskControlBlock {
@@ -405,13 +460,16 @@ impl TaskControlBlock {
             euid: AtomicU32::new(0),
             egid: AtomicU32::new(0),
             stdin_nonblock: AtomicBool::new(false),
+            cpu_affinity: crate::sync::SpinLock::new(CpuSet::new()),
+            preferred_cpu: AtomicUsize::new(0),
+            last_cpu: AtomicUsize::new(0),
         };
 
         // prepare TrapContext in user space
         tcb.mm.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
-            KERNEL_SPACE.wait().lock().token(),
+            KERNEL_SPACE.wait().read().token(),
             kernel_stack_top,
             trap_handler as usize,
         ));
@@ -439,7 +497,7 @@ impl TaskControlBlock {
         self.mm.set_trap_context(TrapContext::app_init_context(
             entrypoint,
             user_stack_top,
-            KERNEL_SPACE.wait().lock().token(),
+            KERNEL_SPACE.wait().read().token(),
             kernel_stack_top,
             trap_handler as usize,
         ));
@@ -503,6 +561,9 @@ impl TaskControlBlock {
             stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
+            cpu_affinity: crate::sync::SpinLock::new(self.cpu_affinity.lock().clone()),
+            preferred_cpu: AtomicUsize::new(self.preferred_cpu.load(atomic::Ordering::Relaxed)),
+            last_cpu: AtomicUsize::new(self.last_cpu.load(atomic::Ordering::Relaxed)),
             mm: Memory {
                 memory_set: Mutex::new(memory_set),
                 kernel_stack,

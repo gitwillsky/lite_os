@@ -1,30 +1,18 @@
-use core::cell::{RefCell, RefMut};
+/// Multi-core synchronization primitives
+/// 
+/// This module provides SMP-safe synchronization primitives for the LiteOS kernel.
+/// All primitives are designed to work correctly in multi-processor environments.
 
-/// Wrap a static data structure inside it so that we are
-/// able to access it without any `unsafe`.
-///
-/// We should only use it in uniprocessor.
-///
-/// In order to get mutable reference of inner data, call
-/// `exclusive_access`.
-#[derive(Debug)]
-pub struct UPSafeCell<T> {
-    /// inner data
-    inner: RefCell<T>,
-}
+pub mod spinlock;
+pub mod barrier;
+pub mod rwlock;
 
-unsafe impl<T> Sync for UPSafeCell<T> {}
+pub use spinlock::{SpinLock, SpinLockGuard};
+pub use rwlock::{RwSpinLock, ReadGuard, WriteGuard};
+pub use barrier::*;
 
-impl<T> UPSafeCell<T> {
-    /// User is responsible to guarantee that inner struct is only used in
-    /// uniprocessor.
-    pub fn new(value: T) -> Self {
-        Self {
-            inner: RefCell::new(value),
-        }
-    }
-    /// Exclusive access inner data in UPSafeCell. Panic if the data has been borrowed.
-    pub fn exclusive_access(&self) -> RefMut<'_, T> {
-        self.inner.borrow_mut()
-    }
-}
+/// Re-export atomic types for convenience
+pub use core::sync::atomic::{
+    AtomicBool, AtomicUsize, AtomicU64, AtomicIsize, AtomicI64,
+    Ordering, fence, compiler_fence
+};

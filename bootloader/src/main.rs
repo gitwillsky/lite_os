@@ -32,6 +32,8 @@ use rustsbi::{RustSBI, SbiRet};
 use spin::Once;
 use trap_stack::{local_hsm, local_remote_hsm, remote_hsm};
 
+static BOARD_INFO: Once<BoardInfo> = Once::new();
+
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -48,8 +50,21 @@ unsafe extern "C" fn _start() -> ! {
 }
 
 extern "C" fn rust_main(hart_id: usize, opaque: usize) {
+
+    // Check if this is the bootstrap hart (hart 0)
+    if hart_id == 0 {
+        // Bootstrap hart initialization
+        bootstrap_hart_init(hart_id, opaque);
+    } else {
+        // Application hart initialization
+        application_hart_init(hart_id, opaque);
+    }
+}
+
+/// Bootstrap hart (hart 0) initialization
+fn bootstrap_hart_init(hart_id: usize, opaque: usize) {
     static GENESIS: AtomicBool = AtomicBool::new(true);
-    static BOARD_INFO: Once<BoardInfo> = Once::new();
+
     // 全局初始化过程
     if GENESIS.swap(false, Ordering::Acquire) {
         unsafe extern "C" {
@@ -118,11 +133,33 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             opaque,
         });
     } else {
-        // 设置 pmp
-        set_pmp(BOARD_INFO.wait());
-        // 设置陷入栈
-        trap_stack::prepare_for_trap();
+        // This should not happen for bootstrap hart
+        panic!("Bootstrap hart double initialization");
     }
+
+    setup_hart_common();
+}
+
+/// Application hart (hart != 0) initialization
+fn application_hart_init(hart_id: usize, opaque: usize) {
+    // Wait for bootstrap hart to complete global initialization
+    // Once::wait() blocks until the value is available
+    let board_info = BOARD_INFO.wait();
+
+    // Set up PMP for this hart
+    set_pmp(board_info);
+
+    // Set up trap stack for this hart
+    trap_stack::prepare_for_trap();
+
+    // Each hart will wait for SBI HSM start command
+    // This is handled in the common setup below
+
+    setup_hart_common();
+}
+
+/// Common setup for all harts after basic initialization
+fn setup_hart_common() {
     // 清理 clint
     clint::clear();
     // 准备启动调度
@@ -281,8 +318,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         Reset,
     };
     // 输出的信息大概是“[rustsbi-panic] hart 0 panicked at ...”
-    println!("[rustsbi-panic] hart {} {info}", hart_id());
-    println!("[rustsbi-panic] system shutdown scheduled due to RustSBI panic");
+    println!("hart {} {info}", hart_id());
+    println!("system shutdown scheduled due to RustSBI panic");
     qemu_test::get().system_reset(RESET_TYPE_SHUTDOWN, RESET_REASON_SYSTEM_FAILURE);
     unreachable!()
 }

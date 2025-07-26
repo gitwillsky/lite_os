@@ -21,30 +21,30 @@ pub fn init_devices() {
 fn init_interrupt_controller() {
     let mut controller = INTERRUPT_CONTROLLER.lock();
     *controller = Some(BasicInterruptController::new());
-    debug!("[HAL] Interrupt controller initialized");
+    debug!("Interrupt controller initialized");
 }
 
 fn scan_virtio_devices() {
     let board_info = board_info();
 
-    debug!("[device] Found {} VirtIO devices", board_info.virtio_count);
-    
+    debug!("Found {} VirtIO devices", board_info.virtio_count);
+
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
-            debug!("[device] Scanning VirtIO device {} at {:#x}", i, base_addr);
+            debug!("Scanning VirtIO device {} at {:#x}", i, base_addr);
 
             if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                 // 同时存储为BlockDevice和HAL Device
                 let block_device = device.clone() as Arc<dyn BlockDevice>;
                 let hal_device = device as Arc<dyn Device>;
-                
+
                 BLOCK_DEVICES.lock().push(block_device);
                 HAL_DEVICES.lock().push(hal_device);
-                
-                debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
+
+                debug!("VirtIO Block device initialized at {:#x}", base_addr);
             } else {
-                debug!("[device] Skipping non-block VirtIO device at {:#x}", base_addr);
+                debug!("Skipping non-block VirtIO device at {:#x}", base_addr);
             }
         }
     }
@@ -54,7 +54,7 @@ fn scan_virtio_devices() {
 fn init_filesystems() {
     let block_devices = block_devices();
     if block_devices.is_empty() {
-        error!("[device]: No block devices found");
+        error!(": No block devices found");
         return;
     }
 
@@ -64,12 +64,12 @@ fn init_filesystems() {
     if let Some(fs) = make_filesystem(device) {
         // Mount to root directory
         if let Err(e) = vfs().mount("/", fs) {
-            error!("[device] File system mount failed: {:?}", e);
+            error!("File system mount failed: {:?}", e);
         } else {
-            debug!("[device] File system mounted successfully");
+            debug!("File system mounted successfully");
         }
     } else {
-        error!("[device] Unable to create file system");
+        error!("Unable to create file system");
     }
 }
 
@@ -90,13 +90,13 @@ where
 }
 
 pub fn handle_external_interrupt() {
-    debug!("[device] Handling external interrupt");
-    
+    debug!("Handling external interrupt");
+
     if let Some(controller) = INTERRUPT_CONTROLLER.lock().as_ref() {
         let pending = controller.pending_interrupts();
         for vector in pending {
             if let Err(e) = controller.handle_interrupt(vector) {
-                debug!("[HAL] Failed to handle interrupt {}: {}", vector, e);
+                debug!("Failed to handle interrupt {}: {}", vector, e);
             }
         }
     }

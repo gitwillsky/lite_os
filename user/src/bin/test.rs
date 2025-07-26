@@ -54,8 +54,8 @@ fn sleep(ms: usize) {
 // 测试1: Hello测试
 fn test_hello() -> i32 {
     println!("=== Test 1: Hello Test ===");
-    println!("[user] Hello from unified test program!");
-    println!("[user] Hello test completed");
+    println!("Hello from unified test program!");
+    println!("Hello test completed");
     println!("✓ Hello test passed!");
     0
 }

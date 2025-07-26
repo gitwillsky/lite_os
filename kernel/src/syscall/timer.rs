@@ -57,7 +57,8 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     }
 
     // 调用内核睡眠函数
-    timer::nanosleep(total_nanoseconds)
+    timer::nanosleep(total_nanoseconds);
+    0
 }
 
 // 获取 Unix 时间戳（秒）

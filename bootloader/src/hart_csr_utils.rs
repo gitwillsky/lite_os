@@ -95,7 +95,7 @@ fn pmpaddr(i: usize) -> usize {
 //             MXL::XLEN64 => "RV64",
 //             MXL::XLEN128 => "RV128",
 //         };
-//         print!("[rustsbi] misa: {mxl_str}");
+//         print!("misa: {mxl_str}");
 //         for ext in 'A'..='Z' {
 //             if isa.has_extension(ext) {
 //                 print!("{ext}");

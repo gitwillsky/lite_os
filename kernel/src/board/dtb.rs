@@ -38,6 +38,8 @@ pub struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,
     pub smp: usize,
+    pub cpu_count: usize,
+    pub cpu_frequency: u64,
     pub time_base_freq: u64,
     pub mem: Range<usize>,
     pub uart: Range<usize>,
@@ -61,7 +63,9 @@ impl Display for BoardInfo {
         writeln!(f, "DTB: {:#x?}", self.dtb)?;
         writeln!(f, "Model: {}", self.model)?;
         writeln!(f, "SMP: {}", self.smp)?;
-        writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
+        writeln!(f, "CPU Count: {}", self.cpu_count)?;
+        writeln!(f, "CPU Frequency: {} MHz", self.cpu_frequency / 1_000_000)?;
+        writeln!(f, "Time Base Frequency: {} MHz", self.time_base_freq / 1_000_000)?;
         writeln!(f, "Memory: {:#x?}", self.mem)?;
         writeln!(f, "UART: {:#x?}", self.uart)?;
         writeln!(f, "Test: {:#x?}", self.test)?;
@@ -95,11 +99,13 @@ impl BoardInfo {
             dtb: dtb_addr..dtb_addr,
             model: StringInLine(0, [0; 128]),
             smp: 0,
+            cpu_count: 0,
+            cpu_frequency: 1_000_000_000, // Default 1GHz
+            time_base_freq: 10_000_000,   // Default 10MHz
             mem: 0..0,
             uart: 0..0,
             test: 0..0,
             clint: 0..0,
-            time_base_freq: 0,
             virtio_devices: [None; 20],
             virtio_count: 0,
             rtc_device: None,
@@ -167,8 +173,11 @@ impl BoardInfo {
                 } else {
                     if current == Str::from(CPUS) && name.starts_with("cpu@") {
                         ans.smp += 1;
+                        ans.cpu_count += 1;
+                        WalkOperation::StepInto  // Step into CPU node to parse frequency
+                    } else {
+                        WalkOperation::StepOver
                     }
-                    WalkOperation::StepOver
                 }
             }
             DtbObj::Property(Property::Model(model)) if ctx.is_root() => {
@@ -233,6 +242,9 @@ impl BoardInfo {
                 let node = ctx.name();
                 if name == Str::from("timebase-frequency") {
                     ans.time_base_freq = bytes_to_usize(value) as u64;
+                } else if name == Str::from("clock-frequency") && node.starts_with("cpu@") {
+                    // Parse CPU frequency from device tree
+                    ans.cpu_frequency = bytes_to_usize(value) as u64;
                 } else if name == Str::from("interrupts") && node.starts_with(VIRTIO) {
                     // VirtIO 设备的中断号
                     if let Some(first_4_bytes) = value.get(0..4) {

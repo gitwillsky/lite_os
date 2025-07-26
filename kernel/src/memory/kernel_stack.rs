@@ -13,7 +13,7 @@ impl KernelStack {
         let handle = KernelStackHandle(KernelStackHandleAllocator.lock().alloc());
         let (bottom, top) = kernel_stack_position(handle.0);
 
-        KERNEL_SPACE.wait().lock().insert_framed_area(
+        KERNEL_SPACE.wait().write().insert_framed_area(
             bottom.into(),
             top.into(),
             MapPermission::R | MapPermission::W,
@@ -45,7 +45,7 @@ impl Drop for KernelStack {
         let (bottom, _) = kernel_stack_position(self.handle.0);
         KERNEL_SPACE
             .wait()
-            .lock()
+            .write()
             .remove_area_with_start_vpn(VirtualAddress::from(bottom).into());
     }
 }

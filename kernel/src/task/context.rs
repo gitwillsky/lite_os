@@ -1,4 +1,4 @@
-use crate::trap::trap_return;
+use crate::{smp::current_cpu_id, trap::trap_return};
 
 /// Task context structure containing some registers
 #[repr(C)]
@@ -10,6 +10,8 @@ pub struct TaskContext {
     kernel_sp: usize,
     /// callee saved registers: s 0..11
     s: [usize; 12],
+    /// tp register (x4) - stores CPU ID
+    tp: usize,
 }
 
 impl TaskContext {
@@ -18,6 +20,7 @@ impl TaskContext {
             ra: 0,
             kernel_sp: 0,
             s: [0; 12],
+            tp: 0,
         }
     }
 
@@ -26,6 +29,7 @@ impl TaskContext {
             ra: trap_return as usize,
             kernel_sp,
             s: [0; 12],
+            tp: current_cpu_id(),
         }
     }
 }

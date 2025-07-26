@@ -1,13 +1,16 @@
 use address::PhysicalAddress;
 use spin::{Mutex, Once};
+use alloc::sync::Arc;
 
 use crate::{
     board,
     memory::mm::{MapArea, MapPermission, MemorySet},
+    sync::{RwSpinLock, SpinLock},
+    smp::{current_cpu_id, cpu_count},
 };
 
 pub mod address;
-mod config;
+pub mod config;
 pub mod dynamic_linker;
 pub mod frame_allocator;
 pub mod heap_allocator;
@@ -39,23 +42,85 @@ unsafe extern "C" {
     pub fn strampoline();
 }
 
-pub static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
+/// SMP-safe kernel memory space
+///
+/// Using Arc<RwSpinLock<>> instead of Once<Mutex<>> for better SMP performance.
+/// Multiple CPUs can read the memory set concurrently, but writes are exclusive.
+pub static KERNEL_SPACE: Once<Arc<RwSpinLock<MemorySet>>> = Once::new();
+
+/// TLB management for SMP systems
+pub struct TlbManager;
+
+impl TlbManager {
+    /// Flush TLB on all CPUs
+    pub fn flush_all_cpus(addr: Option<usize>) {
+        let cpu_count = cpu_count();
+        let current_cpu = current_cpu_id();
+
+        // Send TLB flush IPI to all other CPUs
+        for cpu_id in 0..cpu_count {
+            if cpu_id != current_cpu {
+                let _ = crate::smp::ipi::send_tlb_flush_ipi(cpu_id, addr);
+            }
+        }
+
+        // Flush local TLB
+        Self::flush_local(addr);
+    }
+
+    /// Flush local TLB
+    pub fn flush_local(addr: Option<usize>) {
+        match addr {
+            Some(addr) => {
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    core::arch::asm!("sfence.vma {}", in(reg) addr);
+                }
+            }
+            None => {
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    core::arch::asm!("sfence.vma");
+                }
+            }
+        }
+    }
+
+    /// Flush TLB for a specific address space ID (ASID)
+    pub fn flush_asid(asid: usize) {
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            core::arch::asm!("sfence.vma zero, {}", in(reg) asid);
+        }
+    }
+}
+
 
 pub fn init() {
+    debug!("Initializing memory management");
+
     let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
     let memory_end_addr: PhysicalAddress = board::board_info().mem.end.into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
+    // Initialize heap and frame allocators (SMP-safe)
     heap_allocator::init();
     frame_allocator::init(kernel_end_addr, memory_end_addr);
 
     // Initialize SLAB allocator after frame allocator is ready
     heap_allocator::init_slab();
 
-    KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
-    KERNEL_SPACE.wait().lock().active();
-    debug!("memory initialized");
+    // Initialize kernel memory space with SMP-safe wrapper
+    KERNEL_SPACE.call_once(|| Arc::new(RwSpinLock::new(init_kernel_space(memory_end_addr))));
+
+    // Activate kernel space on this CPU
+    {
+        let kernel_space = KERNEL_SPACE.wait().read();
+        kernel_space.active();
+    }
+
+    debug!("Memory management initialized");
 }
 
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
