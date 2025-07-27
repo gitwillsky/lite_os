@@ -736,6 +736,8 @@ impl core::fmt::Debug for TaskControlBlock {
             TaskControlBlock {{
                 pid: {},
                 name: {},
+                user_stack_top: {:#x},
+                user_stap_val: {:#x},
                 parent: {:?},
                 children: {:?},
                 exit_code: {},
@@ -743,6 +745,8 @@ impl core::fmt::Debug for TaskControlBlock {
             }}"#,
             self.pid(),
             self.name(),
+            self.mm.kernel_stack.get_top(),
+            self.mm.memory_set.lock().token(),
             self.parent().map(|parent| parent.name()),
             self.children
                 .lock()

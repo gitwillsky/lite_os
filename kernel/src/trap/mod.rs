@@ -132,11 +132,24 @@ pub fn trap_handler() {
                             exit_current_and_run_next(-5);
                         }
                     } else {
+                        let current_task = task::current_task();
+                        let current_cpu_id = crate::smp::current_cpu_id();
+                        let user_token = if current_task.is_some() {
+                            Some(task::current_user_token())
+                        } else {
+                            None
+                        };
+                        let trap_cx = task::current_trap_context();
+
                         error!(
-                            "Instruction Page Fault, VA:{:#x} current task: {:?}",
+                            "Instruction Page Fault: VA={:#x}, PC={:#x}, CPU={}, current_task={:?}, user_token={:#x}",
                             stval,
-                            task::current_task()
+                            trap_cx.sepc,
+                            current_cpu_id,
+                            current_task,
+                            user_token.unwrap_or(0)
                         );
+
                         exit_current_and_run_next(-5);
                     }
                 }

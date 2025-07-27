@@ -2,7 +2,7 @@ use core::fmt::{self, Write};
 use spin::Mutex;
 use alloc::string::String;
 
-const LOG_BUFFER_SIZE: usize = 1024;
+const LOG_BUFFER_SIZE: usize = 4096;
 
 pub struct StackBuffer {
     buffer: [u8; LOG_BUFFER_SIZE],
