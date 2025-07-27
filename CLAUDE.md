@@ -11,7 +11,7 @@ LiteOS is a sophisticated, Rust-based operating system designed for the RISC-V 6
 The LiteOS system consists of four main components:
 
 1. **Bootloader** (`bootloader/`) - M-Mode SBI-compliant bootloader using RustSBI
-2. **Kernel** (`kernel/`) - S-Mode operating system kernel with full POSIX compatibility  
+2. **Kernel** (`kernel/`) - S-Mode operating system kernel with full POSIX compatibility
 3. **User Programs** (`user/`) - Native user-space applications and shell
 4. **WASM Runtime** (`wasm_programs/`) - WebAssembly execution environment
 
@@ -109,7 +109,7 @@ $ wasm_runtime file_test.wasm
 ```bash
 # Individual component builds
 make build-bootloader    # Build M-Mode bootloader only
-make build-kernel       # Build S-Mode kernel only  
+make build-kernel       # Build S-Mode kernel only
 make build-user         # Build user programs only
 
 # Filesystem management
@@ -127,7 +127,7 @@ cd wasm_programs && ./build.sh  # Build WASM test programs
 make run-gdb                    # Start QEMU with GDB server
 make gdb                        # Connect GDB to kernel
 
-# Address-to-line debugging  
+# Address-to-line debugging
 make addr2line ADDR=0x12345678  # Convert address to source location
 
 # QEMU testing
@@ -162,7 +162,7 @@ lite_os/
 │   ├── src/
 │   │   ├── main.rs         # Kernel entry point
 │   │   ├── memory/         # Virtual memory management
-│   │   ├── task/           # Process/task management  
+│   │   ├── task/           # Process/task management
 │   │   ├── syscall/        # POSIX system call implementation
 │   │   ├── fs/             # VFS and FAT32 filesystem
 │   │   ├── drivers/        # VirtIO device drivers
@@ -214,7 +214,7 @@ LiteOS implements 82 POSIX-compatible system calls organized by category:
 - Dynamic memory allocation
 
 **Inter-Process Communication:**
-- `pipe`, `dup`, `dup2`  
+- `pipe`, `dup`, `dup2`
 - Signal handling (`signal`, `sigaction`, `kill`)
 
 **Security:**
@@ -241,7 +241,7 @@ LiteOS implements 82 POSIX-compatible system calls organized by category:
 LiteOS supports WebAssembly programs compiled from multiple languages:
 
 - **Rust**: Native integration with `wasm32-wasip1` target
-- **C/C++**: Via clang/wasi-sdk toolchain  
+- **C/C++**: Via clang/wasi-sdk toolchain
 - **Go**: TinyGo with WASI support
 - **Other**: Any language with WASI compilation support
 
@@ -252,7 +252,7 @@ The WASM runtime maps WASI standard interfaces to LiteOS system calls:
 ```rust
 // File operations
 wasi::fd_read()     → SYSCALL_READ (63)
-wasi::fd_write()    → SYSCALL_WRITE (64)  
+wasi::fd_write()    → SYSCALL_WRITE (64)
 wasi::path_open()   → SYSCALL_OPEN (56)
 
 // Process control
@@ -284,7 +284,7 @@ $ wasm_runtime file_test.wasm arg1 arg2
 ### Kernel Memory Map
 - **Kernel Code**: Loaded at high memory addresses
 - **Page Tables**: Multi-level page table structure
-- **Heap**: Dynamic kernel memory allocation  
+- **Heap**: Dynamic kernel memory allocation
 - **Device MMIO**: Memory-mapped device regions
 
 ### User Memory Map
@@ -324,7 +324,7 @@ $ wasm_runtime hello_wasm.wasm  # Test WASM execution
 - Verify RISC-V target installation: `rustup target add riscv64gc-unknown-none-elf`
 - Check QEMU installation and RISC-V support
 
-**Runtime Issues:**  
+**Runtime Issues:**
 - **Boot failure**: Check bootloader/kernel compatibility
 - **No filesystem**: Ensure `fs.img` exists (`make create-fs`)
 - **Device errors**: Verify QEMU device configuration in Makefile
@@ -340,7 +340,7 @@ $ wasm_runtime hello_wasm.wasm  # Test WASM execution
 # Kernel debugging
 make run-gdb && make gdb
 
-# Memory analysis  
+# Memory analysis
 make addr2line ADDR=<address>
 
 # QEMU console debugging
@@ -365,8 +365,17 @@ make addr2line ADDR=<address>
 
 ### Architecture Goals
 - **Education**: Clear, well-documented code for learning OS concepts
-- **Performance**: Efficient implementation suitable for embedded/IoT use cases  
+- **Performance**: Efficient implementation suitable for embedded/IoT use cases
 - **Compatibility**: Strong POSIX compliance for application portability
 - **Innovation**: Modern language (Rust) applied to systems programming
 
 This LiteOS implementation represents a significant achievement in modern operating system development, combining educational clarity with production-ready features and innovative WebAssembly integration.
+
+可用的二进制命令：
+ls ~/.cargo/bin
+cargo          cargo-objcopy  cargo-watch    rust-cov       rust-nm        rust-strip
+cargo-clippy   cargo-objdump  clippy-driver  rust-gdb       rust-objcopy   rustc
+cargo-cov      cargo-profdata hi             rust-gdbgui    rust-objdump   rustdoc
+cargo-fmt      cargo-readobj  rls            rust-ld        rust-profdata  rustfmt
+cargo-miri     cargo-size     rust-analyzer  rust-lld       rust-readobj   rustup
+cargo-nm       cargo-strip    rust-ar        rust-lldb      rust-size

@@ -310,7 +310,6 @@ fn schedule_task(task: Arc<TaskControlBlock>) {
         &*task_context as *const TaskContext
     };
 
-    // 关键：在切换前设置当前任务 (模仿工作版本的 processor.current = Some(task.clone()))
     cpu_data.set_current_task(Some(task.clone()));
     let idle_cx_ptr = {
         let mut idle_context = cpu_data.idle_context.lock();
