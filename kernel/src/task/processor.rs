@@ -78,7 +78,7 @@ impl LoadBalancer {
                 cpu_loads.push((cpu_id, load));
             }
         }
-        
+
         // 确保读取到最新的负载信息
         crate::sync::memory_barrier::full();
 
@@ -92,10 +92,10 @@ impl LoadBalancer {
 
         let total_load: usize = cpu_loads.iter().map(|(_, load)| *load).sum();
         let avg_load = total_load / cpu_loads.len();
-        
+
         // 只有当负载不平衡超过阈值时才进行平衡
         let load_imbalance_threshold = 2;
-        
+
         for &(overloaded_cpu, load) in cpu_loads.iter() {
             if load <= avg_load + load_imbalance_threshold {
                 continue; // 负载差异不大，跳过
@@ -103,7 +103,7 @@ impl LoadBalancer {
 
             // Find the most underloaded CPU, preferring CPUs with better cache locality
             let mut best_target: Option<(usize, usize)> = None;
-            
+
             for &(candidate_cpu, candidate_load) in cpu_loads.iter() {
                 if candidate_load < avg_load.saturating_sub(1) {
                     // 简单的缓存亲和性估计：相邻CPU ID通常有更好的缓存共享
@@ -112,7 +112,7 @@ impl LoadBalancer {
                     } else {
                         candidate_cpu - overloaded_cpu
                     };
-                    
+
                     match best_target {
                         None => best_target = Some((candidate_cpu, cache_distance)),
                         Some((_, best_distance)) if cache_distance < best_distance => {
@@ -130,9 +130,9 @@ impl LoadBalancer {
                     let stolen_tasks = overloaded_data.steal_tasks(tasks_to_move);
 
                     if !stolen_tasks.is_empty() {
-                        debug!("Load balancing: moving {} tasks from CPU{} to CPU{}", 
+                        debug!("Load balancing: moving {} tasks from CPU{} to CPU{}",
                                stolen_tasks.len(), overloaded_cpu, underloaded_cpu);
-                        
+
                         for task in stolen_tasks {
                             // Add to underloaded CPU
                             if let Some(underloaded_data) = cpu_data(underloaded_cpu) {
@@ -144,7 +144,7 @@ impl LoadBalancer {
                         if let Err(e) = ipi::send_reschedule_ipi(underloaded_cpu) {
                             debug!("Failed to send reschedule IPI: {}", e);
                         }
-                        
+
                         // 确保负载平衡的更改可见
                         crate::sync::memory_barrier::full();
                     }
@@ -230,8 +230,6 @@ pub fn current_cwd() -> String {
 /// This function runs on all CPUs and implements the per-CPU scheduler logic.
 /// It handles task execution, load balancing, and idle management.
 pub fn run_tasks() -> ! {
-    info!("Entering scheduler main loop");
-
     loop {
         // Periodic maintenance
         perform_periodic_maintenance();
@@ -245,7 +243,6 @@ pub fn run_tasks() -> ! {
 
         // No local task, try work stealing
         if let Some(stolen_task) = try_work_stealing() {
-            debug!("8");
             // 直接在调度循环中进行任务切换，恢复工作版本的逻辑
             schedule_task(stolen_task);
             continue;
@@ -253,7 +250,6 @@ pub fn run_tasks() -> ! {
 
         // No work available anywhere, enter idle state
         enter_idle_state();
-        debug!("9");
     }
 }
 
@@ -347,7 +343,7 @@ fn schedule_task(task: Arc<TaskControlBlock>) {
     cpu_data
         .task_start_time
         .store(start_time, Ordering::Release);
-    
+
     // 确保任务状态变更在其他CPU上可见
     crate::sync::memory_barrier::full();
 
@@ -466,13 +462,13 @@ pub fn suspend_current_and_run_next() {
         let task_cx_ptr = &mut *task_cx as *mut TaskContext;
         let mut task_status = task.task_status.lock();
         let should_readd = *task_status == TaskStatus::Running;
-        
+
         // 如果任务应该继续运行，先更新状态再释放锁
         if should_readd {
             *task_status = TaskStatus::Ready;
         }
         drop(task_status); // 显式释放锁
-        
+
         (task_cx_ptr, should_readd)
     };
 
