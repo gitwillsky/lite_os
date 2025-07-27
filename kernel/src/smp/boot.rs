@@ -20,6 +20,9 @@ use crate::{
 
 static DTB_ADDR: AtomicUsize = AtomicUsize::new(0);
 
+/// Global initialization completion flag
+static GLOBAL_INIT_COMPLETE: AtomicBool = AtomicBool::new(false);
+
 /// Enhanced boot synchronization using IPI barriers
 static BOOT_PHASE_BARRIER: SpinLock<Option<u64>> = SpinLock::new(None);
 static MEMORY_INIT_BARRIER: SpinLock<Option<u64>> = SpinLock::new(None);
@@ -43,88 +46,26 @@ enum BootPhase {
 /// Maximum time to wait for secondary CPUs to boot (in milliseconds)
 const SECONDARY_CPU_BOOT_TIMEOUT_MS: u64 = 10000;
 
-/// Entry point for secondary CPUs
-/// This function is called by secondary CPUs after they are started by SBI
+/// Check if global initialization is complete
+pub fn global_init_complete() -> bool {
+    GLOBAL_INIT_COMPLETE.load(Ordering::Acquire)
+}
+
+/// Mark global initialization as complete (called by CPU0)
+pub fn mark_global_init_complete() {
+    GLOBAL_INIT_COMPLETE.store(true, Ordering::Release);
+}
+
+/// Mark a secondary CPU as ready
+pub fn mark_secondary_cpu_ready() {
+    SECONDARY_CPU_READY_COUNT.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Entry point for secondary CPUs using unified initialization
 #[unsafe(no_mangle)]
 pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
-    // Convert hart ID to logical CPU ID first
-    let cpu_id = if let Some(logical_id) = crate::smp::topology::arch_to_logical_cpu_id(hart_id) {
-        logical_id
-    } else {
-        // If not found in topology, use hart_id as fallback
-        warn!("Unknown hart ID {}, using as logical CPU ID", hart_id);
-        hart_id
-    };
-
-    // CRITICAL FIX: Initialize CPU ID register with logical CPU ID
-    init_cpu_id_register(cpu_id);
-
-    info!("Secondary CPU {} (hart {}) starting enhanced initialization", cpu_id, hart_id);
-
-    // Wait for primary CPU to complete global initialization
-    while !PRIMARY_CPU_READY.load(Ordering::Acquire) {
-        core::hint::spin_loop();
-    }
-
-    // Initialize this CPU using traditional method first
-    secondary_cpu_init(cpu_id, hart_id);
-
-    // Mark this CPU as ready for legacy compatibility
-    SECONDARY_CPU_READY_COUNT.fetch_add(1, Ordering::AcqRel);
-
-    info!("Secondary CPU {} enhanced initialization complete", cpu_id);
-
-    // EMERGENCY: Avoid calling run_tasks, implement simple IPI loop here
-    debug!("Secondary CPU {} starting simple IPI loop", cpu_id);
-
-    // Direct SBI output to confirm we're here
-    unsafe {
-        core::arch::asm!(
-            "li a0, 0x53  # 'S'
-             li a7, 1     # SBI console putchar
-             ecall
-             li a0, 0x49  # 'I'
-             li a7, 1
-             ecall
-             li a0, 0x4D  # 'M'
-             li a7, 1
-             ecall
-             li a0, 0x50  # 'P'
-             li a7, 1
-             ecall
-             li a0, 0x0A  # '\\n'
-             li a7, 1
-             ecall",
-            options(nostack, preserves_flags)
-        );
-    }
-
-    let mut counter = 0u64;
-    loop {
-        // Call IPI handler directly
-        crate::smp::ipi::handle_ipi_interrupt();
-
-        counter = counter.wrapping_add(1);
-
-        // Heartbeat every million iterations
-        if counter % 1000000 == 0 {
-            unsafe {
-                core::arch::asm!(
-                    "li a0, 0x49  # 'I'
-                     li a7, 1     # SBI console putchar
-                     ecall",
-                    out("a0") _,
-                    out("a7") _,
-                    options(nostack, preserves_flags)
-                );
-            }
-        }
-
-        // Simple wait
-        unsafe {
-            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-        }
-    }
+    // Use the unified CPU main with is_primary=false
+    crate::unified_cpu_main(hart_id, dtb_addr, false)
 }
 
 /// Phased secondary CPU initialization using IPI barriers
@@ -241,8 +182,8 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
     }
 }
 
-/// Architecture-specific secondary CPU initialization
-fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
+/// Architecture-specific secondary CPU initialization (now public)
+pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "riscv64")]
     {
         // Enable supervisor interrupts
@@ -278,8 +219,8 @@ fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
     }
 }
 
-/// Initialize memory management for secondary CPU
-fn secondary_cpu_memory_init(cpu_id: usize) -> Result<(), &'static str> {
+/// Initialize memory management for secondary CPU (now public)
+pub fn secondary_cpu_memory_init(cpu_id: usize) -> Result<(), &'static str> {
     // Activate the kernel page table
     let kernel_space_arc = KERNEL_SPACE.wait();
     let kernel_space = kernel_space_arc.read();
@@ -338,8 +279,8 @@ fn secondary_cpu_stop(cpu_id: usize) -> ! {
     }
 }
 
-/// Halt a secondary CPU due to error
-fn secondary_cpu_halt(cpu_id: usize) -> ! {
+/// Halt a secondary CPU due to error (now public)
+pub fn secondary_cpu_halt(cpu_id: usize) -> ! {
     error!("Halting CPU {} due to error", cpu_id);
     secondary_cpu_stop(cpu_id)
 }
@@ -399,7 +340,7 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
         let timeout_ms = SECONDARY_CPU_BOOT_TIMEOUT_MS;
         let start_time = crate::timer::get_time_us();
 
-        while SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire) < started_count {
+                while SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire) < started_count {
             let elapsed = (crate::timer::get_time_us() - start_time) / 1000;
             if elapsed > timeout_ms {
                 warn!("Timeout waiting for secondary CPUs, {} ready out of {}",

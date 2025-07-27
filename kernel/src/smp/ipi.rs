@@ -907,7 +907,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
 /// Send synchronous response back to caller
 fn send_sync_response(call_id: u64, response: IpiResponse) {
     let cpu_id = current_cpu_id();
-    debug!("CPU{} sending sync response for call_id={}: {:?}", cpu_id, call_id, response);
+    debug!("CPU{} sending sync response for call_id={}", cpu_id, call_id);
 
     // Find the original caller by looking up the sync call
     if let Some(call_lock) = IPI_MANAGER.sync_calls.lock().get(&call_id) {

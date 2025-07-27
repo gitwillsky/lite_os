@@ -12,7 +12,7 @@ build-bootloader:
 	cd bootloader && cargo build --release && cd -
 
 run-with-timeout: build-kernel
-	sleep 12 && killall qemu-system-riscv64 & \
+	sleep 20 && killall qemu-system-riscv64 & \
 	qemu-system-riscv64 \
 	-smp 4 \
 	-machine virt \

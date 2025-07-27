@@ -277,63 +277,19 @@ pub fn current_cwd() -> String {
 /// Enhanced task scheduler with IPI-aware preemptive multitasking
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
-    // ULTRA-SIMPLE: Get CPU ID using only inline assembly to avoid any function calls
-    let cpu_id = unsafe {
-        let mut id: usize;
-        core::arch::asm!(
-            "mv {}, tp",
-            out(reg) id,
-            options(pure, nomem, nostack, preserves_flags)
-        );
-        id
-    };
+    let cpu_id = crate::smp::current_cpu_id();
 
-    // ULTRA-SIMPLE scheduler loop for secondary CPUs
+    // Secondary CPUs run ultra-simplified loop to avoid illegal instruction
     if cpu_id > 0 {
-        // Direct SBI output to confirm entry
-        unsafe {
-            core::arch::asm!(
-                "li a0, 0x53  # 'S'
-                 li a7, 1     # SBI console putchar
-                 ecall
-                 li a0, 0x45  # 'E'
-                 li a7, 1
-                 ecall
-                 li a0, 0x43  # 'C'
-                 li a7, 1
-                 ecall
-                 li a0, 0x0A  # '\\n'
-                 li a7, 1
-                 ecall",
-                options(nostack, preserves_flags)
-            );
-        }
+        info!("CPU{} entering simplified scheduler loop", cpu_id);
 
-        let mut counter = 0u64;
+        // Ultra-simplified loop for secondary CPUs to avoid illegal instructions
         loop {
-            // Call IPI handler - this is what we need to test
+            // Only handle IPI messages for now
             ipi::handle_ipi_interrupt();
 
-            counter = counter.wrapping_add(1);
-
-            // Simple heartbeat every million iterations
-            if counter % 1000000 == 0 {
-                unsafe {
-                    core::arch::asm!(
-                        "li a0, 0x49  # 'I'
-                         li a7, 1     # SBI console putchar
-                         ecall",
-                        out("a0") _,
-                        out("a7") _,
-                        options(nostack, preserves_flags)
-                    );
-                }
-            }
-
-            // Simple wait
-            unsafe {
-                core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-            }
+            // Simple CPU yield/wait
+            core::hint::spin_loop();
         }
     } else {
         // CPU0 continues with full scheduler
