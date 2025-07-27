@@ -1,7 +1,7 @@
 use core::sync::atomic;
 
 use crate::memory::{
-    PAGE_SIZE,
+    PAGE_SIZE, TlbManager,
     address::{VirtualAddress, VirtualPageNumber},
     mm::{MapArea, MapPermission, MapType},
 };
@@ -62,9 +62,7 @@ pub fn sys_brk(new_brk: usize) -> isize {
         task.mm.memory_set.lock().push(map_area, None);
 
         // 刷新页表
-        unsafe {
-            core::arch::asm!("sfence.vma");
-        }
+        TlbManager::flush_local(None);
     } else if new_brk < task.mm.heap_top.load(atomic::Ordering::Relaxed) {
         // 缩小堆
         let start_va = VirtualAddress::from(new_brk);
@@ -74,9 +72,7 @@ pub fn sys_brk(new_brk: usize) -> isize {
         task.mm.remove_area_with_start_vpn(start_va);
 
         // 刷新页表
-        unsafe {
-            core::arch::asm!("sfence.vma");
-        }
+        TlbManager::flush_local(None);
     }
 
     task.mm.heap_top.store(new_brk, atomic::Ordering::Relaxed);
@@ -195,9 +191,7 @@ pub fn sys_mmap(
     task.mm.memory_set.lock().push(map_area, None);
 
     // 刷新页表
-    unsafe {
-        core::arch::asm!("sfence.vma");
-    }
+    TlbManager::flush_local(None);
 
     usize::from(start_va) as isize
 }
@@ -223,9 +217,7 @@ pub fn sys_munmap(addr: usize, length: usize) -> isize {
     task.mm.remove_area_with_start_vpn(start_va);
 
     // 刷新页表
-    unsafe {
-        core::arch::asm!("sfence.vma");
-    }
+    TlbManager::flush_local(None);
 
     0
 }

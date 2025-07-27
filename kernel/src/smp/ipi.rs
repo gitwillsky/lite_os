@@ -9,6 +9,7 @@ use crate::{
     sync::spinlock::SpinLock,
     smp::{MAX_CPU_NUM, current_cpu_id, cpu_is_online},
     arch::sbi,
+    memory::TlbManager,
 };
 
 /// Types of inter-processor interrupts
@@ -282,7 +283,7 @@ fn handle_ipi_message(message: IpiMessage) {
 
         IpiMessage::TlbFlush { addr, asid } => {
             IPI_MANAGER.stats[cpu_id].tlb_flush_count.fetch_add(1, Ordering::Relaxed);
-            handle_tlb_flush_ipi(addr, asid);
+            TlbManager::flush_local(addr);
         }
 
         IpiMessage::FunctionCall { func } => {
@@ -337,26 +338,6 @@ fn handle_reschedule_ipi() {
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
         if !cpu_data.in_interrupt() {
             crate::task::suspend_current_and_run_next();
-        }
-    }
-}
-
-/// Handle TLB flush IPI
-fn handle_tlb_flush_ipi(addr: Option<usize>, _asid: Option<usize>) {
-    match addr {
-        Some(addr) => {
-            // Flush specific address
-            #[cfg(target_arch = "riscv64")]
-            unsafe {
-                core::arch::asm!("sfence.vma {}", in(reg) addr);
-            }
-        }
-        None => {
-            // Flush entire TLB
-            #[cfg(target_arch = "riscv64")]
-            unsafe {
-                core::arch::asm!("sfence.vma");
-            }
         }
     }
 }

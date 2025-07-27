@@ -9,7 +9,7 @@ use crate::memory::{
     dynamic_linker::DynamicLinker,
     frame_allocator::{FrameTracker, alloc},
     page_table::{PTEFlags, PageTableEntry},
-    strampoline,
+    strampoline, TlbManager,
 };
 
 use super::config;
@@ -206,8 +206,8 @@ impl MemorySet {
         let satp = self.page_table.token();
         unsafe {
             satp::write(Satp::from_bits(satp));
-            asm!("sfence.vma")
         }
+        TlbManager::flush_local(None);
     }
 
     pub fn get_page_table(&self) -> &PageTable {

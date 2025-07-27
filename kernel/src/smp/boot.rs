@@ -12,7 +12,7 @@ use crate::{
         MAX_CPU_NUM, init_cpu_id_register
     },
     arch::sbi,
-    memory::{address::PhysicalAddress, KERNEL_SPACE},
+    memory::{address::PhysicalAddress, KERNEL_SPACE, TlbManager},
     sync::spinlock::SpinLock,
 };
 
@@ -121,8 +121,7 @@ fn secondary_cpu_memory_init(cpu_id: usize) {
         riscv::register::satp::write(unsafe { core::mem::transmute(token) });
 
         // Flush TLB
-        #[cfg(target_arch = "riscv64")]
-        core::arch::asm!("sfence.vma");
+        TlbManager::flush_local(None);
     }
 
     // Initialize per-CPU heap allocator if needed
