@@ -46,7 +46,7 @@ impl<T> RwSpinLock<T> {
     }
 
     /// Acquire read lock
-    pub fn read(&self) -> ReadGuard<T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         loop {
             let current = self.lock.load(Ordering::Acquire);
             
@@ -71,7 +71,7 @@ impl<T> RwSpinLock<T> {
     }
 
     /// Try to acquire read lock without blocking
-    pub fn try_read(&self) -> Option<ReadGuard<T>> {
+    pub fn try_read(&self) -> Option<ReadGuard<'_, T>> {
         let current = self.lock.load(Ordering::Acquire);
         
         // Check if writer is active or reader count would overflow
@@ -93,7 +93,7 @@ impl<T> RwSpinLock<T> {
     }
 
     /// Acquire write lock
-    pub fn write(&self) -> WriteGuard<T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         loop {
             let current = self.lock.load(Ordering::Acquire);
             
@@ -118,7 +118,7 @@ impl<T> RwSpinLock<T> {
     }
 
     /// Try to acquire write lock without blocking
-    pub fn try_write(&self) -> Option<WriteGuard<T>> {
+    pub fn try_write(&self) -> Option<WriteGuard<'_, T>> {
         if self.lock.compare_exchange(
             0,
             WRITER_BIT,

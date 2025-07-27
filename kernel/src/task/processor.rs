@@ -279,44 +279,32 @@ pub fn current_cwd() -> String {
 pub fn run_tasks() -> ! {
     let cpu_id = crate::smp::current_cpu_id();
 
-    // Secondary CPUs run ultra-simplified loop to avoid illegal instruction
-    if cpu_id > 0 {
-        info!("CPU{} entering simplified scheduler loop", cpu_id);
+    info!("CPU{} entering full scheduler loop", cpu_id);
 
-        // Ultra-simplified loop for secondary CPUs to avoid illegal instructions
-        loop {
-            // Only handle IPI messages for now
-            ipi::handle_ipi_interrupt();
+    // All CPUs use the same scheduler loop for proper multi-core task distribution
+    loop {
+        // 1. Handle pending IPI messages first (highest priority)
+        ipi::handle_ipi_interrupt();
 
-            // Simple CPU yield/wait
-            core::hint::spin_loop();
-        }
-    } else {
-        // CPU0 continues with full scheduler
-        info!("CPU0 entering full scheduler loop");
-
-        loop {
-            // 1. Handle pending IPI messages first (highest priority)
-            ipi::handle_ipi_interrupt();
-
-            // 2. Periodic maintenance
+        // 2. Periodic maintenance (only on CPU0 to avoid conflicts)  
+        if cpu_id == 0 {
             perform_enhanced_periodic_maintenance();
-
-            // 3. Try to get a task from the local queue first
-            if let Some(task) = get_next_local_task() {
-                schedule_task_with_preemption(task);
-                continue;
-            }
-
-            // 4. No local task, try enhanced work stealing
-            if let Some(stolen_task) = try_enhanced_work_stealing() {
-                schedule_task_with_preemption(stolen_task);
-                continue;
-            }
-
-            // 5. No work available anywhere, enter enhanced idle state
-            enter_enhanced_idle_state();
         }
+
+        // 3. Try to get a task from the local queue first
+        if let Some(task) = get_next_local_task() {
+            schedule_task_with_preemption(task);
+            continue;
+        }
+
+        // 4. No local task, try enhanced work stealing
+        if let Some(stolen_task) = try_enhanced_work_stealing() {
+            schedule_task_with_preemption(stolen_task);
+            continue;
+        }
+
+        // 5. No work available anywhere, enter enhanced idle state
+        enter_enhanced_idle_state();
     }
 }
 

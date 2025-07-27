@@ -62,13 +62,26 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
         // Fallback for unknown hart IDs
         hart_id
     };
-    secondary_cpu_init_phased(cpu_id, hart_id);
+    
+    // Set CPU ID register for this CPU
+    init_cpu_id_register(cpu_id);
+    
+    debug!("CPU{} (hart {}) starting secondary initialization", cpu_id, hart_id);
+    
+    // Use simplified initialization instead of phased approach
+    if let Err(e) = secondary_cpu_init(cpu_id, hart_id) {
+        error!("CPU{} initialization failed: {}", cpu_id, e);
+        secondary_cpu_halt(cpu_id);
+    }
+    
+    // Wait for global initialization to complete
     while !crate::smp::boot::global_init_complete() {
         core::hint::spin_loop();
     }
 
     mark_secondary_cpu_ready();
-
+    
+    debug!("CPU{} entering task scheduler loop", cpu_id);
     run_tasks();
 }
 
@@ -153,16 +166,17 @@ fn wait_for_boot_phase(phase: BootPhase) -> Result<(), &'static str> {
 }
 
 /// Initialize a secondary CPU
-fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
+fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str> {
     // Set CPU state to starting
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Starting);
+        debug!("CPU{} state set to Starting", cpu_id);
     } else {
         error!(
             "No CPU data available for CPU {} during initialization",
             cpu_id
         );
-        secondary_cpu_halt(cpu_id);
+        return Err("No CPU data available");
     }
 
     // Initialize architecture-specific features
@@ -171,13 +185,13 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
             "Architecture-specific initialization failed for CPU {}: {}",
             cpu_id, e
         );
-        secondary_cpu_halt(cpu_id);
+        return Err(e);
     }
 
     // Initialize per-CPU memory management
     if let Err(e) = secondary_cpu_memory_init(cpu_id) {
         error!("Memory initialization failed for CPU {}: {}", cpu_id, e);
-        secondary_cpu_halt(cpu_id);
+        return Err(e);
     }
 
     // Use the same trap handler setup as CPU0
@@ -185,16 +199,20 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
 
     // Mark CPU as online
     cpu_set_online(cpu_id);
+    debug!("CPU{} marked as online", cpu_id);
 
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Online);
+        debug!("CPU{} state set to Online", cpu_id);
     } else {
         error!(
             "No CPU data available for CPU {} after initialization",
             cpu_id
         );
-        secondary_cpu_halt(cpu_id);
+        return Err("No CPU data available after init");
     }
+    
+    Ok(())
 }
 
 /// Architecture-specific secondary CPU initialization (now public)
@@ -224,7 +242,7 @@ pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> 
         );
 
         // Initialize floating point if available
-        #[cfg(feature = "f")]
+        #[cfg(feature = "float")]
         unsafe {
             riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Initial);
         }

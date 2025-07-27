@@ -30,7 +30,7 @@ impl<T> SpinLock<T> {
     }
 
     /// Acquire the lock, spinning until it becomes available
-    pub fn lock(&self) -> SpinLockGuard<T> {
+    pub fn lock(&self) -> SpinLockGuard<'_, T> {
         while self.locked.compare_exchange_weak(
             false, 
             true, 
@@ -47,7 +47,7 @@ impl<T> SpinLock<T> {
     }
 
     /// Try to acquire the lock without blocking
-    pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
         if self.locked.compare_exchange(
             false,
             true,
@@ -143,7 +143,7 @@ impl<T> RwSpinLock<T> {
         }
     }
 
-    pub fn read(&self) -> ReadGuard<T> {
+    pub fn read(&self) -> ReadGuard<'_, T> {
         loop {
             // Wait for any writer to finish
             while self.lock.load(Ordering::Acquire) {
@@ -165,7 +165,7 @@ impl<T> RwSpinLock<T> {
         ReadGuard { lock: self }
     }
 
-    pub fn write(&self) -> WriteGuard<T> {
+    pub fn write(&self) -> WriteGuard<'_, T> {
         // Acquire writer lock
         while self.lock.compare_exchange_weak(
             false,
