@@ -49,14 +49,12 @@ pub fn init() {
 /// Get the current CPU ID
 #[inline]
 pub fn current_cpu_id() -> usize {
-    // For RISC-V, we can use the hart ID from CSR
+    // For RISC-V, we use tp register which is set during boot
     #[cfg(target_arch = "riscv64")]
     {
-        use riscv::register::mhartid;
-        // In supervisor mode, we need to use tp register which should be set during boot
         let mut cpu_id: usize;
         unsafe {
-            core::arch::asm!("mv {}, tp", out(reg) cpu_id);
+            core::arch::asm!("mv {}, tp", out(reg) cpu_id, options(pure, nomem, nostack, preserves_flags));
         }
         cpu_id
     }

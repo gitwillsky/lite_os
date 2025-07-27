@@ -46,26 +46,17 @@ impl LoadBalancer {
         }
     }
 
-    /// Check if load balancing is needed
+    /// Check if load balancing is needed (using call counter instead of timer)
     fn should_balance(&self) -> bool {
-        let current_time = get_time_us();
-        let last_balance = self.last_balance_time.load(Ordering::Relaxed);
-        current_time.saturating_sub(last_balance) >= self.balance_interval_us
+        let call_count = self.last_balance_time.fetch_add(1, Ordering::Relaxed);
+        call_count % 10000 == 0  // Balance every 10000 calls instead of time-based
     }
 
     /// Enhanced load balancing using synchronous IPI for reliable task migration
     fn balance_load(&self) {
-        let current_time = get_time_msec();
-        if self
-            .last_balance_time
-            .compare_exchange(
-                self.last_balance_time.load(Ordering::Relaxed),
-                current_time,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            )
-            .is_err()
-        {
+        // Simple load balancing without timer dependency
+        static BALANCE_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        if BALANCE_LOCK.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_err() {
             // Another CPU is already balancing
             return;
         }
@@ -105,6 +96,7 @@ impl LoadBalancer {
         }
 
         if cpu_loads.is_empty() {
+            BALANCE_LOCK.store(false, Ordering::Release);
             return;
         }
 
@@ -153,6 +145,9 @@ impl LoadBalancer {
         if successful_migrations > 0 {
             info!("Load balancing completed: {} tasks migrated", successful_migrations);
         }
+
+        // Release the balance lock
+        BALANCE_LOCK.store(false, Ordering::Release);
     }
 
     /// Migrate tasks between CPUs using synchronous IPI
@@ -277,58 +272,41 @@ pub fn current_cwd() -> String {
 /// Enhanced task scheduler with IPI-aware preemptive multitasking
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
-    // CRITICAL: Use inline assembly to output debug info before ANY Rust operations
-    unsafe {
-        core::arch::asm!(
-            "li a0, 0x45  # 'E'
-             li a7, 1     # SBI console putchar
-             ecall
-             li a0, 0x4E  # 'N'
-             li a7, 1
-             ecall
-             li a0, 0x54  # 'T'
-             li a7, 1
-             ecall
-             li a0, 0x45  # 'E'
-             li a7, 1
-             ecall
-             li a0, 0x52  # 'R'
-             li a7, 1
-             ecall
-             li a0, 0x0A  # '\\n'
-             li a7, 1
-             ecall",
-            options(nostack, preserves_flags)
-        );
-    }
-
-    crate::console::emergency_print("EMERGENCY: run_tasks() function ENTERED\n");
-
-    // Simple approach: get CPU ID without complex operations
+    // ULTRA-SIMPLE: Get CPU ID using only inline assembly to avoid any function calls
     let cpu_id = unsafe {
         let mut id: usize;
-        core::arch::asm!("mv {}, tp", out(reg) id);
+        core::arch::asm!(
+            "mv {}, tp",
+            out(reg) id,
+            options(pure, nomem, nostack, preserves_flags)
+        );
         id
     };
 
-    crate::console::emergency_print("EMERGENCY: Simple CPU ID ");
-    if cpu_id < 10 {
-        let digit = (b'0' + cpu_id as u8) as char;
-        let digit_bytes = [digit as u8];
-        let digit_str = unsafe { core::str::from_utf8_unchecked(&digit_bytes) };
-        crate::console::emergency_print(digit_str);
-    } else {
-        crate::console::emergency_print("X");
-    }
-    crate::console::emergency_print("\n");
-
     // ULTRA-SIMPLE scheduler loop for secondary CPUs
     if cpu_id > 0 {
-        crate::console::emergency_print("Secondary CPU entering simple IPI loop\n");
+        // Direct SBI output to confirm entry
+        unsafe {
+            core::arch::asm!(
+                "li a0, 0x53  # 'S'
+                 li a7, 1     # SBI console putchar
+                 ecall
+                 li a0, 0x45  # 'E'
+                 li a7, 1
+                 ecall
+                 li a0, 0x43  # 'C'
+                 li a7, 1
+                 ecall
+                 li a0, 0x0A  # '\\n'
+                 li a7, 1
+                 ecall",
+                options(nostack, preserves_flags)
+            );
+        }
 
         let mut counter = 0u64;
         loop {
-            // Only handle IPI messages - nothing else
+            // Call IPI handler - this is what we need to test
             ipi::handle_ipi_interrupt();
 
             counter = counter.wrapping_add(1);
@@ -395,15 +373,12 @@ fn perform_enhanced_periodic_maintenance() {
         cpu_data.update_load_stats();
     }
 
-    // Clean up expired IPI resources periodically
+    // Clean up expired IPI resources periodically (using simple counter instead of timer)
     static LAST_IPI_CLEANUP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let current_time = get_time_msec();
-    let last_cleanup = LAST_IPI_CLEANUP.load(Ordering::Relaxed);
+    let cleanup_counter = LAST_IPI_CLEANUP.fetch_add(1, Ordering::Relaxed);
 
-    if current_time - last_cleanup > 5000 { // 5 seconds
-        if LAST_IPI_CLEANUP.compare_exchange(last_cleanup, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-            ipi::cleanup_expired_ipi_resources();
-        }
+    if cleanup_counter % 100000 == 0 { // Periodic cleanup based on call count instead of time
+        ipi::cleanup_expired_ipi_resources();
     }
 
     // Perform load balancing (only one CPU does this per interval)

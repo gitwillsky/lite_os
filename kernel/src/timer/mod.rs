@@ -47,10 +47,9 @@ pub fn init_secondary_cpu(cpu_id: usize) {
     // Synchronize time with global timer
     GLOBAL_TIMER.sync_cpu_time(cpu_id);
 
-    // Set up timer interrupt for this CPU
-    setup_timer_interrupt();
-
-    debug!("Timer initialized for CPU {}", cpu_id);
+    // For secondary CPUs: only sync time, do not enable timer interrupts
+    // They will only handle IPI interrupts, timer is managed by CPU0
+    debug!("Timer time sync complete for CPU {} (no timer interrupts enabled)", cpu_id);
 }
 
 /// Set up timer interrupt for the current CPU

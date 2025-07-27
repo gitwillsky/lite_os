@@ -74,9 +74,57 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
 
     info!("Secondary CPU {} enhanced initialization complete", cpu_id);
 
-    // Call the main task scheduler for this CPU
-    debug!("Secondary CPU {} starting run_tasks", cpu_id);
-    crate::task::run_tasks()
+    // EMERGENCY: Avoid calling run_tasks, implement simple IPI loop here
+    debug!("Secondary CPU {} starting simple IPI loop", cpu_id);
+
+    // Direct SBI output to confirm we're here
+    unsafe {
+        core::arch::asm!(
+            "li a0, 0x53  # 'S'
+             li a7, 1     # SBI console putchar
+             ecall
+             li a0, 0x49  # 'I'
+             li a7, 1
+             ecall
+             li a0, 0x4D  # 'M'
+             li a7, 1
+             ecall
+             li a0, 0x50  # 'P'
+             li a7, 1
+             ecall
+             li a0, 0x0A  # '\\n'
+             li a7, 1
+             ecall",
+            options(nostack, preserves_flags)
+        );
+    }
+
+    let mut counter = 0u64;
+    loop {
+        // Call IPI handler directly
+        crate::smp::ipi::handle_ipi_interrupt();
+
+        counter = counter.wrapping_add(1);
+
+        // Heartbeat every million iterations
+        if counter % 1000000 == 0 {
+            unsafe {
+                core::arch::asm!(
+                    "li a0, 0x49  # 'I'
+                     li a7, 1     # SBI console putchar
+                     ecall",
+                    out("a0") _,
+                    out("a7") _,
+                    options(nostack, preserves_flags)
+                );
+            }
+        }
+
+        // Simple wait
+        unsafe {
+            core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+        }
+    }
 }
 
 /// Phased secondary CPU initialization using IPI barriers

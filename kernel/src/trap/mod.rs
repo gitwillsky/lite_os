@@ -45,30 +45,35 @@ pub fn trap_handler() {
             match interrupt {
                 Interrupt::SupervisorTimer => {
                     let cpu_id = crate::smp::current_cpu_id();
-                    // 只在前几次timer中断时打印调试信息
-                    static TIMER_DEBUG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-                    let count = TIMER_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                    if count < 20 {
-                        debug!("CPU{} received timer interrupt (count={})", cpu_id, count);
-                    }
 
-                    timer::set_next_timer_interrupt();
+                    // Only CPU0 handles full timer processing including setting next timer
+                    if cpu_id == 0 {
+                        // Set next timer interrupt
+                        timer::set_next_timer_interrupt();
+                        // 只在前几次timer中断时打印调试信息
+                        static TIMER_DEBUG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+                        let count = TIMER_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        if count < 20 {
+                            debug!("CPU{} received timer interrupt (count={})", cpu_id, count);
+                        }
 
-                    // 检查 watchdog 状态
-                    crate::watchdog::check();
+                        // 检查 watchdog 状态
+                        crate::watchdog::check();
 
-                    // 检查并唤醒到期的睡眠任务
-                    timer::check_and_wakeup_sleeping_tasks();
+                        // 检查并唤醒到期的睡眠任务
+                        timer::check_and_wakeup_sleeping_tasks();
 
-                    // Check and handle pending signals before task switch
-                    {
-                        let cx = task::current_trap_context();
-                        if !check_signals_and_maybe_exit_with_cx(cx) {
-                            return; // Process was terminated by signal
+                        // Check and handle pending signals before task switch
+                        // (Only if we have a current task)
+                        if task::current_task().is_some() {
+                            let cx = task::current_trap_context();
+                            if !check_signals_and_maybe_exit_with_cx(cx) {
+                                return; // Process was terminated by signal
+                            }
+                            suspend_current_and_run_next();
                         }
                     }
-
-                    suspend_current_and_run_next();
+                    // For secondary CPUs: just acknowledge timer interrupt, do nothing else
                 }
                 Interrupt::SupervisorExternal => {
                     // 处理外部中断（包括VirtIO设备中断）
