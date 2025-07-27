@@ -55,19 +55,19 @@ fn primary_cpu_init(hart_id: usize, dtb_addr: usize) -> ! {
     drivers::init_devices();
     task::init();
 
-    // // 为secondary CPUs设置DTB地址
-    // smp::boot::set_dtb_addr(dtb_addr);
+    // 为secondary CPUs设置DTB地址
+    smp::boot::set_dtb_addr(dtb_addr);
 
-    // match smp::boot::start_secondary_cpus() {
-    //     Ok(count) => {
-    //         debug!("Started {} secondary CPUs", count);
-    //     }
-    //     Err(e) => {
-    //         error!("Failed to start some secondary CPUs: {}", e);
-    //     }
-    // }
+    match smp::boot::start_secondary_cpus() {
+        Ok(count) => {
+            debug!("Started {} secondary CPUs", count);
+        }
+        Err(e) => {
+            error!("Failed to start some secondary CPUs: {}", e);
+        }
+    }
 
-    // smp::boot::wait_for_all_cpus_online();
+    smp::boot::wait_for_all_cpus_online();
 
     // Print final system information
     if config::DEFAULT_LOG_LEVEL == LogLevel::Debug {
