@@ -520,7 +520,7 @@ fn test_ipi_connectivity() {
         }
 
         match ipi::send_function_call_ipi_sync(cpu_id, || {
-            debug!("IPI connectivity test received on CPU{}", current_cpu_id());
+            // Simple response without complex logging or CPU ID calls
             ipi::IpiResponse::Success
         }, 1000) {
             Ok(ipi::IpiResponse::Success) => {

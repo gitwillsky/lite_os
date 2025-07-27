@@ -783,13 +783,14 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
 
-    // Simple heartbeat using CPU cycle counter instead of timer to avoid timer dependency issues
+    // More frequent heartbeat for secondary CPUs to confirm they're checking for IPIs
     static LAST_IPI_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     if cpu_id > 0 {
-        // Use a simple counter instead of timer to avoid TIMER_FREQ=0 division issue
-        let check_counter = LAST_IPI_CHECK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if check_counter % 1000000 == 0 {  // Log every million calls
-            debug!("CPU{} IPI check #{}", cpu_id, check_counter);
+        let current_time = get_time_msec();
+        let last_check = LAST_IPI_CHECK.load(core::sync::atomic::Ordering::Relaxed);
+        if current_time - last_check > 1000 { // Every 1 second
+            LAST_IPI_CHECK.store(current_time, core::sync::atomic::Ordering::Relaxed);
+            debug!("CPU{} checking for IPI messages, time={}ms", cpu_id, current_time);
         }
     }
 

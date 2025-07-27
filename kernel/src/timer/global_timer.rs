@@ -41,7 +41,14 @@ impl GlobalTimer {
             use riscv::register::time;
 
             use crate::timer::config::TIMER_FREQ;
-            time::read64() / (TIMER_FREQ.load(Ordering::Relaxed) / 1_000_000)
+            let freq = TIMER_FREQ.load(Ordering::Relaxed);
+            if freq == 0 {
+                // Safety fallback: if TIMER_FREQ not initialized, return 0
+                // This should not happen with proper initialization
+                warn!("TIMER_FREQ not initialized, returning 0");
+                return 0;
+            }
+            time::read64() / (freq / 1_000_000)
         }
 
         #[cfg(not(target_arch = "riscv64"))]

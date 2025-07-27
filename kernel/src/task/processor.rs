@@ -46,17 +46,26 @@ impl LoadBalancer {
         }
     }
 
-    /// Check if load balancing is needed (using call counter instead of timer)
+    /// Check if load balancing is needed
     fn should_balance(&self) -> bool {
-        let call_count = self.last_balance_time.fetch_add(1, Ordering::Relaxed);
-        call_count % 10000 == 0  // Balance every 10000 calls instead of time-based
+        let current_time = get_time_us();
+        let last_balance = self.last_balance_time.load(Ordering::Relaxed);
+        current_time.saturating_sub(last_balance) >= self.balance_interval_us
     }
 
     /// Enhanced load balancing using synchronous IPI for reliable task migration
     fn balance_load(&self) {
-        // Simple load balancing without timer dependency
-        static BALANCE_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-        if BALANCE_LOCK.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+        let current_time = get_time_msec();
+        if self
+            .last_balance_time
+            .compare_exchange(
+                self.last_balance_time.load(Ordering::Relaxed),
+                current_time,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
             // Another CPU is already balancing
             return;
         }
@@ -96,7 +105,6 @@ impl LoadBalancer {
         }
 
         if cpu_loads.is_empty() {
-            BALANCE_LOCK.store(false, Ordering::Release);
             return;
         }
 
@@ -145,9 +153,6 @@ impl LoadBalancer {
         if successful_migrations > 0 {
             info!("Load balancing completed: {} tasks migrated", successful_migrations);
         }
-
-        // Release the balance lock
-        BALANCE_LOCK.store(false, Ordering::Release);
     }
 
     /// Migrate tasks between CPUs using synchronous IPI
@@ -373,12 +378,15 @@ fn perform_enhanced_periodic_maintenance() {
         cpu_data.update_load_stats();
     }
 
-    // Clean up expired IPI resources periodically (using simple counter instead of timer)
+    // Clean up expired IPI resources periodically
     static LAST_IPI_CLEANUP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    let cleanup_counter = LAST_IPI_CLEANUP.fetch_add(1, Ordering::Relaxed);
+    let current_time = get_time_msec();
+    let last_cleanup = LAST_IPI_CLEANUP.load(Ordering::Relaxed);
 
-    if cleanup_counter % 100000 == 0 { // Periodic cleanup based on call count instead of time
-        ipi::cleanup_expired_ipi_resources();
+    if current_time - last_cleanup > 5000 { // 5 seconds
+        if LAST_IPI_CLEANUP.compare_exchange(last_cleanup, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            ipi::cleanup_expired_ipi_resources();
+        }
     }
 
     // Perform load balancing (only one CPU does this per interval)
