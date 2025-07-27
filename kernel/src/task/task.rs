@@ -41,32 +41,32 @@ impl CpuSet {
     pub fn new() -> Self {
         Self { mask: !0u64 } // Default to all CPUs
     }
-    
+
     pub fn from_mask(mask: u64) -> Self {
         Self { mask }
     }
-    
+
     pub fn is_set(&self, cpu: usize) -> bool {
         if cpu >= 64 { return false; }
         (self.mask & (1 << cpu)) != 0
     }
-    
+
     pub fn set(&mut self, cpu: usize) {
         if cpu < 64 {
             self.mask |= 1 << cpu;
         }
     }
-    
+
     pub fn clear(&mut self, cpu: usize) {
         if cpu < 64 {
             self.mask &= !(1 << cpu);
         }
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.mask == 0
     }
-    
+
     pub fn first_cpu(&self) -> Option<usize> {
         if self.mask == 0 { return None; }
         Some(self.mask.trailing_zeros() as usize)
@@ -385,7 +385,7 @@ pub struct TaskControlBlock {
     pub euid: AtomicU32,
     /// 有效组ID (用于权限检查)
     pub egid: AtomicU32,
-    
+
     /// stdin 非阻塞标志 (用于 fcntl 设置)
     pub stdin_nonblock: AtomicBool,
 
@@ -393,7 +393,7 @@ pub struct TaskControlBlock {
     pub args: Mutex<Option<Vec<String>>>,
     /// 进程启动时的环境变量
     pub envs: Mutex<Option<Vec<String>>>,
-    
+
     /// CPU亲和性掩码
     pub cpu_affinity: crate::sync::SpinLock<CpuSet>,
     /// 首选CPU ID

@@ -467,11 +467,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     // Reparent children to init process
     if let Some(init_proc) = task_manager::init_proc() {
         if pid == init_proc.pid() {
-            error!(
-                "[CPU{}] init process exit with exit_code {}",
-                current_cpu_id(),
-                exit_code
-            );
+            error!("init process exit with exit_code {}", exit_code);
             // System should shutdown
             shutdown();
         } else {
