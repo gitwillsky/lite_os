@@ -1,5 +1,5 @@
 /// Per-CPU data structures and management
-/// 
+///
 /// This module defines the per-CPU data structure that contains all the
 /// CPU-local state including scheduler queues, memory pools, and statistics.
 
@@ -9,7 +9,6 @@ use crate::{
     sync::spinlock::SpinLock,
     task::{TaskControlBlock, context::TaskContext},
     memory::slab_allocator::SlabAllocator,
-    timer::TimeSpec,
 };
 
 /// Type of CPU in the system
@@ -43,7 +42,7 @@ pub enum CpuState {
 pub struct CpuSchedulerQueue {
     /// High priority task queue
     pub high_priority: VecDeque<Arc<TaskControlBlock>>,
-    /// Normal priority task queue  
+    /// Normal priority task queue
     pub normal_priority: VecDeque<Arc<TaskControlBlock>>,
     /// Low priority task queue
     pub low_priority: VecDeque<Arc<TaskControlBlock>>,
@@ -67,13 +66,13 @@ impl CpuSchedulerQueue {
     /// Add a task to the appropriate queue based on its priority
     pub fn add_task(&mut self, task: Arc<TaskControlBlock>) {
         let priority = task.sched.lock().priority;
-        
+
         match priority {
             p if p > 120 => self.low_priority.push_back(task),
             p if p > 100 => self.normal_priority.push_back(task),
             _ => self.high_priority.push_back(task),
         }
-        
+
         self.task_count += 1;
     }
 
@@ -83,22 +82,22 @@ impl CpuSchedulerQueue {
             self.task_count -= 1;
             return Some(task);
         }
-        
+
         if let Some(task) = self.normal_priority.pop_front() {
             self.task_count -= 1;
             return Some(task);
         }
-        
+
         if let Some(task) = self.cfs_queue.pop_front() {
             self.task_count -= 1;
             return Some(task);
         }
-        
+
         if let Some(task) = self.low_priority.pop_front() {
             self.task_count -= 1;
             return Some(task);
         }
-        
+
         None
     }
 
@@ -180,7 +179,7 @@ impl CpuLoadStats {
     pub fn update_load(&self, queue_length: usize) {
         // Simple exponential moving average
         let current_load = (queue_length * 1000) as usize; // Scale by 1000
-        
+
         // 1-minute load average (alpha = 1 - exp(-1/60))
         let alpha_1min = 16; // Approximation of (1 - exp(-1/60)) * 1000
         let old_load = self.load_avg_1min.load(Ordering::Relaxed);
@@ -202,71 +201,71 @@ impl CpuLoadStats {
 
     /// Get current CPU utilization percentage (0-100)
     pub fn cpu_utilization(&self) -> u32 {
-        let total_time = self.user_time.load(Ordering::Relaxed) 
-                       + self.kernel_time.load(Ordering::Relaxed) 
+        let total_time = self.user_time.load(Ordering::Relaxed)
+                       + self.kernel_time.load(Ordering::Relaxed)
                        + self.idle_time.load(Ordering::Relaxed);
-        
+
         if total_time == 0 {
             return 0;
         }
-        
-        let active_time = self.user_time.load(Ordering::Relaxed) 
+
+        let active_time = self.user_time.load(Ordering::Relaxed)
                         + self.kernel_time.load(Ordering::Relaxed);
-        
+
         ((active_time * 100) / total_time) as u32
     }
 }
 
 /// Per-CPU data structure
-/// 
+///
 /// This structure contains all CPU-local state including the scheduler queue,
 /// current running task, statistics, and CPU-local memory allocator.
 pub struct CpuData {
     /// CPU ID
     pub cpu_id: usize,
-    
+
     /// CPU type (bootstrap or application processor)
     pub cpu_type: CpuType,
-    
+
     /// Current CPU state
     pub state: SpinLock<CpuState>,
-    
+
     /// Architecture-specific CPU ID (e.g., HART ID for RISC-V)
     pub arch_cpu_id: AtomicUsize,
-    
+
     /// Current running task
     pub current_task: SpinLock<Option<Arc<TaskControlBlock>>>,
-    
+
     /// Per-CPU scheduler queue
     pub scheduler_queue: SpinLock<CpuSchedulerQueue>,
-    
+
     /// Idle task context for this CPU
     pub idle_context: SpinLock<TaskContext>,
-    
+
     /// Per-CPU memory allocator
     pub allocator: SpinLock<Option<SlabAllocator>>,
-    
+
     /// CPU load statistics
     pub stats: CpuLoadStats,
-    
+
     /// Timestamp when this CPU was last idle
     pub last_idle_time: AtomicU64,
-    
+
     /// Timestamp when this CPU started executing current task
     pub task_start_time: AtomicU64,
-    
+
     /// CPU frequency in Hz
     pub frequency: AtomicU64,
-    
+
     /// Flag indicating if this CPU needs rescheduling
     pub need_resched: AtomicBool,
-    
+
     /// Flag indicating if this CPU is in interrupt context
     pub in_interrupt: AtomicBool,
-    
+
     /// Interrupt nesting level
     pub interrupt_nesting: AtomicUsize,
-    
+
     /// Cache line alignment to avoid false sharing
     _padding: [u8; 64],
 }
