@@ -40,26 +40,6 @@ pub fn init() {
     info!("Timer subsystem initialized");
 }
 
-/// Initialize timer for a secondary CPU
-pub fn init_secondary_cpu(cpu_id: usize) {
-    debug!("Initializing timer for CPU {}", cpu_id);
-
-    // Ensure TIMER_FREQ is initialized for secondary CPUs too
-    if TIMER_FREQ.load(Ordering::Relaxed) == 0 {
-        let time_base_freq = board::board_info().time_base_freq;
-        TIMER_FREQ.store(time_base_freq, Ordering::Relaxed);
-        TICK_INTERVAL_VALUE.store(time_base_freq / TICKS_PER_SEC as u64, Ordering::Relaxed);
-        debug!("Secondary CPU {} initialized timer frequency: {} Hz", cpu_id, time_base_freq);
-    }
-
-    // Synchronize time with global timer
-    GLOBAL_TIMER.sync_cpu_time(cpu_id);
-
-    // For secondary CPUs: only sync time, do not enable timer interrupts
-    // They will only handle IPI interrupts, timer is managed by CPU0
-    debug!("Timer time sync complete for CPU {} (no timer interrupts enabled)", cpu_id);
-}
-
 /// Set up timer interrupt for the current CPU
 fn setup_timer_interrupt() {
     #[cfg(target_arch = "riscv64")]

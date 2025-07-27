@@ -1,22 +1,14 @@
+use crate::{
+    arch::sbi, memory::{address::PhysicalAddress, TlbManager, KERNEL_SPACE}, smp::{
+        cpu::{CpuData, CpuState, CpuType}, cpu_data, cpu_set_online, current_cpu_id, init_cpu_id_register, ipi::{self, create_ipi_barrier, wait_at_ipi_barrier}, set_cpu_data, MAX_CPU_NUM
+    }, sync::spinlock::SpinLock, task::run_tasks, timer::get_time_msec
+};
 /// SMP boot sequence implementation
 ///
 /// This module handles the multi-core boot process, including secondary
 /// CPU initialization and synchronization between cores.
-
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-use crate::{
-    smp::{
-        cpu::{CpuData, CpuState, CpuType},
-        current_cpu_id, set_cpu_data, cpu_set_online, cpu_data,
-        MAX_CPU_NUM, init_cpu_id_register,
-        ipi::{self, create_ipi_barrier, wait_at_ipi_barrier}
-    },
-    arch::sbi,
-    memory::{address::PhysicalAddress, KERNEL_SPACE, TlbManager},
-    sync::spinlock::SpinLock,
-    timer::get_time_msec,
-};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 static DTB_ADDR: AtomicUsize = AtomicUsize::new(0);
 
@@ -64,15 +56,30 @@ pub fn mark_secondary_cpu_ready() {
 /// Entry point for secondary CPUs using unified initialization
 #[unsafe(no_mangle)]
 pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
-    // Use the unified CPU main with is_primary=false
-    crate::unified_cpu_main(hart_id, dtb_addr, false)
+    let cpu_id = if let Some(logical_id) = crate::smp::topology::arch_to_logical_cpu_id(hart_id) {
+        logical_id
+    } else {
+        // Fallback for unknown hart IDs
+        hart_id
+    };
+    secondary_cpu_init_phased(cpu_id, hart_id);
+    while !crate::smp::boot::global_init_complete() {
+        core::hint::spin_loop();
+    }
+
+    mark_secondary_cpu_ready();
+
+    run_tasks();
 }
 
 /// Phased secondary CPU initialization using IPI barriers
 fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'static str> {
     // Phase 1: Basic initialization
     if let Err(e) = wait_for_boot_phase(BootPhase::Initialization) {
-        error!("CPU{} failed to synchronize in initialization phase: {}", cpu_id, e);
+        error!(
+            "CPU{} failed to synchronize in initialization phase: {}",
+            cpu_id, e
+        );
         return Err("Initialization phase sync failed");
     }
 
@@ -85,13 +92,19 @@ fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'stat
 
     // Architecture-specific initialization
     if let Err(e) = arch_specific_secondary_init(hart_id) {
-        error!("Architecture-specific initialization failed for CPU {}: {}", cpu_id, e);
+        error!(
+            "Architecture-specific initialization failed for CPU {}: {}",
+            cpu_id, e
+        );
         return Err(e);
     }
 
     // Phase 2: Memory management initialization
     if let Err(e) = wait_for_boot_phase(BootPhase::MemorySetup) {
-        error!("CPU{} failed to synchronize in memory setup phase: {}", cpu_id, e);
+        error!(
+            "CPU{} failed to synchronize in memory setup phase: {}",
+            cpu_id, e
+        );
         return Err("Memory setup phase sync failed");
     }
 
@@ -100,14 +113,11 @@ fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'stat
         return Err(e);
     }
 
-    if let Err(e) = secondary_cpu_timer_init(cpu_id) {
-        error!("Timer initialization failed for CPU {}: {}", cpu_id, e);
-        return Err(e);
-    }
-
-    // Phase 3: System ready
     if let Err(e) = wait_for_boot_phase(BootPhase::SystemReady) {
-        error!("CPU{} failed to synchronize in system ready phase: {}", cpu_id, e);
+        error!(
+            "CPU{} failed to synchronize in system ready phase: {}",
+            cpu_id, e
+        );
         return Err("System ready phase sync failed");
     }
 
@@ -115,7 +125,10 @@ fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'stat
     cpu_set_online(cpu_id);
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Online);
-        debug!("CPU{} marked as online with enhanced synchronization", cpu_id);
+        debug!(
+            "CPU{} marked as online with enhanced synchronization",
+            cpu_id
+        );
     }
 
     Ok(())
@@ -124,15 +137,15 @@ fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'stat
 /// Wait for a specific boot phase using IPI barriers
 fn wait_for_boot_phase(phase: BootPhase) -> Result<(), &'static str> {
     let barrier_id = match phase {
-        BootPhase::Initialization => {
-            BOOT_PHASE_BARRIER.lock().ok_or("No initialization barrier")?
-        }
-        BootPhase::MemorySetup => {
-            MEMORY_INIT_BARRIER.lock().ok_or("No memory setup barrier")?
-        }
-        BootPhase::SystemReady => {
-            SYSTEM_READY_BARRIER.lock().ok_or("No system ready barrier")?
-        }
+        BootPhase::Initialization => BOOT_PHASE_BARRIER
+            .lock()
+            .ok_or("No initialization barrier")?,
+        BootPhase::MemorySetup => MEMORY_INIT_BARRIER
+            .lock()
+            .ok_or("No memory setup barrier")?,
+        BootPhase::SystemReady => SYSTEM_READY_BARRIER
+            .lock()
+            .ok_or("No system ready barrier")?,
     };
 
     debug!("CPU{} waiting for phase {:?}", current_cpu_id(), phase);
@@ -145,13 +158,19 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Starting);
     } else {
-        error!("No CPU data available for CPU {} during initialization", cpu_id);
+        error!(
+            "No CPU data available for CPU {} during initialization",
+            cpu_id
+        );
         secondary_cpu_halt(cpu_id);
     }
 
     // Initialize architecture-specific features
     if let Err(e) = arch_specific_secondary_init(hart_id) {
-        error!("Architecture-specific initialization failed for CPU {}: {}", cpu_id, e);
+        error!(
+            "Architecture-specific initialization failed for CPU {}: {}",
+            cpu_id, e
+        );
         secondary_cpu_halt(cpu_id);
     }
 
@@ -161,13 +180,6 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
         secondary_cpu_halt(cpu_id);
     }
 
-    // Initialize per-CPU timer
-    if let Err(e) = secondary_cpu_timer_init(cpu_id) {
-        error!("Timer initialization failed for CPU {}: {}", cpu_id, e);
-        secondary_cpu_halt(cpu_id);
-    }
-
-    // Set supervisor trap vector for this CPU (required for S-mode interrupt handling)
     // Use the same trap handler setup as CPU0
     crate::trap::init();
 
@@ -177,7 +189,10 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Online);
     } else {
-        error!("No CPU data available for CPU {} after initialization", cpu_id);
+        error!(
+            "No CPU data available for CPU {} after initialization",
+            cpu_id
+        );
         secondary_cpu_halt(cpu_id);
     }
 }
@@ -199,8 +214,14 @@ pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> 
         // Debug: Check interrupt register status
         let sstatus = riscv::register::sstatus::read();
         let sie = riscv::register::sie::read();
-        info!("Hart {} interrupt status: sstatus.sie={}, sie.ssoft={}, sie.stimer={}, sie.sext={}",
-              hart_id, sstatus.sie(), sie.ssoft(), sie.stimer(), sie.sext());
+        info!(
+            "Hart {} interrupt status: sstatus.sie={}, sie.ssoft={}, sie.stimer={}, sie.sext={}",
+            hart_id,
+            sstatus.sie(),
+            sie.ssoft(),
+            sie.stimer(),
+            sie.sext()
+        );
 
         // Initialize floating point if available
         #[cfg(feature = "f")]
@@ -244,15 +265,6 @@ pub fn secondary_cpu_memory_init(cpu_id: usize) -> Result<(), &'static str> {
     }
 }
 
-/// Initialize timer for secondary CPU
-fn secondary_cpu_timer_init(cpu_id: usize) -> Result<(), &'static str> {
-    // Timer initialization is handled by the timer module
-    crate::timer::init_secondary_cpu(cpu_id);
-    debug!("Timer initialized for CPU {}", cpu_id);
-    Ok(())
-}
-
-
 /// Stop a secondary CPU
 fn secondary_cpu_stop(cpu_id: usize) -> ! {
     info!("Stopping CPU {}", cpu_id);
@@ -292,12 +304,14 @@ pub fn set_dtb_addr(dtb_addr: usize) {
 
 /// Enhanced start secondary CPUs with fallback to traditional synchronization
 pub fn start_secondary_cpus() -> Result<usize, &'static str> {
-    let topology = crate::smp::topology::get_topology()
-        .ok_or("CPU topology not discovered")?;
+    let topology = crate::smp::topology::get_topology().ok_or("CPU topology not discovered")?;
 
     let mut started_count = 0;
 
-    info!("Starting enhanced multi-phase boot sequence for {} CPUs", topology.cpus.len());
+    info!(
+        "Starting enhanced multi-phase boot sequence for {} CPUs",
+        topology.cpus.len()
+    );
 
     // First, start all secondary CPUs using traditional method
     for cpu_info in &topology.cpus {
@@ -306,18 +320,17 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
             continue;
         }
 
-        info!("Starting CPU {} (hart {})", cpu_info.cpu_id, cpu_info.arch_id);
+        info!(
+            "Starting CPU {} (hart {})",
+            cpu_info.cpu_id, cpu_info.arch_id
+        );
 
         unsafe extern "C" {
             fn _secondary_start();
         }
 
         let dtb_addr = DTB_ADDR.load(Ordering::Acquire);
-        let result = sbi::hart_start(
-            cpu_info.arch_id,
-            _secondary_start as usize,
-            dtb_addr,
-        );
+        let result = sbi::hart_start(cpu_info.arch_id, _secondary_start as usize, dtb_addr);
 
         match result {
             Ok(_) => {
@@ -331,7 +344,10 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
     }
 
     if started_count > 0 {
-        info!("Waiting for {} secondary CPUs using traditional synchronization", started_count);
+        info!(
+            "Waiting for {} secondary CPUs using traditional synchronization",
+            started_count
+        );
 
         // Mark primary CPU as ready to start coordination
         PRIMARY_CPU_READY.store(true, Ordering::Release);
@@ -340,11 +356,14 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
         let timeout_ms = SECONDARY_CPU_BOOT_TIMEOUT_MS;
         let start_time = crate::timer::get_time_us();
 
-                while SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire) < started_count {
+        while SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire) < started_count {
             let elapsed = (crate::timer::get_time_us() - start_time) / 1000;
             if elapsed > timeout_ms {
-                warn!("Timeout waiting for secondary CPUs, {} ready out of {}",
-                      SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire), started_count);
+                warn!(
+                    "Timeout waiting for secondary CPUs, {} ready out of {}",
+                    SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire),
+                    started_count
+                );
                 break;
             }
 
@@ -353,7 +372,10 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
         }
 
         let ready_count = SECONDARY_CPU_READY_COUNT.load(Ordering::Acquire);
-        info!("{} out of {} secondary CPUs are ready", ready_count, started_count);
+        info!(
+            "{} out of {} secondary CPUs are ready",
+            ready_count, started_count
+        );
 
         // Now try to initialize enhanced IPI barriers for online CPUs
         if ready_count > 0 {
@@ -369,7 +391,10 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
 
 /// Initialize enhanced synchronization after CPUs are online
 fn initialize_enhanced_synchronization(online_cpu_count: usize) {
-    info!("Initializing enhanced IPI synchronization for {} online CPUs", online_cpu_count);
+    info!(
+        "Initializing enhanced IPI synchronization for {} online CPUs",
+        online_cpu_count
+    );
 
     // Build list of actually online CPUs
     let mut online_cpus = Vec::new();
@@ -387,9 +412,13 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
     }
 
     // Try to create IPI barriers for online CPUs only
-    match create_ipi_barrier(&online_cpus, 5000) { // 5 second timeout
+    match create_ipi_barrier(&online_cpus, 5000) {
+        // 5 second timeout
         Ok(test_barrier) => {
-            info!("Successfully created IPI barrier for {} CPUs", online_cpus.len());
+            info!(
+                "Successfully created IPI barrier for {} CPUs",
+                online_cpus.len()
+            );
 
             // Test the barrier
             match wait_at_ipi_barrier(test_barrier) {
@@ -412,7 +441,10 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
             }
         }
         Err(e) => {
-            warn!("Failed to create IPI barrier for enhanced synchronization: {}", e);
+            warn!(
+                "Failed to create IPI barrier for enhanced synchronization: {}",
+                e
+            );
             info!("Falling back to traditional synchronization methods");
         }
     }
@@ -441,8 +473,12 @@ fn perform_initial_health_check() {
         }
     }
 
-    info!("System health check: {} CPUs online, {} failed: {:?}",
-          online_cpus, failed_cpus.len(), failed_cpus);
+    info!(
+        "System health check: {} CPUs online, {} failed: {:?}",
+        online_cpus,
+        failed_cpus.len(),
+        failed_cpus
+    );
 
     // Test IPI functionality between CPUs
     test_ipi_connectivity();
@@ -460,28 +496,39 @@ fn test_ipi_connectivity() {
             continue;
         }
 
-        match ipi::send_function_call_ipi_sync(cpu_id, || {
-            // Simple response without complex logging or CPU ID calls
-            ipi::IpiResponse::Success
-        }, 1000) {
+        match ipi::send_function_call_ipi_sync(
+            cpu_id,
+            || {
+                // Simple response without complex logging or CPU ID calls
+                ipi::IpiResponse::Success
+            },
+            1000,
+        ) {
             Ok(ipi::IpiResponse::Success) => {
                 successful_tests += 1;
                 debug!("IPI test successful: CPU{} -> CPU{}", current_cpu, cpu_id);
             }
             Ok(response) => {
                 failed_tests += 1;
-                warn!("IPI test unexpected response: CPU{} -> CPU{}: {:?}",
-                      current_cpu, cpu_id, response);
+                warn!(
+                    "IPI test unexpected response: CPU{} -> CPU{}: {:?}",
+                    current_cpu, cpu_id, response
+                );
             }
             Err(e) => {
                 failed_tests += 1;
-                error!("IPI test failed: CPU{} -> CPU{}: {}", current_cpu, cpu_id, e);
+                error!(
+                    "IPI test failed: CPU{} -> CPU{}: {}",
+                    current_cpu, cpu_id, e
+                );
             }
         }
     }
 
-    info!("IPI connectivity test complete: {} successful, {} failed",
-          successful_tests, failed_tests);
+    info!(
+        "IPI connectivity test complete: {} successful, {} failed",
+        successful_tests, failed_tests
+    );
 }
 
 /// Check if all CPUs are online and ready
@@ -527,8 +574,10 @@ pub fn wait_for_all_cpus_online() {
 
         let elapsed = (crate::timer::get_time_us() - start_time) / 1000;
         if elapsed > timeout_ms {
-            warn!("Timeout waiting for CPUs, {} online out of {}",
-                  online_count, expected_cpus);
+            warn!(
+                "Timeout waiting for CPUs, {} online out of {}",
+                online_count, expected_cpus
+            );
             break;
         }
 
@@ -560,7 +609,8 @@ pub fn shutdown_secondary_cpus() -> Result<(), &'static str> {
             }
 
             // Send synchronous stop IPI with confirmation
-            match ipi::send_stop_ipi_sync(cpu_id, 2000) { // 2 second timeout
+            match ipi::send_stop_ipi_sync(cpu_id, 2000) {
+                // 2 second timeout
                 Ok(ipi::IpiResponse::Success) => {
                     shutdown_confirmations += 1;
                     info!("CPU{} confirmed shutdown", cpu_id);
@@ -580,8 +630,10 @@ pub fn shutdown_secondary_cpus() -> Result<(), &'static str> {
     // Clean up IPI resources
     ipi::cleanup_expired_ipi_resources();
 
-    info!("Enhanced shutdown complete: {} confirmed, {} failed",
-          shutdown_confirmations, failed_shutdowns);
+    info!(
+        "Enhanced shutdown complete: {} confirmed, {} failed",
+        shutdown_confirmations, failed_shutdowns
+    );
 
     if failed_shutdowns > 0 {
         warn!("Some CPUs failed to shutdown cleanly");
