@@ -29,6 +29,10 @@ unsafe extern "C" fn _start() -> ! {
             call {clear_bss}
             
         2:
+            # 在调用kmain之前设置tp寄存器
+            # tp寄存器用于current_cpu_id()函数获取CPU ID
+            mv tp, t3       # 设置tp寄存器为hart_id
+            
             # 恢复参数并调用kmain
             mv x10, t3
             mv x11, t4
@@ -85,6 +89,11 @@ unsafe extern "C" fn _secondary_start() -> ! {
             j 3b
         4:
             # 栈指针有效，继续执行
+            # 在调用secondary_cpu_main之前，先设置tp寄存器
+            # tp寄存器用于current_cpu_id()函数获取CPU ID
+            # 这里暂时使用hart_id作为CPU ID，稍后会被正确设置
+            mv tp, t0       # 设置tp寄存器为hart_id
+            
             # 调用secondary CPU main函数
             call {secondary_cpu_main}
             

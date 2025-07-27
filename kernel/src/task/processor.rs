@@ -425,6 +425,14 @@ fn perform_periodic_maintenance() {
 
 /// Get the next task from the local CPU queue
 fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
+    let cpu_id = current_cpu_id();
+    
+    // Validate CPU ID before proceeding
+    if cpu_id >= crate::smp::MAX_CPU_NUM {
+        error!("Invalid CPU ID {} in get_next_local_task", cpu_id);
+        return None;
+    }
+    
     let cpu_data = current_cpu_data()?;
     cpu_data.pop_task()
 }
@@ -432,6 +440,13 @@ fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
 /// Enhanced work stealing using synchronous IPI for coordination
 fn try_enhanced_work_stealing() -> Option<Arc<TaskControlBlock>> {
     let current_cpu = current_cpu_id();
+    
+    // Validate CPU ID before proceeding
+    if current_cpu >= crate::smp::MAX_CPU_NUM {
+        error!("Invalid CPU ID {} in try_enhanced_work_stealing", current_cpu);
+        return None;
+    }
+    
     let total_cpus = cpu_count();
 
     // First, collect load information from all CPUs

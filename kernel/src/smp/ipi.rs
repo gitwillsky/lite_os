@@ -782,31 +782,48 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 /// Handle incoming IPI interrupt
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
+    
+    // Validate CPU ID to prevent array bounds violations
+    if cpu_id >= MAX_CPU_NUM {
+        error!("Invalid CPU ID {} in handle_ipi_interrupt", cpu_id);
+        return;
+    }
 
     // More frequent heartbeat for secondary CPUs to confirm they're checking for IPIs
     static LAST_IPI_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     if cpu_id > 0 {
         let current_time = get_time_msec();
         let last_check = LAST_IPI_CHECK.load(core::sync::atomic::Ordering::Relaxed);
-        if current_time - last_check > 1000 { // Every 1 second
+        if current_time.saturating_sub(last_check) > 1000 { // Every 1 second
             LAST_IPI_CHECK.store(current_time, core::sync::atomic::Ordering::Relaxed);
             debug!("CPU{} checking for IPI messages, time={}ms", cpu_id, current_time);
         }
     }
 
-    // Check if there are any pending messages
-    let queue_len = IPI_MANAGER.queues[cpu_id].lock().len();
+    // Check if there are any pending messages with error handling
+    let queue_len = match IPI_MANAGER.queues.get(cpu_id) {
+        Some(queue) => queue.lock().len(),
+        None => {
+            error!("No IPI queue found for CPU {}", cpu_id);
+            return;
+        }
+    };
+    
     if queue_len > 0 {
         debug!("CPU{} found {} pending IPI messages", cpu_id, queue_len);
-        IPI_MANAGER.stats[cpu_id].received.fetch_add(1, Ordering::Relaxed);
+        if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
+            stats.received.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
-    // Process all pending messages
+    // Process all pending messages with bounds checking
     let mut message_count = 0;
-    while let Some(message) = IPI_MANAGER.queues[cpu_id].lock().pop() {
-        message_count += 1;
-        debug!("CPU{} processing IPI message #{}", cpu_id, message_count);
-        handle_ipi_message(message);
+    if let Some(queue) = IPI_MANAGER.queues.get(cpu_id) {
+        while let Some(message) = queue.lock().pop() {
+            message_count += 1;
+            debug!("CPU{} processing IPI message #{}", cpu_id, message_count);
+            handle_ipi_message(message);
+        }
     }
 
     if message_count == 0 && queue_len > 0 {

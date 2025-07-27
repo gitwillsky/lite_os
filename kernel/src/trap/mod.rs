@@ -265,11 +265,45 @@ pub fn trap_return() -> ! {
 
 #[unsafe(no_mangle)]
 pub fn trap_from_kernel() -> ! {
+    let cpu_id = crate::smp::current_cpu_id();
+    let scause_val = scause::read();
+    let stval_val = stval::read();
+    let sepc_val = sepc::read();
+    
     error!(
-        "[trap_from_kernel] scause={:?}, stval={:#x}, sepc={:#x}",
-        scause::read(),
-        stval::read(),
-        sepc::read()
+        "[trap_from_kernel] CPU{} scause={:?}, stval={:#x}, sepc={:#x}",
+        cpu_id, scause_val, stval_val, sepc_val
     );
-    panic!("a trap from kernel");
+    
+    // Add detailed analysis for common trap types
+    match scause_val.cause() {
+        Trap::Exception(code) => {
+            if let Ok(exception) = Exception::from_number(code) {
+                match exception {
+                    Exception::IllegalInstruction => {
+                        error!("CPU{} illegal instruction at PC={:#x}, instruction might be unimplemented or corrupted", cpu_id, sepc_val);
+                    }
+                    Exception::InstructionMisaligned => {
+                        error!("CPU{} instruction misaligned at PC={:#x}", cpu_id, sepc_val);
+                    }
+                    Exception::LoadMisaligned => {
+                        error!("CPU{} load misaligned, trying to access address {:#x}", cpu_id, stval_val);
+                    }
+                    Exception::StoreMisaligned => {
+                        error!("CPU{} store misaligned, trying to access address {:#x}", cpu_id, stval_val);
+                    }
+                    _ => {
+                        error!("CPU{} kernel exception: {:?}", cpu_id, exception);
+                    }
+                }
+            } else {
+                error!("CPU{} unknown exception code: {}", cpu_id, code);
+            }
+        }
+        Trap::Interrupt(code) => {
+            error!("CPU{} unexpected kernel interrupt: code={}", cpu_id, code);
+        }
+    }
+    
+    panic!("a trap from kernel on CPU{}", cpu_id);
 }
