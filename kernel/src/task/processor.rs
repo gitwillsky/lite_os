@@ -455,8 +455,6 @@ pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().expect("No current task to exit");
     let pid = task.pid();
 
-    info!("Task {} exiting with code {}", pid, exit_code);
-
     // Handle task exit
     task.set_exit_code(exit_code);
     *task.task_status.lock() = TaskStatus::Zombie;
