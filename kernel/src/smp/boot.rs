@@ -211,7 +211,7 @@ fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
         debug!("Architecture-specific init complete for hart {}", hart_id);
         Ok(())
     }
-    
+
     #[cfg(not(target_arch = "riscv64"))]
     {
         warn!("Architecture-specific init not implemented for this architecture");
@@ -360,9 +360,6 @@ pub fn start_secondary_cpus() -> Result<usize, &'static str> {
             initialize_enhanced_synchronization(ready_count + 1); // +1 for primary CPU
         }
 
-        // Initialize IPI subsystem now that CPUs are online
-        ipi::init();
-        
         // Perform initial system health check
         perform_initial_health_check();
     }
@@ -378,7 +375,7 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
     let mut online_cpus = Vec::new();
     for cpu_id in 0..crate::smp::cpu_count() {
         if let Some(cpu_data) = cpu_data(cpu_id) {
-            if cpu_data.state() == CpuState::Online || cpu_id == 0 {
+            if cpu_data.state() == CpuState::Online {
                 online_cpus.push(cpu_id);
             }
         }
@@ -393,7 +390,7 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
     match create_ipi_barrier(&online_cpus, 5000) { // 5 second timeout
         Ok(test_barrier) => {
             info!("Successfully created IPI barrier for {} CPUs", online_cpus.len());
-            
+
             // Test the barrier
             match wait_at_ipi_barrier(test_barrier) {
                 Ok(_) => {
@@ -444,7 +441,7 @@ fn perform_initial_health_check() {
         }
     }
 
-    info!("System health check: {} CPUs online, {} failed: {:?}", 
+    info!("System health check: {} CPUs online, {} failed: {:?}",
           online_cpus, failed_cpus.len(), failed_cpus);
 
     // Test IPI functionality between CPUs
@@ -473,7 +470,7 @@ fn test_ipi_connectivity() {
             }
             Ok(response) => {
                 failed_tests += 1;
-                warn!("IPI test unexpected response: CPU{} -> CPU{}: {:?}", 
+                warn!("IPI test unexpected response: CPU{} -> CPU{}: {:?}",
                       current_cpu, cpu_id, response);
             }
             Err(e) => {
@@ -483,7 +480,7 @@ fn test_ipi_connectivity() {
         }
     }
 
-    info!("IPI connectivity test complete: {} successful, {} failed", 
+    info!("IPI connectivity test complete: {} successful, {} failed",
           successful_tests, failed_tests);
 }
 
@@ -583,7 +580,7 @@ pub fn shutdown_secondary_cpus() -> Result<(), &'static str> {
     // Clean up IPI resources
     ipi::cleanup_expired_ipi_resources();
 
-    info!("Enhanced shutdown complete: {} confirmed, {} failed", 
+    info!("Enhanced shutdown complete: {} confirmed, {} failed",
           shutdown_confirmations, failed_shutdowns);
 
     if failed_shutdowns > 0 {

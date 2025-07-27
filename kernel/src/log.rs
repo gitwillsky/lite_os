@@ -1,6 +1,5 @@
 use core::fmt::{self, Write};
 use spin::Mutex;
-use alloc::string::String;
 
 const LOG_BUFFER_SIZE: usize = 4096;
 
@@ -126,7 +125,7 @@ impl fmt::Display for LogLevel {
 }
 
 /// Logger configuration
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LoggerConfig {
     /// Minimum log level to display
     pub level: LogLevel,
@@ -138,6 +137,8 @@ pub struct LoggerConfig {
     pub show_timestamps: bool,
     /// Whether to show CPU ID
     pub show_cpu_id: bool,
+    /// Module filter for controlling which modules can log
+    pub module_filter: ModuleFilter,
 }
 
 impl Default for LoggerConfig {
@@ -148,6 +149,7 @@ impl Default for LoggerConfig {
             use_bright_colors: false,
             show_timestamps: false,
             show_cpu_id: true,
+            module_filter: ModuleFilter::new(),
         }
     }
 }
@@ -166,6 +168,7 @@ impl Logger {
                 use_bright_colors: false,
                 show_timestamps: false,
                 show_cpu_id: true,
+                module_filter: ModuleFilter::new(),
             },
         }
     }
@@ -187,7 +190,7 @@ impl Logger {
     }
 
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
-        if level >= self.config.level {
+        if level >= self.config.level && self.config.module_filter.is_module_enabled(module) {
             // Use stack buffer to avoid heap allocation
             let mut buffer = StackBuffer::new();
 
@@ -253,6 +256,101 @@ pub fn use_bright_colors(use_bright: bool) {
     LOGGER.lock().use_bright_colors(use_bright);
 }
 
+/// Enable logging for a specific module or module prefix (early boot safe)
+/// Note: This function only works with predefined static module patterns
+/// For common modules, use the predefined constants like MODULE_SYSCALL, MODULE_MEMORY, etc.
+pub fn enable_module_pattern(pattern: &'static str) -> bool {
+    LOGGER.lock().config.module_filter.enable_module(pattern)
+}
+
+/// Disable logging for a specific module or module prefix (early boot safe)
+/// Note: This function only works with predefined static module patterns
+/// For common modules, use the predefined constants like MODULE_SYSCALL, MODULE_MEMORY, etc.
+pub fn disable_module_pattern(pattern: &'static str) -> bool {
+    LOGGER.lock().config.module_filter.disable_module(pattern)
+}
+
+/// Set the module filter to allow all modules (default behavior)
+pub fn enable_all_modules() {
+    LOGGER.lock().config.module_filter = ModuleFilter::allow_all();
+}
+
+/// Set the module filter to block all modules by default
+/// After calling this, you need to explicitly enable modules you want to see
+pub fn disable_all_modules() {
+    LOGGER.lock().config.module_filter = ModuleFilter::block_all();
+}
+
+/// Clear all module filters and reset to default (all modules enabled)
+pub fn clear_module_filters() {
+    LOGGER.lock().config.module_filter.clear();
+}
+
+/// Print current module filter configuration
+pub fn print_module_filter_info() {
+    let logger = LOGGER.lock();
+    let filter = &logger.config.module_filter;
+
+    println!("=== Module Filter Configuration ===");
+    println!("Default enabled: {}", filter.default_enabled);
+
+    let enabled_count = filter.get_enabled_count();
+    let disabled_count = filter.get_disabled_count();
+
+    if enabled_count > 0 {
+        println!("Enabled modules:");
+        for i in 0..enabled_count {
+            if let Some(module) = filter.get_enabled_module(i) {
+                println!("  + {}", module);
+            }
+        }
+    }
+
+    if disabled_count > 0 {
+        println!("Disabled modules:");
+        for i in 0..disabled_count {
+            if let Some(module) = filter.get_disabled_module(i) {
+                println!("  - {}", module);
+            }
+        }
+    }
+
+    if enabled_count == 0 && disabled_count == 0 {
+        if filter.default_enabled {
+            println!("All modules are enabled (default)");
+        } else {
+            println!("All modules are disabled (default)");
+        }
+    }
+    println!("==================================");
+}
+
+// Predefined module patterns (static strings for early boot safety)
+pub const MODULE_SYSCALL: &str = "kernel::syscall";
+pub const MODULE_MEMORY: &str = "kernel::memory";
+pub const MODULE_FS: &str = "kernel::fs";
+pub const MODULE_TASK: &str = "kernel::task";
+pub const MODULE_SMP: &str = "kernel::smp";
+pub const MODULE_TRAP: &str = "kernel::trap";
+pub const MODULE_DRIVERS: &str = "kernel::drivers";
+pub const MODULE_TIMER: &str = "kernel::timer";
+
+// Specific filesystem modules
+pub const MODULE_FAT32: &str = "kernel::fs::fat32";
+pub const MODULE_VFS: &str = "kernel::fs::vfs";
+
+// Specific driver modules
+pub const MODULE_VIRTIO_BLK: &str = "kernel::drivers::virtio_blk";
+pub const MODULE_VIRTIO_CONSOLE: &str = "kernel::drivers::virtio_console";
+
+// Convenience functions for common modules
+pub fn enable_syscall_logs() -> bool { enable_module_pattern(MODULE_SYSCALL) }
+pub fn disable_syscall_logs() -> bool { disable_module_pattern(MODULE_SYSCALL) }
+pub fn enable_memory_logs() -> bool { enable_module_pattern(MODULE_MEMORY) }
+pub fn disable_memory_logs() -> bool { disable_module_pattern(MODULE_MEMORY) }
+pub fn enable_fs_logs() -> bool { enable_module_pattern(MODULE_FS) }
+pub fn disable_fs_logs() -> bool { disable_module_pattern(MODULE_FS) }
+
 /// Internal logging function
 pub fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     LOGGER.lock().log(level, module, args);
@@ -317,6 +415,209 @@ pub fn init_auto() {
         use_bright_colors: false,
         show_timestamps: false,
         show_cpu_id: true,
+        module_filter: ModuleFilter::new(),
     };
     set_log_config(config);
+}
+
+/// Maximum number of module patterns that can be stored
+const MAX_MODULE_PATTERNS: usize = 32;
+
+/// Module filter for controlling which modules can log (no heap allocation)
+#[derive(Debug, Clone)]
+pub struct ModuleFilter {
+    /// Enabled module patterns (supports prefix matching)
+    enabled_modules: [Option<&'static str>; MAX_MODULE_PATTERNS],
+    /// Disabled module patterns (takes precedence over enabled)
+    disabled_modules: [Option<&'static str>; MAX_MODULE_PATTERNS],
+    /// Number of enabled patterns
+    enabled_count: usize,
+    /// Number of disabled patterns
+    disabled_count: usize,
+    /// If true, all modules are enabled by default (whitelist mode)
+    /// If false, all modules are disabled by default (blacklist mode)
+    default_enabled: bool,
+}
+
+impl ModuleFilter {
+    pub const fn new() -> Self {
+        Self {
+            enabled_modules: [None; MAX_MODULE_PATTERNS],
+            disabled_modules: [None; MAX_MODULE_PATTERNS],
+            enabled_count: 0,
+            disabled_count: 0,
+            default_enabled: true, // By default, all modules are enabled
+        }
+    }
+
+    /// Create a filter that allows all modules
+    pub const fn allow_all() -> Self {
+        Self {
+            enabled_modules: [None; MAX_MODULE_PATTERNS],
+            disabled_modules: [None; MAX_MODULE_PATTERNS],
+            enabled_count: 0,
+            disabled_count: 0,
+            default_enabled: true,
+        }
+    }
+
+    /// Create a filter that blocks all modules by default
+    pub const fn block_all() -> Self {
+        Self {
+            enabled_modules: [None; MAX_MODULE_PATTERNS],
+            disabled_modules: [None; MAX_MODULE_PATTERNS],
+            enabled_count: 0,
+            disabled_count: 0,
+            default_enabled: false,
+        }
+    }
+
+    /// Enable logging for a specific module or module prefix
+    /// Uses static string literals to avoid heap allocation
+    pub fn enable_module(&mut self, module: &'static str) -> bool {
+        // Remove from disabled first
+        self.remove_disabled_module(module);
+
+        // Add to enabled if not already present and space available
+        for i in 0..self.enabled_count {
+            if let Some(existing) = self.enabled_modules[i] {
+                if existing == module {
+                    return true; // Already enabled
+                }
+            }
+        }
+
+        if self.enabled_count < MAX_MODULE_PATTERNS {
+            self.enabled_modules[self.enabled_count] = Some(module);
+            self.enabled_count += 1;
+            true
+        } else {
+            false // No space available
+        }
+    }
+
+    /// Disable logging for a specific module or module prefix
+    /// Uses static string literals to avoid heap allocation
+    pub fn disable_module(&mut self, module: &'static str) -> bool {
+        // Remove from enabled first
+        self.remove_enabled_module(module);
+
+        // Add to disabled if not already present and space available
+        for i in 0..self.disabled_count {
+            if let Some(existing) = self.disabled_modules[i] {
+                if existing == module {
+                    return true; // Already disabled
+                }
+            }
+        }
+
+        if self.disabled_count < MAX_MODULE_PATTERNS {
+            self.disabled_modules[self.disabled_count] = Some(module);
+            self.disabled_count += 1;
+            true
+        } else {
+            false // No space available
+        }
+    }
+
+    /// Check if a module is allowed to log
+    pub fn is_module_enabled(&self, module: &str) -> bool {
+        // Check if explicitly disabled (takes priority)
+        for i in 0..self.disabled_count {
+            if let Some(disabled_pattern) = self.disabled_modules[i] {
+                if module.starts_with(disabled_pattern) {
+                    return false;
+                }
+            }
+        }
+
+        // Check if explicitly enabled
+        for i in 0..self.enabled_count {
+            if let Some(enabled_pattern) = self.enabled_modules[i] {
+                if module.starts_with(enabled_pattern) {
+                    return true;
+                }
+            }
+        }
+
+        // Use default behavior
+        self.default_enabled
+    }
+
+    /// Clear all filters and reset to default
+    pub fn clear(&mut self) {
+        self.enabled_modules = [None; MAX_MODULE_PATTERNS];
+        self.disabled_modules = [None; MAX_MODULE_PATTERNS];
+        self.enabled_count = 0;
+        self.disabled_count = 0;
+        self.default_enabled = true;
+    }
+
+    /// Remove a module from enabled list
+    fn remove_enabled_module(&mut self, module: &'static str) {
+        for i in 0..self.enabled_count {
+            if let Some(existing) = self.enabled_modules[i] {
+                if existing == module {
+                    // Shift remaining elements down
+                    for j in i..self.enabled_count - 1 {
+                        self.enabled_modules[j] = self.enabled_modules[j + 1];
+                    }
+                    self.enabled_modules[self.enabled_count - 1] = None;
+                    self.enabled_count -= 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Remove a module from disabled list
+    fn remove_disabled_module(&mut self, module: &'static str) {
+        for i in 0..self.disabled_count {
+            if let Some(existing) = self.disabled_modules[i] {
+                if existing == module {
+                    // Shift remaining elements down
+                    for j in i..self.disabled_count - 1 {
+                        self.disabled_modules[j] = self.disabled_modules[j + 1];
+                    }
+                    self.disabled_modules[self.disabled_count - 1] = None;
+                    self.disabled_count -= 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Get count of enabled module patterns
+    pub fn get_enabled_count(&self) -> usize {
+        self.enabled_count
+    }
+
+    /// Get count of disabled module patterns
+    pub fn get_disabled_count(&self) -> usize {
+        self.disabled_count
+    }
+
+    /// Get enabled module pattern by index
+    pub fn get_enabled_module(&self, index: usize) -> Option<&'static str> {
+        if index < self.enabled_count {
+            self.enabled_modules[index]
+        } else {
+            None
+        }
+    }
+
+    /// Get disabled module pattern by index
+    pub fn get_disabled_module(&self, index: usize) -> Option<&'static str> {
+        if index < self.disabled_count {
+            self.disabled_modules[index]
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for ModuleFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }

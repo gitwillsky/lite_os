@@ -305,7 +305,7 @@ impl IpiQueue {
 
         // Check if this priority queue is full first
         let current_len = self.messages.get(&priority).map(|q| q.len()).unwrap_or(0);
-        
+
         if current_len >= self.max_size_per_priority {
             // For critical messages, try to drop lower priority messages
             if priority == IpiPriority::Critical {
@@ -442,7 +442,7 @@ impl IpiBarrier {
 
         self.waiting_cpus[cpu_id].store(true, Ordering::Release);
         let arrived = self.arrived_cpus.fetch_add(1, Ordering::AcqRel) + 1;
-        
+
         if arrived >= self.expected_cpus {
             self.completed.store(true, Ordering::Release);
             return true;
@@ -553,11 +553,6 @@ impl IpiManager {
 /// Global IPI manager instance
 static IPI_MANAGER: IpiManager = IpiManager::new();
 
-/// Initialize IPI subsystem
-pub fn init() {
-    debug!("Inter-processor interrupt subsystem initialized");
-}
-
 /// Send an IPI message to a specific CPU (asynchronous)
 pub fn send_ipi(target_cpu: usize, message: IpiMessage) -> Result<(), &'static str> {
     send_ipi_with_retry(target_cpu, message, 3, 100)
@@ -663,21 +658,21 @@ pub fn send_ipi_sync(target_cpu: usize, mut message: IpiMessage, timeout_ms: u64
                     IpiResponse::Timeout => Ok(IpiResponse::Timeout),
                 };
                 drop(call);
-                
+
                 // Clean up
                 let mut sync_calls = IPI_MANAGER.sync_calls.lock();
                 sync_calls.remove(&call_id);
-                
+
                 return result;
             }
-            
+
             if call.is_timed_out() {
                 drop(call);
-                
+
                 // Clean up
                 let mut sync_calls = IPI_MANAGER.sync_calls.lock();
                 sync_calls.remove(&call_id);
-                
+
                 return Ok(IpiResponse::Timeout);
             }
         } else {
@@ -775,7 +770,7 @@ pub fn handle_ipi_interrupt() {
 /// Handle a specific IPI message (asynchronous)
 fn handle_ipi_message(message: IpiMessage) {
     let response = handle_ipi_message_sync(message);
-    
+
     // For async messages, we don't need to do anything with the response
     // unless it's an error that should be logged
     match response {
@@ -795,7 +790,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
             IPI_MANAGER.stats[cpu_id].reschedule_count.fetch_add(1, Ordering::Relaxed);
             handle_reschedule_ipi();
             let response = IpiResponse::Success;
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
@@ -806,7 +801,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
             IPI_MANAGER.stats[cpu_id].tlb_flush_count.fetch_add(1, Ordering::Relaxed);
             TlbManager::flush_local(addr);
             let response = IpiResponse::Success;
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
@@ -816,7 +811,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
         IpiMessage::FunctionCall { func, sync_call } => {
             IPI_MANAGER.stats[cpu_id].function_call_count.fetch_add(1, Ordering::Relaxed);
             let response = func();
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
@@ -825,11 +820,11 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
 
         IpiMessage::Stop { sync_call } => {
             let response = IpiResponse::Success;
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
-            
+
             handle_stop_ipi();
             response
         }
@@ -837,7 +832,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
         IpiMessage::WakeUp { sync_call } => {
             handle_wakeup_ipi();
             let response = IpiResponse::Success;
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
@@ -846,7 +841,7 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
 
         IpiMessage::Generic { msg_type, data, sync_call } => {
             let response = handle_generic_ipi_sync(msg_type, data);
-            
+
             if let Some(call_id) = sync_call {
                 send_sync_response(call_id, response.clone());
             }
@@ -886,11 +881,11 @@ fn send_hardware_ipi(target_cpu: usize) -> Result<(), &'static str> {
 fn send_hardware_ipi_with_retry(target_cpu: usize, max_retries: usize) -> Result<(), &'static str> {
     for attempt in 0..=max_retries {
         let result = try_send_hardware_ipi(target_cpu);
-        
+
         if result.is_ok() {
             return Ok(());
         }
-        
+
         if attempt < max_retries {
             // Short delay before retry
             for _ in 0..1000 {
@@ -898,7 +893,7 @@ fn send_hardware_ipi_with_retry(target_cpu: usize, max_retries: usize) -> Result
             }
         }
     }
-    
+
     Err("Hardware IPI send failed after retries")
 }
 
@@ -977,7 +972,7 @@ fn handle_generic_ipi(msg_type: usize, data: usize) {
 fn handle_generic_ipi_sync(msg_type: usize, data: usize) -> IpiResponse {
     debug!("CPU {} received generic IPI: type={}, data={:#x}",
            current_cpu_id(), msg_type, data);
-    
+
     // Application-specific handling can be added here
     // For now, just return success
     IpiResponse::Success
@@ -1002,28 +997,28 @@ pub fn send_reschedule_ipi_broadcast() -> Result<usize, &'static str> {
 
 /// Send TLB flush IPI to a specific CPU (asynchronous)
 pub fn send_tlb_flush_ipi(target_cpu: usize, addr: Option<usize>) -> Result<(), &'static str> {
-    send_ipi(target_cpu, IpiMessage::TlbFlush { 
-        addr, 
-        asid: None, 
-        sync_call: None 
+    send_ipi(target_cpu, IpiMessage::TlbFlush {
+        addr,
+        asid: None,
+        sync_call: None
     })
 }
 
 /// Send TLB flush IPI to a specific CPU (synchronous)
 pub fn send_tlb_flush_ipi_sync(target_cpu: usize, addr: Option<usize>, timeout_ms: u64) -> Result<IpiResponse, &'static str> {
-    send_ipi_sync(target_cpu, IpiMessage::TlbFlush { 
-        addr, 
-        asid: None, 
-        sync_call: None 
+    send_ipi_sync(target_cpu, IpiMessage::TlbFlush {
+        addr,
+        asid: None,
+        sync_call: None
     }, timeout_ms)
 }
 
 /// Send TLB flush IPI to all CPUs
 pub fn send_tlb_flush_ipi_broadcast(addr: Option<usize>) -> Result<usize, &'static str> {
-    send_ipi_broadcast(IpiMessage::TlbFlush { 
-        addr, 
-        asid: None, 
-        sync_call: None 
+    send_ipi_broadcast(IpiMessage::TlbFlush {
+        addr,
+        asid: None,
+        sync_call: None
     }, false)
 }
 
@@ -1113,7 +1108,7 @@ pub fn wait_at_ipi_barrier(barrier_id: u64) -> Result<(), &'static str> {
         if let Some(barrier) = barriers.get(&barrier_id) {
             // Arrive at the barrier
             barrier.arrive(cpu_id);
-            
+
             // Wait for completion
             barrier.wait(cpu_id)?;
             barrier.is_completed()
