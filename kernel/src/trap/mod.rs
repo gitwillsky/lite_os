@@ -72,7 +72,7 @@ pub fn trap_handler() {
                 Interrupt::SupervisorSoft => {
                     // 处理软件中断（IPI）
                     crate::smp::ipi::handle_ipi_interrupt();
-                    
+
                     // 清除软件中断位
                     #[cfg(target_arch = "riscv64")]
                     unsafe {
@@ -152,7 +152,7 @@ pub fn trap_handler() {
                         let trap_cx = task::current_trap_context();
 
                         error!(
-                            "Instruction Page Fault: VA={:#x}, PC={:#x}, CPU={}, current_task={:?}, user_token={:#x}",
+                            "Instruction Page Fault: VA={:#x}, PC={:#x}, CPU={}, current_task={:?}, current_user_token={:#x}",
                             stval,
                             trap_cx.sepc,
                             current_cpu_id,

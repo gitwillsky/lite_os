@@ -737,7 +737,7 @@ impl core::fmt::Debug for TaskControlBlock {
                 pid: {},
                 name: {},
                 user_stack_top: {:#x},
-                user_stap_val: {:#x},
+                user_token: {:#x},
                 parent: {:?},
                 children: {:?},
                 exit_code: {},

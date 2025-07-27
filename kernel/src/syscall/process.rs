@@ -2,7 +2,8 @@ use alloc::{string::ToString, sync::Arc, vec::Vec};
 
 use crate::{
     memory::{
-        page_table::{translated_byte_buffer, translated_ref_mut, translated_str},
+        page_table::{translated_byte_buffer, translated_ref_mut, translated_str, PageTable},
+        address::VirtualAddress,
         frame_allocator,
     },
     task::{
@@ -133,8 +134,17 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 
         // 写入退出码到用户空间
         if !exit_code_ptr.is_null() {
-            let parent_token = task.mm.memory_set.lock().token();
-            *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
+            // 使用内存集的锁保护整个翻译和写入过程，避免多核竞争
+            let memory_set = task.mm.memory_set.lock();
+            let parent_token = memory_set.token();
+            
+            // 检查地址是否有效，避免访问无效内存
+            if PageTable::from_token(parent_token)
+                .translate_va(VirtualAddress::from(exit_code_ptr as usize)).is_some() {
+                *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
+            } else {
+                warn!("Failed to translate exit_code_ptr={:#x}, skipping write", exit_code_ptr as usize);
+            }
         }
 
         return found_pid as isize;
