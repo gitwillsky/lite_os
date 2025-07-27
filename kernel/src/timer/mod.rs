@@ -114,6 +114,12 @@ fn process_sleeping_tasks() {
 
 /// Set the next timer interrupt
 pub fn set_next_timer_interrupt() {
+    assert_ne!(
+        TICK_INTERVAL_VALUE.load(Ordering::Relaxed),
+        0,
+        "TICK_INTERVAL_VALUE is 0"
+    );
+
     #[cfg(target_arch = "riscv64")]
     {
         use riscv::register::time;
