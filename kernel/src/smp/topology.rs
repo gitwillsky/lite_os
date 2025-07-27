@@ -183,7 +183,7 @@ pub fn discover_cpus() {
     // Create default cache topology
     create_default_cache_topology(&mut topology);
 
-    info!("CPU topology discovery complete: {} CPUs, {} NUMA nodes",
+    debug!("CPU topology discovery complete: {} CPUs, {} NUMA nodes",
           topology.cpu_count, topology.numa_nodes.len());
 
     // Store the topology globally

@@ -201,7 +201,10 @@ where
         Ok(())
     } else {
         // Send IPI to execute on remote CPU
-        ipi::send_function_call_ipi(cpu_id, Box::new(func))
+        ipi::send_function_call_ipi(cpu_id, || {
+            func();
+            ipi::IpiResponse::Success
+        })
     }
 }
 
