@@ -73,7 +73,7 @@ impl LoadBalancer {
         // Collect load information from all CPUs using synchronous IPI
         let mut cpu_loads = Vec::new();
         let current_cpu = current_cpu_id();
-        
+
         for cpu_id in 0..cpu_count() {
             if cpu_id == current_cpu {
                 // Get local load directly
@@ -132,7 +132,7 @@ impl LoadBalancer {
             if let Some(underloaded_cpu) = best_target {
                 // Use synchronous IPI to ensure reliable task migration
                 let tasks_to_move = 1.max((load - avg_load) / 3);
-                
+
                 match self.migrate_tasks_sync(overloaded_cpu, underloaded_cpu, tasks_to_move) {
                     Ok(migrated_count) if migrated_count > 0 => {
                         successful_migrations += migrated_count;
@@ -143,7 +143,7 @@ impl LoadBalancer {
                         // No tasks were migrated
                     }
                     Err(e) => {
-                        debug!("Failed to migrate tasks from CPU{} to CPU{}: {}", 
+                        debug!("Failed to migrate tasks from CPU{} to CPU{}: {}",
                                overloaded_cpu, underloaded_cpu, e);
                     }
                 }
@@ -163,10 +163,10 @@ impl LoadBalancer {
                 let initial_load = cpu_data.load();
                 let stolen_tasks = cpu_data.steal_tasks(count);
                 let final_load = cpu_data.load();
-                
-                debug!("CPU{} stole {} tasks, load: {} -> {}", 
+
+                debug!("CPU{} stole {} tasks, load: {} -> {}",
                        current_cpu_id(), stolen_tasks.len(), initial_load, final_load);
-                
+
                 // Store stolen tasks temporarily in a shared location
                 // In practice, this would use a more sophisticated mechanism
                 ipi::IpiResponse::Value(stolen_tasks.len())
@@ -282,6 +282,8 @@ pub fn run_tasks() -> ! {
     let cpu_id = current_cpu_id();
     info!("CPU{} entering enhanced scheduler loop", cpu_id);
 
+    // Note: Trap handler should already be set up per CPU
+
     loop {
         // 1. Handle pending IPI messages first (highest priority)
         ipi::handle_ipi_interrupt();
@@ -324,7 +326,7 @@ fn perform_enhanced_periodic_maintenance() {
     static LAST_IPI_CLEANUP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let current_time = get_time_msec();
     let last_cleanup = LAST_IPI_CLEANUP.load(Ordering::Relaxed);
-    
+
     if current_time - last_cleanup > 5000 { // 5 seconds
         if LAST_IPI_CLEANUP.compare_exchange(last_cleanup, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
             ipi::cleanup_expired_ipi_resources();
@@ -361,7 +363,7 @@ fn check_preemption_opportunities() {
     if current_time - last_check > PREEMPT_CHECK_INTERVAL_MS {
         if LAST_PREEMPT_CHECK.compare_exchange(last_check, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
             let current_cpu = current_cpu_id();
-            
+
             for cpu_id in 0..cpu_count() {
                 if cpu_id == current_cpu {
                     continue;
@@ -434,7 +436,7 @@ fn try_enhanced_work_stealing() -> Option<Arc<TaskControlBlock>> {
 
     // First, collect load information from all CPUs
     let mut cpu_loads = Vec::new();
-    
+
     for cpu_id in 0..total_cpus {
         if cpu_id == current_cpu {
             continue;
@@ -470,7 +472,7 @@ fn try_enhanced_work_stealing() -> Option<Arc<TaskControlBlock>> {
             if let Some(cpu_data) = current_cpu_data() {
                 let stolen_tasks = cpu_data.steal_tasks(1);
                 if !stolen_tasks.is_empty() {
-                    debug!("CPU{} stole {} tasks for remote CPU", 
+                    debug!("CPU{} stole {} tasks for remote CPU",
                            current_cpu_id(), stolen_tasks.len());
                     ipi::IpiResponse::Value(stolen_tasks.len())
                 } else {
@@ -624,7 +626,7 @@ fn enter_enhanced_idle_state() {
             error!("No CPU data available for enhanced idle");
             loop {
                 ipi::handle_ipi_interrupt(); // Still handle IPIs even without CPU data
-                
+
                 #[cfg(target_arch = "riscv64")]
                 unsafe {
                     riscv::asm::wfi();
@@ -639,7 +641,7 @@ fn enter_enhanced_idle_state() {
     let cpu_id = current_cpu_id();
     cpu_data.set_state(crate::smp::cpu::CpuState::Idle);
     let idle_start = get_time_msec();
-    
+
     debug!("CPU{} entering enhanced idle state", cpu_id);
 
     loop {
@@ -656,7 +658,7 @@ fn enter_enhanced_idle_state() {
         static LAST_STEAL_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
         let current_time = get_time_msec();
         let last_check = LAST_STEAL_CHECK.load(Ordering::Relaxed);
-        
+
         if current_time - last_check > 100 { // Check every 100ms
             if LAST_STEAL_CHECK.compare_exchange(last_check, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
                 if let Some(_) = try_enhanced_work_stealing() {
@@ -673,7 +675,7 @@ fn enter_enhanced_idle_state() {
 
         // 5. Wait for interrupt with timeout
         let wait_start = get_time_msec();
-        
+
         #[cfg(target_arch = "riscv64")]
         unsafe {
             riscv::asm::wfi();
@@ -699,7 +701,7 @@ fn enter_enhanced_idle_state() {
     let idle_time = idle_end.saturating_sub(idle_start);
     cpu_data.record_idle_time(idle_time);
     cpu_data.set_state(crate::smp::cpu::CpuState::Online);
-    
+
     debug!("CPU{} exiting enhanced idle state after {}ms", cpu_id, idle_time);
 }
 
@@ -713,7 +715,7 @@ fn perform_idle_system_check() {
         if let Some(cpu_data) = cpu_data(cpu_id) {
             let load = cpu_data.load();
             total_tasks += load;
-            
+
             if load == 0 {
                 idle_cpus += 1;
             } else if load > 5 {
@@ -723,13 +725,13 @@ fn perform_idle_system_check() {
     }
 
     if overloaded_cpus > 0 && idle_cpus > 1 {
-        debug!("System imbalance detected: {} overloaded, {} idle CPUs", 
+        debug!("System imbalance detected: {} overloaded, {} idle CPUs",
                overloaded_cpus, idle_cpus);
         // Trigger load balancing
         LOAD_BALANCER.lock().balance_load();
     }
 
-    debug!("Idle system check: {} total tasks, {} idle CPUs, {} overloaded CPUs", 
+    debug!("Idle system check: {} total tasks, {} idle CPUs, {} overloaded CPUs",
            total_tasks, idle_cpus, overloaded_cpus);
 }
 

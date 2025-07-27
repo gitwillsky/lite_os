@@ -177,6 +177,10 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
         secondary_cpu_halt(cpu_id);
     }
 
+    // Set supervisor trap vector for this CPU (required for S-mode interrupt handling)
+    // Use the same trap handler setup as CPU0
+    crate::trap::init();
+
     // Mark CPU as online
     cpu_set_online(cpu_id);
 
@@ -201,6 +205,12 @@ fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
             riscv::register::sie::set_stimer();
             riscv::register::sie::set_ssoft();
         }
+
+        // Debug: Check interrupt register status
+        let sstatus = riscv::register::sstatus::read();
+        let sie = riscv::register::sie::read();
+        info!("Hart {} interrupt status: sstatus.sie={}, sie.ssoft={}, sie.stimer={}, sie.sext={}",
+              hart_id, sstatus.sie(), sie.ssoft(), sie.stimer(), sie.sext());
 
         // Initialize floating point if available
         #[cfg(feature = "f")]

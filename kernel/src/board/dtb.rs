@@ -48,6 +48,8 @@ pub struct BoardInfo {
     pub virtio_devices: [Option<VirtIODevice>; 20],
     pub virtio_count: usize,
     pub rtc_device: Option<RTCDevice>,
+    /// HART IDs from device tree CPU nodes (indexed by logical CPU ID)
+    pub cpu_hart_ids: [Option<usize>; 32],  // Support up to 32 CPUs
 }
 
 impl<const N: usize> Display for StringInLine<N> {
@@ -77,6 +79,15 @@ impl Display for BoardInfo {
         for i in 0..self.virtio_count {
             if let Some(dev) = &self.virtio_devices[i] {
                 writeln!(f, "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}", i, dev.base_addr, dev.base_addr + dev.size, dev.irq)?;
+            }
+        }
+        // Display CPU HART IDs
+        writeln!(f, "CPU HART IDs:")?;
+        for i in 0..self.cpu_count {
+            if let Some(hart_id) = self.cpu_hart_ids[i] {
+                writeln!(f, "  CPU[{}]: HART {}", i, hart_id)?;
+            } else {
+                writeln!(f, "  CPU[{}]: HART unknown", i)?;
             }
         }
         Ok(())
@@ -109,15 +120,19 @@ impl BoardInfo {
             virtio_devices: [None; 20],
             virtio_count: 0,
             rtc_device: None,
+            cpu_hart_ids: [None; 32],
         };
 
         // 用于临时存储当前 VirtIO 设备的信息
         let mut current_virtio_reg: Option<Range<usize>> = None;
         let mut current_virtio_irq: Option<u32> = None;
-        
+
         // 用于临时存储当前 RTC 设备的信息
         let mut current_rtc_reg: Option<Range<usize>> = None;
         let mut current_rtc_irq: Option<u32> = None;
+
+        // 用于跟踪CPU解析
+        let mut current_cpu_index: usize = 0;
 
         let dtb = unsafe {
             Dtb::from_raw_parts_filtered(dtb_addr as *const u8, |node| {
@@ -172,9 +187,11 @@ impl BoardInfo {
                     }
                 } else {
                     if current == Str::from(CPUS) && name.starts_with("cpu@") {
+                        // Set current CPU index for tracking hart_id
+                        current_cpu_index = ans.cpu_count;
                         ans.smp += 1;
                         ans.cpu_count += 1;
-                        WalkOperation::StepInto  // Step into CPU node to parse frequency
+                        WalkOperation::StepInto  // Step into CPU node to parse frequency and reg
                     } else {
                         WalkOperation::StepOver
                     }
@@ -187,7 +204,16 @@ impl BoardInfo {
             }
             DtbObj::Property(Property::Reg(mut reg)) => {
                 let node = ctx.name();
-                if node.starts_with(UART) || node.starts_with(SERIAL) {
+                if node.starts_with("cpu@") {
+                    // Parse CPU node reg property to get hart_id
+                    if let Some(reg_range) = reg.next() {
+                        let hart_id = reg_range.start; // Hart ID is typically the first value in reg
+                        if current_cpu_index < 32 {
+                            ans.cpu_hart_ids[current_cpu_index] = Some(hart_id);
+                        }
+                    }
+                    WalkOperation::StepOver
+                } else if node.starts_with(UART) || node.starts_with(SERIAL) {
                     ans.uart = reg.next().unwrap();
                     WalkOperation::StepOut
                 } else if node.starts_with(TEST) {

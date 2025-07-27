@@ -44,6 +44,14 @@ pub fn trap_handler() {
         if let Ok(interrupt) = Interrupt::from_number(code) {
             match interrupt {
                 Interrupt::SupervisorTimer => {
+                    let cpu_id = crate::smp::current_cpu_id();
+                    // 只在前几次timer中断时打印调试信息
+                    static TIMER_DEBUG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+                    let count = TIMER_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if count < 20 {
+                        debug!("CPU{} received timer interrupt (count={})", cpu_id, count);
+                    }
+
                     timer::set_next_timer_interrupt();
 
                     // 检查 watchdog 状态
@@ -68,13 +76,10 @@ pub fn trap_handler() {
                 }
                 Interrupt::SupervisorSoft => {
                     // 处理软件中断（IPI）
+                    let cpu_id = crate::smp::current_cpu_id();
+                    debug!("CPU{} received supervisor software interrupt (IPI)", cpu_id);
                     crate::smp::ipi::handle_ipi_interrupt();
-
-                    // 清除软件中断位
-                    #[cfg(target_arch = "riscv64")]
-                    unsafe {
-                        riscv::register::sip::clear_ssoft();
-                    }
+                    debug!("CPU{} finished handling IPI interrupt", cpu_id);
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);

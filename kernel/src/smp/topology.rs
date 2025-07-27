@@ -132,8 +132,7 @@ pub fn discover_cpus() {
     for logical_id in 0..cpu_count {
         let arch_id = if board_info.cpu_count > 1 {
             // Use actual hart IDs from device tree if available
-            // For now, assume linear mapping
-            logical_id
+            board_info.cpu_hart_ids[logical_id].unwrap_or(logical_id)
         } else {
             0 // Single CPU system
         };
@@ -154,7 +153,7 @@ pub fn discover_cpus() {
         cpu_info.numa_node = 0;
 
         // Log before moving cpu_info
-        debug!("Discovered CPU {}: arch_id={}, frequency={}Hz",
+        info!("Discovered CPU {}: arch_id={} (hart_id), frequency={}Hz",
               logical_id, arch_id, cpu_info.frequency);
 
         topology.add_cpu(cpu_info);
@@ -168,6 +167,7 @@ pub fn discover_cpus() {
 
         let cpu_data = Arc::new(CpuData::new(logical_id, cpu_type));
         cpu_data.set_arch_cpu_id(arch_id);
+        info!("Set CPU{} arch_cpu_id to {} (hart_id)", logical_id, arch_id);
         set_cpu_data(logical_id, cpu_data);
     }
 

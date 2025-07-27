@@ -576,10 +576,14 @@ pub fn send_ipi_with_retry(target_cpu: usize, message: IpiMessage, max_retries: 
     }
 
     // Try to add message to target CPU's queue first (only once)
+    debug!("CPU{} adding IPI message to CPU{} queue", current_cpu, target_cpu);
     let result = IPI_MANAGER.queues[target_cpu].lock().push(message);
     if result.is_err() {
+        error!("CPU{} failed to add IPI message to CPU{} queue", current_cpu, target_cpu);
         IPI_MANAGER.stats[current_cpu].send_failures.fetch_add(1, Ordering::Relaxed);
         return result;
+    } else {
+        debug!("CPU{} successfully added IPI message to CPU{} queue", current_cpu, target_cpu);
     }
 
     // Retry only the hardware IPI sending part
@@ -645,12 +649,27 @@ pub fn send_ipi_sync(target_cpu: usize, mut message: IpiMessage, timeout_ms: u64
     }
 
     // Wait for response or timeout
+    let start_time = get_time_msec();
+    debug!("CPU{} waiting for sync response from CPU{}, call_id={}, timeout={}ms",
+           current_cpu, target_cpu, call_id, timeout_ms);
+
+    let mut loop_count = 0;
     loop {
+        loop_count += 1;
+
+        // Periodic debug output
+        if loop_count % 10000 == 0 {
+            let elapsed = get_time_msec() - start_time;
+            debug!("CPU{} still waiting for sync response (elapsed={}ms, loops={})",
+                   current_cpu, elapsed, loop_count);
+        }
+
         // Check if call completed
         if let Some(call_lock) = IPI_MANAGER.sync_calls.lock().get(&call_id) {
             let call = call_lock.lock();
             if call.is_completed() {
                 let response = call.response.as_ref().unwrap();
+                debug!("CPU{} received sync response: {:?} (loops={})", current_cpu, response, loop_count);
                 let result = match response {
                     IpiResponse::Success => Ok(IpiResponse::Success),
                     IpiResponse::Value(v) => Ok(IpiResponse::Value(*v)),
@@ -667,6 +686,9 @@ pub fn send_ipi_sync(target_cpu: usize, mut message: IpiMessage, timeout_ms: u64
             }
 
             if call.is_timed_out() {
+                let elapsed = get_time_msec() - start_time;
+                warn!("CPU{} sync call {} timed out after {}ms (loops={})",
+                      current_cpu, call_id, elapsed, loop_count);
                 drop(call);
 
                 // Clean up
@@ -676,6 +698,7 @@ pub fn send_ipi_sync(target_cpu: usize, mut message: IpiMessage, timeout_ms: u64
                 return Ok(IpiResponse::Timeout);
             }
         } else {
+            error!("CPU{} sync call tracking lost for call_id={}", current_cpu, call_id);
             return Err("Sync call tracking lost");
         }
 
@@ -759,11 +782,21 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 /// Handle incoming IPI interrupt
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
+    debug!("CPU{} received IPI interrupt", cpu_id);
     IPI_MANAGER.stats[cpu_id].received.fetch_add(1, Ordering::Relaxed);
 
     // Process all pending messages
+    let mut message_count = 0;
     while let Some(message) = IPI_MANAGER.queues[cpu_id].lock().pop() {
+        message_count += 1;
+        debug!("CPU{} processing IPI message #{}", cpu_id, message_count);
         handle_ipi_message(message);
+    }
+
+    if message_count == 0 {
+        warn!("CPU{} received IPI interrupt but no messages in queue", cpu_id);
+    } else {
+        debug!("CPU{} processed {} IPI messages", cpu_id, message_count);
     }
 }
 
@@ -857,10 +890,16 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
 
 /// Send synchronous response back to caller
 fn send_sync_response(call_id: u64, response: IpiResponse) {
+    let cpu_id = current_cpu_id();
+    debug!("CPU{} sending sync response for call_id={}: {:?}", cpu_id, call_id, response);
+
     // Find the original caller by looking up the sync call
     if let Some(call_lock) = IPI_MANAGER.sync_calls.lock().get(&call_id) {
         let mut call = call_lock.lock();
         call.complete(response);
+        debug!("CPU{} successfully completed sync call {}", cpu_id, call_id);
+    } else {
+        error!("CPU{} failed to find sync call {} to complete", cpu_id, call_id);
     }
 }
 
@@ -904,9 +943,23 @@ fn try_send_hardware_ipi(target_cpu: usize) -> Result<(), &'static str> {
     {
         // Get the hart ID for the target CPU
         if let Some(cpu_data) = crate::smp::cpu_data(target_cpu) {
-            let hart_mask = 1 << cpu_data.arch_cpu_id.load(Ordering::Relaxed);
-            sbi::send_ipi(hart_mask).map_err(|_| "SBI IPI send failed")
+            let hart_id = cpu_data.arch_cpu_id.load(Ordering::Relaxed);
+            let hart_mask = 1 << hart_id;
+            debug!("Sending IPI to CPU{} (hart_id={}, hart_mask={:#x})", target_cpu, hart_id, hart_mask);
+            match sbi::send_ipi(hart_mask) {
+                Ok(()) => {
+                    debug!("SBI IPI send successful: CPU{} hart_id={} hart_mask={:#x}",
+                           target_cpu, hart_id, hart_mask);
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("SBI IPI send failed: CPU{} hart_id={} hart_mask={:#x} error={}",
+                           target_cpu, hart_id, hart_mask, e);
+                    Err("SBI IPI send failed")
+                }
+            }
         } else {
+            error!("Cannot find CPU data for target CPU{}", target_cpu);
             Err("Cannot find CPU data for target CPU")
         }
     }

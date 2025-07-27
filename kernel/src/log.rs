@@ -1,43 +1,59 @@
 use core::fmt::{self, Write};
 use spin::Mutex;
 
-const LOG_BUFFER_SIZE: usize = 4096;
-
-pub struct StackBuffer {
-    buffer: [u8; LOG_BUFFER_SIZE],
+/// Optimized log buffer for direct console integration
+struct FastLogBuffer {
+    buffer: [u8; 512], // Smaller buffer since console handles buffering
     position: usize,
 }
 
-impl StackBuffer {
-    pub fn new() -> Self {
+impl FastLogBuffer {
+    const fn new() -> Self {
         Self {
-            buffer: [0; LOG_BUFFER_SIZE],
+            buffer: [0; 512],
             position: 0,
         }
     }
 
-    pub fn as_str(&self) -> &str {
+    fn reset(&mut self) {
+        self.position = 0;
+    }
+
+    fn as_str(&self) -> &str {
         unsafe {
             core::str::from_utf8_unchecked(&self.buffer[..self.position])
         }
     }
-}
 
-impl Write for StackBuffer {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+    fn write_str_fast(&mut self, s: &str) -> bool {
         let bytes = s.as_bytes();
-        let remaining = LOG_BUFFER_SIZE - self.position;
-
+        let remaining = 512 - self.position;
+        
         if bytes.len() <= remaining {
             self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
             self.position += bytes.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn write_char_fast(&mut self, c: char) -> bool {
+        if self.position < 511 {
+            self.buffer[self.position] = c as u8;
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Write for FastLogBuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.write_str_fast(s) {
             Ok(())
         } else {
-            // Truncate if buffer is full
-            if remaining > 0 {
-                self.buffer[self.position..].copy_from_slice(&bytes[..remaining]);
-                self.position = LOG_BUFFER_SIZE;
-            }
             Err(fmt::Error)
         }
     }
@@ -154,7 +170,24 @@ impl Default for LoggerConfig {
     }
 }
 
-/// Global logger configuration
+/// Fast CPU ID formatting without heap allocation
+fn format_cpu_id_fast(buffer: &mut FastLogBuffer, cpu_id: usize) {
+    let _ = buffer.write_str_fast("[CPU");
+    
+    // Simple number formatting for CPU IDs (0-99)
+    if cpu_id >= 10 {
+        let tens = cpu_id / 10;
+        let ones = cpu_id % 10;
+        let _ = buffer.write_char_fast((b'0' + tens as u8) as char);
+        let _ = buffer.write_char_fast((b'0' + ones as u8) as char);
+    } else {
+        let _ = buffer.write_char_fast((b'0' + cpu_id as u8) as char);
+    }
+    
+    let _ = buffer.write_str_fast("] ");
+}
+
+/// Optimized logger for direct console integration
 pub struct Logger {
     config: LoggerConfig,
 }
@@ -189,21 +222,16 @@ impl Logger {
         self.config.use_bright_colors = use_bright;
     }
 
+    /// Optimized logging function that directly integrates with console
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.config.level && self.config.module_filter.is_module_enabled(module) {
-            // Use stack buffer to avoid heap allocation
-            let mut buffer = StackBuffer::new();
-
-            // Add timestamp if enabled
-            if self.config.show_timestamps {
-                let time_us = crate::timer::get_time_us();
-                let _ = write!(buffer, "[{:>8}.{:03}] ", time_us / 1000, time_us % 1000);
-            }
-
-            // Add CPU ID if enabled (skip during early boot to avoid hangs)
+            // Use stack buffer for fast formatting
+            let mut buffer = FastLogBuffer::new();
+            
+            // Add CPU ID if enabled
             if self.config.show_cpu_id {
                 let cpu_id = crate::smp::current_cpu_id();
-                let _ = write!(buffer, "[CPU{}] ", cpu_id);
+                format_cpu_id_fast(&mut buffer, cpu_id);
             }
 
             // Add colored log level
@@ -213,23 +241,82 @@ impl Logger {
                 } else {
                     level.color()
                 };
-                let _ = write!(buffer, "[{}{}{}] ", color, level.name(), Colors::RESET);
+                let _ = buffer.write_str_fast("[");
+                let _ = buffer.write_str_fast(color);
+                let _ = buffer.write_str_fast(level.name());
+                let _ = buffer.write_str_fast(Colors::RESET);
+                let _ = buffer.write_str_fast("] ");
             } else {
-                let _ = write!(buffer, "[{}] ", level.name());
+                let _ = buffer.write_str_fast("[");
+                let _ = buffer.write_str_fast(level.name());
+                let _ = buffer.write_str_fast("] ");
             }
 
             // Add module name with color
             if self.config.enable_colors {
-                let _ = write!(buffer, "[{}{}{}] ", Colors::DIM, module, Colors::RESET);
+                let _ = buffer.write_str_fast("[");
+                let _ = buffer.write_str_fast(Colors::DIM);
+                let _ = buffer.write_str_fast(module);
+                let _ = buffer.write_str_fast(Colors::RESET);
+                let _ = buffer.write_str_fast("] ");
             } else {
-                let _ = write!(buffer, "[{}] ", module);
+                let _ = buffer.write_str_fast("[");
+                let _ = buffer.write_str_fast(module);
+                let _ = buffer.write_str_fast("] ");
             }
 
-            // Add the actual log message
-            let _ = write!(buffer, "{}", args);
+            // Try to format the message into remaining buffer space
+            if let Some(simple_msg) = args.as_str() {
+                // Simple case: string literal
+                let _ = buffer.write_str_fast(simple_msg);
+            } else {
+                // Complex formatting required
+                let remaining = 512 - buffer.position;
+                if remaining > 0 {
+                    let mut temp_buffer = [0u8; 256];
+                    let mut cursor = 0;
+                    
+                    // Use minimal stack writer for complex formatting
+                    struct MinimalWriter<'a> {
+                        buffer: &'a mut [u8],
+                        cursor: &'a mut usize,
+                    }
+                    
+                    impl<'a> Write for MinimalWriter<'a> {
+                        fn write_str(&mut self, s: &str) -> fmt::Result {
+                            let bytes = s.as_bytes();
+                            let space = self.buffer.len() - *self.cursor;
+                            let to_copy = bytes.len().min(space);
+                            
+                            if to_copy > 0 {
+                                self.buffer[*self.cursor..*self.cursor + to_copy]
+                                    .copy_from_slice(&bytes[..to_copy]);
+                                *self.cursor += to_copy;
+                            }
+                            Ok(())
+                        }
+                    }
+                    
+                    let mut writer = MinimalWriter {
+                        buffer: &mut temp_buffer,
+                        cursor: &mut cursor,
+                    };
+                    
+                    if writer.write_fmt(args).is_ok() && cursor > 0 {
+                        if let Ok(formatted) = core::str::from_utf8(&temp_buffer[..cursor]) {
+                            let _ = buffer.write_str_fast(formatted);
+                        }
+                    }
+                }
+            }
 
-            // Print the complete formatted message
-            println!("{}", buffer.as_str());
+            // For Error level, use emergency mode to ensure output
+            if level == LogLevel::Error {
+                crate::console::emergency_print(buffer.as_str());
+            } else {
+                // Direct call to console's write_line, avoiding println! macro
+                crate::console::write_log_line(buffer.as_str());
+            }
         }
     }
 }
@@ -257,15 +344,11 @@ pub fn use_bright_colors(use_bright: bool) {
 }
 
 /// Enable logging for a specific module or module prefix (early boot safe)
-/// Note: This function only works with predefined static module patterns
-/// For common modules, use the predefined constants like MODULE_SYSCALL, MODULE_MEMORY, etc.
 pub fn enable_module_pattern(pattern: &'static str) -> bool {
     LOGGER.lock().config.module_filter.enable_module(pattern)
 }
 
 /// Disable logging for a specific module or module prefix (early boot safe)
-/// Note: This function only works with predefined static module patterns
-/// For common modules, use the predefined constants like MODULE_SYSCALL, MODULE_MEMORY, etc.
 pub fn disable_module_pattern(pattern: &'static str) -> bool {
     LOGGER.lock().config.module_filter.disable_module(pattern)
 }
@@ -276,7 +359,6 @@ pub fn enable_all_modules() {
 }
 
 /// Set the module filter to block all modules by default
-/// After calling this, you need to explicitly enable modules you want to see
 pub fn disable_all_modules() {
     LOGGER.lock().config.module_filter = ModuleFilter::block_all();
 }
@@ -291,38 +373,48 @@ pub fn print_module_filter_info() {
     let logger = LOGGER.lock();
     let filter = &logger.config.module_filter;
 
-    println!("=== Module Filter Configuration ===");
-    println!("Default enabled: {}", filter.default_enabled);
+    // Use emergency print to ensure this diagnostic info is always shown
+    crate::console::emergency_print("=== Module Filter Configuration ===\n");
+    
+    if filter.default_enabled {
+        crate::console::emergency_print("Default enabled: true\n");
+    } else {
+        crate::console::emergency_print("Default enabled: false\n");
+    }
 
     let enabled_count = filter.get_enabled_count();
     let disabled_count = filter.get_disabled_count();
 
     if enabled_count > 0 {
-        println!("Enabled modules:");
+        crate::console::emergency_print("Enabled modules:\n");
         for i in 0..enabled_count {
             if let Some(module) = filter.get_enabled_module(i) {
-                println!("  + {}", module);
+                crate::console::emergency_print("  + ");
+                crate::console::emergency_print(module);
+                crate::console::emergency_print("\n");
             }
         }
     }
 
     if disabled_count > 0 {
-        println!("Disabled modules:");
+        crate::console::emergency_print("Disabled modules:\n");
         for i in 0..disabled_count {
             if let Some(module) = filter.get_disabled_module(i) {
-                println!("  - {}", module);
+                crate::console::emergency_print("  - ");
+                crate::console::emergency_print(module);
+                crate::console::emergency_print("\n");
             }
         }
     }
 
     if enabled_count == 0 && disabled_count == 0 {
         if filter.default_enabled {
-            println!("All modules are enabled (default)");
+            crate::console::emergency_print("All modules are enabled (default)\n");
         } else {
-            println!("All modules are disabled (default)");
+            crate::console::emergency_print("All modules are disabled (default)\n");
         }
     }
-    println!("==================================");
+    crate::console::emergency_print("==================================\n");
 }
 
 // Predefined module patterns (static strings for early boot safety)
@@ -351,7 +443,7 @@ pub fn disable_memory_logs() -> bool { disable_module_pattern(MODULE_MEMORY) }
 pub fn enable_fs_logs() -> bool { enable_module_pattern(MODULE_FS) }
 pub fn disable_fs_logs() -> bool { disable_module_pattern(MODULE_FS) }
 
-/// Internal logging function
+/// Internal logging function (optimized for direct console integration)
 pub fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     LOGGER.lock().log(level, module, args);
 }
@@ -380,7 +472,7 @@ macro_rules! warn {
     };
 }
 
-/// Error level logging macro
+/// Error level logging macro (uses emergency mode for critical errors)
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {
@@ -407,11 +499,10 @@ pub fn init_with_colors(level: LogLevel, enable_colors: bool) {
 }
 
 /// Auto-detect color support and initialize accordingly
-/// This is a simple heuristic - in a real system you might check TERM environment variable
 pub fn init_auto() {
     let config = LoggerConfig {
         level: LogLevel::Info,
-        enable_colors: true, // Enable colors by default - can be disabled if needed
+        enable_colors: true,
         use_bright_colors: false,
         show_timestamps: false,
         show_cpu_id: true,
@@ -473,7 +564,6 @@ impl ModuleFilter {
     }
 
     /// Enable logging for a specific module or module prefix
-    /// Uses static string literals to avoid heap allocation
     pub fn enable_module(&mut self, module: &'static str) -> bool {
         // Remove from disabled first
         self.remove_disabled_module(module);
@@ -497,7 +587,6 @@ impl ModuleFilter {
     }
 
     /// Disable logging for a specific module or module prefix
-    /// Uses static string literals to avoid heap allocation
     pub fn disable_module(&mut self, module: &'static str) -> bool {
         // Remove from enabled first
         self.remove_enabled_module(module);
