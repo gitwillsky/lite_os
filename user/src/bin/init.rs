@@ -4,14 +4,14 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{exec, exit, fork, wait, yield_};
+use user_lib::{exec, exit, fork, sleep, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     let mut shell_pid = None;
 
     // Start initial shell
-    spawn_shell(&mut shell_pid);
+    spawn("/bin/ls", &mut shell_pid);
 
     // Main process reaping loop
     loop {
@@ -27,20 +27,20 @@ fn main() -> i32 {
         if let Some(current_shell_pid) = shell_pid {
             if exited_pid as usize == current_shell_pid {
                 shell_pid = None;
-                spawn_shell(&mut shell_pid);
+                spawn("/bin/ls", &mut shell_pid);
             }
         }
     }
 }
 
-fn spawn_shell(shell_pid: &mut Option<usize>) {
+fn spawn(process: &str, shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
-        let exit_code = exec("/bin/shell") as i32;
+        let exit_code = exec(process) as i32;
         exit(exit_code);
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);
     } else {
-        println!("init: failed to fork shell process");
+        println!("init: failed to fork process {}", process);
     }
 }

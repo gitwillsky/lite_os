@@ -7,12 +7,9 @@ use core::{
 
 pub use context::TrapContext;
 use riscv::{
-    ExceptionNumber, InterruptNumber,
-    interrupt::{Exception, Interrupt, Trap},
-    register::{
-        self, scause, sepc, stval,
-        stvec::{self, TrapMode},
-    },
+    interrupt::{Exception, Interrupt, Trap}, register::{
+        self, satp, scause, sepc, stval, stvec::{self, TrapMode}
+    }, ExceptionNumber, InterruptNumber
 };
 
 use crate::{
@@ -144,20 +141,16 @@ pub fn trap_handler() {
                     } else {
                         let current_task = task::current_task();
                         let current_cpu_id = crate::smp::current_cpu_id();
-                        let user_token = if current_task.is_some() {
-                            Some(task::current_user_token())
-                        } else {
-                            None
-                        };
+                        let cpu_satp = satp::read();
                         let trap_cx = task::current_trap_context();
 
                         error!(
-                            "Instruction Page Fault: VA={:#x}, PC={:#x}, CPU={}, current_task={:?}, current_user_token={:#x}",
+                            "Instruction Page Fault: VA={:#x}, PC={:#x}, CPU={}, current_user_token={:#x}, current_task={:?}",
                             stval,
                             trap_cx.sepc,
                             current_cpu_id,
+                            cpu_satp.bits(),
                             current_task,
-                            user_token.unwrap_or(0)
                         );
 
                         exit_current_and_run_next(-5);
