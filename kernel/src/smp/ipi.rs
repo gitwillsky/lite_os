@@ -577,7 +577,16 @@ pub fn send_ipi_with_retry(target_cpu: usize, message: IpiMessage, max_retries: 
 
     // Try to add message to target CPU's queue first (only once)
     debug!("CPU{} adding IPI message to CPU{} queue", current_cpu, target_cpu);
-    let result = IPI_MANAGER.queues[target_cpu].lock().push(message);
+    let result = {
+        let mut queue = IPI_MANAGER.queues[target_cpu].lock();
+        let old_len = queue.len();
+        let result = queue.push(message);
+        let new_len = queue.len();
+        info!("CPU{} IPI queue for CPU{}: before={}, after={}, result={:?}", 
+              current_cpu, target_cpu, old_len, new_len, result);
+        result
+    };
+    
     if result.is_err() {
         error!("CPU{} failed to add IPI message to CPU{} queue", current_cpu, target_cpu);
         IPI_MANAGER.stats[current_cpu].send_failures.fetch_add(1, Ordering::Relaxed);
@@ -783,6 +792,8 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
     
+    info!("CPU{} handle_ipi_interrupt called", cpu_id);
+    
     // Validate CPU ID to prevent array bounds violations
     if cpu_id >= MAX_CPU_NUM {
         error!("Invalid CPU ID {} in handle_ipi_interrupt", cpu_id);
@@ -796,13 +807,23 @@ pub fn handle_ipi_interrupt() {
         let last_check = LAST_IPI_CHECK.load(core::sync::atomic::Ordering::Relaxed);
         if current_time.saturating_sub(last_check) > 1000 { // Every 1 second
             LAST_IPI_CHECK.store(current_time, core::sync::atomic::Ordering::Relaxed);
-            debug!("CPU{} checking for IPI messages, time={}ms", cpu_id, current_time);
+            info!("CPU{} IPI heartbeat check, time={}ms", cpu_id, current_time);
         }
     }
 
     // Check if there are any pending messages with error handling
     let queue_len = match IPI_MANAGER.queues.get(cpu_id) {
-        Some(queue) => queue.lock().len(),
+        Some(queue) => {
+            let locked_queue = queue.lock();
+            let len = locked_queue.len();
+            info!("CPU{} IPI queue detailed status: total_len={}, critical={}, high={}, normal={}, low={}", 
+                  cpu_id, len,
+                  locked_queue.len_for_priority(IpiPriority::Critical),
+                  locked_queue.len_for_priority(IpiPriority::High),
+                  locked_queue.len_for_priority(IpiPriority::Normal),
+                  locked_queue.len_for_priority(IpiPriority::Low));
+            len
+        },
         None => {
             error!("No IPI queue found for CPU {}", cpu_id);
             return;
@@ -810,10 +831,12 @@ pub fn handle_ipi_interrupt() {
     };
     
     if queue_len > 0 {
-        debug!("CPU{} found {} pending IPI messages", cpu_id, queue_len);
+        info!("CPU{} found {} pending IPI messages - PROCESSING", cpu_id, queue_len);
         if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
             stats.received.fetch_add(1, Ordering::Relaxed);
         }
+    } else {
+        debug!("CPU{} no pending IPI messages", cpu_id);
     }
 
     // Process all pending messages with bounds checking
@@ -821,15 +844,17 @@ pub fn handle_ipi_interrupt() {
     if let Some(queue) = IPI_MANAGER.queues.get(cpu_id) {
         while let Some(message) = queue.lock().pop() {
             message_count += 1;
-            debug!("CPU{} processing IPI message #{}", cpu_id, message_count);
+            info!("CPU{} processing IPI message #{}: {:?}", cpu_id, message_count, message);
             handle_ipi_message(message);
         }
     }
 
     if message_count == 0 && queue_len > 0 {
-        warn!("CPU{} had {} queued messages but couldn't pop any", cpu_id, queue_len);
+        error!("CPU{} had {} queued messages but couldn't pop any", cpu_id, queue_len);
     } else if message_count > 0 {
-        debug!("CPU{} processed {} IPI messages", cpu_id, message_count);
+        info!("CPU{} processed {} IPI messages - COMPLETE", cpu_id, message_count);
+    } else {
+        debug!("CPU{} no IPI messages to process", cpu_id);
     }
 }
 
@@ -853,7 +878,9 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
 
     match message {
         IpiMessage::Reschedule { sync_call } => {
-            IPI_MANAGER.stats[cpu_id].reschedule_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
+                stats.reschedule_count.fetch_add(1, Ordering::Relaxed);
+            }
             handle_reschedule_ipi();
             let response = IpiResponse::Success;
 
@@ -864,7 +891,9 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
         }
 
         IpiMessage::TlbFlush { addr, asid, sync_call } => {
-            IPI_MANAGER.stats[cpu_id].tlb_flush_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
+                stats.tlb_flush_count.fetch_add(1, Ordering::Relaxed);
+            }
             TlbManager::flush_local(addr);
             let response = IpiResponse::Success;
 
@@ -875,7 +904,9 @@ fn handle_ipi_message_sync(message: IpiMessage) -> IpiResponse {
         }
 
         IpiMessage::FunctionCall { func, sync_call } => {
-            IPI_MANAGER.stats[cpu_id].function_call_count.fetch_add(1, Ordering::Relaxed);
+            if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
+                stats.function_call_count.fetch_add(1, Ordering::Relaxed);
+            }
             let response = func();
 
             if let Some(call_id) = sync_call {

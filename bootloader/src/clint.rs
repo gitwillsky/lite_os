@@ -1,4 +1,4 @@
-use crate::{aclint, constants, hart::hart_id, trap_stack::remote_hsm};
+use crate::{aclint, constants, hart::hart_id};
 use core::{
     ptr::null_mut,
     sync::atomic::{AtomicPtr, Ordering},
@@ -17,7 +17,7 @@ impl Ipi for Clint {
     #[inline]
     fn send_ipi(&self, hart_mask: HartMask) -> SbiRet {
         for i in 0..constants::MAX_HART_NUM {
-            if hart_mask.has_bit(i) && remote_hsm(i).map_or(false, |hsm| hsm.allow_ipi()) {
+            if hart_mask.has_bit(i) {
                 set_msip(i);
             }
         }

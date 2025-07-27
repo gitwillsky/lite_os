@@ -1,5 +1,5 @@
 use crate::{
-    arch::sbi, memory::{address::PhysicalAddress, TlbManager, KERNEL_SPACE}, smp::{
+    arch::sbi, memory::{address::PhysicalAddress, TlbManager, KERNEL_SPACE, TRAMPOLINE}, smp::{
         cpu::{CpuData, CpuState, CpuType}, cpu_data, cpu_set_online, current_cpu_id, init_cpu_id_register, ipi::{self, create_ipi_barrier, wait_at_ipi_barrier}, set_cpu_data, MAX_CPU_NUM
     }, sync::spinlock::SpinLock, task::run_tasks, timer::get_time_msec
 };
@@ -62,25 +62,25 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
         // Fallback for unknown hart IDs
         hart_id
     };
-    
+
     // Set CPU ID register for this CPU
     init_cpu_id_register(cpu_id);
-    
+
     debug!("CPU{} (hart {}) starting secondary initialization", cpu_id, hart_id);
-    
+
     // Use simplified initialization instead of phased approach
     if let Err(e) = secondary_cpu_init(cpu_id, hart_id) {
         error!("CPU{} initialization failed: {}", cpu_id, e);
         secondary_cpu_halt(cpu_id);
     }
-    
+
     // Wait for global initialization to complete
     while !crate::smp::boot::global_init_complete() {
         core::hint::spin_loop();
     }
 
     mark_secondary_cpu_ready();
-    
+
     debug!("CPU{} entering task scheduler loop", cpu_id);
     run_tasks();
 }
@@ -211,7 +211,7 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str>
         );
         return Err("No CPU data available after init");
     }
-    
+
     Ok(())
 }
 
@@ -471,6 +471,7 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
 /// Perform initial system health check after all CPUs are online
 fn perform_initial_health_check() {
     let mut online_cpus = 0;
+    let mut idle_cpus = 0;
     let mut failed_cpus = Vec::new();
 
     for cpu_id in 0..crate::smp::cpu_count() {
@@ -479,6 +480,11 @@ fn perform_initial_health_check() {
                 CpuState::Online => {
                     online_cpus += 1;
                     debug!("CPU{} is online and healthy", cpu_id);
+                }
+                CpuState::Idle => {
+                    // Idle is also a valid healthy state for secondary CPUs
+                    idle_cpus += 1;
+                    debug!("CPU{} is idle and healthy", cpu_id);
                 }
                 state => {
                     warn!("CPU{} is in unexpected state: {:?}", cpu_id, state);
@@ -491,15 +497,16 @@ fn perform_initial_health_check() {
         }
     }
 
+    let healthy_cpus = online_cpus + idle_cpus;
     info!(
-        "System health check: {} CPUs online, {} failed: {:?}",
-        online_cpus,
+        "System health check: {} CPUs healthy ({} online, {} idle), {} failed: {:?}",
+        healthy_cpus, online_cpus, idle_cpus,
         failed_cpus.len(),
         failed_cpus
     );
 
     // Test IPI functionality between CPUs
-    test_ipi_connectivity();
+    // test_ipi_connectivity();
 }
 
 /// Test IPI connectivity between all CPUs

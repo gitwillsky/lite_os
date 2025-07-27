@@ -277,14 +277,54 @@ pub fn current_cwd() -> String {
 /// Enhanced task scheduler with IPI-aware preemptive multitasking
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
+    // CRITICAL: Test if we can execute any code at all
+    unsafe {
+        core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+    }
+    
+    // CRITICAL: Add debug BEFORE calling current_cpu_id() in case it crashes
+    debug!("run_tasks() ENTRY - before current_cpu_id()");
+    
+    // Read tp register directly for debugging
+    let tp_value: usize;
+    unsafe {
+        core::arch::asm!("mv {}, tp", out(reg) tp_value, options(pure, nomem, nostack, preserves_flags));
+    }
+    debug!("run_tasks() tp register value = {}", tp_value);
+    
     let cpu_id = crate::smp::current_cpu_id();
+    
+    // CRITICAL: Add debug IMMEDIATELY after current_cpu_id()
+    debug!("run_tasks() got cpu_id = {}", cpu_id);
 
     info!("CPU{} entering full scheduler loop", cpu_id);
+    
+    // DEBUG: Test each section of the main loop separately
+    debug!("CPU{} about to enter main scheduler loop", cpu_id);
 
     // All CPUs use the same scheduler loop for proper multi-core task distribution
     loop {
+        // DEBUG: Add debug for first few loop iterations
+        static LOOP_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let loop_count = LOOP_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if loop_count < 10 {
+            debug!("CPU{} scheduler loop iteration #{}", cpu_id, loop_count);
+        }
+        
         // 1. Handle pending IPI messages first (highest priority)
+        debug!("CPU{} about to call handle_ipi_interrupt()", cpu_id);
+        
+        if cpu_id > 0 {
+            // More frequent debug from secondary CPUs to confirm they're running
+            static SECONDARY_CPU_HEARTBEAT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+            let count = SECONDARY_CPU_HEARTBEAT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            if count % 100000 == 0 {
+                info!("CPU{} scheduler heartbeat: loop #{}, still running", cpu_id, count);
+            }
+        }
+        
         ipi::handle_ipi_interrupt();
+        debug!("CPU{} completed handle_ipi_interrupt()", cpu_id);
 
         // 2. Periodic maintenance (only on CPU0 to avoid conflicts)  
         if cpu_id == 0 {
@@ -423,7 +463,7 @@ fn perform_periodic_maintenance() {
     }
 }
 
-/// Get the next task from the local CPU queue
+/// Get the next task from the local CPU queue or global pool
 fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
     
@@ -433,8 +473,21 @@ fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
         return None;
     }
     
-    let cpu_data = current_cpu_data()?;
-    cpu_data.pop_task()
+    // First try local CPU queue
+    if let Some(cpu_data) = current_cpu_data() {
+        if let Some(task) = cpu_data.pop_task() {
+            debug!("CPU{} got task {} from local queue", cpu_id, task.pid());
+            return Some(task);
+        }
+    }
+    
+    // If no local task, try global task manager
+    if let Some(task) = crate::task::task_manager::fetch_task() {
+        debug!("CPU{} got task {} from global pool", cpu_id, task.pid());
+        return Some(task);
+    }
+    
+    None
 }
 
 /// Enhanced work stealing using synchronous IPI for coordination
@@ -666,6 +719,13 @@ fn enter_enhanced_idle_state() {
         // 2. Check if we now have local tasks after IPI processing
         if cpu_data.queue_length() > 0 {
             debug!("CPU{} found tasks after IPI processing, exiting idle", cpu_id);
+            break;
+        }
+
+        // 2.5. Check global task pool
+        if let Some(task) = crate::task::task_manager::fetch_task() {
+            debug!("CPU{} found task {} in global pool, exiting idle", cpu_id, task.pid());
+            cpu_data.add_task(task);
             break;
         }
 

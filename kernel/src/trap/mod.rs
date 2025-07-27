@@ -30,6 +30,10 @@ pub fn init() {
 
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
+    // CRITICAL DEBUG: Add immediate debug at trap entry
+    let cpu_id = crate::smp::current_cpu_id();
+    info!("CPU{} ENTERED trap_handler - this proves trap is working", cpu_id);
+
     set_kernel_trap_entry();
 
     // 标记进入内核态
@@ -82,9 +86,26 @@ pub fn trap_handler() {
                 Interrupt::SupervisorSoft => {
                     // 处理软件中断（IPI）
                     let cpu_id = crate::smp::current_cpu_id();
-                    debug!("CPU{} received supervisor software interrupt (IPI)", cpu_id);
+                    
+                    // Track IPI trap calls per CPU
+                    static IPI_TRAP_COUNTER: [core::sync::atomic::AtomicUsize; 8] = [
+                        core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
+                        core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
+                        core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
+                        core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
+                    ];
+                    
+                    let trap_count = IPI_TRAP_COUNTER[cpu_id].fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+                    info!("!!!!!! CPU{} received supervisor software interrupt (IPI) - TRAP #{} !!!!!!", cpu_id, trap_count);
+
+                    // Clear the software interrupt by writing to SIP register
+                    #[cfg(target_arch = "riscv64")]
+                    unsafe {
+                        riscv::register::sip::clear_ssoft();
+                    }
+
                     crate::smp::ipi::handle_ipi_interrupt();
-                    debug!("CPU{} finished handling IPI interrupt", cpu_id);
+                    info!("CPU{} finished handling IPI interrupt trap #{} - COMPLETE", cpu_id, trap_count);
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);
@@ -269,12 +290,12 @@ pub fn trap_from_kernel() -> ! {
     let scause_val = scause::read();
     let stval_val = stval::read();
     let sepc_val = sepc::read();
-    
+
     error!(
         "[trap_from_kernel] CPU{} scause={:?}, stval={:#x}, sepc={:#x}",
         cpu_id, scause_val, stval_val, sepc_val
     );
-    
+
     // Add detailed analysis for common trap types
     match scause_val.cause() {
         Trap::Exception(code) => {
@@ -304,6 +325,6 @@ pub fn trap_from_kernel() -> ! {
             error!("CPU{} unexpected kernel interrupt: code={}", cpu_id, code);
         }
     }
-    
+
     panic!("a trap from kernel on CPU{}", cpu_id);
 }

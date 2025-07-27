@@ -57,23 +57,23 @@ pub fn current_cpu_id() -> usize {
             core::arch::asm!("mv {}, tp", out(reg) cpu_id, options(pure, nomem, nostack, preserves_flags));
         }
         
-        // Validate CPU ID to prevent issues with uninitialized tp register
+        // Enhanced validation with detailed error recovery
         if cpu_id >= MAX_CPU_NUM {
-            // If tp is not properly initialized, try to recover by using hart ID directly
-            let mut hart_id: usize;
-            unsafe {
-                // Try to read mhartid register (might not be available in S-mode)
-                // For now, return 0 as a safe fallback
-                hart_id = 0;
-            }
+            // Log more detailed debugging information
+            error!("Invalid CPU ID {} from tp register (MAX_CPU_NUM={})", cpu_id, MAX_CPU_NUM);
             
-            // Log the issue for debugging
-            if cpu_id != usize::MAX && cpu_id != 0 {
-                debug!("Invalid CPU ID {} from tp register, using fallback", cpu_id);
+            // Try to map invalid value to a valid one based on expected values
+            // RISC-V hart IDs are usually small values (0, 1, 2, 3...)
+            if cpu_id < 16 {
+                // Probably a valid hart ID that wasn't properly mapped
+                let mapped_id = cpu_id % MAX_CPU_NUM;
+                warn!("Mapping invalid CPU ID {} to {}", cpu_id, mapped_id);
+                mapped_id
+            } else {
+                // Completely invalid value, use fallback
+                error!("Completely invalid CPU ID {}, falling back to CPU 0", cpu_id);
+                0
             }
-            
-            // Return a safe value
-            hart_id.min(MAX_CPU_NUM - 1)
         } else {
             cpu_id
         }

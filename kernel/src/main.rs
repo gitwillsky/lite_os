@@ -67,6 +67,13 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
     // Watchdog (global)
     watchdog::init();
 
+    // Mark CPU0 (BSP) as online
+    smp::cpu_set_online(0);
+    if let Some(cpu0_data) = smp::cpu_data(0) {
+        cpu0_data.set_state(smp::cpu::CpuState::Online);
+        debug!("CPU0 (BSP) marked as online");
+    }
+
     // Mark global initialization complete for secondary CPUs
     smp::boot::mark_global_init_complete();
 
