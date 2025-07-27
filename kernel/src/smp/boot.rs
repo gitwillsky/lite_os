@@ -57,8 +57,8 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
 
     info!("Secondary CPU {} initialization complete", cpu_id);
 
-    // Enter the per-CPU scheduler loop
-    secondary_cpu_scheduler_loop(cpu_id)
+    // Enter the unified scheduler loop
+    crate::task::run_tasks()
 }
 
 /// Initialize a secondary CPU
@@ -66,27 +66,42 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) {
     // Set CPU state to starting
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Starting);
+    } else {
+        error!("No CPU data available for CPU {} during initialization", cpu_id);
+        secondary_cpu_halt(cpu_id);
     }
 
     // Initialize architecture-specific features
-    arch_specific_secondary_init(hart_id);
+    if let Err(e) = arch_specific_secondary_init(hart_id) {
+        error!("Architecture-specific initialization failed for CPU {}: {}", cpu_id, e);
+        secondary_cpu_halt(cpu_id);
+    }
 
     // Initialize per-CPU memory management
-    secondary_cpu_memory_init(cpu_id);
+    if let Err(e) = secondary_cpu_memory_init(cpu_id) {
+        error!("Memory initialization failed for CPU {}: {}", cpu_id, e);
+        secondary_cpu_halt(cpu_id);
+    }
 
     // Initialize per-CPU timer
-    secondary_cpu_timer_init(cpu_id);
+    if let Err(e) = secondary_cpu_timer_init(cpu_id) {
+        error!("Timer initialization failed for CPU {}: {}", cpu_id, e);
+        secondary_cpu_halt(cpu_id);
+    }
 
     // Mark CPU as online
     cpu_set_online(cpu_id);
 
     if let Some(cpu_data) = cpu_data(cpu_id) {
         cpu_data.set_state(CpuState::Online);
+    } else {
+        error!("No CPU data available for CPU {} after initialization", cpu_id);
+        secondary_cpu_halt(cpu_id);
     }
 }
 
 /// Architecture-specific secondary CPU initialization
-fn arch_specific_secondary_init(hart_id: usize) {
+fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "riscv64")]
     {
         // Enable supervisor interrupts
@@ -106,11 +121,18 @@ fn arch_specific_secondary_init(hart_id: usize) {
         }
 
         debug!("Architecture-specific init complete for hart {}", hart_id);
+        Ok(())
+    }
+    
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        warn!("Architecture-specific init not implemented for this architecture");
+        Ok(())
     }
 }
 
 /// Initialize memory management for secondary CPU
-fn secondary_cpu_memory_init(cpu_id: usize) {
+fn secondary_cpu_memory_init(cpu_id: usize) -> Result<(), &'static str> {
     // Activate the kernel page table
     let kernel_space_arc = KERNEL_SPACE.wait();
     let kernel_space = kernel_space_arc.read();
@@ -125,133 +147,23 @@ fn secondary_cpu_memory_init(cpu_id: usize) {
     }
 
     // Initialize per-CPU heap allocator if needed
-    if let Some(cpu_data) = cpu_data(cpu_id) {
+    if let Some(_cpu_data) = cpu_data(cpu_id) {
         // Per-CPU allocator will be initialized on first use
         debug!("Memory management initialized for CPU {}", cpu_id);
+        Ok(())
+    } else {
+        Err("CPU data not available for memory initialization")
     }
 }
 
 /// Initialize timer for secondary CPU
-fn secondary_cpu_timer_init(cpu_id: usize) {
+fn secondary_cpu_timer_init(cpu_id: usize) -> Result<(), &'static str> {
     // Timer initialization is handled by the timer module
     crate::timer::init_secondary_cpu(cpu_id);
     debug!("Timer initialized for CPU {}", cpu_id);
+    Ok(())
 }
 
-/// Secondary CPU scheduler loop
-fn secondary_cpu_scheduler_loop(cpu_id: usize) -> ! {
-    debug!("CPU {} entering scheduler loop", cpu_id);
-
-    loop {
-        // Check if this CPU needs to be stopped
-        if let Some(cpu_data) = cpu_data(cpu_id) {
-            match cpu_data.state() {
-                CpuState::Stopping => {
-                    info!("CPU {} stopping", cpu_id);
-                    secondary_cpu_stop(cpu_id);
-                }
-                CpuState::Error => {
-                    error!("CPU {} in error state, halting", cpu_id);
-                    secondary_cpu_halt(cpu_id);
-                }
-                _ => {}
-            }
-        }
-
-        // Try to get a task from the local queue
-        if let Some(cpu_data) = cpu_data(cpu_id) {
-            if let Some(task) = cpu_data.pop_task() {
-                // Execute the task
-                execute_task_on_cpu(cpu_id, task);
-                continue;
-            }
-        }
-
-        // No local task, try work stealing
-        if let Some(stolen_task) = try_steal_task(cpu_id) {
-            execute_task_on_cpu(cpu_id, stolen_task);
-            continue;
-        }
-
-        // No work available, enter idle state
-        secondary_cpu_idle(cpu_id);
-    }
-}
-
-/// Execute a task on the specified CPU
-fn execute_task_on_cpu(cpu_id: usize, task: Arc<crate::task::TaskControlBlock>) {
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        // Set the current task
-        cpu_data.set_current_task(Some(task.clone()));
-
-        // Update task state
-        *task.task_status.lock() = crate::task::TaskStatus::Running;
-
-        // Record start time
-        let start_time = crate::timer::get_time_us();
-        task.last_runtime.store(start_time, Ordering::Relaxed);
-        cpu_data.task_start_time.store(start_time, Ordering::Relaxed);
-
-        // Switch to the task
-        let task_cx_ptr = &*task.mm.task_cx.lock() as *const _;
-        let idle_cx_ptr = &mut *cpu_data.idle_context.lock() as *mut _;
-
-        unsafe {
-            crate::task::__switch(idle_cx_ptr, task_cx_ptr);
-        }
-
-        // Task has been switched away, update statistics
-        let end_time = crate::timer::get_time_us();
-        let runtime = end_time.saturating_sub(start_time);
-        cpu_data.record_task_execution(runtime, 0); // Simplified for now
-
-        // Clear current task
-        cpu_data.set_current_task(None);
-    }
-}
-
-/// Try to steal work from other CPUs
-fn try_steal_task(cpu_id: usize) -> Option<Arc<crate::task::TaskControlBlock>> {
-    // Implement work-stealing algorithm
-    for victim_cpu in 0..MAX_CPU_NUM {
-        if victim_cpu == cpu_id || !crate::smp::cpu_is_online(victim_cpu) {
-            continue;
-        }
-
-        if let Some(victim_data) = cpu_data(victim_cpu) {
-            // Only steal if victim has more than one task
-            if victim_data.queue_length() > 1 {
-                let stolen_tasks = victim_data.steal_tasks(1);
-                if let Some(task) = stolen_tasks.into_iter().next() {
-                    debug!("CPU {} stole task from CPU {}", cpu_id, victim_cpu);
-                    return Some(task);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Put secondary CPU in idle state
-fn secondary_cpu_idle(cpu_id: usize) {
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        cpu_data.set_state(CpuState::Idle);
-
-        let idle_start = crate::timer::get_time_us();
-
-        // Wait for interrupt or work
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            riscv::asm::wfi();
-        }
-
-        let idle_end = crate::timer::get_time_us();
-        let idle_time = idle_end.saturating_sub(idle_start);
-        cpu_data.record_idle_time(idle_time);
-
-        cpu_data.set_state(CpuState::Online);
-    }
-}
 
 /// Stop a secondary CPU
 fn secondary_cpu_stop(cpu_id: usize) -> ! {

@@ -69,6 +69,16 @@ pub fn trap_handler() {
                     // 处理外部中断（包括VirtIO设备中断）
                     crate::drivers::handle_external_interrupt();
                 }
+                Interrupt::SupervisorSoft => {
+                    // 处理软件中断（IPI）
+                    crate::smp::ipi::handle_ipi_interrupt();
+                    
+                    // 清除软件中断位
+                    #[cfg(target_arch = "riscv64")]
+                    unsafe {
+                        riscv::register::sip::clear_ssoft();
+                    }
+                }
                 _ => {
                     panic!("Unknown interrupt: {:?}", interrupt);
                 }

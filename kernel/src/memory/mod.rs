@@ -52,20 +52,32 @@ pub static KERNEL_SPACE: Once<Arc<RwSpinLock<MemorySet>>> = Once::new();
 pub struct TlbManager;
 
 impl TlbManager {
-    /// Flush TLB on all CPUs
+    /// Flush TLB on all CPUs with proper synchronization
     pub fn flush_all_cpus(addr: Option<usize>) {
         let cpu_count = cpu_count();
         let current_cpu = current_cpu_id();
 
         // Send TLB flush IPI to all other CPUs
+        let mut ipi_sent_count = 0;
         for cpu_id in 0..cpu_count {
-            if cpu_id != current_cpu {
-                let _ = crate::smp::ipi::send_tlb_flush_ipi(cpu_id, addr);
+            if cpu_id != current_cpu && crate::smp::cpu_is_online(cpu_id) {
+                if let Ok(_) = crate::smp::ipi::send_tlb_flush_ipi(cpu_id, addr) {
+                    ipi_sent_count += 1;
+                } else {
+                    warn!("Failed to send TLB flush IPI to CPU {}", cpu_id);
+                }
             }
         }
 
-        // Flush local TLB
+        // Flush local TLB first to ensure ordering
         Self::flush_local(addr);
+
+        // Add memory barrier to ensure TLB flushes are visible across CPUs
+        crate::sync::memory_barrier::full();
+
+        if ipi_sent_count > 0 {
+            debug!("TLB flush sent to {} CPUs", ipi_sent_count);
+        }
     }
 
     /// Flush local TLB

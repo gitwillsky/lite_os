@@ -332,13 +332,17 @@ fn handle_reschedule_ipi() {
     // Set the reschedule flag for the current CPU
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
         cpu_data.set_need_resched(true);
-    }
-
-    // If not in interrupt context, immediately reschedule
-    if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        
+        // If not in interrupt context, immediately reschedule
         if !cpu_data.in_interrupt() {
-            crate::task::suspend_current_and_run_next();
+            // 检查当前是否有任务在运行
+            if cpu_data.current_task().is_some() {
+                crate::task::suspend_current_and_run_next();
+            }
         }
+    } else {
+        error!("No CPU data available when handling reschedule IPI on CPU {}", 
+               current_cpu_id());
     }
 }
 

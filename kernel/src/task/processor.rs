@@ -78,37 +78,76 @@ impl LoadBalancer {
                 cpu_loads.push((cpu_id, load));
             }
         }
+        
+        // 确保读取到最新的负载信息
+        crate::sync::memory_barrier::full();
 
         // Sort by load (highest first)
         cpu_loads.sort_by(|a, b| b.1.cmp(&a.1));
 
-        // Balance load from highest to lowest
-        let avg_load = cpu_loads.iter().map(|(_, load)| load).sum::<usize>() / cpu_loads.len();
+        // 改进的负载平衡算法，更加考虑缓存局部性和性能
+        if cpu_loads.is_empty() {
+            return;
+        }
 
+        let total_load: usize = cpu_loads.iter().map(|(_, load)| *load).sum();
+        let avg_load = total_load / cpu_loads.len();
+        
+        // 只有当负载不平衡超过阈值时才进行平衡
+        let load_imbalance_threshold = 2;
+        
         for &(overloaded_cpu, load) in cpu_loads.iter() {
-            if load <= avg_load + 1 {
-                break; // No more overloaded CPUs
+            if load <= avg_load + load_imbalance_threshold {
+                continue; // 负载差异不大，跳过
             }
 
-            // Find underloaded CPU
-            if let Some(&(underloaded_cpu, _)) = cpu_loads
-                .iter()
-                .find(|(_, l)| *l < avg_load.saturating_sub(1))
-            {
-                // Move tasks from overloaded to underloaded CPU
+            // Find the most underloaded CPU, preferring CPUs with better cache locality
+            let mut best_target: Option<(usize, usize)> = None;
+            
+            for &(candidate_cpu, candidate_load) in cpu_loads.iter() {
+                if candidate_load < avg_load.saturating_sub(1) {
+                    // 简单的缓存亲和性估计：相邻CPU ID通常有更好的缓存共享
+                    let cache_distance = if overloaded_cpu > candidate_cpu {
+                        overloaded_cpu - candidate_cpu
+                    } else {
+                        candidate_cpu - overloaded_cpu
+                    };
+                    
+                    match best_target {
+                        None => best_target = Some((candidate_cpu, cache_distance)),
+                        Some((_, best_distance)) if cache_distance < best_distance => {
+                            best_target = Some((candidate_cpu, cache_distance));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            if let Some((underloaded_cpu, _)) = best_target {
+                // 更保守的任务迁移策略：只迁移少量任务
                 if let Some(overloaded_data) = cpu_data(overloaded_cpu) {
-                    let tasks_to_move = (load - avg_load) / 2; // Move half the excess
+                    let tasks_to_move = 1.max((load - avg_load) / 3); // 更保守的迁移
                     let stolen_tasks = overloaded_data.steal_tasks(tasks_to_move);
 
-                    for task in stolen_tasks {
-                        // Add to underloaded CPU
-                        if let Some(underloaded_data) = cpu_data(underloaded_cpu) {
-                            underloaded_data.add_task(task);
+                    if !stolen_tasks.is_empty() {
+                        debug!("Load balancing: moving {} tasks from CPU{} to CPU{}", 
+                               stolen_tasks.len(), overloaded_cpu, underloaded_cpu);
+                        
+                        for task in stolen_tasks {
+                            // Add to underloaded CPU
+                            if let Some(underloaded_data) = cpu_data(underloaded_cpu) {
+                                underloaded_data.add_task(task);
+                            }
                         }
-                    }
 
-                    // Send reschedule IPI to underloaded CPU
-                    let _ = ipi::send_reschedule_ipi(underloaded_cpu);
+                        // Send reschedule IPI to underloaded CPU
+                        if let Err(e) = ipi::send_reschedule_ipi(underloaded_cpu) {
+                            debug!("Failed to send reschedule IPI: {}", e);
+                        }
+                        
+                        // 确保负载平衡的更改可见
+                        crate::sync::memory_barrier::full();
+                    }
                 }
             }
         }
@@ -265,10 +304,14 @@ fn try_work_stealing() -> Option<Arc<TaskControlBlock>> {
 
         if let Some(victim_data) = cpu_data(victim_cpu) {
             // Only steal if victim has more than one task (to avoid ping-ponging)
-            if victim_data.queue_length() > 1 {
+            let victim_load = victim_data.queue_length();
+            if victim_load > 1 {
+                // 使用原子操作确保窃取的原子性
                 let stolen_tasks = victim_data.steal_tasks(1);
                 if let Some(task) = stolen_tasks.into_iter().next() {
                     debug!("Stole task {} from CPU{}", task.pid(), victim_cpu);
+                    // 确保任务状态变更可见
+                    crate::sync::memory_barrier::full();
                     return Some(task);
                 }
             }
@@ -300,10 +343,13 @@ fn schedule_task(task: Arc<TaskControlBlock>) {
     // 按照工作版本的逻辑：先设置任务状态和时间，再获取上下文指针
     *task.task_status.lock() = TaskStatus::Running;
     let start_time = get_time_us();
-    task.last_runtime.store(start_time, Ordering::Relaxed);
+    task.last_runtime.store(start_time, Ordering::Release);
     cpu_data
         .task_start_time
-        .store(start_time, Ordering::Relaxed);
+        .store(start_time, Ordering::Release);
+    
+    // 确保任务状态变更在其他CPU上可见
+    crate::sync::memory_barrier::full();
 
     let task_cx_ptr = {
         let task_context = task.mm.task_cx.lock();
@@ -418,16 +464,25 @@ pub fn suspend_current_and_run_next() {
     let (task_cx_ptr, should_readd) = {
         let mut task_cx = task.mm.task_cx.lock();
         let task_cx_ptr = &mut *task_cx as *mut TaskContext;
-        let should_readd = *task.task_status.lock() == TaskStatus::Running;
+        let mut task_status = task.task_status.lock();
+        let should_readd = *task_status == TaskStatus::Running;
+        
+        // 如果任务应该继续运行，先更新状态再释放锁
+        if should_readd {
+            *task_status = TaskStatus::Ready;
+        }
+        drop(task_status); // 显式释放锁
+        
         (task_cx_ptr, should_readd)
     };
 
     // If task should continue running, add it back to the queue
     if should_readd {
-        *task.task_status.lock() = TaskStatus::Ready;
         if let Some(cpu_data) = current_cpu_data() {
             cpu_data.add_task(task);
         }
+        // 确保任务状态更改可见
+        crate::sync::memory_barrier::full();
     }
 
     // 按照工作版本逻辑：直接调用 schedule 函数切换到 idle
