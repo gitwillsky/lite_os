@@ -47,10 +47,7 @@ const SECONDARY_CPU_BOOT_TIMEOUT_MS: u64 = 10000;
 /// This function is called by secondary CPUs after they are started by SBI
 #[unsafe(no_mangle)]
 pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
-    // Initialize CPU ID register for this hart
-    init_cpu_id_register(hart_id);
-
-    // Convert hart ID to logical CPU ID
+    // Convert hart ID to logical CPU ID first
     let cpu_id = if let Some(logical_id) = crate::smp::topology::arch_to_logical_cpu_id(hart_id) {
         logical_id
     } else {
@@ -58,6 +55,9 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
         warn!("Unknown hart ID {}, using as logical CPU ID", hart_id);
         hart_id
     };
+
+    // CRITICAL FIX: Initialize CPU ID register with logical CPU ID
+    init_cpu_id_register(cpu_id);
 
     info!("Secondary CPU {} (hart {}) starting enhanced initialization", cpu_id, hart_id);
 
@@ -74,7 +74,8 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
 
     info!("Secondary CPU {} enhanced initialization complete", cpu_id);
 
-    // Enter the unified scheduler loop
+    // Call the main task scheduler for this CPU
+    debug!("Secondary CPU {} starting run_tasks", cpu_id);
     crate::task::run_tasks()
 }
 

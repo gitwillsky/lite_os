@@ -274,37 +274,110 @@ pub fn current_cwd() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-/// Enhanced main scheduler loop with integrated IPI handling
-///
-/// This function runs on all CPUs and implements the enhanced per-CPU scheduler logic.
+/// Enhanced task scheduler with IPI-aware preemptive multitasking
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
-    let cpu_id = current_cpu_id();
-    info!("CPU{} entering enhanced scheduler loop", cpu_id);
+    // CRITICAL: Use inline assembly to output debug info before ANY Rust operations
+    unsafe {
+        core::arch::asm!(
+            "li a0, 0x45  # 'E'
+             li a7, 1     # SBI console putchar
+             ecall
+             li a0, 0x4E  # 'N'
+             li a7, 1
+             ecall
+             li a0, 0x54  # 'T'
+             li a7, 1
+             ecall
+             li a0, 0x45  # 'E'
+             li a7, 1
+             ecall
+             li a0, 0x52  # 'R'
+             li a7, 1
+             ecall
+             li a0, 0x0A  # '\\n'
+             li a7, 1
+             ecall",
+            options(nostack, preserves_flags)
+        );
+    }
 
-    // Note: Trap handler should already be set up per CPU
+    crate::console::emergency_print("EMERGENCY: run_tasks() function ENTERED\n");
 
-    loop {
-        // 1. Handle pending IPI messages first (highest priority)
-        ipi::handle_ipi_interrupt();
+    // Simple approach: get CPU ID without complex operations
+    let cpu_id = unsafe {
+        let mut id: usize;
+        core::arch::asm!("mv {}, tp", out(reg) id);
+        id
+    };
 
-        // 2. Periodic maintenance
-        perform_enhanced_periodic_maintenance();
+    crate::console::emergency_print("EMERGENCY: Simple CPU ID ");
+    if cpu_id < 10 {
+        let digit = (b'0' + cpu_id as u8) as char;
+        let digit_bytes = [digit as u8];
+        let digit_str = unsafe { core::str::from_utf8_unchecked(&digit_bytes) };
+        crate::console::emergency_print(digit_str);
+    } else {
+        crate::console::emergency_print("X");
+    }
+    crate::console::emergency_print("\n");
 
-        // 3. Try to get a task from the local queue first
-        if let Some(task) = get_next_local_task() {
-            schedule_task_with_preemption(task);
-            continue;
+    // ULTRA-SIMPLE scheduler loop for secondary CPUs
+    if cpu_id > 0 {
+        crate::console::emergency_print("Secondary CPU entering simple IPI loop\n");
+
+        let mut counter = 0u64;
+        loop {
+            // Only handle IPI messages - nothing else
+            ipi::handle_ipi_interrupt();
+
+            counter = counter.wrapping_add(1);
+
+            // Simple heartbeat every million iterations
+            if counter % 1000000 == 0 {
+                unsafe {
+                    core::arch::asm!(
+                        "li a0, 0x49  # 'I'
+                         li a7, 1     # SBI console putchar
+                         ecall",
+                        out("a0") _,
+                        out("a7") _,
+                        options(nostack, preserves_flags)
+                    );
+                }
+            }
+
+            // Simple wait
+            unsafe {
+                core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
+            }
         }
+    } else {
+        // CPU0 continues with full scheduler
+        info!("CPU0 entering full scheduler loop");
 
-        // 4. No local task, try enhanced work stealing
-        if let Some(stolen_task) = try_enhanced_work_stealing() {
-            schedule_task_with_preemption(stolen_task);
-            continue;
+        loop {
+            // 1. Handle pending IPI messages first (highest priority)
+            ipi::handle_ipi_interrupt();
+
+            // 2. Periodic maintenance
+            perform_enhanced_periodic_maintenance();
+
+            // 3. Try to get a task from the local queue first
+            if let Some(task) = get_next_local_task() {
+                schedule_task_with_preemption(task);
+                continue;
+            }
+
+            // 4. No local task, try enhanced work stealing
+            if let Some(stolen_task) = try_enhanced_work_stealing() {
+                schedule_task_with_preemption(stolen_task);
+                continue;
+            }
+
+            // 5. No work available anywhere, enter enhanced idle state
+            enter_enhanced_idle_state();
         }
-
-        // 5. No work available anywhere, enter enhanced idle state
-        enter_enhanced_idle_state();
     }
 }
 

@@ -28,7 +28,7 @@ impl FastLogBuffer {
     fn write_str_fast(&mut self, s: &str) -> bool {
         let bytes = s.as_bytes();
         let remaining = 512 - self.position;
-        
+
         if bytes.len() <= remaining {
             self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
             self.position += bytes.len();
@@ -173,7 +173,7 @@ impl Default for LoggerConfig {
 /// Fast CPU ID formatting without heap allocation
 fn format_cpu_id_fast(buffer: &mut FastLogBuffer, cpu_id: usize) {
     let _ = buffer.write_str_fast("[CPU");
-    
+
     // Simple number formatting for CPU IDs (0-99)
     if cpu_id >= 10 {
         let tens = cpu_id / 10;
@@ -183,7 +183,7 @@ fn format_cpu_id_fast(buffer: &mut FastLogBuffer, cpu_id: usize) {
     } else {
         let _ = buffer.write_char_fast((b'0' + cpu_id as u8) as char);
     }
-    
+
     let _ = buffer.write_str_fast("] ");
 }
 
@@ -227,7 +227,7 @@ impl Logger {
         if level >= self.config.level && self.config.module_filter.is_module_enabled(module) {
             // Use stack buffer for fast formatting
             let mut buffer = FastLogBuffer::new();
-            
+
             // Add CPU ID if enabled
             if self.config.show_cpu_id {
                 let cpu_id = crate::smp::current_cpu_id();
@@ -275,19 +275,19 @@ impl Logger {
                 if remaining > 0 {
                     let mut temp_buffer = [0u8; 256];
                     let mut cursor = 0;
-                    
+
                     // Use minimal stack writer for complex formatting
                     struct MinimalWriter<'a> {
                         buffer: &'a mut [u8],
                         cursor: &'a mut usize,
                     }
-                    
+
                     impl<'a> Write for MinimalWriter<'a> {
                         fn write_str(&mut self, s: &str) -> fmt::Result {
                             let bytes = s.as_bytes();
                             let space = self.buffer.len() - *self.cursor;
                             let to_copy = bytes.len().min(space);
-                            
+
                             if to_copy > 0 {
                                 self.buffer[*self.cursor..*self.cursor + to_copy]
                                     .copy_from_slice(&bytes[..to_copy]);
@@ -296,12 +296,12 @@ impl Logger {
                             Ok(())
                         }
                     }
-                    
+
                     let mut writer = MinimalWriter {
                         buffer: &mut temp_buffer,
                         cursor: &mut cursor,
                     };
-                    
+
                     if writer.write_fmt(args).is_ok() && cursor > 0 {
                         if let Ok(formatted) = core::str::from_utf8(&temp_buffer[..cursor]) {
                             let _ = buffer.write_str_fast(formatted);
@@ -375,7 +375,7 @@ pub fn print_module_filter_info() {
 
     // Use emergency print to ensure this diagnostic info is always shown
     crate::console::emergency_print("=== Module Filter Configuration ===\n");
-    
+
     if filter.default_enabled {
         crate::console::emergency_print("Default enabled: true\n");
     } else {

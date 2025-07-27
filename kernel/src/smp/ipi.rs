@@ -782,8 +782,23 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 /// Handle incoming IPI interrupt
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
-    debug!("CPU{} received IPI interrupt", cpu_id);
-    IPI_MANAGER.stats[cpu_id].received.fetch_add(1, Ordering::Relaxed);
+
+    // Simple heartbeat using CPU cycle counter instead of timer to avoid timer dependency issues
+    static LAST_IPI_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    if cpu_id > 0 {
+        // Use a simple counter instead of timer to avoid TIMER_FREQ=0 division issue
+        let check_counter = LAST_IPI_CHECK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if check_counter % 1000000 == 0 {  // Log every million calls
+            debug!("CPU{} IPI check #{}", cpu_id, check_counter);
+        }
+    }
+
+    // Check if there are any pending messages
+    let queue_len = IPI_MANAGER.queues[cpu_id].lock().len();
+    if queue_len > 0 {
+        debug!("CPU{} found {} pending IPI messages", cpu_id, queue_len);
+        IPI_MANAGER.stats[cpu_id].received.fetch_add(1, Ordering::Relaxed);
+    }
 
     // Process all pending messages
     let mut message_count = 0;
@@ -793,9 +808,9 @@ pub fn handle_ipi_interrupt() {
         handle_ipi_message(message);
     }
 
-    if message_count == 0 {
-        warn!("CPU{} received IPI interrupt but no messages in queue", cpu_id);
-    } else {
+    if message_count == 0 && queue_len > 0 {
+        warn!("CPU{} had {} queued messages but couldn't pop any", cpu_id, queue_len);
+    } else if message_count > 0 {
         debug!("CPU{} processed {} IPI messages", cpu_id, message_count);
     }
 }
