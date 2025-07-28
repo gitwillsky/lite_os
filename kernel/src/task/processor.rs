@@ -629,7 +629,7 @@ fn enter_simple_idle_state() {
         // 6. Periodic idle statistics update
         let current_time = get_time_msec();
         if idle_iterations % 100 == 0 {
-            let idle_duration = current_time - idle_start_time;
+            let idle_duration = current_time.saturating_sub(idle_start_time);
             cpu_data.record_idle_time(idle_duration * 1000); // Convert to microseconds
 
             // Debug info every 10 seconds of idle time
@@ -703,7 +703,7 @@ fn enter_simple_idle_state() {
         }
 
         // 9. Timeout check - don't stay idle forever if there might be work
-        let idle_duration = current_time - idle_start_time;
+        let idle_duration = current_time.saturating_sub(idle_start_time);
         if idle_duration > 5000 { // 5 seconds max idle time
             debug!("CPU{} idle timeout, forcing wake-up check", cpu_id);
             // Force a more aggressive check for work
@@ -716,7 +716,7 @@ fn enter_simple_idle_state() {
     }
 
     // Record total idle time
-    let total_idle_time = get_time_msec() - idle_start_time;
+    let total_idle_time = get_time_msec().saturating_sub(idle_start_time);
     cpu_data.record_idle_time(total_idle_time * 1000); // Convert to microseconds
 
     // Set CPU back to online state
