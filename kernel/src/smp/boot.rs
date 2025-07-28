@@ -1,8 +1,11 @@
 use crate::{
     arch::sbi, memory::{address::PhysicalAddress, TlbManager, KERNEL_SPACE, TRAMPOLINE}, smp::{
-        cpu::{CpuData, CpuState, CpuType}, cpu_data, cpu_set_online, current_cpu_id, init_cpu_id_register, ipi::{self, create_ipi_barrier, wait_at_ipi_barrier}, set_cpu_data, MAX_CPU_NUM
+        cpu::{CpuData, CpuState, CpuType}, cpu_data, cpu_set_online, current_cpu_id, ipi::{self, create_ipi_barrier, wait_at_ipi_barrier}, set_cpu_data, MAX_CPU_NUM
     }, sync::spinlock::SpinLock, task::run_tasks, timer::get_time_msec
 };
+
+#[cfg(target_arch = "riscv64")]
+use crate::smp::init_cpu_id_register;
 /// SMP boot sequence implementation
 ///
 /// This module handles the multi-core boot process, including secondary
@@ -15,25 +18,13 @@ static DTB_ADDR: AtomicUsize = AtomicUsize::new(0);
 /// Global initialization completion flag
 static GLOBAL_INIT_COMPLETE: AtomicBool = AtomicBool::new(false);
 
-/// Enhanced boot synchronization using IPI barriers
-static BOOT_PHASE_BARRIER: SpinLock<Option<u64>> = SpinLock::new(None);
-static MEMORY_INIT_BARRIER: SpinLock<Option<u64>> = SpinLock::new(None);
+/// System ready barrier for enhanced synchronization
 static SYSTEM_READY_BARRIER: SpinLock<Option<u64>> = SpinLock::new(None);
 static PRIMARY_CPU_READY: AtomicBool = AtomicBool::new(false);
 
 /// Legacy counter for compatibility (will be removed in future)
 static SECONDARY_CPU_READY_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Boot phase tracking
-static CURRENT_BOOT_PHASE: SpinLock<BootPhase> = SpinLock::new(BootPhase::Initialization);
-
-/// Boot phases for coordinated initialization
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootPhase {
-    Initialization,
-    MemorySetup,
-    SystemReady,
-}
 
 /// Maximum time to wait for secondary CPUs to boot (in milliseconds)
 const SECONDARY_CPU_BOOT_TIMEOUT_MS: u64 = 10000;
@@ -64,6 +55,7 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
     };
 
     // Set CPU ID register for this CPU
+    #[cfg(target_arch = "riscv64")]
     init_cpu_id_register(cpu_id);
 
     debug!("CPU{} (hart {}) starting secondary initialization", cpu_id, hart_id);
@@ -85,85 +77,6 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
     run_tasks();
 }
 
-/// Phased secondary CPU initialization using IPI barriers
-fn secondary_cpu_init_phased(cpu_id: usize, hart_id: usize) -> Result<(), &'static str> {
-    // Phase 1: Basic initialization
-    if let Err(e) = wait_for_boot_phase(BootPhase::Initialization) {
-        error!(
-            "CPU{} failed to synchronize in initialization phase: {}",
-            cpu_id, e
-        );
-        return Err("Initialization phase sync failed");
-    }
-
-    // Set CPU state to starting
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        cpu_data.set_state(CpuState::Starting);
-    } else {
-        return Err("No CPU data available");
-    }
-
-    // Architecture-specific initialization
-    if let Err(e) = arch_specific_secondary_init(hart_id) {
-        error!(
-            "Architecture-specific initialization failed for CPU {}: {}",
-            cpu_id, e
-        );
-        return Err(e);
-    }
-
-    // Phase 2: Memory management initialization
-    if let Err(e) = wait_for_boot_phase(BootPhase::MemorySetup) {
-        error!(
-            "CPU{} failed to synchronize in memory setup phase: {}",
-            cpu_id, e
-        );
-        return Err("Memory setup phase sync failed");
-    }
-
-    if let Err(e) = secondary_cpu_memory_init(cpu_id) {
-        error!("Memory initialization failed for CPU {}: {}", cpu_id, e);
-        return Err(e);
-    }
-
-    if let Err(e) = wait_for_boot_phase(BootPhase::SystemReady) {
-        error!(
-            "CPU{} failed to synchronize in system ready phase: {}",
-            cpu_id, e
-        );
-        return Err("System ready phase sync failed");
-    }
-
-    // Mark CPU as online
-    cpu_set_online(cpu_id);
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        cpu_data.set_state(CpuState::Online);
-        debug!(
-            "CPU{} marked as online with enhanced synchronization",
-            cpu_id
-        );
-    }
-
-    Ok(())
-}
-
-/// Wait for a specific boot phase using IPI barriers
-fn wait_for_boot_phase(phase: BootPhase) -> Result<(), &'static str> {
-    let barrier_id = match phase {
-        BootPhase::Initialization => BOOT_PHASE_BARRIER
-            .lock()
-            .ok_or("No initialization barrier")?,
-        BootPhase::MemorySetup => MEMORY_INIT_BARRIER
-            .lock()
-            .ok_or("No memory setup barrier")?,
-        BootPhase::SystemReady => SYSTEM_READY_BARRIER
-            .lock()
-            .ok_or("No system ready barrier")?,
-    };
-
-    debug!("CPU{} waiting for phase {:?}", current_cpu_id(), phase);
-    wait_at_ipi_barrier(barrier_id)
-}
 
 /// Initialize a secondary CPU
 fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str> {
@@ -241,10 +154,9 @@ pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> 
             sie.sext()
         );
 
-        // Initialize floating point if available
-        #[cfg(feature = "float")]
+        // Initialize floating point support (required for kernel operation)
         unsafe {
-            riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Initial);
+            riscv::register::sstatus::set_fs(riscv::register::sstatus::FS::Dirty);
         }
 
         debug!("Architecture-specific init complete for hart {}", hart_id);

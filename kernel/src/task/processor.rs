@@ -277,30 +277,7 @@ pub fn current_cwd() -> String {
 /// Enhanced task scheduler with IPI-aware preemptive multitasking
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
-    // CRITICAL: Test if we can execute any code at all
-    unsafe {
-        core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-    }
-    
-    // CRITICAL: Add debug BEFORE calling current_cpu_id() in case it crashes
-    debug!("run_tasks() ENTRY - before current_cpu_id()");
-    
-    // Read tp register directly for debugging
-    let tp_value: usize;
-    unsafe {
-        core::arch::asm!("mv {}, tp", out(reg) tp_value, options(pure, nomem, nostack, preserves_flags));
-    }
-    debug!("run_tasks() tp register value = {}", tp_value);
-    
     let cpu_id = crate::smp::current_cpu_id();
-    
-    // CRITICAL: Add debug IMMEDIATELY after current_cpu_id()
-    debug!("run_tasks() got cpu_id = {}", cpu_id);
-
-    info!("CPU{} entering full scheduler loop", cpu_id);
-    
-    // DEBUG: Test each section of the main loop separately
-    debug!("CPU{} about to enter main scheduler loop", cpu_id);
 
     // All CPUs use the same scheduler loop for proper multi-core task distribution
     loop {
@@ -310,10 +287,10 @@ pub fn run_tasks() -> ! {
         if loop_count < 10 {
             debug!("CPU{} scheduler loop iteration #{}", cpu_id, loop_count);
         }
-        
+
         // 1. Handle pending IPI messages first (highest priority)
         debug!("CPU{} about to call handle_ipi_interrupt()", cpu_id);
-        
+
         if cpu_id > 0 {
             // More frequent debug from secondary CPUs to confirm they're running
             static SECONDARY_CPU_HEARTBEAT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -322,11 +299,11 @@ pub fn run_tasks() -> ! {
                 info!("CPU{} scheduler heartbeat: loop #{}, still running", cpu_id, count);
             }
         }
-        
+
         ipi::handle_ipi_interrupt();
         debug!("CPU{} completed handle_ipi_interrupt()", cpu_id);
 
-        // 2. Periodic maintenance (only on CPU0 to avoid conflicts)  
+        // 2. Periodic maintenance (only on CPU0 to avoid conflicts)
         if cpu_id == 0 {
             perform_enhanced_periodic_maintenance();
         }
@@ -466,13 +443,13 @@ fn perform_periodic_maintenance() {
 /// Get the next task from the local CPU queue or global pool
 fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
     let cpu_id = current_cpu_id();
-    
+
     // Validate CPU ID before proceeding
     if cpu_id >= crate::smp::MAX_CPU_NUM {
         error!("Invalid CPU ID {} in get_next_local_task", cpu_id);
         return None;
     }
-    
+
     // First try local CPU queue
     if let Some(cpu_data) = current_cpu_data() {
         if let Some(task) = cpu_data.pop_task() {
@@ -480,26 +457,26 @@ fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
             return Some(task);
         }
     }
-    
+
     // If no local task, try global task manager
     if let Some(task) = crate::task::task_manager::fetch_task() {
         debug!("CPU{} got task {} from global pool", cpu_id, task.pid());
         return Some(task);
     }
-    
+
     None
 }
 
 /// Enhanced work stealing using synchronous IPI for coordination
 fn try_enhanced_work_stealing() -> Option<Arc<TaskControlBlock>> {
     let current_cpu = current_cpu_id();
-    
+
     // Validate CPU ID before proceeding
     if current_cpu >= crate::smp::MAX_CPU_NUM {
         error!("Invalid CPU ID {} in try_enhanced_work_stealing", current_cpu);
         return None;
     }
-    
+
     let total_cpus = cpu_count();
 
     // First, collect load information from all CPUs

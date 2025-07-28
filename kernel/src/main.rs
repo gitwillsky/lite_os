@@ -33,7 +33,7 @@ mod watchdog;
 
 use crate::{
     log::LogLevel,
-    smp::{current_cpu_id, init_cpu_id_register},
+    smp::current_cpu_id,
 };
 
 #[unsafe(no_mangle)]
