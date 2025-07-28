@@ -207,11 +207,11 @@ pub fn current_cwd() -> String {
 /// It handles IPI processing, task execution, load balancing, and preemptive scheduling.
 pub fn run_tasks() -> ! {
     let cpu_id = crate::smp::current_cpu_id();
+    debug!("CPU{}: Starting task scheduler loop", cpu_id);
 
     // All CPUs use the same scheduler loop for proper multi-core task distribution
     loop {
         // 1. Handle pending IPI messages first (highest priority)
-        // Remove excessive debug logging to avoid spam
         ipi::handle_ipi_interrupt();
 
         // 2. Periodic maintenance (only on CPU0 to avoid conflicts)
@@ -221,14 +221,28 @@ pub fn run_tasks() -> ! {
 
         // 3. Try to get a task from the local queue first
         if let Some(task) = get_next_local_task() {
-            schedule_task_with_preemption(task);
-            continue;
+            // 关键修复：检查任务状态是否可执行
+            let task_status = *task.task_status.lock();
+            if task_status == TaskStatus::Ready {
+                schedule_task_with_preemption(task);
+                continue;
+            } else {
+                debug!("CPU{}: Skipping task {} with invalid status: {:?}", cpu_id, task.pid(), task_status);
+                continue;
+            }
         }
 
         // 4. No local task, try traditional work stealing (avoid sync IPI during boot)
         if let Some(stolen_task) = try_traditional_work_stealing() {
-            schedule_task_with_preemption(stolen_task);
-            continue;
+            // 关键修复：检查偷取的任务状态是否可执行
+            let stolen_task_status = *stolen_task.task_status.lock();
+            if stolen_task_status == TaskStatus::Ready {
+                schedule_task_with_preemption(stolen_task);
+                continue;
+            } else {
+                debug!("CPU{}: Skipping stolen task {} with invalid status: {:?}", cpu_id, stolen_task.pid(), stolen_task_status);
+                continue;
+            }
         }
 
         // 5. No work available anywhere, enter simple idle state
@@ -304,6 +318,28 @@ fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
     // If no local task, try global task manager
     if let Some(task) = crate::task::task_manager::fetch_task() {
         return Some(task);
+    }
+
+    // 关键修复：如果仍然没有任务，主动检查是否有任务被分配但未处理
+    static LAST_TASK_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let current_time = crate::timer::get_time_msec();
+    let last_check = LAST_TASK_CHECK.load(core::sync::atomic::Ordering::Relaxed);
+
+    if current_time.saturating_sub(last_check) > 100 { // 每100ms检查一次
+        if LAST_TASK_CHECK.compare_exchange(last_check, current_time,
+            core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Relaxed).is_ok() {
+
+            // 强制触发全局负载均衡
+            crate::task::task_manager::perform_global_load_balance();
+
+            // 再次尝试获取任务
+            if let Some(cpu_data) = current_cpu_data() {
+                if let Some(task) = cpu_data.pop_task() {
+                    debug!("CPU{}: Found task {} after load balance", cpu_id, task.pid());
+                    return Some(task);
+                }
+            }
+        }
     }
 
     None
@@ -413,10 +449,11 @@ fn try_traditional_work_stealing() -> Option<Arc<TaskControlBlock>> {
 
 /// Enhanced task scheduling with preemption support
 fn schedule_task_with_preemption(task: Arc<TaskControlBlock>) {
+    let cpu_id = current_cpu_id();
     let cpu_data = match current_cpu_data() {
         Some(data) => data,
         None => {
-            error!("No CPU data available for task execution");
+            error!("CPU{}: No CPU data available for task execution", cpu_id);
             return;
         }
     };
@@ -426,47 +463,60 @@ fn schedule_task_with_preemption(task: Arc<TaskControlBlock>) {
         handle_task_signals(&task);
         // If task was terminated by signal, don't execute it
         if task.is_zombie() {
+            debug!("CPU{}: Task {} is zombie, skipping execution", cpu_id, task.pid());
             return;
         }
     }
 
-    // 按照工作版本的逻辑：先设置任务状态和时间，再获取上下文指针
-    *task.task_status.lock() = TaskStatus::Running;
+    // 设置任务状态为运行中
+    {
+        let mut status = task.task_status.lock();
+        if *status != TaskStatus::Ready {
+            debug!("CPU{}: Task {} status is {:?}, not ready to run", cpu_id, task.pid(), *status);
+            return;
+        }
+        *status = TaskStatus::Running;
+    }
+
     let start_time = get_time_us();
     task.last_runtime.store(start_time, Ordering::Release);
-    cpu_data
-        .task_start_time
-        .store(start_time, Ordering::Release);
+    cpu_data.task_start_time.store(start_time, Ordering::Release);
 
-    // 确保任务状态变更在其他CPU上可见
-    crate::sync::memory_barrier::full();
+    // 设置当前任务
+    cpu_data.set_current_task(Some(task.clone()));
 
+    // 获取任务上下文指针 - 关键：必须在设置当前任务之后
     let task_cx_ptr = {
         let task_context = task.mm.task_cx.lock();
         &*task_context as *const TaskContext
     };
 
-    cpu_data.set_current_task(Some(task.clone()));
     let idle_cx_ptr = {
         let mut idle_context = cpu_data.idle_context.lock();
         &mut *idle_context as *mut TaskContext
     };
 
-    // 释放 cpu_data 的锁定，避免死锁
+    // 确保内存一致性
+    crate::sync::memory_barrier::full();
+
     drop(cpu_data);
 
-    // Switch to the task (从 idle 切换到 task，完全按照工作版本逻辑)
+    // Switch to the task
     unsafe {
         __switch(idle_cx_ptr, task_cx_ptr);
     }
 
-    // 任务执行完毕，返回到调度循环，记录统计信息
+    // 任务执行完毕，返回到调度循环
     let end_time = get_time_us();
     let runtime = end_time.saturating_sub(start_time);
+
+    // 更新任务统计信息
     task.sched.lock().update_vruntime(runtime);
 
     if let Some(cpu_data) = current_cpu_data() {
         cpu_data.record_task_execution(runtime, 0);
+        // 清除当前任务指针，避免任务完成后仍被认为是当前任务
+        cpu_data.set_current_task(None);
     }
 }
 
@@ -543,8 +593,9 @@ fn enter_simple_idle_state() {
         ipi::handle_ipi_interrupt();
 
         // 2. Check if we have local tasks after IPI processing
-        if cpu_data.queue_length() > 0 {
-            debug!("CPU{} waking up: found {} local tasks", cpu_id, cpu_data.queue_length());
+        let queue_len = cpu_data.queue_length();
+        if queue_len > 0 {
+            debug!("CPU{} waking up: found {} local tasks", cpu_id, queue_len);
             break;
         }
 
@@ -555,8 +606,8 @@ fn enter_simple_idle_state() {
             break;
         }
 
-        // 4. Try to get tasks from global pool (every few iterations)
-        if idle_iterations % 5 == 0 {
+        // 4. 关键修复：频繁检查全局任务池，特别是对于非CPU0的处理器
+        if idle_iterations % 2 == 0 || cpu_id != 0 {  // 非CPU0更频繁检查
             if let Some(task) = crate::task::task_manager::fetch_task() {
                 debug!("CPU{} waking up: found global task {}", cpu_id, task.pid());
                 cpu_data.add_task(task);
@@ -635,133 +686,9 @@ fn enter_simple_idle_state() {
            cpu_id, total_idle_time, idle_iterations);
 }
 
-/// Enhanced idle state with active IPI processing (unused during boot to avoid deadlocks)
-fn enter_enhanced_idle_state() {
-    let cpu_data = match current_cpu_data() {
-        Some(data) => data,
-        None => {
-            error!("No CPU data available for enhanced idle");
-            loop {
-                ipi::handle_ipi_interrupt(); // Still handle IPIs even without CPU data
-
-                #[cfg(target_arch = "riscv64")]
-                unsafe {
-                    riscv::asm::wfi();
-                }
-
-                #[cfg(not(target_arch = "riscv64"))]
-                core::hint::spin_loop();
-            }
-        }
-    };
-
-    let cpu_id = current_cpu_id();
-    cpu_data.set_state(crate::smp::cpu::CpuState::Idle);
-    let idle_start = get_time_msec();
-
-    debug!("CPU{} entering enhanced idle state", cpu_id);
-
-    loop {
-        // 1. Process any pending IPI messages
-        ipi::handle_ipi_interrupt();
-
-        // 2. Check if we now have local tasks after IPI processing
-        if cpu_data.queue_length() > 0 {
-            debug!("CPU{} found tasks after IPI processing, exiting idle", cpu_id);
-            break;
-        }
-
-        // 2.5. Check global task pool
-        if let Some(task) = crate::task::task_manager::fetch_task() {
-            debug!("CPU{} found task {} in global pool, exiting idle", cpu_id, task.pid());
-            cpu_data.add_task(task);
-            break;
-        }
-
-        // 3. Check if other CPUs have become overloaded (work stealing opportunity)
-        static LAST_STEAL_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let current_time = get_time_msec();
-        let last_check = LAST_STEAL_CHECK.load(Ordering::Relaxed);
-
-        if current_time - last_check > 100 { // Check every 100ms
-            if LAST_STEAL_CHECK.compare_exchange(last_check, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-                if let Some(_) = try_traditional_work_stealing() {
-                    debug!("CPU{} found work through traditional stealing, exiting idle", cpu_id);
-                    break;
-                }
-            }
-        }
-
-        // 4. Periodic system health check in idle
-        if cpu_id == 0 && (current_time - idle_start) % 5000 == 0 { // Every 5 seconds
-            perform_idle_system_check();
-        }
-
-        // 5. Wait for interrupt with timeout
-        let wait_start = get_time_msec();
-
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            riscv::asm::wfi();
-        }
-
-        #[cfg(not(target_arch = "riscv64"))]
-        core::hint::spin_loop();
-
-        // 6. Short circuit if we waited too long (potential deadlock detection)
-        let wait_time = get_time_msec() - wait_start;
-        if wait_time > 1000 { // 1 second
-            debug!("CPU{} long idle wait detected, checking system state", cpu_id);
-            break;
-        }
-
-        // 7. Final check for tasks
-        if cpu_data.queue_length() > 0 {
-            break;
-        }
-    }
-
-    let idle_end = get_time_msec();
-    let idle_time = idle_end.saturating_sub(idle_start);
-    cpu_data.record_idle_time(idle_time);
-    cpu_data.set_state(crate::smp::cpu::CpuState::Online);
-
-    debug!("CPU{} exiting enhanced idle state after {}ms", cpu_id, idle_time);
-}
-
-/// Perform system health check during idle time
-fn perform_idle_system_check() {
-    let mut total_tasks = 0;
-    let mut idle_cpus = 0;
-    let mut overloaded_cpus = 0;
-
-    for cpu_id in 0..cpu_count() {
-        if let Some(cpu_data) = cpu_data(cpu_id) {
-            let load = cpu_data.load();
-            total_tasks += load;
-
-            if load == 0 {
-                idle_cpus += 1;
-            } else if load > 5 {
-                overloaded_cpus += 1;
-            }
-        }
-    }
-
-    if overloaded_cpus > 0 && idle_cpus > 1 {
-        debug!("System imbalance detected: {} overloaded, {} idle CPUs",
-               overloaded_cpus, idle_cpus);
-        // Trigger load balancing
-        LOAD_BALANCER.lock().balance_load();
-    }
-
-    debug!("Idle system check: {} total tasks, {} idle CPUs, {} overloaded CPUs",
-           total_tasks, idle_cpus, overloaded_cpus);
-}
-
-/// Suspend the current task and run the next task (按工作版本逻辑重构)
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().expect("No current task to suspend");
+    let cpu_id = current_cpu_id();
     let end_time = get_time_us();
     let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
 
@@ -772,14 +699,26 @@ pub fn suspend_current_and_run_next() {
         let mut task_cx = task.mm.task_cx.lock();
         let task_cx_ptr = &mut *task_cx as *mut TaskContext;
         let mut task_status = task.task_status.lock();
-        let should_readd = *task_status == TaskStatus::Running;
 
-        // 如果任务应该继续运行，先更新状态再释放锁
-        if should_readd {
-            *task_status = TaskStatus::Ready;
-        }
-        drop(task_status); // 显式释放锁
+        // 关键修复：检查任务是否真的应该继续运行
+        let should_readd = match *task_status {
+            TaskStatus::Running => {
+                // 只有明确仍在运行状态的任务才重新加入队列
+                *task_status = TaskStatus::Ready;
+                true
+            },
+            TaskStatus::Sleeping | TaskStatus::Zombie => {
+                // 已经睡眠或僵尸状态的任务不应该重新调度
+                debug!("CPU{}: Task {} status is {:?}, not readding to queue", cpu_id, task.pid(), *task_status);
+                false
+            },
+            _ => {
+                debug!("CPU{}: Task {} status is {:?}, not readding to queue", cpu_id, task.pid(), *task_status);
+                false
+            }
+        };
 
+        drop(task_status);
         (task_cx_ptr, should_readd)
     };
 
@@ -790,6 +729,8 @@ pub fn suspend_current_and_run_next() {
         }
         // 确保任务状态更改可见
         crate::sync::memory_barrier::full();
+    } else {
+        debug!("CPU{}: Task {} suspended without readding to queue", cpu_id, task.pid());
     }
 
     // 按照工作版本逻辑：直接调用 schedule 函数切换到 idle
@@ -799,14 +740,19 @@ pub fn suspend_current_and_run_next() {
 /// Block the current task and run the next task (按工作版本逻辑重构)
 pub fn block_current_and_run_next() {
     let task = take_current_task().expect("No current task to block");
+    let cpu_id = current_cpu_id();
     let end_time = get_time_us();
     let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
+
+    debug!("CPU{}: Blocking task {} after {}us runtime", cpu_id, task.pid(), runtime);
 
     // Update task statistics
     task.sched.lock().update_vruntime(runtime);
     let task_cx_ptr = &mut *task.mm.task_cx.lock() as *mut TaskContext;
 
     // Task is blocked, don't add back to queue
+    debug!("CPU{}: Task {} blocked, not readding to queue", cpu_id, task.pid());
+
     // 按照工作版本逻辑：直接调用 schedule 函数切换到 idle
     schedule(task_cx_ptr);
 }
@@ -814,7 +760,10 @@ pub fn block_current_and_run_next() {
 /// Exit the current task and run the next task (按工作版本逻辑重构)
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().expect("No current task to exit");
+    let cpu_id = current_cpu_id();
     let pid = task.pid();
+
+    debug!("CPU{}: Task {} exiting with code {}", cpu_id, pid, exit_code);
 
     // Handle task exit
     task.set_exit_code(exit_code);
@@ -907,84 +856,4 @@ pub fn mark_kernel_exit() {
             *in_kernel = false;
         }
     }
-}
-
-/// Enhanced system debug information with IPI statistics
-fn print_enhanced_system_debug_info() {
-    let mut total_tasks = 0;
-    let mut cpu_loads = Vec::new();
-    let mut ipi_stats_summary = Vec::new();
-
-    for cpu_id in 0..cpu_count() {
-        if let Some(cpu_data) = cpu_data(cpu_id) {
-            let load = cpu_data.load();
-            total_tasks += load;
-            cpu_loads.push(load);
-
-            // Collect IPI statistics
-            if let Some(ipi_stats) = ipi::get_ipi_stats(cpu_id) {
-                let sent = ipi_stats.sent.load(Ordering::Relaxed);
-                let received = ipi_stats.received.load(Ordering::Relaxed);
-                let failures = ipi_stats.send_failures.load(Ordering::Relaxed);
-                ipi_stats_summary.push((sent, received, failures));
-            } else {
-                ipi_stats_summary.push((0, 0, 0));
-            }
-        }
-    }
-
-    debug!(
-        "[ENHANCED SCHED] System status: {} total tasks, CPU loads: {:?}, time: {}ms",
-        total_tasks,
-        cpu_loads,
-        get_time_msec()
-    );
-
-    // Print IPI statistics
-    for (cpu_id, (sent, received, failures)) in ipi_stats_summary.iter().enumerate() {
-        if *sent > 0 || *received > 0 || *failures > 0 {
-            debug!(
-                "[IPI STATS] CPU{}: sent={}, received={}, failures={}",
-                cpu_id, sent, received, failures
-            );
-        }
-    }
-
-    // Print queue status for each priority
-    for cpu_id in 0..cpu_count() {
-        if let Some(queue_status) = ipi::get_ipi_queue_status_detailed(cpu_id) {
-            let has_messages = queue_status.iter().any(|(count, _)| *count > 0);
-            if has_messages {
-                debug!(
-                    "[IPI QUEUE] CPU{}: Critical={}/{}, High={}/{}, Normal={}/{}, Low={}/{}",
-                    cpu_id,
-                    queue_status[0].0, queue_status[0].1,
-                    queue_status[1].0, queue_status[1].1,
-                    queue_status[2].0, queue_status[2].1,
-                    queue_status[3].0, queue_status[3].1
-                );
-            }
-        }
-    }
-
-    // Print load balancer effectiveness
-    let load_variance: f32 = if cpu_loads.len() > 1 {
-        let mean = total_tasks as f32 / cpu_loads.len() as f32;
-        let variance = cpu_loads.iter()
-            .map(|&load| {
-                let diff = load as f32 - mean;
-                diff * diff
-            })
-            .sum::<f32>() / cpu_loads.len() as f32;
-        // Simple approximation since we don't have sqrt in no_std
-        if variance < 1.0 { variance } else { variance / 2.0 + 1.0 }
-    } else {
-        0.0
-    };
-
-    debug!(
-        "[LOAD BALANCE] Load variance: {:.2}, Balance quality: {}",
-        load_variance,
-        if load_variance < 1.0 { "Good" } else if load_variance < 2.0 { "Fair" } else { "Poor" }
-    );
 }
