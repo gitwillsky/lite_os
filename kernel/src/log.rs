@@ -1,64 +1,6 @@
 use core::fmt::{self, Write};
 use spin::Mutex;
 
-/// Optimized log buffer for direct console integration
-struct FastLogBuffer {
-    buffer: [u8; 512], // Smaller buffer since console handles buffering
-    position: usize,
-}
-
-impl FastLogBuffer {
-    const fn new() -> Self {
-        Self {
-            buffer: [0; 512],
-            position: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.position = 0;
-    }
-
-    fn as_str(&self) -> &str {
-        unsafe {
-            core::str::from_utf8_unchecked(&self.buffer[..self.position])
-        }
-    }
-
-    fn write_str_fast(&mut self, s: &str) -> bool {
-        let bytes = s.as_bytes();
-        let remaining = 512 - self.position;
-
-        if bytes.len() <= remaining {
-            self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
-            self.position += bytes.len();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn write_char_fast(&mut self, c: char) -> bool {
-        if self.position < 511 {
-            self.buffer[self.position] = c as u8;
-            self.position += 1;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl Write for FastLogBuffer {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        if self.write_str_fast(s) {
-            Ok(())
-        } else {
-            Err(fmt::Error)
-        }
-    }
-}
-
 /// ANSI color codes for terminal output
 pub struct Colors;
 
@@ -170,24 +112,65 @@ impl Default for LoggerConfig {
     }
 }
 
-/// Fast CPU ID formatting without heap allocation
-fn format_cpu_id_fast(buffer: &mut FastLogBuffer, cpu_id: usize) {
-    let _ = buffer.write_str_fast("[CPU");
-
-    // Simple number formatting for CPU IDs (0-99)
-    if cpu_id >= 10 {
-        let tens = cpu_id / 10;
-        let ones = cpu_id % 10;
-        let _ = buffer.write_char_fast((b'0' + tens as u8) as char);
-        let _ = buffer.write_char_fast((b'0' + ones as u8) as char);
-    } else {
-        let _ = buffer.write_char_fast((b'0' + cpu_id as u8) as char);
-    }
-
-    let _ = buffer.write_str_fast("] ");
+/// Simple stack-based log formatting
+struct StackLogBuffer {
+    buffer: [u8; 512],
+    pos: usize,
 }
 
-/// Optimized logger for direct console integration
+impl StackLogBuffer {
+    fn new() -> Self {
+        Self {
+            buffer: [0; 512],
+            pos: 0,
+        }
+    }
+
+    fn write_str(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        let space = self.buffer.len() - self.pos;
+        let to_copy = bytes.len().min(space);
+        
+        if to_copy > 0 {
+            self.buffer[self.pos..self.pos + to_copy].copy_from_slice(&bytes[..to_copy]);
+            self.pos += to_copy;
+        }
+    }
+
+    fn write_char(&mut self, c: char) {
+        if self.pos < self.buffer.len() {
+            self.buffer[self.pos] = c as u8;
+            self.pos += 1;
+        }
+    }
+
+    fn write_number(&mut self, mut num: usize) {
+        if num == 0 {
+            self.write_char('0');
+            return;
+        }
+
+        let mut digits = [0u8; 20]; // enough for 64-bit numbers
+        let mut count = 0;
+
+        while num > 0 {
+            digits[count] = (b'0' + (num % 10) as u8);
+            num /= 10;
+            count += 1;
+        }
+
+        // Write digits in reverse order
+        for i in (0..count).rev() {
+            self.write_char(digits[i] as char);
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buffer[..self.pos]).unwrap_or("[INVALID_UTF8]")
+    }
+}
+
+/// Simplified logger for direct console output
 pub struct Logger {
     config: LoggerConfig,
 }
@@ -222,100 +205,91 @@ impl Logger {
         self.config.use_bright_colors = use_bright;
     }
 
-    /// Optimized logging function that directly integrates with console
+    /// Simplified logging with direct console output
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.config.level && self.config.module_filter.is_module_enabled(module) {
-            // Use stack buffer for fast formatting
-            let mut buffer = FastLogBuffer::new();
+            let mut buffer = StackLogBuffer::new();
 
             // Add CPU ID if enabled
             if self.config.show_cpu_id {
                 let cpu_id = crate::smp::current_cpu_id();
-                format_cpu_id_fast(&mut buffer, cpu_id);
+                buffer.write_str("[CPU");
+                buffer.write_number(cpu_id);
+                buffer.write_str("] ");
             }
 
-            // Add colored log level
+            // Add log level with colors
             if self.config.enable_colors {
                 let color = if self.config.use_bright_colors {
                     level.bright_color()
                 } else {
                     level.color()
                 };
-                let _ = buffer.write_str_fast("[");
-                let _ = buffer.write_str_fast(color);
-                let _ = buffer.write_str_fast(level.name());
-                let _ = buffer.write_str_fast(Colors::RESET);
-                let _ = buffer.write_str_fast("] ");
+                buffer.write_str("[");
+                buffer.write_str(color);
+                buffer.write_str(level.name());
+                buffer.write_str(Colors::RESET);
+                buffer.write_str("] ");
             } else {
-                let _ = buffer.write_str_fast("[");
-                let _ = buffer.write_str_fast(level.name());
-                let _ = buffer.write_str_fast("] ");
+                buffer.write_str("[");
+                buffer.write_str(level.name());
+                buffer.write_str("] ");
             }
 
-            // Add module name with color
+            // Add module name
             if self.config.enable_colors {
-                let _ = buffer.write_str_fast("[");
-                let _ = buffer.write_str_fast(Colors::DIM);
-                let _ = buffer.write_str_fast(module);
-                let _ = buffer.write_str_fast(Colors::RESET);
-                let _ = buffer.write_str_fast("] ");
+                buffer.write_str("[");
+                buffer.write_str(Colors::DIM);
+                buffer.write_str(module);
+                buffer.write_str(Colors::RESET);
+                buffer.write_str("] ");
             } else {
-                let _ = buffer.write_str_fast("[");
-                let _ = buffer.write_str_fast(module);
-                let _ = buffer.write_str_fast("] ");
+                buffer.write_str("[");
+                buffer.write_str(module);
+                buffer.write_str("] ");
             }
 
-            // Try to format the message into remaining buffer space
+            // Format and add message
             if let Some(simple_msg) = args.as_str() {
-                // Simple case: string literal
-                let _ = buffer.write_str_fast(simple_msg);
+                buffer.write_str(simple_msg);
             } else {
-                // Complex formatting required
-                let remaining = 512 - buffer.position;
-                if remaining > 0 {
-                    let mut temp_buffer = [0u8; 256];
-                    let mut cursor = 0;
-
-                    // Use minimal stack writer for complex formatting
-                    struct MinimalWriter<'a> {
-                        buffer: &'a mut [u8],
-                        cursor: &'a mut usize,
-                    }
-
-                    impl<'a> Write for MinimalWriter<'a> {
-                        fn write_str(&mut self, s: &str) -> fmt::Result {
-                            let bytes = s.as_bytes();
-                            let space = self.buffer.len() - *self.cursor;
-                            let to_copy = bytes.len().min(space);
-
-                            if to_copy > 0 {
-                                self.buffer[*self.cursor..*self.cursor + to_copy]
-                                    .copy_from_slice(&bytes[..to_copy]);
-                                *self.cursor += to_copy;
-                            }
-                            Ok(())
+                // Format into temporary buffer
+                let mut temp = [0u8; 256];
+                let mut cursor = 0;
+                
+                struct TempWriter<'a> {
+                    buffer: &'a mut [u8],
+                    cursor: &'a mut usize,
+                }
+                
+                impl<'a> Write for TempWriter<'a> {
+                    fn write_str(&mut self, s: &str) -> fmt::Result {
+                        let bytes = s.as_bytes();
+                        let space = self.buffer.len() - *self.cursor;
+                        let to_copy = bytes.len().min(space);
+                        
+                        if to_copy > 0 {
+                            self.buffer[*self.cursor..*self.cursor + to_copy]
+                                .copy_from_slice(&bytes[..to_copy]);
+                            *self.cursor += to_copy;
                         }
+                        Ok(())
                     }
-
-                    let mut writer = MinimalWriter {
-                        buffer: &mut temp_buffer,
-                        cursor: &mut cursor,
-                    };
-
-                    if writer.write_fmt(args).is_ok() && cursor > 0 {
-                        if let Ok(formatted) = core::str::from_utf8(&temp_buffer[..cursor]) {
-                            let _ = buffer.write_str_fast(formatted);
-                        }
+                }
+                
+                let mut writer = TempWriter { buffer: &mut temp, cursor: &mut cursor };
+                if writer.write_fmt(args).is_ok() && cursor > 0 {
+                    if let Ok(s) = core::str::from_utf8(&temp[..cursor]) {
+                        buffer.write_str(s);
                     }
                 }
             }
 
-            // For Error level, use emergency mode to ensure output
+            // Output directly to console
             if level == LogLevel::Error {
                 crate::console::emergency_print(buffer.as_str());
             } else {
-                // Direct call to console's write_line, avoiding println! macro
-                crate::console::write_log_line(buffer.as_str());
+                crate::console::print_direct(buffer.as_str());
             }
         }
     }
@@ -443,7 +417,7 @@ pub fn disable_memory_logs() -> bool { disable_module_pattern(MODULE_MEMORY) }
 pub fn enable_fs_logs() -> bool { enable_module_pattern(MODULE_FS) }
 pub fn disable_fs_logs() -> bool { disable_module_pattern(MODULE_FS) }
 
-/// Internal logging function (optimized for direct console integration)
+/// Internal logging function
 pub fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     LOGGER.lock().log(level, module, args);
 }
