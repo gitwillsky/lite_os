@@ -83,10 +83,10 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str>
     // Create per-CPU data structure for this secondary CPU
     let cpu_data_arc = crate::alloc::sync::Arc::new(CpuData::new(cpu_id, CpuType::Application));
     cpu_data_arc.set_arch_cpu_id(hart_id);
-    
+
     // Register the CPU data in the global array
     set_cpu_data(cpu_id, cpu_data_arc.clone());
-    
+
     debug!("CPU{} per-CPU data structure created and registered", cpu_id);
 
     // Set CPU state to starting
@@ -133,7 +133,7 @@ pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> 
 
             // Enable specific interrupt types with explicit verification
             riscv::register::sie::set_sext();  // External interrupts
-            riscv::register::sie::set_stimer(); // Timer interrupts  
+            riscv::register::sie::set_stimer(); // Timer interrupts
             riscv::register::sie::set_ssoft();  // Software interrupts (IPIs)
 
             // Ensure software interrupts are definitely enabled
@@ -408,7 +408,7 @@ fn perform_initial_health_check() {
     );
 
     // Test IPI functionality between CPUs
-    // test_ipi_connectivity();
+    test_ipi_connectivity();
 }
 
 /// Test IPI connectivity between all CPUs
