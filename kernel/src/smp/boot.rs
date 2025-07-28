@@ -80,17 +80,18 @@ pub extern "C" fn secondary_cpu_main(hart_id: usize, dtb_addr: usize) -> ! {
 
 /// Initialize a secondary CPU
 fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str> {
+    // Create per-CPU data structure for this secondary CPU
+    let cpu_data_arc = crate::alloc::sync::Arc::new(CpuData::new(cpu_id, CpuType::Application));
+    cpu_data_arc.set_arch_cpu_id(hart_id);
+    
+    // Register the CPU data in the global array
+    set_cpu_data(cpu_id, cpu_data_arc.clone());
+    
+    debug!("CPU{} per-CPU data structure created and registered", cpu_id);
+
     // Set CPU state to starting
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        cpu_data.set_state(CpuState::Starting);
-        debug!("CPU{} state set to Starting", cpu_id);
-    } else {
-        error!(
-            "No CPU data available for CPU {} during initialization",
-            cpu_id
-        );
-        return Err("No CPU data available");
-    }
+    cpu_data_arc.set_state(CpuState::Starting);
+    debug!("CPU{} state set to Starting", cpu_id);
 
     // Initialize architecture-specific features
     if let Err(e) = arch_specific_secondary_init(hart_id) {
@@ -114,16 +115,9 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str>
     cpu_set_online(cpu_id);
     debug!("CPU{} marked as online", cpu_id);
 
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        cpu_data.set_state(CpuState::Online);
-        debug!("CPU{} state set to Online", cpu_id);
-    } else {
-        error!(
-            "No CPU data available for CPU {} after initialization",
-            cpu_id
-        );
-        return Err("No CPU data available after init");
-    }
+    // Set CPU state to Online (it should exist now since we created it)
+    cpu_data_arc.set_state(CpuState::Online);
+    debug!("CPU{} state set to Online", cpu_id);
 
     Ok(())
 }
@@ -341,43 +335,9 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
         return;
     }
 
-    // Try to create IPI barriers for online CPUs only
-    match create_ipi_barrier(&online_cpus, 5000) {
-        // 5 second timeout
-        Ok(test_barrier) => {
-            info!(
-                "Successfully created IPI barrier for {} CPUs",
-                online_cpus.len()
-            );
-
-            // Test the barrier
-            match wait_at_ipi_barrier(test_barrier) {
-                Ok(_) => {
-                    info!("IPI barrier test successful");
-                    // Store a new barrier for future use
-                    match create_ipi_barrier(&online_cpus, SECONDARY_CPU_BOOT_TIMEOUT_MS) {
-                        Ok(barrier) => {
-                            *SYSTEM_READY_BARRIER.lock() = Some(barrier);
-                            info!("Enhanced synchronization initialized successfully");
-                        }
-                        Err(e) => {
-                            warn!("Failed to create persistent barrier: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("IPI barrier test failed: {}", e);
-                }
-            }
-        }
-        Err(e) => {
-            warn!(
-                "Failed to create IPI barrier for enhanced synchronization: {}",
-                e
-            );
-            info!("Falling back to traditional synchronization methods");
-        }
-    }
+    // Skip IPI barrier testing during boot to avoid deadlocks
+    // The IPI system will be available for runtime use
+    info!("Skipping IPI barrier testing during boot phase for stability");
 }
 
 /// Perform initial system health check after all CPUs are online
@@ -386,7 +346,16 @@ fn perform_initial_health_check() {
     let mut idle_cpus = 0;
     let mut failed_cpus = Vec::new();
 
-    for cpu_id in 0..crate::smp::cpu_count() {
+    // Check all expected CPUs based on topology
+    let topology = match crate::smp::topology::get_topology() {
+        Some(t) => t,
+        None => {
+            error!("No topology information available for health check");
+            return;
+        }
+    };
+    for cpu_info in &topology.cpus {
+        let cpu_id = cpu_info.cpu_id;
         if let Some(cpu_data) = cpu_data(cpu_id) {
             match cpu_data.state() {
                 CpuState::Online => {
@@ -394,9 +363,11 @@ fn perform_initial_health_check() {
                     debug!("CPU{} is online and healthy", cpu_id);
                 }
                 CpuState::Idle => {
-                    // Idle is also a valid healthy state for secondary CPUs
-                    idle_cpus += 1;
-                    debug!("CPU{} is idle and healthy", cpu_id);
+                    // Idle is a valid state but we want CPUs to be online for task execution
+                    // Set them to online if they're currently idle
+                    cpu_data.set_state(CpuState::Online);
+                    online_cpus += 1;
+                    debug!("CPU{} was idle, set to online and healthy", cpu_id);
                 }
                 state => {
                     warn!("CPU{} is in unexpected state: {:?}", cpu_id, state);

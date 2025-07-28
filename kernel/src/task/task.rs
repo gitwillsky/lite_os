@@ -461,7 +461,7 @@ impl TaskControlBlock {
             egid: AtomicU32::new(0),
             stdin_nonblock: AtomicBool::new(false),
             cpu_affinity: crate::sync::SpinLock::new(CpuSet::new()),
-            preferred_cpu: AtomicUsize::new(0),
+            preferred_cpu: AtomicUsize::new(usize::MAX), // No preferred CPU initially
             last_cpu: AtomicUsize::new(0),
         };
 
@@ -562,7 +562,7 @@ impl TaskControlBlock {
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
             cpu_affinity: crate::sync::SpinLock::new(self.cpu_affinity.lock().clone()),
-            preferred_cpu: AtomicUsize::new(self.preferred_cpu.load(atomic::Ordering::Relaxed)),
+            preferred_cpu: AtomicUsize::new(usize::MAX), // Child should not inherit parent's CPU preference
             last_cpu: AtomicUsize::new(self.last_cpu.load(atomic::Ordering::Relaxed)),
             mm: Memory {
                 memory_set: Mutex::new(memory_set),

@@ -93,7 +93,7 @@ impl GlobalTaskManager {
         }
     }
 
-    /// Select the best CPU for a new task
+    /// Select the best CPU for a new task using advanced scheduling heuristics
     fn select_best_cpu_for_task(&self, task: &Arc<TaskControlBlock>) -> usize {
         let current_cpu = current_cpu_id();
         let total_cpus = cpu_count();
@@ -101,35 +101,73 @@ impl GlobalTaskManager {
         // Check task's CPU affinity if set
         let affinity = task.cpu_affinity.lock();
         let preferred_cpu = task.preferred_cpu.load(core::sync::atomic::Ordering::Relaxed);
+        let affinity_mask = affinity.mask;
         drop(affinity);
 
-        // If task has a preferred CPU and it's online, try to use it
-        if preferred_cpu < total_cpus && cpu_is_online(preferred_cpu) {
-            if let Some(cpu_data) = cpu_data(preferred_cpu) {
-                if cpu_data.load() < 4 { // Don't overload the preferred CPU
-                    return preferred_cpu;
-                }
-            }
-        }
-
-        // Find the CPU with the lowest load
-        let mut best_cpu = current_cpu;
-        let mut lowest_load = usize::MAX;
-
+        // Collect valid CPUs based on affinity - if no affinity is set, all CPUs are valid
+        let mut valid_cpus = Vec::new();
         for cpu_id in 0..total_cpus {
             if !cpu_is_online(cpu_id) {
                 continue;
             }
 
+            // Check CPU affinity - if mask is 0, no affinity restriction
+            if affinity_mask != 0 && (affinity_mask & (1 << cpu_id)) == 0 {
+                continue;
+            }
+
+            valid_cpus.push(cpu_id);
+        }
+
+        if valid_cpus.is_empty() {
+            warn!("No valid CPUs available for task {}, falling back to CPU0", task.pid());
+            return 0;
+        }
+
+        // If task has a preferred CPU and it's valid, try to use it (but only if it's not the default usize::MAX)
+        if preferred_cpu != usize::MAX && preferred_cpu < total_cpus && valid_cpus.contains(&preferred_cpu) {
+            if let Some(cpu_data) = cpu_data(preferred_cpu) {
+                if cpu_data.load() < 6 { // Allow some overload for preferred CPU
+                    debug!("Assigning task {} to preferred CPU {}", task.pid(), preferred_cpu);
+                    return preferred_cpu;
+                }
+            }
+        }
+
+        // Advanced CPU selection considering multiple factors
+        let mut best_cpu = current_cpu;
+        let mut best_score = f32::MIN;
+
+        for &cpu_id in &valid_cpus {
             if let Some(cpu_data) = cpu_data(cpu_id) {
                 let load = cpu_data.load();
-                if load < lowest_load {
-                    lowest_load = load;
+                let queue_len = cpu_data.queue_length();
+                let cpu_utilization = cpu_data.stats.cpu_utilization() as f32 / 100.0;
+
+                // Calculate a score considering multiple factors
+                let load_factor = 1.0 / (load as f32 + 1.0);
+                let queue_factor = 1.0 / (queue_len as f32 + 1.0);
+                let utilization_factor = 1.0 - cpu_utilization;
+
+                // Prefer current CPU slightly to reduce cache misses
+                let locality_bonus = if cpu_id == current_cpu { 0.1 } else { 0.0 };
+
+                // Check if CPU is idle and give it high priority
+                let idle_bonus = if cpu_data.state() == crate::smp::cpu::CpuState::Idle { 0.5 } else { 0.0 };
+
+                let score = load_factor * 0.4 + queue_factor * 0.3 + utilization_factor * 0.2 + locality_bonus + idle_bonus;
+
+                debug!("CPU{}: load={}, queue={}, util={:.1}%, score={:.3}",
+                       cpu_id, load, queue_len, cpu_utilization * 100.0, score);
+
+                if score > best_score {
+                    best_score = score;
                     best_cpu = cpu_id;
                 }
             }
         }
 
+        debug!("Selected CPU{} for task {} (score={:.3})", best_cpu, task.pid(), best_score);
         best_cpu
     }
 
@@ -246,74 +284,136 @@ impl GlobalTaskManager {
         tasks
     }
 
-    /// Perform global load balancing
+    /// Perform global load balancing with advanced heuristics
     fn global_load_balance(&self) {
         let total_cpus = cpu_count();
         if total_cpus <= 1 {
             return; // No balancing needed for single CPU
         }
 
-        // Collect load information
-        let mut cpu_loads = Vec::new();
+        // Collect detailed load information
+        let mut cpu_info = Vec::new();
+        let mut total_load = 0;
+
         for cpu_id in 0..total_cpus {
             if cpu_is_online(cpu_id) {
                 if let Some(cpu_data) = cpu_data(cpu_id) {
-                    cpu_loads.push((cpu_id, cpu_data.load()));
+                    let load = cpu_data.load();
+                    let queue_len = cpu_data.queue_length();
+                    let state = cpu_data.state();
+                    let utilization = cpu_data.stats.cpu_utilization();
+
+                    cpu_info.push((cpu_id, load, queue_len, state, utilization));
+                    total_load += load;
                 }
             }
         }
 
-        if cpu_loads.is_empty() {
+        if cpu_info.is_empty() {
             return;
         }
 
+        let avg_load = total_load / cpu_info.len();
+        let load_threshold = 2; // Minimum imbalance to trigger migration
+
         // Sort by load (highest first)
-        cpu_loads.sort_by(|a, b| b.1.cmp(&a.1));
+        cpu_info.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let avg_load = cpu_loads.iter().map(|(_, load)| load).sum::<usize>() / cpu_loads.len();
+        let mut migrations_performed = 0;
 
-        // Balance load from highest to lowest
-        for &(overloaded_cpu, load) in cpu_loads.iter() {
-            if load <= avg_load + 1 {
+        // Identify overloaded and underloaded CPUs
+        for &(overloaded_cpu, load, queue_len, state, utilization) in cpu_info.iter() {
+            if load <= avg_load + load_threshold {
                 break; // No more significantly overloaded CPUs
             }
 
-            // Find an underloaded CPU
-            if let Some(&(underloaded_cpu, _)) = cpu_loads.iter()
-                .find(|(_, l)| *l < avg_load.saturating_sub(1)) {
+            debug!("CPU{} is overloaded: load={}, queue={}, state={:?}, util={}%",
+                   overloaded_cpu, load, queue_len, state, utilization);
 
-                // Move tasks from overloaded to underloaded CPU
+            // Find the best underloaded CPU for migration
+            let mut best_target = None;
+            let mut best_target_score = f32::MIN;
+
+            for &(target_cpu, target_load, target_queue, target_state, target_util) in cpu_info.iter() {
+                if target_cpu == overloaded_cpu || target_load >= avg_load {
+                    continue;
+                }
+
+                // Calculate migration benefit score
+                let load_diff = load - target_load;
+                let utilization_factor = 1.0 - (target_util as f32 / 100.0);
+                let idle_bonus = if target_state == crate::smp::cpu::CpuState::Idle { 1.0 } else { 0.0 };
+
+                let score = (load_diff as f32) * 0.6 + utilization_factor * 0.3 + idle_bonus * 0.1;
+
+                if score > best_target_score {
+                    best_target_score = score;
+                    best_target = Some(target_cpu);
+                }
+            }
+
+            if let Some(target_cpu) = best_target {
                 if let Some(overloaded_data) = cpu_data(overloaded_cpu) {
-                    let tasks_to_move = (load - avg_load) / 2;
+                    // Calculate optimal number of tasks to move
+                    let optimal_move = ((load - avg_load) + 1) / 2;
+                    let tasks_to_move = optimal_move.max(1).min(queue_len);
+
                     let stolen_tasks = overloaded_data.steal_tasks(tasks_to_move);
+                    let actual_moved = stolen_tasks.len();
 
-                    for task in stolen_tasks {
-                        if let Some(underloaded_data) = cpu_data(underloaded_cpu) {
-                            underloaded_data.add_task(task);
+                    if actual_moved > 0 {
+                        if let Some(target_data) = cpu_data(target_cpu) {
+                            for task in stolen_tasks {
+                                // Update task's preferred CPU to the new target
+                                task.preferred_cpu.store(target_cpu, core::sync::atomic::Ordering::Relaxed);
+                                target_data.add_task(task);
+                            }
 
-                            // Send reschedule IPI to wake up the underloaded CPU
-                            let _ = crate::smp::ipi::send_reschedule_ipi(underloaded_cpu);
+                            // Send IPI to wake up target CPU
+                            if let Err(e) = crate::smp::ipi::send_reschedule_ipi(target_cpu) {
+                                debug!("Failed to send reschedule IPI to CPU{}: {}", target_cpu, e);
+                            }
+
+                            migrations_performed += actual_moved;
+                            info!("Load balance: migrated {} tasks from CPU{} to CPU{} (score={:.2})",
+                                  actual_moved, overloaded_cpu, target_cpu, best_target_score);
+
+                            // Note: We don't update cpu_info here to avoid borrow issues
+                            // The load will be recalculated on the next balance cycle
                         }
                     }
-
-                    debug!("Balanced {} tasks from CPU{} to CPU{}",
-                           tasks_to_move, overloaded_cpu, underloaded_cpu);
                 }
             }
         }
 
-        // Distribute tasks from global pool
+        // Distribute tasks from global pool to underloaded CPUs
+        let mut global_tasks_distributed = 0;
         let mut global_pool = self.global_task_pool.lock();
+
         while let Some(task) = global_pool.pop_front() {
             let target_cpu = self.select_best_cpu_for_task(&task);
+
             if let Some(cpu_data) = cpu_data(target_cpu) {
+                debug!("Distributing global task {} to CPU{}", task.pid(), target_cpu);
                 cpu_data.add_task(task);
-                let _ = crate::smp::ipi::send_reschedule_ipi(target_cpu);
+
+                // Send IPI to wake up target CPU
+                if let Err(e) = crate::smp::ipi::send_reschedule_ipi(target_cpu) {
+                    debug!("Failed to send reschedule IPI to CPU{}: {}", target_cpu, e);
+                }
+
+                global_tasks_distributed += 1;
             } else {
                 // Put it back if no CPU is available
                 global_pool.push_back(task);
                 break;
             }
+        }
+        drop(global_pool);
+
+        if migrations_performed > 0 || global_tasks_distributed > 0 {
+            info!("Global load balance completed: {} migrations, {} global tasks distributed",
+                  migrations_performed, global_tasks_distributed);
         }
     }
 }

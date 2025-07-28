@@ -53,7 +53,7 @@ impl LoadBalancer {
         current_time.saturating_sub(last_balance) >= self.balance_interval_us
     }
 
-    /// Enhanced load balancing using synchronous IPI for reliable task migration
+    /// Simple load balancing without synchronous IPIs (safe during boot)
     fn balance_load(&self) {
         let current_time = get_time_msec();
         if self
@@ -70,37 +70,13 @@ impl LoadBalancer {
             return;
         }
 
-        // Collect load information from all CPUs using synchronous IPI
+        // Collect load information from all CPUs without using sync IPIs
         let mut cpu_loads = Vec::new();
-        let current_cpu = current_cpu_id();
 
         for cpu_id in 0..cpu_count() {
-            if cpu_id == current_cpu {
-                // Get local load directly
-                if let Some(cpu_data) = cpu_data(cpu_id) {
-                    cpu_loads.push((cpu_id, cpu_data.load()));
-                }
-            } else {
-                // Use synchronous IPI to get accurate load from remote CPU
-                match ipi::send_function_call_ipi_sync(cpu_id, || {
-                    if let Some(cpu_data) = current_cpu_data() {
-                        ipi::IpiResponse::Value(cpu_data.load())
-                    } else {
-                        ipi::IpiResponse::Value(0)
-                    }
-                }, 100) { // 100ms timeout
-                    Ok(ipi::IpiResponse::Value(load)) => {
-                        cpu_loads.push((cpu_id, load));
-                    }
-                    Ok(_) => {
-                        debug!("Unexpected IPI response from CPU{}", cpu_id);
-                        continue;
-                    }
-                    Err(e) => {
-                        debug!("Failed to get load from CPU{}: {}", cpu_id, e);
-                        continue;
-                    }
-                }
+            // Get load directly from CPU data (no IPI needed)
+            if let Some(cpu_data) = cpu_data(cpu_id) {
+                cpu_loads.push((cpu_id, cpu_data.load()));
             }
         }
 
@@ -130,21 +106,20 @@ impl LoadBalancer {
                 .map(|(cpu_id, _)| *cpu_id);
 
             if let Some(underloaded_cpu) = best_target {
-                // Use synchronous IPI to ensure reliable task migration
+                // Use simple task migration without sync IPIs
                 let tasks_to_move = 1.max((load - avg_load) / 3);
 
-                match self.migrate_tasks_sync(overloaded_cpu, underloaded_cpu, tasks_to_move) {
-                    Ok(migrated_count) if migrated_count > 0 => {
-                        successful_migrations += migrated_count;
-                        debug!("Load balancing: migrated {} tasks from CPU{} to CPU{}",
-                               migrated_count, overloaded_cpu, underloaded_cpu);
-                    }
-                    Ok(_) => {
-                        // No tasks were migrated
-                    }
-                    Err(e) => {
-                        debug!("Failed to migrate tasks from CPU{} to CPU{}: {}",
-                               overloaded_cpu, underloaded_cpu, e);
+                if let Some(overloaded_data) = cpu_data(overloaded_cpu) {
+                    let stolen_tasks = overloaded_data.steal_tasks(tasks_to_move);
+                    if !stolen_tasks.is_empty() {
+                        if let Some(underloaded_data) = cpu_data(underloaded_cpu) {
+                            for task in stolen_tasks {
+                                underloaded_data.add_task(task);
+                                successful_migrations += 1;
+                            }
+                            debug!("Load balancing: migrated {} tasks from CPU{} to CPU{}",
+                                   successful_migrations, overloaded_cpu, underloaded_cpu);
+                        }
                     }
                 }
             }
@@ -155,52 +130,6 @@ impl LoadBalancer {
         }
     }
 
-    /// Migrate tasks between CPUs using synchronous IPI
-    fn migrate_tasks_sync(&self, from_cpu: usize, to_cpu: usize, count: usize) -> Result<usize, &'static str> {
-        // Step 1: Request tasks from source CPU
-        let stolen_count = match ipi::send_function_call_ipi_sync(from_cpu, move || {
-            if let Some(cpu_data) = current_cpu_data() {
-                let initial_load = cpu_data.load();
-                let stolen_tasks = cpu_data.steal_tasks(count);
-                let final_load = cpu_data.load();
-
-                debug!("CPU{} stole {} tasks, load: {} -> {}",
-                       current_cpu_id(), stolen_tasks.len(), initial_load, final_load);
-
-                // Store stolen tasks temporarily in a shared location
-                // In practice, this would use a more sophisticated mechanism
-                ipi::IpiResponse::Value(stolen_tasks.len())
-            } else {
-                ipi::IpiResponse::Error("No CPU data available")
-            }
-        }, 500) {
-            Ok(ipi::IpiResponse::Value(count)) => count,
-            Ok(ipi::IpiResponse::Error(e)) => return Err(e),
-            Ok(_) => return Err("Unexpected response from steal operation"),
-            Err(e) => return Err(e),
-        };
-
-        if stolen_count == 0 {
-            return Ok(0);
-        }
-
-        // Step 2: Notify target CPU to expect new tasks
-        match ipi::send_function_call_ipi_sync(to_cpu, move || {
-            debug!("CPU{} notified of {} incoming tasks", current_cpu_id(), stolen_count);
-            // In practice, the target CPU would prepare to receive tasks
-            ipi::IpiResponse::Success
-        }, 500) {
-            Ok(ipi::IpiResponse::Success) => {
-                // Step 3: Send reschedule IPI to target CPU
-                if let Err(e) = ipi::send_reschedule_ipi(to_cpu) {
-                    debug!("Failed to send reschedule IPI to CPU{}: {}", to_cpu, e);
-                }
-                Ok(stolen_count)
-            }
-            Ok(_) => Err("Unexpected response from target CPU"),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 /// Statistics tracking for debugging and monitoring
@@ -281,27 +210,9 @@ pub fn run_tasks() -> ! {
 
     // All CPUs use the same scheduler loop for proper multi-core task distribution
     loop {
-        // DEBUG: Add debug for first few loop iterations
-        static LOOP_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-        let loop_count = LOOP_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if loop_count < 10 {
-            debug!("CPU{} scheduler loop iteration #{}", cpu_id, loop_count);
-        }
-
         // 1. Handle pending IPI messages first (highest priority)
-        debug!("CPU{} about to call handle_ipi_interrupt()", cpu_id);
-
-        if cpu_id > 0 {
-            // More frequent debug from secondary CPUs to confirm they're running
-            static SECONDARY_CPU_HEARTBEAT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-            let count = SECONDARY_CPU_HEARTBEAT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            if count % 100000 == 0 {
-                info!("CPU{} scheduler heartbeat: loop #{}, still running", cpu_id, count);
-            }
-        }
-
+        // Remove excessive debug logging to avoid spam
         ipi::handle_ipi_interrupt();
-        debug!("CPU{} completed handle_ipi_interrupt()", cpu_id);
 
         // 2. Periodic maintenance (only on CPU0 to avoid conflicts)
         if cpu_id == 0 {
@@ -314,18 +225,18 @@ pub fn run_tasks() -> ! {
             continue;
         }
 
-        // 4. No local task, try enhanced work stealing
-        if let Some(stolen_task) = try_enhanced_work_stealing() {
+        // 4. No local task, try traditional work stealing (avoid sync IPI during boot)
+        if let Some(stolen_task) = try_traditional_work_stealing() {
             schedule_task_with_preemption(stolen_task);
             continue;
         }
 
-        // 5. No work available anywhere, enter enhanced idle state
-        enter_enhanced_idle_state();
+        // 5. No work available anywhere, enter simple idle state
+        enter_simple_idle_state();
     }
 }
 
-/// Enhanced periodic maintenance with IPI integration
+/// Simple periodic maintenance without problematic sync IPIs
 fn perform_enhanced_periodic_maintenance() {
     let cpu_id = current_cpu_id();
 
@@ -350,7 +261,7 @@ fn perform_enhanced_periodic_maintenance() {
         }
     }
 
-    // Perform load balancing (only one CPU does this per interval)
+    // Simple load balancing without sync IPIs
     if cpu_id == 0 {
         // Primary CPU handles load balancing
         let load_balancer = LOAD_BALANCER.lock();
@@ -360,85 +271,18 @@ fn perform_enhanced_periodic_maintenance() {
         }
     }
 
-    // Check for preemption opportunities
-    check_preemption_opportunities();
-
-    // Print debug information periodically
-    if DEBUG_STATS.lock().should_print_debug() && cpu_id == 0 {
-        print_enhanced_system_debug_info();
-    }
-}
-
-/// Check for preemption opportunities on other CPUs
-fn check_preemption_opportunities() {
-    static LAST_PREEMPT_CHECK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-    const PREEMPT_CHECK_INTERVAL_MS: u64 = 50; // 50ms
-
+    // Trigger global load balancing from task manager
+    static LAST_GLOBAL_BALANCE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let current_time = get_time_msec();
-    let last_check = LAST_PREEMPT_CHECK.load(Ordering::Relaxed);
+    let last_balance = LAST_GLOBAL_BALANCE.load(Ordering::Relaxed);
 
-    if current_time - last_check > PREEMPT_CHECK_INTERVAL_MS {
-        if LAST_PREEMPT_CHECK.compare_exchange(last_check, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-            let current_cpu = current_cpu_id();
-
-            for cpu_id in 0..cpu_count() {
-                if cpu_id == current_cpu {
-                    continue;
-                }
-
-                // Check if CPU needs preemption
-                if should_preempt_cpu(cpu_id) {
-                    if let Err(e) = ipi::send_reschedule_ipi(cpu_id) {
-                        debug!("Failed to send preemption IPI to CPU{}: {}", cpu_id, e);
-                    } else {
-                        debug!("Sent preemption IPI to CPU{}", cpu_id);
-                    }
-                }
-            }
+    if current_time - last_balance > 1000 && cpu_id == 0 { // Every 1 second, only CPU0
+        if LAST_GLOBAL_BALANCE.compare_exchange(last_balance, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+            crate::task::task_manager::perform_global_load_balance();
         }
     }
 }
 
-/// Check if a CPU should be preempted
-fn should_preempt_cpu(cpu_id: usize) -> bool {
-    if let Some(cpu_data) = cpu_data(cpu_id) {
-        if let Some(current_task) = cpu_data.current_task() {
-            let task_runtime = get_time_msec() - current_task.last_runtime.load(Ordering::Relaxed);
-            return task_runtime > 100; // 100ms time slice
-        }
-    }
-    false
-}
-
-/// Perform periodic maintenance tasks
-fn perform_periodic_maintenance() {
-    let cpu_id = current_cpu_id();
-
-    // Feed watchdog to indicate this CPU is alive
-    if let Err(_) = crate::watchdog::feed() {
-        // Watchdog may be disabled, which is fine
-    }
-
-    // Update load statistics
-    if let Some(cpu_data) = current_cpu_data() {
-        cpu_data.update_load_stats();
-    }
-
-    // Perform load balancing (only one CPU does this per interval)
-    if cpu_id == 0 {
-        // Primary CPU handles load balancing
-        let load_balancer = LOAD_BALANCER.lock();
-        if load_balancer.should_balance() {
-            drop(load_balancer);
-            LOAD_BALANCER.lock().balance_load();
-        }
-    }
-
-    // Print debug information periodically
-    if DEBUG_STATS.lock().should_print_debug() && cpu_id == 0 {
-        print_enhanced_system_debug_info();
-    }
-}
 
 /// Get the next task from the local CPU queue or global pool
 fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
@@ -453,113 +297,112 @@ fn get_next_local_task() -> Option<Arc<TaskControlBlock>> {
     // First try local CPU queue
     if let Some(cpu_data) = current_cpu_data() {
         if let Some(task) = cpu_data.pop_task() {
-            debug!("CPU{} got task {} from local queue", cpu_id, task.pid());
             return Some(task);
         }
     }
 
     // If no local task, try global task manager
     if let Some(task) = crate::task::task_manager::fetch_task() {
-        debug!("CPU{} got task {} from global pool", cpu_id, task.pid());
         return Some(task);
     }
 
     None
 }
 
-/// Enhanced work stealing using synchronous IPI for coordination
-fn try_enhanced_work_stealing() -> Option<Arc<TaskControlBlock>> {
-    let current_cpu = current_cpu_id();
 
-    // Validate CPU ID before proceeding
-    if current_cpu >= crate::smp::MAX_CPU_NUM {
-        error!("Invalid CPU ID {} in try_enhanced_work_stealing", current_cpu);
+/// Enhanced work stealing algorithm with multiple strategies
+fn try_traditional_work_stealing() -> Option<Arc<TaskControlBlock>> {
+    let current_cpu = current_cpu_id();
+    let total_cpus = cpu_count();
+
+    if total_cpus <= 1 {
         return None;
     }
 
-    let total_cpus = cpu_count();
-
-    // First, collect load information from all CPUs
-    let mut cpu_loads = Vec::new();
+    // Strategy 1: Look for significantly overloaded CPUs first
+    let mut best_victim = None;
+    let mut best_victim_load = 0;
 
     for cpu_id in 0..total_cpus {
         if cpu_id == current_cpu {
             continue;
         }
 
-        // Use synchronous IPI to get current load
-        match ipi::send_function_call_ipi_sync(cpu_id, || {
-            if let Some(cpu_data) = current_cpu_data() {
-                ipi::IpiResponse::Value(cpu_data.load())
-            } else {
-                ipi::IpiResponse::Value(0)
+        if let Some(victim_data) = cpu_data(cpu_id) {
+            let victim_load = victim_data.queue_length();
+
+            // Prefer CPUs with high load for better load balancing
+            if victim_load > 2 && victim_load > best_victim_load {
+                best_victim_load = victim_load;
+                best_victim = Some(cpu_id);
             }
-        }, 50) { // 50ms timeout for quick check
-            Ok(ipi::IpiResponse::Value(load)) => {
-                if load > 1 { // Only consider CPUs with multiple tasks
-                    cpu_loads.push((cpu_id, load));
-                }
-            }
-            _ => continue, // Skip this CPU if IPI fails
         }
     }
 
-    if cpu_loads.is_empty() {
-        return None;
-    }
+    // Try to steal from the most loaded CPU first
+    if let Some(victim_cpu) = best_victim {
+        if let Some(victim_data) = cpu_data(victim_cpu) {
+            let stolen_tasks = victim_data.steal_tasks(1);
+            if let Some(task) = stolen_tasks.into_iter().next() {
+                info!("Work steal: task {} from overloaded CPU{} (load={})",
+                      task.pid(), victim_cpu, best_victim_load);
 
-    // Sort by load (highest first) for better steal targets
-    cpu_loads.sort_by(|a, b| b.1.cmp(&a.1));
+                // Update task's preferred CPU to current CPU for locality
+                task.preferred_cpu.store(current_cpu, core::sync::atomic::Ordering::Relaxed);
 
-    // Try to steal from the most loaded CPU
-    for (victim_cpu, _) in cpu_loads.iter().take(2) { // Try top 2 loaded CPUs
-        match ipi::send_function_call_ipi_sync(*victim_cpu, || {
-            if let Some(cpu_data) = current_cpu_data() {
-                let stolen_tasks = cpu_data.steal_tasks(1);
-                if !stolen_tasks.is_empty() {
-                    debug!("CPU{} stole {} tasks for remote CPU",
-                           current_cpu_id(), stolen_tasks.len());
-                    ipi::IpiResponse::Value(stolen_tasks.len())
-                } else {
-                    ipi::IpiResponse::Value(0)
-                }
-            } else {
-                ipi::IpiResponse::Value(0)
+                crate::sync::memory_barrier::full();
+                return Some(task);
             }
-        }, 200) { // 200ms timeout for task stealing
-            Ok(ipi::IpiResponse::Value(count)) if count > 0 => {
-                debug!("Successfully coordinated task steal from CPU{}", victim_cpu);
-                // In a real implementation, the actual task would be transferred
-                // through a shared data structure. For now, we return None
-                // as this is a coordination-only example.
-                return None;
-            }
-            _ => continue, // Try next CPU
         }
     }
 
-    // Fallback to traditional work stealing if IPI method fails
-    try_traditional_work_stealing()
-}
-
-/// Traditional work stealing as fallback
-fn try_traditional_work_stealing() -> Option<Arc<TaskControlBlock>> {
-    let current_cpu = current_cpu_id();
-    let total_cpus = cpu_count();
-
-    // Try to steal from each CPU in round-robin fashion
+    // Strategy 2: Round-robin search for any available tasks
     for i in 1..total_cpus {
         let victim_cpu = (current_cpu + i) % total_cpus;
 
         if let Some(victim_data) = cpu_data(victim_cpu) {
-            // Only steal if victim has more than one task (to avoid ping-ponging)
             let victim_load = victim_data.queue_length();
+
+            // Only steal if victim has more than one task (to avoid ping-ponging)
             if victim_load > 1 {
                 let stolen_tasks = victim_data.steal_tasks(1);
                 if let Some(task) = stolen_tasks.into_iter().next() {
-                    debug!("Traditional steal: task {} from CPU{}", task.pid(), victim_cpu);
+                    debug!("Round-robin steal: task {} from CPU{} (load={})",
+                           task.pid(), victim_cpu, victim_load);
+
+                    // Update task's preferred CPU for locality
+                    task.preferred_cpu.store(current_cpu, core::sync::atomic::Ordering::Relaxed);
+
                     crate::sync::memory_barrier::full();
                     return Some(task);
+                }
+            }
+        }
+    }
+
+    // Strategy 3: Check for any single task that can be stolen (only if really needed)
+    static STEAL_ATTEMPTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    let attempts = STEAL_ATTEMPTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // Only try single-task stealing occasionally to avoid excessive stealing
+    if attempts % 10 == 0 {
+        for i in 1..total_cpus {
+            let victim_cpu = (current_cpu + i) % total_cpus;
+
+            if let Some(victim_data) = cpu_data(victim_cpu) {
+                let victim_load = victim_data.queue_length();
+
+                if victim_load == 1 {
+                    let stolen_tasks = victim_data.steal_tasks(1);
+                    if let Some(task) = stolen_tasks.into_iter().next() {
+                        debug!("Last-resort steal: task {} from CPU{}", task.pid(), victim_cpu);
+
+                        // Update task's preferred CPU for locality
+                        task.preferred_cpu.store(current_cpu, core::sync::atomic::Ordering::Relaxed);
+
+                        crate::sync::memory_barrier::full();
+                        return Some(task);
+                    }
                 }
             }
         }
@@ -663,7 +506,136 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) {
     }
 }
 
-/// Enhanced idle state with active IPI processing
+/// Enhanced idle state with intelligent task discovery and power management
+fn enter_simple_idle_state() {
+    let cpu_data = match current_cpu_data() {
+        Some(data) => data,
+        None => {
+            error!("No CPU data available for idle, entering emergency idle loop");
+            loop {
+                ipi::handle_ipi_interrupt();
+
+                #[cfg(target_arch = "riscv64")]
+                unsafe {
+                    riscv::asm::wfi();
+                }
+
+                #[cfg(not(target_arch = "riscv64"))]
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    let cpu_id = current_cpu_id();
+    let idle_start_time = get_time_msec();
+
+    // Set CPU to idle state but keep it online for scheduling
+    cpu_data.set_state(crate::smp::cpu::CpuState::Idle);
+
+    debug!("CPU{} entering enhanced idle state", cpu_id);
+
+    // Idle loop with multiple wake-up strategies
+    let mut idle_iterations = 0;
+    loop {
+        idle_iterations += 1;
+
+        // 1. Always process pending IPI messages first (highest priority)
+        ipi::handle_ipi_interrupt();
+
+        // 2. Check if we have local tasks after IPI processing
+        if cpu_data.queue_length() > 0 {
+            debug!("CPU{} waking up: found {} local tasks", cpu_id, cpu_data.queue_length());
+            break;
+        }
+
+        // 3. Check if we need to reschedule (IPI might have set this flag)
+        if cpu_data.need_resched() {
+            debug!("CPU{} waking up: reschedule flag set", cpu_id);
+            cpu_data.set_need_resched(false);
+            break;
+        }
+
+        // 4. Try to get tasks from global pool (every few iterations)
+        if idle_iterations % 5 == 0 {
+            if let Some(task) = crate::task::task_manager::fetch_task() {
+                debug!("CPU{} waking up: found global task {}", cpu_id, task.pid());
+                cpu_data.add_task(task);
+                break;
+            }
+        }
+
+        // 5. Try work stealing (less frequently to avoid overhead)
+        if idle_iterations % 10 == 0 {
+            if let Some(stolen_task) = try_traditional_work_stealing() {
+                debug!("CPU{} waking up: stole task {} from another CPU", cpu_id, stolen_task.pid());
+                cpu_data.add_task(stolen_task);
+                break;
+            }
+        }
+
+        // 6. Periodic idle statistics update
+        let current_time = get_time_msec();
+        if idle_iterations % 100 == 0 {
+            let idle_duration = current_time - idle_start_time;
+            cpu_data.record_idle_time(idle_duration * 1000); // Convert to microseconds
+
+            // Debug info every 10 seconds of idle time
+            if idle_duration > 0 && idle_duration % 10000 == 0 {
+                debug!("CPU{} has been idle for {}ms (iterations={})",
+                       cpu_id, idle_duration, idle_iterations);
+            }
+        }
+
+        // 7. Check for system-wide idle condition and help with load balancing
+        if idle_iterations % 50 == 0 && cpu_id == 0 {
+            // CPU0 can trigger global load balancing when idle
+            crate::task::task_manager::perform_global_load_balance();
+        }
+
+        // 8. Power-efficient wait for interrupts
+        #[cfg(target_arch = "riscv64")]
+        unsafe {
+            // Enable interrupts before WFI to ensure we can wake up
+            riscv::register::sstatus::set_sie();
+            riscv::asm::wfi();
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            // Yield to other threads/processes
+            core::hint::spin_loop();
+
+            // Add a small delay to reduce CPU usage
+            for _ in 0..1000 {
+                core::hint::spin_loop();
+            }
+        }
+
+        // 9. Timeout check - don't stay idle forever if there might be work
+        let idle_duration = current_time - idle_start_time;
+        if idle_duration > 5000 { // 5 seconds max idle time
+            debug!("CPU{} idle timeout, forcing wake-up check", cpu_id);
+            // Force a more aggressive check for work
+            if let Some(task) = crate::task::task_manager::fetch_task() {
+                debug!("CPU{} found task {} after timeout", cpu_id, task.pid());
+                cpu_data.add_task(task);
+                break;
+            }
+        }
+    }
+
+    // Record total idle time
+    let total_idle_time = get_time_msec() - idle_start_time;
+    cpu_data.record_idle_time(total_idle_time * 1000); // Convert to microseconds
+
+    // Set CPU back to online state
+    cpu_data.set_state(crate::smp::cpu::CpuState::Online);
+
+    debug!("CPU{} exiting idle state after {}ms ({} iterations)",
+           cpu_id, total_idle_time, idle_iterations);
+}
+
+/// Enhanced idle state with active IPI processing (unused during boot to avoid deadlocks)
 fn enter_enhanced_idle_state() {
     let cpu_data = match current_cpu_data() {
         Some(data) => data,
@@ -713,8 +685,8 @@ fn enter_enhanced_idle_state() {
 
         if current_time - last_check > 100 { // Check every 100ms
             if LAST_STEAL_CHECK.compare_exchange(last_check, current_time, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-                if let Some(_) = try_enhanced_work_stealing() {
-                    debug!("CPU{} found work through enhanced stealing, exiting idle", cpu_id);
+                if let Some(_) = try_traditional_work_stealing() {
+                    debug!("CPU{} found work through traditional stealing, exiting idle", cpu_id);
                     break;
                 }
             }

@@ -32,7 +32,6 @@ pub fn init() {
 pub fn trap_handler() {
     // CRITICAL DEBUG: Add immediate debug at trap entry
     let cpu_id = crate::smp::current_cpu_id();
-    info!("CPU{} ENTERED trap_handler - this proves trap is working", cpu_id);
 
     set_kernel_trap_entry();
 
@@ -54,13 +53,6 @@ pub fn trap_handler() {
                     if cpu_id == 0 {
                         // Set next timer interrupt
                         timer::set_next_timer_interrupt();
-                        // 只在前几次timer中断时打印调试信息
-                        static TIMER_DEBUG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-                        let count = TIMER_DEBUG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        if count < 20 {
-                            debug!("CPU{} received timer interrupt (count={})", cpu_id, count);
-                        }
-
                         // 检查 watchdog 状态
                         crate::watchdog::check();
 
@@ -86,7 +78,7 @@ pub fn trap_handler() {
                 Interrupt::SupervisorSoft => {
                     // 处理软件中断（IPI）
                     let cpu_id = crate::smp::current_cpu_id();
-                    
+
                     // Track IPI trap calls per CPU
                     static IPI_TRAP_COUNTER: [core::sync::atomic::AtomicUsize; 8] = [
                         core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
@@ -94,7 +86,7 @@ pub fn trap_handler() {
                         core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
                         core::sync::atomic::AtomicUsize::new(0), core::sync::atomic::AtomicUsize::new(0),
                     ];
-                    
+
                     let trap_count = IPI_TRAP_COUNTER[cpu_id].fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
                     info!("!!!!!! CPU{} received supervisor software interrupt (IPI) - TRAP #{} !!!!!!", cpu_id, trap_count);
 

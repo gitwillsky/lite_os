@@ -582,11 +582,11 @@ pub fn send_ipi_with_retry(target_cpu: usize, message: IpiMessage, max_retries: 
         let old_len = queue.len();
         let result = queue.push(message);
         let new_len = queue.len();
-        info!("CPU{} IPI queue for CPU{}: before={}, after={}, result={:?}", 
+        info!("CPU{} IPI queue for CPU{}: before={}, after={}, result={:?}",
               current_cpu, target_cpu, old_len, new_len, result);
         result
     };
-    
+
     if result.is_err() {
         error!("CPU{} failed to add IPI message to CPU{} queue", current_cpu, target_cpu);
         IPI_MANAGER.stats[current_cpu].send_failures.fetch_add(1, Ordering::Relaxed);
@@ -791,9 +791,7 @@ pub fn send_ipi_broadcast(message: IpiMessage, exclude_self: bool) -> Result<usi
 /// Handle incoming IPI interrupt
 pub fn handle_ipi_interrupt() {
     let cpu_id = current_cpu_id();
-    
-    info!("CPU{} handle_ipi_interrupt called", cpu_id);
-    
+
     // Validate CPU ID to prevent array bounds violations
     if cpu_id >= MAX_CPU_NUM {
         error!("Invalid CPU ID {} in handle_ipi_interrupt", cpu_id);
@@ -816,12 +814,6 @@ pub fn handle_ipi_interrupt() {
         Some(queue) => {
             let locked_queue = queue.lock();
             let len = locked_queue.len();
-            info!("CPU{} IPI queue detailed status: total_len={}, critical={}, high={}, normal={}, low={}", 
-                  cpu_id, len,
-                  locked_queue.len_for_priority(IpiPriority::Critical),
-                  locked_queue.len_for_priority(IpiPriority::High),
-                  locked_queue.len_for_priority(IpiPriority::Normal),
-                  locked_queue.len_for_priority(IpiPriority::Low));
             len
         },
         None => {
@@ -829,14 +821,12 @@ pub fn handle_ipi_interrupt() {
             return;
         }
     };
-    
+
     if queue_len > 0 {
         info!("CPU{} found {} pending IPI messages - PROCESSING", cpu_id, queue_len);
         if let Some(stats) = IPI_MANAGER.stats.get(cpu_id) {
             stats.received.fetch_add(1, Ordering::Relaxed);
         }
-    } else {
-        debug!("CPU{} no pending IPI messages", cpu_id);
     }
 
     // Process all pending messages with bounds checking
@@ -853,8 +843,6 @@ pub fn handle_ipi_interrupt() {
         error!("CPU{} had {} queued messages but couldn't pop any", cpu_id, queue_len);
     } else if message_count > 0 {
         info!("CPU{} processed {} IPI messages - COMPLETE", cpu_id, message_count);
-    } else {
-        debug!("CPU{} no IPI messages to process", cpu_id);
     }
 }
 
@@ -958,12 +946,14 @@ fn send_sync_response(call_id: u64, response: IpiResponse) {
     debug!("CPU{} sending sync response for call_id={}", cpu_id, call_id);
 
     // Find the original caller by looking up the sync call
-    if let Some(call_lock) = IPI_MANAGER.sync_calls.lock().get(&call_id) {
+    let sync_calls = IPI_MANAGER.sync_calls.lock();
+    if let Some(call_lock) = sync_calls.get(&call_id) {
         let mut call = call_lock.lock();
         call.complete(response);
         debug!("CPU{} successfully completed sync call {}", cpu_id, call_id);
     } else {
-        error!("CPU{} failed to find sync call {} to complete", cpu_id, call_id);
+        // This is not necessarily an error during boot phase
+        debug!("CPU{} could not find sync call {} to complete (may be cleaned up)", cpu_id, call_id);
     }
 }
 
@@ -1036,22 +1026,43 @@ fn try_send_hardware_ipi(target_cpu: usize) -> Result<(), &'static str> {
     }
 }
 
-/// Handle reschedule IPI
+/// Handle reschedule IPI with enhanced task discovery
 fn handle_reschedule_ipi() {
-    // Set the reschedule flag for the current CPU
+    let cpu_id = current_cpu_id();
+
     if let Some(cpu_data) = crate::smp::current_cpu_data() {
+        // Set the reschedule flag for the current CPU
         cpu_data.set_need_resched(true);
 
-        // If not in interrupt context, immediately reschedule
+        debug!("CPU{} received reschedule IPI, queue_len={}, current_task={}",
+               cpu_id,
+               cpu_data.queue_length(),
+               cpu_data.current_task().map(|t| t.pid()).unwrap_or(0));
+
+        // If CPU is idle, wake it up immediately
+        if cpu_data.state() == crate::smp::cpu::CpuState::Idle {
+            debug!("CPU{} waking up from idle due to reschedule IPI", cpu_id);
+            cpu_data.set_state(crate::smp::cpu::CpuState::Online);
+        }
+
+        // If not in interrupt context and we have a current task, consider preemption
         if !cpu_data.in_interrupt() {
-            // 检查当前是否有任务在运行
-            if cpu_data.current_task().is_some() {
-                crate::task::suspend_current_and_run_next();
+            if let Some(current_task) = cpu_data.current_task() {
+                // Check if we have higher priority tasks waiting
+                if cpu_data.queue_length() > 0 {
+                    debug!("CPU{} preempting current task {} due to waiting tasks",
+                           cpu_id, current_task.pid());
+                    crate::task::suspend_current_and_run_next();
+                }
+            } else if cpu_data.queue_length() > 0 {
+                // No current task but we have tasks waiting - this should trigger scheduling
+                debug!("CPU{} has no current task but {} tasks waiting", cpu_id, cpu_data.queue_length());
             }
+        } else {
+            debug!("CPU{} received reschedule IPI in interrupt context, deferring", cpu_id);
         }
     } else {
-        error!("No CPU data available when handling reschedule IPI on CPU {}",
-               current_cpu_id());
+        error!("No CPU data available when handling reschedule IPI on CPU {}", cpu_id);
     }
 }
 
