@@ -61,10 +61,7 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
     // Device drivers
     drivers::init_devices();
 
-    // Global task management (scheduler, etc.)
-    task::init();
-
-    // Watchdog (global)
+    // Watchdog (global) - initialize before tasks
     watchdog::init();
 
     // Mark CPU0 (BSP) as online
@@ -91,41 +88,11 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
     }
 
     smp::boot::wait_for_all_cpus_online();
-    print_system_info();
+
+    // Initialize task management and create init process right before scheduling
+    task::init();
 
     // Start primary CPU task loop
     task::run_tasks();
 }
 
-/// Print system information after initialization
-fn print_system_info() {
-    if config::DEFAULT_LOG_LEVEL != LogLevel::Debug {
-        return;
-    }
-
-    let cpu_count = smp::cpu_count();
-    let online_cpus = smp::online_cpu_ids();
-
-    info!("=== System Information ===");
-    info!("CPU Count: {}", cpu_count);
-    info!("Online CPUs: {:?}", online_cpus);
-
-    // Print topology information
-    smp::topology::print_topology_info();
-
-    // Print memory information
-    let board_info = board::board_info();
-    info!(
-        "Memory: {:#x} - {:#x} ({}MB)",
-        board_info.mem.start,
-        board_info.mem.end,
-        (board_info.mem.end - board_info.mem.start) >> 20
-    );
-
-    if let Some(topology) = smp::topology::get_topology() {
-        info!("NUMA Nodes: {}", topology.numa_nodes.len());
-        info!("Cache Levels: {}", topology.caches.len());
-    }
-
-    info!("========================");
-}

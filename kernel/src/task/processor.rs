@@ -221,9 +221,11 @@ pub fn run_tasks() -> ! {
 
         // 3. Try to get a task from the local queue first
         if let Some(task) = get_next_local_task() {
+            debug!("CPU{}: Found local task {} to execute", cpu_id, task.pid());
             // 关键修复：检查任务状态是否可执行
             let task_status = *task.task_status.lock();
             if task_status == TaskStatus::Ready {
+                debug!("CPU{}: Executing task {} (status: Ready)", cpu_id, task.pid());
                 schedule_task_with_preemption(task);
                 continue;
             } else {
@@ -234,7 +236,6 @@ pub fn run_tasks() -> ! {
 
         // 4. No local task, try traditional work stealing (avoid sync IPI during boot)
         if let Some(stolen_task) = try_traditional_work_stealing() {
-            // 关键修复：检查偷取的任务状态是否可执行
             let stolen_task_status = *stolen_task.task_status.lock();
             if stolen_task_status == TaskStatus::Ready {
                 schedule_task_with_preemption(stolen_task);
@@ -246,6 +247,7 @@ pub fn run_tasks() -> ! {
         }
 
         // 5. No work available anywhere, enter simple idle state
+        debug!("CPU{}: Entering idle state (no tasks found)", cpu_id);
         enter_simple_idle_state();
     }
 }
@@ -646,9 +648,47 @@ fn enter_simple_idle_state() {
         // 8. Power-efficient wait for interrupts
         #[cfg(target_arch = "riscv64")]
         unsafe {
-            // Enable interrupts before WFI to ensure we can wake up
+            // Ensure software interrupts are enabled before WFI
             riscv::register::sstatus::set_sie();
+            riscv::register::sie::set_ssoft();
+            
+            // Debug: Check interrupt configuration before WFI
+            let sstatus = riscv::register::sstatus::read();
+            let sie = riscv::register::sie::read();
+            let sip = riscv::register::sip::read();
+            
+            if idle_iterations % 10 == 0 && cpu_id > 0 {
+                debug!("CPU{} WFI check: sstatus.sie={}, sie.ssoft={}, sip.ssoft={}", 
+                       cpu_id, sstatus.sie(), sie.ssoft(), sip.ssoft());
+                
+                // Check if we already have a pending software interrupt
+                if sip.ssoft() {
+                    info!("CPU{} has pending software interrupt BEFORE WFI!", cpu_id);
+                }
+            }
+            
+            // Check one more time before WFI
+            let sip_before = riscv::register::sip::read();
+            if sip_before.ssoft() && cpu_id > 0 {
+                info!("CPU{} skipping WFI - software interrupt already pending", cpu_id);
+                // Process the interrupt immediately instead of WFI
+                continue;
+            }
+            
+            // Use WFI for power efficiency (should work now with proper interrupt setup)
+            if cpu_id > 0 && idle_iterations % 50 == 0 {
+                debug!("CPU{} entering WFI (iteration {})", cpu_id, idle_iterations);
+            }
+            
             riscv::asm::wfi();
+            
+            // Check if WFI was interrupted by software interrupt
+            if cpu_id > 0 {
+                let sip_after = riscv::register::sip::read();
+                if sip_after.ssoft() {
+                    info!("CPU{} WFI interrupted by software interrupt!", cpu_id);
+                }
+            }
         }
 
         #[cfg(not(target_arch = "riscv64"))]

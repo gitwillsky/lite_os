@@ -995,14 +995,22 @@ fn try_send_hardware_ipi(target_cpu: usize) -> Result<(), &'static str> {
     // For RISC-V, we use SBI to send IPIs
     #[cfg(target_arch = "riscv64")]
     {
-        // Get the hart ID for the target CPU
+        // Get the hart ID for the target CPU with enhanced validation
         if let Some(cpu_data) = crate::smp::cpu_data(target_cpu) {
             let hart_id = cpu_data.arch_cpu_id.load(Ordering::Relaxed);
-            let hart_mask = 1 << hart_id;
-            debug!("Sending IPI to CPU{} (hart_id={}, hart_mask={:#x})", target_cpu, hart_id, hart_mask);
+            
+            // Validate hart ID range (typically 0-7 for most systems)
+            if hart_id >= 64 {
+                error!("Invalid hart_id {} for CPU{}", hart_id, target_cpu);
+                return Err("Invalid hart ID");
+            }
+            
+            let hart_mask = 1usize << hart_id;
+            info!("Sending IPI to CPU{} (hart_id={}, hart_mask={:#x})", target_cpu, hart_id, hart_mask);
+            
             match sbi::send_ipi(hart_mask) {
                 Ok(()) => {
-                    debug!("SBI IPI send successful: CPU{} hart_id={} hart_mask={:#x}",
+                    info!("SBI IPI send successful: CPU{} hart_id={} hart_mask={:#x}",
                            target_cpu, hart_id, hart_mask);
                     Ok(())
                 }

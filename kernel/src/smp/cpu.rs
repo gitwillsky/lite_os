@@ -9,6 +9,8 @@ use crate::{
     sync::spinlock::SpinLock,
     task::{TaskControlBlock, context::TaskContext},
     memory::slab_allocator::SlabAllocator,
+    smp::ipi::send_reschedule_ipi,
+    debug, warn,
 };
 
 /// Type of CPU in the system
@@ -349,8 +351,24 @@ impl CpuData {
 
     /// Add a task to this CPU's scheduler queue
     pub fn add_task(&self, task: Arc<TaskControlBlock>) {
+        let task_pid = task.pid();
+        let cpu_state = self.state();
+        debug!("CPU{}: Adding task {}, CPU state: {:?}", self.cpu_id, task_pid, cpu_state);
+        
         self.scheduler_queue.lock().add_task(task);
         self.set_need_resched(true);
+
+        // If this CPU is idle, send an IPI to wake it up
+        if matches!(cpu_state, CpuState::Idle) {
+            debug!("CPU{}: Sending reschedule IPI to wake up idle CPU", self.cpu_id);
+            if let Err(e) = send_reschedule_ipi(self.cpu_id) {
+                warn!("Failed to send reschedule IPI to CPU {}: {}", self.cpu_id, e);
+            } else {
+                debug!("CPU{}: Successfully sent reschedule IPI", self.cpu_id);
+            }
+        } else {
+            debug!("CPU{}: Not sending IPI, CPU state is {:?}", self.cpu_id, cpu_state);
+        }
     }
 
     /// Get the next task to run from this CPU's queue

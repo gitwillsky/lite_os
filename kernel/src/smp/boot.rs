@@ -126,27 +126,44 @@ fn secondary_cpu_init(cpu_id: usize, hart_id: usize) -> Result<(), &'static str>
 pub fn arch_specific_secondary_init(hart_id: usize) -> Result<(), &'static str> {
     #[cfg(target_arch = "riscv64")]
     {
-        // Enable supervisor interrupts
+        // Critical: Ensure interrupts are properly configured for secondary CPUs
         unsafe {
+            // Enable supervisor interrupts globally
             riscv::register::sstatus::set_sie();
 
-            // Set up interrupt delegation
-            riscv::register::sie::set_sext();
-            riscv::register::sie::set_stimer();
-            riscv::register::sie::set_ssoft();
+            // Enable specific interrupt types with explicit verification
+            riscv::register::sie::set_sext();  // External interrupts
+            riscv::register::sie::set_stimer(); // Timer interrupts  
+            riscv::register::sie::set_ssoft();  // Software interrupts (IPIs)
+
+            // Ensure software interrupts are definitely enabled
+            // This is critical for IPI delivery during WFI
+            let mut sie_val = riscv::register::sie::read();
+            if !sie_val.ssoft() {
+                error!("Hart {} software interrupt not enabled, forcing enable", hart_id);
+                riscv::register::sie::set_ssoft();
+            }
         }
 
-        // Debug: Check interrupt register status
+        // Debug: Verify interrupt register status with detailed logging
         let sstatus = riscv::register::sstatus::read();
         let sie = riscv::register::sie::read();
         info!(
-            "Hart {} interrupt status: sstatus.sie={}, sie.ssoft={}, sie.stimer={}, sie.sext={}",
+            "Hart {} interrupt configuration: sstatus.sie={}, sie.ssoft={}, sie.stimer={}, sie.sext={}",
             hart_id,
             sstatus.sie(),
             sie.ssoft(),
             sie.stimer(),
             sie.sext()
         );
+
+        // Verify software interrupt enable is persistent
+        if !sie.ssoft() {
+            error!("CRITICAL: Hart {} software interrupts not enabled after setup!", hart_id);
+            return Err("Software interrupt setup failed");
+        } else {
+            info!("Hart {} software interrupts properly enabled for IPI delivery", hart_id);
+        }
 
         // Initialize floating point support (required for kernel operation)
         unsafe {
@@ -320,12 +337,15 @@ fn initialize_enhanced_synchronization(online_cpu_count: usize) {
         online_cpu_count
     );
 
-    // Build list of actually online CPUs
+    // Build list of actually online CPUs (including idle CPUs which are available)
     let mut online_cpus = Vec::new();
     for cpu_id in 0..crate::smp::cpu_count() {
         if let Some(cpu_data) = cpu_data(cpu_id) {
-            if cpu_data.state() == CpuState::Online {
-                online_cpus.push(cpu_id);
+            match cpu_data.state() {
+                CpuState::Online | CpuState::Idle => {
+                    online_cpus.push(cpu_id);
+                }
+                _ => {}
             }
         }
     }
@@ -363,11 +383,10 @@ fn perform_initial_health_check() {
                     debug!("CPU{} is online and healthy", cpu_id);
                 }
                 CpuState::Idle => {
-                    // Idle is a valid state but we want CPUs to be online for task execution
-                    // Set them to online if they're currently idle
-                    cpu_data.set_state(CpuState::Online);
+                    // Idle is a valid and healthy state for CPUs waiting for tasks
+                    // Keep them idle so IPI can wake them up when tasks are added
                     online_cpus += 1;
-                    debug!("CPU{} was idle, set to online and healthy", cpu_id);
+                    debug!("CPU{} is idle and healthy", cpu_id);
                 }
                 state => {
                     warn!("CPU{} is in unexpected state: {:?}", cpu_id, state);
