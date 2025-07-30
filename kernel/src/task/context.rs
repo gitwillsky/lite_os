@@ -10,6 +10,8 @@ pub struct TaskContext {
     kernel_sp: usize,
     /// callee saved registers: s 0..11
     s: [usize; 12],
+    /// thread pointer register (tp)
+    tp: usize,
 }
 
 impl TaskContext {
@@ -18,6 +20,7 @@ impl TaskContext {
             ra: 0,
             kernel_sp: 0,
             s: [0; 12],
+            tp: 0,
         }
     }
 
@@ -26,6 +29,15 @@ impl TaskContext {
             ra: trap_return as usize,
             kernel_sp,
             s: [0; 12],
+            tp: 0,
         }
+    }
+
+    pub fn ra(&self) -> usize {
+        self.ra
+    }
+
+    pub fn kernel_sp(&self) -> usize {
+        self.kernel_sp
     }
 }

@@ -408,6 +408,7 @@ fn perform_initial_health_check() {
     );
 
     // Test IPI functionality between CPUs
+    // info!("Skipping IPI connectivity test to avoid blocking main boot process");
     test_ipi_connectivity();
 }
 

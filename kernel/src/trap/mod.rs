@@ -314,7 +314,49 @@ pub fn trap_from_kernel() -> ! {
             }
         }
         Trap::Interrupt(code) => {
-            error!("CPU{} unexpected kernel interrupt: code={}", cpu_id, code);
+            if let Ok(interrupt) = Interrupt::from_number(code) {
+                match interrupt {
+                    Interrupt::SupervisorSoft => {
+                        // Handle software interrupt (IPI) in kernel mode
+                        info!("!!!!!! CPU{} received supervisor software interrupt (IPI) - KERNEL TRAP !!!!!!", cpu_id);
+
+                        // Clear the software interrupt by writing to SIP register
+                        #[cfg(target_arch = "riscv64")]
+                        unsafe {
+                            riscv::register::sip::clear_ssoft();
+                        }
+
+                        crate::smp::ipi::handle_ipi_interrupt();
+                        info!("CPU{} finished handling IPI interrupt in kernel mode", cpu_id);
+
+                        // For kernel mode IPI, handle and return normally
+                        info!("CPU{} IPI handling complete, resuming normal operation", cpu_id);
+
+                        // For kernel mode IPI, check if we need to reschedule
+                        // after handling the IPI message
+                        if let Some(cpu_data) = crate::smp::current_cpu_data() {
+                            if cpu_data.need_resched() {
+                                debug!("CPU{} IPI triggered reschedule, entering task loop", cpu_id);
+                                cpu_data.set_need_resched(false);
+                                // Enter the task scheduler to handle new tasks
+                                crate::task::run_tasks();
+                            }
+                        }
+
+                        // If no reschedule needed, just wait for next interrupt
+                        loop {
+                            unsafe {
+                                riscv::asm::wfi(); // Wait for next interrupt
+                            }
+                        }
+                    }
+                    _ => {
+                        error!("CPU{} unexpected kernel interrupt: {:?}", cpu_id, interrupt);
+                    }
+                }
+            } else {
+                error!("CPU{} unknown interrupt code: {}", cpu_id, code);
+            }
         }
     }
 

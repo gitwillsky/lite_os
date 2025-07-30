@@ -88,9 +88,12 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
     }
 
     smp::boot::wait_for_all_cpus_online();
+    debug!("All CPUs online, proceeding to task initialization");
 
     // Initialize task management and create init process right before scheduling
+    debug!("About to call task::init()");
     task::init();
+    debug!("task::init() completed successfully");
 
     // Start primary CPU task loop
     task::run_tasks();

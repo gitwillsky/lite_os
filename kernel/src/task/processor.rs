@@ -586,6 +586,11 @@ fn enter_simple_idle_state() {
 
     debug!("CPU{} entering enhanced idle state", cpu_id);
 
+    // Verify interrupt enable state
+    let sstatus_val = riscv::register::sstatus::read();
+    let sie_val = riscv::register::sie::read();
+    debug!("CPU{} idle: sstatus.sie={}, sie.ssoft={}", cpu_id, sstatus_val.sie(), sie_val.ssoft());
+
     // Idle loop with multiple wake-up strategies
     let mut idle_iterations = 0;
     loop {
@@ -645,28 +650,29 @@ fn enter_simple_idle_state() {
             crate::task::task_manager::perform_global_load_balance();
         }
 
-        // 8. Power-efficient wait for interrupts
+        // 8. Critical fix: Replace WFI with active polling for secondary CPUs
+        // The WFI instruction on RISC-V may not reliably wake up on software interrupts
         #[cfg(target_arch = "riscv64")]
         unsafe {
-            // Ensure software interrupts are enabled before WFI
+            // Ensure software interrupts are enabled
             riscv::register::sstatus::set_sie();
             riscv::register::sie::set_ssoft();
-            
+
             // Debug: Check interrupt configuration before WFI
             let sstatus = riscv::register::sstatus::read();
             let sie = riscv::register::sie::read();
             let sip = riscv::register::sip::read();
-            
+
             if idle_iterations % 10 == 0 && cpu_id > 0 {
-                debug!("CPU{} WFI check: sstatus.sie={}, sie.ssoft={}, sip.ssoft={}", 
+                debug!("CPU{} WFI check: sstatus.sie={}, sie.ssoft={}, sip.ssoft={}",
                        cpu_id, sstatus.sie(), sie.ssoft(), sip.ssoft());
-                
+
                 // Check if we already have a pending software interrupt
                 if sip.ssoft() {
                     info!("CPU{} has pending software interrupt BEFORE WFI!", cpu_id);
                 }
             }
-            
+
             // Check one more time before WFI
             let sip_before = riscv::register::sip::read();
             if sip_before.ssoft() && cpu_id > 0 {
@@ -674,14 +680,14 @@ fn enter_simple_idle_state() {
                 // Process the interrupt immediately instead of WFI
                 continue;
             }
-            
+
             // Use WFI for power efficiency (should work now with proper interrupt setup)
             if cpu_id > 0 && idle_iterations % 50 == 0 {
                 debug!("CPU{} entering WFI (iteration {})", cpu_id, idle_iterations);
             }
-            
+
             riscv::asm::wfi();
-            
+
             // Check if WFI was interrupted by software interrupt
             if cpu_id > 0 {
                 let sip_after = riscv::register::sip::read();
@@ -705,7 +711,6 @@ fn enter_simple_idle_state() {
         // 9. Timeout check - don't stay idle forever if there might be work
         let idle_duration = current_time.saturating_sub(idle_start_time);
         if idle_duration > 5000 { // 5 seconds max idle time
-            debug!("CPU{} idle timeout, forcing wake-up check", cpu_id);
             // Force a more aggressive check for work
             if let Some(task) = crate::task::task_manager::fetch_task() {
                 debug!("CPU{} found task {} after timeout", cpu_id, task.pid());

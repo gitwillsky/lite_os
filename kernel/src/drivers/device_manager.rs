@@ -32,8 +32,6 @@ fn scan_virtio_devices() {
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
-            debug!("Scanning VirtIO device {} at {:#x}", i, base_addr);
-
             if let Some(device) = VirtIOBlockDevice::new(base_addr) {
                 // 同时存储为BlockDevice和HAL Device
                 let block_device = device.clone() as Arc<dyn BlockDevice>;
@@ -41,10 +39,6 @@ fn scan_virtio_devices() {
 
                 BLOCK_DEVICES.lock().push(block_device);
                 HAL_DEVICES.lock().push(hal_device);
-
-                debug!("VirtIO Block device initialized at {:#x}", base_addr);
-            } else {
-                debug!("Skipping non-block VirtIO device at {:#x}", base_addr);
             }
         }
     }
