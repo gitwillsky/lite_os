@@ -11,21 +11,18 @@ use lazy_static::lazy_static;
 use riscv::asm::wfi;
 
 use crate::{
-    arch::sbi::shutdown,
+    arch::{sbi::shutdown, hart::hart_id},
     sync::UPSafeCell,
     task::{
-        __switch, add_task,
+        __switch,
         context::TaskContext,
+        multicore::{current_processor, CORE_MANAGER},
         task::{TaskControlBlock, TaskStatus},
         task_manager::{self, SchedulingPolicy, get_scheduling_policy},
     },
     timer::get_time_us,
     trap::TrapContext,
 };
-
-lazy_static! {
-    static ref PROCESSOR: UPSafeCell<Processor> = UPSafeCell::new(Processor::new());
-}
 
 // 使用原子变量替换unsafe的全局变量，提高线程安全性
 static LAST_DEBUG_TIME: AtomicU64 = AtomicU64::new(0);
@@ -35,12 +32,12 @@ const DEBUG_INTERVAL_US: u64 = 5_000_000; // 5秒调试间隔
 
 /// 获取并移除当前任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    PROCESSOR.exclusive_access().take_current()
+    current_processor().exclusive_access().current.take()
 }
 
 /// 获取当前任务的引用
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    PROCESSOR.exclusive_access().current()
+    current_processor().exclusive_access().current.clone()
 }
 
 /// 获取当前任务的用户空间页表令牌
@@ -68,58 +65,82 @@ pub fn current_cwd() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
-/// 主调度循环 - 在内核初始化完毕之后进入idle控制流
+/// 主调度循环 - 多核心版本
 pub fn run_tasks() -> ! {
+    let current_hart = hart_id();
+    debug!("Core {} entering scheduling loop", current_hart);
+    
     loop {
         // 在主调度循环中喂狗，表明系统正常运行
         if let Err(_) = crate::watchdog::feed() {
             // Watchdog 可能被禁用，这是正常的
         }
         
-        if let Some(task) = task_manager::fetch_task() {
-            if task.is_zombie() {
+        // 1. 尝试从本地调度器获取任务
+        let task = {
+            let mut processor = current_processor().exclusive_access();
+            processor.fetch_task()
+        };
+        
+        if let Some(task) = task {
+            if !task.is_zombie() {
+                // 处理信号检查
+                if task.signal_state.lock().has_deliverable_signals() {
+                    handle_task_signals(&task);
+                    continue;
+                }
+                
+                // 切换到任务
+                switch_to_task(task);
                 continue;
             }
-
-            // 处理信号检查
-            if task.signal_state.lock().has_deliverable_signals() {
-                handle_task_signals(&task);
-                continue;
-            }
-            // 切换到任务
-            let mut processor = PROCESSOR.exclusive_access();
-
-            let next_task_cx_ptr = {
-                let task_context = task.mm.task_cx.lock();
-                let next_task_cx_ptr = &*task_context as *const TaskContext;
-                *task.task_status.lock() = TaskStatus::Running;
-
-                // 记录任务开始运行的时间
-                let start_time = get_time_us();
-                task.last_runtime.store(start_time, Ordering::Relaxed);
-
-                next_task_cx_ptr
-            };
-            processor.current = Some(task.clone());
-            let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
-            drop(processor);
-
-            // 当前的 run_tasks 函数是 idle 任务，切换到下一个任务
-            unsafe {
-                __switch(idle_task_cx_ptr, next_task_cx_ptr);
-            }
-        } else {
-            // 没有可运行的任务，让出CPU等待中断
-            wfi();
         }
+        
+        // 2. 尝试工作窃取
+        if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
+            if !stolen_task.is_zombie() {
+                debug!("Core {} stole task from other core", current_hart);
+                switch_to_task(stolen_task);
+                continue;
+            }
+        }
+        
+        // 3. 没有任务，进入空闲状态
+        wfi();
+    }
+}
+
+/// 切换到指定任务
+fn switch_to_task(task: Arc<TaskControlBlock>) {
+    let mut processor = current_processor().exclusive_access();
+    
+    let next_task_cx_ptr = {
+        let task_context = task.mm.task_cx.lock();
+        let next_task_cx_ptr = &*task_context as *const TaskContext;
+        *task.task_status.lock() = TaskStatus::Running;
+
+        // 记录任务开始运行的时间
+        let start_time = get_time_us();
+        task.last_runtime.store(start_time, Ordering::Relaxed);
+
+        next_task_cx_ptr
+    };
+    
+    processor.current = Some(task.clone());
+    let idle_task_cx_ptr = processor.idle_context_ptr();
+    drop(processor);
+
+    // 切换到任务
+    unsafe {
+        __switch(idle_task_cx_ptr, next_task_cx_ptr);
     }
 }
 
 /// 调度函数 - 切换到idle控制流
 fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let idle_task_cx_ptr = {
-        let mut processor = PROCESSOR.exclusive_access();
-        processor.get_idle_task_cx_ptr()
+        let mut processor = current_processor().exclusive_access();
+        processor.idle_context_ptr()
     };
 
     unsafe {
@@ -150,7 +171,7 @@ pub fn suspend_current_and_run_next() {
 
     // 如果任务应该重新加入就绪队列
     if should_readd {
-        add_task(task);
+        CORE_MANAGER.add_task(task);
     }
 
     schedule(task_cx_ptr);
@@ -320,10 +341,11 @@ fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
 /// 检查并移除当前任务（如果匹配）
 fn check_and_remove_current_task(task: &Arc<TaskControlBlock>) -> bool {
     let is_current_task = {
-        let processor = PROCESSOR.exclusive_access();
+        let processor = current_processor().exclusive_access();
         processor
-            .current()
-            .map(|current| Arc::ptr_eq(&current, task))
+            .current
+            .as_ref()
+            .map(|current| Arc::ptr_eq(current, task))
             .unwrap_or(false)
     };
 
@@ -334,41 +356,3 @@ fn check_and_remove_current_task(task: &Arc<TaskControlBlock>) -> bool {
     is_current_task
 }
 
-/// 描述CPU执行状态
-struct Processor {
-    /// 当前正在执行的任务
-    current: Option<Arc<TaskControlBlock>>,
-    /// 当前处理器上idle任务的上下文
-    idle_task_cx: TaskContext,
-}
-
-impl Processor {
-    /// 创建新的处理器实例
-    pub fn new() -> Self {
-        Self {
-            current: None,
-            idle_task_cx: TaskContext::zero_init(),
-        }
-    }
-
-    /// 获取并移除当前任务
-    pub fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.current.take()
-    }
-
-    /// 获取当前任务的引用
-    pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
-        self.current.as_ref().map(Arc::clone)
-    }
-
-    /// 获取idle任务上下文的可变指针
-    pub fn get_idle_task_cx_ptr(&mut self) -> *mut TaskContext {
-        &mut self.idle_task_cx
-    }
-}
-
-impl Default for Processor {
-    fn default() -> Self {
-        Self::new()
-    }
-}

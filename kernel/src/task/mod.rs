@@ -6,6 +6,7 @@ use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::INIT_
 
 mod context;
 pub mod loader;
+pub mod multicore;
 mod pid;
 mod processor;
 mod scheduler;

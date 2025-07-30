@@ -31,6 +31,11 @@ pub fn init() {
     set_kernel_trap_entry();
 }
 
+/// 从核心初始化 - 只设置trap入口
+pub fn init_local() {
+    set_kernel_trap_entry();
+}
+
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
     set_kernel_trap_entry();
