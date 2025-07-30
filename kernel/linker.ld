@@ -55,10 +55,10 @@ SECTIONS {
     . = ALIGN(4K);
     ebss = .;
 
-    /* 为启动栈分配空间 */
+    /* 为每个核心分配独立的启动栈 */
     . = ALIGN(16);
     boot_stack_bottom = .;
-    . += KERNEL_STACK_SIZE;
+    . += KERNEL_STACK_SIZE * 8; /* 8个核心，每个16KB */
     boot_stack_top = .;
 
     ekernel = .;

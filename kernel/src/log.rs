@@ -39,7 +39,8 @@ impl Logger {
 
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.level {
-            println!("[{}] [{}] {}", level, module, args);
+            let hart_id = crate::arch::hart::hart_id();
+            println!("[{}] [CORE-{}] [{}] {}", level, hart_id, module, args);
         }
     }
 }

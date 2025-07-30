@@ -69,19 +69,22 @@ pub fn current_cwd() -> String {
 pub fn run_tasks() -> ! {
     let current_hart = hart_id();
     debug!("Core {} entering scheduling loop", current_hart);
-    
+
+    // 每隔一段时间打印调试信息
+    let mut debug_counter = 0u64;
+
     loop {
         // 在主调度循环中喂狗，表明系统正常运行
         if let Err(_) = crate::watchdog::feed() {
             // Watchdog 可能被禁用，这是正常的
         }
-        
+
         // 1. 尝试从本地调度器获取任务
         let task = {
             let mut processor = current_processor().exclusive_access();
             processor.fetch_task()
         };
-        
+
         if let Some(task) = task {
             if !task.is_zombie() {
                 // 处理信号检查
@@ -89,22 +92,22 @@ pub fn run_tasks() -> ! {
                     handle_task_signals(&task);
                     continue;
                 }
-                
+
                 // 切换到任务
                 switch_to_task(task);
                 continue;
             }
         }
-        
+
         // 2. 尝试工作窃取
         if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
             if !stolen_task.is_zombie() {
-                debug!("Core {} stole task from other core", current_hart);
+                debug!("Core {} stole task PID {} from other core", current_hart, stolen_task.pid());
                 switch_to_task(stolen_task);
                 continue;
             }
         }
-        
+
         // 3. 没有任务，进入空闲状态
         wfi();
     }
@@ -113,7 +116,7 @@ pub fn run_tasks() -> ! {
 /// 切换到指定任务
 fn switch_to_task(task: Arc<TaskControlBlock>) {
     let mut processor = current_processor().exclusive_access();
-    
+
     let next_task_cx_ptr = {
         let task_context = task.mm.task_cx.lock();
         let next_task_cx_ptr = &*task_context as *const TaskContext;
@@ -125,7 +128,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
 
         next_task_cx_ptr
     };
-    
+
     processor.current = Some(task.clone());
     let idle_task_cx_ptr = processor.idle_context_ptr();
     drop(processor);
@@ -248,9 +251,9 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 fn handle_task_signals(task: &Arc<TaskControlBlock>) {
     // 使用安全的信号处理方法，避免获取trap context导致死锁
     use crate::task::signal::SignalDelivery;
-    
+
     let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
-    
+
     if !should_continue {
         if let Some(code) = exit_code {
             // 如果信号要求终止进程，则设置为僵尸状态
@@ -265,7 +268,7 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) {
 fn update_task_runtime_stats(task: &Arc<TaskControlBlock>, runtime: u64) {
     // 更新调度器的虚拟运行时间
     task.sched.lock().update_vruntime(runtime);
-    
+
     // 注意：不在这里更新CPU时间统计，避免与 mark_kernel_entry/exit 重复计算
     // 用户态/内核态时间的详细统计由 mark_kernel_entry/exit 函数负责
     // 这里只更新调度器需要的虚拟运行时间
@@ -276,7 +279,7 @@ pub fn mark_kernel_entry() {
     if let Some(task) = current_task() {
         let current_time = get_time_us();
         let mut in_kernel = task.in_kernel_mode.lock();
-        
+
         // 如果之前在用户态，计算用户态时间
         if !*in_kernel {
             let last_runtime = task.last_runtime.load(Ordering::Relaxed);
@@ -285,7 +288,7 @@ pub fn mark_kernel_entry() {
                 task.user_cpu_time.fetch_add(user_time, Ordering::Relaxed);
                 task.total_cpu_time.fetch_add(user_time, Ordering::Relaxed);
             }
-            
+
             // 记录进入内核态的时间
             task.kernel_enter_time.store(current_time, Ordering::Relaxed);
             *in_kernel = true;
@@ -298,7 +301,7 @@ pub fn mark_kernel_exit() {
     if let Some(task) = current_task() {
         let current_time = get_time_us();
         let mut in_kernel = task.in_kernel_mode.lock();
-        
+
         // 如果之前在内核态，计算内核态时间
         if *in_kernel {
             let kernel_enter_time = task.kernel_enter_time.load(Ordering::Relaxed);
@@ -307,7 +310,7 @@ pub fn mark_kernel_exit() {
                 task.kernel_cpu_time.fetch_add(kernel_time, Ordering::Relaxed);
                 task.total_cpu_time.fetch_add(kernel_time, Ordering::Relaxed);
             }
-            
+
             // 更新最后运行时间为退出内核态的时间
             task.last_runtime.store(current_time, Ordering::Relaxed);
             *in_kernel = false;

@@ -128,8 +128,12 @@ impl CoreManager {
     /// 激活一个核心
     pub fn activate_core(&self, hart_id: usize) {
         if let Some(processor) = self.get_processor(hart_id) {
-            processor.exclusive_access().active.store(true, Ordering::Relaxed);
-            self.active_cores.fetch_add(1, Ordering::Relaxed);
+            let mut proc = processor.exclusive_access();
+            if !proc.active.load(Ordering::Relaxed) {
+                proc.active.store(true, Ordering::Relaxed);
+                self.active_cores.fetch_add(1, Ordering::Relaxed);
+                debug!("Core {} activated, total active cores: {}", hart_id, self.active_cores.load(Ordering::Relaxed));
+            }
         }
     }
 
