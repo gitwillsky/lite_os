@@ -118,7 +118,6 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             opaque,
         });
 
-        // 启动其他核心
         start_all_cores(board_info, opaque);
     } else {
         // 设置 pmp
