@@ -12,7 +12,6 @@ use riscv::asm::wfi;
 
 use crate::{
     arch::{sbi::shutdown, hart::hart_id},
-    sync::UPSafeCell,
     task::{
         __switch,
         context::TaskContext,
@@ -32,12 +31,12 @@ const DEBUG_INTERVAL_US: u64 = 5_000_000; // 5秒调试间隔
 
 /// 获取并移除当前任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    current_processor().exclusive_access().current.take()
+    current_processor().lock().current.take()
 }
 
 /// 获取当前任务的引用
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    current_processor().exclusive_access().current.clone()
+    current_processor().lock().current.clone()
 }
 
 /// 获取当前任务的用户空间页表令牌
@@ -81,7 +80,7 @@ pub fn run_tasks() -> ! {
 
         // 1. 尝试从本地调度器获取任务
         let task = {
-            let mut processor = current_processor().exclusive_access();
+            let mut processor = current_processor().lock();
             processor.fetch_task()
         };
 
@@ -102,7 +101,6 @@ pub fn run_tasks() -> ! {
         // 2. 尝试工作窃取
         if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
             if !stolen_task.is_zombie() {
-                debug!("Core {} stole task PID {} from other core", current_hart, stolen_task.pid());
                 switch_to_task(stolen_task);
                 continue;
             }
@@ -115,7 +113,7 @@ pub fn run_tasks() -> ! {
 
 /// 切换到指定任务
 fn switch_to_task(task: Arc<TaskControlBlock>) {
-    let mut processor = current_processor().exclusive_access();
+    let mut processor = current_processor().lock();
 
     let next_task_cx_ptr = {
         let task_context = task.mm.task_cx.lock();
@@ -142,7 +140,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
 /// 调度函数 - 切换到idle控制流
 fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     let idle_task_cx_ptr = {
-        let mut processor = current_processor().exclusive_access();
+        let mut processor = current_processor().lock();
         processor.idle_context_ptr()
     };
 
@@ -344,7 +342,7 @@ fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
 /// 检查并移除当前任务（如果匹配）
 fn check_and_remove_current_task(task: &Arc<TaskControlBlock>) -> bool {
     let is_current_task = {
-        let processor = current_processor().exclusive_access();
+        let processor = current_processor().lock();
         processor
             .current
             .as_ref()

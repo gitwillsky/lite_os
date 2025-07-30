@@ -1,11 +1,10 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
-use spin::RwLock;
+use spin::{RwLock, Mutex};
 
 use crate::{
     arch::hart::{hart_id, is_valid_hart_id, MAX_CORES},
-    sync::UPSafeCell,
     task::{
         context::TaskContext,
         scheduler::{Scheduler, cfs_scheduler::CFScheduler},
@@ -81,7 +80,7 @@ impl CoreProcessor {
 /// 多核心管理器
 pub struct CoreManager {
     /// 每个核心的处理器
-    pub processors: [UPSafeCell<CoreProcessor>; MAX_CORES],
+    pub processors: [Mutex<CoreProcessor>; MAX_CORES],
     /// 活跃核心数量
     pub active_cores: AtomicUsize,
     /// 启动屏障 - 等待所有核心就绪
@@ -95,14 +94,14 @@ impl CoreManager {
         // 手动创建处理器数组，避免const函数限制
         Self {
             processors: [
-                UPSafeCell::new(CoreProcessor::new(0)),
-                UPSafeCell::new(CoreProcessor::new(1)),
-                UPSafeCell::new(CoreProcessor::new(2)),
-                UPSafeCell::new(CoreProcessor::new(3)),
-                UPSafeCell::new(CoreProcessor::new(4)),
-                UPSafeCell::new(CoreProcessor::new(5)),
-                UPSafeCell::new(CoreProcessor::new(6)),
-                UPSafeCell::new(CoreProcessor::new(7)),
+                Mutex::new(CoreProcessor::new(0)),
+                Mutex::new(CoreProcessor::new(1)),
+                Mutex::new(CoreProcessor::new(2)),
+                Mutex::new(CoreProcessor::new(3)),
+                Mutex::new(CoreProcessor::new(4)),
+                Mutex::new(CoreProcessor::new(5)),
+                Mutex::new(CoreProcessor::new(6)),
+                Mutex::new(CoreProcessor::new(7)),
             ],
             active_cores: AtomicUsize::new(0), // 初始时没有核心活跃
             boot_barrier: AtomicUsize::new(0),
@@ -111,7 +110,7 @@ impl CoreManager {
     }
 
     /// 获取指定核心的处理器
-    pub fn get_processor(&self, hart_id: usize) -> Option<&UPSafeCell<CoreProcessor>> {
+    pub fn get_processor(&self, hart_id: usize) -> Option<&Mutex<CoreProcessor>> {
         if is_valid_hart_id(hart_id) {
             Some(&self.processors[hart_id])
         } else {
@@ -120,7 +119,7 @@ impl CoreManager {
     }
 
     /// 获取当前核心的处理器
-    pub fn current_processor(&self) -> &UPSafeCell<CoreProcessor> {
+    pub fn current_processor(&self) -> &Mutex<CoreProcessor> {
         let hart = hart_id();
         &self.processors[hart]
     }
@@ -128,7 +127,7 @@ impl CoreManager {
     /// 激活一个核心
     pub fn activate_core(&self, hart_id: usize) {
         if let Some(processor) = self.get_processor(hart_id) {
-            let mut proc = processor.exclusive_access();
+            let mut proc = processor.lock();
             if !proc.active.load(Ordering::Relaxed) {
                 proc.active.store(true, Ordering::Relaxed);
                 self.active_cores.fetch_add(1, Ordering::Relaxed);
@@ -151,7 +150,7 @@ impl CoreManager {
         // 首先收集所有活跃核心的负载信息
         for i in 0..MAX_CORES {
             if let Some(processor) = self.get_processor(i) {
-                let proc = processor.exclusive_access();
+                let proc = processor.lock();
                 if proc.active.load(Ordering::Relaxed) {
                     let load = proc.task_count();
                     active_cores.push((i, load));
@@ -180,7 +179,7 @@ impl CoreManager {
         for hart in 0..MAX_CORES {
             if hart != idle_hart {
                 if let Some(processor) = self.get_processor(hart) {
-                    let proc = processor.exclusive_access();
+                    let proc = processor.lock();
                     if proc.active.load(Ordering::Relaxed) {
                         let load = proc.task_count();
                         if load > 1 { // 只从有多个任务的核心窃取
@@ -197,7 +196,7 @@ impl CoreManager {
         // 尝试从负载最重的核心窃取任务
         for (hart, _load) in loaded_cores {
             if let Some(processor) = self.get_processor(hart) {
-                let mut proc = processor.exclusive_access();
+                let mut proc = processor.lock();
                 if let Some(task) = proc.steal_task() {
                     return Some(task);
                 }
@@ -222,7 +221,7 @@ impl CoreManager {
         };
 
         if let Some(processor) = self.get_processor(target_core) {
-            processor.exclusive_access().add_task(task.clone());
+            processor.lock().add_task(task.clone());
         } else {
             warn!("Failed to add task PID {} to core {} (invalid core)", task.pid(), target_core);
         }
@@ -238,7 +237,7 @@ impl CoreManager {
         // 收集各核心调度器中的任务
         for i in 0..MAX_CORES {
             if let Some(processor) = self.get_processor(i) {
-                let proc = processor.exclusive_access();
+                let proc = processor.lock();
                 if proc.active.load(Ordering::Relaxed) {
                     all_tasks.extend(proc.scheduler.get_all_tasks());
                 }
@@ -248,7 +247,7 @@ impl CoreManager {
         // 添加当前运行的任务
         for i in 0..MAX_CORES {
             if let Some(processor) = self.get_processor(i) {
-                let proc = processor.exclusive_access();
+                let proc = processor.lock();
                 if let Some(current) = &proc.current {
                     all_tasks.push(current.clone());
                 }
@@ -263,7 +262,7 @@ impl CoreManager {
         let mut count = 0;
         for i in 0..MAX_CORES {
             if let Some(processor) = self.get_processor(i) {
-                let proc = processor.exclusive_access();
+                let proc = processor.lock();
                 if proc.active.load(Ordering::Relaxed) {
                     count += proc.task_count();
                 }
@@ -278,11 +277,11 @@ lazy_static! {
 }
 
 /// 获取当前核心的处理器
-pub fn current_processor() -> &'static UPSafeCell<CoreProcessor> {
+pub fn current_processor() -> &'static Mutex<CoreProcessor> {
     CORE_MANAGER.current_processor()
 }
 
 /// 获取指定核心的处理器
-pub fn get_processor(hart_id: usize) -> Option<&'static UPSafeCell<CoreProcessor>> {
+pub fn get_processor(hart_id: usize) -> Option<&'static Mutex<CoreProcessor>> {
     CORE_MANAGER.get_processor(hart_id)
 }
