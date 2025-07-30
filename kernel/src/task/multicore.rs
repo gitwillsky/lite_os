@@ -145,48 +145,86 @@ impl CoreManager {
     /// 寻找负载最轻的核心
     pub fn find_least_loaded_core(&self) -> usize {
         let mut min_load = usize::MAX;
-        let mut target_core = 0;
+        let mut target_core = None;
+        let mut active_cores = Vec::new();
 
+        // 首先收集所有活跃核心的负载信息
         for i in 0..MAX_CORES {
             if let Some(processor) = self.get_processor(i) {
                 let proc = processor.exclusive_access();
                 if proc.active.load(Ordering::Relaxed) {
                     let load = proc.task_count();
+                    active_cores.push((i, load));
                     if load < min_load {
                         min_load = load;
-                        target_core = i;
+                        target_core = Some(i);
                     }
                 }
             }
         }
 
-        target_core
+        // 如果找到目标核心，返回它；否则返回第一个活跃核心
+        target_core.unwrap_or_else(|| {
+            if let Some((core_id, _)) = active_cores.first() {
+                *core_id
+            } else {
+                0 // 后备选择
+            }
+        })
     }
 
     /// 工作窃取 - 从其他核心窃取任务
     pub fn steal_work(&self, idle_hart: usize) -> Option<Arc<TaskControlBlock>> {
+        // 收集所有活跃核心的负载信息
+        let mut loaded_cores = Vec::new();
         for hart in 0..MAX_CORES {
             if hart != idle_hart {
                 if let Some(processor) = self.get_processor(hart) {
-                    let mut proc = processor.exclusive_access();
+                    let proc = processor.exclusive_access();
                     if proc.active.load(Ordering::Relaxed) {
-                        if let Some(task) = proc.steal_task() {
-                            return Some(task);
+                        let load = proc.task_count();
+                        if load > 1 { // 只从有多个任务的核心窃取
+                            loaded_cores.push((hart, load));
                         }
                     }
                 }
             }
         }
+
+        // 按负载降序排序，优先从最忙的核心窃取
+        loaded_cores.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // 尝试从负载最重的核心窃取任务
+        for (hart, _load) in loaded_cores {
+            if let Some(processor) = self.get_processor(hart) {
+                let mut proc = processor.exclusive_access();
+                if let Some(task) = proc.steal_task() {
+                    return Some(task);
+                }
+            }
+        }
+
         None
     }
 
     /// 添加任务 - 智能分配到合适的核心
     pub fn add_task(&self, task: Arc<TaskControlBlock>) {
-        // 简单策略：分配到负载最轻的核心
-        let target_core = self.find_least_loaded_core();
-        
+        use crate::arch::hart::hart_id;
+
+        let target_core = if task.pid() == crate::task::pid::INIT_PID {
+            // init任务分配到当前boot核心，确保系统启动顺序正确
+            let current_hart = hart_id();
+            current_hart
+        } else {
+            // 其他任务分配到负载最轻的核心
+            let selected_core = self.find_least_loaded_core();
+            selected_core
+        };
+
         if let Some(processor) = self.get_processor(target_core) {
             processor.exclusive_access().add_task(task.clone());
+        } else {
+            warn!("Failed to add task PID {} to core {} (invalid core)", task.pid(), target_core);
         }
 
         // 添加到全局任务列表（用于监控）
