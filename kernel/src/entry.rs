@@ -12,11 +12,11 @@ unsafe extern "C" fn _start() -> ! {
             slli t1, a0, 14         # t1 = hart_id << 14 = hart_id * 16384
             la sp, boot_stack_top   # sp = boot_stack_top
             sub sp, sp, t1          # sp = boot_stack_top - hart_id * KERNEL_STACK_SIZE
-            
+
             # 保存参数
             add t0, x10, x0         # hart_id
             add t1, x11, x0         # dtb_addr
-            
+
             # 保存BSS清理状态到全局变量，让第一个核心清理
             # 这里简化处理：总是调用clear_bss，函数内部会处理重复调用
             call {clear_bss}
@@ -35,10 +35,10 @@ unsafe extern "C" fn _start() -> ! {
 
 extern "C" fn clear_bss() {
     use core::sync::atomic::{AtomicBool, Ordering};
-    
+
     // 全局标志，确保BSS只被清理一次
     static BSS_CLEARED: AtomicBool = AtomicBool::new(false);
-    
+
     // 只有第一个调用的核心才执行BSS清理
     if BSS_CLEARED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
         unsafe extern "C" {

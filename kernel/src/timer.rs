@@ -5,7 +5,7 @@ use alloc::sync::Arc;
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, task::TaskControlBlock, drivers::GoldfishRTC};
+use crate::{arch::sbi, board, config, drivers::GoldfishRTC, task::TaskControlBlock};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -35,8 +35,10 @@ fn init_rtc_device() -> Option<GoldfishRTC> {
     debug!("Checking for RTC device...");
 
     if let Some(rtc_info) = board_info.rtc_device {
-        debug!("Found RTC device at base address: {:#x}, size: {:#x}",
-               rtc_info.base_addr, rtc_info.size);
+        debug!(
+            "Found RTC device at base address: {:#x}, size: {:#x}",
+            rtc_info.base_addr, rtc_info.size
+        );
 
         // 检查地址是否合理
         if rtc_info.base_addr == 0 {
@@ -232,7 +234,7 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     0
 }
 
-pub fn init() {
+pub fn enable_timer_interrupt() {
     let time_base_freq = board::board_info().time_base_freq;
 
     unsafe {
@@ -240,6 +242,10 @@ pub fn init() {
         register::sie::set_stimer();
     }
 
+    set_next_timer_interrupt();
+}
+
+pub fn init_rtc() {
     // 初始化 RTC 设备
     if let Some(rtc) = init_rtc_device() {
         *RTC_DEVICE.lock() = Some(rtc);
@@ -260,6 +266,5 @@ pub fn init() {
         warn!("Goldfish RTC not available, using default boot time");
         BOOT_TIME_UNIX_SECONDS.store(1704067200, Ordering::Relaxed);
     }
-    set_next_timer_interrupt();
     debug!("timer initialized with real-time clock");
 }
