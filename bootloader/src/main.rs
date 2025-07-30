@@ -117,6 +117,9 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             start_addr: KERNEL_ENTRY,
             opaque,
         });
+
+        // 启动其他核心
+        start_all_cores(board_info, opaque);
     } else {
         // 设置 pmp
         set_pmp(BOARD_INFO.wait());
@@ -134,6 +137,44 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         medeleg::clear_supervisor_env_call();
         medeleg::clear_machine_env_call();
         mtvec::write(trap_vec::trap_vec as _, mtvec::TrapMode::Vectored);
+    }
+}
+
+/// 启动所有其他核心
+fn start_all_cores(board_info: &BoardInfo, opaque: usize) {
+    use crate::hart::hart_id;
+
+    let current_hart = hart_id();
+    let total_cores = board_info.smp;
+
+    println!(
+        "[rustsbi] Starting {} cores (current: {})",
+        total_cores, current_hart
+    );
+
+    // 启动除当前核心外的所有核心
+    for hart_id in 0..total_cores {
+        if hart_id != current_hart {
+            match remote_hsm(hart_id) {
+                Some(remote) => {
+                    if remote.start(Supervisor {
+                        start_addr: KERNEL_ENTRY,
+                        opaque,
+                    }) {
+                        clint::set_msip(hart_id);
+                        println!("[rustsbi] Successfully started core {}", hart_id);
+                    } else {
+                        println!(
+                            "[rustsbi] Failed to start core {} (already started)",
+                            hart_id
+                        );
+                    }
+                }
+                None => {
+                    println!("[rustsbi] Invalid hart id: {}", hart_id);
+                }
+            }
+        }
     }
 }
 
