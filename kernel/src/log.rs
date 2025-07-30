@@ -10,14 +10,21 @@ pub enum LogLevel {
     Error = 3,
 }
 
+impl LogLevel {
+    /// Get the colored string representation of the log level
+    pub fn colored_str(&self) -> &'static str {
+        match self {
+            LogLevel::Debug => "\x1b[36mDEBUG\x1b[0m", // Cyan
+            LogLevel::Info => "\x1b[32mINFO\x1b[0m",   // Green
+            LogLevel::Warn => "\x1b[33mWARN\x1b[0m",   // Yellow
+            LogLevel::Error => "\x1b[31mERROR\x1b[0m", // Red
+        }
+    }
+}
+
 impl fmt::Display for LogLevel {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            LogLevel::Debug => write!(f, "DEBUG"),
-            LogLevel::Info => write!(f, "INFO"),
-            LogLevel::Warn => write!(f, "WARN"),
-            LogLevel::Error => write!(f, "ERROR"),
-        }
+        write!(f, "{}", self.colored_str())
     }
 }
 
@@ -40,7 +47,8 @@ impl Logger {
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.level {
             let hart_id = crate::arch::hart::hart_id();
-            println!("[{}] [CORE-{}] [{}] {}", level, hart_id, module, args);
+            println!("[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
+                     hart_id, level, module, args);
         }
     }
 }
