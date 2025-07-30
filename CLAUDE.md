@@ -24,6 +24,7 @@ The LiteOS system consists of four main components:
 - **File System**: VFS layer with FAT32 support and VirtIO block devices
 - **Comprehensive System Calls**: 30+ implemented system calls covering all major POSIX interfaces
 - **Advanced Scheduling**: Multiple scheduling algorithms (FIFO, Priority, CFS) with priority control
+- **Multi-Core Hardware Support**: RISC-V HART management with up to 8 cores, SBI HSM compliance
 - **IPC Mechanisms**: Pipes, signals, and file locking
 - **WebAssembly Support**: WASI-compatible runtime for multi-language programs
 
@@ -176,7 +177,9 @@ lite_os/
 │   │   ├── uart16550.rs    # Serial console support
 │   │   ├── fast_trap/      # M-Mode trap handling
 │   │   ├── aclint.rs       # Advanced Core Local Interruptor
-│   │   ├── clint.rs        # Core Local Interruptor
+│   │   ├── clint.rs        # Core Local Interruptor (multi-core IPI)
+│   │   ├── hsm_cell/       # Hardware State Management for multi-core
+│   │   ├── hart.rs         # RISC-V HART (hardware thread) management
 │   │   └── console.rs      # Console support
 │   └── linker.ld           # Bootloader memory layout
 │
@@ -360,12 +363,58 @@ $ wasm_runtime math_test.wasm
 $ wasm_runtime wasi_test.wasm
 ```
 
+## Multi-Core Support
+
+### Hardware Multi-Core Features
+
+LiteOS provides comprehensive multi-core support at the hardware level:
+
+**RISC-V HART Management:**
+- **Maximum 8 Cores**: Supports up to 8 RISC-V Hardware Threads (HARTs)
+- **SBI HSM Compliance**: Full RISC-V SBI Hart State Management implementation
+- **Per-HART Resources**: Each core gets 16KB dedicated stack space
+- **Hardware Thread States**: START, STOP, SUSPEND, RESUME operations
+
+**Inter-Core Communication:**
+- **CLINT Integration**: Core Local Interruptor for inter-processor interrupts (IPI)
+- **Hardware State Management**: `HsmCell` for thread-safe HART coordination
+- **Core Identification**: `mhartid` register support for core-specific operations
+
+**Bootloader Multi-Core:**
+- **Primary HART Bootstrap**: HART 0 performs system initialization
+- **Secondary HART Startup**: Dynamic secondary core activation via SBI calls
+- **Synchronized Boot**: Coordinated transition to S-Mode kernel
+
+### Current Kernel Limitations
+
+While hardware multi-core support is complete, kernel-level multi-core features are still developing:
+
+**Single-Core Kernel Design:**
+- **Unified Scheduler**: All cores share a single task scheduler instance
+- **Global Task Queue**: No per-core task queues or load balancing
+- **No CPU Affinity**: Tasks cannot be bound to specific cores
+
+**Shared Resource Management:**
+- **Single Memory Manager**: All cores use shared heap and page allocators
+- **Unified File System**: No per-core filesystem caches
+- **Global Synchronization**: Potential bottlenecks in multi-core scenarios
+
+### Multi-Core Development Status
+
+- ✅ **Hardware Support**: Complete RISC-V multi-core hardware abstraction
+- ✅ **SBI Interface**: Full Hart State Management implementation
+- ✅ **Inter-Core IPI**: Working inter-processor interrupt mechanism
+- 🚧 **Kernel Scheduling**: Single scheduler with multi-core potential
+- ❌ **Load Balancing**: No automatic task distribution across cores
+- ❌ **CPU Affinity**: No per-core task binding support
+
 ## Memory Layout
 
 ### Kernel Memory Map
-- **Kernel Code**: Loaded at high memory addresses
+- **Kernel Code**: Loaded at high memory addresses (0x80200000)
 - **Page Tables**: Multi-level page table structure
-- **Heap**: Dynamic kernel memory allocation  
+- **Heap**: Dynamic kernel memory allocation
+- **Per-HART Stacks**: 16KB stack space per hardware thread
 - **Device MMIO**: Memory-mapped device regions
 
 ### User Memory Map
@@ -442,10 +491,15 @@ make addr2line ADDR=<address>
 - Safety-first approach with minimal `unsafe` code
 
 ### Contributing Areas
-1. **WASM Runtime Enhancement**: Improve WASI compatibility and performance
-2. **Network Stack**: Implement TCP/IP networking (hardware support exists)
-3. **Graphics Support**: Enhance VirtIO GPU integration for GUI applications
-4. **Multi-Core Support**: Complete multi-core processing implementation
+1. **Multi-Core Kernel Implementation**: 
+   - Per-core task schedulers and load balancing algorithms
+   - CPU affinity and NUMA-aware memory allocation
+   - Lock-free data structures for multi-core synchronization
+   - Per-core filesystem and network stack instances
+
+2. **WASM Runtime Enhancement**: Improve WASI compatibility and performance
+3. **Network Stack**: Implement TCP/IP networking (hardware support exists)
+4. **Graphics Support**: Enhance VirtIO GPU integration for GUI applications
 5. **File Systems**: Add support for additional filesystem types (ext4, btrfs)
 6. **Shell Enhancements**: Add more built-in commands and scripting support
 7. **Device Drivers**: Expand VirtIO device ecosystem support
