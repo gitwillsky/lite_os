@@ -22,8 +22,8 @@ The LiteOS system consists of four main components:
 - **Virtual Memory Management**: Multi-level page tables with process isolation
 - **Process Management**: Unix-like process model with `fork()`, `exec()`, and `wait()`
 - **File System**: VFS layer with FAT32 support and VirtIO block devices
-- **POSIX System Calls**: 82 implemented system calls covering all major POSIX interfaces
-- **Advanced Scheduling**: Four scheduling algorithms (FIFO, Priority, Round-Robin, CFS)
+- **Comprehensive System Calls**: 30+ implemented system calls covering all major POSIX interfaces
+- **Advanced Scheduling**: Multiple scheduling algorithms (FIFO, Priority, CFS) with priority control
 - **IPC Mechanisms**: Pipes, signals, and file locking
 - **WebAssembly Support**: WASI-compatible runtime for multi-language programs
 
@@ -90,17 +90,36 @@ make clean
 
 ### Using the System
 
-After booting, you'll see a shell prompt (`$`). Available commands include:
+After booting, you'll see a shell prompt (`$ `). The system boots with `init` and provides access to a comprehensive shell with many built-in commands:
 
 ```bash
-# Native programs
-$ test           # Run test suite
+# File operations
+$ ls             # List directory contents
+$ cat filename   # Display file contents
+$ mkdir dirname  # Create directory
+$ rm filename    # Remove files
+$ pwd            # Show current directory
+$ echo text      # Print text
+
+# System utilities
+$ test           # Run comprehensive test suite
+$ top            # Process monitor (like htop)
+$ kill pid       # Send signals to processes
+$ vim filename   # Built-in text editor
 $ exit           # Clean shutdown
 
 # WASM programs (with runtime)
 $ wasm_runtime hello_wasm.wasm
-$ wasm_runtime file_test.wasm
+$ wasm_runtime file_test.wasm arg1 arg2
+$ wasm_runtime math_test.wasm
+$ wasm_runtime wasi_test.wasm
 ```
+
+The shell includes advanced features:
+- **Tab completion** for commands and filenames
+- **Command history** with arrow key navigation
+- **Job control** for background processes
+- **Built-in editor** for command line editing
 
 ## Development Workflows
 
@@ -155,33 +174,65 @@ lite_os/
 │   │   ├── main.rs         # Boot entry point
 │   │   ├── device_tree.rs  # Device tree parsing
 │   │   ├── uart16550.rs    # Serial console support
-│   │   └── fast_trap/      # M-Mode trap handling
+│   │   ├── fast_trap/      # M-Mode trap handling
+│   │   ├── aclint.rs       # Advanced Core Local Interruptor
+│   │   ├── clint.rs        # Core Local Interruptor
+│   │   └── console.rs      # Console support
 │   └── linker.ld           # Bootloader memory layout
 │
 ├── kernel/                  # S-Mode operating system kernel
 │   ├── src/
 │   │   ├── main.rs         # Kernel entry point
 │   │   ├── memory/         # Virtual memory management
-│   │   ├── task/           # Process/task management  
-│   │   ├── syscall/        # POSIX system call implementation
-│   │   ├── fs/             # VFS and FAT32 filesystem
-│   │   ├── drivers/        # VirtIO device drivers
+│   │   ├── task/           # Process/task management with advanced scheduling
+│   │   ├── syscall/        # Comprehensive POSIX system call implementation
+│   │   ├── fs/             # VFS layer with FAT32 and file locking support
+│   │   ├── drivers/        # VirtIO device drivers (block, console, GPU, etc.)
 │   │   ├── trap/           # Exception/interrupt handling
-│   │   ├── ipc/            # Inter-process communication
-│   │   └── sync/           # Synchronization primitives
+│   │   ├── ipc/            # Inter-process communication (pipes)
+│   │   ├── sync/           # Synchronization primitives
+│   │   ├── arch/           # Architecture-specific code (RISC-V)
+│   │   └── board/          # Board support and device tree parsing
 │   └── linker.ld           # Kernel memory layout
 │
-├── user/                    # User-space programs
+├── user/                    # User-space programs and libraries
 │   ├── src/
 │   │   ├── lib.rs          # User library (system call wrappers)
-│   │   └── bin/            # User programs
-│   │       ├── user_shell.rs    # Interactive shell
+│   │   └── bin/            # Rich set of user programs
+│   │       ├── init.rs          # System initialization
+│   │       ├── shell.rs         # Advanced interactive shell
+│   │       ├── shell_modules/   # Shell components
+│   │       │   ├── builtins.rs     # Built-in commands
+│   │       │   ├── completion.rs   # Tab completion
+│   │       │   ├── editor.rs       # Command line editor
+│   │       │   ├── executor.rs     # Command execution
+│   │       │   ├── history.rs      # Command history
+│   │       │   └── jobs.rs         # Job control
+│   │       ├── vim.rs           # Built-in text editor
+│   │       ├── top.rs           # Process monitor
 │   │       ├── wasm_runtime.rs  # WebAssembly runtime
-│   │       └── test.rs          # Test programs
+│   │       ├── wasm_runtime/    # WASM runtime components
+│   │       │   ├── engine.rs       # WASM execution engine
+│   │       │   ├── filesystem.rs   # WASI filesystem interface
+│   │       │   ├── process.rs      # Process management
+│   │       │   └── wasi.rs         # WASI implementation
+│   │       ├── test.rs          # Comprehensive test suite
+│   │       ├── cat.rs           # File display utility
+│   │       ├── ls.rs            # Directory listing
+│   │       ├── mkdir.rs         # Directory creation
+│   │       ├── rm.rs            # File removal
+│   │       ├── pwd.rs           # Current directory
+│   │       ├── echo.rs          # Text output
+│   │       ├── kill.rs          # Process signaling
+│   │       └── exit.rs          # Clean shutdown
 │   └── linker.ld           # User program memory layout
 │
 ├── wasm_programs/           # WebAssembly test programs
 │   ├── src/                # Rust WASM source code
+│   │   ├── hello_wasm.rs   # Basic WASM hello world
+│   │   ├── file_test.rs    # File I/O testing
+│   │   ├── math_test.rs    # Mathematical operations
+│   │   └── wasi_test.rs    # WASI interface testing
 │   ├── build.sh            # WASM build script
 │   └── wasm_output/        # Compiled .wasm files
 │
@@ -189,6 +240,8 @@ lite_os/
 ├── Cargo.toml              # Workspace configuration
 ├── rust-toolchain.toml     # Rust toolchain specification
 ├── create_fs.py            # Filesystem creation utility
+├── virt-riscv64.dtb        # Device tree binary
+├── virt-riscv64.dts        # Device tree source
 ├── README.md               # User documentation (Chinese)
 └── TODO.md                 # Development roadmap (Chinese)
 ```
@@ -197,37 +250,63 @@ lite_os/
 
 ### System Calls
 
-LiteOS implements 82 POSIX-compatible system calls organized by category:
+LiteOS implements 30+ comprehensive POSIX-compatible system calls organized by category:
 
 **File Operations:**
 - `open`, `close`, `read`, `write`, `lseek`
-- `mkdir`, `rmdir`, `stat`, `chmod`, `chown`
-- File descriptor management and locking (`flock`)
+- `mkdir`, `remove`, `stat`, `chmod`, `chown`
+- `listdir`, `chdir`, `getcwd`, `read_file`
+- File descriptor management (`dup`, `dup2`, `flock`, `fcntl`)
+- FIFO support (`mkfifo`)
 
 **Process Management:**
-- `fork`, `exec`, `execve`, `wait`, `wait_pid`
-- `getpid`, `getppid`, `exit`
-- Priority and scheduler control
+- `fork`, `exec`, `execve`, `wait_pid`
+- `getpid`, `exit`, `yield`
+- Process monitoring (`get_process_list`, `get_process_info`, `get_system_stats`)
+- Advanced scheduling (`setpriority`, `getpriority`, `sched_setscheduler`, `sched_getscheduler`)
 
 **Memory Management:**
-- `brk`, `mmap`, `munmap`
-- Dynamic memory allocation
+- `brk`, `sbrk`, `mmap`, `munmap`
+- Dynamic memory allocation and management
 
 **Inter-Process Communication:**
 - `pipe`, `dup`, `dup2`  
-- Signal handling (`signal`, `sigaction`, `kill`)
+- Comprehensive signal handling (`signal`, `sigaction`, `sigprocmask`, `sigreturn`, `kill`)
+- Signal utilities (`pause`, `alarm`)
 
-**Security:**
+**Security & Permissions:**
 - User/group management (`getuid`, `setuid`, `getgid`, `setgid`)
-- Permission controls
+- Extended permissions (`geteuid`, `getegid`, `seteuid`, `setegid`)
+- File permission controls
+
+**Dynamic Linking:**
+- `dlopen`, `dlsym`, `dlclose`
+- Runtime library loading and symbol resolution
+
+**Time Management:**
+- High-resolution time (`get_time_ms`, `get_time_us`, `get_time_ns`)
+- POSIX time interfaces (`time`, `gettimeofday`)
+- Sleep functionality (`nanosleep`)
+
+**System Monitoring:**
+- Watchdog timer (`watchdog_configure`, `watchdog_start`, `watchdog_stop`, `watchdog_feed`)
+- System statistics and process monitoring
+- Hardware watchdog support
+
+**System Control:**
+- `shutdown` for clean system shutdown
+- Argument retrieval (`get_args`) for command-line processing
 
 ### Device Interface
 
 **VirtIO Devices:**
-- **Block Device**: Storage via `virtio-blk-device`
+- **Block Device**: Storage via `virtio-blk-device` with FAT32 filesystem
 - **Console**: Serial I/O via VirtIO console (optional)
-- **Random**: Hardware random number generation
-- **Network**: Ethernet via `virtio-net-device`
+- **Random**: Hardware random number generation (`virtio-rng-device`)
+- **Graphics**: GPU acceleration via `virtio-gpu-device`
+- **Input**: Mouse support via `virtio-mouse-device`
+- **Network**: Ethernet via `virtio-net-device` with port forwarding (5555)
+- **RTC**: Real-time clock with local time base
 
 **Hardware Abstraction Layer (HAL):**
 - Device enumeration and lifecycle management
@@ -277,6 +356,8 @@ cargo build --release --target wasm32-wasip1 --bin hello_wasm
 # Run WASM programs in LiteOS
 $ wasm_runtime hello_wasm.wasm
 $ wasm_runtime file_test.wasm arg1 arg2
+$ wasm_runtime math_test.wasm
+$ wasm_runtime wasi_test.wasm
 ```
 
 ## Memory Layout
@@ -311,8 +392,12 @@ cd wasm_programs && ./build.sh
 ```bash
 # Boot to shell and run tests
 make run
-$ test           # Run built-in test suite
+$ test           # Run comprehensive built-in test suite
+$ top            # Test process monitoring
+$ vim testfile   # Test built-in editor
 $ wasm_runtime hello_wasm.wasm  # Test WASM execution
+$ ls             # Test filesystem operations
+$ echo "Hello" | cat  # Test pipes and I/O
 ```
 
 ## Troubleshooting
@@ -358,10 +443,12 @@ make addr2line ADDR=<address>
 
 ### Contributing Areas
 1. **WASM Runtime Enhancement**: Improve WASI compatibility and performance
-2. **Device Drivers**: Add support for additional VirtIO devices
-3. **Network Stack**: Implement TCP/IP networking
-4. **File Systems**: Add support for additional filesystem types
-5. **Scheduler Improvements**: Enhance CFS or add new scheduling algorithms
+2. **Network Stack**: Implement TCP/IP networking (hardware support exists)
+3. **Graphics Support**: Enhance VirtIO GPU integration for GUI applications
+4. **Multi-Core Support**: Complete multi-core processing implementation
+5. **File Systems**: Add support for additional filesystem types (ext4, btrfs)
+6. **Shell Enhancements**: Add more built-in commands and scripting support
+7. **Device Drivers**: Expand VirtIO device ecosystem support
 
 ### Architecture Goals
 - **Education**: Clear, well-documented code for learning OS concepts
@@ -369,4 +456,4 @@ make addr2line ADDR=<address>
 - **Compatibility**: Strong POSIX compliance for application portability
 - **Innovation**: Modern language (Rust) applied to systems programming
 
-This LiteOS implementation represents a significant achievement in modern operating system development, combining educational clarity with production-ready features and innovative WebAssembly integration.
+This LiteOS implementation represents a significant achievement in modern operating system development, combining educational clarity with production-ready features and innovative WebAssembly integration. The system showcases advanced features including a sophisticated shell with job control, built-in text editor, process monitoring tools, and comprehensive WASI-compatible WebAssembly runtime, making it both a learning platform and a foundation for embedded RISC-V applications.
