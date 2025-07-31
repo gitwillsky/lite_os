@@ -290,20 +290,10 @@ impl FAT32FileSystem {
 
     fn allocate_cluster(&self) -> Option<u32> {
         let mut fat_cache = self.fat_cache.lock();
-        debug!(
-            "Looking for free cluster. FAT cache size: {}",
-            fat_cache.len()
-        );
-
         // Start from cluster 2 (clusters 0 and 1 are reserved)
         for i in 2..fat_cache.len() {
-            debug!(
-                "Checking cluster {}: FAT[{}] = {:#08x}",
-                i, i, fat_cache[i]
-            );
             if fat_cache[i] == CLUSTER_FREE {
                 fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
-                debug!("Allocated cluster {}", i);
                 return Some(i as u32);
             }
         }

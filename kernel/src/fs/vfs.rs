@@ -38,7 +38,6 @@ impl VirtualFileSystem {
 
     /// 规范化路径，解析 . 和 .. 组件
     fn canonicalize_path(&self, path: &str) -> String {
-        debug!("[VFS] Canonicalizing path: {}", path);
         let mut components = Vec::new();
 
         for component in path.split('/') {
@@ -65,7 +64,6 @@ impl VirtualFileSystem {
             format!("/{}", components.join("/"))
         };
 
-        debug!("[VFS] Canonicalized {} -> {}", path, canonical);
         canonical
     }
 
@@ -137,7 +135,6 @@ impl VirtualFileSystem {
     }
 
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        debug!("[VFS] Resolving path: {}", path);
         let root_fs = self.root_fs.lock();
         let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
 
@@ -150,7 +147,6 @@ impl VirtualFileSystem {
         };
 
         if path.is_empty() {
-            debug!("[VFS] Returning root inode");
             return Ok(current);
         }
 
@@ -158,12 +154,9 @@ impl VirtualFileSystem {
             if component.is_empty() {
                 continue;
             }
-            debug!("[VFS] Looking for component: {}", component);
             current = current.find_child(component)?;
-            debug!("[VFS] Found component: {}", component);
         }
 
-        debug!("[VFS] Successfully resolved path: {}", path);
         Ok(current)
     }
 
