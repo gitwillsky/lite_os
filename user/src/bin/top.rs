@@ -94,12 +94,27 @@ fn display_system_stats() {
                 / 100.0;
             // 显示CPU使用率信息
             let cpu_percent = stats.cpu_usage_percent as f32 / 100.0;
+            let cpu_display = if cpu_percent.is_finite() { 
+                format!("{:.1}", cpu_percent) 
+            } else { 
+                "N/A".to_string() 
+            };
+            let user_display = if user_percent.is_finite() { 
+                format!("{:.1}", user_percent) 
+            } else { 
+                "N/A".to_string() 
+            };
+            let system_display = if system_percent.is_finite() { 
+                format!("{:.1}", system_percent) 
+            } else { 
+                "N/A".to_string() 
+            };
             println!(
-                "CPU: {:.1}% total, {}s uptime, {:.1}% user, {:.1}% system",
-                cpu_percent,
+                "CPU: {}% total, {}s uptime, {}% user, {}% system",
+                cpu_display,
                 stats.system_uptime / 1_000_000,
-                user_percent,
-                system_percent
+                user_display,
+                system_display
             );
         }
     } else {
@@ -214,10 +229,13 @@ fn display_process(info: &ProcessInfo) {
     };
 
     // 格式化CPU使用率
-    let cpu_percent_str = if info.cpu_percent > 0 {
-        format!("{:.1}", info.cpu_percent as f32 / 100.0)
-    } else {
+    let cpu_percent_val = info.cpu_percent as f32 / 100.0;
+    let cpu_percent_str = if cpu_percent_val.is_finite() && cpu_percent_val > 0.0 {
+        format!("{:.1}", cpu_percent_val)
+    } else if cpu_percent_val.is_finite() {
         "0.0".to_string()
+    } else {
+        "NaN".to_string()
     };
 
     let process_name = extract_process_name(&info.name);
