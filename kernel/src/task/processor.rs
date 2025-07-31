@@ -23,11 +23,30 @@ use crate::{
     trap::TrapContext,
 };
 
-// 使用原子变量替换unsafe的全局变量，提高线程安全性
-static LAST_DEBUG_TIME: AtomicU64 = AtomicU64::new(0);
+// =============================================================================
+// 任务处理器 - 负责任务调度、切换和生命周期管理
+//
+// 主要功能：
+// - 任务调度循环
+// - 任务切换和上下文管理
+// - 进程退出和僵尸进程清理
+// - 信号处理
+// - CPU时间统计
+// =============================================================================
+
+// =============================================================================
+// 常量和静态变量
+// =============================================================================
 
 pub const IDLE_PID: usize = 0;
 const DEBUG_INTERVAL_US: u64 = 5_000_000; // 5秒调试间隔
+
+/// 使用原子变量替换unsafe的全局变量，提高线程安全性
+static LAST_DEBUG_TIME: AtomicU64 = AtomicU64::new(0);
+
+// =============================================================================
+// 当前任务管理
+// =============================================================================
 
 /// 获取并移除当前任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
@@ -63,6 +82,10 @@ pub fn current_cwd() -> String {
         .map(|task| task.cwd.lock().clone())
         .unwrap_or_else(|| "/".to_string())
 }
+
+// =============================================================================
+// 任务调度和切换
+// =============================================================================
 
 /// 主调度循环 - 多核心版本
 pub fn run_tasks() -> ! {
@@ -152,26 +175,12 @@ fn schedule(switched_task_cx_ptr: *mut TaskContext) {
 /// 挂起当前任务并运行下一个任务
 pub fn suspend_current_and_run_next() {
     let task = take_current_task().expect("No current task to suspend");
-    let end_time = get_time_us();
-    // 调试信息输出
-    // print_debug_info_if_needed(end_time, &task);
-
-    let (task_cx_ptr, runtime, should_readd) = {
-        let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
-        let task_cx_ptr = &mut *task.mm.task_cx.lock() as *mut _;
-
-        update_task_runtime_stats(&task, runtime);
-
-        let should_readd = *task.task_status.lock() == TaskStatus::Running;
-        if should_readd {
-            *task.task_status.lock() = TaskStatus::Ready;
-        }
-
-        (task_cx_ptr, runtime, should_readd)
-    };
-
+    let task_cx_ptr = prepare_task_for_suspend(&task);
+    
     // 如果任务应该重新加入就绪队列
+    let should_readd = *task.task_status.lock() == TaskStatus::Running;
     if should_readd {
+        *task.task_status.lock() = TaskStatus::Ready;
         CORE_MANAGER.add_task(task);
     }
 
@@ -181,167 +190,158 @@ pub fn suspend_current_and_run_next() {
 /// 阻塞当前任务并切换到下一个任务
 pub fn block_current_and_run_next() {
     let task = take_current_task().expect("No current task to block");
-    let end_time = get_time_us();
-
-    let (task_cx_ptr, runtime) = {
-        let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
-        update_task_runtime_stats(&task, runtime);
-        let task_cx_ptr = &mut *task.mm.task_cx.lock() as *mut _;
-
-        (task_cx_ptr, runtime)
-    };
-
+    let task_cx_ptr = prepare_task_for_suspend(&task);
     schedule(task_cx_ptr);
 }
 
 /// 退出当前任务并运行下一个任务
 pub fn exit_current_and_run_next(exit_code: i32) {
     let task = take_current_task().expect("No current task to exit");
-    let pid = task.pid();
-
-    // 处理任务退出
-    task.set_exit_code(exit_code);
-    *task.task_status.lock() = TaskStatus::Zombie;
-
-    // 关闭所有文件描述符并清理文件锁
-    task.file.lock().close_all_fds_and_cleanup_locks(pid);
-
-    // 将进程挂给 init_proc, 等待回收
-    if let Some(init_proc) = task_manager::init_proc() {
-        if pid == init_proc.pid() {
-            error!("init process exit with exit_code {}", exit_code);
-        } else {
-            // 收集需要重新父化的子进程
-            let mut children_to_reparent: Vec<_> = task
-                .children
-                .lock()
-                .iter()
-                .filter(|child| child.pid() != pid)
-                .cloned()
-                .collect();
-            if !children_to_reparent.is_empty() {
-                // 先处理子进程的parent指针
-                for child in &children_to_reparent {
-                    child.set_parent(Arc::downgrade(&init_proc.clone()));
-                }
-                // 然后处理init_proc的children列表
-                let mut init_proc_children = init_proc.children.lock();
-                for child in children_to_reparent {
-                    init_proc_children.push(child);
-                }
-            }
-        }
-    }
-
-    // 唤醒等待的父进程
-    if let Some(parent) = task.parent() {
-        if *parent.task_status.lock() == TaskStatus::Sleeping {
-            // 父进程可能在等待子进程，唤醒它
-            parent.wakeup();
-        }
-    }
-
+    
+    // 执行完整的任务清理
+    perform_task_exit_cleanup(&task, exit_code, false);
+    
     // 调度到下一个任务
     schedule(&mut *task.mm.task_cx.lock() as *mut _);
 }
 
 /// 处理任务信号
 fn handle_task_signals(task: &Arc<TaskControlBlock>) {
-    // 使用安全的信号处理方法，避免获取trap context导致死锁
     use crate::task::signal::SignalDelivery;
 
     let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
 
     if !should_continue {
         if let Some(code) = exit_code {
-            // 如果信号要求终止进程，则执行完整的进程退出流程
             debug!("Task {} terminated by signal with exit code {}", task.pid(), code);
-            
-            // 执行与exit_current_and_run_next相同的清理工作，但不调度到下一个任务
-            // 因为我们还在调度循环中
-            perform_task_cleanup(task, code);
+            // 执行任务清理，但不调度（因为我们在调度循环中）
+            perform_task_exit_cleanup(task, code, true);
         }
     }
 }
 
-/// 执行任务清理工作（不包括调度）
-fn perform_task_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32) {
+/// 统一的任务退出清理函数
+/// 
+/// # 参数
+/// - task: 要清理的任务
+/// - exit_code: 退出码
+/// - from_signal: 是否来自信号终止（影响父子关系处理）
+fn perform_task_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32, from_signal: bool) {
     let pid = task.pid();
     
-    // 处理任务退出
+    // 设置退出状态
     task.set_exit_code(exit_code);
     *task.task_status.lock() = TaskStatus::Zombie;
 
     // 关闭所有文件描述符并清理文件锁
     task.file.lock().close_all_fds_and_cleanup_locks(pid);
 
-    // 重新父化当前进程的子进程给init进程
+    // 重新父化子进程到init进程
+    reparent_children_to_init(task);
+    
+    // 处理父子关系
+    handle_parent_child_relationship(task, from_signal);
+}
+
+/// 将进程的子进程重新父化给init进程
+fn reparent_children_to_init(task: &Arc<TaskControlBlock>) {
+    let pid = task.pid();
+    
     if let Some(init_proc) = task_manager::init_proc() {
         if pid == init_proc.pid() {
-            error!("init process exit with exit_code {}", exit_code);
-        } else {
-            // 收集需要重新父化的子进程
-            let mut children_to_reparent: Vec<_> = task
-                .children
-                .lock()
-                .iter()
-                .filter(|child| child.pid() != pid)
-                .cloned()
-                .collect();
-            if !children_to_reparent.is_empty() {
-                // 先处理子进程的parent指针
-                for child in &children_to_reparent {
-                    child.set_parent(Arc::downgrade(&init_proc.clone()));
-                }
-                // 然后处理init_proc的children列表
-                let mut init_proc_children = init_proc.children.lock();
-                for child in children_to_reparent {
-                    init_proc_children.push(child);
-                }
-            }
-        }
-    }
-
-    // 对于信号终止的进程，将其从原父进程的子进程列表中移除，并转移给init进程
-    if let Some(parent) = task.parent() {
-        // 从原父进程的子进程列表中移除当前进程
-        let mut removed = false;
-        {
-            let mut parent_children = parent.children.lock();
-            if let Some(pos) = parent_children.iter().position(|child| Arc::ptr_eq(child, task)) {
-                parent_children.remove(pos);
-                removed = true;
-                debug!("Removed zombie process {} from parent {} children list", pid, parent.pid());
-            }
+            error!("init process exit with exit_code {}", task.exit_code());
+            return;
         }
         
-        // 将当前进程转移给init进程
-        if removed {
-            if let Some(init_proc) = task_manager::init_proc() {
-                if pid != init_proc.pid() && parent.pid() != init_proc.pid() {
-                    // 只有当父进程不是init进程时才转移
-                    init_proc.children.lock().push(task.clone());
-                    task.set_parent(Arc::downgrade(&init_proc));
-                    debug!("Transferred zombie process {} to init process", pid);
-                }
+        let children_to_reparent: Vec<_> = task
+            .children
+            .lock()
+            .iter()
+            .filter(|child| child.pid() != pid)
+            .cloned()
+            .collect();
+            
+        if !children_to_reparent.is_empty() {
+            // 设置子进程的新父进程
+            for child in &children_to_reparent {
+                child.set_parent(Arc::downgrade(&init_proc));
             }
-        }
-        
-        // 唤醒等待的父进程
-        if *parent.task_status.lock() == TaskStatus::Sleeping {
-            parent.wakeup();
+            
+            // 将子进程添加到init进程的子进程列表
+            let mut init_children = init_proc.children.lock();
+            for child in children_to_reparent {
+                init_children.push(child);
+            }
         }
     }
 }
 
-/// 更新任务运行时间统计
-fn update_task_runtime_stats(task: &Arc<TaskControlBlock>, runtime: u64) {
+/// 处理进程退出时的父子关系
+fn handle_parent_child_relationship(task: &Arc<TaskControlBlock>, from_signal: bool) {
+    let Some(parent) = task.parent() else {
+        return;
+    };
+    
+    let pid = task.pid();
+    
+    // 如果是信号终止，需要从父进程的子进程列表中移除并转移给init
+    if from_signal {
+        let removed = remove_from_parent_children(&parent, task);
+        
+        if removed {
+            transfer_to_init_if_needed(task, &parent);
+        }
+    }
+    
+    // 唤醒等待的父进程
+    wake_waiting_parent(&parent);
+}
+
+/// 从父进程的子进程列表中移除指定任务
+fn remove_from_parent_children(parent: &Arc<TaskControlBlock>, task: &Arc<TaskControlBlock>) -> bool {
+    let mut parent_children = parent.children.lock();
+    if let Some(pos) = parent_children.iter().position(|child| Arc::ptr_eq(child, task)) {
+        parent_children.remove(pos);
+        debug!("Removed zombie process {} from parent {} children list", task.pid(), parent.pid());
+        true
+    } else {
+        false
+    }
+}
+
+/// 如果需要，将任务转移给init进程
+fn transfer_to_init_if_needed(task: &Arc<TaskControlBlock>, parent: &Arc<TaskControlBlock>) {
+    let Some(init_proc) = task_manager::init_proc() else {
+        return;
+    };
+    
+    let pid = task.pid();
+    
+    // 只有当父进程不是init进程时才转移
+    if pid != init_proc.pid() && parent.pid() != init_proc.pid() {
+        init_proc.children.lock().push(task.clone());
+        task.set_parent(Arc::downgrade(&init_proc));
+        debug!("Transferred zombie process {} to init process", pid);
+    }
+}
+
+/// 唤醒等待的父进程
+fn wake_waiting_parent(parent: &Arc<TaskControlBlock>) {
+    if *parent.task_status.lock() == TaskStatus::Sleeping {
+        parent.wakeup();
+    }
+}
+
+/// 准备任务以便挂起（统一处理运行时间统计）
+/// 返回任务上下文指针
+fn prepare_task_for_suspend(task: &Arc<TaskControlBlock>) -> *mut TaskContext {
+    let end_time = get_time_us();
+    let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
+    
     // 更新调度器的虚拟运行时间
     task.sched.lock().update_vruntime(runtime);
-
-    // 注意：不在这里更新CPU时间统计，避免与 mark_kernel_entry/exit 重复计算
-    // 用户态/内核态时间的详细统计由 mark_kernel_entry/exit 函数负责
-    // 这里只更新调度器需要的虚拟运行时间
+    
+    &mut *task.mm.task_cx.lock() as *mut _
 }
 
 /// 标记进程进入内核态
@@ -389,6 +389,7 @@ pub fn mark_kernel_exit() {
 }
 
 /// 如果需要则打印调试信息（每5秒一次）
+#[allow(dead_code)]
 fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
     let last_time = LAST_DEBUG_TIME.load(Ordering::Relaxed);
     if current_time.saturating_sub(last_time) >= DEBUG_INTERVAL_US {
@@ -409,23 +410,5 @@ fn print_debug_info_if_needed(current_time: u64, task: &Arc<TaskControlBlock>) {
             );
         }
     }
-}
-
-/// 检查并移除当前任务（如果匹配）
-fn check_and_remove_current_task(task: &Arc<TaskControlBlock>) -> bool {
-    let is_current_task = {
-        let processor = current_processor().lock();
-        processor
-            .current
-            .as_ref()
-            .map(|current| Arc::ptr_eq(current, task))
-            .unwrap_or(false)
-    };
-
-    if is_current_task {
-        take_current_task();
-    }
-
-    is_current_task
 }
 
