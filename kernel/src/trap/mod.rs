@@ -70,13 +70,6 @@ pub fn trap_handler() {
                     crate::drivers::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
-                    // 重要：使用warn级别确保消息显示
-                    warn!(
-                        ">>> SupervisorSoft interrupt received on core {} <<<",
-                        crate::arch::hart::hart_id()
-                    );
-
-                    // 关键修复：清除SSIP位以防止中断重复触发
                     // 读取当前sip寄存器值
                     let sip_val: usize;
                     unsafe {
@@ -89,19 +82,11 @@ pub fn trap_handler() {
                         asm!("csrw sip, {}", in(reg) clear_ssip);
                     }
 
-                    warn!("Cleared SSIP bit: sip was {:#x}, now {:#x}", sip_val, clear_ssip);
-
                     // 检查当前进程是否有待处理的信号
-                    warn!("Checking for pending signals on current task");
                     let cx = task::current_trap_context();
                     if !check_signals_and_maybe_exit_with_cx(cx) {
-                        warn!("Process was terminated by signal");
                         return; // Process was terminated by signal
                     }
-                    warn!("Signal processing completed, continuing execution");
-
-                    // IPI处理完成后不需要调度，直接返回用户态
-                    // suspend_current_and_run_next();
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?} (code: {})", interrupt, code);

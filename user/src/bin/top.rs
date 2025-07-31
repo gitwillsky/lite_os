@@ -143,8 +143,8 @@ fn display_system_stats() {
 
 // 显示进程表头
 fn display_process_header() {
-    println!("  PID  PPID   UID   GID  EUID  EGID  STAT PRI NICE   %CPU    VRUN    HEAP CORE  COMMAND");
-    println!("-----  ----  ----  ----  ----  ----  ---- --- ----  -----  ------  ------ ----  --------");
+    println!("  PID  PPID   UID   GID  STAT PRI NICE   %CPU    VRUN    HEAP CORE  COMMAND");
+    println!("-----  ----  ----  ----  ---- --- ----  -----  ------  ------ ----  --------");
 }
 
 // 格式化状态显示
@@ -259,13 +259,11 @@ fn display_process(info: &ProcessInfo) {
     let process_name = extract_process_name(&info.name);
 
     println!(
-        "{:5}  {:4}  {:4}  {:4}  {:4}  {:4}  {} {:3}  {:3}  {:5}  {:6}  {:6}  {:3}  {}",
+        "{:5}  {:4}  {:4}  {:4}  {} {:3}  {:3}  {:5}  {:6}  {:6}  {:3}  {}",
         info.pid,
         info.ppid,
         info.uid,
         info.gid,
-        info.euid,
-        info.egid,
         format_status(info.status),
         info.priority,
         info.nice,
