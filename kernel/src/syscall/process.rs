@@ -85,7 +85,7 @@ pub fn sys_fork() -> isize {
 
     // child fork return 0, so ra = 0
     trap_cx.x[10] = 0;
-    
+
     // 添加到统一任务管理器（会自动处理调度器添加）
     task::add_task(new_task);
 
@@ -147,6 +147,9 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
             let parent_token = task.mm.memory_set.lock().token();
             *translated_ref_mut(parent_token, exit_code_ptr) = exit_code;
         }
+
+        // 从全局任务管理器中移除僵尸进程
+        crate::task::remove_task(found_pid);
 
         return found_pid as isize;
     }
@@ -554,7 +557,7 @@ pub fn sys_setegid(egid: u32) -> isize {
 /// 返回值：实际进程数量（如果超过max_count则只填充max_count个）
 pub fn sys_get_process_list(pids: *mut u32, max_count: usize) -> isize {
     let token = current_user_token();
-    
+
     if max_count == 0 {
         return get_task_count() as isize;
     }
@@ -700,11 +703,11 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
 /// 返回值：成功返回0，失败返回-1
 pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
     let token = current_user_token();
-    
+
     // 使用新的统一接口获取进程统计信息
     let process_stats = get_process_statistics();
     let all_tasks = get_all_tasks();
-    
+
     let mut total_cpu_user_time = 0u64;
     let mut total_cpu_kernel_time = 0u64;
 
@@ -787,15 +790,15 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
 /// 返回值：成功返回0，失败返回-1
 pub fn sys_get_cpu_core_info(core_info: *mut CpuCoreInfo) -> isize {
     let token = current_user_token();
-    
+
     let cpu_core_info = CpuCoreInfo {
         total_cores: crate::arch::hart::MAX_CORES as u32,
         active_cores: crate::task::multicore::CORE_MANAGER.active_core_count() as u32,
     };
-    
+
     // 将核心信息写入用户空间
     let mut info_buffers = translated_byte_buffer(token, core_info as *const u8, core::mem::size_of::<CpuCoreInfo>());
-    
+
     if !info_buffers.is_empty() && info_buffers[0].len() >= core::mem::size_of::<CpuCoreInfo>() {
         let info_bytes = unsafe {
             core::slice::from_raw_parts(
