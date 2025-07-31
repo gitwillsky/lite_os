@@ -857,19 +857,10 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
 
     // 先检查所有可能的位置
     let current = crate::task::current_task();
-    if let Some(ref curr_task) = current {
-        debug!("Current task PID: {}", curr_task.pid());
-    }
-
     // 检查所有任务
     let all_tasks = crate::task::get_all_tasks();
-    debug!("Total tasks available: {}", all_tasks.len());
-    for task in &all_tasks {
-        debug!("Task PID {}: status = {:?}", task.pid(), *task.task_status.lock());
-    }
 
     if let Some(task) = find_task_by_pid(target_pid) {
-        debug!("Found task with PID {}, status: {:?}", target_pid, *task.task_status.lock());
 
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {
