@@ -543,13 +543,17 @@ impl SignalDelivery {
                     // 但我们不能在这里获取trap_context，因为会导致死锁
                     // 解决方案：标记信号需要在trap context中处理
 
-                    // 将信号重新加入待处理队列，但设置特殊标记
-                    // 这样在有trap context的地方会重新处理
-                    task.signal_state.lock().add_pending_signal(signal);
+                    // 检查是否已经标记过，避免重复处理
+                    let needs_handling = task.signal_state.lock().needs_trap_context_handling();
+                    if !needs_handling {
+                        // 将信号重新加入待处理队列，但设置特殊标记
+                        // 这样在有trap context的地方会重新处理
+                        task.signal_state.lock().add_pending_signal(signal);
 
-                    // 设置一个标记，表示有信号需要在trap context中处理
-                    // 这将在下次进入trap handler时被处理
-                    task.signal_state.lock().set_needs_trap_context_handling(true);
+                        // 设置一个标记，表示有信号需要在trap context中处理
+                        // 这将在下次进入trap handler时被处理
+                        task.signal_state.lock().set_needs_trap_context_handling(true);
+                    }
 
                     // 暂时继续执行，等待在trap handler中处理
                     return (true, None);
@@ -562,23 +566,32 @@ impl SignalDelivery {
         task: &TaskControlBlock,
         trap_cx: &mut TrapContext,
     ) -> (bool, Option<i32>) {
-        // 检查是否有待处理的信号
-        if let Some(signal) = task.signal_state.lock().next_deliverable_signal() {
-            // 处理信号
-            Self::deliver_signal(task, signal, trap_cx)
+        // 检查是否有待处理的信号 - 获取信号和处理器信息，然后立即释放锁
+        let signal_and_handler = {
+            let mut signal_state = task.signal_state.lock();
+            if let Some(signal) = signal_state.next_deliverable_signal() {
+                let handler = signal_state.get_handler(signal);
+                Some((signal, handler))
+            } else {
+                None
+            }
+        }; // 锁在这里被释放
+
+        if let Some((signal, handler)) = signal_and_handler {
+            // 处理信号 - 现在不会有嵌套锁的问题
+            Self::deliver_signal_with_handler(task, signal, handler, trap_cx)
         } else {
             (true, None)
         }
     }
 
-    /// 投递单个信号
-    fn deliver_signal(
+    /// 投递单个信号，使用预先获取的处理器信息
+    fn deliver_signal_with_handler(
         task: &crate::task::TaskControlBlock,
         signal: Signal,
+        handler: SignalDisposition,
         trap_cx: &mut TrapContext,
     ) -> (bool, Option<i32>) {
-        let handler = task.signal_state.lock().get_handler(signal);
-
         match handler.action {
             SignalAction::Ignore => {
                 // 忽略信号，继续执行
@@ -827,11 +840,11 @@ fn find_process_core(target_pid: usize) -> Option<usize> {
 fn send_ipi_for_signal(core_id: usize, target_pid: usize) {
     // 使用SBI发送IPI到目标核心
     let hart_mask = 1usize << core_id;
-    
+
+
     // 调用SBI发送IPI
     match crate::arch::sbi::sbi_send_ipi(hart_mask, 0) {
         Ok(()) => {
-            info!("Sent IPI to core {} for signal delivery to PID {}", core_id, target_pid);
         }
         Err(error) => {
             warn!("Failed to send IPI to core {} for PID {}: error {}", core_id, target_pid, error);
@@ -841,23 +854,23 @@ fn send_ipi_for_signal(core_id: usize, target_pid: usize) {
 
 pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), SignalError> {
     debug!("Sending signal {} to PID {}", signal as u32, target_pid);
-    
+
     // 先检查所有可能的位置
     let current = crate::task::current_task();
     if let Some(ref curr_task) = current {
         debug!("Current task PID: {}", curr_task.pid());
     }
-    
+
     // 检查所有任务
     let all_tasks = crate::task::get_all_tasks();
     debug!("Total tasks available: {}", all_tasks.len());
     for task in &all_tasks {
         debug!("Task PID {}: status = {:?}", task.pid(), *task.task_status.lock());
     }
-    
+
     if let Some(task) = find_task_by_pid(target_pid) {
         debug!("Found task with PID {}, status: {:?}", target_pid, *task.task_status.lock());
-        
+
         // 检查信号是否可以被捕获
         if signal.is_uncatchable() {
             // SIGKILL和SIGSTOP不能被阻塞或忽略
@@ -878,7 +891,7 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
             // 普通信号加入待处理队列
             debug!("Adding signal {} to pending queue for PID {}", signal as u32, target_pid);
             task.signal_state.lock().add_pending_signal(signal);
-            
+
             // 在多核环境下，如果目标进程正在其他核心上运行，发送IPI强制其检查信号
             let current_status = *task.task_status.lock();
             if current_status == crate::task::TaskStatus::Running {

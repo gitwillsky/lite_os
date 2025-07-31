@@ -70,17 +70,38 @@ pub fn trap_handler() {
                     crate::drivers::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
-                    debug!(
-                        "Received SupervisorSoft interrupt on core {}",
+                    // 重要：使用warn级别确保消息显示
+                    warn!(
+                        ">>> SupervisorSoft interrupt received on core {} <<<",
                         crate::arch::hart::hart_id()
                     );
+
+                    // 关键修复：清除SSIP位以防止中断重复触发
+                    // 读取当前sip寄存器值
+                    let sip_val: usize;
+                    unsafe {
+                        asm!("csrr {}, sip", out(reg) sip_val);
+                    }
+
+                    // 清除SSIP位（位1）
+                    let clear_ssip = sip_val & !(1 << 1);
+                    unsafe {
+                        asm!("csrw sip, {}", in(reg) clear_ssip);
+                    }
+
+                    warn!("Cleared SSIP bit: sip was {:#x}, now {:#x}", sip_val, clear_ssip);
+
                     // 检查当前进程是否有待处理的信号
+                    warn!("Checking for pending signals on current task");
                     let cx = task::current_trap_context();
                     if !check_signals_and_maybe_exit_with_cx(cx) {
+                        warn!("Process was terminated by signal");
                         return; // Process was terminated by signal
                     }
-                    // 继续正常调度
-                    suspend_current_and_run_next();
+                    warn!("Signal processing completed, continuing execution");
+
+                    // IPI处理完成后不需要调度，直接返回用户态
+                    // suspend_current_and_run_next();
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?} (code: {})", interrupt, code);
@@ -122,6 +143,7 @@ pub fn trap_handler() {
 
                     // Check and handle pending signals after syscall using the existing trap context
                     if !check_signals_and_maybe_exit_with_cx(cx) {
+                        debug!("Process was terminated by signal after syscall {}", syscall_id);
                         return; // Process was terminated by signal
                     }
                 }
@@ -167,12 +189,6 @@ pub fn trap_handler() {
         } else {
             panic!("Invalid exception code: {:?}", code);
         }
-    }
-
-    // Check and handle pending signals before returning to user space
-    {
-        let cx = task::current_trap_context();
-        check_signals_and_maybe_exit_with_cx(cx);
     }
 
     // 标记退出内核态

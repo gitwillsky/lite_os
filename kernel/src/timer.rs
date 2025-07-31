@@ -140,15 +140,13 @@ pub fn set_next_timer_interrupt() {
     let _ = sbi::set_timer(next_mtime as usize);
 }
 
-pub fn get_sleeping_tasks() -> alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>> {
-    crate::task::get_sleeping_tasks()
-}
 
 pub fn enable_timer_interrupt() {
     let time_base_freq = board::board_info().time_base_freq;
 
     unsafe {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
+        // 启用定时器中断
         register::sie::set_stimer();
     }
 
