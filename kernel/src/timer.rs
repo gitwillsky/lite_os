@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, drivers::GoldfishRTC};
+use crate::{arch::sbi, board, config, drivers::GoldfishRTC, task::add_sleeping_task};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -20,8 +20,6 @@ const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
 
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
 static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
-
-// 睡眠任务队列已迁移到 task_manager 模块进行统一管理
 
 // 全局 RTC 设备实例
 static RTC_DEVICE: Mutex<Option<GoldfishRTC>> = Mutex::new(None);
@@ -142,55 +140,8 @@ pub fn set_next_timer_interrupt() {
     let _ = sbi::set_timer(next_mtime as usize);
 }
 
-// 将任务加入睡眠队列 - 使用统一任务管理器
-pub fn add_sleeping_task(task: alloc::sync::Arc<crate::task::TaskControlBlock>, wake_time_ns: u64) {
-    crate::task::add_sleeping_task(task, wake_time_ns);
-}
-
 pub fn get_sleeping_tasks() -> alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>> {
     crate::task::get_sleeping_tasks()
-}
-
-// 检查并唤醒到期的睡眠任务 - 使用统一任务管理器
-pub fn check_and_wakeup_sleeping_tasks() {
-    let current_time = get_time_ns();
-    // 统一任务管理器会处理状态更新和重新加入调度器的逻辑
-    crate::task::check_and_wakeup_sleeping_tasks(current_time);
-}
-
-// nanosleep 实现
-pub fn nanosleep(nanoseconds: u64) -> isize {
-    if nanoseconds == 0 {
-        return 0;
-    }
-
-    let start_time = get_time_ns();
-
-    // 无论时间长短，都使用睡眠队列来保证准确性
-    if let Some(current_task) = crate::task::current_task() {
-        let wake_time = start_time + nanoseconds;
-
-        // 使用统一的任务状态更新方法
-        crate::task::set_task_status(&current_task, crate::task::TaskStatus::Sleeping);
-
-        // 将当前任务加入睡眠队列
-        add_sleeping_task(current_task, wake_time);
-
-        // 让出CPU，等待被唤醒（此时任务状态为Sleeping，不会被重新加入就绪队列）
-        crate::task::block_current_and_run_next();
-
-        // 醒来后检查实际时间
-        let end_time = get_time_ns();
-        let actual_sleep = end_time - start_time;
-    } else {
-        // 如果没有当前任务，使用忙等待（不推荐，但作为备用方案）
-        let start_time = get_time_ns();
-        while get_time_ns() - start_time < nanoseconds {
-            // 忙等待
-        }
-    }
-
-    0
 }
 
 pub fn enable_timer_interrupt() {

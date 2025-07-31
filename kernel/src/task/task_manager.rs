@@ -3,14 +3,13 @@
 /// 这个模块是系统中所有进程管理的中心，提供统一的抽象接口。
 /// 它隐藏了进程在不同状态下的存储细节（调度器队列、睡眠队列、当前运行等），
 /// 对外只暴露简洁的进程管理API。
-
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use spin::RwLock;
 use lazy_static::lazy_static;
+use spin::RwLock;
 
 use crate::{
     arch::hart::MAX_CORES,
-    task::{TaskControlBlock, TaskStatus, multicore::CORE_MANAGER},
+    task::{multicore::CORE_MANAGER, TaskControlBlock, TaskStatus}, timer::get_time_ns,
 };
 
 /// 调度策略
@@ -35,6 +34,7 @@ pub struct ProcessStats {
 /// 统一的任务管理器
 ///
 /// 这是系统中唯一的进程状态权威源，所有其他组件都通过这个管理器来操作进程。
+/// 睡眠管理现在直接基于进程的wake_time_ns字段，不需要单独存储。
 pub struct TaskManager {
     /// 全局进程表：PID -> TaskControlBlock
     /// 这里存储系统中所有进程，无论其状态如何
@@ -45,10 +45,6 @@ pub struct TaskManager {
 
     /// 当前的调度策略
     scheduling_policy: RwLock<SchedulingPolicy>,
-
-    /// 睡眠任务队列：以唤醒时间（纳秒）为键，任务为值
-    /// 迁移自 timer 模块，现在统一在这里管理
-    sleeping_tasks: RwLock<BTreeMap<u64, Arc<TaskControlBlock>>>,
 }
 
 impl TaskManager {
@@ -57,7 +53,6 @@ impl TaskManager {
             processes: RwLock::new(BTreeMap::new()),
             init_process: RwLock::new(None),
             scheduling_policy: RwLock::new(SchedulingPolicy::CFS),
-            sleeping_tasks: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -84,7 +79,7 @@ impl TaskManager {
                 CORE_MANAGER.add_task(task);
             }
             TaskStatus::Sleeping => {
-                // 睡眠任务由 timer 模块管理，这里不做处理
+                // 睡眠任务通过wake_time_ns字段管理，无需额外处理
             }
             TaskStatus::Running => {
                 // 运行中的任务已经在某个核心上，不需要添加到调度器
@@ -94,7 +89,6 @@ impl TaskManager {
             }
         }
 
-        debug!("Added process PID {} to unified task manager", pid);
     }
 
     /// 从系统中移除进程
@@ -102,7 +96,6 @@ impl TaskManager {
     pub fn remove_process(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
         let mut processes = self.processes.write();
         if let Some(task) = processes.remove(&pid) {
-            debug!("Removed process PID {} from unified task manager", pid);
             Some(task)
         } else {
             None
@@ -193,7 +186,6 @@ impl TaskManager {
     /// 设置调度策略
     pub fn set_scheduling_policy(&self, policy: SchedulingPolicy) {
         *self.scheduling_policy.write() = policy;
-        debug!("Scheduling policy changed to {:?}", policy);
     }
 
     /// 获取当前调度策略
@@ -203,7 +195,12 @@ impl TaskManager {
 
     /// 更新进程状态
     /// 当进程状态发生变化时，需要调用此函数来维护一致性
-    pub fn update_process_status(&self, pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
+    pub fn update_process_status(
+        &self,
+        pid: usize,
+        old_status: TaskStatus,
+        new_status: TaskStatus,
+    ) {
         if let Some(task) = self.find_process_by_pid(pid) {
             // 根据状态变化进行相应的调度器操作
             match (old_status, new_status) {
@@ -228,8 +225,6 @@ impl TaskManager {
                     // 其他状态转换
                 }
             }
-
-            debug!("Process PID {} status updated: {:?} -> {:?}", pid, old_status, new_status);
         }
     }
 
@@ -254,101 +249,96 @@ impl TaskManager {
                     }
                 }
                 if !found_on_core {
-                    warn!("Process PID {} claims to be running but not found on any core", pid);
+                    warn!(
+                        "Process PID {} claims to be running but not found on any core",
+                        pid
+                    );
                 }
             }
         }
     }
 
-    /// === 睡眠任务管理方法 ===
-
-    /// 添加任务到睡眠队列
+    /// 添加任务到睡眠状态
     pub fn add_sleeping_task(&self, task: Arc<TaskControlBlock>, wake_time_ns: u64) {
-        let mut sleeping_tasks = self.sleeping_tasks.write();
-
-        // 避免时间冲突：如果已存在相同时间，则递增1纳秒
-        let mut actual_wake_time = wake_time_ns;
-        while sleeping_tasks.contains_key(&actual_wake_time) {
-            actual_wake_time += 1;
-        }
-
-        sleeping_tasks.insert(actual_wake_time, task.clone());
-        debug!("Added task PID {} to sleep queue, wake time: {} ns", task.pid(), actual_wake_time);
+        // 直接在任务的wake_time_ns字段设置唤醒时间
+        task.wake_time_ns
+            .store(wake_time_ns, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// 获取所有睡眠任务
     pub fn get_sleeping_tasks(&self) -> Vec<Arc<TaskControlBlock>> {
-        let sleeping_tasks = self.sleeping_tasks.read();
-        sleeping_tasks.values().cloned().collect()
+        let processes = self.processes.read();
+        processes
+            .values()
+            .filter(|task| {
+                *task.task_status.lock() == TaskStatus::Sleeping
+                    && task
+                        .wake_time_ns
+                        .load(core::sync::atomic::Ordering::Relaxed)
+                        > 0
+            })
+            .cloned()
+            .collect()
     }
 
     /// 检查并唤醒到期的睡眠任务
     /// 返回被唤醒的任务列表
-    pub fn check_and_wakeup_sleeping_tasks(&self, current_time_ns: u64) -> Vec<Arc<TaskControlBlock>> {
-        // 使用 try_write 避免死锁
-        if let Some(mut sleeping_tasks) = self.sleeping_tasks.try_write() {
-            let mut awakened_tasks = Vec::new();
-            let mut keys_to_remove = Vec::new();
+    pub fn check_and_wakeup_sleeping_tasks(
+        &self,
+        current_time_ns: u64,
+    ) -> Vec<Arc<TaskControlBlock>> {
+        let processes = self.processes.read();
+        let mut awakened_tasks = Vec::new();
 
-            // 收集需要唤醒的任务
-            for (&wake_time, task) in sleeping_tasks.iter() {
-                if wake_time <= current_time_ns {
+        // 遍历所有进程，检查睡眠状态的进程是否到期
+        for task in processes.values() {
+            if *task.task_status.lock() == TaskStatus::Sleeping {
+                let wake_time = task
+                    .wake_time_ns
+                    .load(core::sync::atomic::Ordering::Relaxed);
+                if wake_time > 0 && wake_time <= current_time_ns {
+                    // 清零唤醒时间，表示不再睡眠
+                    task.wake_time_ns
+                        .store(0, core::sync::atomic::Ordering::Relaxed);
                     awakened_tasks.push(task.clone());
-                    keys_to_remove.push(wake_time);
-                } else {
-                    // BTreeMap是有序的，后面的都不会到期
-                    break;
                 }
             }
-
-            // 从睡眠队列中移除
-            for key in keys_to_remove {
-                sleeping_tasks.remove(&key);
-            }
-
-            if !awakened_tasks.is_empty() {
-                debug!("Awakened {} sleeping tasks", awakened_tasks.len());
-            }
-
-            awakened_tasks
-        } else {
-            // 如果获取锁失败，返回空列表
-            Vec::new()
         }
+        awakened_tasks
     }
 
-    /// 从睡眠队列中移除指定任务（用于提前唤醒）
+    /// 从睡眠状态中移除指定任务（用于提前唤醒）
     pub fn remove_sleeping_task(&self, task_pid: usize) -> bool {
-        let mut sleeping_tasks = self.sleeping_tasks.write();
-
-        // 需要遍历查找，因为我们只知道PID不知道wake_time
-        let mut key_to_remove = None;
-        for (&wake_time, task) in sleeping_tasks.iter() {
-            if task.pid() == task_pid {
-                key_to_remove = Some(wake_time);
-                break;
+        if let Some(task) = self.find_process_by_pid(task_pid) {
+            if *task.task_status.lock() == TaskStatus::Sleeping {
+                // 清零唤醒时间，表示不再睡眠
+                task.wake_time_ns
+                    .store(0, core::sync::atomic::Ordering::Relaxed);
+                return true;
             }
         }
-
-        if let Some(key) = key_to_remove {
-            sleeping_tasks.remove(&key);
-            debug!("Removed task PID {} from sleep queue", task_pid);
-            true
-        } else {
-            false
-        }
+        false
     }
 
-    /// 获取睡眠队列中的任务数量
+    /// 获取睡眠任务数量
     pub fn get_sleeping_task_count(&self) -> usize {
-        let sleeping_tasks = self.sleeping_tasks.read();
-        sleeping_tasks.len()
+        let processes = self.processes.read();
+        processes
+            .values()
+            .filter(|task| {
+                *task.task_status.lock() == TaskStatus::Sleeping
+                    && task
+                        .wake_time_ns
+                        .load(core::sync::atomic::Ordering::Relaxed)
+                        > 0
+            })
+            .count()
     }
 }
 
 // 全局统一任务管理器实例
 lazy_static! {
-    pub static ref UNIFIED_TASK_MANAGER: TaskManager = TaskManager::new();
+    pub static ref TASK_MANAGER: TaskManager = TaskManager::new();
 }
 
 // 对外统一接口函数
@@ -356,67 +346,67 @@ lazy_static! {
 
 /// 添加任务到系统
 pub fn add_task(task: Arc<TaskControlBlock>) {
-    UNIFIED_TASK_MANAGER.add_process(task);
+    TASK_MANAGER.add_process(task);
 }
 
 /// 根据PID查找任务
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.find_process_by_pid(pid)
+    TASK_MANAGER.find_process_by_pid(pid)
 }
 
 /// 获取所有任务
 pub fn get_all_tasks() -> Vec<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.get_all_processes()
+    TASK_MANAGER.get_all_processes()
 }
 
 /// 获取所有PID
 pub fn get_all_pids() -> Vec<usize> {
-    UNIFIED_TASK_MANAGER.get_all_pids()
+    TASK_MANAGER.get_all_pids()
 }
 
 /// 获取任务数量
 pub fn get_task_count() -> usize {
-    UNIFIED_TASK_MANAGER.get_process_count()
+    TASK_MANAGER.get_process_count()
 }
 
 /// 获取init进程
 pub fn init_proc() -> Option<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.get_init_process()
+    TASK_MANAGER.get_init_process()
 }
 
 /// 获取进程统计信息
 pub fn get_process_statistics() -> ProcessStats {
-    UNIFIED_TASK_MANAGER.get_process_stats()
+    TASK_MANAGER.get_process_stats()
 }
 
 /// 设置调度策略
 pub fn set_scheduling_policy(policy: SchedulingPolicy) {
-    UNIFIED_TASK_MANAGER.set_scheduling_policy(policy);
+    TASK_MANAGER.set_scheduling_policy(policy);
 }
 
 /// 获取调度策略
 pub fn get_scheduling_policy() -> SchedulingPolicy {
-    UNIFIED_TASK_MANAGER.get_scheduling_policy()
+    TASK_MANAGER.get_scheduling_policy()
 }
 
 /// 移除任务（用于进程回收）
 pub fn remove_task(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.remove_process(pid)
+    TASK_MANAGER.remove_process(pid)
 }
 
 /// 更新任务状态
 pub fn update_task_status(pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
-    UNIFIED_TASK_MANAGER.update_process_status(pid, old_status, new_status);
+    TASK_MANAGER.update_process_status(pid, old_status, new_status);
 }
 
 /// 同步所有任务状态
 pub fn sync_all_task_states() {
-    UNIFIED_TASK_MANAGER.sync_all_process_states();
+    TASK_MANAGER.sync_all_process_states();
 }
 
 /// 获取在特定核心上运行的任务
 pub fn get_task_on_core(core_id: usize) -> Option<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.get_process_on_core(core_id)
+    TASK_MANAGER.get_process_on_core(core_id)
 }
 
 /// 安全的状态更新函数
@@ -435,21 +425,19 @@ pub fn set_task_status(task: &Arc<TaskControlBlock>, new_status: TaskStatus) {
     }
 }
 
-// === 睡眠任务管理的便利函数 ===
-
 /// 添加任务到睡眠队列
 pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
-    UNIFIED_TASK_MANAGER.add_sleeping_task(task, wake_time_ns);
+    TASK_MANAGER.add_sleeping_task(task, wake_time_ns);
 }
 
 /// 获取所有睡眠任务
 pub fn get_sleeping_tasks() -> Vec<Arc<TaskControlBlock>> {
-    UNIFIED_TASK_MANAGER.get_sleeping_tasks()
+    TASK_MANAGER.get_sleeping_tasks()
 }
 
 /// 检查并唤醒到期的睡眠任务
 pub fn check_and_wakeup_sleeping_tasks(current_time_ns: u64) -> Vec<Arc<TaskControlBlock>> {
-    let awakened_tasks = UNIFIED_TASK_MANAGER.check_and_wakeup_sleeping_tasks(current_time_ns);
+    let awakened_tasks = TASK_MANAGER.check_and_wakeup_sleeping_tasks(current_time_ns);
 
     // 将唤醒的任务状态设置为Ready并添加到调度器
     for task in &awakened_tasks {
@@ -462,17 +450,52 @@ pub fn check_and_wakeup_sleeping_tasks(current_time_ns: u64) -> Vec<Arc<TaskCont
 
 /// 从睡眠队列中移除指定任务
 pub fn remove_sleeping_task(task_pid: usize) -> bool {
-    UNIFIED_TASK_MANAGER.remove_sleeping_task(task_pid)
+    TASK_MANAGER.remove_sleeping_task(task_pid)
 }
 
 /// 获取睡眠任务数量
 pub fn get_sleeping_task_count() -> usize {
-    UNIFIED_TASK_MANAGER.get_sleeping_task_count()
+    TASK_MANAGER.get_sleeping_task_count()
 }
 
 /// 获取可调度任务数量（用于调试）
 pub fn schedulable_task_count() -> usize {
     // 返回Ready和Running状态的任务数量
-    let process_stats = UNIFIED_TASK_MANAGER.get_process_stats();
+    let process_stats = TASK_MANAGER.get_process_stats();
     (process_stats.ready + process_stats.running) as usize
+}
+
+// nanosleep 实现
+pub fn nanosleep(nanoseconds: u64) -> isize {
+    if nanoseconds == 0 {
+        return 0;
+    }
+
+    let start_time = get_time_ns();
+
+    // 无论时间长短，都使用睡眠队列来保证准确性
+    if let Some(current_task) = crate::task::current_task() {
+        let wake_time = start_time + nanoseconds;
+
+        // 使用统一的任务状态更新方法
+        crate::task::set_task_status(&current_task, crate::task::TaskStatus::Sleeping);
+
+        // 将当前任务加入睡眠队列
+        add_sleeping_task(current_task, wake_time);
+
+        // 让出CPU，等待被唤醒（此时任务状态为Sleeping，不会被重新加入就绪队列）
+        crate::task::block_current_and_run_next();
+
+        // 醒来后检查实际时间
+        let end_time = get_time_ns();
+        let actual_sleep = end_time - start_time;
+    } else {
+        // 如果没有当前任务，使用忙等待（不推荐，但作为备用方案）
+        let start_time = get_time_ns();
+        while get_time_ns() - start_time < nanoseconds {
+            // 忙等待
+        }
+    }
+
+    0
 }

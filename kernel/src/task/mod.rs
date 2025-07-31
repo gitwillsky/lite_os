@@ -17,16 +17,7 @@ mod task_manager;
 pub use processor::*;
 pub use signal::{SIG_RETURN_ADDR, check_and_handle_signals, check_and_handle_signals_with_cx};
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
-pub use task_manager::{
-    SchedulingPolicy, ProcessStats, 
-    add_task, find_task_by_pid, get_all_tasks, get_all_pids, get_task_count,
-    init_proc, get_process_statistics, set_scheduling_policy, get_scheduling_policy,
-    remove_task, update_task_status, sync_all_task_states, get_task_on_core, set_task_status,
-    schedulable_task_count,
-    // 睡眠任务管理接口
-    add_sleeping_task, get_sleeping_tasks, check_and_wakeup_sleeping_tasks, 
-    remove_sleeping_task, get_sleeping_task_count
-};
+pub use task_manager::*;
 
 global_asm!(include_str!("switch.S"));
 

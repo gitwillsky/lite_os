@@ -340,6 +340,9 @@ pub struct TaskControlBlock {
     
     /// stdin 非阻塞标志 (用于 fcntl 设置)
     pub stdin_nonblock: AtomicBool,
+    
+    /// 睡眠唤醒时间（纳秒），0表示不在睡眠中
+    pub wake_time_ns: AtomicU64,
 
     /// 进程启动时的命令行参数
     pub args: Mutex<Option<Vec<String>>>,
@@ -405,6 +408,7 @@ impl TaskControlBlock {
             euid: AtomicU32::new(0),
             egid: AtomicU32::new(0),
             stdin_nonblock: AtomicBool::new(false),
+            wake_time_ns: AtomicU64::new(0),
         };
 
         // prepare TrapContext in user space
@@ -501,6 +505,7 @@ impl TaskControlBlock {
             euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
             egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
             stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
+            wake_time_ns: AtomicU64::new(0),
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
             mm: Memory {

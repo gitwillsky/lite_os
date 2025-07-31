@@ -36,11 +36,11 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     // 安全地从用户空间读取TimeSpec结构
     let token = current_user_token();
     let req_buffers = translated_byte_buffer(token, req as *const u8, core::mem::size_of::<TimeSpec>());
-    
+
     if req_buffers.is_empty() {
         return -14; // EFAULT: bad address
     }
-    
+
     // 从缓冲区中读取TimeSpec
     let timespec = unsafe { *(req_buffers[0].as_ptr() as *const TimeSpec) };
 
@@ -57,7 +57,7 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     }
 
     // 调用内核睡眠函数
-    timer::nanosleep(total_nanoseconds)
+    crate::task::nanosleep(total_nanoseconds)
 }
 
 // 获取 Unix 时间戳（秒）
@@ -84,7 +84,7 @@ pub fn sys_gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> isize {
     // 安全地写入用户空间
     let token = current_user_token();
     let mut tv_buffers = translated_byte_buffer(token, tv as *const u8, core::mem::size_of::<TimeVal>());
-    
+
     if tv_buffers.is_empty() {
         return -14; // EFAULT: bad address
     }

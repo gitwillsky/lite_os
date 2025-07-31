@@ -19,8 +19,8 @@ use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
     syscall,
     task::{
-        self, current_user_token, exit_current_and_run_next, suspend_current_and_run_next,
-        SIG_RETURN_ADDR, mark_kernel_entry, mark_kernel_exit,
+        self, SIG_RETURN_ADDR, current_user_token, exit_current_and_run_next, mark_kernel_entry,
+        mark_kernel_exit, suspend_current_and_run_next,
     },
     timer,
 };
@@ -53,8 +53,7 @@ pub fn trap_handler() {
                     crate::watchdog::check();
 
                     // 检查并唤醒到期的睡眠任务
-                    timer::check_and_wakeup_sleeping_tasks();
-
+                    crate::task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
 
                     // Check and handle pending signals before task switch
                     {
@@ -82,7 +81,10 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     let sepc = task::current_trap_context().sepc;
-                    error!("[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.", sepc);
+                    error!(
+                        "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
+                        sepc
+                    );
                     exit_current_and_run_next(-2);
                 }
                 Exception::Breakpoint => {
