@@ -985,7 +985,6 @@ impl Inode for FAT32Inode {
 
         // Update directory entry with new file size if size changed
         if new_size != old_size {
-            debug!("File size changed from {} to {}, updating directory entry", old_size, new_size);
             if let Err(e) = fs.update_directory_entry_size(self.cluster, new_size as u32) {
                 // Log the error but don't fail the write operation
                 // The in-memory size is still updated correctly
