@@ -2,6 +2,14 @@ use core::arch::asm;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// CPU核心信息结构体
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CpuCoreInfo {
+    pub total_cores: u32,     // 总核心数
+    pub active_cores: u32,    // 活跃核心数
+}
+
 /// 进程信息结构体（与内核中的定义保持一致）
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +29,7 @@ pub struct ProcessInfo {
     pub last_runtime: u64,
     pub total_cpu_time: u64,  // 总CPU时间（微秒）
     pub cpu_percent: u32,     // CPU使用率百分比（0-10000，支持两位小数）
+    pub core_id: u32,         // 进程运行的核心ID
     pub name: [u8; 32],       // 进程名（固定长度，以0结尾）
 }
 
@@ -103,6 +112,7 @@ const SYSCALL_ALARM: usize = 37;
 // 进程监控系统调用
 const SYSCALL_GET_PROCESS_LIST: usize = 700;
 const SYSCALL_GET_PROCESS_INFO: usize = 701;
+const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
 const SYSCALL_GET_SYSTEM_STATS: usize = 702;
 
 // 时间相关系统调用
@@ -658,6 +668,20 @@ pub fn get_process_info(pid: u32, info: &mut ProcessInfo) -> isize {
 /// 返回值：成功返回0，失败返回-1
 pub fn get_system_stats(stats: &mut SystemStats) -> isize {
     syscall(SYSCALL_GET_SYSTEM_STATS, [stats as *mut SystemStats as usize, 0, 0])
+}
+
+pub fn get_cpu_core_info() -> Option<CpuCoreInfo> {
+    let mut core_info = CpuCoreInfo {
+        total_cores: 0,
+        active_cores: 0,
+    };
+    
+    let result = syscall(SYSCALL_GET_CPU_CORE_INFO, [&mut core_info as *mut CpuCoreInfo as usize, 0, 0]);
+    if result == 0 {
+        Some(core_info)
+    } else {
+        None
+    }
 }
 
 // 时间相关结构体和函数

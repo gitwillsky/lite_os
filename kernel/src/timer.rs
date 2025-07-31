@@ -1,11 +1,9 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, drivers::GoldfishRTC, task::TaskControlBlock};
+use crate::{arch::sbi, board, config, drivers::GoldfishRTC};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -23,8 +21,7 @@ const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
 static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
 
-// 睡眠任务队列：以唤醒时间为键，任务为值
-static SLEEPING_TASKS: Mutex<BTreeMap<u64, Arc<TaskControlBlock>>> = Mutex::new(BTreeMap::new());
+// 睡眠任务队列已迁移到 task_manager 模块进行统一管理
 
 // 全局 RTC 设备实例
 static RTC_DEVICE: Mutex<Option<GoldfishRTC>> = Mutex::new(None);
@@ -145,58 +142,20 @@ pub fn set_next_timer_interrupt() {
     let _ = sbi::set_timer(next_mtime as usize);
 }
 
-// 将任务加入睡眠队列
-pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
-    let mut sleeping_tasks = SLEEPING_TASKS.lock();
-
-    // 避免时间冲突：如果已存在相同时间，则递增1纳秒
-    let mut actual_wake_time = wake_time_ns;
-    while sleeping_tasks.contains_key(&actual_wake_time) {
-        actual_wake_time += 1;
-    }
-
-    sleeping_tasks.insert(actual_wake_time, task);
+// 将任务加入睡眠队列 - 使用统一任务管理器
+pub fn add_sleeping_task(task: alloc::sync::Arc<crate::task::TaskControlBlock>, wake_time_ns: u64) {
+    crate::task::add_sleeping_task(task, wake_time_ns);
 }
 
-pub fn get_sleeping_tasks() -> alloc::vec::Vec<Arc<TaskControlBlock>> {
-    let sleeping_tasks = SLEEPING_TASKS.lock();
-    sleeping_tasks.values().cloned().collect()
+pub fn get_sleeping_tasks() -> alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>> {
+    crate::task::get_sleeping_tasks()
 }
 
-// 检查并唤醒到期的睡眠任务
+// 检查并唤醒到期的睡眠任务 - 使用统一任务管理器
 pub fn check_and_wakeup_sleeping_tasks() {
-    // 尝试获取锁，如果失败说明其他地方正在使用，直接返回避免死锁
-    if let Some(mut sleeping_tasks) = SLEEPING_TASKS.try_lock() {
-        let current_time = get_time_ns();
-
-        // 收集需要唤醒的任务
-        let mut tasks_to_wakeup = alloc::vec::Vec::new();
-        let mut keys_to_remove = alloc::vec::Vec::new();
-
-        for (&wake_time, task) in sleeping_tasks.iter() {
-            if wake_time <= current_time {
-                tasks_to_wakeup.push(task.clone());
-                keys_to_remove.push(wake_time);
-            } else {
-                // BTreeMap是有序的，后面的都不会到期
-                break;
-            }
-        }
-
-        // 从睡眠队列中移除
-        for key in keys_to_remove {
-            sleeping_tasks.remove(&key);
-        }
-
-        // 释放锁后再唤醒任务
-        drop(sleeping_tasks);
-
-        for task in tasks_to_wakeup {
-            // 将任务状态从Sleeping改为Ready
-            *task.task_status.lock() = crate::task::TaskStatus::Ready;
-            crate::task::add_task(task);
-        }
-    }
+    let current_time = get_time_ns();
+    // 统一任务管理器会处理状态更新和重新加入调度器的逻辑
+    crate::task::check_and_wakeup_sleeping_tasks(current_time);
 }
 
 // nanosleep 实现
@@ -211,8 +170,8 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     if let Some(current_task) = crate::task::current_task() {
         let wake_time = start_time + nanoseconds;
 
-        // 设置任务状态为睡眠，防止被调度器重新加入就绪队列
-        *current_task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+        // 使用统一的任务状态更新方法
+        crate::task::set_task_status(&current_task, crate::task::TaskStatus::Sleeping);
 
         // 将当前任务加入睡眠队列
         add_sleeping_task(current_task, wake_time);

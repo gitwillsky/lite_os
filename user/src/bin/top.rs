@@ -82,22 +82,39 @@ fn display_system_stats() {
             stats.used_memory / (1024 * 1024),
             stats.free_memory / (1024 * 1024)
         );
+        
+        // 显示CPU核心信息 - 需要通过系统调用获取
+        if let Some(core_info) = get_cpu_core_info() {
+            println!("CPU Cores: {} active of {} total", core_info.active_cores, core_info.total_cores);
+        }
 
         if stats.cpu_user_time + stats.cpu_system_time > 0 {
-            let user_percent = (stats.cpu_user_time * 10000
-                / (stats.cpu_user_time + stats.cpu_system_time))
-                as f32
-                / 100.0;
-            let system_percent = (stats.cpu_system_time * 10000
-                / (stats.cpu_user_time + stats.cpu_system_time))
-                as f32
-                / 100.0;
+            let total_time = stats.cpu_user_time + stats.cpu_system_time;
+            let user_percent = if total_time > 0 {
+                (stats.cpu_user_time as f64 * 100.0 / total_time as f64) as f32
+            } else {
+                0.0
+            };
+            let system_percent = if total_time > 0 {
+                (stats.cpu_system_time as f64 * 100.0 / total_time as f64) as f32
+            } else {
+                0.0
+            };
             // 显示CPU使用率信息
-            let cpu_percent = stats.cpu_usage_percent as f32 / 100.0;
-            let cpu_display = if cpu_percent.is_finite() { 
+            let cpu_percent = if stats.cpu_usage_percent > 0 && stats.cpu_usage_percent <= 10000 {
+                stats.cpu_usage_percent as f32 / 100.0
+            } else if stats.system_uptime > 0 && total_time > 0 {
+                // 如果内核返回的总CPU使用率异常，使用单核计算的备用方法
+                let single_core_percent = (total_time as f64 * 100.0 / stats.system_uptime as f64) as f32;
+                if single_core_percent > 100.0 { 100.0 } else { single_core_percent }
+            } else {
+                0.0
+            };
+            
+            let cpu_display = if cpu_percent.is_finite() && cpu_percent >= 0.0 { 
                 format!("{:.1}", cpu_percent) 
             } else { 
-                "N/A".to_string() 
+                "0.0".to_string() 
             };
             let user_display = if user_percent.is_finite() { 
                 format!("{:.1}", user_percent) 
@@ -126,8 +143,8 @@ fn display_system_stats() {
 
 // 显示进程表头
 fn display_process_header() {
-    println!("  PID  PPID   UID   GID  EUID  EGID  STAT PRI NICE   %CPU    VRUN    HEAP   COMMAND");
-    println!("-----  ----  ----  ----  ----  ----  ---- --- ----  -----  ------  ------  --------");
+    println!("  PID  PPID   UID   GID  EUID  EGID  STAT PRI NICE   %CPU    VRUN    HEAP CORE  COMMAND");
+    println!("-----  ----  ----  ----  ----  ----  ---- --- ----  -----  ------  ------ ----  --------");
 }
 
 // 格式化状态显示
@@ -228,20 +245,21 @@ fn display_process(info: &ProcessInfo) {
         0
     };
 
-    // 格式化CPU使用率
-    let cpu_percent_val = info.cpu_percent as f32 / 100.0;
-    let cpu_percent_str = if cpu_percent_val.is_finite() && cpu_percent_val > 0.0 {
-        format!("{:.1}", cpu_percent_val)
-    } else if cpu_percent_val.is_finite() {
+    // 格式化CPU使用率 - cpu_percent范围是0-10000，表示0.00%-100.00%
+    let cpu_percent_str = if info.cpu_percent == 0 {
         "0.0".to_string()
+    } else if info.cpu_percent <= 10000 {
+        let cpu_val = info.cpu_percent as f64 / 100.0;
+        format!("{:.1}", cpu_val)
     } else {
-        "NaN".to_string()
+        // 异常值，可能是内核计算错误，限制为100%
+        "100.0".to_string()
     };
 
     let process_name = extract_process_name(&info.name);
 
     println!(
-        "{:5}  {:4}  {:4}  {:4}  {:4}  {:4}  {} {:3}  {:3}  {:5}  {:6}  {:6}  {}",
+        "{:5}  {:4}  {:4}  {:4}  {:4}  {:4}  {} {:3}  {:3}  {:5}  {:6}  {:6}  {:3}  {}",
         info.pid,
         info.ppid,
         info.uid,
@@ -258,6 +276,7 @@ fn display_process(info: &ProcessInfo) {
             format!("{}ms", info.vruntime / 1000)
         },
         format_size(heap_size),
+        info.core_id,
         if process_name.is_empty() {
             "N/A".to_string()
         } else {
@@ -303,27 +322,22 @@ fn sort_processes(processes: &mut Vec<ProcessInfo>, sort_by: SortBy, reverse: bo
 
 // 获取并显示所有进程信息（带排序功能）
 fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'static str> {
-    // 首先获取进程数量
-    let process_count = get_process_count();
-    if process_count <= 0 {
-        return Err("No processes found or failed to get process count");
-    }
+    // 使用较大的缓冲区来减少竞态条件，预分配64个PID槽位
+    const MAX_PROCESS_BUFFER: usize = 64;
+    let mut pids = vec![0u32; MAX_PROCESS_BUFFER];
 
-    // 创建缓冲区来存储PIDs
-    let mut pids = Vec::with_capacity(process_count as usize);
-    for _ in 0..process_count as usize {
-        pids.push(0u32);
-    }
-
-    // 获取所有进程的PID
+    // 获取所有进程的PID列表
     let actual_count = get_process_list(&mut pids);
     if actual_count <= 0 {
         return Err("Failed to get process list");
     }
+    
+    // 截断到实际数量
+    pids.truncate(actual_count as usize);
 
     // 收集所有进程信息
     let mut processes = Vec::new();
-    for i in 0..actual_count as usize {
+    for &pid in &pids {
         let mut info = ProcessInfo {
             pid: 0,
             ppid: 0,
@@ -340,33 +354,17 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
             last_runtime: 0,
             total_cpu_time: 0,
             cpu_percent: 0,
+            core_id: 0,
             name: [0u8; 32],
         };
 
-        if get_process_info(pids[i], &mut info) == 0 {
-            processes.push(info);
-        } else {
-            // 创建错误条目用于显示
-            let error_info = ProcessInfo {
-                pid: pids[i],
-                ppid: 0,
-                uid: 0,
-                gid: 0,
-                euid: 0,
-                egid: 0,
-                status: 999, // 错误状态
-                priority: 0,
-                nice: 0,
-                vruntime: 0,
-                heap_base: 0,
-                heap_top: 0,
-                last_runtime: 0,
-                total_cpu_time: 0,
-                cpu_percent: 0,
-                name: [0u8; 32],
-            };
-            processes.push(error_info);
+        if get_process_info(pid, &mut info) == 0 {
+            // 验证进程信息的合理性
+            if info.pid > 0 && info.core_id < 8 {  // 假设最大8个核心
+                processes.push(info);
+            }
         }
+        // 如果获取进程信息失败或信息异常，直接跳过
     }
 
     // 排序进程
@@ -377,14 +375,7 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
 
     // 显示排序后的进程信息
     for info in &processes {
-        if info.status == 999 {
-            println!(
-                "{:5}  ----  ----  ----  ----  ----  ---- --- ----  -----  ------  ------  ERROR",
-                info.pid
-            );
-        } else {
-            display_process(info);
-        }
+        display_process(info);
     }
 
     Ok(())

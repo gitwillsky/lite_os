@@ -89,6 +89,7 @@ const SYSCALL_MUNMAP: usize = 216;
 const SYSCALL_GET_PROCESS_LIST: usize = 700;
 const SYSCALL_GET_PROCESS_INFO: usize = 701;
 const SYSCALL_GET_SYSTEM_STATS: usize = 702;
+const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
 
 // 时间相关系统调用
 const SYSCALL_GET_TIME_MS: usize = 800;
@@ -180,6 +181,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),
         SYSCALL_GET_PROCESS_INFO => sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo),
         SYSCALL_GET_SYSTEM_STATS => sys_get_system_stats(args[0] as *mut SystemStats),
+        SYSCALL_GET_CPU_CORE_INFO => sys_get_cpu_core_info(args[0] as *mut CpuCoreInfo),
 
         // 时间相关系统调用
         SYSCALL_GET_TIME_MS => sys_get_time_msec(),
