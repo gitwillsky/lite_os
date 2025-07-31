@@ -69,8 +69,21 @@ pub fn trap_handler() {
                     // 处理外部中断（包括VirtIO设备中断）
                     crate::drivers::handle_external_interrupt();
                 }
+                Interrupt::SupervisorSoft => {
+                    debug!(
+                        "Received SupervisorSoft interrupt on core {}",
+                        crate::arch::hart::hart_id()
+                    );
+                    // 检查当前进程是否有待处理的信号
+                    let cx = task::current_trap_context();
+                    if !check_signals_and_maybe_exit_with_cx(cx) {
+                        return; // Process was terminated by signal
+                    }
+                    // 继续正常调度
+                    suspend_current_and_run_next();
+                }
                 _ => {
-                    panic!("Unknown interrupt: {:?}", interrupt);
+                    panic!("Unknown interrupt: {:?} (code: {})", interrupt, code);
                 }
             }
         } else {

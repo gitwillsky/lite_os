@@ -337,10 +337,10 @@ pub struct TaskControlBlock {
     pub euid: AtomicU32,
     /// 有效组ID (用于权限检查)
     pub egid: AtomicU32,
-    
+
     /// stdin 非阻塞标志 (用于 fcntl 设置)
     pub stdin_nonblock: AtomicBool,
-    
+
     /// 睡眠唤醒时间（纳秒），0表示不在睡眠中
     pub wake_time_ns: AtomicU64,
 

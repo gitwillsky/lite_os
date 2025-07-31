@@ -808,6 +808,37 @@ impl SignalDelivery {
 }
 
 /// 全局函数：向指定进程发送信号
+/// 查找进程当前运行在哪个核心
+fn find_process_core(target_pid: usize) -> Option<usize> {
+    for i in 0..crate::arch::hart::MAX_CORES {
+        if let Some(processor) = crate::task::multicore::CORE_MANAGER.get_processor(i) {
+            let proc = processor.lock();
+            if let Some(current_task) = &proc.current {
+                if current_task.pid() == target_pid {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 发送IPI到指定核心，强制其检查信号
+fn send_ipi_for_signal(core_id: usize, target_pid: usize) {
+    // 使用SBI发送IPI到目标核心
+    let hart_mask = 1usize << core_id;
+    
+    // 调用SBI发送IPI
+    match crate::arch::sbi::sbi_send_ipi(hart_mask, 0) {
+        Ok(()) => {
+            info!("Sent IPI to core {} for signal delivery to PID {}", core_id, target_pid);
+        }
+        Err(error) => {
+            warn!("Failed to send IPI to core {} for PID {}: error {}", core_id, target_pid, error);
+        }
+    }
+}
+
 pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), SignalError> {
     debug!("Sending signal {} to PID {}", signal as u32, target_pid);
     
@@ -847,6 +878,23 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
             // 普通信号加入待处理队列
             debug!("Adding signal {} to pending queue for PID {}", signal as u32, target_pid);
             task.signal_state.lock().add_pending_signal(signal);
+            
+            // 在多核环境下，如果目标进程正在其他核心上运行，发送IPI强制其检查信号
+            let current_status = *task.task_status.lock();
+            if current_status == crate::task::TaskStatus::Running {
+                // 查找进程运行在哪个核心
+                if let Some(core_id) = find_process_core(target_pid) {
+                    // 发送IPI到目标核心，强制其立即检查信号
+                    send_ipi_for_signal(core_id, target_pid);
+                } else {
+                    // 如果没找到运行的核心，说明进程可能刚好切换状态，使用软件唤醒
+                    debug!("Process PID {} not found on any core, it may have just changed state", target_pid);
+                }
+            } else if current_status == crate::task::TaskStatus::Sleeping {
+                // 如果进程在睡眠，使用现有的唤醒机制
+                task.wakeup();
+                info!("Waking up sleeping PID {} to handle signal {}", target_pid, signal as u32);
+            }
         }
 
         Ok(())

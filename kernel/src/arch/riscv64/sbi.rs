@@ -58,6 +58,9 @@ pub fn console_getchar() -> isize {
 /// SBI Hart State Management Extension (HSM)
 const SBI_EXT_HSM: usize = 0x48534D; // "HSM"
 
+/// SBI Inter-Processor Interrupt Extension (IPI)
+const SBI_EXT_IPI: usize = 0x735049; // "sPI"
+
 /// HSM function IDs
 const SBI_HSM_HART_START: usize = 0;
 const SBI_HSM_HART_STOP: usize = 1;
@@ -89,6 +92,21 @@ pub fn hart_get_status(hartid: usize) -> Result<usize, isize> {
     let (error, status) = sbi_call(SBI_EXT_HSM, SBI_HSM_HART_GET_STATUS, [hartid, 0, 0, 0, 0, 0]);
     if error == 0 {
         Ok(status as usize)
+    } else {
+        Err(error)
+    }
+}
+
+/// IPI function IDs
+const SBI_IPI_SEND: usize = 0;
+
+/// SBI send IPI function
+/// hart_mask: 位掩码，指示要发送IPI的hart
+/// hart_mask_base: hart_mask对应的基础hart ID
+pub fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) -> Result<(), isize> {
+    let (error, _) = sbi_call(SBI_EXT_IPI, SBI_IPI_SEND, [hart_mask, hart_mask_base, 0, 0, 0, 0]);
+    if error == 0 {
+        Ok(())
     } else {
         Err(error)
     }
