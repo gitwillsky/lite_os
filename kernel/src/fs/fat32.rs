@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec, vec::Vec, collections::BTreeMap};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
 use crate::drivers::{BlockDevice, block::BlockError};
@@ -97,39 +97,6 @@ const CLUSTER_FREE: u32 = 0x00000000;
 const CLUSTER_EOF: u32 = 0x0FFFFFF8;
 const CLUSTER_BAD: u32 = 0x0FFFFFF7;
 
-/// FAT cache to avoid loading entire FAT table
-struct FatCache {
-    /// Cached FAT entries (cluster -> next_cluster)
-    entries: BTreeMap<u32, u32>,
-    /// Maximum cache size (number of entries)
-    max_size: usize,
-}
-
-impl FatCache {
-    const DEFAULT_MAX_SIZE: usize = 1024; // Cache up to 1024 FAT entries
-
-    fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            max_size: Self::DEFAULT_MAX_SIZE,
-        }
-    }
-
-    fn get(&self, cluster: u32) -> Option<u32> {
-        self.entries.get(&cluster).copied()
-    }
-
-    fn insert(&mut self, cluster: u32, next_cluster: u32) {
-        // If cache is full, remove the first (oldest) entry
-        if self.entries.len() >= self.max_size {
-            if let Some((&first_key, _)) = self.entries.iter().next() {
-                self.entries.remove(&first_key);
-            }
-        }
-        self.entries.insert(cluster, next_cluster);
-    }
-}
-
 pub struct FAT32FileSystem {
     device: Arc<dyn BlockDevice>,
     bpb: BiosParameterBlock,
@@ -138,8 +105,7 @@ pub struct FAT32FileSystem {
     sectors_per_cluster: u32,
     bytes_per_cluster: u32,
     root_cluster: u32,
-    sectors_per_fat: u32,
-    fat_cache: Mutex<FatCache>,
+    fat_cache: Mutex<Vec<u32>>,
 }
 
 impl FAT32FileSystem {
@@ -208,9 +174,43 @@ impl FAT32FileSystem {
         info!("[FAT32] Root directory cluster: {}", root_cluster);
         info!("[FAT32] Data area start sector: {}", cluster_start_sector);
 
-        // Initialize FAT cache (don't load entire FAT table)
-        let fat_cache = FatCache::new();
-        info!("[FAT32] FAT cache initialized (on-demand loading)");
+        // Load FAT table
+        let fat_sectors = sectors_per_fat_32 as usize;
+        let fat_entries = (fat_sectors * SECTOR_SIZE) / 4;
+        let mut fat_cache = Vec::with_capacity(fat_entries);
+
+        // Calculate how many device blocks we need for the FAT
+        let device_block_size = device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
+        let fat_blocks = (fat_sectors + sectors_per_block - 1) / sectors_per_block;
+
+        for block_idx in 0..fat_blocks {
+            let mut block_data = vec![0u8; device_block_size];
+            let block_num = fat_start_sector as usize / sectors_per_block + block_idx;
+
+            if device.read_block(block_num, &mut block_data).is_err() {
+                return None;
+            }
+
+            // Process each sector within the block
+            for sector_in_block in 0..sectors_per_block {
+                let current_sector = block_idx * sectors_per_block + sector_in_block;
+                if current_sector >= fat_sectors {
+                    break;
+                }
+
+                let sector_offset = sector_in_block * SECTOR_SIZE;
+                let sector_data = &block_data[sector_offset..sector_offset + SECTOR_SIZE];
+
+                let entries = unsafe {
+                    core::slice::from_raw_parts(sector_data.as_ptr() as *const u32, SECTOR_SIZE / 4)
+                };
+                fat_cache.extend_from_slice(entries);
+            }
+        }
+
+        // Debug: Show first few FAT entries
+        info!("[FAT32] FAT table loaded with {} entries", fat_cache.len());
 
         Some(Arc::new(FAT32FileSystem {
             device,
@@ -220,67 +220,12 @@ impl FAT32FileSystem {
             sectors_per_cluster,
             bytes_per_cluster,
             root_cluster,
-            sectors_per_fat: sectors_per_fat_32,
             fat_cache: Mutex::new(fat_cache),
         }))
     }
 
     fn cluster_to_sector(&self, cluster: u32) -> u32 {
         self.cluster_start_sector + (cluster - 2) * self.sectors_per_cluster
-    }
-
-    /// Read a FAT entry on-demand
-    fn read_fat_entry(&self, cluster: u32) -> u32 {
-        if cluster < 2 {
-            return CLUSTER_EOF;
-        }
-
-        // Check cache first
-        {
-            let cache = self.fat_cache.lock();
-            if let Some(entry) = cache.get(cluster) {
-                return entry;
-            }
-        }
-
-        // Read from disk
-        let fat_offset = cluster * 4; // Each FAT32 entry is 4 bytes
-        let sector_in_fat = fat_offset as usize / SECTOR_SIZE;
-        let offset_in_sector = fat_offset as usize % SECTOR_SIZE;
-
-        if sector_in_fat >= self.sectors_per_fat as usize {
-            return CLUSTER_EOF;
-        }
-
-        // Calculate device block number
-        let device_block_size = self.device.block_size();
-        let sectors_per_block = device_block_size / SECTOR_SIZE;
-        let block_num = (self.fat_start_sector as usize + sector_in_fat) / sectors_per_block;
-        let sector_in_block = ((self.fat_start_sector as usize + sector_in_fat) % sectors_per_block) * SECTOR_SIZE;
-
-        // Read the block containing this FAT entry
-        let mut block_data = vec![0u8; device_block_size];
-        if self.device.read_block(block_num, &mut block_data).is_err() {
-            return CLUSTER_EOF;
-        }
-
-        // Extract the FAT entry
-        let entry_offset = sector_in_block + offset_in_sector;
-        if entry_offset + 4 > block_data.len() {
-            return CLUSTER_EOF;
-        }
-
-        let entry = unsafe {
-            core::ptr::read_unaligned(block_data[entry_offset..].as_ptr() as *const u32)
-        } & 0x0FFFFFFF; // Mask to 28 bits for FAT32
-
-        // Cache this entry
-        {
-            let mut cache = self.fat_cache.lock();
-            cache.insert(cluster, entry);
-        }
-
-        entry
     }
 
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), BlockError> {
@@ -348,63 +293,55 @@ impl FAT32FileSystem {
     }
 
     fn next_cluster(&self, cluster: u32) -> u32 {
-        let entry = self.read_fat_entry(cluster);
-        if entry >= CLUSTER_EOF {
-            CLUSTER_EOF
-        } else {
-            entry
+        let fat_cache = self.fat_cache.lock();
+        if cluster as usize >= fat_cache.len() {
+            return CLUSTER_EOF;
         }
+        fat_cache[cluster as usize] & 0x0FFFFFFF
     }
 
     fn allocate_cluster(&self) -> Option<u32> {
-        debug!("[FAT32] Looking for free cluster using on-demand scanning");
+        let mut fat_cache = self.fat_cache.lock();
+        debug!(
+            "[FAT32] Looking for free cluster. FAT cache size: {}",
+            fat_cache.len()
+        );
 
-        // Estimate maximum clusters based on sectors per FAT
-        let max_entries = (self.sectors_per_fat * SECTOR_SIZE as u32) / 4;
-        
         // Start from cluster 2 (clusters 0 and 1 are reserved)
-        // Scan in blocks to avoid too many individual reads
-        const SCAN_BLOCK_SIZE: u32 = 32;
-        
-        for block_start in (2..max_entries).step_by(SCAN_BLOCK_SIZE as usize) {
-            let block_end = (block_start + SCAN_BLOCK_SIZE).min(max_entries);
-            
-            for cluster in block_start..block_end {
-                let entry = self.read_fat_entry(cluster);
-                if entry == CLUSTER_FREE {
-                    // Try to allocate this cluster
-                    if self.write_fat_entry(cluster, CLUSTER_EOF).is_ok() {
-                        debug!("[FAT32] Allocated cluster {}", cluster);
-                        return Some(cluster);
-                    }
-                }
+        for i in 2..fat_cache.len() {
+            debug!(
+                "[FAT32] Checking cluster {}: FAT[{}] = {:#08x}",
+                i, i, fat_cache[i]
+            );
+            if fat_cache[i] == CLUSTER_FREE {
+                fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
+                debug!("[FAT32] Allocated cluster {}", i);
+                return Some(i as u32);
             }
         }
-        
         warn!("[FAT32] No free clusters available");
         None
     }
 
     fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
-        if cluster < 2 {
+        let mut fat_cache = self.fat_cache.lock();
+        if cluster as usize >= fat_cache.len() || cluster < 2 {
             error!("[FAT32] Invalid cluster number for FAT write: {}", cluster);
             return Err(BlockError::InvalidBlock);
         }
 
-        let masked_value = value & 0x0FFFFFFF;
-
-        // Update cache
-        {
-            let mut fat_cache = self.fat_cache.lock();
-            fat_cache.insert(cluster, masked_value);
-        }
+        fat_cache[cluster as usize] = value & 0x0FFFFFFF;
 
         // Write to both FAT copies
+        let sectors_per_fat_32 = unsafe {
+            let bpb_ptr = &self.bpb as *const _ as *const u8;
+            core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32)
+        };
         let num_fats = self.bpb.num_fats;
 
         for fat_num in 0..num_fats {
             // Calculate FAT sector for this copy
-            let fat_start = self.fat_start_sector + (fat_num as u32 * self.sectors_per_fat);
+            let fat_start = self.fat_start_sector + (fat_num as u32 * sectors_per_fat_32);
             let fat_sector = fat_start + (cluster * 4) / SECTOR_SIZE as u32;
             let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
 
@@ -424,7 +361,7 @@ impl FAT32FileSystem {
                 return Err(BlockError::InvalidBlock);
             }
 
-            let value_bytes = masked_value.to_le_bytes();
+            let value_bytes = value.to_le_bytes();
             block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
 
             self.device.write_block(block_num as usize, &block_data)?;
