@@ -114,8 +114,8 @@ pub fn get_unix_timestamp_us() -> u64 {
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = board::board_info().time_base_freq;
-    // 避免溢出：先除后乘
-    (current_mtime / time_base_freq) * MSEC_PER_SEC
+    // 使用128位运算避免溢出，保持精度
+    ((current_mtime as u128 * MSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 pub fn get_time_us() -> u64 {
@@ -148,6 +148,8 @@ pub fn enable_timer_interrupt() {
         TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
         // 启用定时器中断
         register::sie::set_stimer();
+        // 启用软件中断，用于处理IPI
+        register::sie::set_ssoft();
     }
 
     set_next_timer_interrupt();
