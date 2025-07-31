@@ -254,10 +254,82 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) {
 
     if !should_continue {
         if let Some(code) = exit_code {
-            // 如果信号要求终止进程，则设置为僵尸状态
+            // 如果信号要求终止进程，则执行完整的进程退出流程
             debug!("Task {} terminated by signal with exit code {}", task.pid(), code);
-            *task.task_status.lock() = TaskStatus::Zombie;
-            task.set_exit_code(code);
+            
+            // 执行与exit_current_and_run_next相同的清理工作，但不调度到下一个任务
+            // 因为我们还在调度循环中
+            perform_task_cleanup(task, code);
+        }
+    }
+}
+
+/// 执行任务清理工作（不包括调度）
+fn perform_task_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32) {
+    let pid = task.pid();
+    
+    // 处理任务退出
+    task.set_exit_code(exit_code);
+    *task.task_status.lock() = TaskStatus::Zombie;
+
+    // 关闭所有文件描述符并清理文件锁
+    task.file.lock().close_all_fds_and_cleanup_locks(pid);
+
+    // 重新父化当前进程的子进程给init进程
+    if let Some(init_proc) = task_manager::init_proc() {
+        if pid == init_proc.pid() {
+            error!("init process exit with exit_code {}", exit_code);
+        } else {
+            // 收集需要重新父化的子进程
+            let mut children_to_reparent: Vec<_> = task
+                .children
+                .lock()
+                .iter()
+                .filter(|child| child.pid() != pid)
+                .cloned()
+                .collect();
+            if !children_to_reparent.is_empty() {
+                // 先处理子进程的parent指针
+                for child in &children_to_reparent {
+                    child.set_parent(Arc::downgrade(&init_proc.clone()));
+                }
+                // 然后处理init_proc的children列表
+                let mut init_proc_children = init_proc.children.lock();
+                for child in children_to_reparent {
+                    init_proc_children.push(child);
+                }
+            }
+        }
+    }
+
+    // 对于信号终止的进程，将其从原父进程的子进程列表中移除，并转移给init进程
+    if let Some(parent) = task.parent() {
+        // 从原父进程的子进程列表中移除当前进程
+        let mut removed = false;
+        {
+            let mut parent_children = parent.children.lock();
+            if let Some(pos) = parent_children.iter().position(|child| Arc::ptr_eq(child, task)) {
+                parent_children.remove(pos);
+                removed = true;
+                debug!("Removed zombie process {} from parent {} children list", pid, parent.pid());
+            }
+        }
+        
+        // 将当前进程转移给init进程
+        if removed {
+            if let Some(init_proc) = task_manager::init_proc() {
+                if pid != init_proc.pid() && parent.pid() != init_proc.pid() {
+                    // 只有当父进程不是init进程时才转移
+                    init_proc.children.lock().push(task.clone());
+                    task.set_parent(Arc::downgrade(&init_proc));
+                    debug!("Transferred zombie process {} to init process", pid);
+                }
+            }
+        }
+        
+        // 唤醒等待的父进程
+        if *parent.task_status.lock() == TaskStatus::Sleeping {
+            parent.wakeup();
         }
     }
 }
