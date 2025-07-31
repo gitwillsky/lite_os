@@ -38,6 +38,8 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
     if hart_id == 0 {
         // 完整系统初始化
         log::init(config::DEFAULT_LOG_LEVEL);
+        log::disable_module("kernel::fs::fat32");
+        log::disable_module("kernel::drivers::device_manager");
         board::init(dtb_addr);
         trap::init();
         memory::init();

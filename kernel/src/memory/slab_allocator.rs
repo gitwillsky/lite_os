@@ -491,7 +491,6 @@ impl SlabAllocator {
         debug!("[SLAB] Initializing SLAB allocator with {} caches", COMMON_SIZES.len());
         for (i, &size) in COMMON_SIZES.iter().enumerate() {
             *self.caches[i].lock() = SlabCache::new(size);
-            debug!("[SLAB] Cache {} initialized for size {}", i, size);
         }
         debug!("[SLAB] SLAB allocator initialization complete");
     }
