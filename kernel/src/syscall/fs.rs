@@ -19,7 +19,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         STD_OUT => {
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
             let mut total_written = 0;
-            
+
             for buffer in buffers {
                 // 直接使用SBI输出，简单可靠
                 let s = core::str::from_utf8(buffer).unwrap();
@@ -65,7 +65,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             }
             assert_eq!(len, 1, "Only support len = 1 in sys_read!");
             let buffers = translated_byte_buffer(current_user_token(), buf, len);
-            
+
             // 检查是否设置了非阻塞标志
             // 对于 stdin，我们需要检查 fd 0 对应的文件描述符
             let is_nonblock = if let Some(task) = current_task() {
@@ -82,7 +82,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
             } else {
                 false
             };
-            
+
             let ch = if is_nonblock {
                 // 非阻塞模式：如果没有输入则立即返回 EAGAIN
                 let c = sbi::console_getchar();
@@ -103,7 +103,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                     }
                 }
             };
-            
+
             let user_buf = buffers.into_iter().next().unwrap();
             if !user_buf.is_empty() {
                 user_buf[0] = ch as u8;
@@ -151,7 +151,12 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
 /// 打开文件
 pub fn sys_open(path: *const u8, flags: u32) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -1;
+        }
+    };
 
     // Open flags
     const O_RDONLY: u32 = 0o0;
@@ -267,7 +272,12 @@ pub fn sys_listdir(path: *const u8, buf: *mut u8, len: usize) -> isize {
     }
 
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     // 验证路径长度
     if path_str.len() > 4096 {
@@ -331,7 +341,12 @@ pub fn sys_listdir(path: *const u8, buf: *mut u8, len: usize) -> isize {
 /// 创建目录
 pub fn sys_mkdir(path: *const u8) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().create_directory(&path_str) {
         Ok(_) => 0,
@@ -352,7 +367,12 @@ pub fn sys_mkdir(path: *const u8) -> isize {
 /// 删除文件或目录
 pub fn sys_remove(path: *const u8) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().remove(&path_str) {
         Ok(_) => 0,
@@ -446,7 +466,12 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> isize {
 /// 获取文件信息
 pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().open(&path_str) {
         Ok(inode) => {
@@ -456,10 +481,10 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
             let mode = inode.mode();
             let uid = inode.uid();
             let gid = inode.gid();
-            
-            // debug!("[STAT] path: {}, size: {}, type: {:?}, mode: 0o{:o}, uid: {}, gid: {}", 
+
+            // debug!("[STAT] path: {}, size: {}, type: {:?}, mode: 0o{:o}, uid: {}, gid: {}",
             //        path_str, size, file_type, mode, uid, gid);
-            
+
             let file_stat = FileStat {
                 size,
                 file_type,
@@ -468,7 +493,7 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
                 uid,
                 gid,
                 atime: 0, // Not implemented yet
-                mtime: 0, // Not implemented yet  
+                mtime: 0, // Not implemented yet
                 ctime: 0, // Not implemented yet
             };
 
@@ -484,7 +509,12 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
 /// 读取文件内容
 pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().open(&path_str) {
         Ok(inode) => {
@@ -524,11 +554,15 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
 }
 
 // 辅助函数：将C字符串转换为Rust字符串
-fn translated_c_string(token: usize, ptr: *const u8) -> String {
+fn translated_c_string(token: usize, ptr: *const u8) -> Result<String, FileSystemError> {
     let mut string = String::new();
     let mut va = ptr as usize;
+    let mut len = 0;
 
     loop {
+        if len >= 4096 {
+            return Err(FileSystemError::InvalidPath);
+        }
         let buffers = translated_byte_buffer(token, va as *const u8, 1);
         if buffers.is_empty() {
             break;
@@ -539,15 +573,21 @@ fn translated_c_string(token: usize, ptr: *const u8) -> String {
         }
         string.push(ch as char);
         va += 1;
+        len += 1;
     }
 
-    string
+    Ok(string)
 }
 
 /// 改变当前工作目录
 pub fn sys_chdir(path: *const u8) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     // Resolve the absolute path BEFORE getting exclusive access to avoid double borrow
     let absolute_path = vfs().resolve_relative_path(&path_str);
@@ -722,7 +762,12 @@ pub fn sys_flock(fd: usize, operation: i32) -> isize {
 /// 创建命名管道（FIFO）
 pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
     let _ = mode; // Mode parameter is currently ignored
 
     match create_fifo(&path_str) {
@@ -743,7 +788,12 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
 /// 修改文件权限
 pub fn sys_chmod(path: *const u8, mode: u32) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().open(&path_str) {
         Ok(inode) => {
@@ -771,7 +821,12 @@ pub fn sys_chmod(path: *const u8, mode: u32) -> isize {
 /// 修改文件所有者
 pub fn sys_chown(path: *const u8, uid: u32, gid: u32) -> isize {
     let token = current_user_token();
-    let path_str = translated_c_string(token, path);
+    let path_str = match translated_c_string(token, path) {
+        Ok(path) => path,
+        Err(e) => {
+            return -36;
+        }
+    };
 
     match vfs().open(&path_str) {
         Ok(inode) => {
@@ -856,12 +911,12 @@ pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
                     // 设置文件状态标志（只允许修改某些标志）
                     let new_flags = arg as u32;
                     let allowed_flags = O_NONBLOCK | O_APPEND;
-                    
+
                     // 保留访问模式和其他不可修改的标志，只更新允许的标志
                     let access_mode = file_desc.flags & 0o3; // O_RDONLY, O_WRONLY, O_RDWR
                     let other_flags = file_desc.flags & !allowed_flags;
                     let updated_flags = access_mode | other_flags | (new_flags & allowed_flags);
-                    
+
                     // 使用原子操作更新标志
                     let file_desc_ptr = Arc::as_ptr(&file_desc) as *const FileDescriptor as *mut FileDescriptor;
                     unsafe {
