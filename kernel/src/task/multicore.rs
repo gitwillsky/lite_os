@@ -85,8 +85,6 @@ pub struct CoreManager {
     pub active_cores: AtomicUsize,
     /// 启动屏障 - 等待所有核心就绪
     pub boot_barrier: AtomicUsize,
-    /// 全局任务列表（用于监控和调试）
-    pub global_tasks: RwLock<Vec<Arc<TaskControlBlock>>>,
 }
 
 impl CoreManager {
@@ -105,7 +103,6 @@ impl CoreManager {
             ],
             active_cores: AtomicUsize::new(0), // 初始时没有核心活跃
             boot_barrier: AtomicUsize::new(0),
-            global_tasks: RwLock::new(Vec::new()),
         }
     }
 
@@ -225,9 +222,6 @@ impl CoreManager {
         } else {
             warn!("Failed to add task PID {} to core {} (invalid core)", task.pid(), target_core);
         }
-
-        // 添加到全局任务列表（用于监控）
-        self.global_tasks.write().push(task);
     }
 
     /// 获取所有任务
