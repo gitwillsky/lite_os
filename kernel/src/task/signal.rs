@@ -519,8 +519,11 @@ impl SignalDelivery {
 
                 SignalAction::Stop => {
                     debug!("Signal {} stops process", signal as u32);
-                    // 更新任务状态为睡眠
+                    // 更新任务状态为睡眠，并通知任务管理器
+                    let old_status = *task.task_status.lock();
                     *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                    // 通知任务管理器状态变化，这会将任务从调度队列中移除
+                    crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Sleeping);
                     // 停止信号不终止进程，只是挂起
                     return (true, None);
                 }
@@ -530,7 +533,11 @@ impl SignalDelivery {
                     // 如果进程被停止，则恢复运行
                     let mut status = task.task_status.lock();
                     if *status == crate::task::TaskStatus::Sleeping {
+                        let old_status = *status;
                         *status = crate::task::TaskStatus::Ready;
+                        drop(status); // 释放锁
+                        // 通知任务管理器状态变化，这会将任务重新添加到调度队列
+                        crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Ready);
                     }
                     // 继续处理下一个信号
                     continue;
@@ -609,14 +616,20 @@ impl SignalDelivery {
             }
             SignalAction::Stop => {
                 // 暂停进程（设置为sleeping状态）
+                let old_status = *task.task_status.lock();
                 *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                // 通知任务管理器状态变化，这会将任务从调度队列中移除
+                crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Sleeping);
                 info!("Signal {} stops process PID {}", signal as u32, task.pid());
                 (true, None)
             }
             SignalAction::Continue => {
                 // 继续进程（如果进程正在睡眠状态）
                 if *task.task_status.lock() == crate::task::TaskStatus::Sleeping {
+                    let old_status = *task.task_status.lock();
                     *task.task_status.lock() = crate::task::TaskStatus::Ready;
+                    // 通知任务管理器状态变化，这会将任务重新添加到调度队列
+                    crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Ready);
                     info!(
                         "Signal {} continues process PID {}",
                         signal as u32,

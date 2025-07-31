@@ -111,7 +111,15 @@ pub fn run_tasks() -> ! {
             if !task.is_zombie() {
                 // 处理信号检查
                 if task.signal_state.lock().has_deliverable_signals() {
-                    handle_task_signals(&task);
+                    if !handle_task_signals(&task) {
+                        // 信号处理后任务不应该继续调度（可能被终止或停止）
+                        continue;
+                    }
+                }
+
+                // 检查任务是否处于睡眠状态
+                if *task.task_status.lock() == TaskStatus::Sleeping {
+                    // 睡眠状态的任务不应该被调度，跳过
                     continue;
                 }
 
@@ -124,6 +132,12 @@ pub fn run_tasks() -> ! {
         // 2. 尝试工作窃取
         if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
             if !stolen_task.is_zombie() {
+                // 检查被窃取的任务是否处于睡眠状态
+                if *stolen_task.task_status.lock() == TaskStatus::Sleeping {
+                    // 睡眠状态的任务不应该被调度，跳过
+                    continue;
+                }
+                
                 switch_to_task(stolen_task);
                 continue;
             }
@@ -206,7 +220,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 }
 
 /// 处理任务信号
-fn handle_task_signals(task: &Arc<TaskControlBlock>) {
+/// 返回是否应该继续调度这个任务
+fn handle_task_signals(task: &Arc<TaskControlBlock>) -> bool {
     use crate::task::signal::SignalDelivery;
 
     let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
@@ -217,7 +232,16 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) {
             // 执行任务清理，但不调度（因为我们在调度循环中）
             perform_task_exit_cleanup(task, code, true);
         }
+        return false; // 不应该继续调度
     }
+    
+    // 检查任务是否被信号停止（例如 SIGTSTP/Ctrl+Z）
+    if *task.task_status.lock() == TaskStatus::Sleeping {
+        debug!("Task {} was stopped by signal", task.pid());
+        return false; // 被停止的任务不应该被调度
+    }
+    
+    true // 可以继续调度
 }
 
 /// 统一的任务退出清理函数
