@@ -38,10 +38,10 @@ pub struct ProcessStats {
 pub struct TaskManager {
     /// 全局进程表：PID -> TaskControlBlock
     /// 这里存储系统中所有进程，无论其状态如何
-    processes: RwLock<BTreeMap<usize, Arc<TaskControlBlock>>>,
+    tasks: RwLock<BTreeMap<usize, Arc<TaskControlBlock>>>,
 
     /// init 进程的引用，用于特殊处理
-    init_process: RwLock<Option<Arc<TaskControlBlock>>>,
+    init_task: RwLock<Option<Arc<TaskControlBlock>>>,
 
     /// 当前的调度策略
     scheduling_policy: RwLock<SchedulingPolicy>,
@@ -50,26 +50,26 @@ pub struct TaskManager {
 impl TaskManager {
     pub fn new() -> Self {
         Self {
-            processes: RwLock::new(BTreeMap::new()),
-            init_process: RwLock::new(None),
+            tasks: RwLock::new(BTreeMap::new()),
+            init_task: RwLock::new(None),
             scheduling_policy: RwLock::new(SchedulingPolicy::CFS),
         }
     }
 
     /// 添加新进程到系统
     /// 这是创建进程的统一入口点
-    pub fn add_process(&self, task: Arc<TaskControlBlock>) {
+    pub fn add_task(&self, task: Arc<TaskControlBlock>) {
         let pid = task.pid();
 
         // 添加到全局进程表
         {
-            let mut processes = self.processes.write();
-            processes.insert(pid, task.clone());
+            let mut tasks = self.tasks.write();
+            tasks.insert(pid, task.clone());
         }
 
         // 如果是 init 进程，特别记录
         if pid == crate::task::pid::INIT_PID {
-            *self.init_process.write() = Some(task.clone());
+            *self.init_task.write() = Some(task.clone());
         }
 
         // 添加到多核调度器（根据当前状态）
@@ -93,8 +93,8 @@ impl TaskManager {
 
     /// 从系统中移除进程
     /// 这是进程回收的统一入口点
-    pub fn remove_process(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        let mut processes = self.processes.write();
+    pub fn remove_task(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+        let mut processes = self.tasks.write();
         if let Some(task) = processes.remove(&pid) {
             Some(task)
         } else {
@@ -104,40 +104,40 @@ impl TaskManager {
 
     /// 根据 PID 查找进程
     /// 这是查找进程的统一接口，性能优化的O(log n)查找
-    pub fn find_process_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
-        let processes = self.processes.read();
+    pub fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+        let processes = self.tasks.read();
         processes.get(&pid).cloned()
     }
 
     /// 获取所有进程
     /// 这是获取进程列表的统一接口
-    pub fn get_all_processes(&self) -> Vec<Arc<TaskControlBlock>> {
-        let processes = self.processes.read();
+    pub fn tasks(&self) -> Vec<Arc<TaskControlBlock>> {
+        let processes = self.tasks.read();
         processes.values().cloned().collect()
     }
 
     /// 获取所有进程的 PID 列表
-    pub fn get_all_pids(&self) -> Vec<usize> {
-        let processes = self.processes.read();
+    pub fn pids(&self) -> Vec<usize> {
+        let processes = self.tasks.read();
         processes.keys().cloned().collect()
     }
 
     /// 获取进程总数
-    pub fn get_process_count(&self) -> usize {
-        let processes = self.processes.read();
+    pub fn task_count(&self) -> usize {
+        let processes = self.tasks.read();
         processes.len()
     }
 
     /// 获取 init 进程
-    pub fn get_init_process(&self) -> Option<Arc<TaskControlBlock>> {
-        let init_proc = self.init_process.read();
+    pub fn init_task(&self) -> Option<Arc<TaskControlBlock>> {
+        let init_proc = self.init_task.read();
         init_proc.clone()
     }
 
     /// 获取进程统计信息
     /// 统一计算各种状态的进程数量
-    pub fn get_process_stats(&self) -> ProcessStats {
-        let processes = self.processes.read();
+    pub fn task_stats(&self) -> ProcessStats {
+        let processes = self.tasks.read();
 
         let mut running = 0u32;
         let mut ready = 0u32;
@@ -164,8 +164,8 @@ impl TaskManager {
     }
 
     /// 获取特定状态的进程
-    pub fn get_processes_by_status(&self, status: TaskStatus) -> Vec<Arc<TaskControlBlock>> {
-        let processes = self.processes.read();
+    pub fn get_tasks_by_status(&self, status: TaskStatus) -> Vec<Arc<TaskControlBlock>> {
+        let processes = self.tasks.read();
         processes
             .values()
             .filter(|task| *task.task_status.lock() == status)
@@ -174,7 +174,7 @@ impl TaskManager {
     }
 
     /// 获取在特定核心上运行的进程
-    pub fn get_process_on_core(&self, core_id: usize) -> Option<Arc<TaskControlBlock>> {
+    pub fn task_on_core(&self, core_id: usize) -> Option<Arc<TaskControlBlock>> {
         if let Some(processor) = CORE_MANAGER.get_processor(core_id) {
             let proc = processor.lock();
             proc.current.clone()
@@ -189,19 +189,19 @@ impl TaskManager {
     }
 
     /// 获取当前调度策略
-    pub fn get_scheduling_policy(&self) -> SchedulingPolicy {
+    pub fn scheduling_policy(&self) -> SchedulingPolicy {
         *self.scheduling_policy.read()
     }
 
     /// 更新进程状态
     /// 当进程状态发生变化时，需要调用此函数来维护一致性
-    pub fn update_process_status(
+    pub fn update_task_status(
         &self,
         pid: usize,
         old_status: TaskStatus,
         new_status: TaskStatus,
     ) {
-        if let Some(task) = self.find_process_by_pid(pid) {
+        if let Some(task) = self.find_task_by_pid(pid) {
             // 根据状态变化进行相应的调度器操作
             match (old_status, new_status) {
                 (TaskStatus::Ready, TaskStatus::Running) => {
@@ -230,8 +230,8 @@ impl TaskManager {
 
     /// 同步所有进程状态
     /// 用于确保进程表与实际状态的一致性
-    pub fn sync_all_process_states(&self) {
-        let processes = self.processes.read();
+    pub fn sync_all_task_states(&self) {
+        let processes = self.tasks.read();
         for task in processes.values() {
             let pid = task.pid();
             let current_status = *task.task_status.lock();
@@ -241,7 +241,7 @@ impl TaskManager {
             if current_status == TaskStatus::Running {
                 let mut found_on_core = false;
                 for i in 0..MAX_CORES {
-                    if let Some(running_task) = self.get_process_on_core(i) {
+                    if let Some(running_task) = self.task_on_core(i) {
                         if running_task.pid() == pid {
                             found_on_core = true;
                             break;
@@ -266,8 +266,8 @@ impl TaskManager {
     }
 
     /// 获取所有睡眠任务
-    pub fn get_sleeping_tasks(&self) -> Vec<Arc<TaskControlBlock>> {
-        let processes = self.processes.read();
+    pub fn sleeping_tasks(&self) -> Vec<Arc<TaskControlBlock>> {
+        let processes = self.tasks.read();
         processes
             .values()
             .filter(|task| {
@@ -287,7 +287,7 @@ impl TaskManager {
         &self,
         current_time_ns: u64,
     ) -> Vec<Arc<TaskControlBlock>> {
-        let processes = self.processes.read();
+        let processes = self.tasks.read();
         let mut awakened_tasks = Vec::new();
 
         // 遍历所有进程，检查睡眠状态的进程是否到期
@@ -309,7 +309,7 @@ impl TaskManager {
 
     /// 从睡眠状态中移除指定任务（用于提前唤醒）
     pub fn remove_sleeping_task(&self, task_pid: usize) -> bool {
-        if let Some(task) = self.find_process_by_pid(task_pid) {
+        if let Some(task) = self.find_task_by_pid(task_pid) {
             if *task.task_status.lock() == TaskStatus::Sleeping {
                 // 清零唤醒时间，表示不再睡眠
                 task.wake_time_ns
@@ -321,8 +321,8 @@ impl TaskManager {
     }
 
     /// 获取睡眠任务数量
-    pub fn get_sleeping_task_count(&self) -> usize {
-        let processes = self.processes.read();
+    pub fn sleeping_task_count(&self) -> usize {
+        let processes = self.tasks.read();
         processes
             .values()
             .filter(|task| {
@@ -346,37 +346,37 @@ lazy_static! {
 
 /// 添加任务到系统
 pub fn add_task(task: Arc<TaskControlBlock>) {
-    TASK_MANAGER.add_process(task);
+    TASK_MANAGER.add_task(task);
 }
 
 /// 根据PID查找任务
 pub fn find_task_by_pid(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.find_process_by_pid(pid)
+    TASK_MANAGER.find_task_by_pid(pid)
 }
 
 /// 获取所有任务
 pub fn get_all_tasks() -> Vec<Arc<TaskControlBlock>> {
-    TASK_MANAGER.get_all_processes()
+    TASK_MANAGER.tasks()
 }
 
 /// 获取所有PID
 pub fn get_all_pids() -> Vec<usize> {
-    TASK_MANAGER.get_all_pids()
+    TASK_MANAGER.pids()
 }
 
 /// 获取任务数量
 pub fn get_task_count() -> usize {
-    TASK_MANAGER.get_process_count()
+    TASK_MANAGER.task_count()
 }
 
 /// 获取init进程
 pub fn init_proc() -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.get_init_process()
+    TASK_MANAGER.init_task()
 }
 
 /// 获取进程统计信息
 pub fn get_process_statistics() -> ProcessStats {
-    TASK_MANAGER.get_process_stats()
+    TASK_MANAGER.task_stats()
 }
 
 /// 设置调度策略
@@ -386,27 +386,27 @@ pub fn set_scheduling_policy(policy: SchedulingPolicy) {
 
 /// 获取调度策略
 pub fn get_scheduling_policy() -> SchedulingPolicy {
-    TASK_MANAGER.get_scheduling_policy()
+    TASK_MANAGER.scheduling_policy()
 }
 
 /// 移除任务（用于进程回收）
 pub fn remove_task(pid: usize) -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.remove_process(pid)
+    TASK_MANAGER.remove_task(pid)
 }
 
 /// 更新任务状态
 pub fn update_task_status(pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
-    TASK_MANAGER.update_process_status(pid, old_status, new_status);
+    TASK_MANAGER.update_task_status(pid, old_status, new_status);
 }
 
 /// 同步所有任务状态
 pub fn sync_all_task_states() {
-    TASK_MANAGER.sync_all_process_states();
+    TASK_MANAGER.sync_all_task_states();
 }
 
 /// 获取在特定核心上运行的任务
 pub fn get_task_on_core(core_id: usize) -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.get_process_on_core(core_id)
+    TASK_MANAGER.task_on_core(core_id)
 }
 
 /// 安全的状态更新函数
@@ -432,17 +432,16 @@ pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
 
 /// 获取所有睡眠任务
 pub fn get_sleeping_tasks() -> Vec<Arc<TaskControlBlock>> {
-    TASK_MANAGER.get_sleeping_tasks()
+    TASK_MANAGER.sleeping_tasks()
 }
 
 /// 检查并唤醒到期的睡眠任务
 pub fn check_and_wakeup_sleeping_tasks(current_time_ns: u64) -> Vec<Arc<TaskControlBlock>> {
     let awakened_tasks = TASK_MANAGER.check_and_wakeup_sleeping_tasks(current_time_ns);
 
-    // 将唤醒的任务状态设置为Ready并添加到调度器
+    // 将唤醒的任务状态设置为Ready（set_task_status会自动处理调度器添加）
     for task in &awakened_tasks {
         set_task_status(task, TaskStatus::Ready);
-        CORE_MANAGER.add_task(task.clone());
     }
 
     awakened_tasks
@@ -455,13 +454,13 @@ pub fn remove_sleeping_task(task_pid: usize) -> bool {
 
 /// 获取睡眠任务数量
 pub fn get_sleeping_task_count() -> usize {
-    TASK_MANAGER.get_sleeping_task_count()
+    TASK_MANAGER.sleeping_task_count()
 }
 
 /// 获取可调度任务数量（用于调试）
 pub fn schedulable_task_count() -> usize {
     // 返回Ready和Running状态的任务数量
-    let process_stats = TASK_MANAGER.get_process_stats();
+    let process_stats = TASK_MANAGER.task_stats();
     (process_stats.ready + process_stats.running) as usize
 }
 
@@ -476,6 +475,7 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     // 无论时间长短，都使用睡眠队列来保证准确性
     if let Some(current_task) = crate::task::current_task() {
         let wake_time = start_time + nanoseconds;
+        let pid = current_task.pid();
 
         // 使用统一的任务状态更新方法
         crate::task::set_task_status(&current_task, crate::task::TaskStatus::Sleeping);
