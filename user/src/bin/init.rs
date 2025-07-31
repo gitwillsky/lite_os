@@ -36,11 +36,12 @@ fn main() -> i32 {
 fn spawn_shell(shell_pid: &mut Option<usize>) {
     let pid = fork();
     if pid == 0 {
-        let exit_code = exec("/bin/shell") as i32;
+        // Use test program instead of shell for comprehensive testing
+        let exit_code = exec("/bin/test") as i32;
         exit(exit_code);
     } else if pid > 0 {
         *shell_pid = Some(pid as usize);
     } else {
-        println!("init: failed to fork shell process");
+        println!("init: failed to fork test process");
     }
 }
