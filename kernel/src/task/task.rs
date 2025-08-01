@@ -671,7 +671,8 @@ impl TaskControlBlock {
     }
 
     pub fn wakeup(self: &Arc<Self>) {
-        if *self.task_status.lock() == TaskStatus::Sleeping {
+        let current_status = *self.task_status.lock();
+        if current_status == TaskStatus::Sleeping || current_status == TaskStatus::Stopped {
             *self.task_status.lock() = TaskStatus::Ready;
             add_task(self.clone());
         }

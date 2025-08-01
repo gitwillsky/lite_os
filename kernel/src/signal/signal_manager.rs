@@ -273,14 +273,17 @@ impl SignalManager {
     fn handle_signal_for_stopped_task(&self, task: &TaskControlBlock, signal: Signal) {
         if signal.is_continue_signal() {
             debug!("SignalManager: SIGCONT will resume stopped process PID {}", task.pid());
+            // 对于SIGCONT信号，也需要恢复进程
+            if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
+                crate::task::set_task_status(&task_arc, TaskStatus::Ready);
+            }
         } else if signal.is_uncatchable() || signal.default_action() == SignalAction::Terminate {
             debug!("SignalManager: Fatal signal {} for stopped PID {} - resuming for termination",
                    signal as u32, task.pid());
-            // 恢复进程以处理致命信号
-            let old_status = *task.task_status.lock();
-            *task.task_status.lock() = TaskStatus::Ready;
-            notify_task_status_change(task.pid(), old_status, TaskStatus::Ready);
-            self.wakeup_task(task);
+            // 恢复进程以处理致命信号，使用统一的状态管理机制
+            if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
+                crate::task::set_task_status(&task_arc, TaskStatus::Ready);
+            }
         }
     }
 
