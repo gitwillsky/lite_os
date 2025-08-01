@@ -19,10 +19,8 @@ pub use signal::{
 };
 
 pub use signal_manager::{
-    SignalManager, SignalEvent, SignalEventBus, EventCallback,
-    SIGNAL_MANAGER, SIGNAL_EVENT_BUS,
+    SignalManager, SIGNAL_MANAGER,
     init, process_multicore_signals, get_multicore_signal_stats,
-    notify_task_status_change, notify_signal_delivered, notify_task_exited, notify_task_created,
 };
 
 pub use signal_state::{

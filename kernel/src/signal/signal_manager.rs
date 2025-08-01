@@ -17,89 +17,9 @@ use super::signal_state::{AtomicSignalState, DEFAULT_BATCH_PROCESSOR};
 use super::signal_delivery::{SafeSignalDelivery, UserStackValidator};
 use super::multicore_signal::{MULTICORE_SIGNAL_MANAGER, InterCoreSignalMessage};
 
-/// 信号相关事件类型
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SignalEvent {
-    /// 任务状态改变事件
-    TaskStatusChanged {
-        pid: usize,
-        old_status: TaskStatus,
-        new_status: TaskStatus,
-    },
-    /// 信号投递事件
-    SignalDelivered {
-        pid: usize,
-        signal: Signal,
-    },
-    /// 任务退出事件
-    TaskExited {
-        pid: usize,
-        exit_code: i32,
-    },
-    /// 任务创建事件
-    TaskCreated {
-        pid: usize,
-        parent_pid: Option<usize>,
-    },
-}
+// Removed redundant SIGNAL_EVENT_BUS - use direct function calls instead
 
-/// 事件监听器回调函数类型
-pub type EventCallback = fn(event: SignalEvent);
-
-/// 信号系统事件总线
-pub struct SignalEventBus {
-    /// 注册的事件监听器
-    listeners: RwLock<Vec<EventCallback>>,
-}
-
-impl SignalEventBus {
-    pub const fn new() -> Self {
-        Self {
-            listeners: RwLock::new(Vec::new()),
-        }
-    }
-
-    /// 注册事件监听器
-    pub fn register_listener(&self, callback: EventCallback) {
-        self.listeners.write().push(callback);
-    }
-
-    /// 发布事件到所有监听器
-    pub fn publish(&self, event: SignalEvent) {
-        let listeners = self.listeners.read();
-        for callback in listeners.iter() {
-            callback(event);
-        }
-    }
-}
-
-/// 全局信号事件总线
-pub static SIGNAL_EVENT_BUS: SignalEventBus = SignalEventBus::new();
-
-/// 任务状态改变通知函数
-/// 替代直接调用 task 模块函数，使用事件通知
-pub fn notify_task_status_change(pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
-    SIGNAL_EVENT_BUS.publish(SignalEvent::TaskStatusChanged {
-        pid,
-        old_status,
-        new_status,
-    });
-}
-
-/// 信号投递通知函数
-pub fn notify_signal_delivered(pid: usize, signal: Signal) {
-    SIGNAL_EVENT_BUS.publish(SignalEvent::SignalDelivered { pid, signal });
-}
-
-/// 任务退出通知函数
-pub fn notify_task_exited(pid: usize, exit_code: i32) {
-    SIGNAL_EVENT_BUS.publish(SignalEvent::TaskExited { pid, exit_code });
-}
-
-/// 任务创建通知函数
-pub fn notify_task_created(pid: usize, parent_pid: Option<usize>) {
-    SIGNAL_EVENT_BUS.publish(SignalEvent::TaskCreated { pid, parent_pid });
-}
+// Removed notification functions - use direct logging instead
 
 /// 多核信号管理信息
 #[derive(Debug)]
@@ -201,8 +121,7 @@ impl SignalManager {
         // 添加信号到待处理队列
         task.signal_state.lock().add_pending_signal(signal);
 
-        // 通知信号投递事件
-        notify_signal_delivered(target_pid, signal);
+        debug!("Signal {} delivered to PID {}", signal as u32, target_pid);
 
         // 使用多核信号管理器发送信号
         let current_status = *task.task_status.lock();
@@ -221,7 +140,7 @@ impl SignalManager {
             }
             TaskStatus::Stopped => {
                 // 处理停止状态下的信号
-                self.handle_signal_for_stopped_task(&task, signal);
+                self.continue_task(&task);
                 // 发送IPI通知其他核心
                 let _ = MULTICORE_SIGNAL_MANAGER.send_signal_to_process(target_pid, signal);
             }
@@ -273,23 +192,6 @@ impl SignalManager {
         }
     }
 
-    /// 处理停止状态任务的信号
-    fn handle_signal_for_stopped_task(&self, task: &TaskControlBlock, signal: Signal) {
-        if signal.is_continue_signal() {
-            debug!("SignalManager: SIGCONT will resume stopped process PID {}", task.pid());
-            // 对于SIGCONT信号，也需要恢复进程
-            if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
-                crate::task::set_task_status(&task_arc, TaskStatus::Ready);
-            }
-        } else if signal.is_uncatchable() || signal.default_action() == SignalAction::Terminate {
-            debug!("SignalManager: Fatal signal {} for stopped PID {} - resuming for termination",
-                   signal as u32, task.pid());
-            // 恢复进程以处理致命信号，使用统一的状态管理机制
-            if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
-                crate::task::set_task_status(&task_arc, TaskStatus::Ready);
-            }
-        }
-    }
 
     /// 发送 IPI 到指定核心
     fn send_ipi_to_core(&self, core_id: usize, target_pid: usize) -> Result<(), SignalError> {
@@ -329,7 +231,6 @@ impl SignalManager {
                 }
                 SignalAction::Terminate => {
                     debug!("SignalManager: Signal {} terminates process", signal as u32);
-                    notify_task_exited(task.pid(), signal.default_exit_code());
                     return (false, Some(signal.default_exit_code()));
                 }
                 SignalAction::Stop => {
@@ -407,7 +308,6 @@ impl SignalManager {
             SignalAction::Terminate => {
                 info!("SignalManager: Signal {} terminates process PID {}",
                       signal as u32, task.pid());
-                notify_task_exited(task.pid(), signal as i32);
                 (false, Some(signal as i32))
             }
             SignalAction::Stop => {
@@ -487,36 +387,6 @@ pub static SIGNAL_MANAGER: SignalManager = SignalManager::new();
 pub fn init() {
     // 初始化多核信号管理器
     MULTICORE_SIGNAL_MANAGER.init();
-
-    // 注册事件监听器处理任务状态变化
-    SIGNAL_EVENT_BUS.register_listener(|event| {
-        match event {
-            SignalEvent::TaskStatusChanged { pid, old_status, new_status } => {
-                debug!("Task status changed: PID {} from {:?} to {:?}", pid, old_status, new_status);
-                // 处理多核环境下的状态同步
-                if new_status == TaskStatus::Running {
-                    let current_core = crate::arch::hart::hart_id();
-                    SIGNAL_MANAGER.update_task_on_core(current_core, pid);
-                }
-            }
-            SignalEvent::SignalDelivered { pid, signal } => {
-                debug!("Signal {} delivered to PID {}", signal as u32, pid);
-                // 处理核心间消息
-                let _ = MULTICORE_SIGNAL_MANAGER.process_core_messages();
-            }
-            SignalEvent::TaskExited { pid, exit_code } => {
-                debug!("Task exited: PID {} with code {}", pid, exit_code);
-                // 清理多核状态
-                if let Some(core_id) = SIGNAL_MANAGER.find_process_core(pid) {
-                    SIGNAL_MANAGER.clear_task_on_core(core_id, pid);
-                }
-            }
-            SignalEvent::TaskCreated { pid, parent_pid } => {
-                debug!("Task created: PID {} (parent: {:?})", pid, parent_pid);
-            }
-        }
-    });
-
     info!("Signal system initialization complete with multi-core support");
 }
 

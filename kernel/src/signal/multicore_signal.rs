@@ -4,7 +4,7 @@ use spin::{Mutex, RwLock};
 
 use crate::arch::hart::{hart_id, MAX_CORES};
 use super::signal::{Signal, SignalError};
-use super::signal_manager::{SIGNAL_EVENT_BUS, SignalEvent};
+// Removed SIGNAL_EVENT_BUS import
 
 /// 核心间信号通信类型
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,11 +91,7 @@ impl CoreSignalHandler {
                 debug!("Core {} received signal delivery request: PID {} signal {}", 
                        self.core_id, target_pid, signal as u32);
                 
-                // 通知信号管理器处理
-                SIGNAL_EVENT_BUS.publish(SignalEvent::SignalDelivered { 
-                    pid: target_pid, 
-                    signal 
-                });
+                // Signal delivery is handled by the caller
             }
             InterCoreSignalMessage::CheckSignals { target_pid } => {
                 debug!("Core {} received signal check request for PID {}", 
