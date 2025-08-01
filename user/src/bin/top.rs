@@ -82,7 +82,7 @@ fn display_system_stats() {
             stats.used_memory / (1024 * 1024),
             stats.free_memory / (1024 * 1024)
         );
-        
+
         // 显示CPU核心信息 - 需要通过系统调用获取
         if let Some(core_info) = get_cpu_core_info() {
             println!("CPU Cores: {} active of {} total", core_info.active_cores, core_info.total_cores);
@@ -110,21 +110,21 @@ fn display_system_stats() {
             } else {
                 0.0
             };
-            
-            let cpu_display = if cpu_percent.is_finite() && cpu_percent >= 0.0 { 
-                format!("{:.1}", cpu_percent) 
-            } else { 
-                "0.0".to_string() 
+
+            let cpu_display = if cpu_percent.is_finite() && cpu_percent >= 0.0 {
+                format!("{:.1}", cpu_percent)
+            } else {
+                "0.0".to_string()
             };
-            let user_display = if user_percent.is_finite() { 
-                format!("{:.1}", user_percent) 
-            } else { 
-                "N/A".to_string() 
+            let user_display = if user_percent.is_finite() {
+                format!("{:.1}", user_percent)
+            } else {
+                "N/A".to_string()
             };
-            let system_display = if system_percent.is_finite() { 
-                format!("{:.1}", system_percent) 
-            } else { 
-                "N/A".to_string() 
+            let system_display = if system_percent.is_finite() {
+                format!("{:.1}", system_percent)
+            } else {
+                "N/A".to_string()
             };
             println!(
                 "CPU: {}% total, {}s uptime, {}% user, {}% system",
@@ -154,6 +154,7 @@ fn format_status(status: u32) -> &'static str {
         1 => "RUN  ",
         2 => "ZOMB ",
         3 => "SLEEP",
+        4 => "STOP ",
         _ => "UNK  ",
     }
 }
@@ -329,7 +330,7 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
     if actual_count <= 0 {
         return Err("Failed to get process list");
     }
-    
+
     // 截断到实际数量
     pids.truncate(actual_count as usize);
 

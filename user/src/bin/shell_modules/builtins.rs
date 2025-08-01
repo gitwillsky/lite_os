@@ -89,7 +89,7 @@ pub fn handle_help_command(_line: &str) {
 /// 处理fg命令
 pub fn handle_fg_command(line: &str, job_manager: &mut JobManager) {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    
+
     if parts.len() > 1 {
         // 指定作业 ID
         let job_spec = parts[1];
@@ -113,7 +113,7 @@ pub fn handle_fg_command(line: &str, job_manager: &mut JobManager) {
 /// 处理bg命令
 pub fn handle_bg_command(line: &str, job_manager: &mut JobManager) {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    
+
     if parts.len() > 1 {
         // 指定作业 ID
         let job_spec = parts[1];
