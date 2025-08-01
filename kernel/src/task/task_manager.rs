@@ -1,15 +1,18 @@
+use core::sync::atomic::Ordering;
+
 /// 统一的任务管理器
 ///
 /// 这个模块是系统中所有进程管理的中心，提供统一的抽象接口。
 /// 它隐藏了进程在不同状态下的存储细节（调度器队列、睡眠队列、当前运行等），
 /// 对外只暴露简洁的进程管理API。
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
 use spin::RwLock;
 
 use crate::{
-    arch::hart::MAX_CORES,
-    task::{multicore::CORE_MANAGER, TaskControlBlock, TaskStatus}, timer::get_time_ns,
+    arch::hart::{hart_id, MAX_CORES},
+    task::{self, context::TaskContext, current_processor, processor::CORE_MANAGER, TaskControlBlock, TaskStatus},
+    timer::{get_time_ns, get_time_us},
 };
 
 /// 调度策略
@@ -92,7 +95,6 @@ impl TaskManager {
                 // 僵尸进程不需要调度
             }
         }
-
     }
 
     /// 从系统中移除进程
@@ -202,12 +204,7 @@ impl TaskManager {
 
     /// 更新进程状态
     /// 当进程状态发生变化时，需要调用此函数来维护一致性
-    pub fn update_task_status(
-        &self,
-        pid: usize,
-        old_status: TaskStatus,
-        new_status: TaskStatus,
-    ) {
+    pub fn update_task_status(&self, pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
         if let Some(task) = self.find_task_by_pid(pid) {
             // 根据状态变化进行相应的调度器操作
             match (old_status, new_status) {
@@ -362,9 +359,6 @@ lazy_static! {
     pub static ref TASK_MANAGER: TaskManager = TaskManager::new();
 }
 
-// 对外统一接口函数
-// 这些函数隐藏了内部实现细节，提供简洁的API
-
 /// 添加任务到系统
 pub fn add_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.add_task(task);
@@ -415,11 +409,6 @@ pub fn remove_task(pid: usize) -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.remove_task(pid)
 }
 
-/// 更新任务状态
-pub fn update_task_status(pid: usize, old_status: TaskStatus, new_status: TaskStatus) {
-    TASK_MANAGER.update_task_status(pid, old_status, new_status);
-}
-
 /// 同步所有任务状态
 pub fn sync_all_task_states() {
     TASK_MANAGER.sync_all_task_states();
@@ -430,8 +419,27 @@ pub fn get_task_on_core(core_id: usize) -> Option<Arc<TaskControlBlock>> {
     TASK_MANAGER.task_on_core(core_id)
 }
 
+/// 添加任务到睡眠队列
+pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
+    TASK_MANAGER.add_sleeping_task(task, wake_time_ns);
+}
+
+/// 获取所有睡眠任务
+pub fn get_sleeping_tasks() -> Vec<Arc<TaskControlBlock>> {
+    TASK_MANAGER.sleeping_tasks()
+}
+
+/// 从睡眠队列中移除指定任务
+pub fn remove_sleeping_task(task_pid: usize) -> bool {
+    TASK_MANAGER.remove_sleeping_task(task_pid)
+}
+
+/// 获取睡眠任务数量
+pub fn get_sleeping_task_count() -> usize {
+    TASK_MANAGER.sleeping_task_count()
+}
+
 /// 安全的状态更新函数
-/// 这个函数应该被用来替代直接修改 task.task_status
 pub fn set_task_status(task: &Arc<TaskControlBlock>, new_status: TaskStatus) {
     let old_status = {
         let mut status_guard = task.task_status.lock();
@@ -442,18 +450,8 @@ pub fn set_task_status(task: &Arc<TaskControlBlock>, new_status: TaskStatus) {
 
     // 通知统一任务管理器状态已改变
     if old_status != new_status {
-        update_task_status(task.pid(), old_status, new_status);
+        TASK_MANAGER.update_task_status(task.pid(), old_status, new_status);
     }
-}
-
-/// 添加任务到睡眠队列
-pub fn add_sleeping_task(task: Arc<TaskControlBlock>, wake_time_ns: u64) {
-    TASK_MANAGER.add_sleeping_task(task, wake_time_ns);
-}
-
-/// 获取所有睡眠任务
-pub fn get_sleeping_tasks() -> Vec<Arc<TaskControlBlock>> {
-    TASK_MANAGER.sleeping_tasks()
 }
 
 /// 检查并唤醒到期的睡眠任务
@@ -468,21 +466,196 @@ pub fn check_and_wakeup_sleeping_tasks(current_time_ns: u64) -> Vec<Arc<TaskCont
     awakened_tasks
 }
 
-/// 从睡眠队列中移除指定任务
-pub fn remove_sleeping_task(task_pid: usize) -> bool {
-    TASK_MANAGER.remove_sleeping_task(task_pid)
+/// 统一的任务退出清理函数
+///
+/// # 参数
+/// - task: 要清理的任务
+/// - exit_code: 退出码
+/// - from_signal: 是否来自信号终止（影响父子关系处理）
+pub fn perform_task_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32, from_signal: bool) {
+    let pid = task.pid();
+
+    // 设置退出状态
+    task.set_exit_code(exit_code);
+    set_task_status(task, TaskStatus::Zombie);
+
+    // 关闭所有文件描述符并清理文件锁
+    task.file.lock().close_all_fds_and_cleanup_locks(pid);
+
+    // 重新父化子进程到init进程
+    reparent_children_to_init(task);
+
+    // 处理父子关系
+    handle_parent_child_relationship(task, from_signal);
 }
 
-/// 获取睡眠任务数量
-pub fn get_sleeping_task_count() -> usize {
-    TASK_MANAGER.sleeping_task_count()
+/// 将进程的子进程重新父化给init进程
+fn reparent_children_to_init(task: &Arc<TaskControlBlock>) {
+    let pid = task.pid();
+
+    if let Some(init_proc) = TASK_MANAGER.init_task() {
+        if pid == init_proc.pid() {
+            error!("init process exit with exit_code {}", task.exit_code());
+            return;
+        }
+
+        let children_to_reparent: Vec<_> = task
+            .children
+            .lock()
+            .iter()
+            .filter(|child| child.pid() != pid)
+            .cloned()
+            .collect();
+
+        if !children_to_reparent.is_empty() {
+            // 设置子进程的新父进程
+            for child in &children_to_reparent {
+                child.set_parent(Arc::downgrade(&init_proc));
+            }
+
+            // 将子进程添加到init进程的子进程列表
+            let mut init_children = init_proc.children.lock();
+            for child in children_to_reparent {
+                init_children.push(child);
+            }
+        }
+    }
 }
 
-/// 获取可调度任务数量（用于调试）
-pub fn schedulable_task_count() -> usize {
-    // 返回Ready和Running状态的任务数量
-    let process_stats = TASK_MANAGER.task_stats();
-    (process_stats.ready + process_stats.running) as usize
+/// 处理进程退出时的父子关系
+fn handle_parent_child_relationship(task: &Arc<TaskControlBlock>, from_signal: bool) {
+    let Some(parent) = task.parent() else {
+        return;
+    };
+
+    let pid = task.pid();
+
+    // 如果是信号终止，需要从父进程的子进程列表中移除并转移给init
+    if from_signal {
+        let removed = remove_from_parent_children(&parent, task);
+
+        if removed {
+            transfer_to_init_if_needed(task, &parent);
+        }
+    }
+
+    // 唤醒等待的父进程
+    wake_waiting_parent(&parent);
+}
+
+/// 从父进程的子进程列表中移除指定任务
+fn remove_from_parent_children(
+    parent: &Arc<TaskControlBlock>,
+    task: &Arc<TaskControlBlock>,
+) -> bool {
+    let mut parent_children = parent.children.lock();
+    if let Some(pos) = parent_children
+        .iter()
+        .position(|child| Arc::ptr_eq(child, task))
+    {
+        parent_children.remove(pos);
+        debug!(
+            "Removed zombie process {} from parent {} children list",
+            task.pid(),
+            parent.pid()
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// 如果需要，将任务转移给init进程
+fn transfer_to_init_if_needed(task: &Arc<TaskControlBlock>, parent: &Arc<TaskControlBlock>) {
+    let Some(init_proc) = TASK_MANAGER.init_task() else {
+        return;
+    };
+
+    let pid = task.pid();
+
+    // 只有当父进程不是init进程时才转移
+    if pid != init_proc.pid() && parent.pid() != init_proc.pid() {
+        init_proc.children.lock().push(task.clone());
+        task.set_parent(Arc::downgrade(&init_proc));
+        debug!("Transferred zombie process {} to init process", pid);
+    }
+}
+
+/// 唤醒等待的父进程
+fn wake_waiting_parent(parent: &Arc<TaskControlBlock>) {
+    if *parent.task_status.lock() == TaskStatus::Sleeping {
+        parent.wakeup();
+    }
+}
+
+/// 暂停任务并重新加入调度队列（如果需要）
+/// 这是 processor.rs 中 suspend_current_and_run_next 的统一接口
+pub fn suspend_task_and_reschedule_if_needed(task: Arc<TaskControlBlock>) {
+    let should_readd = *task.task_status.lock() == TaskStatus::Running;
+    if should_readd {
+        set_task_status(&task, TaskStatus::Ready);
+    }
+}
+
+/// 准备任务以便挂起（统一处理运行时间统计）
+/// 返回任务上下文指针
+pub fn prepare_task_for_suspend(
+    task: &Arc<TaskControlBlock>,
+) -> *mut crate::task::context::TaskContext {
+    let end_time = get_time_us();
+    let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
+
+     // 更新调度器的虚拟运行时间
+     task.sched.lock().update_vruntime(runtime);
+
+    &mut *task.mm.task_cx.lock() as *mut _
+}
+
+/// 标记进程进入内核态
+pub fn mark_kernel_entry() {
+    if let Some(task) = current_task() {
+        let current_time = get_time_us();
+        let mut in_kernel = task.in_kernel_mode.lock();
+
+        // 如果之前在用户态，计算用户态时间
+        if !*in_kernel {
+            let last_runtime = task.last_runtime.load(Ordering::Relaxed);
+            if current_time > last_runtime {
+                let user_time = current_time - last_runtime;
+                task.user_cpu_time.fetch_add(user_time, Ordering::Relaxed);
+                task.total_cpu_time.fetch_add(user_time, Ordering::Relaxed);
+            }
+
+            // 记录进入内核态的时间
+            task.kernel_enter_time
+                .store(current_time, Ordering::Relaxed);
+            *in_kernel = true;
+        }
+    }
+}
+
+/// 标记进程退出内核态
+pub fn mark_kernel_exit() {
+    if let Some(task) = current_task() {
+        let current_time = get_time_us();
+        let mut in_kernel = task.in_kernel_mode.lock();
+
+        // 如果之前在内核态，计算内核态时间
+        if *in_kernel {
+            let kernel_enter_time = task.kernel_enter_time.load(Ordering::Relaxed);
+            if current_time > kernel_enter_time {
+                let kernel_time = current_time - kernel_enter_time;
+                task.kernel_cpu_time
+                    .fetch_add(kernel_time, Ordering::Relaxed);
+                task.total_cpu_time
+                    .fetch_add(kernel_time, Ordering::Relaxed);
+            }
+
+            // 更新最后运行时间为退出内核态的时间
+            task.last_runtime.store(current_time, Ordering::Relaxed);
+            *in_kernel = false;
+        }
+    }
 }
 
 // nanosleep 实现
@@ -490,34 +663,30 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     if nanoseconds == 0 {
         return 0;
     }
-
     let start_time = get_time_ns();
-
     // 无论时间长短，都使用睡眠队列来保证准确性
-    if let Some(current_task) = crate::task::current_task() {
+    if let Some(current_task) = current_task() {
         let wake_time = start_time + nanoseconds;
         let pid = current_task.pid();
 
-        // 使用统一的任务状态更新方法
-        crate::task::set_task_status(&current_task, crate::task::TaskStatus::Sleeping);
-
-        // 将当前任务加入睡眠队列
+        set_task_status(&current_task, TaskStatus::Sleeping);
         add_sleeping_task(current_task, wake_time);
-
         // 让出CPU，等待被唤醒（此时任务状态为Sleeping，不会被重新加入就绪队列）
-        crate::task::block_current_and_run_next();
+        block_current_and_run_next();
 
         // 醒来后检查实际时间
         let end_time = get_time_ns();
         let actual_sleep = end_time - start_time;
-        
+
         // 检查是否睡眠时间足够
         if actual_sleep < nanoseconds {
             // 睡眠被提前中断，检查是否还需要继续睡眠
             let remaining_ns = nanoseconds - actual_sleep;
-            if let Some(current_task) = crate::task::current_task() {
+            if let Some(current_task) = task::current_task() {
                 // 检查唤醒时间是否被清零（表示被信号中断）
-                let wake_time = current_task.wake_time_ns.load(core::sync::atomic::Ordering::Relaxed);
+                let wake_time = current_task
+                    .wake_time_ns
+                    .load(core::sync::atomic::Ordering::Relaxed);
                 if wake_time == 0 {
                     // 唤醒时间被清零，说明被信号中断，返回 EINTR
                     return -4; // EINTR
@@ -536,4 +705,192 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
     }
 
     0
+}
+
+/// 常量定义
+pub const IDLE_PID: usize = 0;
+
+/// 获取并移除当前任务
+pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
+    current_processor().lock().current.take()
+}
+
+/// 获取当前任务的引用
+pub fn current_task() -> Option<Arc<TaskControlBlock>> {
+    current_processor().lock().current.clone()
+}
+
+/// 获取当前任务的用户空间页表令牌
+pub fn current_user_token() -> usize {
+    current_task()
+        .expect("No current task when getting user token")
+        .mm
+        .memory_set
+        .lock()
+        .token()
+}
+
+/// 获取当前任务的陷阱上下文
+pub fn current_trap_context() -> &'static mut crate::trap::TrapContext {
+    current_task()
+        .expect("No current task when getting trap context")
+        .mm
+        .trap_context()
+}
+
+/// 获取当前工作目录
+pub fn current_cwd() -> alloc::string::String {
+    current_task()
+        .map(|task| task.cwd.lock().clone())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+pub fn run_tasks() -> ! {
+    let current_hart = hart_id();
+    CORE_MANAGER.activate_core(current_hart);
+
+    loop {
+        if let Err(_) = crate::watchdog::feed() {
+            // Watchdog 可能被禁用，这是正常的
+        }
+
+        // 1. 尝试从本地调度器获取任务
+        let task = {
+            let mut processor = current_processor().lock();
+            processor.fetch_task()
+        };
+
+        if let Some(task) = task {
+            if !task.is_zombie() {
+                // 处理信号检查
+                if task.signal_state.lock().has_deliverable_signals() {
+                    if !handle_task_signals(&task) {
+                        // 信号处理后任务不应该继续调度（可能被终止或停止）
+                        continue;
+                    }
+                }
+
+                // 检查任务是否处于睡眠状态
+                if *task.task_status.lock() == TaskStatus::Sleeping {
+                    // 睡眠状态的任务不应该被调度，跳过
+                    continue;
+                }
+
+                // 切换到任务
+                switch_to_task(task);
+                continue;
+            }
+        }
+
+        // 2. 尝试工作窃取
+        if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
+            if !stolen_task.is_zombie() {
+                // 检查被窃取的任务是否处于睡眠状态
+                if *stolen_task.task_status.lock() == TaskStatus::Sleeping {
+                    // 睡眠状态的任务不应该被调度，跳过
+                    continue;
+                }
+
+                switch_to_task(stolen_task);
+                continue;
+            }
+        }
+
+        // 3. 没有任务，进入空闲状态
+        use riscv::asm::wfi;
+        wfi();
+    }
+}
+
+/// 处理任务信号
+/// 返回是否应该继续调度这个任务
+fn handle_task_signals(task: &Arc<TaskControlBlock>) -> bool {
+    use crate::signal::SignalDelivery;
+
+    let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
+
+    if !should_continue {
+        if let Some(code) = exit_code {
+            debug!(
+                "Task {} terminated by signal with exit code {}",
+                task.pid(),
+                code
+            );
+            // 执行任务清理，但不调度（因为我们在调度循环中）
+            crate::task::task_manager::perform_task_exit_cleanup(task, code, true);
+        }
+        return false; // 不应该继续调度
+    }
+
+    // 检查任务是否被信号停止（例如 SIGTSTP/Ctrl+Z）
+    if *task.task_status.lock() == TaskStatus::Stopped {
+        debug!("Task {} was stopped by signal", task.pid());
+        return false; // 被停止的任务不应该被调度
+    }
+
+    true // 可以继续调度
+}
+
+/// 挂起当前任务并运行下一个任务
+pub fn suspend_current_and_run_next() {
+    let task = take_current_task().expect("No current task to suspend");
+    let task_cx_ptr = prepare_task_for_suspend(&task);
+    suspend_task_and_reschedule_if_needed(task);
+    schedule(task_cx_ptr);
+}
+
+/// 阻塞当前任务并切换到下一个任务
+pub fn block_current_and_run_next() {
+    let task = take_current_task().expect("No current task to block");
+    let task_cx_ptr = prepare_task_for_suspend(&task);
+    schedule(task_cx_ptr);
+}
+
+/// 退出当前任务并运行下一个任务
+pub fn exit_current_and_run_next(exit_code: i32) {
+    let task = take_current_task().expect("No current task to exit");
+
+    // 执行完整的任务清理
+    perform_task_exit_cleanup(&task, exit_code, false);
+
+    // 调度到下一个任务
+    schedule(&mut *task.mm.task_cx.lock() as *mut _);
+}
+
+/// 切换到指定任务
+fn switch_to_task(task: Arc<TaskControlBlock>) {
+    let mut processor = current_processor().lock();
+
+    let next_task_cx_ptr = {
+        let task_context = task.mm.task_cx.lock();
+        let next_task_cx_ptr = &*task_context as *const TaskContext;
+        *task.task_status.lock() = TaskStatus::Running;
+
+        // 记录任务开始运行的时间
+        let start_time = get_time_us();
+        task.last_runtime.store(start_time, Ordering::Relaxed);
+
+        next_task_cx_ptr
+    };
+
+    processor.current = Some(task.clone());
+    let idle_task_cx_ptr = processor.idle_context_ptr();
+    drop(processor);
+
+    // 切换到任务
+    unsafe {
+        crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
+    }
+}
+
+/// 调度函数 - 切换到idle控制流
+fn schedule(switched_task_cx_ptr: *mut TaskContext) {
+    let idle_task_cx_ptr = {
+        let mut processor = current_processor().lock();
+        processor.idle_context_ptr()
+    };
+
+    unsafe {
+        crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    }
 }

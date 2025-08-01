@@ -3,7 +3,7 @@
 #![feature(alloc_error_handler)]
 #![allow(unused)]
 
-use crate::memory::KERNEL_SPACE;
+use crate::{memory::KERNEL_SPACE, task::CORE_MANAGER};
 
 extern crate alloc;
 
@@ -53,7 +53,7 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         task::init();
 
         // 激活boot核心
-        task::multicore::CORE_MANAGER.activate_core(hart_id);
+        CORE_MANAGER.activate_core(hart_id);
 
         task::run_tasks();
     } else {
@@ -62,7 +62,7 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         timer::enable_timer_interrupt();
 
         // 激活从核心
-        task::multicore::CORE_MANAGER.activate_core(hart_id);
+        CORE_MANAGER.activate_core(hart_id);
 
         task::run_tasks();
     }
