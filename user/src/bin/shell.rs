@@ -426,6 +426,9 @@ fn main() -> i32 {
                         job_manager.list_jobs();
                     } else if line.starts_with("fg") {
                         handle_fg_command(line, &mut job_manager);
+                        // fg 命令后不立即显示提示符，让前台作业运行
+                        editor.clear();
+                        continue;
                     } else if line.starts_with("bg") {
                         handle_bg_command(line, &mut job_manager);
                     } else {

@@ -28,6 +28,7 @@ pub struct ProcessStats {
     pub running: u32,
     pub ready: u32,
     pub sleeping: u32,
+    pub stopped: u32,
     pub zombie: u32,
 }
 
@@ -80,6 +81,9 @@ impl TaskManager {
             }
             TaskStatus::Sleeping => {
                 // 睡眠任务通过wake_time_ns字段管理，无需额外处理
+            }
+            TaskStatus::Stopped => {
+                // 被信号停止的任务不参与调度，直到收到SIGCONT信号
             }
             TaskStatus::Running => {
                 // 运行中的任务已经在某个核心上，不需要添加到调度器
@@ -142,6 +146,7 @@ impl TaskManager {
         let mut running = 0u32;
         let mut ready = 0u32;
         let mut sleeping = 0u32;
+        let mut stopped = 0u32;
         let mut zombie = 0u32;
 
         for task in processes.values() {
@@ -150,6 +155,7 @@ impl TaskManager {
                 TaskStatus::Running => running += 1,
                 TaskStatus::Ready => ready += 1,
                 TaskStatus::Sleeping => sleeping += 1,
+                TaskStatus::Stopped => stopped += 1,
                 TaskStatus::Zombie => zombie += 1,
             }
         }
@@ -159,6 +165,7 @@ impl TaskManager {
             running,
             ready,
             sleeping,
+            stopped,
             zombie,
         }
     }
@@ -214,8 +221,15 @@ impl TaskManager {
                 (TaskStatus::Running, TaskStatus::Sleeping) => {
                     // 从某个核心的current移动到睡眠队列，由 timer 模块处理
                 }
+                (TaskStatus::Running, TaskStatus::Stopped) => {
+                    // 从某个核心的current移动到停止状态，不参与调度
+                }
                 (TaskStatus::Sleeping, TaskStatus::Ready) => {
                     // 从睡眠队列移动到调度器队列
+                    CORE_MANAGER.add_task(task);
+                }
+                (TaskStatus::Stopped, TaskStatus::Ready) => {
+                    // 从停止状态恢复到调度器队列
                     CORE_MANAGER.add_task(task);
                 }
                 (_, TaskStatus::Zombie) => {
@@ -489,6 +503,23 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
         // 醒来后检查实际时间
         let end_time = get_time_ns();
         let actual_sleep = end_time - start_time;
+        
+        // 检查是否睡眠时间足够
+        if actual_sleep < nanoseconds {
+            // 睡眠被提前中断，检查是否还需要继续睡眠
+            let remaining_ns = nanoseconds - actual_sleep;
+            if let Some(current_task) = crate::task::current_task() {
+                // 检查唤醒时间是否被清零（表示被信号中断）
+                let wake_time = current_task.wake_time_ns.load(core::sync::atomic::Ordering::Relaxed);
+                if wake_time == 0 {
+                    // 唤醒时间被清零，说明被信号中断，返回 EINTR
+                    return -4; // EINTR
+                } else {
+                    // 继续睡眠剩余时间
+                    return nanosleep(remaining_ns);
+                }
+            }
+        }
     } else {
         // 如果没有当前任务，使用忙等待（不推荐，但作为备用方案）
         let start_time = get_time_ns();

@@ -87,6 +87,7 @@ pub enum TaskStatus {
     Running,
     Zombie,
     Sleeping, // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
+    Stopped,  // 对应Linux的TASK_STOPPED，被信号暂停（如SIGTSTP）
 }
 
 #[derive(Debug)]
@@ -344,6 +345,9 @@ pub struct TaskControlBlock {
     /// 睡眠唤醒时间（纳秒），0表示不在睡眠中
     pub wake_time_ns: AtomicU64,
 
+    /// 被停止前的状态（用于SIGCONT恢复）
+    pub prev_status_before_stop: Mutex<Option<TaskStatus>>,
+
     /// 进程启动时的命令行参数
     pub args: Mutex<Option<Vec<String>>>,
     /// 进程启动时的环境变量
@@ -409,6 +413,7 @@ impl TaskControlBlock {
             egid: AtomicU32::new(0),
             stdin_nonblock: AtomicBool::new(false),
             wake_time_ns: AtomicU64::new(0),
+            prev_status_before_stop: Mutex::new(None),
         };
 
         // prepare TrapContext in user space
@@ -506,6 +511,7 @@ impl TaskControlBlock {
             egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
             stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
             wake_time_ns: AtomicU64::new(0),
+            prev_status_before_stop: Mutex::new(None),
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
             mm: Memory {

@@ -519,25 +519,35 @@ impl SignalDelivery {
 
                 SignalAction::Stop => {
                     debug!("Signal {} stops process", signal as u32);
-                    // 更新任务状态为睡眠，并通知任务管理器
+                    // 保存当前状态以便SIGCONT恢复
                     let old_status = *task.task_status.lock();
-                    *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                    *task.prev_status_before_stop.lock() = Some(old_status);
+                    // 更新任务状态为停止，并通知任务管理器
+                    *task.task_status.lock() = crate::task::TaskStatus::Stopped;
+
+                    // 如果任务在睡眠中被停止，保留其唤醒时间不变，以便恢复时继续睡眠
+                    // 不调用 remove_sleeping_task，因为我们希望在恢复时能继续睡眠
+
                     // 通知任务管理器状态变化，这会将任务从调度队列中移除
-                    crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Sleeping);
-                    // 停止信号不终止进程，只是挂起
-                    return (true, None);
+                    crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Stopped);
+                    // 停止信号暂停进程执行，但不终止进程
+                    // 返回 false 让调度器知道不应该继续执行这个进程
+                    return (false, None);
                 }
 
                 SignalAction::Continue => {
                     debug!("Signal {} continues process", signal as u32);
                     // 如果进程被停止，则恢复运行
                     let mut status = task.task_status.lock();
-                    if *status == crate::task::TaskStatus::Sleeping {
+                    if *status == crate::task::TaskStatus::Stopped {
                         let old_status = *status;
-                        *status = crate::task::TaskStatus::Ready;
+                        // 恢复到停止前的状态，如果没有记录则默认为Ready
+                        let restored_status = task.prev_status_before_stop.lock().take().unwrap_or(crate::task::TaskStatus::Ready);
+                        *status = restored_status;
                         drop(status); // 释放锁
                         // 通知任务管理器状态变化，这会将任务重新添加到调度队列
-                        crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Ready);
+                        crate::task::update_task_status(task.pid(), old_status, restored_status);
+                        debug!("Process PID {} restored from Stopped to {:?}", task.pid(), restored_status);
                     }
                     // 继续处理下一个信号
                     continue;
@@ -615,25 +625,36 @@ impl SignalDelivery {
                 (false, Some(signal as i32))
             }
             SignalAction::Stop => {
-                // 暂停进程（设置为sleeping状态）
+                // 暂停进程（设置为stopped状态）
                 let old_status = *task.task_status.lock();
-                *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                // 保存当前状态以便SIGCONT恢复
+                *task.prev_status_before_stop.lock() = Some(old_status);
+                *task.task_status.lock() = crate::task::TaskStatus::Stopped;
+
+                // 如果任务在睡眠中被停止，保留其唤醒时间不变，以便恢复时继续睡眠
+                // 不调用 remove_sleeping_task，因为我们希望在恢复时能继续睡眠
+
                 // 通知任务管理器状态变化，这会将任务从调度队列中移除
-                crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Sleeping);
-                info!("Signal {} stops process PID {}", signal as u32, task.pid());
-                (true, None)
+                crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Stopped);
+                info!("Signal {} stops process PID {} (was {:?})", signal as u32, task.pid(), old_status);
+                // 返回 false 让调度器知道不应该继续执行这个进程
+                (false, None)
             }
             SignalAction::Continue => {
-                // 继续进程（如果进程正在睡眠状态）
-                if *task.task_status.lock() == crate::task::TaskStatus::Sleeping {
-                    let old_status = *task.task_status.lock();
-                    *task.task_status.lock() = crate::task::TaskStatus::Ready;
+                // 继续进程（如果进程正在停止状态）
+                let current_status = *task.task_status.lock();
+                if current_status == crate::task::TaskStatus::Stopped {
+                    let old_status = current_status;
+                    // 恢复到停止前的状态，如果没有记录则默认为Ready
+                    let restored_status = task.prev_status_before_stop.lock().take().unwrap_or(crate::task::TaskStatus::Ready);
+                    *task.task_status.lock() = restored_status;
                     // 通知任务管理器状态变化，这会将任务重新添加到调度队列
-                    crate::task::update_task_status(task.pid(), old_status, crate::task::TaskStatus::Ready);
+                    crate::task::update_task_status(task.pid(), old_status, restored_status);
                     info!(
-                        "Signal {} continues process PID {}",
+                        "Signal {} continues process PID {} (restored to {:?})",
                         signal as u32,
-                        task.pid()
+                        task.pid(),
+                        restored_status
                     );
                 }
                 (true, None)
@@ -887,7 +908,10 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
                 }
                 Signal::SIGSTOP => {
                     info!("Stopping process PID {} with SIGSTOP", target_pid);
-                    *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+                    let old_status = *task.task_status.lock();
+                    *task.task_status.lock() = crate::task::TaskStatus::Stopped;
+                    // 通知任务管理器状态变化
+                    crate::task::update_task_status(target_pid, old_status, crate::task::TaskStatus::Stopped);
                 }
                 _ => unreachable!(),
             }
@@ -908,9 +932,27 @@ pub fn send_signal_to_process(target_pid: usize, signal: Signal) -> Result<(), S
                     debug!("Process PID {} not found on any core, it may have just changed state", target_pid);
                 }
             } else if current_status == crate::task::TaskStatus::Sleeping {
-                // 如果进程在睡眠，使用现有的唤醒机制
-                task.wakeup();
-                info!("Waking up sleeping PID {} to handle signal {}", target_pid, signal as u32);
+                // 如果进程在睡眠，检查信号类型决定是否唤醒
+                if signal.is_stop_signal() {
+                    // 停止信号不需要唤醒进程，让进程保持睡眠状态
+                    debug!("Process PID {} already sleeping, stop signal {} will keep it stopped", target_pid, signal as u32);
+                } else {
+                    // 其他信号需要唤醒进程来处理
+                    task.wakeup();
+                    debug!("Waking up sleeping PID {} to handle signal {}", target_pid, signal as u32);
+                }
+            } else if current_status == crate::task::TaskStatus::Stopped {
+                // 如果进程被停止，检查信号类型决定如何处理
+                if signal.is_continue_signal() {
+                    // SIGCONT信号会直接在信号处理中唤醒进程，这里不需要额外操作
+                    debug!("Process PID {} is stopped, SIGCONT will be handled by signal delivery", target_pid);
+                } else if signal.is_stop_signal() {
+                    // 停止信号对已经停止的进程无效
+                    debug!("Process PID {} already stopped, ignoring additional stop signal {}", target_pid, signal as u32);
+                } else {
+                    // 其他信号可能需要唤醒进程处理，但进程会在处理完信号后继续运行
+                    debug!("Process PID {} is stopped, signal {} will be queued for processing", target_pid, signal as u32);
+                }
             }
         }
 

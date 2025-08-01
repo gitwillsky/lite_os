@@ -201,6 +201,9 @@ fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
     if !should_continue {
         if let Some(code) = exit_code {
             exit_current_and_run_next(code);
+        } else {
+            // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
+            task::suspend_current_and_run_next();
         }
     }
     should_continue
