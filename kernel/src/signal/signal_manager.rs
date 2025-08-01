@@ -15,7 +15,6 @@ use crate::{
 use super::signal::{Signal, SignalAction, SignalDisposition, SignalError, SignalSet, SignalState};
 use super::signal_state::{AtomicSignalState, DEFAULT_BATCH_PROCESSOR};
 use super::signal_delivery::{SafeSignalDelivery, UserStackValidator};
-use super::task_state_manager::{TASK_STATE_MANAGER, TaskStateTransitionValidator};
 use super::multicore_signal::{MULTICORE_SIGNAL_MANAGER, InterCoreSignalMessage};
 
 /// 信号相关事件类型
@@ -256,8 +255,13 @@ impl SignalManager {
 
     /// 停止任务
     fn stop_task(&self, task: &TaskControlBlock) {
-        if let Err(e) = TASK_STATE_MANAGER.stop_task(task, true) {
-            warn!("Failed to stop task PID {}: {}", task.pid(), e);
+        // 保存停止前的状态
+        let old_status = *task.task_status.lock();
+        *task.prev_status_before_stop.lock() = Some(old_status);
+
+        // 使用统一的状态管理
+        if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
+            crate::task::set_task_status(&task_arc, TaskStatus::Stopped);
         }
     }
 
@@ -376,8 +380,14 @@ impl SignalManager {
 
     /// 继续被停止的任务
     fn continue_task(&self, task: &TaskControlBlock) {
-        if let Err(e) = TASK_STATE_MANAGER.resume_task(task) {
-            warn!("Failed to resume task PID {}: {}", task.pid(), e);
+        // 获取停止前的状态
+        let restored_status = task.prev_status_before_stop.lock()
+            .take()
+            .unwrap_or(TaskStatus::Ready);
+
+        // 使用统一的状态管理恢复任务
+        if let Some(task_arc) = crate::task::find_task_by_pid(task.pid()) {
+            crate::task::set_task_status(&task_arc, restored_status);
         }
     }
 

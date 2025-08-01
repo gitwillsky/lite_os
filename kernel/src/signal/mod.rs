@@ -5,7 +5,6 @@ pub mod signal;
 pub mod signal_manager;
 pub mod signal_state;
 pub mod signal_delivery;
-pub mod task_state_manager;
 pub mod multicore_signal;
 
 // Re-export commonly used types and functions
@@ -34,11 +33,6 @@ pub use signal_delivery::{
     SafeSignalDelivery, UserStackValidator, SignalDeliveryError,
 };
 
-pub use task_state_manager::{
-    TaskStateManager, TaskStateTransitionValidator, TaskStatusStats,
-    TaskStateEvent, TASK_STATE_MANAGER,
-    update_task_status, stop_task, resume_task, terminate_task, get_task_statistics,
-};
 
 pub use multicore_signal::{
     MultiCoreSignalManager, InterCoreSignalMessage, CoreSignalStats,

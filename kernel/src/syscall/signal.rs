@@ -262,10 +262,8 @@ pub fn sys_pause() -> isize {
             return -1; // EINTR
         }
 
-        // 使用任务状态管理器进入睡眠状态
-        if let Err(_) = crate::signal::TASK_STATE_MANAGER.sleep_task(&task, 0) {
-            return -1;
-        }
+        // 进入睡眠状态等待信号
+        crate::task::set_task_status(&task, crate::task::TaskStatus::Sleeping);
 
         // 让出CPU
         crate::task::suspend_current_and_run_next();
