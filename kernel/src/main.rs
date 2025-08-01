@@ -23,6 +23,7 @@ mod lang_item;
 
 mod id;
 mod memory;
+mod signal;
 mod sync;
 mod syscall;
 mod task;
@@ -46,8 +47,9 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         timer::init_rtc();
         timer::enable_timer_interrupt();
         watchdog::init();
-        fs::vfs::init_vfs();
-        drivers::init_devices();
+        fs::vfs::init();
+        drivers::init();
+        signal::init();
         task::init();
 
         // 激活boot核心

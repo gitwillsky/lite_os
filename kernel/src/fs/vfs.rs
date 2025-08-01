@@ -208,7 +208,7 @@ use spin::Once;
 
 pub static VFS_MANAGER: Once<VirtualFileSystem> = Once::new();
 
-pub fn init_vfs() {
+pub fn init() {
     VFS_MANAGER.call_once(|| VirtualFileSystem::new());
 }
 

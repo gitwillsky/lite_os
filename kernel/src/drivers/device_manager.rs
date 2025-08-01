@@ -12,7 +12,7 @@ static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 static HAL_DEVICES: Mutex<Vec<Arc<dyn Device>>> = Mutex::new(Vec::new());
 static INTERRUPT_CONTROLLER: Mutex<Option<BasicInterruptController>> = Mutex::new(None);
 
-pub fn init_devices() {
+pub fn init() {
     init_interrupt_controller();
     scan_virtio_devices();
     init_filesystems();
@@ -28,7 +28,7 @@ fn scan_virtio_devices() {
     let board_info = board_info();
 
     debug!("[device] Found {} VirtIO devices", board_info.virtio_count);
-    
+
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
@@ -38,10 +38,10 @@ fn scan_virtio_devices() {
                 // 同时存储为BlockDevice和HAL Device
                 let block_device = device.clone() as Arc<dyn BlockDevice>;
                 let hal_device = device as Arc<dyn Device>;
-                
+
                 BLOCK_DEVICES.lock().push(block_device);
                 HAL_DEVICES.lock().push(hal_device);
-                
+
                 debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
             } else {
                 debug!("[device] Skipping non-block VirtIO device at {:#x}", base_addr);
@@ -91,7 +91,7 @@ where
 
 pub fn handle_external_interrupt() {
     debug!("[device] Handling external interrupt");
-    
+
     if let Some(controller) = INTERRUPT_CONTROLLER.lock().as_ref() {
         let pending = controller.pending_interrupts();
         for vector in pending {

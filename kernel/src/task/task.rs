@@ -21,12 +21,12 @@ use crate::{
         kernel_stack::KernelStack,
         mm::{self, MemorySet},
     },
+    signal::SignalState,
     sync::UPSafeCell,
     task::{
         add_task,
         context::TaskContext,
         pid::{PidHandle, alloc_pid},
-        signal::SignalState,
     },
     trap::{TrapContext, trap_handler},
 };
@@ -81,7 +81,7 @@ impl FileDescriptor {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TaskStatus {
     Ready,
     Running,

@@ -1,11 +1,9 @@
 use crate::memory::page_table::translated_byte_buffer;
-use crate::task::{
-    current_task, current_user_token,
-    signal::{
-        Signal, SignalAction, SignalDelivery, SignalDisposition, SignalError, SignalSet,
-        send_signal_to_process,
-    },
+use crate::signal::{
+    Signal, SignalAction, SignalDelivery, SignalDisposition, SignalError, SignalSet,
+    send_signal_to_process, SIGNAL_MANAGER,
 };
+use crate::task::{current_task, current_user_token};
 
 /// 信号掩码操作常量
 pub const SIG_BLOCK: i32 = 0;
@@ -16,11 +14,12 @@ pub const SIG_SETMASK: i32 = 2;
 pub const SIG_DFL: usize = 0; // 默认动作
 pub const SIG_IGN: usize = 1; // 忽略信号
 
-/// kill系统调用 - 向指定进程发送信号
+/// kill系统调用 - 向指定进程发送信号（简化版）
 pub fn sys_kill(pid: usize, sig: u32) -> isize {
     // 验证信号号是否有效
     if let Some(signal) = Signal::from_u8(sig as u8) {
-        match send_signal_to_process(pid, signal) {
+        // 直接使用信号管理器发送信号
+        match SIGNAL_MANAGER.send_signal(pid, signal) {
             Ok(()) => 0,
             Err(SignalError::ProcessNotFound) => -1, // ESRCH
             Err(SignalError::PermissionDenied) => -1, // EPERM
@@ -31,7 +30,7 @@ pub fn sys_kill(pid: usize, sig: u32) -> isize {
     }
 }
 
-/// signal系统调用 - 设置信号处理函数
+/// signal系统调用 - 设置信号处理函数（简化版）
 pub fn sys_signal(sig: u32, handler: usize) -> isize {
     if let Some(signal) = Signal::from_u8(sig as u8) {
         // 不能捕获SIGKILL和SIGSTOP
@@ -40,6 +39,13 @@ pub fn sys_signal(sig: u32, handler: usize) -> isize {
         }
 
         if let Some(task) = current_task() {
+            // 验证处理器地址
+            if handler != SIG_DFL && handler != SIG_IGN {
+                if let Err(_) = crate::signal::SafeSignalDelivery::validate_handler_address(handler) {
+                    return -1; // EINVAL
+                }
+            }
+
             // 获取当前的信号处理器
             let old_handler = task.signal_state.lock().get_handler(signal);
             let old_handler_addr = match old_handler.action {
@@ -62,7 +68,6 @@ pub fn sys_signal(sig: u32, handler: usize) -> isize {
             };
 
             task.signal_state.lock().set_handler(signal, disposition);
-
             old_handler_addr
         } else {
             -1
@@ -235,8 +240,8 @@ pub fn sys_sigreturn() -> isize {
     if let Some(task) = current_task() {
         let trap_cx = task.mm.trap_context();
 
-        // 调用信号处理引擎的sigreturn方法
-        let success = SignalDelivery::sigreturn(&task, trap_cx);
+        // 使用新的信号管理器
+        let success = SIGNAL_MANAGER.sigreturn(&task, trap_cx);
 
         if success {
             0 // 成功返回
@@ -248,18 +253,19 @@ pub fn sys_sigreturn() -> isize {
     }
 }
 
-/// pause系统调用 - 暂停进程直到收到信号
+/// pause系统调用 - 暂停进程直到收到信号（简化版）
 pub fn sys_pause() -> isize {
     if let Some(task) = current_task() {
-
         // 检查是否有待处理的信号
         if task.signal_state.lock().has_deliverable_signals() {
             // 如果有信号待处理，不暂停
             return -1; // EINTR
         }
 
-        // 设置进程为睡眠状态
-        *task.task_status.lock() = crate::task::TaskStatus::Sleeping;
+        // 使用任务状态管理器进入睡眠状态
+        if let Err(_) = crate::signal::TASK_STATE_MANAGER.sleep_task(&task, 0) {
+            return -1;
+        }
 
         // 让出CPU
         crate::task::suspend_current_and_run_next();

@@ -17,9 +17,10 @@ use riscv::{
 
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
+    signal::SIG_RETURN_ADDR,
     syscall,
     task::{
-        self, SIG_RETURN_ADDR, current_user_token, exit_current_and_run_next, mark_kernel_entry,
+        self, current_user_token, exit_current_and_run_next, mark_kernel_entry,
         mark_kernel_exit, suspend_current_and_run_next,
     },
     timer,
@@ -143,7 +144,7 @@ pub fn trap_handler() {
                         let task = task::current_task().expect("No current task");
                         let mut cx = task::current_trap_context();
 
-                        use crate::task::signal::SignalDelivery;
+                        use crate::signal::SignalDelivery;
                         if SignalDelivery::sigreturn(&task, cx) {
                             debug!("Sigreturn successful, continuing execution");
                             // 成功恢复，继续执行
@@ -185,7 +186,7 @@ pub fn trap_handler() {
 /// Helper function to check and handle pending signals
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit() -> bool {
-    let (should_continue, exit_code) = task::check_and_handle_signals();
+    let (should_continue, exit_code) = crate::signal::check_and_handle_signals();
     if !should_continue {
         if let Some(code) = exit_code {
             exit_current_and_run_next(code);
@@ -197,7 +198,7 @@ fn check_signals_and_maybe_exit() -> bool {
 /// Helper function to check and handle pending signals with existing trap context
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
-    let (should_continue, exit_code) = task::check_and_handle_signals_with_cx(trap_cx);
+    let (should_continue, exit_code) = crate::signal::check_and_handle_signals_with_cx(trap_cx);
     if !should_continue {
         if let Some(code) = exit_code {
             exit_current_and_run_next(code);

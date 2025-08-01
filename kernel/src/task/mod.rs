@@ -10,12 +10,10 @@ pub mod multicore;
 mod pid;
 mod processor;
 mod scheduler;
-pub mod signal;
 mod task;
 mod task_manager;
 
 pub use processor::*;
-pub use signal::{SIG_RETURN_ADDR, check_and_handle_signals, check_and_handle_signals_with_cx};
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
 pub use task_manager::*;
 

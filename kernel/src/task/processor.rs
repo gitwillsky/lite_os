@@ -222,7 +222,7 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 /// 处理任务信号
 /// 返回是否应该继续调度这个任务
 fn handle_task_signals(task: &Arc<TaskControlBlock>) -> bool {
-    use crate::task::signal::SignalDelivery;
+    use crate::signal::SignalDelivery;
 
     let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
 
