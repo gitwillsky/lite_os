@@ -667,6 +667,7 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
             TaskStatus::Running => 1,
             TaskStatus::Zombie => 2,
             TaskStatus::Sleeping => 3,
+            TaskStatus::Stopped => 4,
         },
         priority: sched.priority,
         nice: sched.nice,

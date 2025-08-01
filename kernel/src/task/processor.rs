@@ -236,7 +236,7 @@ fn handle_task_signals(task: &Arc<TaskControlBlock>) -> bool {
     }
     
     // 检查任务是否被信号停止（例如 SIGTSTP/Ctrl+Z）
-    if *task.task_status.lock() == TaskStatus::Sleeping {
+    if *task.task_status.lock() == TaskStatus::Stopped {
         debug!("Task {} was stopped by signal", task.pid());
         return false; // 被停止的任务不应该被调度
     }
