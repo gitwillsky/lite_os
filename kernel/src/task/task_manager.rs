@@ -214,6 +214,10 @@ impl TaskManager {
                 (TaskStatus::Ready, TaskStatus::Running) => {
                     // 从调度器队列移动到某个核心的current，由调度器处理
                 }
+                (TaskStatus::Ready, TaskStatus::Stopped) => {
+                    // 从调度器队列移动到停止状态，不参与调度
+                    // 任务已经从调度器中移除，无需额外操作
+                }
                 (TaskStatus::Running, TaskStatus::Ready) => {
                     // 从某个核心的current移动到调度器队列
                     CORE_MANAGER.add_task(task);
@@ -227,6 +231,9 @@ impl TaskManager {
                 (TaskStatus::Sleeping, TaskStatus::Ready) => {
                     // 从睡眠队列移动到调度器队列
                     CORE_MANAGER.add_task(task);
+                }
+                (TaskStatus::Sleeping, TaskStatus::Stopped) => {
+                    // 从睡眠状态移动到停止状态，不参与调度
                 }
                 (TaskStatus::Stopped, TaskStatus::Ready) => {
                     // 从停止状态恢复到调度器队列

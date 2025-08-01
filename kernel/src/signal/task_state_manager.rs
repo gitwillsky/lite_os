@@ -72,17 +72,39 @@ impl TaskStateTransitionValidator {
         use TaskStatus::*;
 
         match (from, to) {
+            // From Ready state
             (Ready, Running) => "Task scheduled for execution",
+            (Ready, Sleeping) => "Task entered sleep/wait state from ready",
+            (Ready, Stopped) => "Ready task stopped by signal",
+            (Ready, Zombie) => "Ready task terminated by signal",
+            
+            // From Running state
             (Running, Ready) => "Task preempted or yielded",
             (Running, Sleeping) => "Task entered sleep/wait state",
-            (Running, Stopped) => "Task stopped by signal",
-            (Running, Zombie) => "Task terminated",
+            (Running, Stopped) => "Running task stopped by signal",
+            (Running, Zombie) => "Running task terminated",
+            
+            // From Sleeping state
             (Sleeping, Ready) => "Task awakened from sleep",
             (Sleeping, Stopped) => "Sleeping task stopped by signal",
             (Sleeping, Zombie) => "Sleeping task terminated by signal",
+            
+            // From Stopped state
             (Stopped, Ready) => "Stopped task resumed by SIGCONT",
             (Stopped, Zombie) => "Stopped task terminated by signal",
-            _ => "Unknown or invalid transition",
+            
+            // From Zombie state (should not happen)
+            (Zombie, _) => "Invalid transition from zombie state",
+            
+            // Same state transitions
+            (Ready, Ready) => "Task remains in ready state",
+            (Running, Running) => "Invalid: task already running",
+            (Sleeping, Sleeping) => "Task remains sleeping",
+            (Stopped, Stopped) => "Task remains stopped",
+            (Zombie, Zombie) => "Task remains zombie",
+            
+            // Any other combinations
+            _ => "Unsupported state transition",
         }
     }
 }
