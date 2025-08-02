@@ -447,7 +447,6 @@ pub fn set_task_status(task: &Arc<TaskControlBlock>, new_status: TaskStatus) {
         *status_guard = new_status;
         old
     };
-
     // 通知统一任务管理器状态已改变
     if old_status != new_status {
         TASK_MANAGER.update_task_status(task.pid(), old_status, new_status);
@@ -805,9 +804,9 @@ pub fn run_tasks() -> ! {
 /// 处理任务信号
 /// 返回是否应该继续调度这个任务
 fn handle_task_signals(task: &Arc<TaskControlBlock>) -> bool {
-    use crate::signal::SignalDelivery;
+    use crate::signal::handle_signals;
 
-    let (should_continue, exit_code) = SignalDelivery::handle_signals_safe(task);
+    let (should_continue, exit_code) = handle_signals(task, None);
 
     if !should_continue {
         if let Some(code) = exit_code {

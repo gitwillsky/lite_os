@@ -17,7 +17,7 @@ use riscv::{
 
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
-    signal::{self, SIG_RETURN_ADDR},
+    signal::{self, handle_signals, sig_return, SIG_RETURN_ADDR},
     syscall,
     task::{
         self, current_user_token, exit_current_and_run_next, mark_kernel_entry,
@@ -144,13 +144,15 @@ pub fn trap_handler() {
                         let task = task::current_task().expect("No current task");
                         let mut cx = task::current_trap_context();
 
-                        use crate::signal::SignalDelivery;
-                        if SignalDelivery::sigreturn(&task, cx) {
-                            debug!("Sigreturn successful, continuing execution");
-                            // 成功恢复，继续执行
-                        } else {
-                            error!("Sigreturn failed, terminating process");
-                            exit_current_and_run_next(-5);
+                        match sig_return(&task, cx) {
+                            Ok(()) => {
+                                debug!("Sigreturn successful, continuing execution");
+                                // 成功恢复，继续执行
+                            }
+                            Err(_) => {
+                                error!("Sigreturn failed, terminating process");
+                                exit_current_and_run_next(-5);
+                            }
                         }
                     } else {
                         error!("Instruction Page Fault, VA:{:#x}", stval);
@@ -186,28 +188,36 @@ pub fn trap_handler() {
 /// Helper function to check and handle pending signals
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit() -> bool {
-    let (should_continue, exit_code) = crate::signal::check_and_handle_signals();
-    if !should_continue {
-        if let Some(code) = exit_code {
-            exit_current_and_run_next(code);
+    if let Some(task) = task::current_task() {
+        let (should_continue, exit_code) = handle_signals(&task, None);
+        if !should_continue {
+            if let Some(code) = exit_code {
+                exit_current_and_run_next(code);
+            }
         }
+        should_continue
+    } else {
+        true
     }
-    should_continue
 }
 
 /// Helper function to check and handle pending signals with existing trap context
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
-    let (should_continue, exit_code) = signal::check_and_handle_signals_with_cx(trap_cx);
-    if !should_continue {
-        if let Some(code) = exit_code {
-            exit_current_and_run_next(code);
-        } else {
-            // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
-            task::suspend_current_and_run_next();
+    if let Some(task) = task::current_task() {
+        let (should_continue, exit_code) = handle_signals(&task, Some(trap_cx));
+        if !should_continue {
+            if let Some(code) = exit_code {
+                exit_current_and_run_next(code);
+            } else {
+                // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
+                task::suspend_current_and_run_next();
+            }
         }
+        should_continue
+    } else {
+        true
     }
-    should_continue
 }
 
 fn set_kernel_trap_entry() {

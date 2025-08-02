@@ -1,38 +1,67 @@
-// Signal System Module
-// Unix-like signal system implementation with multi-core support
+mod core;
+mod state;
+mod delivery;
+mod multicore;
 
-pub mod signal;
-pub mod signal_manager;
-pub mod signal_state;
-pub mod signal_delivery;
-pub mod multicore_signal;
-
-// Re-export commonly used types and functions
-pub use signal::{
-    Signal, SignalSet, SignalAction, SignalDisposition, SignalState,
-    SignalError, SignalFrame, SignalDelivery,
-    SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK,
-    SA_NOCLDSTOP, SA_NOCLDWAIT, SA_SIGINFO, SA_RESTART, SA_NODEFER, SA_RESETHAND, SA_ONSTACK,
-    SIG_DFL, SIG_IGN, SIG_RETURN_ADDR,
-    uncatchable_signals, stop_signals,
-    send_signal_to_process, check_and_handle_signals, check_and_handle_signals_with_cx,
-};
-
-pub use signal_manager::{
-    SignalManager, SIGNAL_MANAGER,
-    init, process_multicore_signals, get_multicore_signal_stats,
-};
-
-pub use signal_state::{
-    AtomicSignalState, DEFAULT_BATCH_PROCESSOR,
-};
-
-pub use signal_delivery::{
-    SafeSignalDelivery, UserStackValidator, SignalDeliveryError,
-};
+use crate::{task::TaskControlBlock, trap::TrapContext};
 
 
-pub use multicore_signal::{
-    MultiCoreSignalManager, InterCoreSignalMessage, CoreSignalStats,
-    MULTICORE_SIGNAL_MANAGER,
-};
+pub use core::{Signal, SignalError, SignalSet, SignalAction};
+pub use state::{SignalState, SignalDisposition};
+
+pub use core::{SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK};
+pub const SIG_RETURN_ADDR: usize = 0;
+
+
+/// 初始化信号系统
+pub fn init() {
+    core::init();
+    info!("Signal system initialized");
+}
+
+/// 向指定进程发送信号
+pub fn send_signal(pid: usize, signal: Signal) -> Result<(), SignalError> {
+    core::send_signal(pid, signal)
+}
+
+/// 处理当前任务的待处理信号
+pub fn handle_signals(
+    task: &TaskControlBlock,
+    trap_cx: Option<&mut TrapContext>
+) -> (bool, Option<i32>) {
+    core::handle_signals(task, trap_cx)
+}
+
+/// 设置信号处理器
+pub fn set_signal_handler(
+    task: &TaskControlBlock,
+    signal: Signal,
+    handler: usize
+) -> Result<usize, SignalError> {
+    core::set_signal_handler(task, signal, handler)
+}
+
+/// 设置信号掩码
+pub fn set_signal_mask(
+    task: &TaskControlBlock,
+    how: i32,
+    set: Option<&SignalSet>,
+    old_set: Option<&mut SignalSet>
+) -> Result<(), SignalError> {
+    core::set_signal_mask(task, how, set, old_set)
+}
+
+/// 从信号处理函数返回
+pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<(), SignalError> {
+    delivery::sig_return(task, trap_cx)
+}
+
+/// 检查任务是否有待处理信号
+pub fn has_pending_signals(task: &TaskControlBlock) -> bool {
+    task.signal_state.lock().has_deliverable_signals()
+}
+
+/// 处理多核信号消息
+pub(crate) fn process_multicore_signals() -> usize {
+    multicore::process_core_messages()
+}

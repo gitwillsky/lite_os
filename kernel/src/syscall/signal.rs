@@ -1,25 +1,17 @@
 use crate::memory::page_table::translated_byte_buffer;
 use crate::signal::{
-    Signal, SignalAction, SignalDelivery, SignalDisposition, SignalError, SignalSet,
-    send_signal_to_process, SIGNAL_MANAGER,
+    Signal, SignalAction, SignalDisposition, SignalError, SignalSet,
+    send_signal, set_signal_handler, set_signal_mask, sig_return, has_pending_signals,
+    SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK,
 };
 use crate::task::{current_task, current_user_token};
-
-/// 信号掩码操作常量
-pub const SIG_BLOCK: i32 = 0;
-pub const SIG_UNBLOCK: i32 = 1;
-pub const SIG_SETMASK: i32 = 2;
-
-/// 特殊信号处理器值
-pub const SIG_DFL: usize = 0; // 默认动作
-pub const SIG_IGN: usize = 1; // 忽略信号
 
 /// kill系统调用 - 向指定进程发送信号（简化版）
 pub fn sys_kill(pid: usize, sig: u32) -> isize {
     // 验证信号号是否有效
     if let Some(signal) = Signal::from_u8(sig as u8) {
-        // 直接使用信号管理器发送信号
-        match SIGNAL_MANAGER.send_signal(pid, signal) {
+        // 发送信号
+        match send_signal(pid, signal) {
             Ok(()) => 0,
             Err(SignalError::ProcessNotFound) => -1, // ESRCH
             Err(SignalError::PermissionDenied) => -1, // EPERM
@@ -40,35 +32,15 @@ pub fn sys_signal(sig: u32, handler: usize) -> isize {
 
         if let Some(task) = current_task() {
             // 验证处理器地址
-            if handler != SIG_DFL && handler != SIG_IGN {
-                if let Err(_) = crate::signal::SafeSignalDelivery::validate_handler_address(handler) {
-                    return -1; // EINVAL
-                }
+            if handler != SIG_DFL && handler != SIG_IGN && handler >= 0x80000000 {
+                return -1; // EINVAL
             }
 
-            // 获取当前的信号处理器
-            let old_handler = task.signal_state.lock().get_handler(signal);
-            let old_handler_addr = match old_handler.action {
-                SignalAction::Handler(addr) => addr as isize,
-                SignalAction::Ignore => SIG_IGN as isize,
-                _ => SIG_DFL as isize,
-            };
-
-            // 设置新的信号处理器
-            let new_action = match handler {
-                SIG_DFL => signal.default_action(),
-                SIG_IGN => SignalAction::Ignore,
-                addr => SignalAction::Handler(addr),
-            };
-
-            let disposition = SignalDisposition {
-                action: new_action,
-                mask: SignalSet::new(),
-                flags: 0,
-            };
-
-            task.signal_state.lock().set_handler(signal, disposition);
-            old_handler_addr
+            // 设置信号处理器
+            match set_signal_handler(&task, signal, handler) {
+                Ok(old_handler) => old_handler as isize,
+                Err(_) => -1,
+            }
         } else {
             -1
         }
@@ -98,8 +70,8 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
         if let Some(task) = current_task() {
             let token = current_user_token();
 
-            // 获取当前的信号处理器
-            let old_handler = task.signal_state.lock().get_handler(signal);
+            let current_handler = task.signal_state.lock().get_handler(signal);
+            let old_handler = current_handler;
 
             // 如果oldact不为空，返回旧的信号处理器
             if !oldact.is_null() {
@@ -157,7 +129,12 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
                         flags: new_sigaction.sa_flags,
                     };
 
-                    task.signal_state.lock().set_handler(signal, disposition);
+                    let handler_addr = match new_action {
+                        SignalAction::Handler(addr) => addr,
+                        SignalAction::Ignore => SIG_IGN,
+                        _ => SIG_DFL,
+                    };
+                    let _ = set_signal_handler(&task, signal, handler_addr);
                 } else {
                     return -1; // EFAULT
                 }
@@ -177,8 +154,8 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
     if let Some(task) = current_task() {
         let token = current_user_token();
 
-        // 获取当前信号掩码
-        let old_mask = task.signal_state.lock().get_signal_mask();
+        let mut old_mask = SignalSet::new();
+        let _ = set_signal_mask(&task, SIG_SETMASK, None, Some(&mut old_mask));
 
         // 如果oldset不为空，返回旧的信号掩码
         if !oldset.is_null() {
@@ -206,23 +183,9 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
             if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<u64>() {
                 let new_mask_raw = unsafe { *(buffers[0].as_ptr() as *const u64) };
                 let new_mask = SignalSet::from_raw(new_mask_raw);
-                let inner = task.signal_state.lock();
 
-                match how {
-                    SIG_BLOCK => {
-                        let combined_mask = old_mask.union(&new_mask);
-                        inner.set_signal_mask(combined_mask);
-                    }
-                    SIG_UNBLOCK => {
-                        let unblocked_mask = old_mask.difference(&new_mask);
-                        inner.set_signal_mask(unblocked_mask);
-                    }
-                    SIG_SETMASK => {
-                        inner.set_signal_mask(new_mask);
-                    }
-                    _ => {
-                        return -1; // EINVAL
-                    }
+                if let Err(_) = set_signal_mask(&task, how, Some(&new_mask), None) {
+                    return -1; // EINVAL
                 }
             } else {
                 return -1; // EFAULT
@@ -240,13 +203,9 @@ pub fn sys_sigreturn() -> isize {
     if let Some(task) = current_task() {
         let trap_cx = task.mm.trap_context();
 
-        // 使用新的信号管理器
-        let success = SIGNAL_MANAGER.sigreturn(&task, trap_cx);
-
-        if success {
-            0 // 成功返回
-        } else {
-            -1 // 失败
+        match sig_return(&task, trap_cx) {
+            Ok(()) => 0,
+            Err(_) => -1,
         }
     } else {
         -1
@@ -256,8 +215,7 @@ pub fn sys_sigreturn() -> isize {
 /// pause系统调用 - 暂停进程直到收到信号（简化版）
 pub fn sys_pause() -> isize {
     if let Some(task) = current_task() {
-        // 检查是否有待处理的信号
-        if task.signal_state.lock().has_deliverable_signals() {
+        if has_pending_signals(&task) {
             // 如果有信号待处理，不暂停
             return -1; // EINTR
         }
