@@ -62,11 +62,3 @@ impl Default for FileStat {
         }
     }
 }
-
-pub fn make_filesystem(device: Arc<dyn BlockDevice>) -> Option<Arc<dyn FileSystem>> {
-    if let Some(fs) = FAT32FileSystem::new(device.clone()) {
-        Some(fs)
-    } else {
-        None
-    }
-}

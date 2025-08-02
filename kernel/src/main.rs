@@ -52,16 +52,15 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         signal::init();
         task::init();
 
-        // 激活boot核心
         CORE_MANAGER.activate_core(hart_id);
 
         task::run_tasks();
     } else {
+        board::init(dtb_addr);
         trap::init();
         KERNEL_SPACE.wait().lock().active();
         timer::enable_timer_interrupt();
 
-        // 激活从核心
         CORE_MANAGER.activate_core(hart_id);
 
         task::run_tasks();

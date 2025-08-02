@@ -17,13 +17,13 @@ use riscv::{
 
 use crate::{
     memory::{TRAMPOLINE, TRAP_CONTEXT},
-    signal::SIG_RETURN_ADDR,
+    signal::{self, SIG_RETURN_ADDR},
     syscall,
     task::{
         self, current_user_token, exit_current_and_run_next, mark_kernel_entry,
         mark_kernel_exit, suspend_current_and_run_next,
     },
-    timer,
+    timer, watchdog,
 };
 
 global_asm!(include_str!("trap.S"));
@@ -51,10 +51,10 @@ pub fn trap_handler() {
                     timer::set_next_timer_interrupt();
 
                     // 检查 watchdog 状态
-                    crate::watchdog::check();
+                    watchdog::check();
 
                     // 检查并唤醒到期的睡眠任务
-                    crate::task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
+                    task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
 
                     // Check and handle pending signals before task switch
                     {
@@ -198,7 +198,7 @@ fn check_signals_and_maybe_exit() -> bool {
 /// Helper function to check and handle pending signals with existing trap context
 /// Returns true if execution should continue, false if process should exit
 fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
-    let (should_continue, exit_code) = crate::signal::check_and_handle_signals_with_cx(trap_cx);
+    let (should_continue, exit_code) = signal::check_and_handle_signals_with_cx(trap_cx);
     if !should_continue {
         if let Some(code) = exit_code {
             exit_current_and_run_next(code);

@@ -1,12 +1,13 @@
+use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::format;
 use spin::Mutex;
 
 use crate::board::board_info;
+use crate::drivers::hal::{BasicInterruptController, Device, DeviceType, InterruptController};
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
-use crate::drivers::hal::{Device, DeviceType, BasicInterruptController, InterruptController};
-use crate::fs::{make_filesystem, vfs::vfs};
+use crate::fs::FAT32FileSystem;
+use crate::fs::vfs::vfs;
 
 static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
 static HAL_DEVICES: Mutex<Vec<Arc<dyn Device>>> = Mutex::new(Vec::new());
@@ -42,14 +43,14 @@ fn scan_virtio_devices() {
                 BLOCK_DEVICES.lock().push(block_device);
                 HAL_DEVICES.lock().push(hal_device);
 
-                debug!("[device] VirtIO Block device initialized at {:#x}", base_addr);
-            } else {
-                debug!("[device] Skipping non-block VirtIO device at {:#x}", base_addr);
+                debug!(
+                    "[device] VirtIO Block device initialized at {:#x}",
+                    base_addr
+                );
             }
         }
     }
 }
-
 
 fn init_filesystems() {
     let block_devices = block_devices();
@@ -58,15 +59,11 @@ fn init_filesystems() {
         return;
     }
 
-    // Use the first block device as root file system
     let device = block_devices[0].clone();
 
-    if let Some(fs) = make_filesystem(device) {
-        // Mount to root directory
+    if let Some(fs) = FAT32FileSystem::new(device) {
         if let Err(e) = vfs().mount("/", fs) {
             error!("[device] File system mount failed: {:?}", e);
-        } else {
-            debug!("[device] File system mounted successfully");
         }
     } else {
         error!("[device] Unable to create file system");
