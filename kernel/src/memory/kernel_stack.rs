@@ -17,7 +17,7 @@ impl KernelStack {
             bottom.into(),
             top.into(),
             MapPermission::R | MapPermission::W,
-        );
+        ).expect("Failed to allocate kernel stack memory");
 
         Self { handle }
     }

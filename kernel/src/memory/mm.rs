@@ -15,6 +15,21 @@ use crate::memory::{
 use super::config;
 use super::{address::VirtualPageNumber, page_table::PageTable};
 
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryError {
+    OutOfMemory,
+}
+
+impl core::fmt::Display for MemoryError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            MemoryError::OutOfMemory => write!(f, "Out of memory"),
+        }
+    }
+}
+
+impl Error for MemoryError {}
+
 bitflags! {
     // PTE Flags 的子集
     #[derive(Debug, Clone, Copy)]
@@ -82,10 +97,11 @@ impl MapArea {
         }
     }
 
-    pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn));
+            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
         }
+        Ok(())
     }
 
     pub fn unmap(&mut self, page_table: &mut PageTable) {
@@ -94,11 +110,11 @@ impl MapArea {
         }
     }
 
-    fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) {
+    fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) -> Result<(), MemoryError> {
         let ppn: PhysicalPageNumber;
         match self.map_type {
             MapType::Framed => {
-                let frame = alloc().unwrap();
+                let frame = alloc().ok_or(MemoryError::OutOfMemory)?;
                 ppn = frame.ppn;
                 self.data_frames.insert(vpn, frame);
             }
@@ -109,6 +125,7 @@ impl MapArea {
 
         let pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
         page_table.map(vpn, ppn, pte_flags);
+        Ok(())
     }
 
     fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) {
@@ -131,14 +148,15 @@ impl MapArea {
         }
     }
 
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
+    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) -> Result<(), MemoryError> {
         for vpn in self.vpn_range.end.as_usize()..new_end.as_usize() {
-            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn));
+            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
         }
         self.vpn_range = Range {
             start: self.vpn_range.start,
             end: new_end,
-        }
+        };
+        Ok(())
     }
 
     pub fn from_another(another: &MapArea) -> Self {
@@ -167,12 +185,13 @@ impl MemorySet {
         }
     }
 
-    pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
+    pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), MemoryError> {
+        map_area.map(&mut self.page_table)?;
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        Ok(())
     }
 
     pub fn insert_framed_area(
@@ -180,11 +199,11 @@ impl MemorySet {
         start_va: VirtualAddress,
         end_va: VirtualAddress,
         permission: MapPermission,
-    ) {
+    ) -> Result<(), MemoryError> {
         self.push(
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
-        );
+        )
     }
 
     pub fn token(&self) -> usize {
@@ -235,16 +254,16 @@ impl MemorySet {
         }
     }
 
-    pub fn append_to(&mut self, start: VirtualAddress, new_end: VirtualAddress) -> bool {
+    pub fn append_to(&mut self, start: VirtualAddress, new_end: VirtualAddress) -> Result<bool, MemoryError> {
         if let Some(area) = self
             .areas
             .iter_mut()
             .find(|area| area.vpn_range.start == start.floor())
         {
-            area.append_to(&mut self.page_table, new_end.ceil());
-            true
+            area.append_to(&mut self.page_table, new_end.ceil())?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -352,7 +371,7 @@ impl MemorySet {
                             &elf.input
                                 [ph.offset() as usize..(ph.offset() + ph.file_size()) as usize],
                         ),
-                    );
+                    )?;
                 }
                 xmas_elf::program::Type::Dynamic => {
                     // Dynamic segment - already processed above
@@ -406,7 +425,7 @@ impl MemorySet {
                 MapPermission::R | MapPermission::W | MapPermission::U,
             ),
             None,
-        );
+        )?;
 
         // used in sbrk
         memory_set.push(
@@ -417,7 +436,7 @@ impl MemorySet {
                 MapPermission::R | MapPermission::W | MapPermission::U,
             ),
             None,
-        );
+        )?;
 
         memory_set.push(
             MapArea::new(
@@ -427,7 +446,7 @@ impl MemorySet {
                 MapPermission::R | MapPermission::W,
             ),
             None,
-        );
+        )?;
 
         let entry_point = elf.header.pt2.entry_point() as usize;
 
@@ -618,13 +637,13 @@ impl MemorySet {
         Ok(())
     }
 
-    pub fn form_existed_user(user_space: &MemorySet) -> Self {
+    pub fn form_existed_user(user_space: &MemorySet) -> Result<Self, MemoryError> {
         let mut memory_set = MemorySet::new();
         memory_set.map_trampoline();
 
         for area in user_space.areas.iter() {
             let new_area = MapArea::from_another(area);
-            memory_set.push(new_area, None);
+            memory_set.push(new_area, None)?;
 
             for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
@@ -641,7 +660,7 @@ impl MemorySet {
                     .copy_from_slice(&src_ppn.get_bytes_array_mut());
             }
         }
-        memory_set
+        Ok(memory_set)
     }
 
     pub fn recycle_data_pages(&mut self) {

@@ -59,7 +59,9 @@ pub fn sys_brk(new_brk: usize) -> isize {
         );
 
         // 添加到内存集合
-        task.mm.memory_set.lock().push(map_area, None);
+        if let Err(_) = task.mm.memory_set.lock().push(map_area, None) {
+            return -ENOMEM;
+        }
 
         // 刷新页表
         unsafe {
@@ -192,7 +194,9 @@ pub fn sys_mmap(
     let map_area = MapArea::new(start_va, end_va, MapType::Framed, permissions);
 
     // 添加到内存集合
-    task.mm.memory_set.lock().push(map_area, None);
+    if let Err(_) = task.mm.memory_set.lock().push(map_area, None) {
+        return 0; // mmap returns 0 on failure
+    }
 
     // 刷新页表
     unsafe {

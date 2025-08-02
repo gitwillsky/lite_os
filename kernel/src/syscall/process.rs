@@ -2,15 +2,10 @@ use alloc::{string::ToString, sync::Arc, vec::Vec};
 
 use crate::{
     memory::{
-        page_table::{translated_byte_buffer, translated_ref_mut, translated_str},
-        frame_allocator,
-    },
-    task::{
-        self, SchedulingPolicy, TaskStatus, ProcessStats, block_current_and_run_next, current_task,
-        current_user_token, exit_current_and_run_next, get_scheduling_policy,
-        loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next,
-        get_all_tasks, get_all_pids, get_task_count, find_task_by_pid, get_process_statistics,
-    },
+        frame_allocator, page_table::{translated_byte_buffer, translated_ref_mut, translated_str}
+    }, syscall::errno, task::{
+        self, block_current_and_run_next, current_task, current_user_token, exit_current_and_run_next, find_task_by_pid, get_all_pids, get_all_tasks, get_process_statistics, get_scheduling_policy, get_task_count, loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next, ProcessStats, SchedulingPolicy, TaskStatus
+    }
 };
 
 /// CPU核心信息
@@ -78,7 +73,10 @@ pub fn sys_getpid() -> isize {
 
 pub fn sys_fork() -> isize {
     let current_task = current_task().unwrap();
-    let new_task = current_task.fork();
+    let new_task = match current_task.fork() {
+        Ok(task) => task,
+        Err(_) => return -errno::ENOMEM,
+    };
     let new_pid = new_task.pid();
 
     let trap_cx = new_task.mm.trap_context();

@@ -88,7 +88,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
                 MapPermission::R | MapPermission::W,
             ),
             None,
-        );
+        ).expect("Failed to map VirtIO MMIO memory");
     }
 
     // RTC 设备映射
@@ -105,7 +105,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
                 MapPermission::R | MapPermission::W,
             ),
             None,
-        );
+        ).expect("Failed to map RTC MMIO memory");
     }
 
     // kernel text section
@@ -123,7 +123,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R | MapPermission::X,
         ),
         None,
-    );
+    ).expect("Failed to map kernel .text section");
 
     // kernel read only data
     let srodata_addr = srodata as usize;
@@ -140,7 +140,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R,
         ),
         None,
-    );
+    ).expect("Failed to map kernel .rodata section");
 
     // kernel data
     let sdata_addr = sdata as usize;
@@ -157,7 +157,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R | MapPermission::W,
         ),
         None,
-    );
+    ).expect("Failed to map kernel .data section");
 
     // kernel bss section
     let sbss_addr = sbss as usize;
@@ -174,7 +174,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R | MapPermission::W,
         ),
         None,
-    );
+    ).expect("Failed to map kernel .bss section");
 
     // kernel boot stack
     let boot_stack_bottom_addr = boot_stack_bottom as usize;
@@ -191,7 +191,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R | MapPermission::W,
         ),
         None,
-    );
+    ).expect("Failed to map kernel boot stack");
 
     // other memory
     let ekernel_addr = ekernel as usize;
@@ -208,7 +208,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             MapPermission::R | MapPermission::W,
         ),
         None,
-    );
+    ).expect("Failed to map kernel memory area");
 
     memory_set
 }

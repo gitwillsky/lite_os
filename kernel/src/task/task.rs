@@ -464,8 +464,8 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    pub fn fork(self: &Arc<Self>) -> Arc<Self> {
-        let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock());
+    pub fn fork(self: &Arc<Self>) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
+        let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock())?;
         let trap_cx_ppn = memory_set.trap_context_ppn();
 
         // alloc a pid and a kernel stack in kernel space
@@ -529,7 +529,7 @@ impl TaskControlBlock {
 
         self.children.lock().push(tcb.clone());
         tcb.mm.trap_context().kernel_sp = kernel_stack_top;
-        tcb
+        Ok(tcb)
     }
 
     pub fn name(&self) -> String {
