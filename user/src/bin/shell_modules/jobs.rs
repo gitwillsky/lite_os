@@ -84,7 +84,6 @@ impl JobManager {
         }
 
         // 找到作业并获取需要的信息
-        let mut job_command = String::new();
         for job in &mut self.jobs {
             if job.id == job_id {
                 if job.status == JobStatus::Stopped {
@@ -95,14 +94,12 @@ impl JobManager {
                     job.status = JobStatus::Running;
                 }
                 job.background = false;
-                job_command = job.command.clone();
                 break;
             }
         }
 
         // 设置前台作业
         self.foreground_job = Some(job_id);
-        println!("{}", job_command);
         Ok(())
     }
 
@@ -208,11 +205,6 @@ impl JobManager {
         } else {
             None
         }
-    }
-
-    /// 设置前台作业
-    pub fn set_foreground_job(&mut self, job_id: Option<usize>) {
-        self.foreground_job = job_id;
     }
 
     /// 停止前台作业（Ctrl+Z）
