@@ -60,7 +60,8 @@ pub fn trap_handler() {
                     {
                         let cx = task::current_trap_context();
                         if !check_signals_and_maybe_exit_with_cx(cx) {
-                            return; // Process was terminated by signal
+                            // Process was terminated, should not continue
+                            return;
                         }
                     }
 
@@ -86,7 +87,8 @@ pub fn trap_handler() {
                     // 检查当前进程是否有待处理的信号
                     let cx = task::current_trap_context();
                     if !check_signals_and_maybe_exit_with_cx(cx) {
-                        return; // Process was terminated by signal
+                        // Process was terminated, should not continue
+                        return;
                     }
                 }
                 _ => {
@@ -129,8 +131,8 @@ pub fn trap_handler() {
 
                     // Check and handle pending signals after syscall using the existing trap context
                     if !check_signals_and_maybe_exit_with_cx(cx) {
-                        debug!("Process was terminated by signal after syscall {}", syscall_id);
-                        return; // Process was terminated by signal
+                        // Process was terminated, should not continue
+                        return;
                     }
                 }
                 Exception::InstructionPageFault => {
@@ -193,6 +195,14 @@ fn check_signals_and_maybe_exit() -> bool {
         if !should_continue {
             if let Some(code) = exit_code {
                 exit_current_and_run_next(code);
+                // This function may return if there's no other task to run
+                // In that case, we should end execution anyway
+                return false;
+            } else {
+                // Process stopped, no trap context available for restoration
+                task::suspend_current_and_run_next();
+                // Process was suspended and then resumed, continue execution
+                return true;
             }
         }
         should_continue
@@ -209,9 +219,14 @@ fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
         if !should_continue {
             if let Some(code) = exit_code {
                 exit_current_and_run_next(code);
+                // This function may return if there's no other task to run
+                // In that case, we should end execution anyway
+                return false;
             } else {
                 // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
                 task::suspend_current_and_run_next();
+                // Process was suspended and then resumed, continue execution
+                return true;
             }
         }
         should_continue
