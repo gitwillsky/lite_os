@@ -133,8 +133,24 @@ impl SignalCore {
                         Ok(())
                     }
                     TaskStatus::Stopped => {
-                        // 信号已加入队列，等待任务恢复时处理
-                        Ok(())
+                        // 对停止的进程，某些信号需要立即处理
+                        match signal {
+                            Signal::SIGKILL | Signal::SIGTERM | Signal::SIGINT | Signal::SIGQUIT | 
+                            Signal::SIGABRT | Signal::SIGBUS | Signal::SIGFPE | Signal::SIGSEGV |
+                            Signal::SIGILL | Signal::SIGTRAP | Signal::SIGPIPE | Signal::SIGALRM => {
+                                // 这些致命信号应该立即唤醒进程以便处理
+                                task.wakeup();
+                                Ok(())
+                            }
+                            Signal::SIGCONT => {
+                                // SIGCONT 恢复进程运行，这个已经在上面的特殊处理中解决
+                                unreachable!("SIGCONT should be handled above")
+                            }
+                            _ => {
+                                // 其他信号加入队列，等待任务恢复时处理
+                                Ok(())
+                            }
+                        }
                     }
                     _ => Ok(())
                 }
