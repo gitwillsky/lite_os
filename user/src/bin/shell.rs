@@ -266,6 +266,7 @@ fn main() -> i32 {
                 // 检查作业状态，即使没有输入
                 let foreground_completed = job_manager.check_job_status();
                 job_manager.cleanup_finished_jobs();
+                job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
 
                 // 如果前台作业完成，打印提示符
                 if foreground_completed {
@@ -459,6 +460,7 @@ fn main() -> i32 {
                 }
                 // 清理已完成的作业并显示提示符
                 job_manager.cleanup_finished_jobs();
+                job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
                 let current_prompt = generate_prompt();
                 print!("{}", current_prompt);
             }

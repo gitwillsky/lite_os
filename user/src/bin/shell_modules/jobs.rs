@@ -2,7 +2,7 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{kill, wait_pid_nb};
+use user_lib::{kill, wait_pid_nb, wait_pid};
 
 /// 作业状态
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,6 +164,35 @@ impl JobManager {
         self.jobs.retain(|job| job.status != JobStatus::Done && job.status != JobStatus::Terminated);
     }
 
+    /// 尝试回收所有可能的zombie子进程（使用非阻塞wait_pid_nb）
+    pub fn reap_zombies(&mut self) {
+        loop {
+            let mut exit_code = 0i32;
+            // 使用非阻塞的wait_pid_nb(-1)尝试回收任何zombie子进程
+            let result = wait_pid_nb(-1isize as usize, &mut exit_code);
+            
+            if result <= 0 {
+                // 没有更多zombie进程需要回收，或者没有子进程
+                break;
+            }
+            
+            // 如果找到了zombie进程，用阻塞的wait_pid实际回收它
+            let mut actual_exit_code = 0i32;
+            let reap_result = wait_pid(result as usize, &mut actual_exit_code);
+            
+            if reap_result <= 0 {
+                // 回收失败，可能已经被其他地方回收了
+                break;
+            }
+            
+            // 如果这个进程不在我们的作业列表中，说明是一个"孤儿"zombie
+            let found_in_jobs = self.jobs.iter().any(|job| job.pid == result as isize);
+            if !found_in_jobs {
+                // 这是一个没有被跟踪的zombie进程，已经被回收了
+            }
+        }
+    }
+
     /// 检查并更新作业状态（非阻塞式）
     /// 返回是否有前台作业完成
     pub fn check_job_status(&mut self) -> bool {
@@ -176,18 +205,31 @@ impl JobManager {
                 let result = wait_pid_nb(job.pid as usize, &mut exit_code);
 
                 if result == job.pid {
-                    // 作业已终止
-                    job.status = if exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated };
-                    if job.background {
-                        println!("[{}] {} {}",
-                            job.id,
-                            if exit_code == 0 { "Done" } else { "Terminated" },
-                            job.command
-                        );
-                    }
-                    if self.foreground_job == Some(job.id) {
-                        self.foreground_job = None;
-                        foreground_job_completed = true;
+                    // 作业已终止，现在使用wait_pid实际回收zombie进程
+                    let mut actual_exit_code = 0i32;
+                    let reap_result = wait_pid(job.pid as usize, &mut actual_exit_code);
+                    
+                    if reap_result == job.pid {
+                        // 成功回收了zombie进程
+                        job.status = if actual_exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated };
+                        if job.background {
+                            println!("[{}] {} {}",
+                                job.id,
+                                if actual_exit_code == 0 { "Done" } else { "Terminated" },
+                                job.command
+                            );
+                        }
+                        if self.foreground_job == Some(job.id) {
+                            self.foreground_job = None;
+                            foreground_job_completed = true;
+                        }
+                    } else {
+                        // 回收失败，可能已经被其他地方回收了
+                        job.status = JobStatus::Terminated;
+                        if self.foreground_job == Some(job.id) {
+                            self.foreground_job = None;
+                            foreground_job_completed = true;
+                        }
                     }
                 }
                 // 如果result == -2，表示作业还在运行，不做任何操作
