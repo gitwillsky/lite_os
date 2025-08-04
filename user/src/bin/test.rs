@@ -964,44 +964,22 @@ fn test_invalid_pointers() -> bool {
 fn test_extreme_values() -> bool {
     println!("Testing extreme values...");
     
-    // Test moderately large memory allocations (reduced from 1GB to 16MB to avoid kernel panic)
-    let large_size = 16 * 1024 * 1024; // 16MB instead of 1GB
-    let addr = mmap(0, large_size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
+    // Test very large memory allocations - 内核应该能够正确处理这种情况
+    let huge_size = 1024 * 1024 * 1024; // 1GB
+    let addr = mmap(0, huge_size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
     if addr > 0 {
-        println!("Large mmap succeeded: {:#x} ({}MB)", addr, large_size / (1024 * 1024));
-        
-        // Test writing to ensure it's actually allocated
-        unsafe {
-            let ptr = addr as *mut u32;
-            *ptr = 0xDEADBEEF;
-            if *ptr == 0xDEADBEEF {
-                println!("Memory write/read verification passed");
-            }
-        }
-        
-        munmap(addr as usize, large_size);
-        println!("Large memory unmapped successfully");
+        println!("Huge mmap succeeded: {:#x}", addr);
+        munmap(addr as usize, huge_size);
     } else {
-        println!("Large mmap failed as expected");
+        println!("Huge mmap failed as expected");
     }
     
-    // Test brk with extreme values
+    // Test brk with extreme values - 应该优雅地失败而不是panic
     let original_brk = brk(0);
-    println!("Original brk: {:#x}", original_brk);
-    
-    // Test with a very large but not MAX value to avoid system issues
-    let large_brk_size = original_brk as usize + 1024 * 1024; // Add 1MB
-    let new_brk = brk(large_brk_size);
-    if new_brk > original_brk {
-        println!("Moderate brk expansion succeeded: {:#x}", new_brk);
-        // Restore original brk
-        brk(original_brk as usize);
-    } else {
-        println!("Moderate brk expansion failed as expected");
+    let extreme_brk = brk(usize::MAX);
+    if extreme_brk != original_brk {
+        println!("Warning: extreme brk succeeded unexpectedly");
     }
-    
-    // Avoid testing with usize::MAX as it can cause system instability
-    println!("Skipping usize::MAX brk test to maintain system stability");
     
     // Test sleep with extreme values
     let start_time = get_time_ms();
@@ -1009,7 +987,7 @@ fn test_extreme_values() -> bool {
     let end_time = get_time_ms();
     println!("Zero sleep took: {}ms", end_time - start_time);
     
-    println!("✅ Extreme value tests completed (with safety adjustments)");
+    println!("✅ Extreme value tests completed");
     true
 }
 

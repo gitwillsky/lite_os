@@ -306,8 +306,8 @@ def main():
                        help='操作类型: create(创建), list(列出内容), add(添加文件)')
     parser.add_argument('--file', '-f', default='fs.img',
                        help='文件系统映像文件名 (默认: fs.img)')
-    parser.add_argument('--size', '-s', type=int, default=64,
-                       help='文件系统大小(MB) (默认: 64)')
+    parser.add_argument('--size', '-s', type=int, default=128,
+                       help='文件系统大小(MB) (默认: 128)')
     parser.add_argument('--add-files', nargs='+',
                        help='要添加的文件列表')
 

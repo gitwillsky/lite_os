@@ -14,6 +14,25 @@ use super::{
     frame_allocator::{self, FrameTracker},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub enum PageTableError {
+    AlreadyMapped,
+    NotMapped,
+    OutOfMemory,
+}
+
+impl core::fmt::Display for PageTableError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            PageTableError::AlreadyMapped => write!(f, "Page is already mapped"),
+            PageTableError::NotMapped => write!(f, "Page is not mapped"),
+            PageTableError::OutOfMemory => write!(f, "Out of memory"),
+        }
+    }
+}
+
+impl core::error::Error for PageTableError {}
+
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct PTEFlags: u8 {
@@ -152,16 +171,22 @@ impl PageTable {
         result
     }
 
-    pub fn map(&mut self, vpn: VirtualPageNumber, ppn: PhysicalPageNumber, flags: PTEFlags) {
-        let pte = self.find_pte_create(vpn).unwrap();
-        assert!(!pte.is_valid(), "vpn {:?} is already mapped", vpn);
+    pub fn map(&mut self, vpn: VirtualPageNumber, ppn: PhysicalPageNumber, flags: PTEFlags) -> Result<(), PageTableError> {
+        let pte = self.find_pte_create(vpn).ok_or(PageTableError::OutOfMemory)?;
+        if pte.is_valid() {
+            return Err(PageTableError::AlreadyMapped);
+        }
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        Ok(())
     }
 
-    pub fn unmap(&mut self, vpn: VirtualPageNumber) {
-        let pte = self.find_pte(vpn).unwrap();
-        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+    pub fn unmap(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
+        let pte = self.find_pte(vpn).ok_or(PageTableError::NotMapped)?;
+        if !pte.is_valid() {
+            return Err(PageTableError::NotMapped);
+        }
         *pte = PageTableEntry::empty();
+        Ok(())
     }
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {

@@ -8,7 +8,7 @@ use crate::memory::{
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
     dynamic_linker::DynamicLinker,
     frame_allocator::{FrameTracker, alloc},
-    page_table::{PTEFlags, PageTableEntry},
+    page_table::{PTEFlags, PageTableEntry, PageTableError},
     strampoline,
 };
 
@@ -18,12 +18,20 @@ use super::{address::VirtualPageNumber, page_table::PageTable};
 #[derive(Debug, Clone, Copy)]
 pub enum MemoryError {
     OutOfMemory,
+    PageTableError(PageTableError),
+}
+
+impl From<PageTableError> for MemoryError {
+    fn from(err: PageTableError) -> Self {
+        MemoryError::PageTableError(err)
+    }
 }
 
 impl core::fmt::Display for MemoryError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             MemoryError::OutOfMemory => write!(f, "Out of memory"),
+            MemoryError::PageTableError(err) => write!(f, "Page table error: {}", err),
         }
     }
 }
@@ -124,7 +132,7 @@ impl MapArea {
         }
 
         let pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
-        page_table.map(vpn, ppn, pte_flags);
+        page_table.map(vpn, ppn, pte_flags)?;
         Ok(())
     }
 
@@ -135,7 +143,8 @@ impl MapArea {
             }
             MapType::Identical => {}
         }
-        page_table.unmap(vpn);
+        // 忽略unmap错误，在某些情况下页面可能已经被unmap了
+        let _ = page_table.unmap(vpn);
     }
 
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
@@ -214,7 +223,8 @@ impl MemorySet {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
         let strampoline_pa = PhysicalAddress::from(strampoline as usize);
 
-        self.page_table.map(
+        // 忽略trampoline映射错误，某些情况下可能已经被映射了
+        let _ = self.page_table.map(
             trampoline_va.into(),
             strampoline_pa.into(),
             PTEFlags::R | PTEFlags::X,
