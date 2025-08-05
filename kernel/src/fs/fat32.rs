@@ -231,17 +231,16 @@ impl FAT32FileSystem {
         }))
     }
 
-    fn cluster_to_sector(&self, cluster: u32) -> u32 {
+    fn cluster_to_sector(&self, cluster: u32) -> Result<u32, ()> {
         // Clusters 0 and 1 are reserved in FAT32, valid data clusters start from 2
-        if cluster < 2 {
+        if cluster < 2 || cluster >= CLUSTER_EOF {
             error!(
-                "Invalid cluster number: {} (clusters 0 and 1 are reserved)",
-                cluster
+                "Invalid cluster number: {} (clusters 0 and 1 are reserved, cluster >= {} is invalid)",
+                cluster, CLUSTER_EOF
             );
-            // Return an invalid sector number that will cause controlled failure
-            return u32::MAX;
+            return Err(());
         }
-        self.cluster_start_sector + (cluster - 2) * self.sectors_per_cluster
+        Ok(self.cluster_start_sector + (cluster - 2) * self.sectors_per_cluster)
     }
 
     /// Get or create a directory-specific lock for fine-grained synchronization
@@ -342,7 +341,8 @@ impl FAT32FileSystem {
             return Err(BlockError::InvalidBlock);
         }
 
-        let start_sector = self.cluster_to_sector(cluster);
+        let start_sector = self.cluster_to_sector(cluster)
+            .map_err(|_| BlockError::InvalidBlock)?;
 
         for i in 0..self.sectors_per_cluster {
             let sector_num = start_sector + i;
@@ -361,7 +361,8 @@ impl FAT32FileSystem {
             return Err(BlockError::InvalidBlock);
         }
 
-        let start_sector = self.cluster_to_sector(cluster);
+        let start_sector = self.cluster_to_sector(cluster)
+            .map_err(|_| BlockError::InvalidBlock)?;
 
         for i in 0..self.sectors_per_cluster {
             let sector_num = start_sector + i;
@@ -616,10 +617,11 @@ impl FAT32FileSystem {
         target_cluster: u32,
         new_size: u32,
     ) -> Result<(), FileSystemError> {
-        // Skip directory entry updates for root directory (parent_dir_cluster == 0)
-        if parent_dir_cluster == 0 {
+        // Only skip if parent_dir_cluster is 0 AND target_cluster is the root directory cluster
+        // This should only happen for the root directory inode itself, not files in root directory
+        if parent_dir_cluster == 0 && target_cluster == self.root_cluster {
             debug!(
-                "[update_directory_entry_size] Skipping directory entry update for root directory"
+                "[update_directory_entry_size] Skipping directory entry update for root directory inode itself"
             );
             return Ok(());
         }
@@ -632,6 +634,10 @@ impl FAT32FileSystem {
             let old_size =
                 unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(entry.file_size)) };
             entry.file_size = new_size;
+            debug!(
+                "[update_directory_entry_size] Updated file size from {} to {} for cluster {} in parent {}",
+                old_size, new_size, target_cluster, parent_dir_cluster
+            );
             Ok(())
         })
     }
@@ -1131,7 +1137,7 @@ impl Inode for FAT32Inode {
         while bytes_written < buf.len() {
             // Read current cluster
             let mut cluster_data = vec![0u8; bytes_per_cluster as usize];
-            if current_cluster < CLUSTER_EOF {
+            if current_cluster >= 2 && current_cluster < CLUSTER_EOF {
                 fs.read_cluster(current_cluster, &mut cluster_data)
                     .map_err(|_| FileSystemError::IoError)?;
             }
