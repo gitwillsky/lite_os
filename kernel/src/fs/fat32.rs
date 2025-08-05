@@ -423,7 +423,7 @@ impl FAT32FileSystem {
 
     /// Update the file size in the directory entry for a given cluster
     /// This searches through all directories to find the entry with the matching cluster
-    fn update_directory_entry_size(&self, target_cluster: u32, new_size: u32) -> Result<(), FileSystemError> {
+    fn update_directory_entry_size(&self, parent_dir_cluster: u32, target_cluster: u32, new_size: u32) -> Result<(), FileSystemError> {
         let _lock = self.directory_lock.lock();  // Ensure exclusive access to directory operations
         debug!("[update_directory_entry_size] Searching for cluster {} with new size {}", target_cluster, new_size);
         
@@ -438,8 +438,8 @@ impl FAT32FileSystem {
                 for _ in 0..1000 { core::hint::spin_loop(); }
             }
             
-            // Start search from root directory
-            match self.search_and_update_entry(self.root_cluster, target_cluster, new_size) {
+            // Start search from the specific parent directory cluster
+            match self.search_and_update_entry(parent_dir_cluster, target_cluster, new_size) {
                 Ok(()) => return Ok(()),
                 Err(FileSystemError::NotFound) if retry < 4 => {
                     debug!("[update_directory_entry_size] Entry not found on retry {}, will retry", retry);
@@ -680,7 +680,7 @@ impl FAT32FileSystem {
         Ok(())
     }
 
-    fn create_directory_entry(&self, parent_cluster: u32, name: &str, new_cluster: u32, is_dir: bool) -> Result<(), FileSystemError> {
+    fn create_directory_entry(&self, parent_cluster: u32, name: &str, new_cluster: u32, is_dir: bool) -> Result<u32, FileSystemError> {
         let _lock = self.directory_lock.lock();  // Ensure exclusive access to directory operations
         let (sfn, lfn_entries) = self.generate_filename_entries(name);
 
@@ -750,7 +750,7 @@ impl FAT32FileSystem {
                 // Force a cache flush to ensure directory entry is written to disk
                 // This is critical for multi-core systems to avoid race conditions
                 debug!("[create_directory_entry] Successfully created directory entry for cluster {} in directory cluster {}", new_cluster, current_cluster);
-                return Ok(());
+                return Ok(current_cluster);
             }
 
             let next_cluster = self.next_cluster(current_cluster);
@@ -888,6 +888,7 @@ impl FileSystem for FAT32FileSystem {
         Arc::new(FAT32Inode {
             fs: self as *const _ as *const FAT32FileSystem,
             cluster: self.root_cluster,
+            parent_dir_cluster: 0,  // Root has no parent
             size: Mutex::new(0),
             is_dir: true,
             mode: Mutex::new(0o755),  // 目录默认权限
@@ -931,6 +932,7 @@ impl FileSystem for FAT32FileSystem {
 pub struct FAT32Inode {
     fs: *const FAT32FileSystem,
     cluster: u32,
+    parent_dir_cluster: u32,  // The directory cluster that contains this file's directory entry
     size: Mutex<u64>,
     is_dir: bool,
     mode: Mutex<u32>,   // 文件权限模式
@@ -1120,7 +1122,7 @@ impl Inode for FAT32Inode {
             // Add memory barrier to ensure all writes are completed before updating directory entry
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
             
-            if let Err(e) = fs.update_directory_entry_size(self.cluster, new_size as u32) {
+            if let Err(e) = fs.update_directory_entry_size(self.parent_dir_cluster, self.cluster, new_size as u32) {
                 // Log the error but don't fail the write operation
                 // The in-memory size is still updated correctly
                 error!("Failed to update directory entry size: {:?}", e);
@@ -1176,6 +1178,7 @@ impl Inode for FAT32Inode {
                 return Ok(Arc::new(FAT32Inode {
                     fs: self.fs,
                     cluster,
+                    parent_dir_cluster: self.cluster,  // Parent directory cluster
                     size: Mutex::new(size),
                     is_dir,
                     mode: Mutex::new(if is_dir { 0o755 } else { 0o644 }),  // 默认权限
@@ -1208,25 +1211,26 @@ impl Inode for FAT32Inode {
         debug!("[create_file] Allocated cluster {} for new file '{}'", new_cluster, name);
 
         // Create file entry in parent directory
-        fs.create_directory_entry(self.cluster, name, new_cluster, false)?;
-        debug!("[create_file] Created directory entry for file '{}' with cluster {}", name, new_cluster);
+        let actual_dir_cluster = fs.create_directory_entry(self.cluster, name, new_cluster, false)?;
+        debug!("[create_file] Created directory entry for file '{}' with cluster {} in directory cluster {}", name, new_cluster, actual_dir_cluster);
 
         // Verify that the directory entry was created successfully by searching for it
         // This ensures the entry is visible before we return the inode
-        debug!("[create_file] Verifying directory entry exists for cluster {}", new_cluster);
-        let verification_result = fs.verify_directory_entry_exists(self.cluster, new_cluster)?;
+        debug!("[create_file] Verifying directory entry exists for cluster {} in directory cluster {}", new_cluster, actual_dir_cluster);
+        let verification_result = fs.verify_directory_entry_exists(actual_dir_cluster, new_cluster)?;
         if !verification_result {
-            error!("[create_file] Directory entry not found after creation for cluster {}", new_cluster);
+            error!("[create_file] Directory entry not found after creation for cluster {} in directory cluster {}", new_cluster, actual_dir_cluster);
             // Try to clean up the allocated cluster
             let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
             return Err(FileSystemError::IoError);
         }
-        debug!("[create_file] Directory entry verification successful for cluster {}", new_cluster);
+        debug!("[create_file] Directory entry verification successful for cluster {} in directory cluster {}", new_cluster, actual_dir_cluster);
 
         // Return the new file inode
         Ok(Arc::new(FAT32Inode {
             fs: self.fs,
             cluster: new_cluster,
+            parent_dir_cluster: actual_dir_cluster,  // Directory cluster where entry was created
             size: Mutex::new(0),
             is_dir: false,
             mode: Mutex::new(0o644),  // 文件默认权限
@@ -1312,12 +1316,13 @@ impl Inode for FAT32Inode {
             .map_err(|_| FileSystemError::IoError)?;
 
         // Create directory entry in parent directory
-        fs.create_directory_entry(self.cluster, name, new_cluster, true)?;
+        let actual_dir_cluster = fs.create_directory_entry(self.cluster, name, new_cluster, true)?;
 
         // Return the new directory inode
         Ok(Arc::new(FAT32Inode {
             fs: self.fs,
             cluster: new_cluster,
+            parent_dir_cluster: actual_dir_cluster,  // Directory cluster where entry was created
             size: Mutex::new(0),
             is_dir: true,
             mode: Mutex::new(0o755),  // 目录默认权限
