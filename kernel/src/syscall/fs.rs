@@ -195,7 +195,6 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
             // 创建新文件
             match vfs().create_file(&path_str) {
                 Ok(inode) => {
-                    debug!("[sys_open] File created successfully: {}", path_str);
                     // 设置文件权限（如果文件系统支持的话）
                     let _ = inode.set_mode(file_mode);
                     if let Some(task) = current_task() {
@@ -205,7 +204,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
                     inode
                 }
                 Err(e) => {
-                    debug!("[sys_open] Failed to create file {}: {:?}", path_str, e);
+                    error!("[sys_open] Failed to create file {}: {:?}", path_str, e);
                     return -1; // 创建失败
                 }
             }
