@@ -384,17 +384,29 @@ impl FAT32FileSystem {
         // Use global lock to prevent race conditions during reload
         let _global_lock = self.global_lock.lock();
 
-        // Read FAT entry directly from disk
+        // Clear the block cache for this FAT sector to force a fresh read
         let fat_sector = self.fat_start_sector + (cluster * 4) / SECTOR_SIZE as u32;
-        let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+        {
+            let mut block_cache = self.block_cache.write();
+            block_cache.remove(&fat_sector);
+        }
 
-        if let Ok(sector_data) = self.read_cached_block(fat_sector) {
-            if sector_offset + 4 <= sector_data.len() {
+        // Read FAT entry directly from device (bypassing cache)
+        let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+        let device_block_size = self.device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
+        let block_num = fat_sector / sectors_per_block as u32;
+        let sector_in_block = fat_sector % sectors_per_block as u32;
+
+        let mut block_data = vec![0u8; device_block_size];
+        if self.device.read_block(block_num as usize, &mut block_data).is_ok() {
+            let sector_data_offset = sector_in_block as usize * SECTOR_SIZE;
+            if sector_data_offset + SECTOR_SIZE <= block_data.len() && sector_offset + 4 <= SECTOR_SIZE {
                 let fat_value = u32::from_le_bytes([
-                    sector_data[sector_offset],
-                    sector_data[sector_offset + 1],
-                    sector_data[sector_offset + 2],
-                    sector_data[sector_offset + 3],
+                    block_data[sector_data_offset + sector_offset],
+                    block_data[sector_data_offset + sector_offset + 1],
+                    block_data[sector_data_offset + sector_offset + 2],
+                    block_data[sector_data_offset + sector_offset + 3],
                 ]) & 0x0FFFFFFF;
 
                 // Update in-memory cache with disk value
@@ -475,11 +487,13 @@ impl FAT32FileSystem {
             let mut fat_cache = self.fat_cache.write();
             if (cluster_to_allocate as usize) < fat_cache.len() {
                 // Double-check that it's still free (defensive programming)
-                if fat_cache[cluster_to_allocate as usize] == CLUSTER_FREE {
+                let current_value = fat_cache[cluster_to_allocate as usize];
+                if current_value == CLUSTER_FREE {
                     fat_cache[cluster_to_allocate as usize] = CLUSTER_EOF;
                 } else {
                     // Someone else allocated it - this shouldn't happen with global lock
-                    error!("Cluster {} was allocated by another thread despite global lock", cluster_to_allocate);
+                    error!("Cluster {} was allocated by another thread despite global lock (current value: {})",
+                           cluster_to_allocate, current_value);
                     return None;
                 }
             }
@@ -549,8 +563,11 @@ impl FAT32FileSystem {
         if result.is_ok() {
             let mut fat_cache = self.fat_cache.write();
             if (cluster as usize) < fat_cache.len() {
+                let old_value = fat_cache[cluster as usize];
                 fat_cache[cluster as usize] = value & 0x0FFFFFFF;
             }
+        } else {
+            error!("Failed to write FAT entry cluster {} to disk: {:?}", cluster, result);
         }
 
         result
