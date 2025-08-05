@@ -380,20 +380,99 @@ impl FAT32FileSystem {
         if cluster as usize >= fat_cache.len() {
             return CLUSTER_EOF;
         }
-        fat_cache[cluster as usize] & 0x0FFFFFFF
+        let next = fat_cache[cluster as usize] & 0x0FFFFFFF;
+
+        // Handle corrupted FAT entries that point to reserved clusters
+        if next == 0 || next == 1 {
+            error!(
+                "Corrupted FAT entry: cluster {} points to invalid cluster {} (reserved clusters 0-1)",
+                cluster, next
+            );
+            return CLUSTER_EOF; // Treat as end of chain
+        }
+
+        next
     }
 
     fn allocate_cluster(&self) -> Option<u32> {
+        // Use global lock to ensure atomic cluster allocation across all operations
+        let _global_lock = self.global_lock.lock();
+
         let mut fat_cache = self.fat_cache.write();
         // Start from cluster 2 (clusters 0 and 1 are reserved)
         for i in 2..fat_cache.len() {
             if fat_cache[i] == CLUSTER_FREE {
+                // First update the in-memory cache
                 fat_cache[i] = CLUSTER_EOF; // Mark as end of chain
-                return Some(i as u32);
+
+                // Then immediately persist to disk to ensure consistency
+                let cluster_to_allocate = i as u32;
+
+                // Release the fat_cache lock temporarily but keep global lock
+                drop(fat_cache);
+
+                // Write to disk with proper error handling
+                if let Err(e) = self.write_fat_entry_atomic(cluster_to_allocate, CLUSTER_EOF) {
+                    error!("Failed to persist allocated cluster {} to disk: {:?}", cluster_to_allocate, e);
+
+                    // Rollback: mark the cluster as free again in memory
+                    let mut fat_cache = self.fat_cache.write();
+                    if (cluster_to_allocate as usize) < fat_cache.len() {
+                        fat_cache[cluster_to_allocate as usize] = CLUSTER_FREE;
+                    }
+                    return None;
+                }
+
+                return Some(cluster_to_allocate);
             }
         }
         warn!("No free clusters available");
         None
+    }
+
+    /// Write to disk only without modifying in-memory cache (for atomic operations)
+    fn write_fat_entry_atomic(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
+        if cluster < 2 {
+            error!("Invalid cluster number for FAT write: {}", cluster);
+            return Err(BlockError::InvalidBlock);
+        }
+
+        // Write to both FAT copies
+        let sectors_per_fat_32 = unsafe {
+            let bpb_ptr = &self.bpb as *const _ as *const u8;
+            core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32)
+        };
+        let num_fats = self.bpb.num_fats;
+
+        for fat_num in 0..num_fats {
+            // Calculate FAT sector for this copy
+            let fat_start = self.fat_start_sector + (fat_num as u32 * sectors_per_fat_32);
+            let fat_sector = fat_start + (cluster * 4) / SECTOR_SIZE as u32;
+            let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
+
+            let device_block_size = self.device.block_size();
+            let sectors_per_block = device_block_size / SECTOR_SIZE;
+            let block_num = fat_sector / sectors_per_block as u32;
+            let sector_in_block = fat_sector % sectors_per_block as u32;
+
+            // Read-modify-write the block
+            let mut block_data = vec![0u8; device_block_size];
+            self.device
+                .read_block(block_num as usize, &mut block_data)?;
+
+            let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
+            if block_sector_offset + 4 > device_block_size {
+                error!("FAT entry would exceed block boundary");
+                return Err(BlockError::InvalidBlock);
+            }
+
+            let value_bytes = (value & 0x0FFFFFFF).to_le_bytes();
+            block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
+
+            self.device.write_block(block_num as usize, &block_data)?;
+        }
+
+        Ok(())
     }
 
     fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
@@ -1162,10 +1241,15 @@ impl Inode for FAT32Inode {
             if bytes_written < buf.len() {
                 let next_cluster = fs.next_cluster(current_cluster);
                 if next_cluster >= CLUSTER_EOF {
-                    // Allocate new cluster
+                    // Allocate new cluster and link it atomically
                     if let Some(new_cluster) = fs.allocate_cluster() {
-                        fs.write_fat_entry(current_cluster, new_cluster)
-                            .map_err(|_| FileSystemError::IoError)?;
+                        // Link the current cluster to the new one
+                        if let Err(e) = fs.write_fat_entry(current_cluster, new_cluster) {
+                            error!("Failed to link cluster {} to {}: {:?}", current_cluster, new_cluster, e);
+                            // Clean up: free the allocated cluster
+                            let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
+                            return Err(FileSystemError::IoError);
+                        }
                         current_cluster = new_cluster;
                     } else {
                         return Err(FileSystemError::NoSpace);
