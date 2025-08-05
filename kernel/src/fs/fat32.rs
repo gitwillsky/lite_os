@@ -413,7 +413,6 @@ impl FAT32FileSystem {
                 let mut fat_cache = self.fat_cache.write();
                 if (cluster as usize) < fat_cache.len() {
                     fat_cache[cluster as usize] = fat_value;
-                    debug!("Reloaded FAT entry for cluster {} from disk: {}", cluster, fat_value);
                 }
             }
         }
@@ -779,6 +778,169 @@ impl FAT32FileSystem {
         }
     }
 
+    fn verify_directory_entry_immediate(
+        &self,
+        dir_cluster: u32,
+        target_cluster: u32,
+    ) -> Result<(), FileSystemError> {
+        // Force a fresh read from disk by clearing block cache first
+        self.flush_block_cache();
+
+        // Memory barrier to ensure cache flush completes
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        let mut current_cluster = dir_cluster;
+        loop {
+            let mut cluster_data = vec![0u8; self.bytes_per_cluster as usize];
+            self.read_cluster(current_cluster, &mut cluster_data)
+                .map_err(|_| FileSystemError::IoError)?;
+
+            // Check each directory entry
+            for chunk in cluster_data.chunks_exact(32) {
+                let entry = unsafe { core::ptr::read_unaligned(chunk.as_ptr() as *const DirectoryEntry) };
+
+                // End of directory entries
+                if entry.name[0] == 0x00 {
+                    break;
+                }
+
+                // Skip deleted and LFN entries
+                if entry.name[0] == 0xE5 || (entry.attr & ATTR_LONG_NAME == ATTR_LONG_NAME) {
+                    continue;
+                }
+
+                let entry_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
+                if entry_cluster == target_cluster {
+                    return Ok(());
+                }
+            }
+
+            // Move to next cluster in directory
+            current_cluster = self.next_cluster(current_cluster);
+            if current_cluster >= CLUSTER_EOF {
+                break;
+            }
+        }
+
+        error!("[verify_directory_entry_immediate] Entry for cluster {} not found in directory {}",
+               target_cluster, dir_cluster);
+        Err(FileSystemError::NotFound)
+    }
+
+    fn find_directory_entry_by_name(
+        &self,
+        dir_cluster: u32,
+        name: &str,
+    ) -> Result<(u32, DirectoryEntry), FileSystemError> {
+        let mut current_cluster = dir_cluster;
+
+        loop {
+            let mut cluster_data = vec![0u8; self.bytes_per_cluster as usize];
+            self.read_cluster(current_cluster, &mut cluster_data)
+                .map_err(|_| FileSystemError::IoError)?;
+
+            // Process LFN entries to reconstruct full names
+            let mut lfn_name = String::new();
+            let mut entries = cluster_data.chunks_exact(32).collect::<Vec<_>>();
+
+            for chunk in entries {
+                let entry = unsafe { core::ptr::read_unaligned(chunk.as_ptr() as *const DirectoryEntry) };
+
+                if entry.name[0] == 0x00 {
+                    break; // End of directory
+                }
+
+                if entry.name[0] == 0xE5 {
+                    lfn_name.clear(); // Reset LFN on deleted entry
+                    continue;
+                }
+
+                if entry.attr & ATTR_LONG_NAME == ATTR_LONG_NAME {
+                    // This is a long filename entry
+                    let lfn = unsafe { core::ptr::read_unaligned(chunk.as_ptr() as *const LongFileNameEntry) };
+
+                    // Extract characters from LFN entry
+                    let mut chars = Vec::new();
+
+                    // name1 (5 chars) - copy to avoid packed field reference
+                    let name1 = lfn.name1;
+                    for &c in &name1 {
+                        if c != 0xFFFF && c != 0x0000 {
+                            chars.push(c);
+                        }
+                    }
+                    // name2 (6 chars) - copy to avoid packed field reference
+                    let name2 = lfn.name2;
+                    for &c in &name2 {
+                        if c != 0xFFFF && c != 0x0000 {
+                            chars.push(c);
+                        }
+                    }
+                    // name3 (2 chars) - copy to avoid packed field reference
+                    let name3 = lfn.name3;
+                    for &c in &name3 {
+                        if c != 0xFFFF && c != 0x0000 {
+                            chars.push(c);
+                        }
+                    }
+
+                    if lfn.order & 0x40 != 0 {
+                        // First LFN entry (highest order)
+                        lfn_name = String::from_utf16_lossy(&chars);
+                    } else {
+                        // Prepend to existing name
+                        let prefix = String::from_utf16_lossy(&chars);
+                        lfn_name = prefix + &lfn_name;
+                    }
+                    continue;
+                }
+
+                // This is a regular directory entry
+                if !lfn_name.is_empty() {
+                    // Use the reconstructed long filename
+                    if lfn_name == name {
+                        let entry_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
+                        return Ok((entry_cluster, entry));
+                    }
+                    lfn_name.clear();
+                } else {
+                    // Use short filename (8.3 format)
+                    let mut short_name = String::new();
+                    for &b in &entry.name {
+                        if b != 0x20 {
+                            short_name.push(b as char);
+                        }
+                    }
+                    if entry.ext[0] != 0x20 {
+                        short_name.push('.');
+                        for &b in &entry.ext {
+                            if b != 0x20 {
+                                short_name.push(b as char);
+                            }
+                        }
+                    }
+
+                    if short_name == name {
+                        let entry_cluster = (entry.first_cluster_high as u32) << 16 | entry.first_cluster_low as u32;
+                        return Ok((entry_cluster, entry));
+                    }
+                }
+            }
+
+            // Move to next cluster in directory
+            current_cluster = self.next_cluster(current_cluster);
+            if current_cluster >= CLUSTER_EOF {
+                break;
+            }
+        }
+
+        Err(FileSystemError::NotFound)
+    }
+
+    fn flush_block_cache(&self) {
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Write a directory entry back to the specified position
     fn write_directory_entry(
         &self,
@@ -832,7 +994,7 @@ impl FAT32FileSystem {
 
         // Check for invalid characters
         for c in name.chars() {
-            if c.is_control() || "\\/:*?\"<>|".contains(c) {
+            if c.is_control() || r#"\/:*?"<>|"#.contains(c) {
                 return Err(FileSystemError::InvalidPath);
             }
         }
@@ -863,19 +1025,41 @@ impl FAT32FileSystem {
         let dir_lock = self.get_directory_lock(parent_cluster);
         let _lock = dir_lock.lock(); // Directory-specific lock
 
-        let (sfn, lfn_entries) = self.generate_filename_entries(name);
+        // Memory barrier to ensure all previous operations are visible
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
+        // First check if the file already exists to prevent duplicates
+        if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
+            return Err(FileSystemError::AlreadyExists);
+        }
+
+        let (sfn, lfn_entries) = self.generate_filename_entries(name);
         let required_slots = lfn_entries.len() + 1;
         let mut current_cluster = parent_cluster;
 
+        // Track all clusters we've checked to avoid infinite loops
+        let mut checked_clusters = alloc::collections::BTreeSet::new();
+
         loop {
+            // Prevent infinite loops in corrupted filesystem
+            if checked_clusters.contains(&current_cluster) {
+                error!("[create_directory_entry] Detected cluster loop at {}", current_cluster);
+                return Err(FileSystemError::IoError);
+            }
+            checked_clusters.insert(current_cluster);
+
+            // Read cluster with error handling
             let mut cluster_data = vec![0u8; self.bytes_per_cluster as usize];
-            self.read_cluster(current_cluster, &mut cluster_data)
-                .map_err(|_| FileSystemError::IoError)?;
+            if let Err(_) = self.read_cluster(current_cluster, &mut cluster_data) {
+                error!("[create_directory_entry] Failed to read cluster {}", current_cluster);
+                return Err(FileSystemError::IoError);
+            }
 
             let mut empty_slots = 0;
             let mut start_index = 0;
+            let entries_per_cluster = cluster_data.len() / 32;
 
+            // Find consecutive empty slots
             for (i, chunk) in cluster_data.chunks_exact(32).enumerate() {
                 if chunk[0] == 0x00 || chunk[0] == 0xE5 {
                     if empty_slots == 0 {
@@ -891,7 +1075,6 @@ impl FAT32FileSystem {
             }
 
             if empty_slots >= required_slots {
-                // Write LFN entries
                 for (i, lfn) in lfn_entries.iter().enumerate() {
                     let offset = (start_index + i) * 32;
                     let lfn_bytes =
@@ -915,28 +1098,64 @@ impl FAT32FileSystem {
                     first_cluster_low: (new_cluster & 0xFFFF) as u16,
                     file_size: 0,
                 };
-                let offset = (start_index + lfn_entries.len()) * 32;
+                let sfn_offset = (start_index + lfn_entries.len()) * 32;
                 let entry_bytes =
                     unsafe { core::slice::from_raw_parts(&entry as *const _ as *const u8, 32) };
-                cluster_data[offset..offset + 32].copy_from_slice(entry_bytes);
+                cluster_data[sfn_offset..sfn_offset + 32].copy_from_slice(entry_bytes);
 
-                self.write_cluster(current_cluster, &cluster_data)
-                    .map_err(|_| FileSystemError::IoError)?;
+                // Atomic write of the entire cluster
+                if let Err(_) = self.write_cluster(current_cluster, &cluster_data) {
+                    error!("[create_directory_entry] Failed to write cluster {}", current_cluster);
+                    return Err(FileSystemError::IoError);
+                }
 
-                // Add memory barrier to ensure directory entry is visible across cores
+                // Force write completion with multiple barriers
                 core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+                self.flush_block_cache();
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+                // Immediate verification that the entry was written correctly
+                if let Err(_) = self.verify_directory_entry_immediate(current_cluster, new_cluster) {
+                    error!("[create_directory_entry] Immediate verification failed for cluster {} in directory {}",
+                           new_cluster, current_cluster);
+                    return Err(FileSystemError::IoError);
+                }
 
                 return Ok(current_cluster);
             }
 
+            // Try to extend the directory if we're at the end
             let next_cluster = self.next_cluster(current_cluster);
             if next_cluster >= CLUSTER_EOF {
-                // Allocate new cluster if needed
-                if let Some(new_cluster) = self.allocate_cluster() {
-                    self.write_fat_entry(current_cluster, new_cluster)
-                        .map_err(|_| FileSystemError::IoError)?;
-                    current_cluster = new_cluster;
+                // Allocate new cluster for directory expansion
+                if let Some(expansion_cluster) = self.allocate_cluster() {
+                    // Initialize the new cluster with zeros
+                    let zero_cluster = vec![0u8; self.bytes_per_cluster as usize];
+                    if let Err(_) = self.write_cluster(expansion_cluster, &zero_cluster) {
+                        // Clean up allocated cluster on failure
+                        let _ = self.write_fat_entry(expansion_cluster, CLUSTER_FREE);
+                        return Err(FileSystemError::IoError);
+                    }
+
+                    // Link current cluster to new cluster
+                    if let Err(_) = self.write_fat_entry(current_cluster, expansion_cluster) {
+                        // Clean up on failure
+                        let _ = self.write_fat_entry(expansion_cluster, CLUSTER_FREE);
+                        return Err(FileSystemError::IoError);
+                    }
+
+                    // Mark new cluster as end-of-chain
+                    if let Err(_) = self.write_fat_entry(expansion_cluster, CLUSTER_EOF) {
+                        return Err(FileSystemError::IoError);
+                    }
+
+                    // Force FAT write completion
+                    self.flush_block_cache();
+                    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+                    current_cluster = expansion_cluster;
                 } else {
+                    error!("[create_directory_entry] No space available for directory expansion");
                     return Err(FileSystemError::NoSpace);
                 }
             } else {
@@ -1389,34 +1608,65 @@ impl Inode for FAT32Inode {
             return Err(FileSystemError::NotDirectory);
         }
 
-        // Validate filename
+        // Validate filename first
         FAT32FileSystem::validate_filename(name)?;
 
-        // Check if file already exists
+        let fs = self.fs();
+
+        // Use a global creation lock to prevent race conditions during file creation
+        static CREATION_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+        let _creation_guard = CREATION_LOCK.lock();
+
+        // Double-check if file already exists (race condition protection)
         if let Ok(_) = self.find_child(name) {
             return Err(FileSystemError::AlreadyExists);
         }
 
-        let fs = self.fs();
+        // Allocate a new cluster for the file with retry mechanism
+        let new_cluster = {
+            let mut attempts = 0;
+            loop {
+                if let Some(cluster) = fs.allocate_cluster() {
+                    break cluster;
+                }
+                attempts += 1;
+                if attempts >= 3 {
+                    error!("[create_file] Failed to allocate cluster after {} attempts", attempts);
+                    return Err(FileSystemError::NoSpace);
+                }
+                // Brief yield to allow other operations to complete
+                core::hint::spin_loop();
+            }
+        };
 
-        // Allocate a new cluster for the file
-        let new_cluster = fs.allocate_cluster().ok_or(FileSystemError::NoSpace)?;
-
-        // Create file entry in parent directory
-        let actual_dir_cluster =
-            fs.create_directory_entry(self.cluster, name, new_cluster, false)?;
-
-        let verification_result =
-            fs.verify_directory_entry_exists(actual_dir_cluster, new_cluster)?;
-        if !verification_result {
-            error!(
-                "[create_file] Directory entry not found after creation for cluster {} in directory cluster {}",
-                new_cluster, actual_dir_cluster
-            );
-            // Try to clean up the allocated cluster
+        // Initialize the allocated cluster with zeros
+        let zero_data = vec![0u8; fs.bytes_per_cluster as usize];
+        if let Err(e) = fs.write_cluster(new_cluster, &zero_data) {
+            error!("[create_file] Failed to initialize cluster {}: {:?}", new_cluster, e);
+            // Clean up allocated cluster
             let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
             return Err(FileSystemError::IoError);
         }
+
+        // Mark cluster as end-of-chain in FAT
+        if let Err(e) = fs.write_fat_entry(new_cluster, CLUSTER_EOF) {
+            error!("[create_file] Failed to mark cluster {} as EOF: {:?}", new_cluster, e);
+            // Clean up allocated cluster
+            let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
+            return Err(FileSystemError::IoError);
+        }
+
+        // Create directory entry with enhanced error handling
+        let actual_dir_cluster = match fs.create_directory_entry(self.cluster, name, new_cluster, false) {
+            Ok(cluster) => cluster,
+            Err(e) => {
+                error!("[create_file] Failed to create directory entry for '{}': {:?}", name, e);
+                // Clean up allocated cluster and FAT entry
+                let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
+                return Err(e);
+            }
+        };
+
         // Return the new file inode
         Ok(Arc::new(FAT32Inode {
             fs: self.fs,
