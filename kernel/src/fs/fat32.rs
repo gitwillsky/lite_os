@@ -105,7 +105,7 @@ struct CacheEntry {
     last_access: u64,
 }
 
-// Multi-core safe filesystem structure
+// Multi-core safe filesystem structure with proper lock hierarchy
 pub struct FAT32FileSystem {
     device: Arc<dyn BlockDevice>,
     bpb: BiosParameterBlock,
@@ -115,13 +115,21 @@ pub struct FAT32FileSystem {
     bytes_per_cluster: u32,
     root_cluster: u32,
 
-    // Multi-level synchronization
+    // Lock hierarchy (must be acquired in this order to avoid deadlock):
+    // 1. global_lock (for filesystem structure changes)
+    // 2. fat_cache (for FAT table operations)
+    // 3. block_cache (for block-level operations)
+    // 4. directory_locks (for specific directory operations)
+
     fat_cache: RwLock<Vec<u32>>,
     block_cache: RwLock<BTreeMap<u32, CacheEntry>>,
     directory_locks: RwLock<BTreeMap<u32, Arc<Mutex<()>>>>, // Per-directory locks
 
     // Global operations lock (for filesystem structure changes)
     global_lock: Mutex<()>,
+
+    // Write ordering lock to ensure proper flush sequence
+    flush_lock: Mutex<()>,
 }
 
 impl FAT32FileSystem {
@@ -228,6 +236,7 @@ impl FAT32FileSystem {
             block_cache: RwLock::new(BTreeMap::new()),
             directory_locks: RwLock::new(BTreeMap::new()),
             global_lock: Mutex::new(()),
+            flush_lock: Mutex::new(()),
         }))
     }
 
@@ -1017,47 +1026,120 @@ impl FAT32FileSystem {
         Err(FileSystemError::NotFound)
     }
 
+    /// Force flush block cache - this MUST succeed for filesystem consistency
+    /// Uses proper lock ordering and retry mechanism to avoid deadlock while ensuring data integrity
     fn flush_block_cache(&self) {
-        // Try to acquire block cache lock with timeout to avoid deadlock
-        if let Some(mut cache) = self.block_cache.try_write() {
-            // Write all dirty blocks to device
-            let mut blocks_flushed = 0;
-            for (sector, entry) in cache.iter_mut() {
-                if entry.dirty {
-                    let device_block_size = self.device.block_size();
-                    let sectors_per_block = device_block_size / SECTOR_SIZE;
-                    let block_num = sector / sectors_per_block as u32;
-                    let sector_in_block = sector % sectors_per_block as u32;
+        // Use flush_lock to serialize all flush operations and prevent interference
+        let _flush_guard = self.flush_lock.lock();
 
-                    // Read-modify-write for device block
-                    let mut block_data = vec![0u8; device_block_size];
-                    if let Ok(_) = self.device.read_block(block_num as usize, &mut block_data) {
-                        let sector_offset = sector_in_block as usize * SECTOR_SIZE;
-                        block_data[sector_offset..sector_offset + SECTOR_SIZE]
-                            .copy_from_slice(&entry.data);
+        // Memory barrier to ensure all previous writes are visible
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-                        if let Ok(_) = self.device.write_block(block_num as usize, &block_data) {
-                            entry.dirty = false;
-                            blocks_flushed += 1;
-                        } else {
-                            error!("[flush_block_cache] Failed to write sector {} to device", sector);
+        // Retry mechanism with backoff for acquiring block cache lock
+        let max_retries = 10;
+        let mut retry_count = 0;
+
+        loop {
+            match self.block_cache.try_write() {
+                Some(mut cache) => {
+                    // Successfully acquired lock, perform flush
+                    let mut blocks_flushed = 0;
+                    let mut failed_blocks = 0;
+
+                    for (sector, entry) in cache.iter_mut() {
+                        if entry.dirty {
+                            match self.flush_single_block(*sector, &entry.data) {
+                                Ok(_) => {
+                                    entry.dirty = false;
+                                    blocks_flushed += 1;
+                                }
+                                Err(e) => {
+                                    error!("[flush_block_cache] Failed to flush sector {}: {:?}", sector, e);
+                                    failed_blocks += 1;
+                                }
+                            }
                         }
-                    } else {
-                        error!("[flush_block_cache] Failed to read device block {} for sector {}", block_num, sector);
                     }
+
+                    // Only clear cache if all blocks were successfully flushed
+                    if failed_blocks == 0 && blocks_flushed > 0 {
+                        cache.clear();
+                    }
+
+                    if failed_blocks > 0 {
+                        error!("[flush_block_cache] {} blocks failed to flush - filesystem may be corrupted!", failed_blocks);
+                    }
+                    break;
+                }
+                None => {
+                    // Could not acquire lock, implement retry with exponential backoff
+                    retry_count += 1;
+
+                    if retry_count >= max_retries {
+                        // This is a critical failure - we CANNOT skip flushing
+                        error!("[flush_block_cache] CRITICAL: Could not acquire block cache lock after {} retries", max_retries);
+                        error!("[flush_block_cache] Forcing emergency flush to preserve data integrity!");
+
+                        // Force a memory barrier and try one more time
+                        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+                        // Last desperate attempt - this might cause temporary slowdown but preserves data
+                        let mut cache = self.block_cache.write(); // Blocking write - will wait for lock
+                        let mut blocks_flushed = 0;
+
+                        for (sector, entry) in cache.iter_mut() {
+                            if entry.dirty {
+                                if let Ok(_) = self.flush_single_block(*sector, &entry.data) {
+                                    entry.dirty = false;
+                                    blocks_flushed += 1;
+                                }
+                            }
+                        }
+
+                        if blocks_flushed > 0 {
+                            cache.clear();
+                        }
+
+                        warn!("[flush_block_cache] Emergency flush completed: {} blocks flushed", blocks_flushed);
+                        break;
+                    }
+
+                    // Exponential backoff: wait longer each time
+                    let backoff_cycles = 1000 * (1 << retry_count.min(8));
+                    for _ in 0..backoff_cycles {
+                        core::hint::spin_loop();
+                    }
+
+                    // Memory barrier before retry
+                    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
                 }
             }
-
-            // Only clear cache if we successfully flushed some blocks
-            if blocks_flushed > 0 {
-                cache.clear();
-            }
-        } else {
-            warn!("[flush_block_cache] Could not acquire block cache lock, skipping flush to avoid deadlock");
         }
 
-        // Add memory barrier to ensure all writes complete
+        // Final memory barrier to ensure all writes are committed
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Flush a single block to device - separated for better error handling
+    fn flush_single_block(&self, sector: u32, data: &[u8]) -> Result<(), BlockError> {
+        if data.len() != SECTOR_SIZE {
+            return Err(BlockError::InvalidBlock);
+        }
+
+        let device_block_size = self.device.block_size();
+        let sectors_per_block = device_block_size / SECTOR_SIZE;
+        let block_num = sector / sectors_per_block as u32;
+        let sector_in_block = sector % sectors_per_block as u32;
+
+        // Read-modify-write for device block
+        let mut block_data = vec![0u8; device_block_size];
+        self.device.read_block(block_num as usize, &mut block_data)?;
+
+        let sector_offset = sector_in_block as usize * SECTOR_SIZE;
+        block_data[sector_offset..sector_offset + SECTOR_SIZE].copy_from_slice(data);
+
+        self.device.write_block(block_num as usize, &block_data)?;
+        Ok(())
     }
 
     /// Write a directory entry back to the specified position
