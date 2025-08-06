@@ -1026,97 +1026,60 @@ impl FAT32FileSystem {
         Err(FileSystemError::NotFound)
     }
 
-    /// Force flush block cache - this MUST succeed for filesystem consistency
-    /// Uses proper lock ordering and retry mechanism to avoid deadlock while ensuring data integrity
+    /// Enhanced block cache flush with improved error handling and atomicity
     fn flush_block_cache(&self) {
-        // Use flush_lock to serialize all flush operations and prevent interference
+        // Use flush_lock to serialize all flush operations
         let _flush_guard = self.flush_lock.lock();
 
-        // Memory barrier to ensure all previous writes are visible
+        // Strong memory barrier to ensure all previous writes are visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Retry mechanism with backoff for acquiring block cache lock
-        let max_retries = 10;
-        let mut retry_count = 0;
+        // Always use blocking write to ensure we don't skip flushing
+        let mut cache = self.block_cache.write();
+        let mut blocks_flushed = 0;
+        let mut failed_blocks = Vec::new();
 
-        loop {
-            match self.block_cache.try_write() {
-                Some(mut cache) => {
-                    // Successfully acquired lock, perform flush
-                    let mut blocks_flushed = 0;
-                    let mut failed_blocks = 0;
-
-                    for (sector, entry) in cache.iter_mut() {
-                        if entry.dirty {
-                            match self.flush_single_block(*sector, &entry.data) {
-                                Ok(_) => {
-                                    entry.dirty = false;
-                                    blocks_flushed += 1;
-                                }
-                                Err(e) => {
-                                    error!("[flush_block_cache] Failed to flush sector {}: {:?}", sector, e);
-                                    failed_blocks += 1;
-                                }
-                            }
-                        }
+        // First pass: attempt to flush all dirty blocks
+        for (sector, entry) in cache.iter_mut() {
+            if entry.dirty {
+                match self.flush_single_block(*sector, &entry.data) {
+                    Ok(_) => {
+                        entry.dirty = false;
+                        blocks_flushed += 1;
                     }
-
-                    // Only clear cache if all blocks were successfully flushed
-                    if failed_blocks == 0 && blocks_flushed > 0 {
-                        cache.clear();
+                    Err(e) => {
+                        error!("[flush_block_cache] Failed to flush sector {}: {:?}", sector, e);
+                        failed_blocks.push(*sector);
                     }
-
-                    if failed_blocks > 0 {
-                        error!("[flush_block_cache] {} blocks failed to flush - filesystem may be corrupted!", failed_blocks);
-                    }
-                    break;
-                }
-                None => {
-                    // Could not acquire lock, implement retry with exponential backoff
-                    retry_count += 1;
-
-                    if retry_count >= max_retries {
-                        // This is a critical failure - we CANNOT skip flushing
-                        error!("[flush_block_cache] CRITICAL: Could not acquire block cache lock after {} retries", max_retries);
-                        error!("[flush_block_cache] Forcing emergency flush to preserve data integrity!");
-
-                        // Force a memory barrier and try one more time
-                        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-                        // Last desperate attempt - this might cause temporary slowdown but preserves data
-                        let mut cache = self.block_cache.write(); // Blocking write - will wait for lock
-                        let mut blocks_flushed = 0;
-
-                        for (sector, entry) in cache.iter_mut() {
-                            if entry.dirty {
-                                if let Ok(_) = self.flush_single_block(*sector, &entry.data) {
-                                    entry.dirty = false;
-                                    blocks_flushed += 1;
-                                }
-                            }
-                        }
-
-                        if blocks_flushed > 0 {
-                            cache.clear();
-                        }
-
-                        warn!("[flush_block_cache] Emergency flush completed: {} blocks flushed", blocks_flushed);
-                        break;
-                    }
-
-                    // Exponential backoff: wait longer each time
-                    let backoff_cycles = 1000 * (1 << retry_count.min(8));
-                    for _ in 0..backoff_cycles {
-                        core::hint::spin_loop();
-                    }
-
-                    // Memory barrier before retry
-                    core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
                 }
             }
         }
 
-        // Final memory barrier to ensure all writes are committed
+        // Second pass: retry failed blocks with device sync
+        if !failed_blocks.is_empty() {
+            warn!("[flush_block_cache] Retrying {} failed blocks", failed_blocks.len());
+            
+            for &sector in &failed_blocks {
+                if let Some(entry) = cache.get_mut(&sector) {
+                    if entry.dirty {
+                        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+                        
+                        if let Ok(_) = self.flush_single_block(sector, &entry.data) {
+                            entry.dirty = false;
+                            blocks_flushed += 1;
+                        } else {
+                            error!("[flush_block_cache] CRITICAL: Cannot flush sector {}", sector);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Only clear successfully flushed blocks from cache
+        if blocks_flushed > 0 {
+            cache.retain(|_, entry| entry.dirty);
+        }
+
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
 
@@ -1223,22 +1186,34 @@ impl FAT32FileSystem {
         new_cluster: u32,
         is_dir: bool,
     ) -> Result<u32, FileSystemError> {
-        // Check if the file already exists BEFORE acquiring lock to prevent deadlock
+        // Enhanced validation and safety checks
+        if parent_cluster < 2 && parent_cluster != self.root_cluster {
+            error!("[create_directory_entry] Invalid parent cluster: {}", parent_cluster);
+            return Err(FileSystemError::InvalidPath);
+        }
+
+        // Check if the file already exists BEFORE acquiring lock
         if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
             return Err(FileSystemError::AlreadyExists);
         }
 
         let dir_lock = self.get_directory_lock(parent_cluster);
-        let _lock = dir_lock.lock(); // Directory-specific lock
+        let _lock = dir_lock.lock();
 
-        // Memory barrier to ensure all previous operations are visible
+        // Strong memory barrier to ensure all previous operations are visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Double-check after acquiring lock
+        if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
+            warn!("[create_directory_entry] File '{}' was created by another thread", name);
+            return Err(FileSystemError::AlreadyExists);
+        }
 
         let (sfn, lfn_entries) = self.generate_filename_entries(name);
         let required_slots = lfn_entries.len() + 1;
         let mut current_cluster = parent_cluster;
 
-        // Track all clusters we've checked to avoid infinite loops
+        // Track all clusters to avoid infinite loops
         let mut checked_clusters = alloc::collections::BTreeSet::new();
 
         loop {
@@ -2084,28 +2059,61 @@ impl Inode for FAT32Inode {
             return Err(FileSystemError::NotFound);
         }
 
-        // Now perform atomic deletion
-        // Step 1: Mark directory entries as deleted
+        // Perform atomic deletion with enhanced safety checks
+        // Step 1: Read current cluster state and verify entries
         let mut cluster_data = vec![0u8; fs.bytes_per_cluster as usize];
         fs.read_cluster(target_cluster, &mut cluster_data)
             .map_err(|_| FileSystemError::IoError)?;
 
-        // Double-check entries are still valid before deleting
-        let mut all_entries_valid = true;
+        // Enhanced validation: verify entries are exactly what we expect
+        let mut verified_entries = Vec::new();
+        
         for &entry_idx in &target_entries {
-            if entry_idx * 32 >= cluster_data.len() || cluster_data[entry_idx * 32] == 0xE5 {
-                all_entries_valid = false;
-                break;
+            if entry_idx * 32 + 32 > cluster_data.len() {
+                error!("[remove] Entry index {} exceeds cluster boundary", entry_idx);
+                continue;
             }
+            
+            let first_byte = cluster_data[entry_idx * 32];
+            
+            // Ensure entry is not already deleted and not end-of-directory
+            if first_byte == 0xE5 || first_byte == 0x00 {
+                warn!("[remove] Entry at index {} already deleted: 0x{:02x}", entry_idx, first_byte);
+                continue; // Skip already deleted entries
+            }
+            
+            // For LFN entries, verify the attribute is correct
+            let attr = cluster_data[entry_idx * 32 + 11];
+            let is_lfn = attr & ATTR_LONG_NAME == ATTR_LONG_NAME;
+            
+            // Additional safety: for SFN entries, verify the cluster matches
+            if !is_lfn {
+                let entry_first_cluster_low = u16::from_le_bytes([
+                    cluster_data[entry_idx * 32 + 26],
+                    cluster_data[entry_idx * 32 + 27],
+                ]);
+                let entry_first_cluster_high = u16::from_le_bytes([
+                    cluster_data[entry_idx * 32 + 20],
+                    cluster_data[entry_idx * 32 + 21],
+                ]);
+                let entry_cluster = (entry_first_cluster_high as u32) << 16 | entry_first_cluster_low as u32;
+                
+                if entry_cluster != child_cluster {
+                    error!("[remove] SFN entry cluster mismatch: expected {}, found {}", child_cluster, entry_cluster);
+                    continue; // Skip mismatched entries
+                }
+            }
+            
+            verified_entries.push(entry_idx);
         }
 
-        if !all_entries_valid {
-            error!("[remove] Directory entries changed during deletion, aborting for safety");
-            return Err(FileSystemError::IoError);
+        if verified_entries.is_empty() {
+            warn!("[remove] No valid entries to delete found");
+            return Err(FileSystemError::NotFound);
         }
 
-        // Mark entries as deleted
-        for &entry_idx in &target_entries {
+        // Mark only verified entries as deleted
+        for &entry_idx in &verified_entries {
             cluster_data[entry_idx * 32] = 0xE5;
         }
 
