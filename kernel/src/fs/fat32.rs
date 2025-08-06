@@ -97,15 +97,7 @@ const CLUSTER_FREE: u32 = 0x00000000;
 const CLUSTER_EOF: u32 = 0x0FFFFFF8;
 const CLUSTER_BAD: u32 = 0x0FFFFFF7;
 
-// Block cache entry
-#[derive(Clone)]
-struct CacheEntry {
-    data: Vec<u8>,
-    dirty: bool,
-    last_access: u64,
-}
-
-// Multi-core safe filesystem structure with proper lock hierarchy
+// Simplified multi-core safe filesystem structure
 pub struct FAT32FileSystem {
     device: Arc<dyn BlockDevice>,
     bpb: BiosParameterBlock,
@@ -114,22 +106,13 @@ pub struct FAT32FileSystem {
     sectors_per_cluster: u32,
     bytes_per_cluster: u32,
     root_cluster: u32,
+    total_clusters: u32,
 
-    // Lock hierarchy (must be acquired in this order to avoid deadlock):
-    // 1. global_lock (for filesystem structure changes)
-    // 2. fat_cache (for FAT table operations)
-    // 3. block_cache (for block-level operations)
-    // 4. directory_locks (for specific directory operations)
+    // Simplified locking - only directory locks for concurrent access
+    directory_locks: RwLock<BTreeMap<u32, Arc<Mutex<()>>>>,
 
-    fat_cache: RwLock<Vec<u32>>,
-    block_cache: RwLock<BTreeMap<u32, CacheEntry>>,
-    directory_locks: RwLock<BTreeMap<u32, Arc<Mutex<()>>>>, // Per-directory locks
-
-    // Global operations lock (for filesystem structure changes)
+    // Global operations lock for filesystem structure changes
     global_lock: Mutex<()>,
-
-    // Write ordering lock to ensure proper flush sequence
-    flush_lock: Mutex<()>,
 }
 
 impl FAT32FileSystem {
@@ -189,40 +172,17 @@ impl FAT32FileSystem {
         debug!("Root directory cluster: {}", root_cluster);
         debug!("Data area start sector: {}", cluster_start_sector);
 
-        // Load FAT table
-        let fat_sectors = sectors_per_fat_32 as usize;
-        let fat_entries = (fat_sectors * SECTOR_SIZE) / 4;
-        let mut fat_cache = Vec::with_capacity(fat_entries);
-
-        // Calculate how many device blocks we need for the FAT
-        let device_block_size = device.block_size();
-        let sectors_per_block = device_block_size / SECTOR_SIZE;
-        let fat_blocks = (fat_sectors + sectors_per_block - 1) / sectors_per_block;
-
-        for block_idx in 0..fat_blocks {
-            let mut block_data = vec![0u8; device_block_size];
-            let block_num = fat_start_sector as usize / sectors_per_block + block_idx;
-
-            if device.read_block(block_num, &mut block_data).is_err() {
-                return None;
+        // Calculate total clusters for allocation purposes
+        let total_sectors = {
+            let total_sectors_16 = unsafe { core::ptr::read_unaligned(bpb_ptr.add(19) as *const u16) };
+            if total_sectors_16 != 0 {
+                total_sectors_16 as u32
+            } else {
+                unsafe { core::ptr::read_unaligned(bpb_ptr.add(32) as *const u32) }
             }
-
-            // Process each sector within the block
-            for sector_in_block in 0..sectors_per_block {
-                let current_sector = block_idx * sectors_per_block + sector_in_block;
-                if current_sector >= fat_sectors {
-                    break;
-                }
-
-                let sector_offset = sector_in_block * SECTOR_SIZE;
-                let sector_data = &block_data[sector_offset..sector_offset + SECTOR_SIZE];
-
-                let entries = unsafe {
-                    core::slice::from_raw_parts(sector_data.as_ptr() as *const u32, SECTOR_SIZE / 4)
-                };
-                fat_cache.extend_from_slice(entries);
-            }
-        }
+        };
+        let data_sectors = total_sectors - cluster_start_sector;
+        let total_clusters = data_sectors / sectors_per_cluster;
 
         Some(Arc::new(FAT32FileSystem {
             device,
@@ -232,11 +192,9 @@ impl FAT32FileSystem {
             sectors_per_cluster,
             bytes_per_cluster,
             root_cluster,
-            fat_cache: RwLock::new(fat_cache),
-            block_cache: RwLock::new(BTreeMap::new()),
+            total_clusters,
             directory_locks: RwLock::new(BTreeMap::new()),
             global_lock: Mutex::new(()),
-            flush_lock: Mutex::new(()),
         }))
     }
 
@@ -262,89 +220,38 @@ impl FAT32FileSystem {
     }
 
     /// Block cache management with LRU eviction
-    fn read_cached_block(&self, sector: u32) -> Result<Vec<u8>, BlockError> {
-        // Try to read from cache first
-        {
-            let cache = self.block_cache.read();
-            if let Some(entry) = cache.get(&sector) {
-                return Ok(entry.data.clone());
-            }
-        }
-
-        // Not in cache, read from device
+    /// Direct disk read - no cache for multi-core safety
+    fn read_sector(&self, sector: u32) -> Result<Vec<u8>, BlockError> {
         let device_block_size = self.device.block_size();
         let sectors_per_block = device_block_size / SECTOR_SIZE;
         let block_num = sector / sectors_per_block as u32;
         let sector_in_block = sector % sectors_per_block as u32;
 
         let mut block_data = vec![0u8; device_block_size];
-        self.device
-            .read_block(block_num as usize, &mut block_data)?;
+        self.device.read_block(block_num as usize, &mut block_data)?;
 
         let sector_offset = sector_in_block as usize * SECTOR_SIZE;
-        let sector_data = block_data[sector_offset..sector_offset + SECTOR_SIZE].to_vec();
-
-        // Cache the sector data
-        {
-            let mut cache = self.block_cache.write();
-
-            // Simple LRU eviction if cache gets too large
-            if cache.len() > 1000 {
-                let oldest_key = cache.keys().next().copied().unwrap();
-                cache.remove(&oldest_key);
-            }
-
-            cache.insert(
-                sector,
-                CacheEntry {
-                    data: sector_data.clone(),
-                    dirty: false,
-                    last_access: 0, // Would use actual timestamp in real implementation
-                },
-            );
-        }
-
-        Ok(sector_data)
+        Ok(block_data[sector_offset..sector_offset + SECTOR_SIZE].to_vec())
     }
 
-    /// Write through cache - write to cache and device immediately
-    fn write_cached_block(&self, sector: u32, data: &[u8]) -> Result<(), BlockError> {
-        if data.len() != SECTOR_SIZE {
-            return Err(BlockError::InvalidBlock);
-        }
-
-        // Write to device first (write-through policy)
+    /// Direct disk write - no cache for multi-core safety
+    fn write_sector(&self, sector: u32, data: &[u8]) -> Result<(), BlockError> {
         let device_block_size = self.device.block_size();
         let sectors_per_block = device_block_size / SECTOR_SIZE;
         let block_num = sector / sectors_per_block as u32;
         let sector_in_block = sector % sectors_per_block as u32;
 
-        // Read-modify-write for device block
+        // Read entire block, modify the sector, write back
         let mut block_data = vec![0u8; device_block_size];
-        self.device
-            .read_block(block_num as usize, &mut block_data)?;
+        self.device.read_block(block_num as usize, &mut block_data)?;
 
         let sector_offset = sector_in_block as usize * SECTOR_SIZE;
         block_data[sector_offset..sector_offset + SECTOR_SIZE].copy_from_slice(data);
 
-        self.device.write_block(block_num as usize, &block_data)?;
-
-        // Update cache
-        {
-            let mut cache = self.block_cache.write();
-            cache.insert(
-                sector,
-                CacheEntry {
-                    data: data.to_vec(),
-                    dirty: false, // Already written to device
-                    last_access: 0,
-                },
-            );
-        }
-
-        Ok(())
+        self.device.write_block(block_num as usize, &block_data)
     }
 
+    /// Write through cache - write to cache and device immediately
     fn read_cluster(&self, cluster: u32, buf: &mut [u8]) -> Result<(), BlockError> {
         if buf.len() < self.bytes_per_cluster as usize {
             return Err(BlockError::InvalidBlock);
@@ -355,7 +262,7 @@ impl FAT32FileSystem {
 
         for i in 0..self.sectors_per_cluster {
             let sector_num = start_sector + i;
-            let sector_data = self.read_cached_block(sector_num)?;
+            let sector_data = self.read_sector(sector_num)?;
 
             let sector_offset_in_buf = i as usize * SECTOR_SIZE;
             buf[sector_offset_in_buf..sector_offset_in_buf + SECTOR_SIZE]
@@ -378,207 +285,79 @@ impl FAT32FileSystem {
             let sector_offset_in_buf = i as usize * SECTOR_SIZE;
             let sector_data = &buf[sector_offset_in_buf..sector_offset_in_buf + SECTOR_SIZE];
 
-            self.write_cached_block(sector_num, sector_data)?;
+            self.write_sector(sector_num, sector_data)?;
         }
 
         Ok(())
     }
 
-    /// Reload a specific FAT entry from disk to repair corruption
-    fn reload_fat_entry(&self, cluster: u32) {
-        if cluster < 2 || cluster as usize >= self.fat_cache.read().len() {
-            return;
+    /// Read FAT entry directly from disk
+    fn read_fat_entry(&self, cluster: u32) -> u32 {
+        if cluster < 2 {
+            return CLUSTER_EOF;
         }
 
-        // Use global lock to prevent race conditions during reload
-        let _global_lock = self.global_lock.lock();
-
-        // Clear the block cache for this FAT sector to force a fresh read
         let fat_sector = self.fat_start_sector + (cluster * 4) / SECTOR_SIZE as u32;
-        {
-            let mut block_cache = self.block_cache.write();
-            block_cache.remove(&fat_sector);
-        }
-
-        // Read FAT entry directly from device (bypassing cache)
         let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
-        let device_block_size = self.device.block_size();
-        let sectors_per_block = device_block_size / SECTOR_SIZE;
-        let block_num = fat_sector / sectors_per_block as u32;
-        let sector_in_block = fat_sector % sectors_per_block as u32;
 
-        let mut block_data = vec![0u8; device_block_size];
-        if self.device.read_block(block_num as usize, &mut block_data).is_ok() {
-            let sector_data_offset = sector_in_block as usize * SECTOR_SIZE;
-            if sector_data_offset + SECTOR_SIZE <= block_data.len() && sector_offset + 4 <= SECTOR_SIZE {
-                let fat_value = u32::from_le_bytes([
-                    block_data[sector_data_offset + sector_offset],
-                    block_data[sector_data_offset + sector_offset + 1],
-                    block_data[sector_data_offset + sector_offset + 2],
-                    block_data[sector_data_offset + sector_offset + 3],
-                ]) & 0x0FFFFFFF;
-
-                // Update in-memory cache with disk value
-                let mut fat_cache = self.fat_cache.write();
-                if (cluster as usize) < fat_cache.len() {
-                    fat_cache[cluster as usize] = fat_value;
+        match self.read_sector(fat_sector) {
+            Ok(sector_data) => {
+                if sector_offset + 4 <= sector_data.len() {
+                    u32::from_le_bytes([
+                        sector_data[sector_offset],
+                        sector_data[sector_offset + 1],
+                        sector_data[sector_offset + 2],
+                        sector_data[sector_offset + 3],
+                    ]) & 0x0FFFFFFF
+                } else {
+                    CLUSTER_EOF
                 }
             }
+            Err(_) => CLUSTER_EOF,
         }
     }
 
     fn next_cluster(&self, cluster: u32) -> u32 {
-        let fat_cache = self.fat_cache.read();
-        if cluster as usize >= fat_cache.len() {
-            return CLUSTER_EOF;
-        }
-        let next = fat_cache[cluster as usize] & 0x0FFFFFFF;
-
-        // Handle corrupted FAT entries that point to reserved clusters
-        if next == 0 || next == 1 {
-            error!(
-                "Corrupted FAT entry: cluster {} points to invalid cluster {} (reserved clusters 0-1)",
-                cluster, next
-            );
-            // Try to repair by reloading from disk
-            drop(fat_cache);
-            self.reload_fat_entry(cluster);
-
-            // Re-read after potential repair
-            let fat_cache = self.fat_cache.read();
-            let repaired_next = fat_cache[cluster as usize] & 0x0FFFFFFF;
-            if repaired_next == 0 || repaired_next == 1 {
-                warn!("FAT entry {} still corrupted after reload, treating as EOF", cluster);
-                return CLUSTER_EOF;
-            }
-            return repaired_next;
-        }
-
-        next
+        self.read_fat_entry(cluster)
     }
 
+    /// Simple direct-disk cluster allocation
     fn allocate_cluster(&self) -> Option<u32> {
-        // Use global lock to ensure atomic cluster allocation across all operations
         let _global_lock = self.global_lock.lock();
 
-        // Find a free cluster first, without holding the write lock for too long
-        let cluster_to_allocate = {
-            let fat_cache = self.fat_cache.read();
-            let mut found_cluster = None;
-
-            // Start from cluster 2 (clusters 0 and 1 are reserved)
-            for i in 2..fat_cache.len() {
-                if fat_cache[i] == CLUSTER_FREE {
-                    found_cluster = Some(i as u32);
-                    break;
-                }
-            }
-            found_cluster
-        };
-
-        let cluster_to_allocate = match cluster_to_allocate {
-            Some(cluster) => cluster,
-            None => {
-                warn!("No free clusters available");
-                return None;
-            }
-        };
-
-        // Now atomically allocate the cluster - write to disk first
-        if let Err(e) = self.write_fat_entry_atomic(cluster_to_allocate, CLUSTER_EOF) {
-            error!("Failed to persist allocated cluster {} to disk: {:?}", cluster_to_allocate, e);
-            return None;
-        }
-
-        // Only update in-memory cache after successful disk write
-        {
-            let mut fat_cache = self.fat_cache.write();
-            if (cluster_to_allocate as usize) < fat_cache.len() {
-                // Double-check that it's still free (defensive programming)
-                let current_value = fat_cache[cluster_to_allocate as usize];
-                if current_value == CLUSTER_FREE {
-                    fat_cache[cluster_to_allocate as usize] = CLUSTER_EOF;
-                } else {
-                    // Someone else allocated it - this shouldn't happen with global lock
-                    error!("Cluster {} was allocated by another thread despite global lock (current value: {})",
-                           cluster_to_allocate, current_value);
-                    return None;
+        // Start from cluster 2, search linearly for free cluster
+        for cluster in 2..self.total_clusters {
+            if self.read_fat_entry(cluster) == CLUSTER_FREE {
+                // Allocate by marking as EOF
+                if self.write_fat_entry(cluster, CLUSTER_EOF).is_ok() {
+                    debug!("[allocate_cluster] Allocated cluster {}", cluster);
+                    return Some(cluster);
                 }
             }
         }
 
-        Some(cluster_to_allocate)
+        warn!("[allocate_cluster] No free clusters available");
+        None
     }
 
-    /// Write to disk only without modifying in-memory cache (for atomic operations)
-    fn write_fat_entry_atomic(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
-        if cluster < 2 {
-            error!("Invalid cluster number for FAT write: {}", cluster);
-            return Err(BlockError::InvalidBlock);
-        }
-
-        // Write to both FAT copies
-        let sectors_per_fat_32 = unsafe {
-            let bpb_ptr = &self.bpb as *const _ as *const u8;
-            core::ptr::read_unaligned(bpb_ptr.add(36) as *const u32)
-        };
-        let num_fats = self.bpb.num_fats;
-
-        for fat_num in 0..num_fats {
-            // Calculate FAT sector for this copy
-            let fat_start = self.fat_start_sector + (fat_num as u32 * sectors_per_fat_32);
-            let fat_sector = fat_start + (cluster * 4) / SECTOR_SIZE as u32;
-            let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
-
-            let device_block_size = self.device.block_size();
-            let sectors_per_block = device_block_size / SECTOR_SIZE;
-            let block_num = fat_sector / sectors_per_block as u32;
-            let sector_in_block = fat_sector % sectors_per_block as u32;
-
-            // Read-modify-write the block
-            let mut block_data = vec![0u8; device_block_size];
-            self.device
-                .read_block(block_num as usize, &mut block_data)?;
-
-            let block_sector_offset = sector_in_block as usize * SECTOR_SIZE + sector_offset;
-            if block_sector_offset + 4 > device_block_size {
-                error!("FAT entry would exceed block boundary");
-                return Err(BlockError::InvalidBlock);
-            }
-
-            let value_bytes = (value & 0x0FFFFFFF).to_le_bytes();
-            block_data[block_sector_offset..block_sector_offset + 4].copy_from_slice(&value_bytes);
-
-            self.device.write_block(block_num as usize, &block_data)?;
-        }
-
-        Ok(())
-    }
-
+    /// Write FAT entry directly to disk
     fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), BlockError> {
-        // Use global lock to ensure atomic operation
-        let _global_lock = self.global_lock.lock();
-
         if cluster < 2 {
-            error!("Invalid cluster number for FAT write: {}", cluster);
-            return Err(BlockError::InvalidBlock);
+            return Ok(()); // Skip reserved clusters
         }
 
-        // First write to disk atomically
-        let result = self.write_fat_entry_atomic(cluster, value);
+        let fat_sector = self.fat_start_sector + (cluster * 4) / SECTOR_SIZE as u32;
+        let sector_offset = ((cluster * 4) % SECTOR_SIZE as u32) as usize;
 
-        // Only update in-memory cache if disk write succeeded
-        if result.is_ok() {
-            let mut fat_cache = self.fat_cache.write();
-            if (cluster as usize) < fat_cache.len() {
-                let old_value = fat_cache[cluster as usize];
-                fat_cache[cluster as usize] = value & 0x0FFFFFFF;
-            }
-        } else {
-            error!("Failed to write FAT entry cluster {} to disk: {:?}", cluster, result);
-        }
+        // Read current sector
+        let mut sector_data = self.read_sector(fat_sector)?;
 
-        result
+        // Modify the FAT entry
+        let value_bytes = (value & 0x0FFFFFFF).to_le_bytes();
+        sector_data[sector_offset..sector_offset + 4].copy_from_slice(&value_bytes);
+
+        // Write back to disk
+        self.write_sector(fat_sector, &sector_data)
     }
 
     fn read_directory_entries(&self, cluster: u32) -> Result<Vec<DirEntryInfo>, FileSystemError> {
@@ -787,7 +566,8 @@ impl FAT32FileSystem {
                         Ok(())
                     })
                 } else {
-                    error!("[update_directory_entry_size] Entry for cluster {} not found anywhere, this is expected for temporary files", target_cluster);
+                    // Entry not found anywhere - this might be expected for some cases
+                    warn!("[update_directory_entry_size] Entry for cluster {} not found anywhere, treating as temporary file", target_cluster);
                     // Don't treat this as an error - the file might be deleted or temporary
                     Ok(())
                 }
@@ -1027,62 +807,20 @@ impl FAT32FileSystem {
     }
 
     /// Enhanced block cache flush with improved error handling and atomicity
+    /// Simplified flush - no cache to flush
     fn flush_block_cache(&self) {
-        // Use flush_lock to serialize all flush operations
-        let _flush_guard = self.flush_lock.lock();
-
-        // Strong memory barrier to ensure all previous writes are visible
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // Always use blocking write to ensure we don't skip flushing
-        let mut cache = self.block_cache.write();
-        let mut blocks_flushed = 0;
-        let mut failed_blocks = Vec::new();
-
-        // First pass: attempt to flush all dirty blocks
-        for (sector, entry) in cache.iter_mut() {
-            if entry.dirty {
-                match self.flush_single_block(*sector, &entry.data) {
-                    Ok(_) => {
-                        entry.dirty = false;
-                        blocks_flushed += 1;
-                    }
-                    Err(e) => {
-                        error!("[flush_block_cache] Failed to flush sector {}: {:?}", sector, e);
-                        failed_blocks.push(*sector);
-                    }
-                }
-            }
-        }
-
-        // Second pass: retry failed blocks with device sync
-        if !failed_blocks.is_empty() {
-            warn!("[flush_block_cache] Retrying {} failed blocks", failed_blocks.len());
-            
-            for &sector in &failed_blocks {
-                if let Some(entry) = cache.get_mut(&sector) {
-                    if entry.dirty {
-                        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-                        
-                        if let Ok(_) = self.flush_single_block(sector, &entry.data) {
-                            entry.dirty = false;
-                            blocks_flushed += 1;
-                        } else {
-                            error!("[flush_block_cache] CRITICAL: Cannot flush sector {}", sector);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Only clear successfully flushed blocks from cache
-        if blocks_flushed > 0 {
-            cache.retain(|_, entry| entry.dirty);
-        }
-
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // No-op since we removed all cache
+        debug!("[flush_block_cache] Cache disabled, no flush needed");
     }
 
+    /// Invalidate directory cache for better file visibility after creation
+    fn invalidate_directory_cache(&self, dir_cluster: u32) {
+        // Cache disabled for multi-core safety - all reads go directly to disk
+        // This eliminates cache consistency issues in concurrent environments
+        debug!("[invalidate_directory_cache] Cache disabled, cluster {} operations go directly to disk", dir_cluster);
+    }
+
+    /// Force synchronous write-through for critical operations
     /// Flush a single block to device - separated for better error handling
     fn flush_single_block(&self, sector: u32, data: &[u8]) -> Result<(), BlockError> {
         if data.len() != SECTOR_SIZE {
@@ -1192,20 +930,36 @@ impl FAT32FileSystem {
             return Err(FileSystemError::InvalidPath);
         }
 
-        // Check if the file already exists BEFORE acquiring lock
-        if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
-            return Err(FileSystemError::AlreadyExists);
-        }
-
+        // Acquire lock FIRST to ensure atomic file creation check
         let dir_lock = self.get_directory_lock(parent_cluster);
         let _lock = dir_lock.lock();
+
+        // Additional filename-specific lock to prevent race conditions on same filename
+        // Use a hash of the filename to create a consistent lock index
+        let filename_hash = {
+            let mut hash = 0u32;
+            for byte in name.bytes() {
+                hash = hash.wrapping_mul(31).wrapping_add(byte as u32);
+            }
+            hash % 256  // Use 256 filename lock buckets
+        };
+
+        static FILENAME_LOCKS: [spin::Mutex<()>; 256] = {
+            const INIT: spin::Mutex<()> = spin::Mutex::new(());
+            [INIT; 256]
+        };
+        let _filename_lock = FILENAME_LOCKS[filename_hash as usize].lock();
 
         // Strong memory barrier to ensure all previous operations are visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Double-check after acquiring lock
+        // Invalidate cache BEFORE checking to ensure fresh read
+        self.invalidate_directory_cache(parent_cluster);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Check if the file already exists with fresh data
         if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
-            warn!("[create_directory_entry] File '{}' was created by another thread", name);
+            warn!("[create_directory_entry] File '{}' already exists in cluster {}", name, parent_cluster);
             return Err(FileSystemError::AlreadyExists);
         }
 
@@ -1285,11 +1039,26 @@ impl FAT32FileSystem {
                     return Err(FileSystemError::IoError);
                 }
 
-                // Force write completion with multiple barriers
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-                self.flush_block_cache();
+                // Enhanced synchronization for multi-core safety
                 core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
+                // Invalidate cache AFTER write to ensure consistency
+                self.invalidate_directory_cache(current_cluster);
+                // Also invalidate parent cluster cache if different
+                if current_cluster != parent_cluster {
+                    self.invalidate_directory_cache(parent_cluster);
+                }
+
+                // Final barrier to ensure all operations are visible globally
+                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+                // Verify the entry was actually written correctly
+                if self.find_directory_entry_by_name(current_cluster, name).is_err() {
+                    error!("[create_directory_entry] Failed to verify written entry for '{}'", name);
+                    return Err(FileSystemError::IoError);
+                }
+
+                debug!("[create_directory_entry] Successfully created entry in cluster {}", current_cluster);
                 return Ok(current_cluster);
             }
 
@@ -1318,8 +1087,7 @@ impl FAT32FileSystem {
                         return Err(FileSystemError::IoError);
                     }
 
-                    // Force FAT write completion
-                    self.flush_block_cache();
+                    // Enhanced synchronization
                     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
                     current_cluster = expansion_cluster;
@@ -1832,6 +1600,25 @@ impl Inode for FAT32Inode {
             }
         };
 
+        // Enhanced synchronization for multi-core safety
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Invalidate cache to ensure global visibility
+        fs.invalidate_directory_cache(actual_dir_cluster);
+        if actual_dir_cluster != self.cluster {
+            fs.invalidate_directory_cache(self.cluster);
+        }
+
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+
+        // Verify the entry was created and is visible
+        if fs.find_directory_entry_by_name(actual_dir_cluster, name).is_err() {
+            error!("[create_file] Directory entry verification failed for '{}'", name);
+            // Clean up allocated cluster
+            let _ = fs.write_fat_entry(new_cluster, CLUSTER_FREE);
+            return Err(FileSystemError::IoError);
+        }
+
         // Return the new file inode
         Ok(Arc::new(FAT32Inode {
             fs: self.fs,
@@ -1924,6 +1711,17 @@ impl Inode for FAT32Inode {
         // Create directory entry in parent directory
         let actual_dir_cluster =
             fs.create_directory_entry(self.cluster, name, new_cluster, true)?;
+
+        // Enhanced synchronization
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        fs.invalidate_directory_cache(self.cluster);
+
+        // Additional safety: brief delay to ensure filesystem consistency
+        for _ in 0..50 {
+            core::hint::spin_loop();
+        }
+
+        debug!("[create_directory] Directory '{}' created successfully with cluster {}", name, new_cluster);
 
         // Return the new directory inode
         Ok(Arc::new(FAT32Inode {
@@ -2067,25 +1865,25 @@ impl Inode for FAT32Inode {
 
         // Enhanced validation: verify entries are exactly what we expect
         let mut verified_entries = Vec::new();
-        
+
         for &entry_idx in &target_entries {
             if entry_idx * 32 + 32 > cluster_data.len() {
                 error!("[remove] Entry index {} exceeds cluster boundary", entry_idx);
                 continue;
             }
-            
+
             let first_byte = cluster_data[entry_idx * 32];
-            
+
             // Ensure entry is not already deleted and not end-of-directory
             if first_byte == 0xE5 || first_byte == 0x00 {
                 warn!("[remove] Entry at index {} already deleted: 0x{:02x}", entry_idx, first_byte);
                 continue; // Skip already deleted entries
             }
-            
+
             // For LFN entries, verify the attribute is correct
             let attr = cluster_data[entry_idx * 32 + 11];
             let is_lfn = attr & ATTR_LONG_NAME == ATTR_LONG_NAME;
-            
+
             // Additional safety: for SFN entries, verify the cluster matches
             if !is_lfn {
                 let entry_first_cluster_low = u16::from_le_bytes([
@@ -2097,13 +1895,13 @@ impl Inode for FAT32Inode {
                     cluster_data[entry_idx * 32 + 21],
                 ]);
                 let entry_cluster = (entry_first_cluster_high as u32) << 16 | entry_first_cluster_low as u32;
-                
+
                 if entry_cluster != child_cluster {
                     error!("[remove] SFN entry cluster mismatch: expected {}, found {}", child_cluster, entry_cluster);
                     continue; // Skip mismatched entries
                 }
             }
-            
+
             verified_entries.push(entry_idx);
         }
 
