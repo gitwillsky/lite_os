@@ -345,45 +345,63 @@ impl ClusterManager {
                         fsinfo.next_free
                     };
 
-                    let free_count = if fsinfo.free_count == 0xFFFFFFFF {
-                        total_clusters  // 未知，估计全部为空闲
+                    // FSInfo 的空闲簇计数可能不准确，需要通过实际扫描来验证
+                    // 为了启动性能，我们仍使用FSInfo的值，但设置保守的估计
+                    let free_count = if fsinfo.free_count == 0xFFFFFFFF || fsinfo.free_count > total_clusters {
+                        // 未知或不合理，进行保守估计
+                        total_clusters / 2  // 假设一半为空闲
                     } else {
-                        fsinfo.free_count
+                        // 使用FSInfo的值，但如果太大则进行限制
+                        fsinfo.free_count.min(total_clusters)
                     };
 
+                    debug!("Loaded FSInfo: next_free={}, free_count={}, total_clusters={}",
+                          next_free, free_count, total_clusters);
                     return (next_free, free_count);
                 }
             }
         }
 
         warn!("Failed to load FSInfo, using defaults");
-        (2, total_clusters) // 默认值
+        (2, total_clusters / 2) // 保守的默认值
     }
 
     fn update_fsinfo(&self, next_free: u32, free_count: u32) {
-        let block_size = self.block_device.block_size();
-        let sectors_per_block = block_size / SECTOR_SIZE;
-        let block_id = self.fsinfo_sector as usize / sectors_per_block;
-        let sector_in_block = self.fsinfo_sector as usize % sectors_per_block;
-        let sector_offset = sector_in_block * SECTOR_SIZE;
+        // 非阻塞更新：如果无法立即获取锁，跳过本次更新以避免阻塞
+        if let Some(_lock) = self.allocation_data.try_lock() {
+            let block_size = self.block_device.block_size();
+            let sectors_per_block = block_size / SECTOR_SIZE;
+            let block_id = self.fsinfo_sector as usize / sectors_per_block;
+            let sector_in_block = self.fsinfo_sector as usize % sectors_per_block;
+            let sector_offset = sector_in_block * SECTOR_SIZE;
 
-        let mut block_buf = vec![0u8; block_size];
-        if self.block_device.read_block(block_id, &mut block_buf).is_ok() {
-            let fsinfo_data = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
-            if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
-                let fsinfo = unsafe {
-                    &mut *(fsinfo_data.as_mut_ptr() as *mut FSInfo)
-                };
+            let mut block_buf = vec![0u8; block_size];
+            if self.block_device.read_block(block_id, &mut block_buf).is_ok() {
+                let fsinfo_data = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
+                if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
+                    let fsinfo = unsafe {
+                        &mut *(fsinfo_data.as_mut_ptr() as *mut FSInfo)
+                    };
 
-                if fsinfo.is_valid() {
-                    fsinfo.next_free = next_free;
-                    fsinfo.free_count = free_count;
+                    if fsinfo.is_valid() {
+                        fsinfo.next_free = next_free;
+                        fsinfo.free_count = free_count;
 
-                    if self.block_device.write_block(block_id, &block_buf).is_ok() {
-                        debug!("Updated FSInfo: next_free={}, free_count={}", next_free, free_count);
+                        if self.block_device.write_block(block_id, &block_buf).is_ok() {
+                            debug!("Updated FSInfo: next_free={}, free_count={}", next_free, free_count);
+                        } else {
+                            warn!("Failed to write FSInfo update to disk");
+                        }
+                    } else {
+                        warn!("Invalid FSInfo structure, skipping update");
                     }
                 }
+            } else {
+                warn!("Failed to read FSInfo sector for update");
             }
+        } else {
+            // 如果无法获取锁，跳过更新，避免阻塞
+            debug!("Skipping FSInfo update due to lock contention");
         }
     }
 
@@ -469,22 +487,34 @@ impl ClusterManager {
     }
 
     pub fn allocate_cluster(&self) -> Result<u32, FileSystemError> {
-        // 限制搜索范围，避免长时间锁定
-        const MAX_SEARCH_ATTEMPTS: u32 = 256;
+        // 增加搜索范围，但仍然限制以避免长时间锁定
+        const MAX_SEARCH_ATTEMPTS: u32 = 1024;
+
+        // 获取CPU ID作为搜索偏移，减少多核竞争
+        let cpu_id = crate::arch::hart::hart_id() as u32;
+        let search_offset = cpu_id * 64; // 每个CPU从不同位置开始搜索
 
         let mut alloc_data = self.allocation_data.lock();
 
         // 快速检查是否还有空闲簇
         if alloc_data.free_cluster_count == 0 {
-            warn!("No free clusters available");
+            warn!("No free clusters available according to FSInfo");
             return Err(FileSystemError::NoSpace);
         }
 
-        let start_cluster = alloc_data.next_free_cluster;
-        let mut current = start_cluster;
+        // 计算起始搜索位置，加入CPU偏移来分散搜索
+        let base_start = alloc_data.next_free_cluster;
+        let start_cluster = if base_start + search_offset < self.total_clusters + 2 {
+            base_start + search_offset
+        } else {
+            2 + (search_offset % (self.total_clusters / 4))  // 在前1/4区域内分散
+        };
 
-        debug!("Starting cluster allocation from cluster {} (free_count={})",
-               start_cluster, alloc_data.free_cluster_count);
+        let mut current = start_cluster;
+        let mut searched_full_circle = false;
+
+        debug!("CPU-{} starting cluster allocation from cluster {} (base={}, free_count={})",
+               cpu_id, start_cluster, base_start, alloc_data.free_cluster_count);
 
         for attempts in 1..=MAX_SEARCH_ATTEMPTS {
             // 确保簇号在有效范围内
@@ -493,6 +523,12 @@ impl ClusterManager {
             }
             if current >= self.total_clusters + 2 {
                 current = 2; // 回绕到开头
+                if !searched_full_circle {
+                    searched_full_circle = true;
+                } else {
+                    // 已经搜索了完整的两轮，放弃
+                    break;
+                }
             }
 
             // 释放锁来读取FAT表项，避免死锁
@@ -509,7 +545,7 @@ impl ClusterManager {
             };
 
             if fat_entry == FAT32_FREE_CLUSTER {
-                debug!("Found free cluster {} after {} attempts", current, attempts);
+                debug!("CPU-{} found free cluster {} after {} attempts", cpu_id, current, attempts);
 
                 // 分配簇
                 if let Err(e) = self.write_fat_entry(current, FAT32_END_OF_CHAIN) {
@@ -523,48 +559,59 @@ impl ClusterManager {
                 // 重新获取锁更新分配数据
                 alloc_data = self.allocation_data.lock();
 
-                // 更新下一个搜索起始位置
+                // 更新下一个搜索起始位置为当前位置附近
                 let new_next_free = if current + 1 >= self.total_clusters + 2 {
                     2
                 } else {
                     current + 1
                 };
 
+                // 保守地更新空闲簇计数
+                let old_count = alloc_data.free_cluster_count;
                 alloc_data.next_free_cluster = new_next_free;
                 alloc_data.free_cluster_count = alloc_data.free_cluster_count.saturating_sub(1);
 
-                debug!("Successfully allocated cluster {}, next_free={}, remaining={}",
-                       current, new_next_free, alloc_data.free_cluster_count);
+                debug!("CPU-{} successfully allocated cluster {}, next_free={}, remaining={} (was={})",
+                       cpu_id, current, new_next_free, alloc_data.free_cluster_count, old_count);
 
                 // 异步更新FSInfo扇区（在锁外进行）
                 let next_free = alloc_data.next_free_cluster;
                 let free_count = alloc_data.free_cluster_count;
                 drop(alloc_data);
-                self.update_fsinfo(next_free, free_count);
+
+                // 大幅减少FSInfo更新频率，避免过多磁盘I/O
+                // 只在分配的前几个簇或每100次分配时更新
+                if attempts <= 2 || attempts % 100 == 0 {
+                    self.update_fsinfo(next_free, free_count);
+                }
 
                 return Ok(current);
             } else {
                 // 簇已被占用，继续搜索
-                if attempts <= 5 {
-                    debug!("Cluster {} is occupied (entry=0x{:08x})", current, fat_entry);
+                if attempts <= 10 || attempts % 100 == 0 {
+                    debug!("CPU-{} cluster {} is occupied (entry=0x{:08x}), attempt {}",
+                           cpu_id, current, fat_entry, attempts);
                 }
                 current += 1;
-                if current >= self.total_clusters + 2 {
-                    current = 2; // 回绕
-                }
-
-                // 如果回到了起始位置，说明搜索了一圈
-                if current == start_cluster {
-                    warn!("Wrapped around to starting cluster, stopping search");
-                    return Err(FileSystemError::NoSpace);
-                }
 
                 // 重新获取锁
                 alloc_data = self.allocation_data.lock();
             }
         }
 
-        warn!("No free clusters found after {} attempts", MAX_SEARCH_ATTEMPTS);
+        // 搜索失败后，重新评估空闲簇计数
+        warn!("CPU-{} no free clusters found after {} attempts, updating free count estimate",
+              cpu_id, MAX_SEARCH_ATTEMPTS);
+
+        // 将空闲簇计数设为0，强制其他分配请求也快速失败
+        alloc_data.free_cluster_count = 0;
+        let next_free = alloc_data.next_free_cluster;
+        let free_count = alloc_data.free_cluster_count;
+        drop(alloc_data);
+
+        // 更新FSInfo反映空间不足
+        self.update_fsinfo(next_free, free_count);
+
         Err(FileSystemError::NoSpace)
     }
 
@@ -587,8 +634,17 @@ impl ClusterManager {
             if start_cluster < alloc_data.next_free_cluster {
                 alloc_data.next_free_cluster = start_cluster;
             }
+
+            let next_free = alloc_data.next_free_cluster;
+            let free_count = alloc_data.free_cluster_count;
+
             debug!("Freed {} clusters starting from {}, free_count now {}",
-                   freed_count, start_cluster, alloc_data.free_cluster_count);
+                   freed_count, start_cluster, free_count);
+
+            drop(alloc_data);
+
+            // 更新FSInfo反映释放的空间
+            self.update_fsinfo(next_free, free_count);
         }
 
         Ok(())
