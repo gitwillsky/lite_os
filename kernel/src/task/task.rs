@@ -48,6 +48,15 @@ impl core::fmt::Debug for FileDescriptor {
     }
 }
 
+impl Drop for FileDescriptor {
+    fn drop(&mut self) {
+        // 文件描述符被销毁时，同步文件内容到磁盘
+        if let Err(e) = self.inode.sync() {
+            warn!("Failed to sync file on close: {:?}", e);
+        }
+    }
+}
+
 impl FileDescriptor {
     pub fn new(inode: Arc<dyn Inode>, flags: u32) -> Self {
         Self {
