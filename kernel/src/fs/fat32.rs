@@ -1,5 +1,5 @@
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     sync::{Arc, Weak},
     vec,
@@ -16,6 +16,11 @@ const FAT32_SIGNATURE: u16 = 0xAA55;
 const FAT32_END_OF_CHAIN: u32 = 0x0FFFFFFF;
 const FAT32_BAD_CLUSTER: u32 = 0x0FFFFFF7;
 const FAT32_FREE_CLUSTER: u32 = 0x00000000;
+
+// FSInfo 扇区签名
+const FSINFO_SIGNATURE1: u32 = 0x41615252;
+const FSINFO_SIGNATURE2: u32 = 0x61417272;
+const FSINFO_SIGNATURE3: u32 = 0xAA550000;
 
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +147,26 @@ impl DirectoryEntry {
     }
 }
 
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct FSInfo {
+    pub signature1: u32,        // 0x41615252
+    pub reserved1: [u8; 480],
+    pub signature2: u32,        // 0x61417272
+    pub free_count: u32,        // 空闲簇数量，0xFFFFFFFF表示未知
+    pub next_free: u32,         // 下次分配搜索起始位置
+    pub reserved2: [u8; 12],
+    pub signature3: u32,        // 0xAA550000
+}
+
+impl FSInfo {
+    pub fn is_valid(&self) -> bool {
+        self.signature1 == FSINFO_SIGNATURE1 &&
+        self.signature2 == FSINFO_SIGNATURE2 &&
+        (self.signature3 & 0xFFFF0000) == (FSINFO_SIGNATURE3 & 0xFFFF0000)
+    }
+}
+
 pub struct ClusterManager {
     fat_start_sector: u32,
     sectors_per_fat: u32,
@@ -150,7 +175,15 @@ pub struct ClusterManager {
     total_clusters: u32,
     block_device: Arc<dyn BlockDevice>,
     fat_cache: RwLock<BTreeMap<u32, u32>>,
-    allocation_lock: Mutex<()>,
+    // 简化同步机制，使用单一的allocation_lock来保护关键数据
+    allocation_data: Mutex<AllocationData>,
+    fsinfo_sector: u32,
+}
+
+#[derive(Debug)]
+struct AllocationData {
+    next_free_cluster: u32,
+    free_cluster_count: u32,
 }
 
 impl core::fmt::Debug for ClusterManager {
@@ -163,7 +196,8 @@ impl core::fmt::Debug for ClusterManager {
             .field("total_clusters", &self.total_clusters)
             .field("block_device", &"<BlockDevice>")
             .field("fat_cache", &self.fat_cache)
-            .field("allocation_lock", &"<Mutex>")
+            .field("allocation_data", &self.allocation_data)
+            .field("fsinfo_sector", &self.fsinfo_sector)
             .finish()
     }
 }
@@ -188,6 +222,9 @@ impl ClusterManager {
         let data_sectors = total_sectors - first_data_sector;
         let total_clusters = data_sectors / boot_sector.sectors_per_cluster as u32;
 
+        let fsinfo_sector = boot_sector.fs_info as u32;
+        let (next_free, free_count) = Self::load_fsinfo(&block_device, fsinfo_sector, total_clusters);
+
         Self {
             fat_start_sector,
             sectors_per_fat: boot_sector.fat_size_32,
@@ -196,7 +233,75 @@ impl ClusterManager {
             total_clusters,
             block_device,
             fat_cache: RwLock::new(BTreeMap::new()),
-            allocation_lock: Mutex::new(()),
+            allocation_data: Mutex::new(AllocationData {
+                next_free_cluster: next_free,
+                free_cluster_count: free_count,
+            }),
+            fsinfo_sector,
+        }
+    }
+
+    fn load_fsinfo(block_device: &Arc<dyn BlockDevice>, fsinfo_sector: u32, total_clusters: u32) -> (u32, u32) {
+        let block_size = block_device.block_size();
+        let sectors_per_block = block_size / SECTOR_SIZE;
+        let block_id = fsinfo_sector as usize / sectors_per_block;
+        let sector_in_block = fsinfo_sector as usize % sectors_per_block;
+        let sector_offset = sector_in_block * SECTOR_SIZE;
+
+        let mut block_buf = vec![0u8; block_size];
+        if block_device.read_block(block_id, &mut block_buf).is_ok() {
+            let fsinfo_data = &block_buf[sector_offset..sector_offset + SECTOR_SIZE];
+            if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
+                let fsinfo = unsafe {
+                    *(fsinfo_data.as_ptr() as *const FSInfo)
+                };
+
+                if fsinfo.is_valid() {
+                    let next_free = if fsinfo.next_free < 2 || fsinfo.next_free >= total_clusters + 2 {
+                        2  // 默认从簇2开始
+                    } else {
+                        fsinfo.next_free
+                    };
+
+                    let free_count = if fsinfo.free_count == 0xFFFFFFFF {
+                        total_clusters  // 未知，估计全部为空闲
+                    } else {
+                        fsinfo.free_count
+                    };
+
+                    return (next_free, free_count);
+                }
+            }
+        }
+
+        warn!("Failed to load FSInfo, using defaults");
+        (2, total_clusters) // 默认值
+    }
+
+    fn update_fsinfo(&self, next_free: u32, free_count: u32) {
+        let block_size = self.block_device.block_size();
+        let sectors_per_block = block_size / SECTOR_SIZE;
+        let block_id = self.fsinfo_sector as usize / sectors_per_block;
+        let sector_in_block = self.fsinfo_sector as usize % sectors_per_block;
+        let sector_offset = sector_in_block * SECTOR_SIZE;
+
+        let mut block_buf = vec![0u8; block_size];
+        if self.block_device.read_block(block_id, &mut block_buf).is_ok() {
+            let fsinfo_data = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
+            if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
+                let fsinfo = unsafe {
+                    &mut *(fsinfo_data.as_mut_ptr() as *mut FSInfo)
+                };
+
+                if fsinfo.is_valid() {
+                    fsinfo.next_free = next_free;
+                    fsinfo.free_count = free_count;
+
+                    if self.block_device.write_block(block_id, &block_buf).is_ok() {
+                        debug!("Updated FSInfo: next_free={}, free_count={}", next_free, free_count);
+                    }
+                }
+            }
         }
     }
 
@@ -248,8 +353,6 @@ impl ClusterManager {
     }
 
     pub fn write_fat_entry(&self, cluster: u32, value: u32) -> Result<(), FileSystemError> {
-        let _lock = self.allocation_lock.lock();
-
         let fat_offset = cluster * 4;
         let fat_sector = self.fat_start_sector + (fat_offset / SECTOR_SIZE as u32);
         let entry_offset = (fat_offset % SECTOR_SIZE as u32) as usize;
@@ -284,30 +387,126 @@ impl ClusterManager {
     }
 
     pub fn allocate_cluster(&self) -> Result<u32, FileSystemError> {
-        let _lock = self.allocation_lock.lock();
+        // 限制搜索范围，避免长时间锁定
+        const MAX_SEARCH_ATTEMPTS: u32 = 256;
 
-        for cluster in 2..self.total_clusters + 2 {
-            match self.read_fat_entry(cluster) {
-                Ok(FAT32_FREE_CLUSTER) => {
-                    self.write_fat_entry(cluster, FAT32_END_OF_CHAIN)?;
-                    return Ok(cluster);
+        let mut alloc_data = self.allocation_data.lock();
+
+        // 快速检查是否还有空闲簇
+        if alloc_data.free_cluster_count == 0 {
+            warn!("No free clusters available");
+            return Err(FileSystemError::NoSpace);
+        }
+
+        let start_cluster = alloc_data.next_free_cluster;
+        let mut current = start_cluster;
+
+        debug!("Starting cluster allocation from cluster {} (free_count={})",
+               start_cluster, alloc_data.free_cluster_count);
+
+        for attempts in 1..=MAX_SEARCH_ATTEMPTS {
+            // 确保簇号在有效范围内
+            if current < 2 {
+                current = 2;
+            }
+            if current >= self.total_clusters + 2 {
+                current = 2; // 回绕到开头
+            }
+
+            // 释放锁来读取FAT表项，避免死锁
+            drop(alloc_data);
+            let fat_entry = match self.read_fat_entry(current) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    warn!("Error reading FAT entry for cluster {}: {:?}", current, e);
+                    current += 1;
+                    // 重新获取锁
+                    alloc_data = self.allocation_data.lock();
+                    continue;
                 }
-                Ok(_) => continue,
-                Err(_) => continue,
+            };
+
+            if fat_entry == FAT32_FREE_CLUSTER {
+                debug!("Found free cluster {} after {} attempts", current, attempts);
+
+                // 分配簇
+                if let Err(e) = self.write_fat_entry(current, FAT32_END_OF_CHAIN) {
+                    warn!("Failed to write FAT entry for cluster {}: {:?}", current, e);
+                    current += 1;
+                    // 重新获取锁
+                    alloc_data = self.allocation_data.lock();
+                    continue;
+                }
+
+                // 重新获取锁更新分配数据
+                alloc_data = self.allocation_data.lock();
+
+                // 更新下一个搜索起始位置
+                let new_next_free = if current + 1 >= self.total_clusters + 2 {
+                    2
+                } else {
+                    current + 1
+                };
+
+                alloc_data.next_free_cluster = new_next_free;
+                alloc_data.free_cluster_count = alloc_data.free_cluster_count.saturating_sub(1);
+
+                debug!("Successfully allocated cluster {}, next_free={}, remaining={}",
+                       current, new_next_free, alloc_data.free_cluster_count);
+
+                // 异步更新FSInfo扇区（在锁外进行）
+                let next_free = alloc_data.next_free_cluster;
+                let free_count = alloc_data.free_cluster_count;
+                drop(alloc_data);
+                self.update_fsinfo(next_free, free_count);
+
+                return Ok(current);
+            } else {
+                // 簇已被占用，继续搜索
+                if attempts <= 5 {
+                    debug!("Cluster {} is occupied (entry=0x{:08x})", current, fat_entry);
+                }
+                current += 1;
+                if current >= self.total_clusters + 2 {
+                    current = 2; // 回绕
+                }
+
+                // 如果回到了起始位置，说明搜索了一圈
+                if current == start_cluster {
+                    warn!("Wrapped around to starting cluster, stopping search");
+                    return Err(FileSystemError::NoSpace);
+                }
+
+                // 重新获取锁
+                alloc_data = self.allocation_data.lock();
             }
         }
 
+        warn!("No free clusters found after {} attempts", MAX_SEARCH_ATTEMPTS);
         Err(FileSystemError::NoSpace)
     }
 
     pub fn free_cluster_chain(&self, start_cluster: u32) -> Result<(), FileSystemError> {
-        let _lock = self.allocation_lock.lock();
-
         let mut current = start_cluster;
+        let mut freed_count = 0u32;
+
         while current < FAT32_END_OF_CHAIN && current >= 2 {
             let next = self.read_fat_entry(current)?;
             self.write_fat_entry(current, FAT32_FREE_CLUSTER)?;
+            freed_count += 1;
             current = next;
+        }
+
+        // 更新空闲簇计数
+        if freed_count > 0 {
+            let mut alloc_data = self.allocation_data.lock();
+            alloc_data.free_cluster_count = alloc_data.free_cluster_count.saturating_add(freed_count);
+            // 如果释放的簇比当前下一个空闲簇位置更靠前，更新搜索起始位置
+            if start_cluster < alloc_data.next_free_cluster {
+                alloc_data.next_free_cluster = start_cluster;
+            }
+            debug!("Freed {} clusters starting from {}, free_count now {}",
+                   freed_count, start_cluster, alloc_data.free_cluster_count);
         }
 
         Ok(())
@@ -316,10 +515,49 @@ impl ClusterManager {
     pub fn get_cluster_chain(&self, start_cluster: u32) -> Result<Vec<u32>, FileSystemError> {
         let mut chain = Vec::new();
         let mut current = start_cluster;
+        let mut seen = BTreeSet::new();
 
-        while current < FAT32_END_OF_CHAIN && current >= 2 {
+        // 限制最大簇链长度防止无限循环
+        const MAX_CHAIN_LENGTH: usize = 65536;
+
+        while current >= 2 && current < FAT32_END_OF_CHAIN && chain.len() < MAX_CHAIN_LENGTH {
+            // 检测循环引用
+            if seen.contains(&current) {
+                warn!("Detected circular reference in FAT chain at cluster {}", current);
+                break;
+            }
+            seen.insert(current);
+
+            // 检查簇号是否在有效范围内
+            if current >= self.total_clusters + 2 {
+                warn!("Invalid cluster number {} in FAT chain", current);
+                break;
+            }
+
             chain.push(current);
-            current = self.read_fat_entry(current)?;
+
+            match self.read_fat_entry(current) {
+                Ok(next) => {
+                    current = next;
+                    // 检查特殊值
+                    if next == FAT32_BAD_CLUSTER {
+                        warn!("Encountered bad cluster {} in FAT chain", next);
+                        break;
+                    }
+                    if next == FAT32_FREE_CLUSTER && !chain.is_empty() {
+                        warn!("Encountered free cluster {} in FAT chain", next);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read FAT entry for cluster {}: {:?}", current, e);
+                    break;
+                }
+            }
+        }
+
+        if chain.len() >= MAX_CHAIN_LENGTH {
+            warn!("FAT chain exceeded maximum length, truncating");
         }
 
         Ok(chain)
@@ -381,7 +619,7 @@ impl ClusterManager {
             let sector_offset_in_block = sector_in_block * SECTOR_SIZE;
 
             let mut block_buf = vec![0u8; block_size];
-            
+
             // 如果不是写整个块，需要先读取
             if sectors_per_block > 1 {
                 self.block_device
