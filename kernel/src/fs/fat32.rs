@@ -131,19 +131,101 @@ impl DirectoryEntry {
     pub fn set_short_name(&mut self, name: &str) {
         self.name.fill(b' ');
 
-        let parts: Vec<&str> = name.split('.').collect();
-        let base_name = parts[0].to_uppercase();
+        // 分离文件名和扩展名
+        let (base_name, extension) = if let Some(dot_pos) = name.rfind('.') {
+            (&name[..dot_pos], Some(&name[dot_pos + 1..]))
+        } else {
+            (name, None)
+        };
 
-        for (i, byte) in base_name.bytes().take(8).enumerate() {
-            self.name[i] = byte;
+        // FAT32短文件名生成规则
+        let clean_base = Self::clean_filename_part(base_name).to_uppercase();
+
+        // 生成基础名（最多8字符）
+        if clean_base.len() > 8 {
+            // 长文件名处理：前6字符 + ~1
+            let mut short_base = String::new();
+            let mut char_count = 0;
+
+            for ch in clean_base.chars() {
+                if char_count >= 6 {
+                    break;
+                }
+                short_base.push(ch);
+                char_count += 1;
+            }
+
+            short_base.push_str("~1");
+
+            // 写入短文件名基础部分
+            for (i, byte) in short_base.bytes().enumerate() {
+                if i < 8 {
+                    self.name[i] = byte;
+                }
+            }
+        } else {
+            // 短文件名直接使用
+            for (i, byte) in clean_base.bytes().take(8).enumerate() {
+                self.name[i] = byte;
+            }
         }
 
-        if parts.len() > 1 {
-            let extension = parts[1].to_uppercase();
-            for (i, byte) in extension.bytes().take(3).enumerate() {
+        // 处理扩展名（最多3字符）
+        if let Some(ext) = extension {
+            let clean_ext = Self::clean_filename_part(ext).to_uppercase();
+            for (i, byte) in clean_ext.bytes().take(3).enumerate() {
                 self.name[8 + i] = byte;
             }
         }
+    }
+
+    /// 清理文件名部分，移除非法字符并转换合法字符
+    fn clean_filename_part(part: &str) -> String {
+        let mut result = String::new();
+
+        for ch in part.chars() {
+            match ch {
+                // 合法的ASCII字符
+                'A'..='Z' | 'a'..='z' | '0'..='9' => {
+                    result.push(ch);
+                }
+                // FAT32允许的特殊字符
+                '!' | '#' | '$' | '%' | '&' | '\'' | '(' | ')' | '-' | '@' | '^' | '_' | '`' | '{' | '}' | '~' => {
+                    result.push(ch);
+                }
+                // 空格在短文件名中不允许，忽略
+                ' ' => {
+                    // 跳过空格
+                }
+                // 其他字符转换为下划线
+                _ => {
+                    result.push('_');
+                }
+            }
+        }
+
+        result
+    }
+
+    /// 根据长文件名生成短文件名字符串（用于查找）
+    pub fn generate_short_name(long_name: &str) -> String {
+        let mut temp_entry = DirectoryEntry {
+            name: [b' '; 11],
+            attributes: 0,
+            nt_reserved: 0,
+            creation_time_tenth: 0,
+            creation_time: 0,
+            creation_date: 0,
+            last_access_date: 0,
+            first_cluster_high: 0,
+            write_time: 0,
+            write_date: 0,
+            first_cluster_low: 0,
+            file_size: 0,
+        };
+
+        temp_entry.set_short_name(long_name);
+        temp_entry.short_name()
     }
 }
 
@@ -756,6 +838,7 @@ impl Inode for Fat32RootInode {
         }
 
         let upper_name = name.to_uppercase();
+        let short_name = DirectoryEntry::generate_short_name(name);
         let cluster_chain = self.cluster_manager.get_cluster_chain(self.root_cluster)?;
 
         for &cluster in &cluster_chain {
@@ -780,7 +863,9 @@ impl Inode for Fat32RootInode {
                     continue;
                 }
 
-                if dir_entry.short_name() == upper_name {
+                let entry_name = dir_entry.short_name();
+                // 检查是否匹配：支持原名、大写名或生成的短文件名
+                if entry_name == upper_name || entry_name == short_name {
                     return Ok(Arc::new(Fat32SimpleInode::new(
                         dir_entry,
                         cluster,
@@ -1193,6 +1278,7 @@ impl Inode for Fat32SimpleInode {
         }
 
         let upper_name = name.to_uppercase();
+        let short_name = DirectoryEntry::generate_short_name(name);
         let cluster_chain = self.cluster_manager.get_cluster_chain(start_cluster)?;
 
         for &cluster in &cluster_chain {
@@ -1217,7 +1303,9 @@ impl Inode for Fat32SimpleInode {
                     continue;
                 }
 
-                if dir_entry.short_name() == upper_name {
+                let entry_name = dir_entry.short_name();
+                // 检查是否匹配：支持原名、大写名或生成的短文件名
+                if entry_name == upper_name || entry_name == short_name {
                     return Ok(Arc::new(Fat32SimpleInode::new(
                         dir_entry,
                         cluster,
