@@ -330,7 +330,6 @@ impl FAT32FileSystem {
             if self.read_fat_entry(cluster) == CLUSTER_FREE {
                 // Allocate by marking as EOF
                 if self.write_fat_entry(cluster, CLUSTER_EOF).is_ok() {
-                    debug!("[allocate_cluster] Allocated cluster {}", cluster);
                     return Some(cluster);
                 }
             }
@@ -528,6 +527,7 @@ impl FAT32FileSystem {
     }
 
     /// Update file size - now just a wrapper around the unified function
+    /// Simplified directory entry size update
     fn update_directory_entry_size(
         &self,
         parent_dir_cluster: u32,
@@ -807,42 +807,6 @@ impl FAT32FileSystem {
     }
 
     /// Enhanced block cache flush with improved error handling and atomicity
-    /// Simplified flush - no cache to flush
-    fn flush_block_cache(&self) {
-        // No-op since we removed all cache
-        debug!("[flush_block_cache] Cache disabled, no flush needed");
-    }
-
-    /// Invalidate directory cache for better file visibility after creation
-    fn invalidate_directory_cache(&self, dir_cluster: u32) {
-        // Cache disabled for multi-core safety - all reads go directly to disk
-        // This eliminates cache consistency issues in concurrent environments
-        debug!("[invalidate_directory_cache] Cache disabled, cluster {} operations go directly to disk", dir_cluster);
-    }
-
-    /// Force synchronous write-through for critical operations
-    /// Flush a single block to device - separated for better error handling
-    fn flush_single_block(&self, sector: u32, data: &[u8]) -> Result<(), BlockError> {
-        if data.len() != SECTOR_SIZE {
-            return Err(BlockError::InvalidBlock);
-        }
-
-        let device_block_size = self.device.block_size();
-        let sectors_per_block = device_block_size / SECTOR_SIZE;
-        let block_num = sector / sectors_per_block as u32;
-        let sector_in_block = sector % sectors_per_block as u32;
-
-        // Read-modify-write for device block
-        let mut block_data = vec![0u8; device_block_size];
-        self.device.read_block(block_num as usize, &mut block_data)?;
-
-        let sector_offset = sector_in_block as usize * SECTOR_SIZE;
-        block_data[sector_offset..sector_offset + SECTOR_SIZE].copy_from_slice(data);
-
-        self.device.write_block(block_num as usize, &block_data)?;
-        Ok(())
-    }
-
     /// Write a directory entry back to the specified position
     fn write_directory_entry(
         &self,
@@ -950,14 +914,7 @@ impl FAT32FileSystem {
         };
         let _filename_lock = FILENAME_LOCKS[filename_hash as usize].lock();
 
-        // Strong memory barrier to ensure all previous operations are visible
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // Invalidate cache BEFORE checking to ensure fresh read
-        self.invalidate_directory_cache(parent_cluster);
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-        // Check if the file already exists with fresh data
+        // Check if the file already exists
         if self.find_directory_entry_by_name(parent_cluster, name).is_ok() {
             warn!("[create_directory_entry] File '{}' already exists in cluster {}", name, parent_cluster);
             return Err(FileSystemError::AlreadyExists);
@@ -1033,28 +990,9 @@ impl FAT32FileSystem {
                     unsafe { core::slice::from_raw_parts(&entry as *const _ as *const u8, 32) };
                 cluster_data[sfn_offset..sfn_offset + 32].copy_from_slice(entry_bytes);
 
-                // Atomic write of the entire cluster
+                // Write cluster and ensure synchronization
                 if let Err(_) = self.write_cluster(current_cluster, &cluster_data) {
                     error!("[create_directory_entry] Failed to write cluster {}", current_cluster);
-                    return Err(FileSystemError::IoError);
-                }
-
-                // Enhanced synchronization for multi-core safety
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-                // Invalidate cache AFTER write to ensure consistency
-                self.invalidate_directory_cache(current_cluster);
-                // Also invalidate parent cluster cache if different
-                if current_cluster != parent_cluster {
-                    self.invalidate_directory_cache(parent_cluster);
-                }
-
-                // Final barrier to ensure all operations are visible globally
-                core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
-                // Verify the entry was actually written correctly
-                if self.find_directory_entry_by_name(current_cluster, name).is_err() {
-                    error!("[create_directory_entry] Failed to verify written entry for '{}'", name);
                     return Err(FileSystemError::IoError);
                 }
 
@@ -1603,14 +1541,6 @@ impl Inode for FAT32Inode {
         // Enhanced synchronization for multi-core safety
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Invalidate cache to ensure global visibility
-        fs.invalidate_directory_cache(actual_dir_cluster);
-        if actual_dir_cluster != self.cluster {
-            fs.invalidate_directory_cache(self.cluster);
-        }
-
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-
         // Verify the entry was created and is visible
         if fs.find_directory_entry_by_name(actual_dir_cluster, name).is_err() {
             error!("[create_file] Directory entry verification failed for '{}'", name);
@@ -1714,12 +1644,6 @@ impl Inode for FAT32Inode {
 
         // Enhanced synchronization
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        fs.invalidate_directory_cache(self.cluster);
-
-        // Additional safety: brief delay to ensure filesystem consistency
-        for _ in 0..50 {
-            core::hint::spin_loop();
-        }
 
         debug!("[create_directory] Directory '{}' created successfully with cluster {}", name, new_cluster);
 
@@ -1921,8 +1845,6 @@ impl Inode for FAT32Inode {
 
         // Force directory write completion
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        fs.flush_block_cache();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         // Step 2: Free the clusters used by the file/directory
         let mut current_cluster = child_cluster;
@@ -1939,8 +1861,6 @@ impl Inode for FAT32Inode {
         }
 
         // Force FAT write completion
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        fs.flush_block_cache();
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
         Ok(())
