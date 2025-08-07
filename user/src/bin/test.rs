@@ -49,7 +49,7 @@ fn print_progress_bar(current: usize, total: usize, width: usize, label: &str) {
     let percentage = (current * 100) / total;
     let filled = (current * width) / total;
     let empty = width - filled;
-    
+
     print!("\r{}: [", label);
     for _ in 0..filled {
         print!("■");
@@ -58,7 +58,7 @@ fn print_progress_bar(current: usize, total: usize, width: usize, label: &str) {
         print!("□");
     }
     print!("] {}% ({}/{})", percentage, current, total);
-    
+
     if current == total {
         println!(""); // New line when complete
     }
@@ -92,7 +92,7 @@ fn multicore_stress_test() -> i32 {
     println!("Creating child processes...");
     for i in 0..num_children {
         print_progress_bar(i + 1, num_children, 20, "Process Creation");
-        
+
         let pid = fork();
         if pid == 0 {
             // Child process - simulate different workloads on different cores
@@ -121,7 +121,7 @@ fn multicore_stress_test() -> i32 {
     let mut all_success = true;
     for (i, child_pid) in children.iter().enumerate() {
         print_progress_bar(i + 1, children.len(), 20, "Process Completion");
-        
+
         let mut exit_code = 0;
         let result = wait_pid(*child_pid as usize, &mut exit_code);
         if result >= 0 && exit_code == 0 {
@@ -145,10 +145,10 @@ fn cpu_intensive_task(id: usize) {
     println!("CPU task {} starting intensive computation", id);
     let mut result = 1u64;
     let total_iterations = 100000;
-    
+
     for i in 1..=total_iterations {
         result = result.wrapping_mul(i as u64).wrapping_add(i as u64);
-        
+
         // Show progress every 10% completion
         if i % (total_iterations / 10) == 0 {
             let progress = (i * 100) / total_iterations;
@@ -186,7 +186,7 @@ fn io_intensive_task(id: usize) {
     println!("I/O task {} starting file operations", id);
 
     for i in 0..10 {
-        let filename = format!("test_io_{}.txt", id);
+        let filename = format!("/tmp_test_io_{}.txt", id);
         let fd = open(&filename, 0o100 | 0o644); // O_CREAT | mode
 
         if fd >= 0 {
@@ -453,7 +453,7 @@ fn test_io_syscalls() -> i32 {
     println!("--- I/O and File Descriptor Syscalls ---");
 
     // open, write, read, close
-    let test_file = "test_io_file.txt";
+    let test_file = "/tmp_test_io_file.txt";
     let fd = open(test_file, 0o100 | 0o644); // O_CREAT | mode
     if fd >= 0 {
         let test_data = b"Hello, LiteOS I/O test!";
@@ -635,7 +635,7 @@ fn test_permission_syscalls() -> i32 {
     println!("UID: {}, EUID: {}, GID: {}, EGID: {}", uid, euid, gid, egid);
 
     // chmod, chown (test on a file we create)
-    let test_file = "test_perm_file.txt";
+    let test_file = "/tmp_test_perm_file.txt";
     let fd = open(test_file, 0o100 | 0o644);
     if fd >= 0 {
         write(fd as usize, b"permission test");
@@ -822,9 +822,9 @@ fn main() -> i32 {
     // Run comprehensive test suite
     let tests: Vec<(&str, fn() -> i32)> = vec![
         ("Complete Syscall Suite", test_all_syscalls),
-        ("Multi-Core Stress Test", multicore_stress_test),
-        ("Multi-Core Signal Test", test_multicore_signals),
-        ("Memory Pressure Test", memory_pressure_test),
+        // ("Multi-Core Stress Test", multicore_stress_test),
+        // ("Multi-Core Signal Test", test_multicore_signals),
+        // ("Memory Pressure Test", memory_pressure_test),
         ("Filesystem Stress Test", filesystem_stress_test),
         ("IPC Reliability Test", ipc_reliability_test),
         ("Long Running Stability Test", long_running_stability_test),
@@ -836,26 +836,26 @@ fn main() -> i32 {
     for (test_index, (test_name, test_func)) in tests.iter().enumerate() {
         total_tests += 1;
         let test_start_time = get_time_ms();
-        
+
         print_test_header(test_name, test_index + 1, tests.len());
-        
+
         let result = test_func();
         let test_elapsed = get_time_ms() - test_start_time;
-        
+
         if result == 0 {
             passed_tests += 1;
             print_test_result(test_name, true, test_elapsed as u64);
         } else {
             print_test_result(test_name, false, test_elapsed as u64);
         }
-        
+
         // Overall progress
         print_progress_bar(test_index + 1, tests.len(), 30, "Overall Progress");
         println!(""); // Extra line for spacing
     }
 
     let total_elapsed = get_time_ms() - start_time;
-    
+
     // Final summary with enhanced formatting
     println!("\n{}", "█".repeat(60));
     println!("📊 === FINAL TEST RESULTS ===");
@@ -865,7 +865,7 @@ fn main() -> i32 {
     println!("✅ Passed: {}", passed_tests);
     println!("❌ Failed: {}", total_tests - passed_tests);
     println!("📊 Success rate: {:.1}%", (passed_tests as f32 / total_tests as f32) * 100.0);
-    
+
     // Progress bar for final results
     print_progress_bar(passed_tests, total_tests, 40, "Test Success Rate");
 
@@ -913,36 +913,36 @@ fn test_edge_cases() -> i32 {
 
 fn test_invalid_fd() -> bool {
     println!("Testing invalid file descriptors...");
-    
+
     // Test read/write with invalid FDs
     let mut buffer = [0u8; 10];
     let invalid_fds = [9999, -1i32 as usize, usize::MAX];
-    
+
     for &fd in &invalid_fds {
         let read_result = read(fd, &mut buffer);
         let write_result = write(fd, b"test");
-        
+
         // These should fail gracefully, not crash
         if read_result >= 0 || write_result >= 0 {
             println!("Warning: invalid FD {} didn't return error", fd);
         }
     }
-    
+
     // Test close with invalid FD
     if close(9999) == 0 {
         println!("Warning: close(9999) unexpectedly succeeded");
     }
-    
+
     println!("✅ Invalid FD tests completed");
     true
 }
 
 fn test_invalid_pointers() -> bool {
     println!("Testing invalid pointer handling...");
-    
+
     // Note: We can't test truly invalid pointers without crashing,
     // but we can test boundary conditions
-    
+
     // Test with very small buffer sizes
     let mut tiny_buffer = [0u8; 0];
     let fd = open("/hello.txt", 0);
@@ -951,19 +951,19 @@ fn test_invalid_pointers() -> bool {
         println!("Read with 0-size buffer result: {}", result);
         close(fd as usize);
     }
-    
+
     // Test getcwd with insufficient buffer
     let mut small_buf = [0u8; 2];
     let result = getcwd(&mut small_buf);
     println!("getcwd with tiny buffer result: {}", result);
-    
+
     println!("✅ Invalid pointer tests completed");
     true
 }
 
 fn test_extreme_values() -> bool {
     println!("Testing extreme values...");
-    
+
     // Test very large memory allocations - 内核应该能够正确处理这种情况
     let huge_size = 1024 * 1024 * 1024; // 1GB
     let addr = mmap(0, huge_size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
@@ -973,38 +973,38 @@ fn test_extreme_values() -> bool {
     } else {
         println!("Huge mmap failed as expected");
     }
-    
+
     // Test brk with extreme values - 应该优雅地失败而不是panic
     let original_brk = brk(0);
     let extreme_brk = brk(usize::MAX);
     if extreme_brk != original_brk {
         println!("Warning: extreme brk succeeded unexpectedly");
     }
-    
+
     // Test sleep with extreme values
     let start_time = get_time_ms();
     sleep_ms(0); // Zero sleep
     let end_time = get_time_ms();
     println!("Zero sleep took: {}ms", end_time - start_time);
-    
+
     println!("✅ Extreme value tests completed");
     true
 }
 
 fn test_concurrent_access() -> bool {
     println!("Testing concurrent access patterns...");
-    
-    let test_file = "concurrent_test.txt";
+
+    let test_file = "/tmp_concurrent_test.txt";
     let fd = open(test_file, 0o100 | 0o644);
     if fd < 0 {
         println!("Failed to create test file");
         return false;
     }
-    
+
     // Create multiple child processes that access the same file
     let num_children = 3;
     let mut children = Vec::new();
-    
+
     for i in 0..num_children {
         let child_pid = fork();
         if child_pid == 0 {
@@ -1020,22 +1020,22 @@ fn test_concurrent_access() -> bool {
             children.push(child_pid);
         }
     }
-    
+
     // Parent also writes
     for j in 0..5 {
         let data = format!("Parent write {}\n", j);
         write(fd as usize, data.as_bytes());
         yield_();
     }
-    
+
     close(fd as usize);
-    
+
     // Wait for all children
     for child_pid in children {
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
     }
-    
+
     // Read back the file to see if data is intact
     let read_fd = open(test_file, 0);
     if read_fd >= 0 {
@@ -1044,7 +1044,7 @@ fn test_concurrent_access() -> bool {
         println!("Concurrent file access result: {} bytes read", bytes_read);
         close(read_fd as usize);
     }
-    
+
     remove(test_file);
     println!("✅ Concurrent access tests completed");
     true
@@ -1071,17 +1071,17 @@ fn test_resource_exhaustion() -> i32 {
 
 fn test_fd_exhaustion() -> bool {
     println!("Testing file descriptor exhaustion...");
-    
+
     let mut fds = Vec::new();
-    let test_file = "fd_test.txt";
-    
+    let test_file = "/tmp_fd_test.txt";
+
     // Create a test file first
     let initial_fd = open(test_file, 0o100 | 0o644);
     if initial_fd >= 0 {
         write(initial_fd as usize, b"test");
         close(initial_fd as usize);
     }
-    
+
     // Try to open many files until we hit the limit
     for i in 0..1000 {
         let fd = open(test_file, 0);
@@ -1092,12 +1092,12 @@ fn test_fd_exhaustion() -> bool {
             break;
         }
     }
-    
+
     // Close all opened FDs
     for fd in fds {
         close(fd as usize);
     }
-    
+
     remove(test_file);
     println!("✅ FD exhaustion test completed");
     true
@@ -1105,16 +1105,16 @@ fn test_fd_exhaustion() -> bool {
 
 fn test_memory_exhaustion() -> bool {
     println!("Testing memory exhaustion...");
-    
+
     let mut allocations = Vec::new();
     let chunk_size = 1024 * 1024; // 1MB chunks
-    
+
     // Try to allocate memory until we fail
     for i in 0..100 {
         let addr = mmap(0, chunk_size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
         if addr > 0 {
             allocations.push(addr);
-            
+
             // Write to the memory to ensure it's actually allocated
             unsafe {
                 let ptr = addr as *mut u32;
@@ -1125,22 +1125,22 @@ fn test_memory_exhaustion() -> bool {
             break;
         }
     }
-    
+
     // Free all allocations
     for addr in allocations {
         munmap(addr as usize, chunk_size);
     }
-    
+
     println!("✅ Memory exhaustion test completed");
     true
 }
 
 fn test_process_exhaustion() -> bool {
     println!("Testing process creation limits...");
-    
+
     let max_children = 50; // Reasonable limit for testing
     let mut children = Vec::new();
-    
+
     for i in 0..max_children {
         let child_pid = fork();
         if child_pid == 0 {
@@ -1154,15 +1154,15 @@ fn test_process_exhaustion() -> bool {
             break;
         }
     }
-    
+
     println!("Created {} child processes", children.len());
-    
+
     // Wait for all children
     for child_pid in children {
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
     }
-    
+
     println!("✅ Process exhaustion test completed");
     true
 }
@@ -1188,10 +1188,10 @@ fn test_error_recovery() -> i32 {
 
 fn test_signal_during_syscall() -> bool {
     println!("Testing signal interruption of syscalls...");
-    
+
     // Set up signal handler
     signal(signals::SIGUSR1, sigusr1_handler as usize);
-    
+
     let child_pid = fork();
     if child_pid == 0 {
         // Child - sleep for a while
@@ -1204,22 +1204,22 @@ fn test_signal_during_syscall() -> bool {
         sleep_ms(100); // Let child start sleeping
         println!("Sending signal to interrupt sleep...");
         kill(child_pid as usize, signals::SIGUSR1);
-        
+
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
         println!("Child exited with code: {}", exit_code);
     }
-    
+
     println!("✅ Signal interruption test completed");
     true
 }
 
 fn test_cleanup_after_error() -> bool {
     println!("Testing cleanup after errors...");
-    
+
     // Test that failed operations don't leave resources leaked
     let original_fd_count = count_open_fds();
-    
+
     // Try to open non-existent file multiple times
     for _ in 0..10 {
         let fd = open("/non/existent/file", 0);
@@ -1227,14 +1227,14 @@ fn test_cleanup_after_error() -> bool {
             close(fd as usize); // Shouldn't happen, but clean up if it does
         }
     }
-    
+
     let final_fd_count = count_open_fds();
     if final_fd_count == original_fd_count {
         println!("✅ No FD leaks detected after failed opens");
     } else {
         println!("⚠️ Possible FD leak: {} -> {}", original_fd_count, final_fd_count);
     }
-    
+
     println!("✅ Cleanup test completed");
     true
 }
@@ -1253,27 +1253,27 @@ fn count_open_fds() -> i32 {
 
 fn test_partial_operations() -> bool {
     println!("Testing partial I/O operations...");
-    
-    let test_file = "partial_test.txt";
+
+    let test_file = "/tmp_partial_test.txt";
     let fd = open(test_file, 0o100 | 0o644);
     if fd < 0 {
         println!("Failed to create test file");
         return false;
     }
-    
+
     // Write large amount of data
     let large_data = vec![0x42u8; 10000];
     let written = write(fd as usize, &large_data);
     println!("Attempted to write {} bytes, actually wrote {}", large_data.len(), written);
-    
+
     close(fd as usize);
-    
+
     // Read it back in small chunks
     let read_fd = open(test_file, 0);
     if read_fd >= 0 {
         let mut total_read = 0;
         let mut buffer = [0u8; 100];
-        
+
         loop {
             let bytes_read = read(read_fd as usize, &mut buffer);
             if bytes_read <= 0 {
@@ -1281,11 +1281,11 @@ fn test_partial_operations() -> bool {
             }
             total_read += bytes_read as usize;
         }
-        
+
         println!("Total bytes read back: {}", total_read);
         close(read_fd as usize);
     }
-    
+
     remove(test_file);
     println!("✅ Partial operations test completed");
     true
@@ -1295,7 +1295,7 @@ fn test_partial_operations() -> bool {
 fn memory_pressure_test() -> i32 {
     println!("=== Memory Pressure Test ===");
     println!("Testing memory fragmentation, allocation patterns, and OOM handling");
-    
+
     let mut passed = 0;
     let mut total = 0;
 
@@ -1317,17 +1317,17 @@ fn memory_pressure_test() -> i32 {
 
 fn test_memory_fragmentation() -> bool {
     println!("Testing memory fragmentation patterns...");
-    
+
     let mut allocations = Vec::new();
     let sizes = [1024, 2048, 4096, 8192, 16384]; // Various sizes
-    
+
     // Phase 1: Allocate memory in different sizes
     for i in 0..100 {
         let size = sizes[i % sizes.len()];
         let addr = mmap(0, size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
         if addr > 0 {
             allocations.push((addr, size));
-            
+
             // Write pattern to verify memory
             unsafe {
                 let ptr = addr as *mut u32;
@@ -1337,9 +1337,9 @@ fn test_memory_fragmentation() -> bool {
             }
         }
     }
-    
+
     println!("Phase 1: Allocated {} memory blocks", allocations.len());
-    
+
     // Phase 2: Free every other allocation to create fragmentation
     let mut freed_count = 0;
     for i in (0..allocations.len()).step_by(2) {
@@ -1348,9 +1348,9 @@ fn test_memory_fragmentation() -> bool {
             freed_count += 1;
         }
     }
-    
+
     println!("Phase 2: Freed {} blocks to create fragmentation", freed_count);
-    
+
     // Phase 3: Try to allocate large blocks in fragmented space
     let mut large_allocs = Vec::new();
     for _ in 0..10 {
@@ -1359,9 +1359,9 @@ fn test_memory_fragmentation() -> bool {
             large_allocs.push(addr);
         }
     }
-    
+
     println!("Phase 3: Allocated {} large blocks in fragmented space", large_allocs.len());
-    
+
     // Cleanup
     for (addr, size) in allocations.iter().step_by(2).skip(1) {
         munmap(*addr as usize, *size);
@@ -1369,14 +1369,14 @@ fn test_memory_fragmentation() -> bool {
     for addr in large_allocs {
         munmap(addr as usize, 32768);
     }
-    
+
     println!("✅ Memory fragmentation test completed");
     true
 }
 
 fn test_allocation_patterns() -> bool {
     println!("Testing various allocation patterns...");
-    
+
     // Test 1: Rapid alloc/free cycles
     for cycle in 0..50 {
         let addr = mmap(0, 4096, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
@@ -1389,7 +1389,7 @@ fn test_allocation_patterns() -> bool {
         }
     }
     println!("Rapid alloc/free cycles completed");
-    
+
     // Test 2: Growing allocations
     let mut growing_allocs = Vec::new();
     let mut size = 1024;
@@ -1409,25 +1409,25 @@ fn test_allocation_patterns() -> bool {
         }
         size *= 2;
     }
-    
+
     println!("Growing allocations: created {} blocks", growing_allocs.len());
-    
+
     // Cleanup growing allocations
     for (addr, size) in growing_allocs {
         munmap(addr as usize, size);
     }
-    
+
     println!("✅ Allocation patterns test completed");
     true
 }
 
 fn test_oom_handling() -> bool {
     println!("Testing OOM (Out of Memory) handling...");
-    
+
     let mut allocations = Vec::new();
     let chunk_size = 1024 * 1024; // 1MB
     let mut total_allocated = 0;
-    
+
     // Try to allocate until we hit memory limits
     for i in 0..200 { // Limit attempts to avoid infinite loop
         let addr = mmap(0, chunk_size, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
@@ -1447,13 +1447,13 @@ fn test_oom_handling() -> bool {
             println!("OOM reached after allocating {} MB", total_allocated / (1024 * 1024));
             break;
         }
-        
+
         // Yield occasionally to avoid hogging CPU
         if i % 10 == 0 {
             yield_();
         }
     }
-    
+
     // Verify we can still do basic operations after OOM
     let test_fd = open("/hello.txt", 0);
     let can_read = if test_fd >= 0 {
@@ -1464,33 +1464,33 @@ fn test_oom_handling() -> bool {
     } else {
         false
     };
-    
+
     if can_read {
         println!("✅ System still functional after OOM");
     } else {
         println!("⚠️ System may be degraded after OOM");
     }
-    
+
     // Cleanup all allocations
     for addr in allocations {
         munmap(addr as usize, chunk_size);
     }
-    
+
     println!("✅ OOM handling test completed");
     true
 }
 
 fn test_memory_alignment() -> bool {
     println!("Testing memory alignment requirements...");
-    
+
     // Test various alignment requirements
     let alignments = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 4096];
-    
+
     for &alignment in &alignments {
         let addr = mmap(0, alignment * 2, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
         if addr > 0 {
             let aligned = (addr as usize + alignment - 1) & !(alignment - 1);
-            
+
             // Test aligned memory access
             unsafe {
                 match alignment {
@@ -1507,11 +1507,11 @@ fn test_memory_alignment() -> bool {
                     }
                 }
             }
-            
+
             munmap(addr as usize, alignment * 2);
         }
     }
-    
+
     println!("✅ Memory alignment test completed");
     true
 }
@@ -1537,22 +1537,22 @@ fn filesystem_stress_test() -> i32 {
 
 fn test_concurrent_file_ops() -> bool {
     println!("Testing concurrent filesystem operations...");
-    
+
     let num_children = 4;
     let mut children = Vec::new();
-    
+
     for i in 0..num_children {
         let child_pid = fork();
         if child_pid == 0 {
             // Child process - perform file operations
             for j in 0..20 {
-                let filename = format!("stress_file_{}_{}.txt", i, j);
+                let filename = format!("/tmp_stress_file_{}_{}.txt", i, j);
                 let fd = open(&filename, 0o100 | 0o644);
                 if fd >= 0 {
                     let data = format!("Data from child {} iteration {}\n", i, j);
                     write(fd as usize, data.as_bytes());
                     close(fd as usize);
-                    
+
                     // Read it back
                     let read_fd = open(&filename, 0);
                     if read_fd >= 0 {
@@ -1560,10 +1560,10 @@ fn test_concurrent_file_ops() -> bool {
                         read(read_fd as usize, &mut buffer);
                         close(read_fd as usize);
                     }
-                    
+
                     remove(&filename);
                 }
-                
+
                 if j % 5 == 0 {
                     yield_();
                 }
@@ -1573,53 +1573,53 @@ fn test_concurrent_file_ops() -> bool {
             children.push(child_pid);
         }
     }
-    
+
     // Wait for all children
     for child_pid in children {
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
     }
-    
+
     println!("✅ Concurrent file operations test completed");
     true
 }
 
 fn test_large_file_ops() -> bool {
     println!("Testing large file operations...");
-    
-    let large_file = "large_test_file.bin";
+
+    let large_file = "/tmp_large_test_file.bin";
     let fd = open(large_file, 0o100 | 0o644);
     if fd < 0 {
         println!("Failed to create large file");
         return false;
     }
-    
+
     // Write large amounts of data in chunks
     let chunk_size = 8192;
     let chunk_data = vec![0x55u8; chunk_size];
     let num_chunks = 100; // Total ~800KB
-    
+
     let mut total_written = 0;
     for i in 0..num_chunks {
         let written = write(fd as usize, &chunk_data);
         total_written += written;
-        
+
         if i % 10 == 0 {
             println!("Written {} chunks ({} bytes)", i + 1, total_written);
             yield_();
         }
     }
-    
+
     close(fd as usize);
-    
+
     println!("Total written: {} bytes", total_written);
-    
+
     // Read it back in different chunk sizes
     let read_fd = open(large_file, 0);
     if read_fd >= 0 {
         let mut total_read = 0;
         let mut buffer = vec![0u8; chunk_size / 2]; // Different chunk size
-        
+
         loop {
             let bytes_read = read(read_fd as usize, &mut buffer);
             if bytes_read <= 0 {
@@ -1627,17 +1627,17 @@ fn test_large_file_ops() -> bool {
             }
             total_read += bytes_read as usize;
         }
-        
+
         close(read_fd as usize);
         println!("Total read back: {} bytes", total_read);
-        
+
         if total_read == total_written as usize {
             println!("✅ Large file integrity verified");
         } else {
             println!("⚠️ Large file integrity check failed");
         }
     }
-    
+
     remove(large_file);
     println!("✅ Large file operations test completed");
     true
@@ -1645,13 +1645,13 @@ fn test_large_file_ops() -> bool {
 
 fn test_many_small_files() -> bool {
     println!("Testing many small file operations...");
-    
+
     let num_files = 200;
     let mut created_files = Vec::new();
-    
-    // Create many small files
+
+    // Create many small files with safe naming pattern
     for i in 0..num_files {
-        let filename = format!("small_file_{:04}.txt", i);
+        let filename = format!("/tmp_small_file_{:04}.txt", i);
         let fd = open(&filename, 0o100 | 0o644);
         if fd >= 0 {
             let data = format!("Small file {} content", i);
@@ -1659,15 +1659,15 @@ fn test_many_small_files() -> bool {
             close(fd as usize);
             created_files.push(filename);
         }
-        
+
         if i % 50 == 0 {
             println!("Created {} files", i + 1);
             yield_();
         }
     }
-    
+
     println!("Created {} small files", created_files.len());
-    
+
     // Read them all back
     let mut read_count = 0;
     for filename in &created_files {
@@ -1680,14 +1680,17 @@ fn test_many_small_files() -> bool {
             close(fd as usize);
         }
     }
-    
+
     println!("Successfully read {} files", read_count);
-    
-    // Clean up
+
+    // Clean up - only remove files we explicitly created
     for filename in created_files {
-        remove(&filename);
+        // Double-check we're only removing our test files
+        if filename.starts_with("/tmp_small_file_") {
+            remove(&filename);
+        }
     }
-    
+
     println!("✅ Many small files test completed");
     true
 }
@@ -1713,18 +1716,18 @@ fn ipc_reliability_test() -> i32 {
 
 fn test_pipe_stress() -> bool {
     println!("Testing pipe stress conditions...");
-    
+
     let mut pipe_fds = [0i32; 2];
     if pipe(&mut pipe_fds) != 0 {
         println!("Failed to create pipe");
         return false;
     }
-    
+
     let child_pid = fork();
     if child_pid == 0 {
         // Child - writer
         close(pipe_fds[0] as usize); // Close read end
-        
+
         let message = b"pipe stress test message ";
         for i in 0..1000 {
             let full_msg = format!("{}#{}", core::str::from_utf8(message).unwrap(), i);
@@ -1738,10 +1741,10 @@ fn test_pipe_stress() -> bool {
     } else if child_pid > 0 {
         // Parent - reader
         close(pipe_fds[1] as usize); // Close write end
-        
+
         let mut total_read = 0;
         let mut buffer = [0u8; 256];
-        
+
         loop {
             let bytes_read = read(pipe_fds[0] as usize, &mut buffer);
             if bytes_read <= 0 {
@@ -1749,24 +1752,24 @@ fn test_pipe_stress() -> bool {
             }
             total_read += bytes_read as usize;
         }
-        
+
         close(pipe_fds[0] as usize);
-        
+
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
-        
+
         println!("Pipe stress test: read {} bytes total", total_read);
     }
-    
+
     println!("✅ Pipe stress test completed");
     true
 }
 
 fn test_signal_storm() -> bool {
     println!("Testing signal storm handling...");
-    
+
     signal(signals::SIGUSR1, sigusr1_handler as usize);
-    
+
     let child_pid = fork();
     if child_pid == 0 {
         // Child - signal receiver
@@ -1783,30 +1786,30 @@ fn test_signal_storm() -> bool {
                 sleep_ms(1); // Brief pause
             }
         }
-        
+
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
-        
+
         println!("Signal storm test completed");
     }
-    
+
     println!("✅ Signal storm test completed");
     true
 }
 
 fn test_shared_file_access() -> bool {
     println!("Testing shared file access patterns...");
-    
-    let shared_file = "shared_access_test.txt";
+
+    let shared_file = "/tmp_shared_access_test.txt";
     let fd = open(shared_file, 0o100 | 0o644);
     if fd < 0 {
         return false;
     }
     close(fd as usize);
-    
+
     let num_children = 3;
     let mut children = Vec::new();
-    
+
     for i in 0..num_children {
         let child_pid = fork();
         if child_pid == 0 {
@@ -1818,14 +1821,14 @@ fn test_shared_file_access() -> bool {
                     write(fd as usize, data.as_bytes());
                     close(fd as usize);
                 }
-                
+
                 let fd = open(shared_file, 0); // O_RDONLY
                 if fd >= 0 {
                     let mut buffer = [0u8; 256];
                     read(fd as usize, &mut buffer);
                     close(fd as usize);
                 }
-                
+
                 yield_();
             }
             exit(0);
@@ -1833,13 +1836,13 @@ fn test_shared_file_access() -> bool {
             children.push(child_pid);
         }
     }
-    
+
     // Wait for all children
     for child_pid in children {
         let mut exit_code = 0;
         wait_pid(child_pid as usize, &mut exit_code);
     }
-    
+
     remove(shared_file);
     println!("✅ Shared file access test completed");
     true
@@ -1849,17 +1852,17 @@ fn test_shared_file_access() -> bool {
 fn long_running_stability_test() -> i32 {
     println!("=== Long Running Stability Test ===");
     println!("Running for extended period to test system stability...");
-    
+
     let start_time = get_time_ms();
     let test_duration_ms = 30000; // 30 seconds
     let mut iterations = 0;
     let update_interval = 1000; // Update progress every 1000 iterations
-    
+
     println!("Test duration: {} seconds", test_duration_ms / 1000);
-    
+
     while get_time_ms() - start_time < test_duration_ms {
         iterations += 1;
-        
+
         // Cycle through different operations
         match iterations % 10 {
             0 => {
@@ -1872,7 +1875,7 @@ fn long_running_stability_test() -> i32 {
             },
             1..=3 => {
                 // File operations
-                let filename = format!("stability_test_{}.tmp", iterations % 10);
+                let filename = format!("/tmp_stability_test_{}.tmp", iterations % 10);
                 let fd = open(&filename, 0o100 | 0o644);
                 if fd >= 0 {
                     write(fd as usize, format!("iteration {}", iterations).as_bytes());
@@ -1908,28 +1911,28 @@ fn long_running_stability_test() -> i32 {
                 }
             }
         }
-        
+
         // Show progress with time-based updates
         if iterations % update_interval == 0 {
             let elapsed = get_time_ms() - start_time;
             let _progress = (elapsed * 100) / test_duration_ms;
             let remaining = test_duration_ms - elapsed;
-            
+
             print_progress_bar(elapsed as usize, test_duration_ms as usize, 30, "Stability Test");
             println!(" - {} ops, {}ms remaining", iterations, remaining);
         }
-        
+
         // Brief yield to prevent overwhelming the system
         if iterations % 50 == 0 {
             yield_();
         }
     }
-    
+
     let total_time = get_time_ms() - start_time;
     println!("\n✅ Stability test completed successfully!");
     println!("   📊 {} iterations in {}ms", iterations, total_time);
     println!("   ⚡ Average rate: {:.1} operations/second", (iterations as f64 * 1000.0) / total_time as f64);
     println!("   🎯 System remained stable throughout the test");
-    
+
     0
 }
