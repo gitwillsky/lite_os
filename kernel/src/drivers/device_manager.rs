@@ -61,7 +61,7 @@ fn init_filesystems() {
 
     let device = block_devices[0].clone();
 
-    if let Some(fs) = FAT32FileSystem::new(device) {
+    if let Ok(fs) = FAT32FileSystem::new(device) {
         if let Err(e) = vfs().mount("/", fs) {
             error!("[device] File system mount failed: {:?}", e);
         }
