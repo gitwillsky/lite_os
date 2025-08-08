@@ -6,7 +6,7 @@ use spin::Mutex;
 use crate::board::board_info;
 use crate::drivers::hal::{BasicInterruptController, Device, DeviceType, InterruptController};
 use crate::drivers::{BlockDevice, VirtIOBlockDevice};
-use crate::fs::FAT32FileSystem;
+use crate::fs::{FAT32FileSystem, Ext2FileSystem};
 use crate::fs::vfs::vfs;
 
 static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
@@ -61,7 +61,11 @@ fn init_filesystems() {
 
     let device = block_devices[0].clone();
 
-    if let Ok(fs) = FAT32FileSystem::new(device) {
+    if let Ok(fs) = Ext2FileSystem::new(device.clone()) {
+        if let Err(e) = vfs().mount("/", fs) {
+            error!("[device] File system mount failed: {:?}", e);
+        }
+    } else if let Ok(fs) = FAT32FileSystem::new(device) {
         if let Err(e) = vfs().mount("/", fs) {
             error!("[device] File system mount failed: {:?}", e);
         }

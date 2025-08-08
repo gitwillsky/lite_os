@@ -6,8 +6,10 @@ pub mod fat32;
 pub mod flock;
 pub mod inode;
 pub mod vfs;
+pub mod ext2;
 
 pub use fat32::FAT32FileSystem;
+pub use ext2::Ext2FileSystem;
 pub use flock::{FileLock, FileLockManager, LockType, LockOp, LockError, file_lock_manager};
 pub use inode::{Inode, InodeType};
 
@@ -22,6 +24,7 @@ pub enum FileSystemError {
     PermissionDenied,
     IoError,
     InvalidFileSystem,
+    InvalidOperation,  // 添加无效操作错误类型
 }
 
 pub trait FileSystem: Send + Sync {
