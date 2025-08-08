@@ -37,7 +37,77 @@ struct Ext2SuperBlock {
     s_rev_level: u32,
     s_def_resuid: u16,
     s_def_resgid: u16,
-    // we do not need the rest for now (to 1024 bytes total); keep padding space
+    // ext2 revision 1 fields
+    s_first_ino: u32,
+    s_inode_size: u16,
+    s_block_group_nr: u16,
+    s_feature_compat: u32,
+    s_feature_incompat: u32,
+    s_feature_ro_compat: u32,
+    s_uuid: [u8; 16],
+    s_volume_name: [u8; 16],
+    s_last_mounted: [u8; 64],
+    s_algorithm_usage_bitmap: u32,
+    // Performance hints
+    s_prealloc_blocks: u8,
+    s_prealloc_dir_blocks: u8,
+    s_reserved_gdt_blocks: u16,
+    // Journaling support valid if EXT3_FEATURE_COMPAT_HAS_JOURNAL set
+    s_journal_uuid: [u8; 16],
+    s_journal_inum: u32,
+    s_journal_dev: u32,
+    s_last_orphan: u32,
+    // Directory indexing support
+    s_hash_seed: [u32; 4],
+    s_def_hash_version: u8,
+    s_jnl_backup_type: u8,
+    s_desc_size: u16,
+    s_default_mount_opts: u32,
+    s_first_meta_bg: u32,
+    s_mkfs_time: u32,
+    s_jnl_blocks: [u32; 17],
+    // 64bit support valid if EXT4_FEATURE_COMPAT_64BIT
+    s_blocks_count_hi: u32,
+    s_r_blocks_count_hi: u32,
+    s_free_blocks_count_hi: u32,
+    s_min_extra_isize: u16,
+    s_want_extra_isize: u16,
+    s_flags: u32,
+    s_raid_stride: u16,
+    s_mmp_update_interval: u16,
+    s_mmp_block: u64,
+    s_raid_stripe_width: u32,
+    s_log_groups_per_flex: u8,
+    s_checksum_type: u8,
+    s_reserved_pad: u16,
+    s_kbytes_written: u64,
+    s_snapshot_inum: u32,
+    s_snapshot_id: u32,
+    s_snapshot_r_blocks_count: u64,
+    s_snapshot_list: u32,
+    s_error_count: u32,
+    s_first_error_time: u32,
+    s_first_error_ino: u32,
+    s_first_error_block: u64,
+    s_first_error_func: [u8; 32],
+    s_first_error_line: u32,
+    s_last_error_time: u32,
+    s_last_error_ino: u32,
+    s_last_error_line: u32,
+    s_last_error_block: u64,
+    s_last_error_func: [u8; 32],
+    s_mount_opts: [u8; 64],
+    s_usr_quota_inum: u32,
+    s_grp_quota_inum: u32,
+    s_overhead_clusters: u32,
+    s_backup_bgs: [u32; 2],
+    s_encrypt_algos: [u8; 4],
+    s_encrypt_pw_salt: [u8; 16],
+    s_lpf_ino: u32,
+    s_prj_quota_inum: u32,
+    s_checksum_seed: u32,
+    s_reserved: [u32; 98],
+    s_checksum: u32,
 }
 
 #[repr(C, packed)]
@@ -102,7 +172,7 @@ pub struct Ext2FileSystem {
     inodes_per_group: usize,
     blocks_per_group: usize,
     first_data_block: u32,
-    groups: Vec<Ext2GroupDesc>,
+    groups: Mutex<Vec<Ext2GroupDesc>>,
     self_ref: spin::Mutex<Weak<Ext2FileSystem>>, // to upgrade &self to Arc
 }
 
@@ -144,14 +214,17 @@ impl Ext2FileSystem {
             return Err(FileSystemError::InvalidFileSystem);
         }
 
-        // Derive inode size from superblock bytes (offset 88), fallback to 128
-        let sb_bytes = &block0[1024..2048];
-        let mut inode_size = 128usize;
-        if sb_bytes.len() >= 90 {
-            let raw = u16::from_le_bytes([sb_bytes[88], sb_bytes[89]]);
-            if raw != 0 { inode_size = raw as usize; }
+        // Get inode size from superblock
+        let inode_size = if superblock.s_rev_level >= 1 && superblock.s_inode_size != 0 {
+            superblock.s_inode_size as usize
+        } else {
+            128usize // EXT2_GOOD_OLD_INODE_SIZE
+        };
+        
+        // Validate inode size
+        if inode_size < 128 || (inode_size & (inode_size - 1)) != 0 {
+            return Err(FileSystemError::InvalidFileSystem);
         }
-        if inode_size != 128 && inode_size != 256 { /* accept typical sizes, others untested */ }
 
         let blocks_per_group = superblock.s_blocks_per_group as usize;
         let inodes_per_group = superblock.s_inodes_per_group as usize;
@@ -185,7 +258,7 @@ impl Ext2FileSystem {
             inodes_per_group,
             blocks_per_group,
             first_data_block,
-            groups,
+            groups: Mutex::new(groups),
             self_ref: spin::Mutex::new(Weak::new()),
         });
         // set self_ref
@@ -215,8 +288,11 @@ impl Ext2FileSystem {
 
     fn read_inode_disk(&self, inode_num: u32) -> Result<Ext2InodeDisk, FileSystemError> {
         let (group, local) = self.group_index_and_local_inode(inode_num);
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let groups = self.groups.lock();
+        let gd = groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
         let table_block = gd.bg_inode_table;
+        drop(groups);
+        
         let inode_size = self.inode_size();
         let inodes_per_block = self.block_size / inode_size;
         let block_offset = local / inodes_per_block;
@@ -230,8 +306,11 @@ impl Ext2FileSystem {
 
     fn write_inode_disk(&self, inode_num: u32, inode: &Ext2InodeDisk) -> Result<(), FileSystemError> {
         let (group, local) = self.group_index_and_local_inode(inode_num);
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let groups = self.groups.lock();
+        let gd = groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
         let table_block = gd.bg_inode_table;
+        drop(groups);
+        
         let inode_size = self.inode_size();
         let inodes_per_block = self.block_size / inode_size;
         let block_offset = local / inodes_per_block;
@@ -245,16 +324,21 @@ impl Ext2FileSystem {
     }
 
     fn alloc_from_bitmap(&self, bitmap_block: u32, total: usize) -> Result<u32, FileSystemError> {
+        if bitmap_block == 0 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
         let mut buf = vec![0u8; self.block_size];
         self.read_block(bitmap_block, &mut buf)?;
-        for (byte_index, b) in buf.iter_mut().enumerate() {
+        let max_bits = cmp::min(total, self.block_size * 8);
+        for (byte_index, b) in buf.iter_mut().enumerate().take(ceil_div(max_bits, 8)) {
             if *b != 0xFF { // has free bits
                 for bit in 0..8 {
-                    if (byte_index * 8 + bit) >= total { break; }
+                    let bit_index = byte_index * 8 + bit;
+                    if bit_index >= max_bits { break; }
                     if (*b & (1u8 << bit)) == 0 {
                         *b |= 1u8 << bit;
                         self.write_block(bitmap_block, &buf)?;
-                        return Ok((byte_index * 8 + bit) as u32);
+                        return Ok(bit_index as u32);
                     }
                 }
             }
@@ -263,25 +347,47 @@ impl Ext2FileSystem {
     }
 
     fn free_in_bitmap(&self, bitmap_block: u32, idx: u32) -> Result<(), FileSystemError> {
+        if bitmap_block == 0 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
         let mut buf = vec![0u8; self.block_size];
         self.read_block(bitmap_block, &mut buf)?;
         let byte_index = (idx / 8) as usize;
         let bit = (idx % 8) as u8;
-        if byte_index >= buf.len() { return Err(FileSystemError::InvalidFileSystem); }
+        if byte_index >= buf.len() { 
+            return Err(FileSystemError::InvalidFileSystem); 
+        }
+        if (buf[byte_index] & (1u8 << bit)) == 0 {
+            return Err(FileSystemError::InvalidFileSystem); // double free
+        }
         buf[byte_index] &= !(1u8 << bit);
         self.write_block(bitmap_block, &buf)
     }
 
     fn allocate_block_in_group(&self, group: usize) -> Result<u32, FileSystemError> {
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let mut groups = self.groups.lock();
+        let gd = groups.get_mut(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        if gd.bg_free_blocks_count == 0 {
+            return Err(FileSystemError::NoSpace);
+        }
         let rel = self.alloc_from_bitmap(gd.bg_block_bitmap, self.blocks_per_group)?; // relative to group
+        // Update block group descriptor
+        gd.bg_free_blocks_count -= 1;
+        self.write_group_descriptor(group, gd)?;
         let abs = (self.first_data_block + (group as u32) * self.blocks_per_group as u32 + rel) as u32;
         Ok(abs)
     }
 
     fn allocate_inode_in_group(&self, group: usize) -> Result<u32, FileSystemError> {
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let mut groups = self.groups.lock();
+        let gd = groups.get_mut(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        if gd.bg_free_inodes_count == 0 {
+            return Err(FileSystemError::NoSpace);
+        }
         let rel = self.alloc_from_bitmap(gd.bg_inode_bitmap, self.inodes_per_group)?; // 0-based within group
+        // Update block group descriptor
+        gd.bg_free_inodes_count -= 1;
+        self.write_group_descriptor(group, gd)?;
         let abs = (group as u32) * self.inodes_per_group as u32 + rel + 1; // inode numbers start at 1
         Ok(abs)
     }
@@ -289,14 +395,35 @@ impl Ext2FileSystem {
     fn free_block(&self, block_id: u32) -> Result<(), FileSystemError> {
         let group = ((block_id - self.first_data_block) as usize) / self.blocks_per_group;
         let rel = (block_id - self.first_data_block) as usize % self.blocks_per_group;
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
-        self.free_in_bitmap(gd.bg_block_bitmap, rel as u32)
+        let mut groups = self.groups.lock();
+        let gd = groups.get_mut(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        self.free_in_bitmap(gd.bg_block_bitmap, rel as u32)?;
+        // Update block group descriptor
+        gd.bg_free_blocks_count += 1;
+        self.write_group_descriptor(group, gd)
     }
 
     fn free_inode(&self, inode_num: u32) -> Result<(), FileSystemError> {
         let (group, local) = self.group_index_and_local_inode(inode_num);
-        let gd = self.groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
-        self.free_in_bitmap(gd.bg_inode_bitmap, local as u32)
+        let mut groups = self.groups.lock();
+        let gd = groups.get_mut(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        self.free_in_bitmap(gd.bg_inode_bitmap, local as u32)?;
+        // Update block group descriptor
+        gd.bg_free_inodes_count += 1;
+        self.write_group_descriptor(group, gd)
+    }
+
+    fn write_group_descriptor(&self, group: usize, gd: &Ext2GroupDesc) -> Result<(), FileSystemError> {
+        let gdt_start_block = if self.block_size == 1024 { 2 } else { 1 } as usize;
+        let gd_per_block = self.block_size / mem::size_of::<Ext2GroupDesc>();
+        let block_offset = group / gd_per_block;
+        let offset_in_block = (group % gd_per_block) * mem::size_of::<Ext2GroupDesc>();
+        
+        let mut buf = vec![0u8; self.block_size];
+        self.read_block((gdt_start_block + block_offset) as u32, &mut buf)?;
+        let dst = unsafe { buf.as_mut_ptr().add(offset_in_block) as *mut Ext2GroupDesc };
+        unsafe { ptr::write_unaligned(dst, *gd) };
+        self.write_block((gdt_start_block + block_offset) as u32, &buf)
     }
 }
 
@@ -324,8 +451,26 @@ impl Ext2Inode {
         }
     }
 
+    fn current_timestamp() -> u32 {
+        // In real implementation, this should get actual Unix timestamp
+        // For now, return a placeholder
+        0
+    }
+
+    fn update_timestamps(&self, access: bool, modify: bool, change: bool) -> Result<(), FileSystemError> {
+        let mut ino = self.disk.lock();
+        let now = Self::current_timestamp();
+        if access { ino.i_atime = now; }
+        if modify { ino.i_mtime = now; }
+        if change { ino.i_ctime = now; }
+        self.fs.write_inode_disk(self.inode_num, &ino)
+    }
+
     fn ensure_block_mapped(&self, file_block_index: u32) -> Result<u32, FileSystemError> {
         // Map file logical block -> physical block, allocate if absent.
+        if file_block_index >= (u32::MAX / self.fs.block_size as u32) {
+            return Err(FileSystemError::NoSpace); // prevent overflow
+        }
         let mut ino = self.disk.lock();
         let bs = self.fs.block_size as u32;
         let ptrs_per_block = (self.fs.block_size / 4) as u32;
@@ -361,6 +506,9 @@ impl Ext2Inode {
             }
             let mut buf = vec![0u8; self.fs.block_size];
             self.fs.read_block(ind, &mut buf)?;
+            if (idx as usize * 4) + 4 > buf.len() {
+                return Err(FileSystemError::InvalidFileSystem);
+            }
             let p = unsafe { (buf.as_mut_ptr() as *mut u32).add(idx as usize) };
             let mut b = unsafe { ptr::read_unaligned(p) };
             if b == 0 {
@@ -396,6 +544,9 @@ impl Ext2Inode {
             drop(ino);
             let mut buf = vec![0u8; self.fs.block_size];
             self.fs.read_block(ind, &mut buf)?;
+            if (idx as usize * 4) + 4 > buf.len() {
+                return Err(FileSystemError::InvalidFileSystem);
+            }
             let p = unsafe { (buf.as_ptr() as *const u32).add(idx as usize) };
             let b = unsafe { ptr::read_unaligned(p) };
             if b == 0 { return Err(FileSystemError::NotFound); }
@@ -508,6 +659,7 @@ impl Inode for Ext2Inode {
         drop(ino);
         if offset as usize >= size { return Ok(0); }
         let to_read = cmp::min(buf.len(), size - offset as usize);
+        if to_read == 0 { return Ok(0); }
         let bs = self.fs.block_size;
         let mut cur_off = offset as usize;
         while done < to_read {
@@ -521,11 +673,18 @@ impl Inode for Ext2Inode {
             done += n;
             cur_off += n;
         }
+        // Update access time
+        self.update_timestamps(true, false, false).ok();
         Ok(done)
     }
 
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
-        if matches!(self.inode_type(), InodeType::Directory) { return Err(FileSystemError::IsDirectory); }
+        if matches!(self.inode_type(), InodeType::Directory) { 
+            return Err(FileSystemError::IsDirectory); 
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let mut done = 0usize;
         let bs = self.fs.block_size;
         let mut cur_off = offset as usize;
@@ -550,6 +709,10 @@ impl Inode for Ext2Inode {
         // i_blocks is in 512-byte sectors for ext2; approximate
         let blocks_512 = ceil_div(new_size, 512);
         ino.i_blocks_lo = (blocks_512 as u32);
+        // Update timestamps
+        let now = Self::current_timestamp();
+        ino.i_mtime = now;
+        ino.i_ctime = now;
         self.fs.write_inode_disk(self.inode_num, &ino)?;
         Ok(done)
     }
@@ -583,24 +746,52 @@ impl Inode for Ext2Inode {
     }
 
     fn create_file(&self, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if !matches!(self.inode_type(), InodeType::Directory) { return Err(FileSystemError::NotDirectory); }
+        if !matches!(self.inode_type(), InodeType::Directory) { 
+            return Err(FileSystemError::NotDirectory); 
+        }
+        if name.is_empty() || name.len() > 255 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
         // allocate inode in same group as parent inode
         let (group, _) = self.fs.group_index_and_local_inode(self.inode_num);
         let child_ino_num = self.fs.allocate_inode_in_group(group)?;
-        let mut disk = Ext2InodeDisk { i_mode: 0o100644, i_links_count: 1, ..Default::default() };
+        let now = Self::current_timestamp();
+        let mut disk = Ext2InodeDisk { 
+            i_mode: 0o100644,
+            i_links_count: 1,
+            i_atime: now,
+            i_mtime: now,
+            i_ctime: now,
+            ..Default::default() 
+        };
         // regular file: 0x8000 flag
         disk.i_mode |= 0x8000;
         self.fs.write_inode_disk(child_ino_num, &disk)?;
         // add directory entry
         self.add_dir_entry(child_ino_num, name, 1)?; // file_type 1 = regular
+        // Update parent directory mtime and ctime
+        self.update_timestamps(false, true, true).ok();
         Ext2Inode::load(self.fs.clone(), child_ino_num).map(|x| x as Arc<dyn Inode>)
     }
 
     fn create_directory(&self, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if !matches!(self.inode_type(), InodeType::Directory) { return Err(FileSystemError::NotDirectory); }
+        if !matches!(self.inode_type(), InodeType::Directory) { 
+            return Err(FileSystemError::NotDirectory); 
+        }
+        if name.is_empty() || name.len() > 255 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
         let (group, _) = self.fs.group_index_and_local_inode(self.inode_num);
         let child_ino_num = self.fs.allocate_inode_in_group(group)?;
-        let mut disk = Ext2InodeDisk { i_mode: 0o040755, i_links_count: 2, ..Default::default() };
+        let now = Self::current_timestamp();
+        let mut disk = Ext2InodeDisk { 
+            i_mode: 0o040755, 
+            i_links_count: 2,
+            i_atime: now,
+            i_mtime: now,
+            i_ctime: now,
+            ..Default::default() 
+        };
         disk.i_mode |= 0x4000; // dir flag
         // allocate first data block for '.' and '..'
         let blk0 = self.fs.allocate_block_in_group(group)?;
@@ -627,6 +818,13 @@ impl Inode for Ext2Inode {
         self.fs.write_block(blk0, &buf)?;
         // add entry under parent
         self.add_dir_entry(child_ino_num, name, 2)?;
+        // Update parent directory link count and timestamps
+        let mut parent_ino = self.disk.lock();
+        parent_ino.i_links_count += 1; // '..' link from new directory
+        parent_ino.i_mtime = now;
+        parent_ino.i_ctime = now;
+        self.fs.write_inode_disk(self.inode_num, &parent_ino)?;
+        drop(parent_ino);
         Ext2Inode::load(self.fs.clone(), child_ino_num).map(|x| x as Arc<dyn Inode>)
     }
 
