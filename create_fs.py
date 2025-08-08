@@ -170,7 +170,9 @@ def copy_files_to_ext2(image_path, debugfs_bin):
     # 简单列出根目录
     try:
         print("\n文件系统内容 (根目录):")
-        subprocess.run([debugfs_bin, '-R', 'ls -l /', image_path], check=True)
+        result = subprocess.run([debugfs_bin, '-R', 'ls -l /', image_path], 
+                              capture_output=True, text=True, check=True)
+        print(result.stdout)
     except Exception:
         pass
 
@@ -232,7 +234,7 @@ def list_fs_contents(filename):
         if mount_point:
             try:
                 if os.uname().sysname == 'Darwin':
-                    subprocess.run(['hdiutil', 'detach', mount_point],
+                    subprocess.run(['hdiutil', 'detach', mount_point, '-quiet'],
                                  capture_output=True, check=True)
                 else:
                     subprocess.run(['sudo', 'umount', mount_point], check=True)
@@ -282,7 +284,7 @@ def add_files_to_fs(filename, files):
         if mount_point:
             try:
                 if os.uname().sysname == 'Darwin':
-                    subprocess.run(['hdiutil', 'detach', mount_point],
+                    subprocess.run(['hdiutil', 'detach', mount_point, '-quiet'],
                                  capture_output=True, check=True)
                 else:
                     subprocess.run(['sudo', 'umount', mount_point], check=True)
