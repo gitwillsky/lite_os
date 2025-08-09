@@ -148,22 +148,39 @@ impl File {
     pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> Option<usize> {
         // 检查文件描述符数量限制
         const MAX_FD_COUNT: usize = 1024; // 每个进程最多打开1024个文件
-        
+
         if self.fd_table.len() >= MAX_FD_COUNT {
+            error!("[FD_ALLOC] CRITICAL: FD table full! {} open files (max {})",
+                   self.fd_table.len(), MAX_FD_COUNT);
             return None; // 达到上限，返回None表示分配失败
         }
-        
+
+        // Log milestone FDs to track progress
+        let start_fd = self.next_fd;
         // 寻找下一个可用的文件描述符
         let mut fd = self.next_fd;
+        let mut search_count = 0;
         while self.fd_table.contains_key(&fd) {
             fd += 1;
-            if fd > MAX_FD_COUNT {
+            search_count += 1;
+            // 修复：检查搜索次数而不是FD数值，防止FD编号大于MAX_FD_COUNT时错误退出
+            // MAX_FD_COUNT是文件表大小限制，不是FD编号限制
+            if search_count >= MAX_FD_COUNT {
+                error!("[FD_ALLOC] CRITICAL: FD search exhausted after {} attempts! Table has {} entries",
+                       search_count, self.fd_table.len());
                 return None; // 防止无限循环
             }
         }
-        
+
+        // Log if search took a long time
+        if search_count > 100 {
+            warn!("[FD_ALLOC] Slow FD search: {} attempts to find FD {} (table fragmented?)",
+                  search_count, fd);
+        }
+
         self.fd_table.insert(fd, file_desc);
         self.next_fd = fd + 1;
+
         Some(fd)
     }
 

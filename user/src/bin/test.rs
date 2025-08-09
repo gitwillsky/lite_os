@@ -822,9 +822,9 @@ fn main() -> i32 {
     // Run comprehensive test suite
     let tests: Vec<(&str, fn() -> i32)> = vec![
         ("Complete Syscall Suite", test_all_syscalls),
-        // ("Multi-Core Stress Test", multicore_stress_test),
-        // ("Multi-Core Signal Test", test_multicore_signals),
-        // ("Memory Pressure Test", memory_pressure_test),
+        ("Multi-Core Stress Test", multicore_stress_test),
+        ("Multi-Core Signal Test", test_multicore_signals),
+        ("Memory Pressure Test", memory_pressure_test),
         ("Filesystem Stress Test", filesystem_stress_test),
         ("IPC Reliability Test", ipc_reliability_test),
         ("Long Running Stability Test", long_running_stability_test),
@@ -1087,6 +1087,12 @@ fn test_fd_exhaustion() -> bool {
         if i % 100 == 0 {
             println!("Opening file descriptor #{}", i);
         }
+
+        // Extra debug for critical range
+        if i >= 890 {
+            println!("CRITICAL: Opening FD #{} - this may trigger the hang", i);
+        }
+
         let fd = open(test_file, 0);
         if fd >= 0 {
             fds.push(fd);
