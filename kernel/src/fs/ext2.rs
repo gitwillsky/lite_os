@@ -2116,6 +2116,40 @@ impl Ext2Inode {
 
                 let rec_len = hdr.rec_len as usize;
                 if rec_len == 0 {
+                    // Newly allocated empty block (all zeros) or corrupt; if at block start, initialize with new entry
+                    if pos == 0 {
+                        let new_hdr = Ext2DirEntry2Header {
+                            inode: child_inode,
+                            rec_len: self.fs.block_size as u16,
+                            name_len: name_bytes.len() as u8,
+                            file_type,
+                        };
+                        unsafe {
+                            ptr::write_unaligned(
+                                buf[pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
+                                new_hdr,
+                            );
+                        }
+
+                        let name_dst = pos + mem::size_of::<Ext2DirEntry2Header>();
+                        if name_dst + name_bytes.len() <= self.fs.block_size {
+                            buf[name_dst..name_dst + name_bytes.len()].copy_from_slice(name_bytes);
+                            self.fs.write_fs_block(blk, &buf)?;
+
+                            // update directory size if needed
+                            let mut ino = self.disk.lock();
+                            let new_size = cmp::max(
+                                ino.i_size_lo as usize,
+                                (blk_index as usize + 1) * self.fs.block_size,
+                            );
+                            ino.i_size_lo = new_size as u32;
+                            self.fs.write_inode_disk(self.inode_num, &ino)?;
+                            return Ok(());
+                        } else {
+                            // fall back to try next block if name would exceed
+                            break;
+                        }
+                    }
                     break;
                 }
 
@@ -2137,6 +2171,69 @@ impl Ext2Inode {
                 );
                 let spare = rec_len.saturating_sub(ideal);
 
+                // Case 1: reuse a free slot (inode==0)
+                if hdr.inode == 0 {
+                    // If this free record is large enough, place the new entry here and optionally split
+                    let min_free_rec = align_up(mem::size_of::<Ext2DirEntry2Header>() + 1, 4);
+                    if rec_len >= needed {
+                        let use_len = if rec_len >= needed + min_free_rec { ideal.max(needed) } else { rec_len };
+
+                        // write used entry at current position
+                        let used_hdr = Ext2DirEntry2Header {
+                            inode: child_inode,
+                            rec_len: use_len as u16,
+                            name_len: name_bytes.len() as u8,
+                            file_type,
+                        };
+                        unsafe {
+                            ptr::write_unaligned(
+                                buf[pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
+                                used_hdr,
+                            );
+                        }
+
+                        let name_dst = pos + mem::size_of::<Ext2DirEntry2Header>();
+                        if name_dst + name_bytes.len() > self.fs.block_size {
+                            warn!("[EXT2] add_dir_entry: name would exceed block boundary when using free slot");
+                            break;
+                        }
+                        buf[name_dst..name_dst + name_bytes.len()].copy_from_slice(name_bytes);
+
+                        // If there is remaining space, create a trailing free record
+                        let remaining = rec_len.saturating_sub(use_len);
+                        if remaining >= min_free_rec {
+                            let free_pos = pos + use_len;
+                            let free_hdr = Ext2DirEntry2Header {
+                                inode: 0,
+                                rec_len: remaining as u16,
+                                name_len: 0,
+                                file_type: 0,
+                            };
+                            if free_pos + mem::size_of::<Ext2DirEntry2Header>() <= self.fs.block_size {
+                                unsafe {
+                                    ptr::write_unaligned(
+                                        buf[free_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
+                                        free_hdr,
+                                    );
+                                }
+                            }
+                        }
+
+                        self.fs.write_fs_block(blk, &buf)?;
+
+                        // update directory size if needed
+                        let mut ino = self.disk.lock();
+                        let new_size = cmp::max(
+                            ino.i_size_lo as usize,
+                            (blk_index as usize + 1) * self.fs.block_size,
+                        );
+                        ino.i_size_lo = new_size as u32;
+                        self.fs.write_inode_disk(self.inode_num, &ino)?;
+                        return Ok(());
+                    }
+                }
+
+                // Case 2: split a used entry's spare tail room
                 if hdr.inode != 0 && spare >= needed {
                     // Validate that we can safely split this entry
                     if ideal > u16::MAX as usize || spare > u16::MAX as usize {
