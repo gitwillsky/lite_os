@@ -36,6 +36,8 @@ pub struct FileDescriptor {
     pub offset: atomic::AtomicU64,
     pub flags: u32,
     pub mode: u32,
+    /// Whether this descriptor has seen successful writes and needs sync on drop
+    pub dirty_on_close: atomic::AtomicBool,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -50,9 +52,11 @@ impl core::fmt::Debug for FileDescriptor {
 
 impl Drop for FileDescriptor {
     fn drop(&mut self) {
-        // 文件描述符被销毁时，同步文件内容到磁盘
-        if let Err(e) = self.inode.sync() {
-            warn!("Failed to sync file on close: {:?}", e);
+        // 仅当曾经发生过写入时才进行同步，避免批量关闭只读FD卡顿
+        if self.dirty_on_close.load(atomic::Ordering::Acquire) {
+            if let Err(e) = self.inode.sync() {
+                warn!("Failed to sync file on close: {:?}", e);
+            }
         }
     }
 }
@@ -64,6 +68,7 @@ impl FileDescriptor {
             offset: atomic::AtomicU64::new(0),
             flags,
             mode: 0o644, // Default file mode
+            dirty_on_close: atomic::AtomicBool::new(false),
         }
     }
 
@@ -85,6 +90,11 @@ impl FileDescriptor {
         if let Ok(bytes_written) = result {
             self.offset
                 .fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
+            if bytes_written > 0 {
+                self
+                    .dirty_on_close
+                    .store(true, atomic::Ordering::Release);
+            }
         }
         result
     }
@@ -217,6 +227,9 @@ impl File {
                 offset: atomic::AtomicU64::new(current_offset),
                 flags: file_desc.flags,
                 mode: file_desc.mode,
+                dirty_on_close: atomic::AtomicBool::new(
+                    file_desc.dirty_on_close.load(atomic::Ordering::Relaxed),
+                ),
             });
             self.alloc_fd(new_file_desc)
         } else {
@@ -236,7 +249,7 @@ impl File {
         }
 
         // 首先获取 oldfd 的文件描述符信息
-        let (inode, current_offset, flags, mode) = {
+        let (inode, current_offset, flags, mode, dirty) = {
             if let Some(file_desc) = self.fd_table.get(&oldfd) {
                 let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
                 (
@@ -244,6 +257,7 @@ impl File {
                     current_offset,
                     file_desc.flags,
                     file_desc.mode,
+                    file_desc.dirty_on_close.load(atomic::Ordering::Relaxed),
                 )
             } else {
                 return None;
@@ -261,6 +275,7 @@ impl File {
             offset: atomic::AtomicU64::new(current_offset),
             flags,
             mode,
+            dirty_on_close: atomic::AtomicBool::new(dirty),
         });
         self.fd_table.insert(newfd, new_file_desc);
 
