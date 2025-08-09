@@ -1084,11 +1084,18 @@ fn test_fd_exhaustion() -> bool {
 
     // Try to open many files until we hit the limit
     for i in 0..1000 {
+        if i % 100 == 0 {
+            println!("Opening file descriptor #{}", i);
+        }
         let fd = open(test_file, 0);
         if fd >= 0 {
             fds.push(fd);
         } else {
-            println!("FD limit reached at {} file descriptors", i);
+            println!("FD limit reached at {} file descriptors (fd={})", i, fd);
+            break;
+        }
+        if i > 1050 {
+            println!("Breaking at iteration {} to prevent infinite loop", i);
             break;
         }
     }

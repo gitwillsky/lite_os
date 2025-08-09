@@ -145,11 +145,26 @@ pub struct File {
 
 impl File {
     /// 分配新的文件描述符
-    pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> usize {
-        let fd = self.next_fd;
+    pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> Option<usize> {
+        // 检查文件描述符数量限制
+        const MAX_FD_COUNT: usize = 1024; // 每个进程最多打开1024个文件
+        
+        if self.fd_table.len() >= MAX_FD_COUNT {
+            return None; // 达到上限，返回None表示分配失败
+        }
+        
+        // 寻找下一个可用的文件描述符
+        let mut fd = self.next_fd;
+        while self.fd_table.contains_key(&fd) {
+            fd += 1;
+            if fd > MAX_FD_COUNT {
+                return None; // 防止无限循环
+            }
+        }
+        
         self.fd_table.insert(fd, file_desc);
-        self.next_fd += 1;
-        fd
+        self.next_fd = fd + 1;
+        Some(fd)
     }
 
     /// 根据文件描述符获取FileDescriptor
@@ -177,7 +192,6 @@ impl File {
     /// 复制文件描述符（用于 dup 系统调用）
     pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
         if let Some(file_desc) = self.fd_table.get(&fd) {
-            let new_fd = self.next_fd;
             // 获取当前偏移量值
             let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
             // 创建新的 FileDescriptor，复制当前偏移量
@@ -187,9 +201,7 @@ impl File {
                 flags: file_desc.flags,
                 mode: file_desc.mode,
             });
-            self.fd_table.insert(new_fd, new_file_desc);
-            self.next_fd += 1;
-            Some(new_fd)
+            self.alloc_fd(new_file_desc)
         } else {
             None
         }

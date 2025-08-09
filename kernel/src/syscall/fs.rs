@@ -233,7 +233,10 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 
         let file_desc = Arc::new(FileDescriptor::new(inode, flags));
         let fd = task.file.lock().alloc_fd(file_desc);
-        fd as isize
+        match fd {
+            Some(fd) => fd as isize,
+            None => -24, // EMFILE: Too many open files
+        }
     } else {
         -1
     }
@@ -395,20 +398,35 @@ pub fn sys_pipe(pipefd: *mut i32) -> isize {
         let read_fd = task.file.lock().alloc_fd(read_fd_desc);
         let write_fd = task.file.lock().alloc_fd(write_fd_desc);
 
-        // 将文件描述符写入用户空间
-        let mut buffers = translated_byte_buffer(token, pipefd as *const u8, 8); // 2 * sizeof(i32)
-        if buffers.len() >= 1 && buffers[0].len() >= 8 {
-            let fd_array = buffers[0].as_mut_ptr() as *mut i32;
-            unsafe {
-                *fd_array = read_fd as i32;
-                *fd_array.add(1) = write_fd as i32;
+        // 检查文件描述符分配是否成功
+        match (read_fd, write_fd) {
+            (Some(read_fd_num), Some(write_fd_num)) => {
+                // 将文件描述符写入用户空间
+                let mut buffers = translated_byte_buffer(token, pipefd as *const u8, 8); // 2 * sizeof(i32)
+                if buffers.len() >= 1 && buffers[0].len() >= 8 {
+                    let fd_array = buffers[0].as_mut_ptr() as *mut i32;
+                    unsafe {
+                        *fd_array = read_fd_num as i32;
+                        *fd_array.add(1) = write_fd_num as i32;
+                    }
+                    0 // 成功
+                } else {
+                    // 内存访问失败，清理已分配的文件描述符
+                    task.file.lock().close_fd(read_fd_num);
+                    task.file.lock().close_fd(write_fd_num);
+                    -14 // EFAULT
+                }
             }
-            0 // 成功
-        } else {
-            // 内存访问失败，清理已分配的文件描述符
-            task.file.lock().close_fd(read_fd);
-            task.file.lock().close_fd(write_fd);
-            -14 // EFAULT
+            _ => {
+                // 文件描述符分配失败，清理已分配的资源
+                if let Some(fd) = read_fd {
+                    task.file.lock().close_fd(fd);
+                }
+                if let Some(fd) = write_fd {
+                    task.file.lock().close_fd(fd);
+                }
+                -24 // EMFILE: Too many open files
+            }
         }
     } else {
         -1
