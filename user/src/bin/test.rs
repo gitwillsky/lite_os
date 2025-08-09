@@ -1088,11 +1088,6 @@ fn test_fd_exhaustion() -> bool {
             println!("Opening file descriptor #{}", i);
         }
 
-        // Extra debug for critical range
-        if i >= 890 {
-            println!("CRITICAL: Opening FD #{} - this may trigger the hang", i);
-        }
-
         let fd = open(test_file, 0);
         if fd >= 0 {
             fds.push(fd);
