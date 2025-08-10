@@ -302,9 +302,6 @@ pub fn handle_external_interrupt() {
     if let Some(controller) = mgr.get_interrupt_controller() {
         let mut ctrl = controller.lock();
         let vectors = ctrl.pending_interrupts();
-        if !vectors.is_empty() {
-            debug!("[DeviceManager] Pending IRQs: {:?}", vectors);
-        }
         for vector in vectors {
             if let Err(e) = ctrl.handle_interrupt(vector) {
                 #[cfg(debug_assertions)]

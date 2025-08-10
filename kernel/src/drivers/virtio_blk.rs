@@ -342,3 +342,34 @@ impl Device for VirtIOBlockDevice {
         self
     }
 }
+
+// === 中断处理支持 ===
+
+struct VirtIOBlockIrqHandler {
+    device: Arc<VirtIOBlockDevice>,
+}
+
+impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
+    fn handle_interrupt(&self, _vector: super::hal::interrupt::InterruptVector) -> Result<(), super::hal::interrupt::InterruptError> {
+        // 仅做最小化的中断确认，避免与同步 I/O 路径上的队列锁竞争
+        if let Ok(status) = self.device.device.interrupt_status() {
+            // 确认 VRING 与 CONFIG 两类中断（如存在）
+            let _ = self.device.device.interrupt_ack(status & (super::hal::virtio::VIRTIO_MMIO_INT_VRING | super::hal::virtio::VIRTIO_MMIO_INT_CONFIG));
+        }
+        Ok(())
+    }
+
+    fn can_handle(&self, _vector: super::hal::interrupt::InterruptVector) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "virtio-blk-irq"
+    }
+}
+
+impl VirtIOBlockDevice {
+    pub fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn super::hal::InterruptHandler> {
+        Arc::new(VirtIOBlockIrqHandler { device: self.clone() })
+    }
+}
