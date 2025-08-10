@@ -46,6 +46,9 @@ const MMIO_QUEUE_AVAIL_LOW: usize = 0x090;
 const MMIO_QUEUE_AVAIL_HIGH: usize = 0x094;
 const MMIO_QUEUE_USED_LOW: usize = 0x0a0;
 const MMIO_QUEUE_USED_HIGH: usize = 0x0a4;
+// virtio-mmio interrupt registers (legacy/modern share the same offsets)
+const MMIO_INTERRUPT_STATUS: usize = 0x060; // R: interrupt status bits
+const MMIO_INTERRUPT_ACK: usize = 0x064;    // W: write 1s to ack bits
 
 // Status bits
 const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
@@ -205,7 +208,10 @@ pub struct VirtioGpuDevice {
 
 impl VirtioGpuDevice {
     fn irq_ack_and_drain(&mut self) {
-        // acknowledge by reading status if needed (MMIO interrupt status not exposed here)
+        // 先尝试清除设备侧中断状态，避免中断线保持为高导致 PLIC 重复触发
+        let isr = self.read32(MMIO_INTERRUPT_STATUS);
+        if isr != 0 { self.write32(MMIO_INTERRUPT_ACK, isr); }
+
         if let Some(ref mut q) = self.ctrl_queue {
             while let Some((id, _len)) = q.used() {
                 // 精准唤醒等待的任务

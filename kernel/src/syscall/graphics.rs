@@ -247,6 +247,7 @@ pub fn sys_gui_present_rects(buf_ptr: *const u8, buf_len: usize, rects_ptr: *con
 // 将设备帧缓冲映射到当前进程的用户空间，返回用户虚拟地址
 // 不考虑兼容性：直接将整个帧缓冲区映射为用户可读写
 pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
+    info!("[GUI] sys_gui_map_framebuffer enter");
     let (fb_va, fb_size) = match with_global_framebuffer(|fb| {
         let info = fb.info().clone();
         let va = VirtualAddress::from(fb.buffer_ptr() as usize);
@@ -264,31 +265,61 @@ pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
     let current = crate::task::current_task().unwrap();
     let mut user_mm = current.mm.memory_set.lock();
 
-    // 选择一段用户地址作为映射基址（简化：固定高地址区起点）
-    let user_base = VirtualAddress::from(0x4000_0000usize);
-    for i in 0..page_count {
-        let src_va = VirtualAddress::from(fb_va.as_usize() + i * page_size);
-        let vpn = src_va.floor();
-        let pte = match pt.translate(vpn) { Some(p) => p, None => return -1 };
-        let dst_va = VirtualAddress::from(user_base.as_usize() + i * page_size);
-        let _ = user_mm.get_page_table_mut().map(
-            dst_va.into(),
-            crate::memory::address::PhysicalAddress::from(pte.ppn()).into(),
-            crate::memory::page_table::PTEFlags::R | crate::memory::page_table::PTEFlags::W | crate::memory::page_table::PTEFlags::U,
-        );
-    }
+    // 选择一段用户地址作为映射基址：从高地址开始探测空洞，避免与现有映射冲突
+    let mut attempt_base = 0x4000_0000usize;
+    let max_base = 0x8000_0000usize;
+    let stride = ((page_count * page_size + 0x1_0000) & !0xFFF) // 下一次尝试按映射大小+一点余量对齐
+        .max(0x10_0000); // 至少 1MB 步长
 
-    // 写回用户态输出参数
+    let user_base = 'FIND: loop {
+        let mut ok = true;
+        // 预探测：检查该区间是否全部可映射；若遇到已映射则跳过到下一段
+        for i in 0..page_count {
+            let dst_va = VirtualAddress::from(attempt_base + i * page_size);
+            if let Some(existing) = user_mm.get_page_table().translate(dst_va.floor()) {
+                if existing.is_valid() {
+                    ok = false; break;
+                }
+            }
+        }
+        if ok {
+            // 真正执行映射
+            for i in 0..page_count {
+                let src_va = VirtualAddress::from(fb_va.as_usize() + i * page_size);
+                let vpn = src_va.floor();
+                let pte = match pt.translate(vpn) { Some(p) => p, None => return -1 };
+                let dst_va = VirtualAddress::from(attempt_base + i * page_size);
+                if let Err(e) = user_mm.get_page_table_mut().map(
+                    dst_va.into(),
+                    crate::memory::address::PhysicalAddress::from(pte.ppn()).into(),
+                    crate::memory::page_table::PTEFlags::R | crate::memory::page_table::PTEFlags::W | crate::memory::page_table::PTEFlags::U,
+                ) {
+                    // 回滚已映射页
+                    for j in 0..i {
+                        let va_rollback = VirtualAddress::from(attempt_base + j * page_size);
+                        let _ = user_mm.get_page_table_mut().unmap(va_rollback.into());
+                    }
+                    ok = false;
+                    break;
+                }
+            }
+            if ok { break VirtualAddress::from(attempt_base); }
+        }
+        attempt_base = attempt_base.saturating_add(stride);
+        if attempt_base >= max_base { return -1; }
+    };
+    info!("[GUI] sys_gui_map_framebuffer mapped {} bytes", fb_size);
+
+    // 重要：在返回用户指针之前释放用户内存集的锁，避免后续用户地址翻译/缺页处理与该锁产生互相等待
+    drop(user_mm);
+    info!("[GUI] sys_gui_map_framebuffer releasing user_mm lock before writing back");
+
+    // 写回用户态输出参数（使用直接引用，避免分段缓冲潜在问题）
     let token = crate::task::current_user_token();
-    let mut bufs = translated_byte_buffer(token, user_addr_out as *const u8, core::mem::size_of::<usize>());
-    let addr_val = user_base.as_usize();
-    let bytes = unsafe { core::slice::from_raw_parts((&addr_val as *const usize) as *const u8, core::mem::size_of::<usize>()) };
-    if let Some(seg) = bufs.first_mut() {
-        let to = core::cmp::min(seg.len(), bytes.len());
-        seg[..to].copy_from_slice(&bytes[..to]);
-        if to == bytes.len() { return 0; }
-    }
-    -1
+    let user_out_ref: &mut usize = crate::memory::page_table::translated_ref_mut(token, user_addr_out);
+    *user_out_ref = user_base.as_usize();
+    info!("[GUI] sys_gui_map_framebuffer done -> {:#x}", *user_out_ref);
+    0
 }
 
 pub fn sys_gui_get_screen_info(info_ptr: *mut GuiScreenInfo) -> isize {
