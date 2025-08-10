@@ -427,20 +427,43 @@ impl VirtioGpuDevice {
         self.write32(MMIO_QUEUE_NOTIFY, 0);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // 阻塞式等待：避免长时间忙等，自旋-让出结合
-        let mut attempts = 5000;
-        loop {
-            let ctrl_queue = self.ctrl_queue.as_mut().unwrap();
-            if let Some((desc_id, _len)) = ctrl_queue.used() {
-                if desc_id == desc_head { break; }
+        // 等待响应：任务上下文阻塞让出；内核上下文采用有限自旋（避免 panic: No current task to block）
+        if crate::task::current_task().is_some() {
+            // 任务上下文：阻塞等待中断推进
+            let mut attempts = 5000;
+            loop {
+                let ctrl_queue = self.ctrl_queue.as_mut().unwrap();
+                if let Some((desc_id, _len)) = ctrl_queue.used() {
+                    if desc_id == desc_head { break; }
+                }
+                if attempts == 0 {
+                    error!("[VirtIO-GPU] Timeout waiting for control response (task context)");
+                    return Err(DeviceError::OperationFailed);
+                }
+                attempts -= 1;
+                crate::task::block_current_and_run_next();
             }
-            if attempts == 0 {
-                error!("[VirtIO-GPU] Timeout waiting for control response");
-                return Err(DeviceError::OperationFailed);
+        } else {
+            // 内核上下文（设备初始化阶段）：使用有限自旋 + 可选 WFI
+            let mut spins: usize = 0;
+            loop {
+                let ctrl_queue = self.ctrl_queue.as_mut().unwrap();
+                if let Some((desc_id, _len)) = ctrl_queue.used() {
+                    if desc_id == desc_head { break; }
+                }
+                spins += 1;
+                if spins % 1_000_000 == 0 {
+                    let (used_idx, avail_idx) = ctrl_queue.indices();
+                    warn!("[VirtIO-GPU] Waiting (kernel ctx)... used_idx={}, avail_idx={}", used_idx, avail_idx);
+                    // 进入低功耗等待中断（若平台支持）
+                    unsafe { riscv::asm::wfi(); }
+                }
+                if spins > 20_000_000 {
+                    error!("[VirtIO-GPU] Timeout waiting for control response (kernel context)");
+                    return Err(DeviceError::OperationFailed);
+                }
+                core::hint::spin_loop();
             }
-            attempts -= 1;
-            // 让出CPU等待外部中断推进
-            crate::task::block_current_and_run_next();
         }
 
         // 请求完成，清理等待者
