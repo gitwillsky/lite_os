@@ -44,6 +44,23 @@ run: build-kernel
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
+run-gui: build-kernel
+	qemu-system-riscv64 \
+	-machine virt \
+	-smp 4 \
+	-rtc base=localtime \
+	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
+	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
+	-drive file=fs.img,if=none,format=raw,id=x0 \
+	-device virtio-blk-device,drive=x0 \
+	-device virtio-rng-device \
+	-device virtio-gpu-device \
+	-device virtio-mouse-device \
+	-device virtio-net-device,netdev=net0 \
+	-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
+	-serial stdio \
+	-display cocoa
+
 run-gdb: build-kernel
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -S -s
 

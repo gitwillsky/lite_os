@@ -18,6 +18,7 @@ mod board;
 mod drivers;
 mod entry;
 mod fs;
+mod graphics;
 mod ipc;
 mod lang_item;
 

@@ -7,7 +7,7 @@ use riscv::register::satp::{self, Satp};
 use crate::memory::{
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
     dynamic_linker::DynamicLinker,
-    frame_allocator::{FrameTracker, alloc},
+    frame_allocator::{FrameTracker, alloc, alloc_contiguous},
     page_table::{PTEFlags, PageTableEntry, PageTableError},
     strampoline,
 };
@@ -183,6 +183,8 @@ pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
     dynamic_linker: Option<DynamicLinker>,
+    // 持有DMA连续页帧，避免在返回后被释放
+    dma_allocations: Vec<FrameTracker>,
 }
 
 impl MemorySet {
@@ -191,6 +193,7 @@ impl MemorySet {
             page_table: PageTable::new(),
             areas: Vec::new(),
             dynamic_linker: None,
+            dma_allocations: Vec::new(),
         }
     }
 
@@ -245,6 +248,56 @@ impl MemorySet {
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
+    }
+
+    /// 分配DMA内存页面
+    pub fn alloc_dma_pages(&mut self, page_count: usize) -> Result<PhysicalAddress, MemoryError> {
+        if page_count == 0 {
+            return Err(MemoryError::OutOfMemory);
+        }
+
+        // 分配连续物理页，适合DMA需求
+        let frame = alloc_contiguous(page_count).ok_or(MemoryError::OutOfMemory)?;
+
+        // 记录以保持生命周期，避免被Drop释放
+        let phys_addr: PhysicalAddress = frame.ppn.into();
+        self.dma_allocations.push(frame);
+
+        Ok(phys_addr)
+    }
+
+    /// 映射DMA内存到虚拟地址空间
+    pub fn map_dma(&mut self, phys_addr: PhysicalAddress, size: usize) -> Result<VirtualAddress, MemoryError> {
+        // 在内核空间找一个合适的虚拟地址
+        // 简化实现：使用固定的DMA区域
+        let dma_base = VirtualAddress::from(0x90000000usize);
+        let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
+
+        // 映射物理页面到虚拟地址
+        for i in 0..page_count {
+            let va = VirtualAddress::from(dma_base.as_usize() + i * config::PAGE_SIZE);
+            let pa = PhysicalAddress::from(phys_addr.as_usize() + i * config::PAGE_SIZE);
+
+            self.page_table.map(
+                va.into(),
+                pa.into(),
+                PTEFlags::R | PTEFlags::W,
+            )?;
+        }
+
+        Ok(dma_base)
+    }
+
+    /// 取消DMA内存映射
+    pub fn unmap_dma(&mut self, virt_addr: VirtualAddress, size: usize) -> Result<(), MemoryError> {
+        let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
+
+        for i in 0..page_count {
+            let va = VirtualAddress::from(virt_addr.as_usize() + i * config::PAGE_SIZE);
+            self.page_table.unmap(va.into())?;
+        }
+
+        Ok(())
     }
 
     pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {

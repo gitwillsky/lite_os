@@ -11,6 +11,7 @@ use crate::drivers::hal::{
 use crate::drivers::GenericBlockDriver;
 use crate::drivers::{VirtIOBlockDevice, BlockDevice, register_block_device};
 use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
+use crate::drivers::VirtioGpuDevice;
 use crate::fs::{FAT32FileSystem, Ext2FileSystem};
 use crate::fs::vfs::vfs;
 
@@ -102,21 +103,73 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
             let base_addr = virtio_dev.base_addr;
             info!("[DeviceManager] Attempting to probe VirtIO device {} at {:#x}, size={:#x}", i, base_addr, virtio_dev.size);
 
-            // 尝试创建VirtIO块设备
-            info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
-            if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
-                // VirtIOBlockDevice 返回的是 Arc<Self>，我们需要将其转换
-                let virtio_arc = virtio_block;
+            // 首先检查设备类型，通过读取device ID
+            let device_id = unsafe {
+                core::ptr::read_volatile((base_addr + 0x08) as *const u32)
+            };
+            info!("[DeviceManager] VirtIO device {} has device ID: {:#x}", i, device_id);
+
+            match device_id {
+                // VirtIO Block device (0x02)
+                2 => {
+                    info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
+                    if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
+                        // VirtIOBlockDevice 返回的是 Arc<Self>，我们需要将其转换
+                        let virtio_arc = virtio_block;
+                        
+                        // 直接注册到块设备管理器
+                        match register_block_device(virtio_arc.clone()) {
+                            Ok(device_id) => {
+                                info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}",
+                                      device_id, base_addr);
+                            }
+                            Err(e) => {
+                                error!("[DeviceManager] Failed to register block device: {:?}", e);
+                            }
+                        }
+                    } else {
+                        warn!("[DeviceManager] Failed to create VirtIO Block device at {:#x}", base_addr);
+                    }
+                }
                 
-                // 直接注册到块设备管理器
-                match register_block_device(virtio_arc.clone()) {
-                    Ok(device_id) => {
-                        info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}",
-                              device_id, base_addr);
+                // VirtIO GPU device (0x10)
+                16 => {
+                    info!("[DeviceManager] Creating VirtioGpuDevice at {:#x}", base_addr);
+                    match VirtioGpuDevice::new(base_addr, 0) {
+                        Ok(mut gpu_device) => {
+                            // 探测设备
+                            if let Ok(true) = gpu_device.probe() {
+                                // 初始化设备
+                                if let Ok(()) = gpu_device.initialize() {
+                                    // 注册到设备管理器
+                                    let device = Box::new(gpu_device);
+                                    let manager = device_manager();
+                                    let mut mgr = manager.lock();
+                                    
+                                    match mgr.add_device(device) {
+                                        Ok(device_id) => {
+                                            info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}",
+                                                  device_id, base_addr);
+                                        }
+                                        Err(e) => {
+                                            error!("[DeviceManager] Failed to add GPU device: {:?}", e);
+                                        }
+                                    }
+                                } else {
+                                    error!("[DeviceManager] Failed to initialize GPU device at {:#x}", base_addr);
+                                }
+                            } else {
+                                warn!("[DeviceManager] GPU device probe failed at {:#x}", base_addr);
+                            }
+                        }
+                        Err(e) => {
+                            error!("[DeviceManager] Failed to create VirtIO GPU device at {:#x}: {:?}", base_addr, e);
+                        }
                     }
-                    Err(e) => {
-                        error!("[DeviceManager] Failed to register block device: {:?}", e);
-                    }
+                }
+
+                _ => {
+                    info!("[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}", device_id, base_addr);
                 }
             }
         }

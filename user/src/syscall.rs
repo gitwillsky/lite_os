@@ -141,7 +141,7 @@ const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
 /// # Returns
 ///
 /// 系统调用返回值
-fn syscall(id: usize, args: [usize; 3]) -> isize {
+pub fn syscall(id: usize, args: [usize; 3]) -> isize {
     let ret: isize;
     unsafe {
         asm!(

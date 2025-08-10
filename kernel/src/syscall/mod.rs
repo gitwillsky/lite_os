@@ -1,4 +1,5 @@
 mod fs;
+mod graphics;
 mod process;
 mod signal;
 mod timer;
@@ -8,6 +9,7 @@ mod memory;
 mod errno;
 
 use fs::*;
+use graphics::*;
 use process::*;
 use signal::*;
 use timer::*;
@@ -198,6 +200,46 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_WATCHDOG_FEED => sys_watchdog_feed(),
         SYSCALL_WATCHDOG_GET_INFO => sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo),
         SYSCALL_WATCHDOG_SET_PRESET => sys_watchdog_set_preset(args[0] as u32),
+
+        // GUI 图形系统调用
+        SYSCALL_GUI_CREATE_CONTEXT => sys_gui_create_context(),
+        SYSCALL_GUI_DESTROY_CONTEXT => sys_gui_destroy_context(args[0]),
+        SYSCALL_GUI_CLEAR_SCREEN => sys_gui_clear_screen(args[0] as u32),
+        SYSCALL_GUI_DRAW_PIXEL => sys_gui_draw_pixel(
+            unsafe { *(args[0] as *const GuiPoint) },
+            unsafe { *(args[1] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_DRAW_LINE => sys_gui_draw_line(
+            unsafe { *(args[0] as *const GuiPoint) },
+            unsafe { *(args[1] as *const GuiPoint) },
+            unsafe { *(args[2] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_DRAW_RECT => sys_gui_draw_rect(
+            unsafe { *(args[0] as *const GuiRect) },
+            unsafe { *(args[1] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_FILL_RECT => sys_gui_fill_rect(
+            unsafe { *(args[0] as *const GuiRect) },
+            unsafe { *(args[1] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_DRAW_CIRCLE => sys_gui_draw_circle(
+            unsafe { *(args[0] as *const GuiPoint) },
+            args[1] as u32,
+            unsafe { *(args[2] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_FILL_CIRCLE => sys_gui_fill_circle(
+            unsafe { *(args[0] as *const GuiPoint) },
+            args[1] as u32,
+            unsafe { *(args[2] as *const GuiColor) }
+        ),
+        SYSCALL_GUI_DRAW_TEXT => sys_gui_draw_text(
+            args[0] as *const u8,
+            args[1],
+            unsafe { *(args[2] as *const GuiPoint) },
+            unsafe { *((args[2] as usize + core::mem::size_of::<GuiPoint>()) as *const GuiColor) }
+        ),
+        SYSCALL_GUI_FLUSH => sys_gui_flush(),
+        SYSCALL_GUI_GET_SCREEN_INFO => sys_gui_get_screen_info(args[0] as *mut GuiScreenInfo),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

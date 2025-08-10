@@ -8,7 +8,9 @@ pub mod block;                  // 块设备抽象层
 pub mod device_manager;         // 设备管理器 - 统一设备管理
 pub mod virtio_blk;            // VirtIO块设备驱动
 pub mod virtio_console;        // VirtIO控制台驱动
+pub mod virtio_gpu;            // VirtIO GPU设备驱动
 pub mod virtio_queue;          // VirtIO队列实现
+pub mod framebuffer;           // Framebuffer抽象层
 pub mod goldfish_rtc;          // Goldfish RTC驱动
 
 // === HAL核心导出 ===
@@ -67,7 +69,14 @@ pub use virtio_console::{
     virtio_console_has_input,
     is_virtio_console_available,
 };
+pub use virtio_gpu::{VirtioGpuDevice, DisplayMode};
 pub use virtio_queue::{VirtQueue, VirtQueueError};
+
+// === Framebuffer导出 ===
+pub use framebuffer::{
+    Framebuffer, GenericFramebuffer, FramebufferInfo, PixelFormat,
+    set_global_framebuffer, get_global_framebuffer, with_global_framebuffer,
+};
 
 // === RTC驱动导出 ===
 pub use goldfish_rtc::{GoldfishRTCDevice, GoldfishRTCDriver};

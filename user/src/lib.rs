@@ -12,7 +12,6 @@ mod lang_item;
 #[macro_use]
 extern crate alloc;
 
-use core::sync::atomic::AtomicBool;
 
 pub use syscall::*;
 
