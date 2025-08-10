@@ -1,47 +1,13 @@
 use crate::drivers::{get_global_framebuffer, with_global_framebuffer};
-use crate::task::current_user_token;
 use crate::memory::page_table::translated_byte_buffer;
-use crate::graphics::{Color, Point, Rect};
-use crate::graphics::primitives::GraphicsRenderer;
-use crate::graphics::font::FontRenderer;
+use crate::task::current_user_token;
 
 pub const SYSCALL_GUI_CREATE_CONTEXT: usize = 300;
 pub const SYSCALL_GUI_DESTROY_CONTEXT: usize = 301;
 pub const SYSCALL_GUI_CLEAR_SCREEN: usize = 302;
-pub const SYSCALL_GUI_DRAW_PIXEL: usize = 303;
-pub const SYSCALL_GUI_DRAW_LINE: usize = 304;
-pub const SYSCALL_GUI_DRAW_RECT: usize = 305;
-pub const SYSCALL_GUI_FILL_RECT: usize = 306;
-pub const SYSCALL_GUI_DRAW_CIRCLE: usize = 307;
-pub const SYSCALL_GUI_FILL_CIRCLE: usize = 308;
-pub const SYSCALL_GUI_DRAW_TEXT: usize = 309;
+pub const SYSCALL_GUI_PRESENT: usize = 312; // 以 RGBA8888 像素提交整帧
 pub const SYSCALL_GUI_FLUSH: usize = 310;
 pub const SYSCALL_GUI_GET_SCREEN_INFO: usize = 311;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct GuiPoint {
-    pub x: i32,
-    pub y: i32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct GuiRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct GuiColor {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -50,24 +16,6 @@ pub struct GuiScreenInfo {
     pub height: u32,
     pub bytes_per_pixel: u32,
     pub pitch: u32,
-}
-
-impl From<GuiPoint> for Point {
-    fn from(gp: GuiPoint) -> Self {
-        Point::new(gp.x, gp.y)
-    }
-}
-
-impl From<GuiRect> for Rect {
-    fn from(gr: GuiRect) -> Self {
-        Rect::new(gr.x, gr.y, gr.width, gr.height)
-    }
-}
-
-impl From<GuiColor> for Color {
-    fn from(gc: GuiColor) -> Self {
-        Color::new_rgba(gc.r, gc.g, gc.b, gc.a)
-    }
 }
 
 pub fn sys_gui_create_context() -> isize {
@@ -87,118 +35,66 @@ pub fn sys_gui_destroy_context(_context_id: usize) -> isize {
 }
 
 pub fn sys_gui_clear_screen(color: u32) -> isize {
-    match with_global_framebuffer(|fb| {
-        fb.clear(color)
-    }) {
+    match with_global_framebuffer(|fb| fb.clear(color)) {
         Some(Ok(_)) => 0,
         _ => -1,
     }
 }
 
-pub fn sys_gui_draw_pixel(point: GuiPoint, color: GuiColor) -> isize {
-    let point = Point::from(point);
-    let color = Color::from(color);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::draw_pixel(fb, point, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_draw_line(start: GuiPoint, end: GuiPoint, color: GuiColor) -> isize {
-    let start = Point::from(start);
-    let end = Point::from(end);
-    let color = Color::from(color);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::draw_line(fb, start, end, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_draw_rect(rect: GuiRect, color: GuiColor) -> isize {
-    let rect = Rect::from(rect);
-    let color = Color::from(color);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::draw_rect(fb, rect, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_fill_rect(rect: GuiRect, color: GuiColor) -> isize {
-    let rect = Rect::from(rect);
-    let color = Color::from(color);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::fill_rect(fb, rect, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_draw_circle(center: GuiPoint, radius: u32, color: GuiColor) -> isize {
-    let center = Point::from(center);
-    let color = Color::from(color);
-    let circle = crate::graphics::geometry::Circle::new(center, radius);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::draw_circle(fb, circle, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_fill_circle(center: GuiPoint, radius: u32, color: GuiColor) -> isize {
-    let center = Point::from(center);
-    let color = Color::from(color);
-    let circle = crate::graphics::geometry::Circle::new(center, radius);
-
-    match with_global_framebuffer(|fb| {
-        GraphicsRenderer::fill_circle(fb, circle, color)
-    }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
-    }
-}
-
-pub fn sys_gui_draw_text(text_ptr: *const u8, text_len: usize, pos: GuiPoint, color: GuiColor) -> isize {
-    // 从用户空间安全读取字符串
+// 以 RGBA8888（u32: 0xAARRGGBB）整帧提交到帧缓冲
+pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
     let token = current_user_token();
-    let mut vec_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(text_len);
-    let buffers = translated_byte_buffer(token, text_ptr, text_len);
-    for seg in buffers.iter() {
-        vec_buf.extend_from_slice(seg);
-    }
-    let text = match core::str::from_utf8(&vec_buf) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
-
-    let pos = Point::from(pos);
-    let color = Color::from(color);
+    let mut user_bufs = translated_byte_buffer(token, buf_ptr, buf_len);
 
     match with_global_framebuffer(|fb| {
-        // 注意：`Framebuffer` trait中有同名的占位实现，需要显式使用 `FontRenderer` 的实现
-        FontRenderer::draw_string(fb, text, pos, color)
+        let info = *fb.info();
+        let expected_bytes = (info.width as usize) * (info.height as usize) * 4usize;
+        if buf_len < expected_bytes {
+            return -1;
+        }
+
+        // 顺序读取用户缓冲的 RGBA8888 像素并逐像素写入设备
+        let mut read_offset = 0usize;
+        let mut next_byte = |user_bufs: &mut [&mut [u8]]| -> Option<u8> {
+            let mut acc = 0usize;
+            for seg in user_bufs.iter() {
+                if read_offset < acc + seg.len() {
+                    let idx = read_offset - acc;
+                    let v = seg[idx];
+                    read_offset += 1;
+                    return Some(v);
+                }
+                acc += seg.len();
+            }
+            None
+        };
+
+        for y in 0..info.height {
+            for x in 0..info.width {
+                // 读取 4 字节 RGBA8888（A在高位），与现有颜色编码保持一致
+                let b0 = next_byte(&mut user_bufs).unwrap_or(0);
+                let b1 = next_byte(&mut user_bufs).unwrap_or(0);
+                let b2 = next_byte(&mut user_bufs).unwrap_or(0);
+                let b3 = next_byte(&mut user_bufs).unwrap_or(0);
+                let rgba8888 = ((b3 as u32) << 24)
+                    | ((b0 as u32) << 16)
+                    | ((b1 as u32) << 8)
+                    | (b2 as u32);
+                // 让具体帧缓冲实现做颜色格式转换
+                let _ = fb.write_pixel(x, y, rgba8888);
+            }
+        }
+
+        fb.mark_dirty();
+        0
     }) {
-        Some(Ok(_)) => 0,
-        _ => -1,
+        Some(ret) => ret,
+        None => -1,
     }
 }
 
 pub fn sys_gui_flush() -> isize {
-    match with_global_framebuffer(|fb| {
-        fb.flush()
-    }) {
+    match with_global_framebuffer(|fb| fb.flush()) {
         Some(Ok(_)) => 0,
         _ => -1,
     }

@@ -2,7 +2,6 @@ use core::fmt;
 use alloc::{sync::Arc, string::String, vec::Vec, vec, boxed::Box};
 use spin::Mutex;
 use crate::drivers::{DeviceError, DeviceState};
-use crate::graphics::font::{get_char_bitmap, FONT_WIDTH, FONT_HEIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -77,87 +76,6 @@ pub trait Framebuffer: Send + Sync {
     fn is_dirty(&self) -> bool;
     fn mark_dirty(&mut self);
     fn mark_clean(&mut self);
-
-    // High-level geometry-aware methods
-    fn draw_rect(&mut self, rect: crate::graphics::geometry::Rect, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
-        // Draw rectangle outline
-        if rect.width == 0 || rect.height == 0 {
-            return Ok(());
-        }
-
-        let color_u32 = color.to_rgba8888();
-        let x = rect.x.max(0) as u32;
-        let y = rect.y.max(0) as u32;
-        let width = rect.width.min((self.info().width as i32 - rect.x.max(0)).max(0) as u32);
-        let height = rect.height.min((self.info().height as i32 - rect.y.max(0)).max(0) as u32);
-
-        if width == 0 || height == 0 {
-            return Ok(());
-        }
-
-        // Top and bottom edges
-        self.fill_rect(x, y, width, 1, color_u32)?;
-        if height > 1 {
-            self.fill_rect(x, y + height - 1, width, 1, color_u32)?;
-        }
-
-        // Left and right edges
-        if height > 2 {
-            self.fill_rect(x, y + 1, 1, height - 2, color_u32)?;
-            if width > 1 {
-                self.fill_rect(x + width - 1, y + 1, 1, height - 2, color_u32)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn fill_rect_geom(&mut self, rect: crate::graphics::geometry::Rect, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
-        if rect.width == 0 || rect.height == 0 {
-            return Ok(());
-        }
-
-        let color_u32 = color.to_rgba8888();
-        let x = rect.x.max(0) as u32;
-        let y = rect.y.max(0) as u32;
-        let width = rect.width.min((self.info().width as i32 - rect.x.max(0)).max(0) as u32);
-        let height = rect.height.min((self.info().height as i32 - rect.y.max(0)).max(0) as u32);
-
-        if width > 0 && height > 0 {
-            self.fill_rect(x, y, width, height, color_u32)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn clear_geom(&mut self, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
-        self.clear(color.to_rgba8888())
-    }
-
-    fn draw_string(&mut self, text: &str, position: crate::graphics::geometry::Point, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
-        // 基于内置位图字体的简易文本渲染
-        let mut cursor_x = position.x;
-        let cursor_y = position.y;
-
-        for &byte in text.as_bytes() {
-            let bitmap = get_char_bitmap(byte);
-            for row in 0..FONT_HEIGHT {
-                let row_bits = bitmap[row as usize];
-                for col in 0..FONT_WIDTH {
-                    if (row_bits & (0x80 >> col)) != 0 {
-                        let x = cursor_x + col as i32;
-                        let y = cursor_y + row as i32;
-                        // 越界检查由 write_pixel 内部完成
-                        let _ = self.write_pixel(x as u32, y as u32, color.to_rgba8888());
-                    }
-                }
-            }
-            cursor_x += FONT_WIDTH as i32;
-        }
-
-        self.mark_dirty();
-        Ok(())
-    }
 }
 
 pub struct GenericFramebuffer {

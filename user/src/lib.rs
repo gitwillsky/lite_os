@@ -6,6 +6,7 @@ pub mod syscall;
 #[macro_use]
 pub mod console;
 pub mod heap;
+pub mod gfx;
 
 mod lang_item;
 
