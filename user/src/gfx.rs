@@ -199,14 +199,29 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
 
 //
 
+fn point_in_fill(edges: &Vec<LineSeg>, sx: f32, sy: f32) -> bool {
+    // odd-even 规则的水平射线测试
+    let mut inside = false;
+    for e in edges.iter() {
+        if libm::fabsf(e.y0 - e.y1) < 1e-6 { continue; }
+        let (ymin, ymax, x0, y0, x1, y1) = if e.y0 < e.y1 { (e.y0, e.y1, e.x0, e.y0, e.x1, e.y1) } else { (e.y1, e.y0, e.x1, e.y1, e.x0, e.y0) };
+        if sy < ymin || sy >= ymax { continue; }
+        let t = (sy - y0) / (y1 - y0);
+        let x = x0 + t * (x1 - x0);
+        if x > sx { inside = !inside; }
+    }
+    inside
+}
+
 fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
-    // 扫描线填充（偶奇规则）+ 边界像素亚像素覆盖抗锯齿
+    // 2x2 超采样（四子像素点测试），更清晰的边缘
     let mut guard = GFX.lock();
     let Some(ref mut g) = *guard else { return };
     let (sw, sh) = (g.info.width as i32, g.info.height as i32);
 
-    // 计算字形包围盒，减少扫描范围
+    // 包围盒
     let mut min_y = i32::MAX; let mut max_y = i32::MIN;
+    let mut min_x = i32::MAX; let mut max_x = i32::MIN;
     for e in edges.iter() {
         let y0f = libm::floorf(e.y0) as i32;
         let y1f = libm::floorf(e.y1) as i32;
@@ -214,93 +229,46 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
         let y1c = libm::ceilf(e.y1) as i32;
         min_y = min_y.min(y0f).min(y1f);
         max_y = max_y.max(y0c).max(y1c);
+        let x0f = libm::floorf(e.x0) as i32; let x1f = libm::floorf(e.x1) as i32;
+        let x0c = libm::ceilf(e.x0) as i32; let x1c = libm::ceilf(e.x1) as i32;
+        min_x = min_x.min(x0f).min(x1f);
+        max_x = max_x.max(x0c).max(x1c);
     }
     min_y = min_y.max(0); max_y = max_y.min(sh - 1);
+    min_x = min_x.max(0); max_x = max_x.min(sw - 1);
 
     let r = ((color >> 16) & 0xFF) as u8;
     let gch = ((color >> 8) & 0xFF) as u8;
     let b = (color & 0xFF) as u8;
     let a = ((color >> 24) & 0xFF) as u8;
     let a_norm = (a as f32) / 255.0;
+    let pitch = g.info.pitch as usize;
+    let bpp = g.info.bytes_per_pixel as usize;
 
     for y in min_y..=max_y {
-        // 收集与扫描线相交的 x 交点
-        let y_f = y as f32 + 0.5;
-        let mut xs: [f32; 1024] = [0.0; 1024];
-        let mut cnt = 0usize;
-        for e in edges.iter() {
-            // 跳过水平边
-            if libm::fabsf(e.y0 - e.y1) < 1e-6 { continue; }
-            let (ymin, ymax, x0, y0, x1, y1) = if e.y0 < e.y1 { (e.y0, e.y1, e.x0, e.y0, e.x1, e.y1) } else { (e.y1, e.y0, e.x1, e.y1, e.x0, e.y0) };
-            if y_f < ymin || y_f >= ymax { continue; }
-            let t = (y_f - y0) / (y1 - y0);
-            let x = x0 + t * (x1 - x0);
-            if cnt < xs.len() { xs[cnt] = x; cnt += 1; }
-        }
-
-        // 排序交点
-        for i in 0..cnt { let mut j = i; while j > 0 && xs[j-1] > xs[j] { let tmp = xs[j-1]; xs[j-1] = xs[j]; xs[j] = tmp; j -= 1; } }
-
-        // 成对处理交点，带边界 coverage
-        let mut i = 0;
-        while i + 1 < cnt {
-            let x_start = xs[i];
-            let x_end = xs[i + 1];
-            if x_end <= x_start { i += 2; continue; }
-
-            let pitch = g.info.pitch as usize;
-            let bpp = g.info.bytes_per_pixel as usize;
-            let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
-
-            let left_pix = libm::floorf(x_start) as i32;
-            let right_pix = libm::floorf(x_end) as i32;
-
-            if left_pix == right_pix {
-                // 同一像素内的细线段
-                if left_pix >= 0 && left_pix < sw {
-                    let cov = (x_end - x_start).max(0.0).min(1.0) * a_norm;
-                    let p = unsafe { row_ptr.add((left_pix as usize) * bpp) };
-                    blend_over(p, &g.info, r, gch, b, cov);
-                }
-                i += 2; continue;
+        let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
+        let sy0 = y as f32 + 0.25;
+        let sy1 = y as f32 + 0.75;
+        for x in min_x..=max_x {
+            let sx0 = x as f32 + 0.25;
+            let sx1 = x as f32 + 0.75;
+            let mut cover = 0.0f32;
+            if point_in_fill(edges, sx0, sy0) { cover += 0.25; }
+            if point_in_fill(edges, sx1, sy0) { cover += 0.25; }
+            if point_in_fill(edges, sx0, sy1) { cover += 0.25; }
+            if point_in_fill(edges, sx1, sy1) { cover += 0.25; }
+            if cover <= 0.0 { continue; }
+            let cover_adj = libm::powf(cover, 0.8) * a_norm; // 略加权使边更实
+            let p = unsafe { row_ptr.add((x as usize) * bpp) };
+            if cover_adj >= 0.999 {
+                write_pixel_rgba(p, &g.info, r, gch, b, 0xFF);
+            } else {
+                blend_over(p, &g.info, r, gch, b, cover_adj);
             }
-
-            // 左边界像素覆盖
-            if left_pix >= 0 && left_pix < sw {
-                let frac = x_start - libm::floorf(x_start);
-                let cov = (1.0 - frac).max(0.0).min(1.0) * a_norm;
-                let p = unsafe { row_ptr.add((left_pix as usize) * bpp) };
-                blend_over(p, &g.info, r, gch, b, cov);
-            }
-            // 右边界像素覆盖
-            if right_pix >= 0 && right_pix < sw {
-                let frac = x_end - libm::floorf(x_end);
-                let cov = frac.max(0.0).min(1.0) * a_norm;
-                let p = unsafe { row_ptr.add((right_pix as usize) * bpp) };
-                blend_over(p, &g.info, r, gch, b, cov);
-            }
-            // 中间整像素填充
-            let x0_full = (left_pix + 1).max(0);
-            let x1_full = (right_pix - 1).min(sw - 1);
-            if x0_full <= x1_full {
-                for x in x0_full..=x1_full {
-                    let p = unsafe { row_ptr.add((x as usize) * bpp) };
-                    write_pixel_rgba(p, &g.info, r, gch, b, 0xFF);
-                }
-            }
-            i += 2;
         }
     }
     // 标记脏并合并脏矩形
     g.dirty = true;
-    // 简化：计算该字形的包围盒作为脏矩形
-    let mut min_x = i32::MAX; let mut max_x = i32::MIN;
-    for e in edges.iter() {
-        let x0f = libm::floorf(e.x0) as i32; let x1f = libm::floorf(e.x1) as i32;
-        let x0c = libm::ceilf(e.x0) as i32; let x1c = libm::ceilf(e.x1) as i32;
-        min_x = min_x.min(x0f).min(x1f); max_x = max_x.max(x0c).max(x1c);
-    }
-    min_x = min_x.max(0); max_x = max_x.min(sw - 1);
     let rect = (min_x, min_y, max_x + 1, max_y + 1);
     g.dirty_rect = Some(match g.dirty_rect {
         Some((ox0, oy0, ox1, oy1)) => (ox0.min(rect.0), oy0.min(rect.1), ox1.max(rect.2), oy1.max(rect.3)),
@@ -321,7 +289,14 @@ pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, 
     let baseline_y = _y;
 
     for ch in _text.chars() {
-        let gid = match face.glyph_index(ch) { Some(id) => id, None => ttf_parser::GlyphId(0) };
+        let gid = match face.glyph_index(ch) {
+            Some(id) => id,
+            None => {
+                if let Some(fb) = face.glyph_index('★') { fb }
+                else if let Some(ast) = face.glyph_index('*') { ast }
+                else { continue }
+            }
+        };
         // 采集并栅格化字形
         let mut collector = OutlineCollector::new(scale, pen_x as f32, baseline_y as f32);
         let _ = face.outline_glyph(gid, &mut collector);
