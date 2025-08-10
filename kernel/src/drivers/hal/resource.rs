@@ -55,7 +55,7 @@ impl MemoryRange {
             executable: false,
         }
     }
-    
+
     pub fn with_attributes(
         start: usize,
         size: usize,
@@ -71,15 +71,15 @@ impl MemoryRange {
             executable,
         }
     }
-    
+
     pub fn end(&self) -> usize {
         self.start + self.size
     }
-    
+
     pub fn contains(&self, addr: usize) -> bool {
         addr >= self.start && addr < self.end()
     }
-    
+
     pub fn overlaps(&self, other: &MemoryRange) -> bool {
         !(self.end() <= other.start || other.end() <= self.start)
     }
@@ -95,15 +95,15 @@ impl IoPortRange {
     pub fn new(start: u16, size: u16) -> Self {
         Self { start, size }
     }
-    
+
     pub fn end(&self) -> u16 {
         self.start + self.size
     }
-    
+
     pub fn contains(&self, port: u16) -> bool {
         port >= self.start && port < self.end()
     }
-    
+
     pub fn overlaps(&self, other: &IoPortRange) -> bool {
         !(self.end() <= other.start || other.end() <= self.start)
     }
@@ -126,17 +126,17 @@ impl IrqResource {
             active_high: true,
         }
     }
-    
+
     pub fn shared(mut self) -> Self {
         self.shared = true;
         self
     }
-    
+
     pub fn edge_triggered(mut self) -> Self {
         self.level_triggered = false;
         self
     }
-    
+
     pub fn active_low(mut self) -> Self {
         self.active_high = false;
         self
@@ -160,7 +160,7 @@ impl Resource {
             Resource::Dma { .. } => ResourceType::Dma,
         }
     }
-    
+
     pub fn conflicts_with(&self, other: &Resource) -> bool {
         match (self, other) {
             (Resource::Memory(a), Resource::Memory(b)) => a.overlaps(b),
@@ -187,13 +187,13 @@ pub trait ResourceManager: Send + Sync {
         resource: Resource,
         owner: &str,
     ) -> Result<(), ResourceError>;
-    
+
     fn release_resource(
         &mut self,
         resource: &Resource,
         owner: &str,
     ) -> Result<(), ResourceError>;
-    
+
     fn find_free_memory(
         &self,
         size: usize,
@@ -201,9 +201,9 @@ pub trait ResourceManager: Send + Sync {
         start: usize,
         end: usize,
     ) -> Option<usize>;
-    
+
     fn is_available(&self, resource: &Resource) -> bool;
-    
+
     fn get_conflicts(&self, resource: &Resource) -> Vec<String>;
 }
 
@@ -212,6 +212,7 @@ pub struct SystemResourceManager {
     memory_map: Mutex<BTreeMap<usize, MemoryRange>>,
     io_ports: Mutex<BTreeMap<u16, IoPortRange>>,
     interrupts: Mutex<BTreeMap<u32, Vec<String>>>, // IRQ -> owners
+    dma_channels: Mutex<BTreeMap<u32, Vec<String>>>, // DMA channel -> owners
 }
 
 impl SystemResourceManager {
@@ -221,13 +222,14 @@ impl SystemResourceManager {
             memory_map: Mutex::new(BTreeMap::new()),
             io_ports: Mutex::new(BTreeMap::new()),
             interrupts: Mutex::new(BTreeMap::new()),
+            dma_channels: Mutex::new(BTreeMap::new()),
         }
     }
-    
+
     fn check_memory_conflict(&self, range: &MemoryRange) -> Vec<String> {
         let allocations = self.allocations.lock();
         let mut conflicts = Vec::new();
-        
+
         for allocation in allocations.iter() {
             if let Resource::Memory(existing) = &allocation.resource {
                 if range.overlaps(existing) {
@@ -235,14 +237,14 @@ impl SystemResourceManager {
                 }
             }
         }
-        
+
         conflicts
     }
-    
+
     fn check_io_conflict(&self, range: &IoPortRange) -> Vec<String> {
         let allocations = self.allocations.lock();
         let mut conflicts = Vec::new();
-        
+
         for allocation in allocations.iter() {
             if let Resource::IoPort(existing) = &allocation.resource {
                 if range.overlaps(existing) {
@@ -250,19 +252,27 @@ impl SystemResourceManager {
                 }
             }
         }
-        
+
         conflicts
     }
-    
+
     fn check_irq_conflict(&self, irq: &IrqResource) -> Vec<String> {
         let interrupts = self.interrupts.lock();
-        
+
         if let Some(owners) = interrupts.get(&irq.irq_num) {
             if !irq.shared || owners.iter().any(|_| !irq.shared) {
                 return owners.clone();
             }
         }
-        
+
+        Vec::new()
+    }
+
+    fn check_dma_conflict(&self, channel: u32) -> Vec<String> {
+        let dmas = self.dma_channels.lock();
+        if let Some(owners) = dmas.get(&channel) {
+            return owners.clone();
+        }
         Vec::new()
     }
 }
@@ -277,13 +287,13 @@ impl ResourceManager for SystemResourceManager {
         if !conflicts.is_empty() {
             return Err(ResourceError::ConflictDetected);
         }
-        
+
         let allocation = ResourceAllocation {
             resource: resource.clone(),
             owner: owner.to_string(),
             exclusive: true,
         };
-        
+
         // Update internal tracking structures
         match &resource {
             Resource::Memory(range) => {
@@ -300,33 +310,36 @@ impl ResourceManager for SystemResourceManager {
                     .or_insert_with(Vec::new)
                     .push(owner.to_string());
             }
-            Resource::Dma { .. } => {
-                // DMA channel tracking would go here
+            Resource::Dma { channel, .. } => {
+                let mut dma = self.dma_channels.lock();
+                dma.entry(*channel)
+                    .or_insert_with(Vec::new)
+                    .push(owner.to_string());
             }
         }
-        
+
         let mut allocations = self.allocations.lock();
         allocations.push(allocation);
-        
+
         Ok(())
     }
-    
+
     fn release_resource(
         &mut self,
         resource: &Resource,
         owner: &str,
     ) -> Result<(), ResourceError> {
         let mut allocations = self.allocations.lock();
-        
+
         let initial_len = allocations.len();
         allocations.retain(|allocation| {
             !(allocation.owner == owner && allocation.resource.resource_type() == resource.resource_type())
         });
-        
+
         if allocations.len() == initial_len {
             return Err(ResourceError::NotFound);
         }
-        
+
         // Update internal tracking structures
         match resource {
             Resource::Memory(range) => {
@@ -346,14 +359,20 @@ impl ResourceManager for SystemResourceManager {
                     }
                 }
             }
-            Resource::Dma { .. } => {
-                // DMA channel release would go here
+            Resource::Dma { channel, .. } => {
+                let mut dma = self.dma_channels.lock();
+                if let Some(owners) = dma.get_mut(channel) {
+                    owners.retain(|o| o != owner);
+                    if owners.is_empty() {
+                        dma.remove(channel);
+                    }
+                }
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn find_free_memory(
         &self,
         size: usize,
@@ -362,12 +381,12 @@ impl ResourceManager for SystemResourceManager {
         end: usize,
     ) -> Option<usize> {
         let memory_map = self.memory_map.lock();
-        
+
         let mut current = (start + alignment - 1) & !(alignment - 1); // Align start
-        
+
         while current + size <= end {
             let test_range = MemoryRange::new(current, size);
-            
+
             let mut conflicts = false;
             for (_, existing) in memory_map.iter() {
                 if test_range.overlaps(existing) {
@@ -377,25 +396,25 @@ impl ResourceManager for SystemResourceManager {
                     break;
                 }
             }
-            
+
             if !conflicts {
                 return Some(current);
             }
         }
-        
+
         None
     }
-    
+
     fn is_available(&self, resource: &Resource) -> bool {
         self.get_conflicts(resource).is_empty()
     }
-    
+
     fn get_conflicts(&self, resource: &Resource) -> Vec<String> {
         match resource {
             Resource::Memory(range) => self.check_memory_conflict(range),
             Resource::IoPort(range) => self.check_io_conflict(range),
             Resource::Interrupt(irq) => self.check_irq_conflict(irq),
-            Resource::Dma { .. } => Vec::new(), // TODO: Implement DMA conflict checking
+            Resource::Dma { channel, .. } => self.check_dma_conflict(*channel),
         }
     }
 }

@@ -2,6 +2,7 @@ use core::fmt;
 use alloc::{sync::Arc, string::String, vec::Vec, vec, boxed::Box};
 use spin::Mutex;
 use crate::drivers::{DeviceError, DeviceState};
+use crate::graphics::font::{get_char_bitmap, FONT_WIDTH, FONT_HEIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -66,7 +67,7 @@ pub trait Framebuffer: Send + Sync {
     fn info(&self) -> &FramebufferInfo;
     fn buffer_ptr(&self) -> *mut u8;
     fn buffer_size(&self) -> usize;
-    
+
     fn write_pixel(&mut self, x: u32, y: u32, color: u32) -> Result<(), DeviceError>;
     fn read_pixel(&self, x: u32, y: u32) -> Result<u32, DeviceError>;
     fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) -> Result<(), DeviceError>;
@@ -76,30 +77,30 @@ pub trait Framebuffer: Send + Sync {
     fn is_dirty(&self) -> bool;
     fn mark_dirty(&mut self);
     fn mark_clean(&mut self);
-    
+
     // High-level geometry-aware methods
     fn draw_rect(&mut self, rect: crate::graphics::geometry::Rect, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
         // Draw rectangle outline
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
-        
+
         let color_u32 = color.to_rgba8888();
         let x = rect.x.max(0) as u32;
         let y = rect.y.max(0) as u32;
         let width = rect.width.min((self.info().width as i32 - rect.x.max(0)).max(0) as u32);
         let height = rect.height.min((self.info().height as i32 - rect.y.max(0)).max(0) as u32);
-        
+
         if width == 0 || height == 0 {
             return Ok(());
         }
-        
+
         // Top and bottom edges
         self.fill_rect(x, y, width, 1, color_u32)?;
         if height > 1 {
             self.fill_rect(x, y + height - 1, width, 1, color_u32)?;
         }
-        
+
         // Left and right edges
         if height > 2 {
             self.fill_rect(x, y + 1, 1, height - 2, color_u32)?;
@@ -107,34 +108,54 @@ pub trait Framebuffer: Send + Sync {
                 self.fill_rect(x + width - 1, y + 1, 1, height - 2, color_u32)?;
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn fill_rect_geom(&mut self, rect: crate::graphics::geometry::Rect, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
         if rect.width == 0 || rect.height == 0 {
             return Ok(());
         }
-        
+
         let color_u32 = color.to_rgba8888();
         let x = rect.x.max(0) as u32;
         let y = rect.y.max(0) as u32;
         let width = rect.width.min((self.info().width as i32 - rect.x.max(0)).max(0) as u32);
         let height = rect.height.min((self.info().height as i32 - rect.y.max(0)).max(0) as u32);
-        
+
         if width > 0 && height > 0 {
             self.fill_rect(x, y, width, height, color_u32)
         } else {
             Ok(())
         }
     }
-    
+
     fn clear_geom(&mut self, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
         self.clear(color.to_rgba8888())
     }
-    
-    fn draw_string(&mut self, _text: &str, _position: crate::graphics::geometry::Point, _color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
-        // For now, just return Ok - text rendering can be implemented later
+
+    fn draw_string(&mut self, text: &str, position: crate::graphics::geometry::Point, color: crate::graphics::geometry::Color) -> Result<(), DeviceError> {
+        // 基于内置位图字体的简易文本渲染
+        let mut cursor_x = position.x;
+        let cursor_y = position.y;
+
+        for &byte in text.as_bytes() {
+            let bitmap = get_char_bitmap(byte);
+            for row in 0..FONT_HEIGHT {
+                let row_bits = bitmap[row as usize];
+                for col in 0..FONT_WIDTH {
+                    if (row_bits & (0x80 >> col)) != 0 {
+                        let x = cursor_x + col as i32;
+                        let y = cursor_y + row as i32;
+                        // 越界检查由 write_pixel 内部完成
+                        let _ = self.write_pixel(x as u32, y as u32, color.to_rgba8888());
+                    }
+                }
+            }
+            cursor_x += FONT_WIDTH as i32;
+        }
+
+        self.mark_dirty();
         Ok(())
     }
 }
@@ -151,7 +172,7 @@ pub type PhysAddr = usize;
 
 impl GenericFramebuffer {
     pub fn new(
-        info: FramebufferInfo, 
+        info: FramebufferInfo,
         buffer: usize,
         flush_callback: Option<Box<dyn Fn() -> Result<(), DeviceError> + Send + Sync>>
     ) -> Self {
@@ -188,7 +209,7 @@ impl GenericFramebuffer {
         match format {
             PixelFormat::RGBA8888 => {
                 if bytes.len() >= 4 {
-                    ((bytes[3] as u32) << 24) | ((bytes[0] as u32) << 16) | 
+                    ((bytes[3] as u32) << 24) | ((bytes[0] as u32) << 16) |
                     ((bytes[1] as u32) << 8) | (bytes[2] as u32)
                 } else {
                     0
@@ -196,7 +217,7 @@ impl GenericFramebuffer {
             }
             PixelFormat::BGRA8888 => {
                 if bytes.len() >= 4 {
-                    ((bytes[3] as u32) << 24) | ((bytes[2] as u32) << 16) | 
+                    ((bytes[3] as u32) << 24) | ((bytes[2] as u32) << 16) |
                     ((bytes[1] as u32) << 8) | (bytes[0] as u32)
                 } else {
                     0
@@ -204,7 +225,7 @@ impl GenericFramebuffer {
             }
             PixelFormat::RGB888 => {
                 if bytes.len() >= 3 {
-                    0xFF000000 | ((bytes[0] as u32) << 16) | 
+                    0xFF000000 | ((bytes[0] as u32) << 16) |
                     ((bytes[1] as u32) << 8) | (bytes[2] as u32)
                 } else {
                     0
@@ -212,7 +233,7 @@ impl GenericFramebuffer {
             }
             PixelFormat::BGR888 => {
                 if bytes.len() >= 3 {
-                    0xFF000000 | ((bytes[2] as u32) << 16) | 
+                    0xFF000000 | ((bytes[2] as u32) << 16) |
                     ((bytes[1] as u32) << 8) | (bytes[0] as u32)
                 } else {
                     0
@@ -253,16 +274,16 @@ impl Framebuffer for GenericFramebuffer {
 
         let offset = self.info.pixel_offset(x, y)
             .ok_or(DeviceError::OperationFailed)?;
-        
+
         let color_bytes = self.convert_color_to_format(color, self.info.format);
-        
+
         unsafe {
             let pixel_ptr = self.buffer_ptr().add(offset);
             for (i, &byte) in color_bytes.iter().enumerate() {
                 *pixel_ptr.add(i) = byte;
             }
         }
-        
+
         self.mark_dirty();
         Ok(())
     }
@@ -274,39 +295,39 @@ impl Framebuffer for GenericFramebuffer {
 
         let offset = self.info.pixel_offset(x, y)
             .ok_or(DeviceError::OperationFailed)?;
-        
+
         let bytes_per_pixel = self.info.format.bytes_per_pixel() as usize;
         let mut color_bytes = vec![0u8; bytes_per_pixel];
-        
+
         unsafe {
             let pixel_ptr = self.buffer_ptr().add(offset);
             for i in 0..bytes_per_pixel {
                 color_bytes[i] = *pixel_ptr.add(i);
             }
         }
-        
+
         Ok(self.convert_format_to_color(&color_bytes, self.info.format))
     }
 
     fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) -> Result<(), DeviceError> {
         let color_bytes = self.convert_color_to_format(color, self.info.format);
         let bytes_per_pixel = color_bytes.len();
-        
+
         for dy in 0..height {
             let current_y = y + dy;
             if current_y >= self.info.height {
                 break;
             }
-            
+
             for dx in 0..width {
                 let current_x = x + dx;
                 if current_x >= self.info.width {
                     break;
                 }
-                
+
                 let offset = self.info.pixel_offset(current_x, current_y)
                     .ok_or(DeviceError::OperationFailed)?;
-                
+
                 unsafe {
                     let pixel_ptr = self.buffer_ptr().add(offset);
                     for i in 0..bytes_per_pixel {
@@ -315,14 +336,14 @@ impl Framebuffer for GenericFramebuffer {
                 }
             }
         }
-        
+
         self.mark_dirty();
         Ok(())
     }
 
     fn copy_rect(&mut self, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, width: u32, height: u32) -> Result<(), DeviceError> {
         let bytes_per_pixel = self.info.format.bytes_per_pixel() as usize;
-        
+
         if !self.info.is_valid_coords(src_x, src_y) ||
            !self.info.is_valid_coords(dst_x, dst_y) {
             return Err(DeviceError::OperationFailed);
@@ -332,17 +353,17 @@ impl Framebuffer for GenericFramebuffer {
             if src_y + dy >= self.info.height || dst_y + dy >= self.info.height {
                 break;
             }
-            
+
             for dx in 0..width {
                 if src_x + dx >= self.info.width || dst_x + dx >= self.info.width {
                     break;
                 }
-                
+
                 let src_offset = self.info.pixel_offset(src_x + dx, src_y + dy)
                     .ok_or(DeviceError::OperationFailed)?;
                 let dst_offset = self.info.pixel_offset(dst_x + dx, dst_y + dy)
                     .ok_or(DeviceError::OperationFailed)?;
-                
+
                 unsafe {
                     let src_ptr = self.buffer_ptr().add(src_offset);
                     let dst_ptr = self.buffer_ptr().add(dst_offset);
@@ -350,7 +371,7 @@ impl Framebuffer for GenericFramebuffer {
                 }
             }
         }
-        
+
         self.mark_dirty();
         Ok(())
     }

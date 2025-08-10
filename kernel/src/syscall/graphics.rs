@@ -187,7 +187,8 @@ pub fn sys_gui_draw_text(text_ptr: *const u8, text_len: usize, pos: GuiPoint, co
     let color = Color::from(color);
 
     match with_global_framebuffer(|fb| {
-        fb.draw_string(text, pos, color)
+        // 注意：`Framebuffer` trait中有同名的占位实现，需要显式使用 `FontRenderer` 的实现
+        FontRenderer::draw_string(fb, text, pos, color)
     }) {
         Some(Ok(_)) => 0,
         _ => -1,
