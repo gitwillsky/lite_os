@@ -269,7 +269,8 @@ pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
     let mut user_mm = current.mm.memory_set.lock();
 
     // 选择一段用户地址作为映射基址：从高地址开始探测空洞，避免与现有映射冲突
-    let mut attempt_base = 0x4000_0000usize;
+    // 避开用户堆(USER_HEAP_BASE=0x4000_0000)与常规mmap起点(0x5000_0000)，将帧缓冲放到更高的用户地址
+    let mut attempt_base = 0x7000_0000usize;
     let max_base = 0x8000_0000usize;
     let stride = ((page_count * page_size + 0x1_0000) & !0xFFF) // 下一次尝试按映射大小+一点余量对齐
         .max(0x10_0000); // 至少 1MB 步长
