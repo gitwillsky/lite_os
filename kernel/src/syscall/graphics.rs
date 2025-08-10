@@ -24,8 +24,6 @@ pub struct GuiScreenInfo {
 }
 
 pub fn sys_gui_create_context() -> isize {
-    info!("[GUI] Creating graphics context");
-
     if get_global_framebuffer().is_some() {
         1 // Return a dummy context ID
     } else {
@@ -35,7 +33,6 @@ pub fn sys_gui_create_context() -> isize {
 }
 
 pub fn sys_gui_destroy_context(_context_id: usize) -> isize {
-    info!("[GUI] Destroying graphics context");
     0
 }
 
@@ -128,7 +125,6 @@ pub fn sys_gui_flush() -> isize {
 }
 
 pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
-    info!("[GUI] sys_gui_flush_rects enter, rects_len={}", rects_len);
     if rects_ptr.is_null() || rects_len == 0 { return sys_gui_flush(); }
     let token = current_user_token();
     let bytes = core::mem::size_of::<Rect>() * rects_len;
@@ -150,7 +146,6 @@ pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
         Some(Ok(_)) => 0,
         _ => -1,
     };
-    info!("[GUI] sys_gui_flush_rects exit, ret={}", ret);
     ret
 }
 
@@ -250,7 +245,6 @@ pub fn sys_gui_present_rects(buf_ptr: *const u8, buf_len: usize, rects_ptr: *con
 // 将设备帧缓冲映射到当前进程的用户空间，返回用户虚拟地址
 // 不考虑兼容性：直接将整个帧缓冲区映射为用户可读写
 pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
-    info!("[GUI] sys_gui_map_framebuffer enter");
     let (fb_va, fb_size) = match with_global_framebuffer(|fb| {
         let info = fb.info().clone();
         let va = VirtualAddress::from(fb.buffer_ptr() as usize);
@@ -312,17 +306,14 @@ pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
         attempt_base = attempt_base.saturating_add(stride);
         if attempt_base >= max_base { return -1; }
     };
-    info!("[GUI] sys_gui_map_framebuffer mapped {} bytes", fb_size);
 
     // 重要：在返回用户指针之前释放用户内存集的锁，避免后续用户地址翻译/缺页处理与该锁产生互相等待
     drop(user_mm);
-    info!("[GUI] sys_gui_map_framebuffer releasing user_mm lock before writing back");
 
     // 写回用户态输出参数（使用直接引用，避免分段缓冲潜在问题）
     let token = crate::task::current_user_token();
     let user_out_ref: &mut usize = crate::memory::page_table::translated_ref_mut(token, user_addr_out);
     *user_out_ref = user_base.as_usize();
-    info!("[GUI] sys_gui_map_framebuffer done -> {:#x}", *user_out_ref);
     0
 }
 
