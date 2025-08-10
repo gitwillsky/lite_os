@@ -237,7 +237,10 @@ fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
 
 fn set_kernel_trap_entry() {
     let mut val = stvec::Stvec::from_bits(0);
-    val.set_address(trap_from_kernel as usize);
+    unsafe extern "C" {
+        fn __kernel_trap();
+    }
+    val.set_address(__kernel_trap as usize);
     val.set_trap_mode(TrapMode::Direct);
     unsafe {
         stvec::write(val);
@@ -277,12 +280,57 @@ pub fn trap_return() -> ! {
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_from_kernel() -> ! {
-    error!(
-        "[trap_from_kernel] scause={:?}, stval={:#x}, sepc={:#x}",
-        scause::read(),
-        stval::read(),
-        sepc::read()
-    );
-    panic!("a trap from kernel");
+extern "C" fn rust_trap_from_kernel() {
+    let scause_val = scause::read();
+    let stval_val = stval::read();
+    let sepc_val = sepc::read();
+
+    match scause_val.cause() {
+        Trap::Interrupt(code) => {
+            if let Ok(interrupt) = Interrupt::from_number(code) {
+                match interrupt {
+                    Interrupt::SupervisorTimer => {
+                        timer::set_next_timer_interrupt();
+                        watchdog::check();
+                        // 在内核态可能没有 current_task，避免访问 TrapContext
+                        let _ = task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
+                        // 不做任务切换，仅返回，让普通调度循环运行
+                    }
+                    Interrupt::SupervisorExternal => {
+                        // 在内核态执行关键路径（如块设备队列操作）期间，
+                        // 处理外部中断可能导致驱动层重入，进而引发队列乱序/竞争。
+                        // 内核态下暂不分发外部中断，由驱动在合适位置主动轮询/确认，
+                        // 或由用户态trap路径进行处理。
+                    }
+                    Interrupt::SupervisorSoft => {
+                        // 清SSIP
+                        let sip_val: usize;
+                        unsafe { asm!("csrr {}, sip", out(reg) sip_val); }
+                        let clear_ssip = sip_val & !(1 << 1);
+                        unsafe { asm!("csrw sip, {}", in(reg) clear_ssip); }
+                    }
+                    _ => {
+                        error!("[kernel] Unhandled kernel interrupt: {:?}", interrupt);
+                    }
+                }
+            } else {
+                error!("[kernel] Invalid kernel interrupt code: {:?}", code);
+            }
+        }
+        Trap::Exception(code) => {
+            if let Ok(exception) = Exception::from_number(code) {
+                error!(
+                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x}, sepc={:#x}",
+                    exception, scause_val, stval_val, sepc_val
+                );
+                panic!("Kernel exception: {:?}", exception);
+            } else {
+                error!(
+                    "[trap_from_kernel] invalid exception code: {:?}, scause={:?}, stval={:#x}, sepc={:#x}",
+                    code, scause_val, stval_val, sepc_val
+                );
+                panic!("Kernel invalid exception code: {:?}", code);
+            }
+        }
+    }
 }

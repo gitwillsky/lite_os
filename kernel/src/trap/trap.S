@@ -8,6 +8,7 @@
     .section .text.trampoline
     .globl __alltraps
     .globl __restore
+    .globl __kernel_trap
     .align 2
 __alltraps:
     csrrw sp, sscratch, sp
@@ -42,6 +43,35 @@ __alltraps:
     sfence.vma
     # jump to trap_handler
     jr t1
+
+    # ----------------------------------------------------------------------
+    # Kernel-mode trap entry
+    # Save minimal caller-saved state, call into Rust to handle, then sret
+    # This path is used when traps/interrupts occur while executing in kernel
+    # mode (e.g., idle loop). It must not corrupt kernel registers/state.
+    # ----------------------------------------------------------------------
+__kernel_trap:
+    # Save general purpose registers (except x0/sp/tp) like __alltraps
+    addi sp, sp, -(32*8)
+    sd x1, 1*8(sp)
+    # skip sp(x2)
+    sd x3, 3*8(sp)
+    # skip tp(x4)
+    .set n, 5
+    .rept 27
+        SAVE_GP %n
+        .set n, n+1
+    .endr
+    call rust_trap_from_kernel
+    ld x1, 1*8(sp)
+    ld x3, 3*8(sp)
+    .set n, 5
+    .rept 27
+        LOAD_GP %n
+        .set n, n+1
+    .endr
+    addi sp, sp, (32*8)
+    sret
 
 __restore:
     # a0: *TrapContext in user space(Constant); a1: user space token

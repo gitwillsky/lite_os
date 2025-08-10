@@ -170,46 +170,47 @@ impl VirtIOBlockDevice {
 
         self.device.notify_queue(0).map_err(|_| BlockError::DeviceError)?;
 
-        const MAX_ATTEMPTS: usize = 1000;
+        const MAX_ATTEMPTS: usize = 100000; // allow more drain cycles on slow devices
         let mut attempts = MAX_ATTEMPTS;
-        let mut log_countdown = 100; // Log every 100 attempts initially
+        let mut completed = false;
 
-        loop {
-            let int_status = self.device.interrupt_status().map_err(|_| BlockError::DeviceError)?;
-            if int_status & 0x1 != 0 {
-                self.device.interrupt_ack(0x1).map_err(|_| BlockError::DeviceError)?;
+        // Busy-wait until our descriptor chain is reported in used ring.
+        // Drain and recycle any other completed requests in front of us to
+        // preserve correct queue ordering.
+        while !completed {
+            // Check and acknowledge interrupt if present
+            if let Ok(int_status) = self.device.interrupt_status() {
+                if int_status & 0x1 != 0 {
+                    let _ = self.device.interrupt_ack(0x1);
+                }
+            }
+
+            // Drain used ring entries
+            while let Some((id, _len)) = queue.used() {
+                if id == desc_idx {
+                    completed = true;
+                    break;
+                } else {
+                    // Another request completed earlier. This is valid when
+                    // multiple requests are in flight. We already recycled its
+                    // descriptors in queue.used(), just continue draining.
+                }
+            }
+
+            if completed {
                 break;
             }
 
-            let used_idx = unsafe {
-                core::ptr::read_volatile(&(*queue.used).idx as *const core::sync::atomic::AtomicU16 as *const u16)
-            };
-
-            if used_idx != queue.last_used_idx {
-                break;
-            }
-
+            // Backoff / timeout management
             attempts -= 1;
-
-            // Progressive logging to avoid spam
             if attempts == 0 {
-                error!("VirtIO block I/O operation timed out after {} attempts", MAX_ATTEMPTS);
-                queue.recycle_descriptors_force(desc_idx);
+                error!("VirtIO block I/O operation timed out after drain");
+                // Do not force-recycle our descriptors; that corrupts the queue
                 return Err(BlockError::IoError);
             }
-
-            for _ in 0..1000 {
+            for _ in 0..200 {
                 core::hint::spin_loop();
             }
-        }
-
-        if let Some((id, _len)) = queue.used() {
-            if id != desc_idx {
-                error!("VirtIO block descriptor ID mismatch: expected {}, got {}", desc_idx, id);
-                queue.recycle_descriptors_force(desc_idx);
-            }
-        } else {
-            queue.recycle_descriptors_force(desc_idx);
         }
 
         match status[0] {
