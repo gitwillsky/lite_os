@@ -246,6 +246,10 @@ impl MemorySet {
         &self.page_table
     }
 
+    pub fn get_page_table_mut(&mut self) -> &mut PageTable {
+        &mut self.page_table
+    }
+
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }

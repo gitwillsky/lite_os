@@ -203,13 +203,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_WATCHDOG_GET_INFO => sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo),
         SYSCALL_WATCHDOG_SET_PRESET => sys_watchdog_set_preset(args[0] as u32),
 
-        // GUI 图形系统调用（最小接口）
+        // GUI 图形系统调用（带矩形刷新）
         SYSCALL_GUI_CREATE_CONTEXT => sys_gui_create_context(),
         SYSCALL_GUI_DESTROY_CONTEXT => sys_gui_destroy_context(args[0]),
         SYSCALL_GUI_CLEAR_SCREEN => sys_gui_clear_screen(args[0] as u32),
         SYSCALL_GUI_PRESENT => sys_gui_present(args[0] as *const u8, args[1]),
         SYSCALL_GUI_FLUSH => sys_gui_flush(),
         SYSCALL_GUI_GET_SCREEN_INFO => sys_gui_get_screen_info(args[0] as *mut GuiScreenInfo),
+        SYSCALL_GUI_FLUSH_RECTS => sys_gui_flush_rects(args[0] as *const crate::drivers::framebuffer::Rect, args[1]),
+        SYSCALL_GUI_MAP_FRAMEBUFFER => sys_gui_map_framebuffer(args[0] as *mut usize),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);

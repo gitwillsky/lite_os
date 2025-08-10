@@ -19,10 +19,11 @@ fn gui_create() -> bool {
 fn gui_clear(color: u32) {
     gfx::gui_clear(color)
 }
-#[inline(always)]
-fn gui_fill_rect(x: i32, y: i32, w: u32, h: u32, color: u32) {
-    gfx::gui_fill_rect_xywh(x, y, w, h, color)
-}
+// 保留但按需启用；避免 dead_code 警告
+// #[inline(always)]
+// fn gui_fill_rect(x: i32, y: i32, w: u32, h: u32, color: u32) {
+//     gfx::gui_fill_rect_xywh(x, y, w, h, color)
+// }
 #[inline(always)]
 fn gui_draw_text_big(x: i32, y: i32, text: &str, color: u32, scale: u32) {
     gfx::draw_string_scaled(x, y, text, color, scale)
@@ -38,8 +39,7 @@ fn main() -> i32 {
     spawn_shell();
 
     if gui_create() {
-        gui_clear(0xFF000000);
-        // 先显示占位文字并刷新，避免用户观感为“黑屏卡住”
+        // 避免一上来全屏清屏，先绘制小块占位文字减少内存触碰
         gui_draw_text_big(40, 60, "Loading font...", 0xFFFFFFFF, 2);
         gui_draw_text_big(40, 90, "Launching Shell...", 0xFFFFFFFF, 2);
         gui_flush();
@@ -48,6 +48,7 @@ fn main() -> i32 {
             "/fonts/NotoSans-Regular.ttf",
         ];
         let mut loaded = false;
+        // 增大读取块并尽量减少 sys 调用，load_font_static 内部会 yield
         for &path in &candidates {
             if let Some(bytes) = load_font_static(path) {
                 gfx::set_default_font(bytes);
@@ -99,6 +100,7 @@ fn main() -> i32 {
         // }
 
         // 阶段3：展示中文/UTF-8 文本（使用默认字体）
+        // 需要时再清屏
         gui_clear(0xFF000000);
         let msg = "你好, LiteOS! 🌟 (TTF/UTF-8 渲染成功)";
         let y = (h / 2 + 10) as i32;
@@ -142,7 +144,7 @@ fn load_font_static(path: &str) -> Option<&'static [u8]> {
     let fd = open(path, open_flags::O_RDONLY) as i32;
     if fd < 0 { return None; }
     let mut data: Vec<u8> = Vec::new();
-    let mut scratch = alloc::vec![0u8; 16 * 1024];
+    let mut scratch = alloc::vec![0u8; 128 * 1024];
     loop {
         let n = read(fd as usize, &mut scratch);
         if n <= 0 { break; }

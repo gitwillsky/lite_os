@@ -174,6 +174,26 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                         Ok(device_id) => {
                                             info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}",
                                                   device_id, base_addr);
+                                            // 注册中断处理器（如果有PLIC）
+                                            if let Some(plic_dev) = &board_info.plic_device {
+                                                let irq = virtio_dev.irq;
+                                                if irq != 0 {
+                                                    if let Some(controller) = mgr.get_interrupt_controller() {
+                                                        let mut ctrl = controller.lock();
+                                                        // 直接使用统一的 GPU IRQ 处理器
+                                                        let handler = Arc::new(crate::drivers::virtio_gpu::VirtioGpuIrqHandler);
+                                                        if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
+                                                            error!("[DeviceManager] Failed to register GPU IRQ handler: {:?}", e);
+                                                        } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::High) {
+                                                            error!("[DeviceManager] Failed to set GPU IRQ priority: {:?}", e);
+                                                        } else if let Err(e) = ctrl.enable_interrupt(irq) {
+                                                            error!("[DeviceManager] Failed to enable GPU IRQ {}: {:?}", irq, e);
+                                                        } else {
+                                                            info!("[DeviceManager] Registered GPU IRQ handler on vector {}", irq);
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             error!("[DeviceManager] Failed to add GPU device: {:?}", e);

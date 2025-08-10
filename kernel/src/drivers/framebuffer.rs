@@ -73,6 +73,7 @@ pub trait Framebuffer: Send + Sync {
     fn copy_rect(&mut self, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, width: u32, height: u32) -> Result<(), DeviceError>;
     fn clear(&mut self, color: u32) -> Result<(), DeviceError>;
     fn flush(&mut self) -> Result<(), DeviceError>;
+    fn flush_rects(&mut self, _rects: &[Rect]) -> Result<(), DeviceError> { self.flush() }
     fn is_dirty(&self) -> bool;
     fn mark_dirty(&mut self);
     fn mark_clean(&mut self);
@@ -82,7 +83,7 @@ pub struct GenericFramebuffer {
     info: FramebufferInfo,
     buffer: usize,
     dirty: bool,
-    flush_callback: Option<Box<dyn Fn() -> Result<(), DeviceError> + Send + Sync>>,
+    flush_callback: Option<Box<dyn Fn(Option<&[Rect]>) -> Result<(), DeviceError> + Send + Sync>>,
 }
 
 pub type VirtAddr = usize;
@@ -92,7 +93,7 @@ impl GenericFramebuffer {
     pub fn new(
         info: FramebufferInfo,
         buffer: usize,
-        flush_callback: Option<Box<dyn Fn() -> Result<(), DeviceError> + Send + Sync>>
+        flush_callback: Option<Box<dyn Fn(Option<&[Rect]>) -> Result<(), DeviceError> + Send + Sync>>
     ) -> Self {
         GenericFramebuffer {
             info,
@@ -301,9 +302,19 @@ impl Framebuffer for GenericFramebuffer {
     fn flush(&mut self) -> Result<(), DeviceError> {
         if self.dirty {
             if let Some(ref callback) = self.flush_callback {
-                callback()?;
+                callback(None)?;
             }
             self.mark_clean();
+        }
+        Ok(())
+    }
+
+    fn flush_rects(&mut self, rects: &[Rect]) -> Result<(), DeviceError> {
+        if let Some(ref callback) = self.flush_callback {
+            callback(Some(rects))?;
+        } else {
+            // 无特定回调，退化为整帧刷新
+            let _ = self.flush();
         }
         Ok(())
     }
@@ -351,4 +362,13 @@ where
     } else {
         None
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }

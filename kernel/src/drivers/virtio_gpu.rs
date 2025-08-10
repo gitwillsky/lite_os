@@ -1,6 +1,6 @@
 use core::mem;
 use core::ptr;
-use alloc::{boxed::Box, sync::Arc, vec::Vec, format, string::{String, ToString}, vec};
+use alloc::{boxed::Box, sync::{Arc, Weak}, vec::Vec, format, string::{String, ToString}, vec, collections::BTreeMap};
 use spin::Mutex;
 use crate::memory::{KERNEL_SPACE, address::{PhysicalAddress, VirtualAddress}};
 use crate::drivers::{
@@ -200,9 +200,23 @@ pub struct VirtioGpuDevice {
     current_width: u32,
     current_height: u32,
     current_format: u32,
+    pending_waiters: BTreeMap<u16, Weak<crate::task::TaskControlBlock>>,
 }
 
 impl VirtioGpuDevice {
+    fn irq_ack_and_drain(&mut self) {
+        // acknowledge by reading status if needed (MMIO interrupt status not exposed here)
+        if let Some(ref mut q) = self.ctrl_queue {
+            while let Some((id, _len)) = q.used() {
+                // 精准唤醒等待的任务
+                if let Some(weak) = self.pending_waiters.remove(&id) {
+                    if let Some(task) = weak.upgrade() {
+                        task.wakeup();
+                    }
+                }
+            }
+        }
+    }
     pub fn new(base_addr: usize, interrupt_vector: InterruptVector) -> Result<Self, DeviceError> {
         info!("[VirtIO-GPU] Creating new VirtIO GPU device at {:#x}", base_addr);
 
@@ -227,6 +241,7 @@ impl VirtioGpuDevice {
             current_width: 0,
             current_height: 0,
             current_format: VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM,
+            pending_waiters: BTreeMap::new(),
         };
 
         Ok(device)
@@ -400,33 +415,36 @@ impl VirtioGpuDevice {
             }
             // Add to available ring
             ctrl_queue.add_to_avail(head.unwrap());
-            head.unwrap()
+            let h = head.unwrap();
+            // 记录等待者（弱引用），用于精准唤醒
+            if let Some(current) = crate::task::current_task() {
+                self.pending_waiters.insert(h, Arc::downgrade(&current));
+            }
+            h
         };
 
         // Notify device (control queue id = 0)
         self.write32(MMIO_QUEUE_NOTIFY, 0);
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 
-        // Wait for response with timeout to避免死等
-        let mut spins: usize = 0;
+        // 阻塞式等待：避免长时间忙等，自旋-让出结合
+        let mut attempts = 5000;
         loop {
             let ctrl_queue = self.ctrl_queue.as_mut().unwrap();
             if let Some((desc_id, _len)) = ctrl_queue.used() {
-                if desc_id == desc_head {
-                    break;
-                }
+                if desc_id == desc_head { break; }
             }
-            spins += 1;
-            if spins % 1_000_000 == 0 {
-                let (used_idx, avail_idx) = ctrl_queue.indices();
-                warn!("[VirtIO-GPU] Waiting for response... used_idx={}, avail_idx={}", used_idx, avail_idx);
-            }
-            if spins > 20_000_000 {
+            if attempts == 0 {
                 error!("[VirtIO-GPU] Timeout waiting for control response");
                 return Err(DeviceError::OperationFailed);
             }
-            core::hint::spin_loop();
+            attempts -= 1;
+            // 让出CPU等待外部中断推进
+            crate::task::block_current_and_run_next();
         }
+
+        // 请求完成，清理等待者
+        self.pending_waiters.remove(&desc_head);
 
         if response.response_type != VIRTIO_GPU_RESP_OK_NODATA &&
            response.response_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
@@ -748,14 +766,17 @@ impl VirtioGpuDevice {
         let fb_info = FramebufferInfo::new(self.current_width, self.current_height, fb_format);
         let fb_buffer = virt_addr.as_usize();
 
-        // flush 回调：找到 GPU 设备并触发 flush 到宿主端
-        let flush_cb: Option<Box<dyn Fn() -> Result<(), DeviceError> + Send + Sync>> = Some(Box::new(|| {
+        // flush 回调：找到 GPU 设备并触发 flush 到宿主端（支持可选矩形列表）
+        let flush_cb: Option<Box<dyn Fn(Option<&[crate::drivers::framebuffer::Rect]>) -> Result<(), DeviceError> + Send + Sync>> = Some(Box::new(|rects_opt| {
             let display_ids = find_devices_by_type(DeviceType::Display);
             for id in display_ids {
                 if let Some(dev_arc) = get_device(id) {
                     let mut dev = dev_arc.lock();
                     if let Some(gpu) = dev.as_any_mut().downcast_mut::<VirtioGpuDevice>() {
-                        return gpu.flush_framebuffer();
+                        return match rects_opt {
+                            Some(rects) => gpu.flush_framebuffer_rects(rects),
+                            None => gpu.flush_framebuffer(),
+                        };
                     }
                 }
             }
@@ -819,6 +840,41 @@ impl VirtioGpuDevice {
         if response.response_type != VIRTIO_GPU_RESP_OK_NODATA {
             error!("[VirtIO-GPU] Failed to flush resource");
             return Err(DeviceError::OperationFailed);
+        }
+
+        Ok(())
+    }
+
+    pub fn flush_framebuffer_rects(&mut self, rects: &[crate::drivers::framebuffer::Rect]) -> Result<(), DeviceError> {
+        let resource_id = self.framebuffer_resource_id
+            .ok_or(DeviceError::InvalidState)?;
+
+        // 对每个矩形执行 transfer + flush；可以进一步合并/裁剪
+        for r in rects.iter() {
+            let transfer_cmd = VirtioGpuTransferToHost2d {
+                hdr: VirtioGpuCtrlHeader { command_type: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
+                r: VirtioGpuRect { x: r.x as u32, y: r.y as u32, width: r.width as u32, height: r.height as u32 },
+                offset: 0,
+                resource_id,
+                padding: 0,
+            };
+            let response = self.send_command(&transfer_cmd)?;
+            if response.response_type != VIRTIO_GPU_RESP_OK_NODATA {
+                error!("[VirtIO-GPU] Failed to transfer rect to host");
+                return Err(DeviceError::OperationFailed);
+            }
+
+            let flush_cmd = VirtioGpuResourceFlush {
+                hdr: VirtioGpuCtrlHeader { command_type: VIRTIO_GPU_CMD_RESOURCE_FLUSH, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
+                r: VirtioGpuRect { x: r.x as u32, y: r.y as u32, width: r.width as u32, height: r.height as u32 },
+                resource_id,
+                padding: 0,
+            };
+            let response = self.send_command(&flush_cmd)?;
+            if response.response_type != VIRTIO_GPU_RESP_OK_NODATA {
+                error!("[VirtIO-GPU] Failed to flush rect");
+                return Err(DeviceError::OperationFailed);
+            }
         }
 
         Ok(())
@@ -1013,6 +1069,26 @@ impl Device for VirtioGpuDevice {
     fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
         self
     }
+}
+
+// 简单的GPU中断处理器：确认中断并尝试推进控制队列 used ring，用于唤醒等待路径
+pub struct VirtioGpuIrqHandler;
+impl InterruptHandler for VirtioGpuIrqHandler {
+    fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), crate::drivers::hal::interrupt::InterruptError> {
+        // 遍历显示类设备，找到GPU并让其 drain used ring
+        let display_ids = find_devices_by_type(DeviceType::Display);
+        for id in display_ids {
+            if let Some(dev_arc) = get_device(id) {
+                let mut dev = dev_arc.lock();
+                if let Some(gpu) = dev.as_any_mut().downcast_mut::<VirtioGpuDevice>() {
+                    gpu.irq_ack_and_drain();
+                }
+            }
+        }
+        Ok(())
+    }
+    fn can_handle(&self, _vector: InterruptVector) -> bool { true }
+    fn name(&self) -> &str { "virtio-gpu-irq" }
 }
 
 // 简单的 Bus 实现用于 VirtIO GPU

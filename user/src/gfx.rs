@@ -12,8 +12,10 @@ pub struct GuiScreenInfo { pub width: u32, pub height: u32, pub bytes_per_pixel:
 
 struct GlobalGfx {
     info: GuiScreenInfo,
-    backbuffer: Vec<u8>, // RGBA8888
+    fb_ptr: usize, // 直接映射的帧缓冲地址（以整数保存，避免线程安全限制）
     default_font: Option<&'static [u8]>,
+    dirty: bool,
+    dirty_rect: Option<(i32, i32, i32, i32)>,
 }
 
 struct SpinLock<T> {
@@ -173,19 +175,35 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
         let mut i = 0;
         while i + 1 < cnt {
             let x0 = libm::ceilf(xs[i]) as i32; // 右取整，避免填充到边界外
-            let mut x1 = libm::floorf(xs[i+1]) as i32; // 左取整
+            let x1 = libm::floorf(xs[i+1]) as i32; // 左取整
             if x1 < x0 { i += 2; continue; }
             let x0c = x0.max(0); let x1c = x1.min(sw - 1);
             if x0c <= x1c {
-                let row_off = (y as usize) * (sw as usize) * 4;
+                let pitch = g.info.pitch as usize;
+                let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
                 for x in x0c..=x1c {
-                    let idx = row_off + (x as usize) * 4;
-                    g.backbuffer[idx] = r; g.backbuffer[idx+1] = gch; g.backbuffer[idx+2] = b; g.backbuffer[idx+3] = a;
+                    let p = unsafe { row_ptr.add((x as usize) * 4) };
+                    unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
                 }
             }
             i += 2;
         }
     }
+    // 标记脏并合并脏矩形
+    g.dirty = true;
+    // 简化：计算该字形的包围盒作为脏矩形
+    let mut min_x = i32::MAX; let mut max_x = i32::MIN;
+    for e in edges.iter() {
+        let x0f = libm::floorf(e.x0) as i32; let x1f = libm::floorf(e.x1) as i32;
+        let x0c = libm::ceilf(e.x0) as i32; let x1c = libm::ceilf(e.x1) as i32;
+        min_x = min_x.min(x0f).min(x1f); max_x = max_x.max(x0c).max(x1c);
+    }
+    min_x = min_x.max(0); max_x = max_x.min(sw - 1);
+    let rect = (min_x, min_y, max_x + 1, max_y + 1);
+    g.dirty_rect = Some(match g.dirty_rect {
+        Some((ox0, oy0, ox1, oy1)) => (ox0.min(rect.0), oy0.min(rect.1), ox1.max(rect.2), oy1.max(rect.3)),
+        None => rect,
+    });
 }
 
 // TTF 渲染：占位实现，后续将以 ttf-parser + 简易栅格化替换
@@ -223,9 +241,11 @@ pub fn gui_create_context() -> bool {
     let mut info = GuiScreenInfo::default();
     let p = &mut info as *mut GuiScreenInfo as usize;
     if syscall(311, [p, 0, 0]) < 0 { return false; }
-    let size = (info.width as usize) * (info.height as usize) * 4usize;
+    let mut mapped_addr: usize = 0;
+    let out_ptr = &mut mapped_addr as *mut usize as usize;
+    if syscall(315, [out_ptr, 0, 0]) < 0 { return false; }
     let mut guard = GFX.lock();
-    *guard = Some(GlobalGfx { info, backbuffer: vec![0u8; size], default_font: None });
+    *guard = Some(GlobalGfx { info, fb_ptr: mapped_addr, default_font: None, dirty: false, dirty_rect: None });
     true
 }
 
@@ -243,9 +263,18 @@ pub fn gui_clear(color: u32) {
         let gch = ((color >> 8) & 0xFF) as u8;
         let b = (color & 0xFF) as u8;
         let a = ((color >> 24) & 0xFF) as u8;
-        for px in g.backbuffer.chunks_exact_mut(4) {
-            px[0] = r; px[1] = gch; px[2] = b; px[3] = a;
+        let pitch = g.info.pitch as usize;
+        let width = g.info.width as usize;
+        let height = g.info.height as usize;
+        for y in 0..height {
+            let row_ptr = (g.fb_ptr + y * pitch) as *mut u8;
+            for x in 0..width {
+                let p = (row_ptr as usize + x * 4) as *mut u8;
+                unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
+            }
         }
+        g.dirty = true;
+        g.dirty_rect = Some((0, 0, g.info.width as i32, g.info.height as i32));
     }
 }
 
@@ -263,13 +292,19 @@ pub fn gui_fill_rect_xywh(x: i32, y: i32, w: u32, h: u32, color: u32) {
         let x1 = (x + w as i32).min(sw);
         let y1 = (y + h as i32).min(sh);
         if x0 >= x1 || y0 >= y1 { return; }
+        let pitch = g.info.pitch as usize;
         for yy in y0..y1 {
-            let row_off = (yy as usize) * (sw as usize) * 4;
+            let row_ptr = (g.fb_ptr + (yy as usize) * pitch) as *mut u8;
             for xx in x0..x1 {
-                let idx = row_off + (xx as usize) * 4;
-                g.backbuffer[idx] = r; g.backbuffer[idx+1] = gch; g.backbuffer[idx+2] = b; g.backbuffer[idx+3] = a;
+                let p = (row_ptr as usize + (xx as usize) * 4) as *mut u8;
+                unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
             }
         }
+        g.dirty = true;
+        g.dirty_rect = Some(match g.dirty_rect {
+            Some((ox0, oy0, ox1, oy1)) => (ox0.min(x0), oy0.min(y0), ox1.max(x1), oy1.max(y1)),
+            None => (x0, y0, x1, y1),
+        });
     }
 }
 
@@ -277,9 +312,16 @@ pub fn gui_fill_rect_xywh(x: i32, y: i32, w: u32, h: u32, color: u32) {
 pub fn gui_flush() {
     let mut guard = GFX.lock();
     if let Some(ref mut g) = *guard {
-        let _ = syscall(312, [g.backbuffer.as_ptr() as usize, g.backbuffer.len(), 0]); // present
+        if !g.dirty { return; }
+        if let Some((x0, y0, x1, y1)) = g.dirty_rect {
+            #[repr(C)]
+            struct Rect { x: u32, y: u32, width: u32, height: u32 }
+            let rect = Rect { x: x0 as u32, y: y0 as u32, width: (x1 - x0) as u32, height: (y1 - y0) as u32 };
+            let _ = syscall(313, [&rect as *const Rect as usize, 1, 0]); // 仅刷新矩形
+        }
+        g.dirty = false;
+        g.dirty_rect = None;
     }
-    let _ = syscall(310, [0,0,0]); // flush to device
 }
 
 // ============ 默认字体管理 ============

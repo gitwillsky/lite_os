@@ -1,5 +1,6 @@
-use crate::drivers::{get_global_framebuffer, with_global_framebuffer};
+use crate::drivers::{get_global_framebuffer, with_global_framebuffer, framebuffer::Rect};
 use crate::memory::page_table::translated_byte_buffer;
+use crate::memory::{KERNEL_SPACE, address::VirtualAddress};
 use crate::task::current_user_token;
 use crate::drivers::PixelFormat;
 
@@ -9,6 +10,9 @@ pub const SYSCALL_GUI_CLEAR_SCREEN: usize = 302;
 pub const SYSCALL_GUI_PRESENT: usize = 312; // 以 RGBA8888 像素提交整帧
 pub const SYSCALL_GUI_FLUSH: usize = 310;
 pub const SYSCALL_GUI_GET_SCREEN_INFO: usize = 311;
+pub const SYSCALL_GUI_FLUSH_RECTS: usize = 313; // 刷新多个矩形区域
+pub const SYSCALL_GUI_PRESENT_RECTS: usize = 314; // 仅提交多个矩形
+pub const SYSCALL_GUI_MAP_FRAMEBUFFER: usize = 315; // 将帧缓冲映射到用户态
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -121,6 +125,170 @@ pub fn sys_gui_flush() -> isize {
         Some(Ok(_)) => 0,
         _ => -1,
     }
+}
+
+pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
+    if rects_ptr.is_null() || rects_len == 0 { return sys_gui_flush(); }
+    let token = current_user_token();
+    let bytes = core::mem::size_of::<Rect>() * rects_len;
+    let mut bufs = translated_byte_buffer(token, rects_ptr as *const u8, bytes);
+    // 将用户 rects 拷到内核临时栈上
+    let mut rects: alloc::vec::Vec<Rect> = alloc::vec::Vec::with_capacity(rects_len);
+    let mut copied = 0usize;
+    while copied < bytes {
+        if bufs.is_empty() { break; }
+        let seg = bufs.remove(0);
+        let to = core::cmp::min(seg.len(), bytes - copied);
+        let p = seg.as_ptr();
+        let slice = unsafe { core::slice::from_raw_parts(p, to) };
+        rects.extend_from_slice(unsafe { core::slice::from_raw_parts(slice.as_ptr() as *const Rect, to / core::mem::size_of::<Rect>()) });
+        copied += to;
+    }
+    if rects.is_empty() { return -1; }
+    match with_global_framebuffer(|fb| fb.flush_rects(&rects)) {
+        Some(Ok(_)) => 0,
+        _ => -1,
+    }
+}
+
+// 以 RGBA8888 提交若干矩形，buf 中紧密按行存放每个矩形的像素，无行间 padding
+pub fn sys_gui_present_rects(buf_ptr: *const u8, buf_len: usize, rects_ptr: *const Rect, rects_len: usize) -> isize {
+    if buf_ptr.is_null() || rects_ptr.is_null() || rects_len == 0 { return -1; }
+    let token = current_user_token();
+    // 读取矩形数组
+    let rect_bytes = core::mem::size_of::<Rect>() * rects_len;
+    let mut rect_bufs = translated_byte_buffer(token, rects_ptr as *const u8, rect_bytes);
+    let mut rects: alloc::vec::Vec<Rect> = alloc::vec::Vec::with_capacity(rects_len);
+    let mut copied = 0usize;
+    while copied < rect_bytes {
+        if rect_bufs.is_empty() { break; }
+        let seg = rect_bufs.remove(0);
+        let to = core::cmp::min(seg.len(), rect_bytes - copied);
+        let seg_ptr = seg.as_ptr();
+        let slice = unsafe { core::slice::from_raw_parts(seg_ptr, to) };
+        let nrect = to / core::mem::size_of::<Rect>();
+        if nrect > 0 {
+            rects.extend_from_slice(unsafe { core::slice::from_raw_parts(slice.as_ptr() as *const Rect, nrect) });
+        }
+        copied += to;
+    }
+    if rects.is_empty() { return -1; }
+
+    // 读取像素缓冲分段迭代器
+    let mut pix_bufs = translated_byte_buffer(token, buf_ptr, buf_len);
+    let mut read_offset: usize = 0;
+    let mut next_chunk = |need: usize, pix_bufs: &mut [&mut [u8]], read_offset: &mut usize| -> Option<&[u8]> {
+        if pix_bufs.is_empty() { return None; }
+        let mut acc = 0usize;
+        for seg in pix_bufs.iter() {
+            let seg_off = if *read_offset >= acc { *read_offset - acc } else { return None };
+            if seg_off < seg.len() {
+                let remain = seg.len() - seg_off;
+                let take = core::cmp::min(remain, need);
+                let ptr = unsafe { seg.as_ptr().add(seg_off) };
+                *read_offset += take;
+                return Some(unsafe { core::slice::from_raw_parts(ptr, take) });
+            }
+            acc += seg.len();
+        }
+        None
+    };
+
+    let ok = with_global_framebuffer(|fb| {
+        let info = *fb.info();
+        // 仅实现 RGBA8888 快路径；其它格式退化为逐像素写
+        let is_fast = info.format == crate::drivers::PixelFormat::RGBA8888;
+        for r in rects.iter() {
+            let w = r.width as usize; let h = r.height as usize;
+            let bytes_per_row = w * 4;
+            let mut row = 0usize;
+            while row < h {
+                // 取一行像素
+                let mut remaining = bytes_per_row;
+                let mut row_bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(bytes_per_row);
+                while remaining > 0 {
+                    if let Some(chunk) = next_chunk(remaining, &mut pix_bufs, &mut read_offset) {
+                        row_bytes.extend_from_slice(chunk);
+                        remaining -= chunk.len();
+                    } else {
+                        return -1; // 缓冲不足
+                    }
+                }
+                if is_fast {
+                    // 直接按 pitch 拷贝
+                    let dst_y = r.y as usize + row;
+                    if dst_y >= info.height as usize { break; }
+                    let dst_x = r.x as usize;
+                    let dst_off = info.pixel_offset(dst_x as u32, dst_y as u32).unwrap_or(0);
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(row_bytes.as_ptr(), fb.buffer_ptr().add(dst_off), bytes_per_row);
+                    }
+                } else {
+                    // 逐像素写入
+                    let mut i = 0usize;
+                    for dx in 0..w {
+                        if i + 4 <= row_bytes.len() {
+                            let r8 = row_bytes[i]; let g8 = row_bytes[i+1]; let b8 = row_bytes[i+2]; let a8 = row_bytes[i+3];
+                            let color = ((a8 as u32) << 24) | ((r8 as u32) << 16) | ((g8 as u32) << 8) | (b8 as u32);
+                            let _ = fb.write_pixel(r.x + dx as u32, r.y + row as u32, color);
+                            i += 4;
+                        }
+                    }
+                }
+                row += 1;
+            }
+        }
+        fb.mark_dirty();
+        0
+    }).unwrap_or(-1);
+    ok
+}
+
+// 将设备帧缓冲映射到当前进程的用户空间，返回用户虚拟地址
+// 不考虑兼容性：直接将整个帧缓冲区映射为用户可读写
+pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
+    let (fb_va, fb_size) = match with_global_framebuffer(|fb| {
+        let info = fb.info().clone();
+        let va = VirtualAddress::from(fb.buffer_ptr() as usize);
+        (va, info.buffer_size)
+    }) {
+        Some(x) => x,
+        None => return -1,
+    };
+
+    // 在当前进程内存空间建立同一物理页的用户映射
+    let page_size = crate::memory::PAGE_SIZE;
+    let page_count = (fb_size + page_size - 1) / page_size;
+    let pt_token = KERNEL_SPACE.wait().lock().token();
+    let pt = crate::memory::page_table::PageTable::from_token(pt_token);
+    let current = crate::task::current_task().unwrap();
+    let mut user_mm = current.mm.memory_set.lock();
+
+    // 选择一段用户地址作为映射基址（简化：固定高地址区起点）
+    let user_base = VirtualAddress::from(0x4000_0000usize);
+    for i in 0..page_count {
+        let src_va = VirtualAddress::from(fb_va.as_usize() + i * page_size);
+        let vpn = src_va.floor();
+        let pte = match pt.translate(vpn) { Some(p) => p, None => return -1 };
+        let dst_va = VirtualAddress::from(user_base.as_usize() + i * page_size);
+        let _ = user_mm.get_page_table_mut().map(
+            dst_va.into(),
+            crate::memory::address::PhysicalAddress::from(pte.ppn()).into(),
+            crate::memory::page_table::PTEFlags::R | crate::memory::page_table::PTEFlags::W | crate::memory::page_table::PTEFlags::U,
+        );
+    }
+
+    // 写回用户态输出参数
+    let token = crate::task::current_user_token();
+    let mut bufs = translated_byte_buffer(token, user_addr_out as *const u8, core::mem::size_of::<usize>());
+    let addr_val = user_base.as_usize();
+    let bytes = unsafe { core::slice::from_raw_parts((&addr_val as *const usize) as *const u8, core::mem::size_of::<usize>()) };
+    if let Some(seg) = bufs.first_mut() {
+        let to = core::cmp::min(seg.len(), bytes.len());
+        seg[..to].copy_from_slice(&bytes[..to]);
+        if to == bytes.len() { return 0; }
+    }
+    -1
 }
 
 pub fn sys_gui_get_screen_info(info_ptr: *mut GuiScreenInfo) -> isize {
