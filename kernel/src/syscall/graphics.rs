@@ -21,6 +21,9 @@ pub struct GuiScreenInfo {
     pub height: u32,
     pub bytes_per_pixel: u32,
     pub pitch: u32,
+    // 新增：像素格式，用户态据此决定 RGBA/BGRA 等通道顺序
+    // 取值约定：0=RGBA8888, 1=BGRA8888, 2=RGB888, 3=BGR888, 4=RGB565
+    pub format: u32,
 }
 
 pub fn sys_gui_create_context() -> isize {
@@ -320,11 +323,19 @@ pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
 pub fn sys_gui_get_screen_info(info_ptr: *mut GuiScreenInfo) -> isize {
     let screen_info = match with_global_framebuffer(|fb| {
         let info = fb.info();
+        let fmt_code: u32 = match info.format {
+            PixelFormat::RGBA8888 => 0,
+            PixelFormat::BGRA8888 => 1,
+            PixelFormat::RGB888 => 2,
+            PixelFormat::BGR888 => 3,
+            PixelFormat::RGB565 => 4,
+        };
         GuiScreenInfo {
             width: info.width,
             height: info.height,
             bytes_per_pixel: info.format.bytes_per_pixel(),
             pitch: info.pitch,
+            format: fmt_code,
         }
     }) {
         Some(info) => info,

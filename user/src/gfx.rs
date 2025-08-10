@@ -8,7 +8,14 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub struct GuiScreenInfo { pub width: u32, pub height: u32, pub bytes_per_pixel: u32, pub pitch: u32 }
+pub struct GuiScreenInfo {
+    pub width: u32,
+    pub height: u32,
+    pub bytes_per_pixel: u32,
+    pub pitch: u32,
+    // 0=RGBA8888, 1=BGRA8888, 2=RGB888, 3=BGR888, 4=RGB565
+    pub format: u32,
+}
 
 struct GlobalGfx {
     info: GuiScreenInfo,
@@ -60,6 +67,68 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
 }
 
 static GFX: SpinLock<Option<GlobalGfx>> = SpinLock::new(None);
+// ================= 像素读写 & 混合工具 =================
+
+#[inline(always)]
+fn write_pixel_rgba(ptr: *mut u8, info: &GuiScreenInfo, r: u8, g: u8, b: u8, a: u8) {
+    unsafe {
+        match info.format {
+            0 => { // RGBA8888
+                *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b; *ptr.add(3) = a;
+            }
+            1 => { // BGRA8888
+                *ptr.add(0) = b; *ptr.add(1) = g; *ptr.add(2) = r; *ptr.add(3) = a;
+            }
+            2 => { // RGB888
+                *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b;
+            }
+            3 => { // BGR888
+                *ptr.add(0) = b; *ptr.add(1) = g; *ptr.add(2) = r;
+            }
+            4 => { // RGB565
+                let r5 = (r >> 3) & 0x1F; let g6 = (g >> 2) & 0x3F; let b5 = (b >> 3) & 0x1F;
+                let v: u16 = ((r5 as u16) << 11) | ((g6 as u16) << 5) | (b5 as u16);
+                *ptr.add(0) = (v & 0xFF) as u8; *ptr.add(1) = (v >> 8) as u8;
+            }
+            _ => { *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b; *ptr.add(3) = a; }
+        }
+    }
+}
+
+#[inline(always)]
+fn read_pixel_rgba(ptr: *const u8, info: &GuiScreenInfo) -> (u8, u8, u8, u8) {
+    unsafe {
+        match info.format {
+            0 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3)),           // RGBA
+            1 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), *ptr.add(3)),           // BGRA -> RGBA
+            2 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), 0xFF),                  // RGB -> RGBA(opaque)
+            3 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), 0xFF),                  // BGR -> RGBA(opaque)
+            4 => {
+                let v = (*ptr.add(0) as u16) | ((*ptr.add(1) as u16) << 8);
+                let r = ((v >> 11) & 0x1F) as u8; let g = ((v >> 5) & 0x3F) as u8; let b = (v & 0x1F) as u8;
+                // 扩展到 8bit
+                (((r as u16 * 255 / 31) as u8), ((g as u16 * 255 / 63) as u8), ((b as u16 * 255 / 31) as u8), 0xFF)
+            }
+            _ => (*ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3)),
+        }
+    }
+}
+
+#[inline(always)]
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    let af = a as f32; let bf = b as f32; let v = af * (1.0 - t) + bf * t; v.max(0.0).min(255.0) as u8
+}
+
+#[inline(always)]
+fn blend_over(ptr: *mut u8, info: &GuiScreenInfo, src_r: u8, src_g: u8, src_b: u8, src_a_coverage: f32) {
+    // 简易线性空间混合：dst = src * a + dst * (1-a)
+    let (dr, dg, db, _da) = read_pixel_rgba(ptr as *const u8, info);
+    let t = src_a_coverage.max(0.0).min(1.0);
+    let r = lerp_u8(dr, src_r, t);
+    let g = lerp_u8(dg, src_g, t);
+    let b = lerp_u8(db, src_b, t);
+    write_pixel_rgba(ptr, info, r, g, b, 0xFF);
+}
 // 几何与轮廓收集
 #[derive(Clone, Copy)]
 struct LineSeg { x0: f32, y0: f32, x1: f32, y1: f32 }
@@ -131,7 +200,7 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
 //
 
 fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
-    // 简易扫描线填充（偶奇规则），按整数像素栅格；无抗锯齿
+    // 扫描线填充（偶奇规则）+ 边界像素亚像素覆盖抗锯齿
     let mut guard = GFX.lock();
     let Some(ref mut g) = *guard else { return };
     let (sw, sh) = (g.info.width as i32, g.info.height as i32);
@@ -152,6 +221,7 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
     let gch = ((color >> 8) & 0xFF) as u8;
     let b = (color & 0xFF) as u8;
     let a = ((color >> 24) & 0xFF) as u8;
+    let a_norm = (a as f32) / 255.0;
 
     for y in min_y..=max_y {
         // 收集与扫描线相交的 x 交点
@@ -171,19 +241,51 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
         // 排序交点
         for i in 0..cnt { let mut j = i; while j > 0 && xs[j-1] > xs[j] { let tmp = xs[j-1]; xs[j-1] = xs[j]; xs[j] = tmp; j -= 1; } }
 
-        // 成对填充区间
+        // 成对处理交点，带边界 coverage
         let mut i = 0;
         while i + 1 < cnt {
-            let x0 = libm::ceilf(xs[i]) as i32; // 右取整，避免填充到边界外
-            let x1 = libm::floorf(xs[i+1]) as i32; // 左取整
-            if x1 < x0 { i += 2; continue; }
-            let x0c = x0.max(0); let x1c = x1.min(sw - 1);
-            if x0c <= x1c {
-                let pitch = g.info.pitch as usize;
-                let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
-                for x in x0c..=x1c {
-                    let p = unsafe { row_ptr.add((x as usize) * 4) };
-                    unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
+            let x_start = xs[i];
+            let x_end = xs[i + 1];
+            if x_end <= x_start { i += 2; continue; }
+
+            let pitch = g.info.pitch as usize;
+            let bpp = g.info.bytes_per_pixel as usize;
+            let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
+
+            let left_pix = libm::floorf(x_start) as i32;
+            let right_pix = libm::floorf(x_end) as i32;
+
+            if left_pix == right_pix {
+                // 同一像素内的细线段
+                if left_pix >= 0 && left_pix < sw {
+                    let cov = (x_end - x_start).max(0.0).min(1.0) * a_norm;
+                    let p = unsafe { row_ptr.add((left_pix as usize) * bpp) };
+                    blend_over(p, &g.info, r, gch, b, cov);
+                }
+                i += 2; continue;
+            }
+
+            // 左边界像素覆盖
+            if left_pix >= 0 && left_pix < sw {
+                let frac = x_start - libm::floorf(x_start);
+                let cov = (1.0 - frac).max(0.0).min(1.0) * a_norm;
+                let p = unsafe { row_ptr.add((left_pix as usize) * bpp) };
+                blend_over(p, &g.info, r, gch, b, cov);
+            }
+            // 右边界像素覆盖
+            if right_pix >= 0 && right_pix < sw {
+                let frac = x_end - libm::floorf(x_end);
+                let cov = frac.max(0.0).min(1.0) * a_norm;
+                let p = unsafe { row_ptr.add((right_pix as usize) * bpp) };
+                blend_over(p, &g.info, r, gch, b, cov);
+            }
+            // 中间整像素填充
+            let x0_full = (left_pix + 1).max(0);
+            let x1_full = (right_pix - 1).min(sw - 1);
+            if x0_full <= x1_full {
+                for x in x0_full..=x1_full {
+                    let p = unsafe { row_ptr.add((x as usize) * bpp) };
+                    write_pixel_rgba(p, &g.info, r, gch, b, 0xFF);
                 }
             }
             i += 2;
@@ -264,13 +366,14 @@ pub fn gui_clear(color: u32) {
         let b = (color & 0xFF) as u8;
         let a = ((color >> 24) & 0xFF) as u8;
         let pitch = g.info.pitch as usize;
+        let bpp = g.info.bytes_per_pixel as usize;
         let width = g.info.width as usize;
         let height = g.info.height as usize;
         for y in 0..height {
             let row_ptr = (g.fb_ptr + y * pitch) as *mut u8;
             for x in 0..width {
-                let p = (row_ptr as usize + x * 4) as *mut u8;
-                unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
+                let p = (row_ptr as usize + x * bpp) as *mut u8;
+                write_pixel_rgba(p, &g.info, r, gch, b, a);
             }
         }
         g.dirty = true;
@@ -293,11 +396,12 @@ pub fn gui_fill_rect_xywh(x: i32, y: i32, w: u32, h: u32, color: u32) {
         let y1 = (y + h as i32).min(sh);
         if x0 >= x1 || y0 >= y1 { return; }
         let pitch = g.info.pitch as usize;
+        let bpp = g.info.bytes_per_pixel as usize;
         for yy in y0..y1 {
             let row_ptr = (g.fb_ptr + (yy as usize) * pitch) as *mut u8;
             for xx in x0..x1 {
-                let p = (row_ptr as usize + (xx as usize) * 4) as *mut u8;
-                unsafe { *p.add(0) = r; *p.add(1) = gch; *p.add(2) = b; *p.add(3) = a; }
+                let p = (row_ptr as usize + (xx as usize) * bpp) as *mut u8;
+                write_pixel_rgba(p, &g.info, r, gch, b, a);
             }
         }
         g.dirty = true;
