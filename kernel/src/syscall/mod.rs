@@ -16,6 +16,8 @@ use timer::*;
 use watchdog::*;
 use dynamic_linking::*;
 use memory::*;
+use crate::task::current_user_token;
+use crate::memory::page_table::{translated_ref_mut, translated_byte_buffer};
 
 pub use signal::sys_sigreturn;
 
@@ -205,39 +207,64 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GUI_CREATE_CONTEXT => sys_gui_create_context(),
         SYSCALL_GUI_DESTROY_CONTEXT => sys_gui_destroy_context(args[0]),
         SYSCALL_GUI_CLEAR_SCREEN => sys_gui_clear_screen(args[0] as u32),
-        SYSCALL_GUI_DRAW_PIXEL => sys_gui_draw_pixel(
-            unsafe { *(args[0] as *const GuiPoint) },
-            unsafe { *(args[1] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_DRAW_LINE => sys_gui_draw_line(
-            unsafe { *(args[0] as *const GuiPoint) },
-            unsafe { *(args[1] as *const GuiPoint) },
-            unsafe { *(args[2] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_DRAW_RECT => sys_gui_draw_rect(
-            unsafe { *(args[0] as *const GuiRect) },
-            unsafe { *(args[1] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_FILL_RECT => sys_gui_fill_rect(
-            unsafe { *(args[0] as *const GuiRect) },
-            unsafe { *(args[1] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_DRAW_CIRCLE => sys_gui_draw_circle(
-            unsafe { *(args[0] as *const GuiPoint) },
-            args[1] as u32,
-            unsafe { *(args[2] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_FILL_CIRCLE => sys_gui_fill_circle(
-            unsafe { *(args[0] as *const GuiPoint) },
-            args[1] as u32,
-            unsafe { *(args[2] as *const GuiColor) }
-        ),
-        SYSCALL_GUI_DRAW_TEXT => sys_gui_draw_text(
-            args[0] as *const u8,
-            args[1],
-            unsafe { *(args[2] as *const GuiPoint) },
-            unsafe { *((args[2] as usize + core::mem::size_of::<GuiPoint>()) as *const GuiColor) }
-        ),
+        SYSCALL_GUI_DRAW_PIXEL => {
+            let token = current_user_token();
+            let p = *translated_ref_mut::<GuiPoint>(token, args[0] as *mut GuiPoint);
+            let c = *translated_ref_mut::<GuiColor>(token, args[1] as *mut GuiColor);
+            sys_gui_draw_pixel(p, c)
+        },
+        SYSCALL_GUI_DRAW_LINE => {
+            let token = current_user_token();
+            let p0 = *translated_ref_mut::<GuiPoint>(token, args[0] as *mut GuiPoint);
+            let p1 = *translated_ref_mut::<GuiPoint>(token, args[1] as *mut GuiPoint);
+            let c = *translated_ref_mut::<GuiColor>(token, args[2] as *mut GuiColor);
+            sys_gui_draw_line(p0, p1, c)
+        },
+        SYSCALL_GUI_DRAW_RECT => {
+            let token = current_user_token();
+            let r = *translated_ref_mut::<GuiRect>(token, args[0] as *mut GuiRect);
+            let c = *translated_ref_mut::<GuiColor>(token, args[1] as *mut GuiColor);
+            sys_gui_draw_rect(r, c)
+        },
+        SYSCALL_GUI_FILL_RECT => {
+            let token = current_user_token();
+            let r = *translated_ref_mut::<GuiRect>(token, args[0] as *mut GuiRect);
+            let c = *translated_ref_mut::<GuiColor>(token, args[1] as *mut GuiColor);
+            sys_gui_fill_rect(r, c)
+        },
+        SYSCALL_GUI_DRAW_CIRCLE => {
+            let token = current_user_token();
+            let center = *translated_ref_mut::<GuiPoint>(token, args[0] as *mut GuiPoint);
+            let radius = args[1] as u32;
+            let color = *translated_ref_mut::<GuiColor>(token, args[2] as *mut GuiColor);
+            sys_gui_draw_circle(center, radius, color)
+        },
+        SYSCALL_GUI_FILL_CIRCLE => {
+            let token = current_user_token();
+            let center = *translated_ref_mut::<GuiPoint>(token, args[0] as *mut GuiPoint);
+            let radius = args[1] as u32;
+            let color = *translated_ref_mut::<GuiColor>(token, args[2] as *mut GuiColor);
+            sys_gui_fill_circle(center, radius, color)
+        },
+        SYSCALL_GUI_DRAW_TEXT => {
+            // 第三个参数指向一个紧凑的缓冲区，包含 GuiPoint 后跟 GuiColor
+            let token = current_user_token();
+            let pack_size = core::mem::size_of::<GuiPoint>() + core::mem::size_of::<GuiColor>();
+            let mut bufs = translated_byte_buffer(token, args[2] as *const u8, pack_size);
+            let mut stack_buf = [0u8; core::mem::size_of::<GuiPoint>() + core::mem::size_of::<GuiColor>()];
+            let mut copied = 0usize;
+            for seg in bufs.iter() {
+                let remain = pack_size - copied;
+                let to_copy = core::cmp::min(remain, seg.len());
+                stack_buf[copied..copied + to_copy].copy_from_slice(&seg[..to_copy]);
+                copied += to_copy;
+                if copied >= pack_size { break; }
+            }
+            if copied < pack_size { return -1; }
+            let pos = unsafe { *(stack_buf.as_ptr() as *const GuiPoint) };
+            let color = unsafe { *(stack_buf.as_ptr().add(core::mem::size_of::<GuiPoint>()) as *const GuiColor) };
+            sys_gui_draw_text(args[0] as *const u8, args[1], pos, color)
+        },
         SYSCALL_GUI_FLUSH => sys_gui_flush(),
         SYSCALL_GUI_GET_SCREEN_INFO => sys_gui_get_screen_info(args[0] as *mut GuiScreenInfo),
 

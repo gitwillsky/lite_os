@@ -5,6 +5,10 @@ use spin::Mutex;
 use crate::memory::{KERNEL_SPACE, address::{PhysicalAddress, VirtualAddress}};
 use crate::drivers::{
     Device, DeviceType, DeviceState, DeviceError, GenericDevice,
+    // 用于全局 Framebuffer 注册与信息
+    GenericFramebuffer, FramebufferInfo, PixelFormat, set_global_framebuffer,
+    // 设备查找（用于 flush 回调）
+    find_devices_by_type, get_device,
     hal::{
         device::DeviceDriver,
         interrupt::{InterruptHandler, InterruptVector},
@@ -731,6 +735,35 @@ impl VirtioGpuDevice {
 
         info!("[VirtIO-GPU] Framebuffer setup complete: {}x{}, {} bytes",
               width, height, framebuffer_size);
+
+        // 在 GPU 完成 framebuffer 建立后，创建并注册全局 Framebuffer，供 GUI 系统调用使用
+        // 将格式映射为通用 Framebuffer 的像素格式
+        let fb_format = match self.current_format {
+            VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM | VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM => PixelFormat::BGRA8888,
+            VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM | VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM => PixelFormat::BGRA8888,
+            VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM | VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM => PixelFormat::RGBA8888,
+            _ => PixelFormat::RGBA8888,
+        };
+
+        let fb_info = FramebufferInfo::new(self.current_width, self.current_height, fb_format);
+        let fb_buffer = virt_addr.as_usize();
+
+        // flush 回调：找到 GPU 设备并触发 flush 到宿主端
+        let flush_cb: Option<Box<dyn Fn() -> Result<(), DeviceError> + Send + Sync>> = Some(Box::new(|| {
+            let display_ids = find_devices_by_type(DeviceType::Display);
+            for id in display_ids {
+                if let Some(dev_arc) = get_device(id) {
+                    let mut dev = dev_arc.lock();
+                    if let Some(gpu) = dev.as_any_mut().downcast_mut::<VirtioGpuDevice>() {
+                        return gpu.flush_framebuffer();
+                    }
+                }
+            }
+            Err(DeviceError::DeviceNotFound)
+        }));
+
+        let fb = GenericFramebuffer::new(fb_info, fb_buffer, flush_cb);
+        set_global_framebuffer(Arc::new(Mutex::new(fb)));
 
         Ok(())
     }
