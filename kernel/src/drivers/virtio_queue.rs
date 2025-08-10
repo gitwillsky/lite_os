@@ -1,6 +1,7 @@
 use crate::memory::{
     address::{PhysicalAddress, VirtualAddress},
     frame_allocator::{self, FrameTracker},
+    PAGE_SIZE,
 };
 use crate::drivers::hal::memory::{DmaBuffer, MemoryError};
 use alloc::vec::Vec;
@@ -221,98 +222,95 @@ impl VirtQueue {
     }
 
     // Simple HAL-like buffer sharing following virtio-drivers pattern
-    fn share_buffer(&self, buf: &[u8]) -> u64 {
-        let va = VirtualAddress::from(buf.as_ptr() as usize);
-        // 使用内核页表进行虚拟地址到物理地址的转换
-        let vpn = va.floor();
-        let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
-        let pte = kernel_space
-            .translate(vpn)
-            .expect("Failed to translate virtual address to physical address");
-        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
+    fn va_to_pa_segments(&self, ptr: *const u8, len: usize) -> alloc::vec::Vec<(u64, u32)> {
+        let mut segments: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+        if len == 0 { return segments; }
+        let mut processed: usize = 0;
+        while processed < len {
+            let cur_va = VirtualAddress::from(ptr as usize + processed);
+            let page_off = cur_va.page_offset();
+            let remain = len - processed;
+            let to_page_end = PAGE_SIZE - page_off;
+            let chunk = core::cmp::min(remain, to_page_end);
 
-        pa as u64
-    }
-
-    fn share_buffer_mut(&self, buf: &mut [u8]) -> u64 {
-        let va = VirtualAddress::from(buf.as_ptr() as usize);
-        // 使用内核页表进行虚拟地址到物理地址的转换
-        let vpn = va.floor();
-        let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
-        let pte = kernel_space
-            .translate(vpn)
-            .expect("Failed to translate virtual address to physical address");
-        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
-
-        pa as u64
+            let pa = {
+                let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
+                match kernel_space.translate_va(cur_va) {
+                    Some(pa) => pa,
+                    None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
+                }
+            };
+            let addr = pa.as_usize() as u64;
+            segments.push((addr, chunk as u32));
+            processed += chunk;
+        }
+        segments
     }
 
     pub fn add_buffer(&mut self, inputs: &[&[u8]], outputs: &mut [&mut [u8]]) -> Option<u16> {
-        let total_needed = (inputs.len() + outputs.len()) as u16;
-        if total_needed == 0 {
-            return None;
+        // 预计算分段后的总描述符数量
+        let mut in_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+        let mut out_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+
+        for input in inputs.iter() {
+            in_segs.extend(self.va_to_pa_segments(input.as_ptr(), input.len()));
+        }
+        for output in outputs.iter_mut() {
+            out_segs.extend(self.va_to_pa_segments(output.as_ptr(), output.len()));
         }
 
+        let total_needed = (in_segs.len() + out_segs.len()) as u16;
+        if total_needed == 0 { return None; }
         if self.num_free < total_needed {
-            error!("[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
-                   total_needed, self.num_free);
+            error!(
+                "[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
+                total_needed, self.num_free
+            );
             return None;
         }
 
         let head = self.free_head;
         let mut desc_idx = head;
-        let outputs_len = outputs.len(); // Store length to avoid borrowing issues
 
-        // 添加输入缓冲区 - update shadow first, then write to actual
-        for (i, input) in inputs.iter().enumerate() {
-            let addr = self.share_buffer(input);
-            let len = input.len() as u32;
-            let flags = if i == inputs.len() - 1 && outputs_len == 0 {
-                0
-            } else {
-                VIRTQ_DESC_F_NEXT
-            };
+        // 填充输入段
+        for (seg_i, (addr, len)) in in_segs.iter().enumerate() {
+            let is_last_in = seg_i == in_segs.len() - 1;
+            let mut flags: u16 = 0;
+            if !(is_last_in && out_segs.is_empty()) {
+                flags |= VIRTQ_DESC_F_NEXT;
+            }
 
             let desc = &mut self.desc_shadow[desc_idx as usize];
-            desc.addr = addr;
-            desc.len = len;
+            desc.addr = *addr;
+            desc.len = *len;
             desc.flags = flags;
 
             let next_idx = desc.next;
-            self.write_desc(desc_idx); // Write to actual descriptor
-
-            if i < inputs.len() - 1 || outputs_len > 0 {
+            self.write_desc(desc_idx);
+            if !is_last_in || !out_segs.is_empty() {
                 desc_idx = next_idx;
             }
         }
 
-        // 添加输出缓冲区 - update shadow first, then write to actual
-        for (i, output) in outputs.iter_mut().enumerate() {
-            let addr = self.share_buffer_mut(output);
-            let len = output.len() as u32;
-            let flags = VIRTQ_DESC_F_WRITE
-                | if i == outputs_len - 1 {
-                    0
-                } else {
-                    VIRTQ_DESC_F_NEXT
-                };
+        // 填充输出段
+        for (seg_i, (addr, len)) in out_segs.iter().enumerate() {
+            let is_last_out = seg_i == out_segs.len() - 1;
+            let mut flags: u16 = VIRTQ_DESC_F_WRITE;
+            if !is_last_out { flags |= VIRTQ_DESC_F_NEXT; }
 
             let desc = &mut self.desc_shadow[desc_idx as usize];
-            desc.addr = addr;
-            desc.len = len;
+            desc.addr = *addr;
+            desc.len = *len;
             desc.flags = flags;
 
             let next_idx = desc.next;
-            self.write_desc(desc_idx); // Write to actual descriptor
-
-            if i < outputs_len - 1 {
-                desc_idx = next_idx;
-            }
+            self.write_desc(desc_idx);
+            if !is_last_out { desc_idx = next_idx; }
         }
 
-        // 更新free_head
+        // 更新free_head与计数
         self.free_head = self.desc_shadow[desc_idx as usize].next;
-        self.num_free -= (inputs.len() + outputs_len) as u16;
+        self.num_free -= total_needed;
 
         Some(head)
     }
