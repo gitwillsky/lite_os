@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, drivers::GoldfishRTC, task::add_sleeping_task};
+use crate::{arch::sbi, board, config, drivers::GoldfishRTCDevice, task::add_sleeping_task};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -22,10 +22,10 @@ const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
 static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
 
 // 全局 RTC 设备实例
-static RTC_DEVICE: Mutex<Option<GoldfishRTC>> = Mutex::new(None);
+static RTC_DEVICE: Mutex<Option<GoldfishRTCDevice>> = Mutex::new(None);
 
 // 初始化 RTC 设备
-fn init_rtc_device() -> Option<GoldfishRTC> {
+fn init_rtc_device() -> Option<GoldfishRTCDevice> {
     let board_info = board::board_info();
     debug!("Checking for RTC device...");
 
@@ -42,7 +42,7 @@ fn init_rtc_device() -> Option<GoldfishRTC> {
         }
 
         // 使用 MmioBus 创建 RTC 设备
-        match GoldfishRTC::new(rtc_info) {
+        match GoldfishRTCDevice::new(rtc_info) {
             Ok(rtc) => {
                 debug!("Successfully initialized Goldfish RTC device");
                 Some(rtc)

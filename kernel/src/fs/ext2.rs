@@ -1017,6 +1017,7 @@ impl Ext2FileSystem {
             self.device
                 .read_block(fs_block_id as usize, buf)
                 .map_err(|_| FileSystemError::IoError)
+                .map(|_| ())
         } else if fs_block_size > dev_block_size {
             // Filesystem block spans multiple device blocks
             let dev_blocks_per_fs_block = fs_block_size / dev_block_size;
@@ -1058,6 +1059,7 @@ impl Ext2FileSystem {
             self.device
                 .write_block(fs_block_id as usize, buf)
                 .map_err(|_| FileSystemError::IoError)
+                .map(|_| ())
         } else if fs_block_size > dev_block_size {
             // Filesystem block spans multiple device blocks
             let dev_blocks_per_fs_block = fs_block_size / dev_block_size;
@@ -1086,6 +1088,7 @@ impl Ext2FileSystem {
             self.device
                 .write_block(dev_block, &dev_buf)
                 .map_err(|_| FileSystemError::IoError)
+                .map(|_| ())
         }
     }
 

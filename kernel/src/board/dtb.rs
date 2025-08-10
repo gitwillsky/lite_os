@@ -24,6 +24,13 @@ pub struct RTCDevice {
     pub irq: u32,
 }
 
+/// PLIC 中断控制器信息
+#[derive(Debug, Clone, Copy)]
+pub struct PLICDevice {
+    pub base_addr: usize,
+    pub size: usize,
+}
+
 impl RTCDevice {
     pub const fn new() -> Self {
         Self {
@@ -46,6 +53,7 @@ pub struct BoardInfo {
     pub virtio_devices: [Option<VirtIODevice>; 20],
     pub virtio_count: usize,
     pub rtc_device: Option<RTCDevice>,
+    pub plic_device: Option<PLICDevice>,
 }
 
 impl<const N: usize> Display for StringInLine<N> {
@@ -70,6 +78,9 @@ impl Display for BoardInfo {
         if let Some(rtc) = self.rtc_device {
             writeln!(f, "RTC Device: base={:#x}, size={:#x}, irq={}", rtc.base_addr, rtc.size, rtc.irq)?;
         }
+        if let Some(plic) = self.plic_device {
+            writeln!(f, "PLIC Device: base={:#x}, size={:#x}", plic.base_addr, plic.size)?;
+        }
         for i in 0..self.virtio_count {
             if let Some(dev) = &self.virtio_devices[i] {
                 writeln!(f, "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}", i, dev.base_addr, dev.base_addr + dev.size, dev.irq)?;
@@ -90,6 +101,7 @@ impl BoardInfo {
         const CLINT: &str = "clint";
         const VIRTIO: &str = "virtio_mmio";
         const RTC: &str = "rtc";
+        const PLIC: &str = "plic";
 
         let mut ans = BoardInfo {
             dtb: dtb_addr..dtb_addr,
@@ -103,6 +115,7 @@ impl BoardInfo {
             virtio_devices: [None; 20],
             virtio_count: 0,
             rtc_device: None,
+            plic_device: None,
         };
 
         // 用于临时存储当前 VirtIO 设备的信息
@@ -112,6 +125,9 @@ impl BoardInfo {
         // 用于临时存储当前 RTC 设备的信息
         let mut current_rtc_reg: Option<Range<usize>> = None;
         let mut current_rtc_irq: Option<u32> = None;
+        
+        // 用于临时存储当前 PLIC 设备的信息
+        let mut current_plic_reg: Option<Range<usize>> = None;
 
         let dtb = unsafe {
             Dtb::from_raw_parts_filtered(dtb_addr as *const u8, |node| {
@@ -150,6 +166,7 @@ impl BoardInfo {
                         || name.starts_with(SERIAL)
                         || name.starts_with(VIRTIO)
                         || name.starts_with(RTC)
+                        || name.starts_with(PLIC)
                     {
                         if name.starts_with(VIRTIO) {
                             // SOC 下的 VirtIO 设备
@@ -159,6 +176,9 @@ impl BoardInfo {
                             // SOC 下的 RTC 设备
                             current_rtc_reg = None;
                             current_rtc_irq = None;
+                        } else if name.starts_with(PLIC) {
+                            // SOC 下的 PLIC 设备
+                            current_plic_reg = None;
                         }
                         WalkOperation::StepInto
                     } else {
@@ -222,6 +242,20 @@ impl BoardInfo {
                             });
                             current_rtc_reg = None;
                             current_rtc_irq = None;
+                        }
+                    }
+                    WalkOperation::StepOver
+                } else if node.starts_with(PLIC) {
+                    // PLIC 设备的 reg 属性
+                    if let Some(reg_range) = reg.next() {
+                        current_plic_reg = Some(reg_range);
+                        // PLIC 不需要 irq 属性，直接创建设备
+                        if let Some(range) = current_plic_reg.as_ref() {
+                            ans.plic_device = Some(PLICDevice {
+                                base_addr: range.start,
+                                size: range.end - range.start,
+                            });
+                            current_plic_reg = None;
                         }
                     }
                     WalkOperation::StepOver

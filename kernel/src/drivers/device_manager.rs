@@ -1,104 +1,293 @@
-use alloc::format;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use alloc::boxed::Box;
 
 use crate::board::board_info;
-use crate::drivers::hal::{BasicInterruptController, Device, DeviceType, InterruptController};
-use crate::drivers::{BlockDevice, VirtIOBlockDevice};
+use crate::drivers::hal::{
+    DeviceManager, Device, DeviceType, DeviceError,
+    interrupt::PlicInterruptController,
+    resource::SystemResourceManager,
+};
+use crate::drivers::GenericBlockDriver;
+use crate::drivers::{VirtIOBlockDevice, BlockDevice, register_block_device};
+use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
 use crate::fs::{FAT32FileSystem, Ext2FileSystem};
 use crate::fs::vfs::vfs;
 
-static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
-static HAL_DEVICES: Mutex<Vec<Arc<dyn Device>>> = Mutex::new(Vec::new());
-static INTERRUPT_CONTROLLER: Mutex<Option<BasicInterruptController>> = Mutex::new(None);
+/// 全局HAL设备管理器
+static DEVICE_MANAGER: spin::Once<spin::Mutex<DeviceManager>> = spin::Once::new();
 
+/// 获取全局设备管理器
+pub fn device_manager() -> &'static spin::Mutex<DeviceManager> {
+    DEVICE_MANAGER.call_once(|| {
+        let resource_manager = Box::new(SystemResourceManager::new());
+        let mut manager = DeviceManager::new(resource_manager);
+
+        // 初始化PLIC中断控制器 - 使用从DTB解析的地址
+        let board_info = crate::board::board_info();
+        if let Some(plic_dev) = &board_info.plic_device {
+            if let Ok(plic) = PlicInterruptController::new(plic_dev.base_addr, 1024, 8) {
+                let interrupt_controller = Arc::new(spin::Mutex::new(plic));
+                manager = manager.with_interrupt_controller(interrupt_controller);
+            }
+        }
+
+        spin::Mutex::new(manager)
+    })
+}
+
+/// 系统初始化入口点
 pub fn init() {
-    init_interrupt_controller();
-    scan_virtio_devices();
+    info!("[DeviceManager] Starting system device initialization");
+    
+    info!("[DeviceManager] About to call register_drivers");
+    // 注册驱动程序
+    register_drivers();
+    
+    info!("[DeviceManager] register_drivers completed successfully");
+
+    // 扫描和初始化设备
+    scan_and_init_devices();
+
+    // 初始化文件系统
     init_filesystems();
+
+    info!("[DeviceManager] Device initialization completed");
 }
 
-fn init_interrupt_controller() {
-    let mut controller = INTERRUPT_CONTROLLER.lock();
-    *controller = Some(BasicInterruptController::new());
-    debug!("[HAL] Interrupt controller initialized");
+/// 注册所有驱动程序
+fn register_drivers() {
+    info!("[DeviceManager] register_drivers: Getting device manager");
+    let manager = device_manager();
+    info!("[DeviceManager] register_drivers: Acquiring lock");
+    let mut mgr = manager.lock();
+
+    info!("[DeviceManager] register_drivers: Creating GenericBlockDriver");
+    // 注册通用块设备驱动
+    let block_driver = Arc::new(GenericBlockDriver::new());
+    info!("[DeviceManager] register_drivers: GenericBlockDriver created successfully");
+    if let Err(e) = mgr.register_driver(block_driver) {
+        error!("[DeviceManager] Failed to register block driver: {:?}", e);
+    } else {
+        info!("[DeviceManager] Registered generic block driver");
+    }
+
+    // 这里可以注册更多驱动程序
+    debug!("[DeviceManager] All drivers registered");
 }
 
-fn scan_virtio_devices() {
+/// 扫描并初始化所有设备
+fn scan_and_init_devices() {
     let board_info = board_info();
 
-    debug!("[device] Found {} VirtIO devices", board_info.virtio_count);
+    // 初始化VirtIO设备
+    init_virtio_devices(&board_info);
+
+    // 初始化RTC设备
+    init_rtc_devices(&board_info);
+
+    // 枚举所有已注册设备
+    enumerate_devices();
+}
+
+/// 初始化VirtIO设备
+fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
+    info!("[DeviceManager] Scanning {} VirtIO devices", board_info.virtio_count);
+    
+    // 输出详细的板级信息用于调试
+    info!("[DeviceManager] Board info debug:\n{}", board_info);
 
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
-            debug!("[device] Scanning VirtIO device {} at {:#x}", i, base_addr);
+            info!("[DeviceManager] Attempting to probe VirtIO device {} at {:#x}, size={:#x}", i, base_addr, virtio_dev.size);
 
-            if let Some(device) = VirtIOBlockDevice::new(base_addr) {
-                // 同时存储为BlockDevice和HAL Device
-                let block_device = device.clone() as Arc<dyn BlockDevice>;
-                let hal_device = device as Arc<dyn Device>;
-
-                BLOCK_DEVICES.lock().push(block_device);
-                HAL_DEVICES.lock().push(hal_device);
-
-                debug!(
-                    "[device] VirtIO Block device initialized at {:#x}",
-                    base_addr
-                );
+            // 尝试创建VirtIO块设备
+            info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
+            if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
+                // VirtIOBlockDevice 返回的是 Arc<Self>，我们需要将其转换
+                let virtio_arc = virtio_block;
+                
+                // 直接注册到块设备管理器
+                match register_block_device(virtio_arc.clone()) {
+                    Ok(device_id) => {
+                        info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}",
+                              device_id, base_addr);
+                    }
+                    Err(e) => {
+                        error!("[DeviceManager] Failed to register block device: {:?}", e);
+                    }
+                }
             }
         }
     }
 }
 
+/// 初始化RTC设备
+fn init_rtc_devices(board_info: &crate::board::BoardInfo) {
+    if let Some(rtc_info) = board_info.rtc_device.as_ref() {
+        info!("[DeviceManager] Initializing RTC device at {:#x}", rtc_info.base_addr);
+
+        match GoldfishRTCDevice::new(rtc_info.clone()) {
+            Ok(rtc_device) => {
+                let device = Box::new(rtc_device);
+                let manager = device_manager();
+                let mut mgr = manager.lock();
+
+                match mgr.add_device(device) {
+                    Ok(device_id) => {
+                        info!("[DeviceManager] RTC device #{} registered at {:#x}",
+                              device_id, rtc_info.base_addr);
+                    }
+                    Err(e) => {
+                        error!("[DeviceManager] Failed to add RTC device: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("[DeviceManager] Failed to create RTC device: {:?}", e);
+            }
+        }
+    }
+}
+
+/// 枚举所有已注册设备
+fn enumerate_devices() {
+    let manager = device_manager();
+    let mgr = manager.lock();
+
+    let devices = mgr.enumerate_devices();
+    info!("[DeviceManager] Total devices registered: {}", devices.len());
+
+    for (id, device_type, name, state) in devices {
+        info!("[DeviceManager] Device #{}: {} ({:?}) - State: {:?}",
+              id, name, device_type, state);
+    }
+
+    // 显示设备统计
+    let stats = mgr.get_device_stats();
+    for (state, count) in stats {
+        debug!("[DeviceManager] Devices in {:?} state: {}", state, count);
+    }
+}
+
+/// 初始化文件系统
 fn init_filesystems() {
-    let block_devices = block_devices();
+    use crate::drivers::{get_primary_block_device, get_all_block_devices};
+
+    let block_devices = get_all_block_devices();
     if block_devices.is_empty() {
-        error!("[device]: No block devices found");
+        warn!("[DeviceManager] No block devices found for filesystem initialization");
         return;
     }
 
-    let device = block_devices[0].clone();
+    info!("[DeviceManager] Found {} block device(s) for filesystem", block_devices.len());
 
-    if let Ok(fs) = Ext2FileSystem::new(device.clone()) {
-        if let Err(e) = vfs().mount("/", fs) {
-            error!("[device] File system mount failed: {:?}", e);
-        }
-    } else if let Ok(fs) = FAT32FileSystem::new(device) {
-        if let Err(e) = vfs().mount("/", fs) {
-            error!("[device] File system mount failed: {:?}", e);
-        }
-    } else {
-        error!("[device] Unable to create file system");
-    }
-}
+    // 使用第一个块设备初始化文件系统
+    if let Some(primary_device) = get_primary_block_device() {
+        info!("[DeviceManager] Attempting filesystem initialization on primary block device");
 
-pub fn block_devices() -> Vec<Arc<dyn BlockDevice>> {
-    BLOCK_DEVICES.lock().clone()
-}
-
-pub fn hal_devices() -> Vec<Arc<dyn Device>> {
-    HAL_DEVICES.lock().clone()
-}
-
-pub fn with_interrupt_controller<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&BasicInterruptController) -> R,
-{
-    let controller = INTERRUPT_CONTROLLER.lock();
-    controller.as_ref().map(f)
-}
-
-pub fn handle_external_interrupt() {
-    debug!("[device] Handling external interrupt");
-
-    if let Some(controller) = INTERRUPT_CONTROLLER.lock().as_ref() {
-        let pending = controller.pending_interrupts();
-        for vector in pending {
-            if let Err(e) = controller.handle_interrupt(vector) {
-                debug!("[HAL] Failed to handle interrupt {}: {}", vector, e);
+        // 尝试Ext2文件系统
+        if let Ok(ext2_fs) = Ext2FileSystem::new(primary_device.clone()) {
+            match vfs().mount("/", ext2_fs) {
+                Ok(()) => {
+                    info!("[DeviceManager] Ext2 filesystem mounted successfully at /");
+                    return;
+                }
+                Err(e) => {
+                    warn!("[DeviceManager] Ext2 filesystem mount failed: {:?}", e);
+                }
             }
         }
+
+        // 回退到FAT32文件系统
+        if let Ok(fat32_fs) = FAT32FileSystem::new(primary_device) {
+            match vfs().mount("/", fat32_fs) {
+                Ok(()) => {
+                    info!("[DeviceManager] FAT32 filesystem mounted successfully at /");
+                }
+                Err(e) => {
+                    error!("[DeviceManager] FAT32 filesystem mount failed: {:?}", e);
+                }
+            }
+        } else {
+            error!("[DeviceManager] Unable to create any supported filesystem");
+        }
     }
+}
+
+/// 处理外部中断
+pub fn handle_external_interrupt() {
+    let manager = device_manager();
+    let mgr = manager.lock();
+
+    // 使用新的HAL中断处理机制
+    for vector in 1..=64 {  // 假设支持64个中断向量
+        if let Err(e) = mgr.handle_device_interrupt(vector) {
+            // 只在调试模式下输出错误，避免中断处理中的过多日志
+            #[cfg(debug_assertions)]
+            debug!("[DeviceManager] Interrupt {} handling failed: {:?}", vector, e);
+        }
+    }
+}
+
+/// 挂起所有设备（电源管理）
+pub fn suspend_all_devices() -> Result<(), DeviceError> {
+    let manager = device_manager();
+    let mgr = manager.lock();
+
+    info!("[DeviceManager] Suspending all devices");
+    mgr.suspend_all_devices()
+}
+
+/// 恢复所有设备（电源管理）
+pub fn resume_all_devices() -> Result<(), DeviceError> {
+    let manager = device_manager();
+    let mgr = manager.lock();
+
+    info!("[DeviceManager] Resuming all devices");
+    mgr.resume_all_devices()
+}
+
+/// 获取设备统计信息
+pub fn get_device_statistics() {
+    let manager = device_manager();
+    let mgr = manager.lock();
+
+    let devices = mgr.enumerate_devices();
+    let stats = mgr.get_device_stats();
+
+    info!("=== Device Manager Statistics ===");
+    info!("Total devices: {}", devices.len());
+
+    for (state, count) in stats {
+        info!("  {:?}: {} devices", state, count);
+    }
+
+    info!("Device Details:");
+    for (id, device_type, name, state) in devices {
+        info!("  #{}: {} ({:?}) - {:?}", id, name, device_type, state);
+    }
+    info!("=== End Statistics ===");
+}
+
+/// 按类型查找设备
+pub fn find_devices_by_type(device_type: DeviceType) -> Vec<u32> {
+    let manager = device_manager();
+    let mgr = manager.lock();
+    mgr.find_devices_by_type(device_type)
+}
+
+/// 按驱动名称查找设备
+pub fn find_devices_by_driver(driver_name: &str) -> Vec<u32> {
+    let manager = device_manager();
+    let mgr = manager.lock();
+    mgr.find_devices_by_driver(driver_name)
+}
+
+/// 获取设备引用
+pub fn get_device(device_id: u32) -> Option<Arc<spin::Mutex<Box<dyn Device>>>> {
+    let manager = device_manager();
+    let mgr = manager.lock();
+    mgr.get_device(device_id)
 }

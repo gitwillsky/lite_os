@@ -341,11 +341,15 @@ impl Device for VirtIOConsoleDevice {
         self.device.device_name()
     }
     
+    fn driver_name(&self) -> alloc::string::String {
+        self.device.driver_name()
+    }
+    
     fn state(&self) -> DeviceState {
         self.device.state()
     }
     
-    fn probe(&self) -> Result<bool, DeviceError> {
+    fn probe(&mut self) -> Result<bool, DeviceError> {
         self.device.probe()
     }
     
@@ -354,11 +358,19 @@ impl Device for VirtIOConsoleDevice {
     }
     
     fn reset(&mut self) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+        self.device.reset()
+    }
+    
+    fn shutdown(&mut self) -> Result<(), DeviceError> {
+        self.device.shutdown()
+    }
+    
+    fn remove(&mut self) -> Result<(), DeviceError> {
+        self.device.remove()
     }
     
     fn suspend(&mut self) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+        self.device.suspend()
     }
     
     fn resume(&mut self) -> Result<(), DeviceError> {
@@ -369,12 +381,32 @@ impl Device for VirtIOConsoleDevice {
         self.device.bus()
     }
     
+    fn resources(&self) -> alloc::vec::Vec<super::hal::resource::Resource> {
+        self.device.resources()
+    }
+    
+    fn request_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.device.request_resources(resource_manager)
+    }
+    
+    fn release_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.device.release_resources(resource_manager)
+    }
+    
     fn supports_interrupt(&self) -> bool {
         true
     }
     
-    fn set_interrupt_handler(&mut self, _handler: Box<dyn InterruptHandler>) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+    fn set_interrupt_handler(&mut self, vector: super::hal::InterruptVector, handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+        self.device.set_interrupt_handler(vector, handler)
+    }
+    
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }
 

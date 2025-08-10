@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::boxed::Box;
 use alloc::format;
 use super::bus::{Bus, MmioBus, BusError};
@@ -62,7 +62,8 @@ impl VirtIODevice {
         
         let name = format!("VirtIO-{}", device_id);
         
-        let inner = GenericDevice::new(device_type, device_id, vendor_id, name, bus);
+        let driver_name = "VirtIO Driver".to_string();
+        let inner = GenericDevice::new(device_type, device_id, vendor_id, name, driver_name, bus);
         
         Ok(Self {
             inner,
@@ -207,11 +208,15 @@ impl Device for VirtIODevice {
         self.inner.device_name()
     }
     
+    fn driver_name(&self) -> String {
+        self.inner.driver_name()
+    }
+    
     fn state(&self) -> DeviceState {
         self.inner.state()
     }
     
-    fn probe(&self) -> Result<bool, DeviceError> {
+    fn probe(&mut self) -> Result<bool, DeviceError> {
         self.probe_virtio()
     }
     
@@ -233,6 +238,14 @@ impl Device for VirtIODevice {
         self.initialize()
     }
     
+    fn shutdown(&mut self) -> Result<(), DeviceError> {
+        self.inner.shutdown()
+    }
+    
+    fn remove(&mut self) -> Result<(), DeviceError> {
+        self.inner.remove()
+    }
+    
     fn suspend(&mut self) -> Result<(), DeviceError> {
         self.inner.suspend()
     }
@@ -245,11 +258,31 @@ impl Device for VirtIODevice {
         self.inner.bus()
     }
     
+    fn resources(&self) -> alloc::vec::Vec<super::resource::Resource> {
+        self.inner.resources()
+    }
+    
+    fn request_resources(&mut self, resource_manager: &mut dyn super::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.inner.request_resources(resource_manager)
+    }
+    
+    fn release_resources(&mut self, resource_manager: &mut dyn super::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.inner.release_resources(resource_manager)
+    }
+    
     fn supports_interrupt(&self) -> bool {
         true
     }
     
-    fn set_interrupt_handler(&mut self, handler: Box<dyn InterruptHandler>) -> Result<(), DeviceError> {
-        self.inner.set_interrupt_handler(handler)
+    fn set_interrupt_handler(&mut self, vector: InterruptVector, handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+        self.inner.set_interrupt_handler(vector, handler)
+    }
+    
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }

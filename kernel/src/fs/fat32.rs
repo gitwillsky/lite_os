@@ -384,7 +384,7 @@ impl ClusterManager {
         let sector_offset = sector_in_block * SECTOR_SIZE;
 
         let mut block_buf = vec![0u8; block_size];
-        if let Ok(()) = self.block_device.read_block(block_id, &mut block_buf) {
+        if let Ok(_) = self.block_device.read_block(block_id, &mut block_buf) {
             let fsinfo_data = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
             if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
                 let fsinfo = unsafe {
@@ -396,7 +396,7 @@ impl ClusterManager {
                     fsinfo.free_count = free_count;
 
                     match self.block_device.write_block(block_id, &block_buf) {
-                        Ok(()) => {
+                        Ok(_) => {
                         },
                         Err(_) => {
                             debug!("FSInfo write failed, will retry later");

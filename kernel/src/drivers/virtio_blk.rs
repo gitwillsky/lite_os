@@ -231,18 +231,20 @@ impl VirtIOBlockDevice {
 }
 
 impl BlockDevice for VirtIOBlockDevice {
-    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        self.perform_io(false, block_id, buf)
+    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        self.perform_io(false, block_id, buf)?;
+        Ok(buf.len())
     }
 
-    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);
         }
 
         let mut write_buf = [0u8; BLOCK_SIZE];
         write_buf.copy_from_slice(buf);
-        self.perform_io(true, block_id, &mut write_buf)
+        self.perform_io(true, block_id, &mut write_buf)?;
+        Ok(buf.len())
     }
 
     fn num_blocks(&self) -> usize {
@@ -271,24 +273,36 @@ impl Device for VirtIOBlockDevice {
         self.device.device_name()
     }
 
+    fn driver_name(&self) -> alloc::string::String {
+        self.device.driver_name()
+    }
+
     fn state(&self) -> DeviceState {
         self.device.state()
     }
 
-    fn probe(&self) -> Result<bool, DeviceError> {
-        self.device.probe()
+    fn probe(&mut self) -> Result<bool, DeviceError> {
+        Ok(true) // VirtIOBlockDevice is already initialized
     }
 
     fn initialize(&mut self) -> Result<(), DeviceError> {
-        Err(DeviceError::InvalidState)
+        Ok(()) // Already initialized in new()
     }
 
     fn reset(&mut self) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+        self.device.reset()
+    }
+
+    fn shutdown(&mut self) -> Result<(), DeviceError> {
+        self.device.shutdown()
+    }
+
+    fn remove(&mut self) -> Result<(), DeviceError> {
+        self.device.remove()
     }
 
     fn suspend(&mut self) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+        self.device.suspend()
     }
 
     fn resume(&mut self) -> Result<(), DeviceError> {
@@ -299,11 +313,31 @@ impl Device for VirtIOBlockDevice {
         self.device.bus()
     }
 
+    fn resources(&self) -> alloc::vec::Vec<super::hal::resource::Resource> {
+        self.device.resources()
+    }
+
+    fn request_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.device.request_resources(resource_manager)
+    }
+
+    fn release_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+        self.device.release_resources(resource_manager)
+    }
+
     fn supports_interrupt(&self) -> bool {
         self.device.supports_interrupt()
     }
 
-    fn set_interrupt_handler(&mut self, handler: Box<dyn super::hal::InterruptHandler>) -> Result<(), DeviceError> {
-        Err(DeviceError::NotSupported)
+    fn set_interrupt_handler(&mut self, vector: super::hal::InterruptVector, handler: Arc<dyn super::hal::InterruptHandler>) -> Result<(), DeviceError> {
+        self.device.set_interrupt_handler(vector, handler)
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
     }
 }

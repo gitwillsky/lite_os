@@ -108,6 +108,23 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         ).expect("Failed to map RTC MMIO memory");
     }
 
+    // PLIC 中断控制器映射
+    if let Some(plic_dev) = &board_info.plic_device {
+        debug!(
+            "[init_kernel_space] PLIC MMIO: {:#x} - {:#x}",
+            plic_dev.base_addr, plic_dev.base_addr + plic_dev.size
+        );
+        memory_set.push(
+            MapArea::new(
+                plic_dev.base_addr.into(),
+                (plic_dev.base_addr + plic_dev.size).into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        ).expect("Failed to map PLIC MMIO memory");
+    }
+
     // kernel text section
     let stext_addr = stext as usize;
     let etext_addr = etext as usize;

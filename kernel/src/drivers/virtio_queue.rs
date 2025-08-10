@@ -2,6 +2,7 @@ use crate::memory::{
     address::{PhysicalAddress, VirtualAddress},
     frame_allocator::{self, FrameTracker},
 };
+use crate::drivers::hal::memory::{DmaBuffer, MemoryError};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
@@ -16,6 +17,36 @@ pub const VIRTQ_USED_F_NO_NOTIFY: u16 = 1;
 
 // VirtIO Available Ring 标志
 pub const VIRTQ_AVAIL_F_NO_INTERRUPT: u16 = 1;
+
+/// VirtIO队列错误类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VirtQueueError {
+    InvalidSize,
+    OutOfMemory,
+    NoFreeDescriptors,
+    InvalidDescriptor,
+    QueueFull,
+    BufferTooLarge,
+    DmaError,
+}
+
+impl From<MemoryError> for VirtQueueError {
+    fn from(_: MemoryError) -> Self {
+        VirtQueueError::DmaError
+    }
+}
+
+/// VirtIO队列统计信息
+#[derive(Debug, Clone, Default)]
+pub struct VirtQueueStats {
+    pub total_requests: u64,
+    pub completed_requests: u64,
+    pub failed_requests: u64,
+    pub bytes_transferred: u64,
+    pub average_latency_ns: u64,
+    pub queue_full_events: u64,
+    pub descriptor_exhaustion: u64,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +93,9 @@ pub struct VirtQueue {
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
+    // 统计信息和管理数据
+    stats: VirtQueueStats,
+    creation_time: u64, // 队列创建时间，用于调试
 }
 
 impl VirtQueue {
@@ -140,6 +174,8 @@ impl VirtQueue {
             queue_token,
             desc_shadow,
             _frame_tracker: frame_tracker,
+            stats: VirtQueueStats::default(),
+            creation_time: 0, // 简化实现，后续可以对接RTC
         })
     }
 
@@ -370,6 +406,108 @@ impl VirtQueue {
         // debug!("[VIRTIO_QUEUE] Force recycling descriptors starting from {}", head);
         self.recycle_descriptors(head);
         // debug!("[VIRTIO_QUEUE] After force recycle: {} free descriptors", self.num_free);
+    }
+
+    /// 获取队列统计信息
+    pub fn get_stats(&self) -> &VirtQueueStats {
+        &self.stats
+    }
+
+    /// 重置队列统计信息
+    pub fn reset_stats(&mut self) {
+        self.stats = VirtQueueStats::default();
+    }
+
+    /// 获取队列健康状态
+    pub fn health_check(&self) -> Result<(), VirtQueueError> {
+        // 检查基本队列状态
+        if self.num_free > self.size {
+            error!("[VirtQueue] Invalid state: num_free ({}) > size ({})", 
+                   self.num_free, self.size);
+            return Err(VirtQueueError::InvalidDescriptor);
+        }
+
+        // 检查可用描述符数量是否合理
+        if self.num_free == 0 && self.stats.total_requests > 0 {
+            warn!("[VirtQueue] No free descriptors available, may indicate resource leak");
+        }
+
+        // 检查完成率
+        let completion_rate = if self.stats.total_requests > 0 {
+            (self.stats.completed_requests * 100) / self.stats.total_requests
+        } else {
+            100
+        };
+
+        if completion_rate < 95 && self.stats.total_requests > 10 {
+            warn!("[VirtQueue] Low completion rate: {}%", completion_rate);
+        }
+
+        Ok(())
+    }
+
+    /// 更新统计信息 - 请求开始
+    pub fn record_request_start(&mut self, bytes: usize) {
+        self.stats.total_requests += 1;
+        self.stats.bytes_transferred += bytes as u64;
+        
+        if self.num_free == 0 {
+            self.stats.queue_full_events += 1;
+        }
+    }
+
+    /// 更新统计信息 - 请求完成
+    pub fn record_request_completion(&mut self, success: bool) {
+        if success {
+            self.stats.completed_requests += 1;
+        } else {
+            self.stats.failed_requests += 1;
+        }
+    }
+
+    /// 获取队列使用率百分比
+    pub fn utilization_percent(&self) -> u16 {
+        ((self.size - self.num_free) * 100) / self.size
+    }
+
+    /// 获取队列年龄（自创建以来的时间）
+    pub fn age_ms(&self) -> u64 {
+        // 简化实现，返回固定值
+        // 在实际系统中应该计算当前时间与 creation_time 的差值
+        1000
+    }
+
+    /// 获取队列信息用于调试
+    pub fn debug_info(&self) -> alloc::string::String {
+        use alloc::format;
+        format!("VirtQueue[token={}]: size={}, free={}, utilization={}%, requests={}/{}, errors={}",
+                self.queue_token, 
+                self.size, 
+                self.num_free,
+                self.utilization_percent(),
+                self.stats.completed_requests,
+                self.stats.total_requests,
+                self.stats.failed_requests)
+    }
+
+    /// 检查队列是否接近满载
+    pub fn is_nearly_full(&self) -> bool {
+        self.utilization_percent() > 80
+    }
+
+    /// 检查队列是否为空
+    pub fn is_empty(&self) -> bool {
+        self.num_free == self.size
+    }
+
+    /// 检查队列是否完全满载
+    pub fn is_full(&self) -> bool {
+        self.num_free == 0
+    }
+
+    /// 获取可用描述符数量占比
+    pub fn free_descriptor_ratio(&self) -> f32 {
+        (self.num_free as f32) / (self.size as f32)
     }
 }
 
