@@ -136,7 +136,19 @@ def collect_binaries():
             dest_name = os.path.basename(wasm_file)
             root_entries.append((wasm_file, f"/{dest_name}"))
 
-    return bin_entries, root_entries
+    # 额外：收集字体文件，放入 /fonts/
+    font_sources = []
+    # 项目根目录下的 .ttf
+    for ttf in glob.glob("*.ttf"):
+        if os.path.isfile(ttf):
+            font_sources.append((ttf, f"/fonts/{os.path.basename(ttf)}"))
+    # fonts/ 子目录下的 .ttf
+    if os.path.isdir("fonts"):
+        for ttf in glob.glob(os.path.join("fonts", "*.ttf")):
+            if os.path.isfile(ttf):
+                font_sources.append((ttf, f"/fonts/{os.path.basename(ttf)}"))
+
+    return bin_entries, root_entries + font_sources
 
 def copy_files_to_ext2(image_path, debugfs_bin):
     """通过 debugfs 将文件写入 ext2 镜像。"""
@@ -145,6 +157,7 @@ def copy_files_to_ext2(image_path, debugfs_bin):
     # 构建 debugfs 命令脚本
     commands = []
     commands.append("mkdir /bin")
+    commands.append("mkdir /fonts")
     for src, dst in bin_entries + root_entries:
         # debugfs 的 write 语法: write <native_file> <dest_file>
         commands.append(f"write {src} {dst}")
@@ -170,7 +183,7 @@ def copy_files_to_ext2(image_path, debugfs_bin):
     # 简单列出根目录
     try:
         print("\n文件系统内容 (根目录):")
-        result = subprocess.run([debugfs_bin, '-R', 'ls -l /', image_path], 
+        result = subprocess.run([debugfs_bin, '-R', 'ls -l /', image_path],
                               capture_output=True, text=True, check=True)
         print(result.stdout)
     except Exception:

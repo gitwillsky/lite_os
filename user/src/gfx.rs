@@ -2,6 +2,7 @@
 
 use crate::syscall::syscall;
 use alloc::vec::Vec;
+// use alloc::string::String;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -56,6 +57,159 @@ impl<'a, T> Drop for SpinLockGuard<'a, T> {
 }
 
 static GFX: SpinLock<Option<GlobalGfx>> = SpinLock::new(None);
+// 几何与轮廓收集
+#[derive(Clone, Copy)]
+struct LineSeg { x0: f32, y0: f32, x1: f32, y1: f32 }
+
+struct OutlineCollector {
+    edges: Vec<LineSeg>,
+    sx: f32, sy: f32,   // scale
+    ox: f32, oy: f32,   // offset
+    last_x: f32,
+    last_y: f32,
+    start_x: f32,
+    start_y: f32,
+}
+
+impl OutlineCollector {
+    fn new(scale: f32, ox: f32, oy: f32) -> Self {
+        Self { edges: Vec::new(), sx: scale, sy: scale, ox, oy, last_x: 0.0, last_y: 0.0, start_x: 0.0, start_y: 0.0 }
+    }
+}
+
+impl ttf_parser::OutlineBuilder for OutlineCollector {
+    fn move_to(&mut self, _x: f32, _y: f32) {
+        self.last_x = _x * self.sx + self.ox; self.last_y = _y * self.sy + self.oy;
+        self.start_x = self.last_x; self.start_y = self.last_y;
+    }
+    fn line_to(&mut self, _x: f32, _y: f32) {
+        let x = _x * self.sx + self.ox; let y = _y * self.sy + self.oy;
+        self.edges.push(LineSeg { x0: self.last_x, y0: self.last_y, x1: x, y1: y });
+        self.last_x = x; self.last_y = y;
+    }
+    fn quad_to(&mut self, _x1: f32, _y1: f32, _x: f32, _y: f32) {
+        // 二次贝塞尔折线化（固定细分 N）
+        let n = 16;
+        let mut px = self.last_x; let mut py = self.last_y;
+        let x1 = _x1 * self.sx + self.ox; let y1 = _y1 * self.sy + self.oy;
+        let x2 = _x * self.sx + self.ox; let y2 = _y * self.sy + self.oy;
+        for i in 1..=n {
+            let t = i as f32 / n as f32;
+            let it = 1.0 - t;
+            let x = it*it* self.last_x + 2.0*it*t*x1 + t*t*x2;
+            let y = it*it* self.last_y + 2.0*it*t*y1 + t*t*y2;
+            self.edges.push(LineSeg { x0: px, y0: py, x1: x, y1: y });
+            px = x; py = y;
+        }
+        self.last_x = x2; self.last_y = y2;
+    }
+    fn curve_to(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _x: f32, _y: f32) {
+        // 三次贝塞尔折线化（固定细分 N）
+        let n = 22;
+        let mut px = self.last_x; let mut py = self.last_y;
+        let x1 = _x1 * self.sx + self.ox; let y1 = _y1 * self.sy + self.oy;
+        let x2 = _x2 * self.sx + self.ox; let y2 = _y2 * self.sy + self.oy;
+        let x3 = _x * self.sx + self.ox; let y3 = _y * self.sy + self.oy;
+        for i in 1..=n {
+            let t = i as f32 / n as f32; let it = 1.0 - t;
+            let x = it*it*it*self.last_x + 3.0*it*it*t*x1 + 3.0*it*t*t*x2 + t*t*t*x3;
+            let y = it*it*it*self.last_y + 3.0*it*it*t*y1 + 3.0*it*t*t*y2 + t*t*t*y3;
+            self.edges.push(LineSeg { x0: px, y0: py, x1: x, y1: y });
+            px = x; py = y;
+        }
+        self.last_x = x3; self.last_y = y3;
+    }
+    fn close(&mut self) {
+        self.edges.push(LineSeg { x0: self.last_x, y0: self.last_y, x1: self.start_x, y1: self.start_y });
+    }
+}
+
+//
+
+fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
+    // 简易扫描线填充（偶奇规则），按整数像素栅格；无抗锯齿
+    let mut guard = GFX.lock();
+    let Some(ref mut g) = *guard else { return };
+    let (sw, sh) = (g.info.width as i32, g.info.height as i32);
+
+    // 计算字形包围盒，减少扫描范围
+    let mut min_y = i32::MAX; let mut max_y = i32::MIN;
+    for e in edges.iter() {
+        let y0f = libm::floorf(e.y0) as i32;
+        let y1f = libm::floorf(e.y1) as i32;
+        let y0c = libm::ceilf(e.y0) as i32;
+        let y1c = libm::ceilf(e.y1) as i32;
+        min_y = min_y.min(y0f).min(y1f);
+        max_y = max_y.max(y0c).max(y1c);
+    }
+    min_y = min_y.max(0); max_y = max_y.min(sh - 1);
+
+    let r = ((color >> 16) & 0xFF) as u8;
+    let gch = ((color >> 8) & 0xFF) as u8;
+    let b = (color & 0xFF) as u8;
+    let a = ((color >> 24) & 0xFF) as u8;
+
+    for y in min_y..=max_y {
+        // 收集与扫描线相交的 x 交点
+        let y_f = y as f32 + 0.5;
+        let mut xs: [f32; 1024] = [0.0; 1024];
+        let mut cnt = 0usize;
+        for e in edges.iter() {
+            // 跳过水平边
+            if libm::fabsf(e.y0 - e.y1) < 1e-6 { continue; }
+            let (ymin, ymax, x0, y0, x1, y1) = if e.y0 < e.y1 { (e.y0, e.y1, e.x0, e.y0, e.x1, e.y1) } else { (e.y1, e.y0, e.x1, e.y1, e.x0, e.y0) };
+            if y_f < ymin || y_f >= ymax { continue; }
+            let t = (y_f - y0) / (y1 - y0);
+            let x = x0 + t * (x1 - x0);
+            if cnt < xs.len() { xs[cnt] = x; cnt += 1; }
+        }
+
+        // 排序交点
+        for i in 0..cnt { let mut j = i; while j > 0 && xs[j-1] > xs[j] { let tmp = xs[j-1]; xs[j-1] = xs[j]; xs[j] = tmp; j -= 1; } }
+
+        // 成对填充区间
+        let mut i = 0;
+        while i + 1 < cnt {
+            let x0 = libm::ceilf(xs[i]) as i32; // 右取整，避免填充到边界外
+            let mut x1 = libm::floorf(xs[i+1]) as i32; // 左取整
+            if x1 < x0 { i += 2; continue; }
+            let x0c = x0.max(0); let x1c = x1.min(sw - 1);
+            if x0c <= x1c {
+                let row_off = (y as usize) * (sw as usize) * 4;
+                for x in x0c..=x1c {
+                    let idx = row_off + (x as usize) * 4;
+                    g.backbuffer[idx] = r; g.backbuffer[idx+1] = gch; g.backbuffer[idx+2] = b; g.backbuffer[idx+3] = a;
+                }
+            }
+            i += 2;
+        }
+    }
+}
+
+// TTF 渲染：占位实现，后续将以 ttf-parser + 简易栅格化替换
+pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, _font_bytes: &'static [u8]) -> bool {
+    // 实现：使用 ttf-parser 解析字形轮廓，折线化后扫描线填充
+    let face = match ttf_parser::Face::parse(_font_bytes, 0) { Ok(f) => f, Err(_) => return false };
+    let upem = face.units_per_em() as f32;
+    if upem <= 0.0 { return false; }
+    let scale = _size_px as f32 / upem;
+
+    let mut pen_x = _x;
+    let pen_y = _y;
+
+    for ch in _text.chars() {
+        let gid = match face.glyph_index(ch) { Some(id) => id, None => ttf_parser::GlyphId(0) };
+        // 采集并栅格化字形
+        let mut collector = OutlineCollector::new(scale, pen_x as f32, pen_y as f32);
+        let _ = face.outline_glyph(gid, &mut collector);
+        rasterize_edges(&collector.edges, _color);
+
+        // 前进光标
+        let adv = face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
+        pen_x += adv as i32;
+    }
+    true
+}
 
 #[inline(always)]
 pub fn gui_create_context() -> bool {
@@ -195,9 +349,16 @@ fn draw_char_scaled(ch: u8, x: i32, y: i32, color: u32, scale: u32) {
 
 pub fn draw_string_scaled(mut x: i32, y: i32, text: &str, color: u32, scale: u32) {
     let s = if scale > 1 { scale } else { 1 };
-    for &b in text.as_bytes() {
-        draw_char_scaled(b, x, y, color, s);
-        x += (FONT_WIDTH * s) as i32;
+    for ch in text.chars() {
+        let cp = ch as u32;
+        if cp < 128 {
+            draw_char_scaled(cp as u8, x, y, color, s);
+            x += (FONT_WIDTH * s) as i32;
+        } else {
+            // 非ASCII：暂以实心方块占位，后续用TTF渲染
+            gui_fill_rect_xywh(x, y, FONT_WIDTH * s, FONT_HEIGHT * s, color);
+            x += (FONT_WIDTH * s) as i32;
+        }
     }
 }
 

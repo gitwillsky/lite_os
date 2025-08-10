@@ -3,20 +3,33 @@
 
 #[macro_use]
 extern crate user_lib;
+extern crate alloc;
 
-use user_lib::{exec, exit, fork, wait, yield_, gfx};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use user_lib::{exec, exit, fork, gfx, read_file, wait, yield_};
 
 // 简单的 GUI 引导：在用户态驱动所有可视化
 #[inline(always)]
-fn gui_create() -> bool { gfx::gui_create_context() }
+fn gui_create() -> bool {
+    gfx::gui_create_context()
+}
 #[inline(always)]
-fn gui_clear(color: u32) { gfx::gui_clear(color) }
+fn gui_clear(color: u32) {
+    gfx::gui_clear(color)
+}
 #[inline(always)]
-fn gui_fill_rect(x: i32, y: i32, w: u32, h: u32, color: u32) { gfx::gui_fill_rect_xywh(x,y,w,h,color) }
+fn gui_fill_rect(x: i32, y: i32, w: u32, h: u32, color: u32) {
+    gfx::gui_fill_rect_xywh(x, y, w, h, color)
+}
 #[inline(always)]
-fn gui_draw_text_big(x: i32, y: i32, text: &str, color: u32, scale: u32) { gfx::draw_string_scaled(x,y,text,color,scale) }
+fn gui_draw_text_big(x: i32, y: i32, text: &str, color: u32, scale: u32) {
+    gfx::draw_string_scaled(x, y, text, color, scale)
+}
 #[inline(always)]
-fn gui_flush() { gfx::gui_flush() }
+fn gui_flush() {
+    gfx::gui_flush()
+}
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -32,23 +45,58 @@ fn main() -> i32 {
 
         // 阶段2：加载界面（简化的全屏进度条）
         let (mut w, mut h) = gfx::screen_size();
-        if w == 0 || h == 0 { w = 1280; h = 800; }
-        for p in 0..=100 {
-            // 背景条纹蓝色
-            for i in 0..10 { let y = (h/10*i) as i32; let c = 0xFF003C64u32 + ((9-i) as u32)*0x00010102; gui_fill_rect(0,y,w,h/10,c); }
-            let bw = w*3/5; let bh = 22u32; let bx = (w - bw)/2; let by = h*2/3;
-            gui_fill_rect(bx as i32, by as i32, bw as u32, bh as u32, 0xFF3A3A3A);
-            let filled = bw * p / 100;
-            if filled>0 { gui_fill_rect(bx as i32+1, by as i32+1, filled-1, bh-2, 0xFF0A56B5); }
-            gui_draw_text_big((w/2-40) as i32, (by+bh+28) as i32, "Loading...", 0xFFFFFFFF, 2);
-            gui_flush();
-            for _ in 0..10000 { user_lib::yield_(); }
+        if w == 0 || h == 0 {
+            w = 1280;
+            h = 800;
         }
+        // for p in 0..=100 {
+        //     // 背景条纹蓝色
+        //     for i in 0..10 {
+        //         let y = (h / 10 * i) as i32;
+        //         let c = 0xFF003C64u32 + ((9 - i) as u32) * 0x00010102;
+        //         gui_fill_rect(0, y, w, h / 10, c);
+        //     }
+        //     let bw = w * 3 / 5;
+        //     let bh = 22u32;
+        //     let bx = (w - bw) / 2;
+        //     let by = h * 2 / 3;
+        //     gui_fill_rect(bx as i32, by as i32, bw as u32, bh as u32, 0xFF3A3A3A);
+        //     let filled = bw * p / 100;
+        //     if filled > 0 {
+        //         gui_fill_rect(bx as i32 + 1, by as i32 + 1, filled - 1, bh - 2, 0xFF0A56B5);
+        //     }
+        //     gui_draw_text_big(
+        //         (w / 2 - 40) as i32,
+        //         (by + bh + 28) as i32,
+        //         "Loading...",
+        //         0xFFFFFFFF,
+        //         2,
+        //     );
+        //     gui_flush();
+        // }
 
-        // 阶段3：进入 shell 前的欢迎
+        // 阶段3：加载字体并用 TTF 渲染 UTF-8 文本
         gui_clear(0xFF000000);
-        gui_draw_text_big( (w/2-90) as i32, (h/2) as i32, "Launching Shell", 0xFFFFFFFF, 2);
-        gui_flush();
+        let mut font_buf: Vec<u8> = alloc::vec![0u8; 8 * 1024 * 1024];
+        let read_n = read_file("/fonts/NotoSans-Regular.ttf", &mut font_buf);
+        if read_n > 0 {
+            font_buf.truncate(read_n as usize);
+            let font_bytes: &'static [u8] = Box::leak(font_buf.into_boxed_slice());
+            let msg = "你好, LiteOS! 🌟 (TTF/UTF-8 渲染成功)";
+            let y = (h / 2 + 10) as i32;
+            let _ = gfx::draw_text_ttf(40, y, msg, 32, 0xFFFFFFFF, font_bytes);
+            gui_flush();
+        } else {
+            // 回退：ASCII 位图字体
+            gui_draw_text_big(
+                (w / 2 - 90) as i32,
+                (h / 2) as i32,
+                "Launching Shell",
+                0xFFFFFFFF,
+                2,
+            );
+            gui_flush();
+        }
     }
 
     spawn_shell(&mut shell_pid);
