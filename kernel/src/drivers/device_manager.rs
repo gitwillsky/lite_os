@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use crate::board::board_info;
 use crate::drivers::hal::{
     DeviceManager, Device, DeviceType, DeviceError,
-    interrupt::PlicInterruptController,
+    interrupt::{PlicInterruptController, InterruptPriority},
     resource::SystemResourceManager,
 };
 use crate::drivers::GenericBlockDriver;
@@ -40,11 +40,11 @@ pub fn device_manager() -> &'static spin::Mutex<DeviceManager> {
 /// 系统初始化入口点
 pub fn init() {
     info!("[DeviceManager] Starting system device initialization");
-    
+
     info!("[DeviceManager] About to call register_drivers");
     // 注册驱动程序
     register_drivers();
-    
+
     info!("[DeviceManager] register_drivers completed successfully");
 
     // 扫描和初始化设备
@@ -94,7 +94,7 @@ fn scan_and_init_devices() {
 /// 初始化VirtIO设备
 fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
     info!("[DeviceManager] Scanning {} VirtIO devices", board_info.virtio_count);
-    
+
     // 输出详细的板级信息用于调试
     info!("[DeviceManager] Board info debug:\n{}", board_info);
 
@@ -115,8 +115,8 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                     info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
                     if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
                         // VirtIOBlockDevice 返回的是 Arc<Self>，我们需要将其转换
-                        let virtio_arc = virtio_block;
-                        
+                        let virtio_arc = virtio_block.clone();
+
                         // 直接注册到块设备管理器
                         match register_block_device(virtio_arc.clone()) {
                             Ok(device_id) => {
@@ -127,11 +127,35 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                 error!("[DeviceManager] Failed to register block device: {:?}", e);
                             }
                         }
+
+                        // 注册中断处理器（如果有PLIC）
+                        // 使用全局设备管理器注册中断处理器（如已配置）
+                        if let Some(plic_dev) = &board_info.plic_device {
+                            let irq = virtio_dev.irq;
+                            if irq != 0 {
+                                let manager = device_manager();
+                                let mut dm = manager.lock();
+                                // 通过公共API获取中断控制器（若暴露），否则跳过
+                                if let Some(controller) = dm.get_interrupt_controller() {
+                                    let handler = virtio_block.irq_handler_for();
+                                    let mut ctrl = controller.lock();
+                                    if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
+                                        error!("[DeviceManager] Failed to register blk IRQ handler: {:?}", e);
+                                    } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::High) {
+                                        error!("[DeviceManager] Failed to set blk IRQ priority: {:?}", e);
+                                    } else if let Err(e) = ctrl.enable_interrupt(irq) {
+                                        error!("[DeviceManager] Failed to enable blk IRQ {}: {:?}", irq, e);
+                                    } else {
+                                        info!("[DeviceManager] Registered blk IRQ handler on vector {}", irq);
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         warn!("[DeviceManager] Failed to create VirtIO Block device at {:#x}", base_addr);
                     }
                 }
-                
+
                 // VirtIO GPU device (0x10)
                 16 => {
                     info!("[DeviceManager] Creating VirtioGpuDevice at {:#x}", base_addr);
@@ -145,7 +169,7 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                     let device = Box::new(gpu_device);
                                     let manager = device_manager();
                                     let mut mgr = manager.lock();
-                                    
+
                                     match mgr.add_device(device) {
                                         Ok(device_id) => {
                                             info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}",
@@ -274,12 +298,18 @@ pub fn handle_external_interrupt() {
     let manager = device_manager();
     let mgr = manager.lock();
 
-    // 使用新的HAL中断处理机制
-    for vector in 1..=64 {  // 假设支持64个中断向量
-        if let Err(e) = mgr.handle_device_interrupt(vector) {
-            // 只在调试模式下输出错误，避免中断处理中的过多日志
-            #[cfg(debug_assertions)]
-            debug!("[DeviceManager] Interrupt {} handling failed: {:?}", vector, e);
+    // 使用控制器的 pending_interrupts 获取并分发中断（适配 PLIC 的 claim/complete 流程）
+    if let Some(controller) = mgr.get_interrupt_controller() {
+        let mut ctrl = controller.lock();
+        let vectors = ctrl.pending_interrupts();
+        if !vectors.is_empty() {
+            debug!("[DeviceManager] Pending IRQs: {:?}", vectors);
+        }
+        for vector in vectors {
+            if let Err(e) = ctrl.handle_interrupt(vector) {
+                #[cfg(debug_assertions)]
+                debug!("[DeviceManager] Interrupt {} handling failed: {:?}", vector, e);
+            }
         }
     }
 }

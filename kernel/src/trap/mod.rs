@@ -297,10 +297,9 @@ extern "C" fn rust_trap_from_kernel() {
                         // 不做任务切换，仅返回，让普通调度循环运行
                     }
                     Interrupt::SupervisorExternal => {
-                        // 在内核态执行关键路径（如块设备队列操作）期间，
-                        // 处理外部中断可能导致驱动层重入，进而引发队列乱序/竞争。
-                        // 内核态下暂不分发外部中断，由驱动在合适位置主动轮询/确认，
-                        // 或由用户态trap路径进行处理。
+                        // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
+                        // 以便唤醒内核态等待 I/O 的任务，避免死等导致看门狗触发。
+                        crate::drivers::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
                         // 清SSIP

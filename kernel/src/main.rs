@@ -4,6 +4,7 @@
 #![allow(unused)]
 
 use crate::{memory::KERNEL_SPACE, task::CORE_MANAGER};
+use riscv::register;
 
 extern crate alloc;
 
@@ -46,6 +47,11 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         memory::init();
         timer::init_rtc();
         timer::enable_timer_interrupt();
+        // 使能外部中断与全局中断
+        unsafe {
+            register::sie::set_sext();
+            register::sstatus::set_sie();
+        }
         watchdog::init();
         fs::vfs::init();
         drivers::init();
@@ -60,6 +66,11 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         trap::init();
         KERNEL_SPACE.wait().lock().active();
         timer::enable_timer_interrupt();
+        // 使能外部中断与全局中断（次核）
+        unsafe {
+            register::sie::set_sext();
+            register::sstatus::set_sie();
+        }
 
         CORE_MANAGER.activate_core(hart_id);
 
