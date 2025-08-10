@@ -128,6 +128,7 @@ pub fn sys_gui_flush() -> isize {
 }
 
 pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
+    info!("[GUI] sys_gui_flush_rects enter, rects_len={}", rects_len);
     if rects_ptr.is_null() || rects_len == 0 { return sys_gui_flush(); }
     let token = current_user_token();
     let bytes = core::mem::size_of::<Rect>() * rects_len;
@@ -145,10 +146,12 @@ pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
         copied += to;
     }
     if rects.is_empty() { return -1; }
-    match with_global_framebuffer(|fb| fb.flush_rects(&rects)) {
+    let ret = match with_global_framebuffer(|fb| fb.flush_rects(&rects)) {
         Some(Ok(_)) => 0,
         _ => -1,
-    }
+    };
+    info!("[GUI] sys_gui_flush_rects exit, ret={}", ret);
+    ret
 }
 
 // 以 RGBA8888 提交若干矩形，buf 中紧密按行存放每个矩形的像素，无行间 padding
