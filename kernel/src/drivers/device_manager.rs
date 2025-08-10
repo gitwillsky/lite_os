@@ -39,17 +39,10 @@ pub fn device_manager() -> &'static spin::Mutex<DeviceManager> {
 
 /// 系统初始化入口点
 pub fn init() {
-    info!("[DeviceManager] Starting system device initialization");
-
-    info!("[DeviceManager] About to call register_drivers");
     // 注册驱动程序
     register_drivers();
-
-    info!("[DeviceManager] register_drivers completed successfully");
-
     // 扫描和初始化设备
     scan_and_init_devices();
-
     // 初始化文件系统
     init_filesystems();
 
@@ -58,23 +51,14 @@ pub fn init() {
 
 /// 注册所有驱动程序
 fn register_drivers() {
-    info!("[DeviceManager] register_drivers: Getting device manager");
     let manager = device_manager();
-    info!("[DeviceManager] register_drivers: Acquiring lock");
     let mut mgr = manager.lock();
 
-    info!("[DeviceManager] register_drivers: Creating GenericBlockDriver");
     // 注册通用块设备驱动
     let block_driver = Arc::new(GenericBlockDriver::new());
-    info!("[DeviceManager] register_drivers: GenericBlockDriver created successfully");
     if let Err(e) = mgr.register_driver(block_driver) {
         error!("[DeviceManager] Failed to register block driver: {:?}", e);
-    } else {
-        info!("[DeviceManager] Registered generic block driver");
     }
-
-    // 这里可以注册更多驱动程序
-    debug!("[DeviceManager] All drivers registered");
 }
 
 /// 扫描并初始化所有设备

@@ -271,7 +271,6 @@ impl VirtioGpuDevice {
     }
 
     fn reset_device(&mut self) {
-        info!("[VirtIO-GPU] Resetting device");
         self.write32(MMIO_STATUS, 0);
 
         while self.read32(MMIO_STATUS) != 0 {
@@ -285,14 +284,11 @@ impl VirtioGpuDevice {
     }
 
     fn negotiate_features(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Negotiating features");
         // 读取设备特性（低/高32位）
         self.write32(MMIO_DEVICE_FEATURES_SEL, 0);
         let dev_feat_low = self.read32(MMIO_DEVICE_FEATURES);
         self.write32(MMIO_DEVICE_FEATURES_SEL, 1);
         let dev_feat_high = self.read32(MMIO_DEVICE_FEATURES);
-
-        info!("[VirtIO-GPU] Device features: high={:#x} low={:#x}", dev_feat_high, dev_feat_low);
 
         // 选择我们支持的特性
         let mut drv_feat_low: u32 = 0;
@@ -301,13 +297,11 @@ impl VirtioGpuDevice {
         // 设备特性：EDID（设备自定义bit 1）
         if (dev_feat_low & (1 << VIRTIO_GPU_F_EDID)) != 0 {
             drv_feat_low |= 1 << VIRTIO_GPU_F_EDID;
-            info!("[VirtIO-GPU] Enabling EDID support");
         }
 
         // 通用特性：VERSION_1（bit 32）
         if (dev_feat_high & (1 << (VIRTIO_F_VERSION_1_BIT - 32))) != 0 {
             drv_feat_high |= 1 << (VIRTIO_F_VERSION_1_BIT - 32);
-            info!("[VirtIO-GPU] Enabling VERSION_1");
         }
 
         // 必须在设置FEATURES_OK前设置ACKNOWLEDGE和DRIVER
@@ -331,11 +325,6 @@ impl VirtioGpuDevice {
     }
 
     fn setup_virtqueues(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Setting up VirtQueues");
-
-        let version = self.read32(MMIO_VERSION);
-        info!("[VirtIO-GPU] MMIO version={}", version);
-
         // 工具：向下取2的幂（返回<=x的最大2次幂，x>0）
         fn pow2_down(mut x: u16) -> u16 {
             if x == 0 { return 0; }
@@ -466,8 +455,6 @@ impl VirtioGpuDevice {
     }
 
     fn get_display_info(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Getting display information");
-
         let cmd = VirtioGpuCtrlHeader {
             command_type: VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
             flags: 0,
@@ -553,8 +540,6 @@ impl VirtioGpuDevice {
         for i in 0..VIRTIO_GPU_MAX_SCANOUTS {
             let mode = &response.pmodes[i];
             if mode.enabled != 0 && mode.r.width > 0 && mode.r.height > 0 {
-                info!("[VirtIO-GPU] Display {}: {}x{} at ({},{})",
-                      i, mode.r.width, mode.r.height, mode.r.x, mode.r.y);
                 self.display_modes.push(DisplayMode {
                     width: mode.r.width,
                     height: mode.r.height,
@@ -598,7 +583,7 @@ impl VirtioGpuDevice {
     }
 
     pub fn setup_framebuffer(&mut self, width: u32, height: u32) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Setting up framebuffer {}x{}", width, height);
+        debug!("[VirtIO-GPU] Setting up framebuffer {}x{}", width, height);
 
         let state = self.state();
         if !(state == DeviceState::Ready || state == DeviceState::Initializing) {
@@ -761,7 +746,7 @@ impl VirtioGpuDevice {
         self.current_width = width;
         self.current_height = height;
 
-        info!("[VirtIO-GPU] Framebuffer setup complete: {}x{}, {} bytes",
+        debug!("[VirtIO-GPU] Framebuffer setup complete: {}x{}, {} bytes",
               width, height, framebuffer_size);
 
         // 在 GPU 完成 framebuffer 建立后，创建并注册全局 Framebuffer，供 GUI 系统调用使用
@@ -953,8 +938,6 @@ impl Device for VirtioGpuDevice {
     }
 
     fn probe(&mut self) -> Result<bool, DeviceError> {
-        info!("[VirtIO-GPU] Probing VirtIO GPU device");
-
         self.base.set_state(DeviceState::Probing);
 
         if !self.check_device_id() {
@@ -963,13 +946,10 @@ impl Device for VirtioGpuDevice {
             return Ok(false);
         }
 
-        info!("[VirtIO-GPU] VirtIO GPU device detected");
         Ok(true)
     }
 
     fn initialize(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Initializing VirtIO GPU device");
-
         self.base.set_state(DeviceState::Initializing);
 
         self.reset_device();
@@ -997,27 +977,21 @@ impl Device for VirtioGpuDevice {
         let _ = self.flush_framebuffer();
 
         self.base.set_state(DeviceState::Ready);
-        info!("[VirtIO-GPU] VirtIO GPU device initialized successfully");
-
         Ok(())
     }
 
     fn reset(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Resetting device");
         self.reset_device();
         self.base.set_state(DeviceState::Uninitialized);
         Ok(())
     }
 
     fn shutdown(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Shutting down device");
         self.reset_device();
         Ok(())
     }
 
     fn remove(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Removing device");
-
         // 清理framebuffer内存
         if let (Some(virt_addr), Some(_phys_addr)) = (self.framebuffer_virt_addr, self.framebuffer_phys_addr) {
             if let Err(e) = KERNEL_SPACE.get().unwrap().lock().unmap_dma(virt_addr, self.framebuffer_size) {
@@ -1035,13 +1009,11 @@ impl Device for VirtioGpuDevice {
     }
 
     fn suspend(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Suspending device");
         self.base.set_state(DeviceState::Suspended);
         Ok(())
     }
 
     fn resume(&mut self) -> Result<(), DeviceError> {
-        info!("[VirtIO-GPU] Resuming device");
         self.base.set_state(DeviceState::Ready);
         Ok(())
     }
