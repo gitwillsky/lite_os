@@ -134,13 +134,13 @@ pub struct AdvancedHeapAllocator {
     // 堆边界
     heap_start: AtomicUsize,
     heap_end: AtomicUsize,
-    
+
     // 分大小类别的空闲链表头 (使用UnsafeCell以支持内部可变性)
     free_lists: UnsafeCell<[*mut FreeBlock; SIZE_CLASSES.len()]>,
-    
+
     // 统计信息
     stats: AllocatorStats,
-    
+
     // 初始化标志
     initialized: AtomicUsize,
 }
@@ -177,7 +177,7 @@ impl AdvancedHeapAllocator {
 
         self.heap_start.store(current_brk as usize, Ordering::Release);
         self.heap_end.store(current_brk as usize, Ordering::Release);
-        
+
         // 分配初始堆空间
         let initial_size = 8 * PAGE_SIZE; // 32KB 初始大小
         if self.expand_heap_internal(initial_size) {
@@ -211,12 +211,12 @@ impl AdvancedHeapAllocator {
     fn expand_heap_internal(&self, min_size: usize) -> bool {
         let aligned_size = self.align_size(min_size, PAGE_SIZE);
         let old_brk = sbrk(aligned_size as isize);
-        
+
         if old_brk > 0 {
             let old_end = self.heap_end.load(Ordering::Acquire);
             let new_end = old_end + aligned_size;
             self.heap_end.store(new_end, Ordering::Release);
-            
+
             // 将新分配的内存添加到空闲链表
             self.add_free_block(old_end, aligned_size);
             true
@@ -230,11 +230,11 @@ impl AdvancedHeapAllocator {
         let heap_start = self.heap_start.load(Ordering::Acquire);
         let heap_end = self.heap_end.load(Ordering::Acquire);
         let heap_size = heap_end - heap_start;
-        
+
         // 只有当堆很大且使用率很低时才收缩
         let current_usage = self.stats.current_usage.load(Ordering::Relaxed);
         let usage_ratio = if heap_size > 0 { (current_usage * 100) / heap_size } else { 100 };
-        
+
         // 如果使用率低于25%且堆大于1MB，尝试收缩
         if usage_ratio < 25 && heap_size > 1024 * 1024 {
             let shrink_size = self.find_shrinkable_memory();
@@ -251,35 +251,35 @@ impl AdvancedHeapAllocator {
     fn find_shrinkable_memory(&self) -> usize {
         let heap_end = self.heap_end.load(Ordering::Acquire);
         let mut shrink_size = 0;
-        
+
         // 从堆尾部开始查找连续的空闲块
         for &class_size in SIZE_CLASSES.iter().rev() {
             let class_index = self.get_size_class_index(class_size);
             let free_lists = unsafe { &mut *self.free_lists.get() };
             let mut current = free_lists[class_index];
-            
+
             while !current.is_null() {
                 unsafe {
                     let block = &*current;
                     if !block.is_valid() {
                         break;
                     }
-                    
+
                     let block_addr = current as usize;
                     let block_end = block_addr + block.size;
-                    
+
                     // 如果这个块在堆的末尾
                     if block_end == heap_end {
                         shrink_size += block.size;
                         // 从链表中移除这个块
                         self.remove_from_free_list(current);
                     }
-                    
+
                     current = block.next;
                 }
             }
         }
-        
+
         // 确保收缩大小页对齐
         self.align_size(shrink_size, PAGE_SIZE)
     }
@@ -294,7 +294,7 @@ impl AdvancedHeapAllocator {
         unsafe {
             let block = &mut *block_ptr;
             *block = FreeBlock::new(size);
-            
+
             // 尝试与相邻块合并
             self.coalesce_block(block_ptr);
         }
@@ -318,7 +318,7 @@ impl AdvancedHeapAllocator {
                 if let Some(prev_block) = self.find_previous_block(block_addr) {
                     let prev_addr = prev_block as usize;
                     let prev_end = prev_addr + (*prev_block).size;
-                    
+
                     if prev_end == block_addr && (*prev_block).is_valid() {
                         // 合并前一个块
                         self.remove_from_free_list(prev_block);
@@ -372,7 +372,7 @@ impl AdvancedHeapAllocator {
     /// 查找前一个块
     fn find_previous_block(&self, addr: usize) -> Option<*mut FreeBlock> {
         let heap_start = self.heap_start.load(Ordering::Acquire);
-        
+
         // 遍历所有空闲块，找到结束地址等于当前地址的块
         let free_lists = unsafe { &*self.free_lists.get() };
         for &head in free_lists {
@@ -383,14 +383,14 @@ impl AdvancedHeapAllocator {
                     if !block.is_valid() {
                         break;
                     }
-                    
+
                     let block_addr = current as usize;
                     let block_end = block_addr + block.size;
-                    
+
                     if block_end == addr && block_addr >= heap_start {
                         return Some(current);
                     }
-                    
+
                     current = block.next;
                 }
             }
@@ -409,14 +409,14 @@ impl AdvancedHeapAllocator {
             let class_index = self.get_size_class_index(block.size);
             let free_lists = unsafe { &mut *self.free_lists.get() };
             let old_head = free_lists[class_index];
-            
+
             block.next = old_head;
             block.prev = null_mut();
-            
+
             if !old_head.is_null() {
                 (*old_head).prev = block_ptr;
             }
-            
+
             free_lists[class_index] = block_ptr;
         }
     }
@@ -453,12 +453,12 @@ impl AdvancedHeapAllocator {
     /// 从空闲链表中查找合适的块
     fn find_free_block(&self, size: usize) -> Option<*mut FreeBlock> {
         let class_index = self.get_size_class_index(size);
-        
+
         // 从对应的size class开始查找
         let free_lists = unsafe { &*self.free_lists.get() };
         for i in class_index..SIZE_CLASSES.len() {
             let mut current = free_lists[i];
-            
+
             while !current.is_null() {
                 unsafe {
                     let block = &*current;
@@ -488,16 +488,16 @@ impl AdvancedHeapAllocator {
             self.remove_from_free_list(block_ptr);
 
             let remaining_size = block.size - needed_size;
-            
+
             // 如果剩余大小足够大，分割块
             if remaining_size >= size_of::<FreeBlock>() + MIN_BLOCK_SIZE {
                 let new_block_addr = (block_ptr as usize) + needed_size;
                 let new_block_ptr = new_block_addr as *mut FreeBlock;
                 let new_block = &mut *new_block_ptr;
-                
+
                 *new_block = FreeBlock::new(remaining_size);
                 self.add_to_free_list(new_block_ptr);
-                
+
                 // 更新原块大小
                 block.size = needed_size;
             }
@@ -506,7 +506,7 @@ impl AdvancedHeapAllocator {
             let allocated_block = block_ptr as *mut AllocatedBlock;
             let allocated = &mut *allocated_block;
             *allocated = AllocatedBlock::new(block.size);
-            
+
             allocated.get_data_ptr()
         }
     }
@@ -534,10 +534,12 @@ impl AdvancedHeapAllocator {
         }
 
         // 如果没有合适的空闲块，扩展堆
-        let expand_size = (total_size * 2).max(PAGE_SIZE * 4); // 至少扩展16KB
+        // 避免对大块分配成倍扩容导致一次申请过多内存（例如为32MiB分配直接申请64MiB）
+        // 这里按需扩容：至少满足本次需求，且不低于最小增长粒度（16KB）
+        let expand_size = core::cmp::max(total_size, PAGE_SIZE * 4);
         if self.expand_heap_internal(expand_size) {
             self.stats.record_expand(expand_size);
-            
+
             // 再次尝试分配
             if let Some(block_ptr) = self.find_free_block(total_size) {
                 let ptr = self.split_block(block_ptr, total_size);
@@ -560,7 +562,7 @@ impl AdvancedHeapAllocator {
         unsafe {
             let allocated_block = AllocatedBlock::from_data_ptr(ptr);
             let allocated = &*allocated_block;
-            
+
             if !allocated.is_valid() {
                 // 无效的块，可能是double free或corruption
                 return;
@@ -573,7 +575,7 @@ impl AdvancedHeapAllocator {
             let block_ptr = allocated_block as *mut FreeBlock;
             let block = &mut *block_ptr;
             *block = FreeBlock::new(size);
-            
+
             self.coalesce_block(block_ptr);
         }
 
