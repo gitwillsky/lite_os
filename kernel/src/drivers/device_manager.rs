@@ -315,11 +315,14 @@ fn init_filesystems() {
 
 /// 处理外部中断
 pub fn handle_external_interrupt() {
-    let manager = device_manager();
-    let mgr = manager.lock();
+    // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
+    let controller_opt = {
+        let manager = device_manager();
+        let mgr = manager.lock();
+        mgr.get_interrupt_controller()
+    };
 
-    // 使用控制器的 pending_interrupts 获取并分发中断（适配 PLIC 的 claim/complete 流程）
-    if let Some(controller) = mgr.get_interrupt_controller() {
+    if let Some(controller) = controller_opt {
         let mut ctrl = controller.lock();
         let vectors = ctrl.pending_interrupts();
         for vector in vectors {
