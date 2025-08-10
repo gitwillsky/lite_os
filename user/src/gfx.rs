@@ -13,6 +13,7 @@ pub struct GuiScreenInfo { pub width: u32, pub height: u32, pub bytes_per_pixel:
 struct GlobalGfx {
     info: GuiScreenInfo,
     backbuffer: Vec<u8>, // RGBA8888
+    default_font: Option<&'static [u8]>,
 }
 
 struct SpinLock<T> {
@@ -79,11 +80,12 @@ impl OutlineCollector {
 
 impl ttf_parser::OutlineBuilder for OutlineCollector {
     fn move_to(&mut self, _x: f32, _y: f32) {
-        self.last_x = _x * self.sx + self.ox; self.last_y = _y * self.sy + self.oy;
+        // TTF 坐标系 y 轴向上，屏幕 y 轴向下，因此需要对 y 取反
+        self.last_x = _x * self.sx + self.ox; self.last_y = self.oy - _y * self.sy;
         self.start_x = self.last_x; self.start_y = self.last_y;
     }
     fn line_to(&mut self, _x: f32, _y: f32) {
-        let x = _x * self.sx + self.ox; let y = _y * self.sy + self.oy;
+        let x = _x * self.sx + self.ox; let y = self.oy - _y * self.sy;
         self.edges.push(LineSeg { x0: self.last_x, y0: self.last_y, x1: x, y1: y });
         self.last_x = x; self.last_y = y;
     }
@@ -91,8 +93,8 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
         // 二次贝塞尔折线化（固定细分 N）
         let n = 16;
         let mut px = self.last_x; let mut py = self.last_y;
-        let x1 = _x1 * self.sx + self.ox; let y1 = _y1 * self.sy + self.oy;
-        let x2 = _x * self.sx + self.ox; let y2 = _y * self.sy + self.oy;
+        let x1 = _x1 * self.sx + self.ox; let y1 = self.oy - _y1 * self.sy;
+        let x2 = _x * self.sx + self.ox; let y2 = self.oy - _y * self.sy;
         for i in 1..=n {
             let t = i as f32 / n as f32;
             let it = 1.0 - t;
@@ -107,9 +109,9 @@ impl ttf_parser::OutlineBuilder for OutlineCollector {
         // 三次贝塞尔折线化（固定细分 N）
         let n = 22;
         let mut px = self.last_x; let mut py = self.last_y;
-        let x1 = _x1 * self.sx + self.ox; let y1 = _y1 * self.sy + self.oy;
-        let x2 = _x2 * self.sx + self.ox; let y2 = _y2 * self.sy + self.oy;
-        let x3 = _x * self.sx + self.ox; let y3 = _y * self.sy + self.oy;
+        let x1 = _x1 * self.sx + self.ox; let y1 = self.oy - _y1 * self.sy;
+        let x2 = _x2 * self.sx + self.ox; let y2 = self.oy - _y2 * self.sy;
+        let x3 = _x * self.sx + self.ox; let y3 = self.oy - _y * self.sy;
         for i in 1..=n {
             let t = i as f32 / n as f32; let it = 1.0 - t;
             let x = it*it*it*self.last_x + 3.0*it*it*t*x1 + 3.0*it*t*t*x2 + t*t*t*x3;
@@ -195,17 +197,20 @@ pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, 
     let scale = _size_px as f32 / upem;
 
     let mut pen_x = _x;
-    let pen_y = _y;
+    // 将基线设置为屏幕坐标，注意 TTF y 向上，OutlineCollector 内部已做翻转
+    let baseline_y = _y;
 
     for ch in _text.chars() {
         let gid = match face.glyph_index(ch) { Some(id) => id, None => ttf_parser::GlyphId(0) };
         // 采集并栅格化字形
-        let mut collector = OutlineCollector::new(scale, pen_x as f32, pen_y as f32);
+        let mut collector = OutlineCollector::new(scale, pen_x as f32, baseline_y as f32);
         let _ = face.outline_glyph(gid, &mut collector);
         rasterize_edges(&collector.edges, _color);
 
         // 前进光标
-        let adv = face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
+        // 计算水平方向 advance
+        let adv_units = face.glyph_hor_advance(gid).unwrap_or(0) as f32;
+        let adv = adv_units * scale;
         pen_x += adv as i32;
     }
     true
@@ -220,7 +225,7 @@ pub fn gui_create_context() -> bool {
     if syscall(311, [p, 0, 0]) < 0 { return false; }
     let size = (info.width as usize) * (info.height as usize) * 4usize;
     let mut guard = GFX.lock();
-    *guard = Some(GlobalGfx { info, backbuffer: vec![0u8; size] });
+    *guard = Some(GlobalGfx { info, backbuffer: vec![0u8; size], default_font: None });
     true
 }
 
@@ -275,6 +280,22 @@ pub fn gui_flush() {
         let _ = syscall(312, [g.backbuffer.as_ptr() as usize, g.backbuffer.len(), 0]); // present
     }
     let _ = syscall(310, [0,0,0]); // flush to device
+}
+
+// ============ 默认字体管理 ============
+
+pub fn set_default_font(font_bytes: &'static [u8]) {
+    let mut guard = GFX.lock();
+    if let Some(ref mut g) = *guard { g.default_font = Some(font_bytes); }
+}
+
+pub fn draw_text(x: i32, y: i32, text: &str, size_px: u32, color: u32) -> bool {
+    // 读取默认字体后立刻释放锁，避免与栅格化中的回缓冲写入锁嵌套
+    let font_opt: Option<&'static [u8]> = {
+        let guard = GFX.lock();
+        if let Some(ref g) = *guard { g.default_font } else { None }
+    };
+    if let Some(bytes) = font_opt { draw_text_ttf(x, y, text, size_px, color, bytes) } else { false }
 }
 
 pub const FONT_WIDTH: u32 = 8;

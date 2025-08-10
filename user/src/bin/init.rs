@@ -7,7 +7,8 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use user_lib::{exec, exit, fork, gfx, read_file, wait, yield_};
+use user_lib::{exec, exit, fork, gfx, wait, yield_, open, read, close};
+use user_lib::open_flags;
 
 // 简单的 GUI 引导：在用户态驱动所有可视化
 #[inline(always)]
@@ -33,14 +34,30 @@ fn gui_flush() {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    let mut shell_pid = None;
-
     // Start initial shell
     if gui_create() {
-        // 阶段1：黑底白字核心初始化提示（用户态模拟，避免内核耦合）
         gui_clear(0xFF000000);
-        gui_draw_text_big(40, 60, "Kernel starting...", 0xFFFFFFFF, 2);
-        gui_draw_text_big(40, 90, "Initializing drivers...", 0xFFFFFFFF, 2);
+        let candidates = [
+            "/fonts/NotoSans-Regular.ttf",
+            "/fonts/SourceHanSansCN-VF.ttf",
+        ];
+        let mut loaded = false;
+        for &path in &candidates {
+            if let Some(bytes) = load_font_static(path) {
+                gfx::set_default_font(bytes);
+                loaded = true;
+                break;
+            }
+        }
+
+        // 阶段1：核心初始化提示
+        if loaded {
+            let _ = gfx::draw_text(40, 60, "Kernel starting...", 24, 0xFFFFFFFF);
+            let _ = gfx::draw_text(40, 90, "Initializing drivers...", 24, 0xFFFFFFFF);
+        } else {
+            gui_draw_text_big(40, 60, "Kernel starting...", 0xFFFFFFFF, 2);
+            gui_draw_text_big(40, 90, "Initializing drivers...", 0xFFFFFFFF, 2);
+        }
         gui_flush();
 
         // 阶段2：加载界面（简化的全屏进度条）
@@ -75,31 +92,18 @@ fn main() -> i32 {
         //     gui_flush();
         // }
 
-        // 阶段3：加载字体并用 TTF 渲染 UTF-8 文本
+        // 阶段3：展示中文/UTF-8 文本（使用默认字体）
         gui_clear(0xFF000000);
-        let mut font_buf: Vec<u8> = alloc::vec![0u8; 8 * 1024 * 1024];
-        let read_n = read_file("/fonts/NotoSans-Regular.ttf", &mut font_buf);
-        if read_n > 0 {
-            font_buf.truncate(read_n as usize);
-            let font_bytes: &'static [u8] = Box::leak(font_buf.into_boxed_slice());
-            let msg = "你好, LiteOS! 🌟 (TTF/UTF-8 渲染成功)";
-            let y = (h / 2 + 10) as i32;
-            let _ = gfx::draw_text_ttf(40, y, msg, 32, 0xFFFFFFFF, font_bytes);
-            gui_flush();
-        } else {
+        let msg = "你好, LiteOS! 🌟 (TTF/UTF-8 渲染成功)";
+        let y = (h / 2 + 10) as i32;
+        if !gfx::draw_text(40, y, msg, 32, 0xFFFFFFFF) {
             // 回退：ASCII 位图字体
-            gui_draw_text_big(
-                (w / 2 - 90) as i32,
-                (h / 2) as i32,
-                "Launching Shell",
-                0xFFFFFFFF,
-                2,
-            );
-            gui_flush();
+            gui_draw_text_big((w / 2 - 90) as i32, (h / 2) as i32, "Launching Shell", 0xFFFFFFFF, 2);
         }
+        gui_flush();
     }
 
-    spawn_shell(&mut shell_pid);
+    spawn_shell();
 
     // Main process reaping loop
     loop {
@@ -110,25 +114,34 @@ fn main() -> i32 {
             yield_();
             continue;
         }
-
-        // // Check if the shell exited
-        // if let Some(current_shell_pid) = shell_pid {
-        //     if exited_pid as usize == current_shell_pid {
-        //         shell_pid = None;
-        //         spawn_shell(&mut shell_pid);
-        //     }
-        // }
     }
 }
 
-fn spawn_shell(shell_pid: &mut Option<usize>) {
+fn spawn_shell() {
     let pid = fork();
     if pid == 0 {
         let exit_code = exec("/bin/shell") as i32;
         exit(exit_code);
     } else if pid > 0 {
-        *shell_pid = Some(pid as usize);
+        // shell started
     } else {
         println!("init: failed to fork shell process");
     }
+}
+
+// 以小块读取字体；系统已支持按需扩栈，栈/堆方案均可，这里使用堆缓冲以保持占用可控
+fn load_font_static(path: &str) -> Option<&'static [u8]> {
+    let fd = open(path, open_flags::O_RDONLY) as i32;
+    if fd < 0 { return None; }
+    let mut data: Vec<u8> = Vec::new();
+    let mut scratch = alloc::vec![0u8; 16 * 1024];
+    loop {
+        let n = read(fd as usize, &mut scratch);
+        if n <= 0 { break; }
+        let n_usize = n as usize;
+        data.extend_from_slice(&scratch[..n_usize]);
+        if n_usize < scratch.len() { break; }
+    }
+    let _ = close(fd as usize);
+    if data.is_empty() { None } else { Some(Box::leak(data.into_boxed_slice())) }
 }

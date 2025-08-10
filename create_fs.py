@@ -138,15 +138,17 @@ def collect_binaries():
 
     # 额外：收集字体文件，放入 /fonts/
     font_sources = []
-    # 项目根目录下的 .ttf
-    for ttf in glob.glob("*.ttf"):
-        if os.path.isfile(ttf):
-            font_sources.append((ttf, f"/fonts/{os.path.basename(ttf)}"))
-    # fonts/ 子目录下的 .ttf
+    # 项目根目录下的 .ttf/.otf
+    for pattern in ("*.ttf", "*.otf"):
+        for font in glob.glob(pattern):
+            if os.path.isfile(font):
+                font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
+    # fonts/ 子目录下的 .ttf/.otf
     if os.path.isdir("fonts"):
-        for ttf in glob.glob(os.path.join("fonts", "*.ttf")):
-            if os.path.isfile(ttf):
-                font_sources.append((ttf, f"/fonts/{os.path.basename(ttf)}"))
+        for pattern in ("*.ttf", "*.otf"):
+            for font in glob.glob(os.path.join("fonts", pattern)):
+                if os.path.isfile(font):
+                    font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
 
     return bin_entries, root_entries + font_sources
 
