@@ -34,12 +34,18 @@ fn gui_flush() {
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // Start initial shell
+    // 先启动交互式 shell，避免大字体加载期间界面长时间黑屏
+    spawn_shell();
+
     if gui_create() {
         gui_clear(0xFF000000);
+        // 先显示占位文字并刷新，避免用户观感为“黑屏卡住”
+        gui_draw_text_big(40, 60, "Loading font...", 0xFFFFFFFF, 2);
+        gui_draw_text_big(40, 90, "Launching Shell...", 0xFFFFFFFF, 2);
+        gui_flush();
         let candidates = [
-            "/fonts/NotoSans-Regular.ttf",
             "/fonts/SourceHanSansCN-VF.ttf",
+            "/fonts/NotoSans-Regular.ttf",
         ];
         let mut loaded = false;
         for &path in &candidates {
@@ -103,7 +109,7 @@ fn main() -> i32 {
         gui_flush();
     }
 
-    spawn_shell();
+    // shell 已启动，无需再次启动
 
     // Main process reaping loop
     loop {
@@ -129,6 +135,8 @@ fn spawn_shell() {
     }
 }
 
+const MAX_FONT_BYTES: usize = 40 * 1024 * 1024; // 限制最大字体大小，避免>20MB卡顿
+
 // 以小块读取字体；系统已支持按需扩栈，栈/堆方案均可，这里使用堆缓冲以保持占用可控
 fn load_font_static(path: &str) -> Option<&'static [u8]> {
     let fd = open(path, open_flags::O_RDONLY) as i32;
@@ -140,6 +148,13 @@ fn load_font_static(path: &str) -> Option<&'static [u8]> {
         if n <= 0 { break; }
         let n_usize = n as usize;
         data.extend_from_slice(&scratch[..n_usize]);
+        // 超过阈值则放弃加载该字体，避免卡顿
+        if data.len() > MAX_FONT_BYTES {
+            let _ = close(fd as usize);
+            return None;
+        }
+        // 让出CPU避免长时间独占
+        yield_();
         if n_usize < scratch.len() { break; }
     }
     let _ = close(fd as usize);

@@ -1,6 +1,7 @@
 use crate::drivers::{get_global_framebuffer, with_global_framebuffer};
 use crate::memory::page_table::translated_byte_buffer;
 use crate::task::current_user_token;
+use crate::drivers::PixelFormat;
 
 pub const SYSCALL_GUI_CREATE_CONTEXT: usize = 300;
 pub const SYSCALL_GUI_DESTROY_CONTEXT: usize = 301;
@@ -53,7 +54,31 @@ pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
             return -1;
         }
 
-        // 顺序读取用户缓冲的 RGBA8888 像素并逐像素写入设备
+        // 快路径：帧缓冲就是 RGBA8888 且逐行无 padding，直接线性拷贝
+        if info.format == PixelFormat::RGBA8888 && info.pitch as usize == (info.width as usize) * 4 {
+            let mut copied: usize = 0;
+            let dst_ptr = fb.buffer_ptr();
+            let dst_size = fb.buffer_size();
+            if dst_size < expected_bytes { return -1; }
+
+            for seg in user_bufs.iter() {
+                if copied >= expected_bytes { break; }
+                let to_copy = core::cmp::min(seg.len(), expected_bytes - copied);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        seg.as_ptr(),
+                        dst_ptr.add(copied),
+                        to_copy,
+                    );
+                }
+                copied += to_copy;
+            }
+            if copied < expected_bytes { return -1; }
+            fb.mark_dirty();
+            return 0;
+        }
+
+        // 兼容路径：逐像素写入并由帧缓冲实现做颜色转换（较慢）
         let mut read_offset = 0usize;
         let mut next_byte = |user_bufs: &mut [&mut [u8]]| -> Option<u8> {
             let mut acc = 0usize;
@@ -71,7 +96,6 @@ pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
 
         for y in 0..info.height {
             for x in 0..info.width {
-                // 读取 4 字节 RGBA8888（A在高位），与现有颜色编码保持一致
                 let b0 = next_byte(&mut user_bufs).unwrap_or(0);
                 let b1 = next_byte(&mut user_bufs).unwrap_or(0);
                 let b2 = next_byte(&mut user_bufs).unwrap_or(0);
@@ -80,7 +104,6 @@ pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
                     | ((b0 as u32) << 16)
                     | ((b1 as u32) << 8)
                     | (b2 as u32);
-                // 让具体帧缓冲实现做颜色格式转换
                 let _ = fb.write_pixel(x, y, rgba8888);
             }
         }
