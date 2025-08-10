@@ -71,6 +71,11 @@ pub fn sys_getpid() -> isize {
     current_task().unwrap().pid() as isize
 }
 
+/// 获取线程ID（与PID等同，后续可扩展）
+pub fn sys_gettid() -> isize {
+    current_task().unwrap().pid() as isize
+}
+
 pub fn sys_fork() -> isize {
     let current_task = current_task().unwrap();
     let new_task = match current_task.fork() {
@@ -88,6 +93,61 @@ pub fn sys_fork() -> isize {
     task::add_task(new_task);
 
     new_pid as isize
+}
+
+/// 创建线程：在当前进程地址空间内生成一个轻量级任务
+/// 参数：entry 用户入口、user_sp 用户栈顶、arg 传入a0
+pub fn sys_thread_create(entry: usize, user_sp: usize, arg: usize) -> isize {
+    let current = current_task().unwrap();
+    match current.spawn_thread(entry, user_sp, arg) {
+        Ok(t) => {
+            let tid = t.pid();
+            crate::task::add_task(t);
+            tid as isize
+        }
+        Err(_) => -errno::ENOMEM,
+    }
+}
+
+/// 线程退出
+pub fn sys_thread_exit(code: i32) -> ! {
+    let task = current_task().unwrap();
+    // 主线程退出仍然走进程退出逻辑
+    if task.pid() == task.tgid() {
+        exit_current_and_run_next(code);
+    } else {
+        crate::task::exit_current_thread_and_run_next(code);
+    }
+    unreachable!()
+}
+
+/// 线程等待
+pub fn sys_thread_join(tid: usize, exit_code_ptr: *mut i32) -> isize {
+    use crate::task::{current_user_token, find_task_by_pid, set_task_status, TaskStatus};
+    let waiter = current_task().unwrap();
+    // 自己不能 join 自己
+    if waiter.pid() == tid { return -errno::EINVAL; }
+
+    loop {
+        if let Some(target) = find_task_by_pid(tid) {
+            if target.is_zombie() {
+                // 拿退出码
+                if !exit_code_ptr.is_null() {
+                    let token = current_user_token();
+                    unsafe { *translated_ref_mut(token, exit_code_ptr) = target.exit_code(); }
+                }
+                // 移除目标
+                crate::task::remove_task(tid);
+                return 0;
+            }
+            // 注册等待并睡眠
+            crate::task::task_manager::register_thread_join_waiter(tid, waiter.clone());
+            set_task_status(&waiter, TaskStatus::Sleeping);
+            block_current_and_run_next();
+        } else {
+            return -errno::ESRCH; // 不存在
+        }
+    }
 }
 
 pub fn sys_exec(path: *const u8) -> isize {

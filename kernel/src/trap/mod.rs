@@ -272,7 +272,7 @@ pub fn trap_return() -> ! {
             "fence.i",
             "jr {restore_va}",
             restore_va = in(reg) restore_va,
-            in("x10") TRAP_CONTEXT,
+            in("x10") crate::task::current_task().unwrap().trap_context_va(),
             in("x11") user_satp,
             options(noreturn)
         )

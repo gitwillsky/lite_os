@@ -57,6 +57,7 @@ const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
 const SYSCALL_YIELD: usize = 124;
 const SYSCALL_GETPID: usize = 172;
+const SYSCALL_GETTID: usize = 178;
 const SYSCALL_FORK: usize = 220;
 const SYSCALL_EXEC: usize = 221;
 const SYSCALL_EXECVE: usize = 222;
@@ -131,6 +132,11 @@ const SYSCALL_WATCHDOG_FEED: usize = 903;
 const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
 const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
 
+// 线程相关系统调用
+const SYSCALL_THREAD_CREATE: usize = 1000;
+const SYSCALL_THREAD_EXIT: usize = 1001;
+const SYSCALL_THREAD_JOIN: usize = 1002;
+
 /// 系统调用
 ///
 /// # Arguments
@@ -173,6 +179,10 @@ pub fn read(fd: usize, buf: &mut [u8]) -> isize {
 /// 返回值：原进程返回新创建的子进程的 Pid，新创建的子进程返回 0
 pub fn fork() -> isize {
     syscall(SYSCALL_FORK, [0, 0, 0])
+}
+
+pub fn gettid() -> isize {
+    syscall(SYSCALL_GETTID, [0, 0, 0])
 }
 
 /// 功能：执行一个程序
@@ -232,6 +242,20 @@ pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
             envp_ptrs.as_ptr() as usize,
         ]
     )
+}
+
+// 线程 API（薄封装）
+pub fn thread_create(entry: usize, user_sp: usize, arg: usize) -> isize {
+    syscall(SYSCALL_THREAD_CREATE, [entry, user_sp, arg])
+}
+
+pub fn thread_exit(code: i32) -> ! {
+    syscall(SYSCALL_THREAD_EXIT, [code as usize, 0, 0]);
+    loop {}
+}
+
+pub fn thread_join(tid: usize, exit_code: &mut i32) -> isize {
+    syscall(SYSCALL_THREAD_JOIN, [tid, exit_code as *mut i32 as usize, 0])
 }
 
 /// 功能：当前进程主动让出 CPU 的执行权
@@ -675,7 +699,7 @@ pub fn get_cpu_core_info() -> Option<CpuCoreInfo> {
         total_cores: 0,
         active_cores: 0,
     };
-    
+
     let result = syscall(SYSCALL_GET_CPU_CORE_INFO, [&mut core_info as *mut CpuCoreInfo as usize, 0, 0]);
     if result == 0 {
         Some(core_info)

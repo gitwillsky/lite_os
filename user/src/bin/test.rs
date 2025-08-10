@@ -821,6 +821,7 @@ fn main() -> i32 {
 
     // Run comprehensive test suite
     let tests: Vec<(&str, fn() -> i32)> = vec![
+        ("Thread Smoke Test", thread_smoke_test),
         ("Complete Syscall Suite", test_all_syscalls),
         ("Multi-Core Stress Test", multicore_stress_test),
         ("Multi-Core Signal Test", test_multicore_signals),
@@ -883,6 +884,25 @@ fn main() -> i32 {
 
     // Return success if all tests passed
     if passed_tests == total_tests { 0 } else { 1 }
+}
+
+#[unsafe(no_mangle)]
+fn thread_entry(arg: usize) -> ! {
+    println!("thread arg={}", arg);
+    user_lib::thread_exit(0)
+}
+
+fn thread_smoke_test() -> i32 {
+    println!("--- Thread smoke test ---");
+    let stack_size = 8192;
+    let mut stack = vec![0u8; stack_size];
+    let sp = stack.as_ptr() as usize + stack_size;
+    let tid = user_lib::thread_create(thread_entry as usize, sp, 1234);
+    if tid < 0 { println!("thread_create failed: {}", tid); return -1; }
+    let mut code = 0i32;
+    let r = user_lib::thread_join(tid as usize, &mut code);
+    println!("thread_join ret={}, code={}", r, code);
+    if r == 0 { 0 } else { 1 }
 }
 
 // Edge cases and boundary condition tests

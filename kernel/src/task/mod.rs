@@ -10,7 +10,7 @@ pub mod processor;
 mod pid;
 mod scheduler;
 mod task;
-mod task_manager;
+pub mod task_manager;
 
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
 pub use task_manager::*;

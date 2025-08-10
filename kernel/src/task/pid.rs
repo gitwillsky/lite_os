@@ -22,6 +22,12 @@ impl Drop for PidHandle {
     }
 }
 
+impl PidHandle {
+    /// 获取原始PID数值（不移动所有权）
+    #[inline]
+    pub fn raw(&self) -> usize { self.0 }
+}
+
 pub fn alloc_pid() -> PidHandle {
     PidHandle((PID_ALLOCATOR.lock().alloc()))
 }

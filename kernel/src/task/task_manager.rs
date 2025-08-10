@@ -7,7 +7,7 @@ use core::sync::atomic::Ordering;
 /// 对外只暴露简洁的进程管理API。
 use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
-use spin::RwLock;
+use spin::{RwLock, Mutex};
 
 use crate::{
     arch::hart::{hart_id, MAX_CORES},
@@ -357,6 +357,7 @@ impl TaskManager {
 // 全局统一任务管理器实例
 lazy_static! {
     pub static ref TASK_MANAGER: TaskManager = TaskManager::new();
+    static ref THREAD_JOIN_MANAGER: Mutex<alloc::collections::BTreeMap<usize, alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>>>> = Mutex::new(alloc::collections::BTreeMap::new());
 }
 
 /// 添加任务到系统
@@ -487,6 +488,38 @@ pub fn perform_task_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32, f
     // 处理父子关系
     handle_parent_child_relationship(task, from_signal);
 }
+/// 线程退出清理：仅结束当前线程，不销毁进程共享资源
+pub fn perform_thread_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32) {
+    let pid = task.pid();
+
+    // 设置退出状态
+    task.set_exit_code(exit_code);
+    set_task_status(task, TaskStatus::Zombie);
+
+    // 释放线程槽位
+    let slot = task.thread_slot.load(Ordering::Relaxed);
+    {
+        let mut slots = task.thread_slots.lock();
+        if slot < slots.len() { slots[slot] = false; }
+    }
+
+    // 通知等待该线程的 join 者
+    let mut join_map = THREAD_JOIN_MANAGER.lock();
+    if let Some(waiters) = join_map.remove(&pid) {
+        for waiter in waiters {
+            if *waiter.task_status.lock() == TaskStatus::Sleeping {
+                waiter.wakeup();
+            }
+        }
+    }
+}
+
+/// 注册 join 等待者
+pub fn register_thread_join_waiter(target_tid: usize, waiter: Arc<TaskControlBlock>) {
+    let mut join_map = THREAD_JOIN_MANAGER.lock();
+    join_map.entry(target_tid).or_default().push(waiter);
+}
+
 
 /// 将进程的子进程重新父化给init进程
 fn reparent_children_to_init(task: &Arc<TaskControlBlock>) {
@@ -892,4 +925,12 @@ fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+/// 退出当前线程并切换到下一个任务（不销毁进程共享资源）
+pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
+    let task = take_current_task().expect("No current task to exit (thread)");
+    perform_thread_exit_cleanup(&task, exit_code);
+    schedule(&mut *task.mm.task_cx.lock() as *mut _);
+    unreachable!()
 }

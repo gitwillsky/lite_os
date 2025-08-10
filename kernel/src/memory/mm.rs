@@ -346,11 +346,11 @@ impl MemorySet {
         }
     }
 
-    /// 获取 TrapContext 的物理页号
-    pub fn trap_context_ppn(&self) -> PhysicalPageNumber {
+    /// 获取给定TrapContext虚拟地址的物理页号
+    pub fn trap_context_ppn(&self, trap_va: usize) -> PhysicalPageNumber {
         self.page_table
-            .translate(VirtualAddress::from(config::TRAP_CONTEXT).into())
-            .expect("TRAP_CONTEXT should be mapped")
+            .translate(VirtualAddress::from(trap_va).into())
+            .expect("TrapContext VA should be mapped")
             .ppn()
     }
 
@@ -507,7 +507,7 @@ impl MemorySet {
 
         memory_set.push(
             MapArea::new(
-                config::TRAP_CONTEXT.into(),
+                config::TRAP_CONTEXT_BASE.into(),
                 config::TRAMPOLINE.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W,

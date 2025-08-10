@@ -16,8 +16,8 @@ use spin::Mutex;
 use crate::{
     fs::inode::Inode,
     memory::{
-        KERNEL_SPACE, TRAP_CONTEXT,
-        address::{PhysicalPageNumber, VirtualAddress},
+        KERNEL_SPACE, TRAP_CONTEXT, TRAP_CONTEXT_BASE, MAX_THREADS_PER_PROCESS, PAGE_SIZE,
+        address::VirtualAddress,
         kernel_stack::KernelStack,
         mm::{self, MemorySet},
     },
@@ -111,12 +111,12 @@ pub enum TaskStatus {
 
 #[derive(Debug)]
 pub struct Memory {
-    /// 用户态的内存空间
-    pub memory_set: Mutex<mm::MemorySet>,
+    /// 用户态的内存空间（线程共享）
+    pub memory_set: alloc::sync::Arc<Mutex<mm::MemorySet>>,
     /// 内核栈
     kernel_stack: KernelStack,
-    /// 用户态的 TrapContext 的物理页号
-    trap_cx_ppn: Mutex<PhysicalPageNumber>,
+    /// 用户态 TrapContext 的虚拟地址（每线程独立）
+    trap_cx_va: Mutex<usize>,
     /// 用户程序堆的基地址
     pub heap_base: AtomicUsize,
     /// 用户程序堆的顶部地址
@@ -126,16 +126,26 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn set_trap_context_ppn(&self, trap_context_ppn: PhysicalPageNumber) {
-        *self.trap_cx_ppn.lock() = trap_context_ppn;
+    pub fn set_trap_context_va(&self, trap_context_va: usize) {
+        *self.trap_cx_va.lock() = trap_context_va;
     }
 
     pub fn set_trap_context(&self, trap_context: TrapContext) {
-        *self.trap_cx_ppn.lock().get_mut() = trap_context;
+        let va = *self.trap_cx_va.lock();
+        let ppn = self
+            .memory_set
+            .lock()
+            .trap_context_ppn(va);
+        *ppn.get_mut() = trap_context;
     }
 
     pub fn trap_context(&self) -> &'static mut TrapContext {
-        self.trap_cx_ppn.lock().get_mut()
+        let va = *self.trap_cx_va.lock();
+        let ppn = self
+            .memory_set
+            .lock()
+            .trap_context_ppn(va);
+        ppn.get_mut()
     }
 
     pub fn remove_area_with_start_vpn(&self, start_va: VirtualAddress) {
@@ -351,7 +361,7 @@ pub struct TaskControlBlock {
     pub task_status: Mutex<TaskStatus>,
 
     pub mm: Memory,
-    pub file: Mutex<File>,
+    pub file: Arc<Mutex<File>>,
     pub sched: Mutex<Sched>,
     /// 信号状态
     pub signal_state: Mutex<SignalState>,
@@ -405,6 +415,13 @@ pub struct TaskControlBlock {
     pub args: Mutex<Option<Vec<String>>>,
     /// 进程启动时的环境变量
     pub envs: Mutex<Option<Vec<String>>>,
+
+    /// 线程组ID（等于进程主线程的PID）
+    pub tgid: AtomicUsize,
+    /// 当前线程所占用的 TrapContext 槽位索引
+    pub thread_slot: AtomicUsize,
+    /// 线程槽位位图（仅主线程拥有，其他线程共享引用）
+    pub thread_slots: alloc::sync::Arc<Mutex<[bool; MAX_THREADS_PER_PROCESS]>>,
 }
 
 impl TaskControlBlock {
@@ -421,24 +438,25 @@ impl TaskControlBlock {
         let task_status = TaskStatus::Ready;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
-        let trap_cx_ppn = memory_set.trap_context_ppn();
+        let trap_cx_va = TRAP_CONTEXT;
+        let pid_raw = pid.raw();
 
         let mut tcb = Self {
             name: Mutex::new(name.to_string()),
             pid,
             task_status: Mutex::new(TaskStatus::Ready),
             mm: Memory {
-                memory_set: Mutex::new(memory_set),
+                memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
                 kernel_stack,
-                trap_cx_ppn: Mutex::new(trap_cx_ppn),
+                trap_cx_va: Mutex::new(trap_cx_va),
                 heap_base: AtomicUsize::new(user_sp),
                 heap_top: AtomicUsize::new(0),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
             },
-            file: Mutex::new(File {
+            file: Arc::new(Mutex::new(File {
                 fd_table: BTreeMap::new(),
                 next_fd: 3,
-            }),
+            })),
             sched: Mutex::new(Sched {
                 nice: 0,
                 vruntime: 0,
@@ -467,6 +485,9 @@ impl TaskControlBlock {
             stdin_nonblock: AtomicBool::new(false),
             wake_time_ns: AtomicU64::new(0),
             prev_status_before_stop: Mutex::new(None),
+            tgid: AtomicUsize::new(pid_raw),
+            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
+            thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
         };
 
         // prepare TrapContext in user space
@@ -496,8 +517,8 @@ impl TaskControlBlock {
 
         let kernel_stack_top = self.mm.kernel_stack.get_top();
 
-        self.mm.set_trap_context_ppn(memory_set.trap_context_ppn());
         *self.mm.memory_set.lock() = memory_set;
+        self.mm.set_trap_context_va(TRAP_CONTEXT);
         self.mm.set_trap_context(TrapContext::app_init_context(
             entrypoint,
             user_stack_top,
@@ -519,18 +540,18 @@ impl TaskControlBlock {
 
     pub fn fork(self: &Arc<Self>) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
         let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock())?;
-        let trap_cx_ppn = memory_set.trap_context_ppn();
+        let trap_cx_va = TRAP_CONTEXT;
 
         // alloc a pid and a kernel stack in kernel space
         let pid = alloc_pid();
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let file = {
-            let mut file = self.file.lock();
-            Mutex::new(File {
+            let file = self.file.lock();
+            Arc::new(Mutex::new(File {
                 fd_table: file.fd_table.clone(),
                 next_fd: file.next_fd,
-            })
+            }))
         };
         let sched = {
             let sched = self.sched.lock();
@@ -568,9 +589,9 @@ impl TaskControlBlock {
             args: Mutex::new(self.args.lock().clone()),
             envs: Mutex::new(self.envs.lock().clone()),
             mm: Memory {
-                memory_set: Mutex::new(memory_set),
+                memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
                 kernel_stack,
-                trap_cx_ppn: Mutex::new(trap_cx_ppn),
+                trap_cx_va: Mutex::new(trap_cx_va),
                 heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
                 heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
@@ -578,10 +599,106 @@ impl TaskControlBlock {
             file,
             sched,
             signal_state: Mutex::new(self.signal_state.lock().clone_for_fork()),
+            tgid: AtomicUsize::new(self.tgid()),
+            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
+            thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
         });
 
         self.children.lock().push(tcb.clone());
         tcb.mm.trap_context().kernel_sp = kernel_stack_top;
+        Ok(tcb)
+    }
+
+    /// 线程组ID（进程ID）
+    pub fn tgid(&self) -> usize {
+        self.tgid.load(atomic::Ordering::Relaxed)
+    }
+
+    /// 获取当前线程TrapContext虚拟地址
+    pub fn trap_context_va(&self) -> usize {
+        *self.mm.trap_cx_va.lock()
+    }
+
+    /// 在当前进程内创建线程
+    /// entry: 用户函数入口地址；user_sp: 线程用户栈顶；arg: 传入a0
+    pub fn spawn_thread(self: &Arc<Self>, entry: usize, user_sp: usize, arg: usize) -> Result<Arc<Self>, Box<dyn Error>> {
+        // 分配线程槽位
+        let slot = {
+            let mut slots = self.thread_slots.lock();
+            // 主线程占用最高槽位（MAX-1），线程从低位开始分配
+            let mut found = None;
+            for i in 0..(MAX_THREADS_PER_PROCESS - 1) {
+                if !slots[i] {
+                    slots[i] = true;
+                    found = Some(i);
+                    break;
+                }
+            }
+            found.ok_or("No free thread slot")?
+        };
+
+        let pid = alloc_pid();
+        let kernel_stack = KernelStack::new();
+        let kernel_stack_top = kernel_stack.get_top();
+        let trap_cx_va = TRAP_CONTEXT_BASE + slot * PAGE_SIZE;
+
+        let tcb = Arc::new(Self {
+            name: Mutex::new(self.name.lock().clone()),
+            pid,
+            task_status: Mutex::new(TaskStatus::Ready),
+            base_size: self.base_size,
+            parent: Mutex::new(Some(Arc::downgrade(self))),
+            children: Mutex::new(Vec::new()),
+            exit_code: AtomicI32::new(0),
+            cwd: Mutex::new(self.cwd.lock().clone()),
+            last_runtime: AtomicU64::new(0),
+            total_cpu_time: AtomicU64::new(0),
+            user_cpu_time: AtomicU64::new(0),
+            kernel_cpu_time: AtomicU64::new(0),
+            creation_time: AtomicU64::new(crate::timer::get_time_us()),
+            kernel_enter_time: AtomicU64::new(0),
+            in_kernel_mode: spin::Mutex::new(false),
+            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
+            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
+            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
+            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
+            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
+            wake_time_ns: AtomicU64::new(0),
+            prev_status_before_stop: Mutex::new(None),
+            args: Mutex::new(self.args.lock().clone()),
+            envs: Mutex::new(self.envs.lock().clone()),
+            mm: Memory {
+                memory_set: self.mm.memory_set.clone(),
+                kernel_stack,
+                trap_cx_va: Mutex::new(trap_cx_va),
+                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
+                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
+            },
+            file: self.file.clone(),
+            sched: Mutex::new(Sched {
+                nice: self.sched.lock().nice,
+                vruntime: 0,
+                priority: self.sched.lock().priority,
+                time_slice: self.sched.lock().time_slice,
+            }),
+            signal_state: Mutex::new(SignalState::new()),
+            tgid: AtomicUsize::new(self.tgid()),
+            thread_slot: AtomicUsize::new(slot),
+            thread_slots: self.thread_slots.clone(),
+        });
+
+        // 初始化线程TrapContext
+        tcb.mm.set_trap_context(TrapContext::app_init_context(
+            entry,
+            user_sp,
+            KERNEL_SPACE.wait().lock().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        ));
+        // a0 = arg
+        tcb.mm.trap_context().x[10] = arg;
+
         Ok(tcb)
     }
 
