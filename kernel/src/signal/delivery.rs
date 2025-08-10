@@ -60,11 +60,14 @@ pub fn setup_signal_handler(
         return Err(SignalError::InternalError);
     }
 
+    // 为信号处理函数预留更多栈空间
+    let handler_sp = signal_frame_addr - 1024; // 预留1KB栈空间给信号处理函数
+
     // 修改执行上下文，跳转到信号处理器
     trap_cx.sepc = handler_addr; // PC指向处理器
-    trap_cx.x[2] = signal_frame_addr; // 更新栈指针
+    trap_cx.x[2] = handler_sp; // 更新栈指针，为信号处理函数预留栈空间
     trap_cx.x[10] = signal as usize; // a0: 信号编号
-    trap_cx.x[1] = 0; // ra: 特殊返回地址
+    trap_cx.x[1] = 0; // ra: 特殊返回地址，触发sigreturn
 
     debug!(
         "Signal {} handler setup at {:#x} for PID {}",
@@ -78,10 +81,13 @@ pub fn setup_signal_handler(
 
 /// 从信号处理函数返回
 pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<(), SignalError> {
+    // 当前栈指针指向信号处理函数的栈空间
+    // 信号帧位于栈指针 + 1024（预留空间）的位置
     let user_sp = trap_cx.x[2];
+    let signal_frame_addr = user_sp + 1024; // 信号帧位置
 
     // 读取信号帧
-    let signal_frame = read_signal_frame(task, user_sp)?;
+    let signal_frame = read_signal_frame(task, signal_frame_addr)?;
 
     // 验证信号帧完整性
     validate_signal_frame(&signal_frame)?;
