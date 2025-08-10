@@ -93,6 +93,10 @@ pub struct VirtQueue {
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
+    // 队列共享内存的物理基地址与各段偏移，供MMIO寄存器编程
+    mem_paddr: PhysicalAddress,
+    avail_offset: usize,
+    used_offset: usize,
     // 统计信息和管理数据
     stats: VirtQueueStats,
     creation_time: u64, // 队列创建时间，用于调试
@@ -114,8 +118,9 @@ impl VirtQueue {
         let avail_size = 2 + 2 + 2 * size as usize + 2;
         let avail_offset = desc_size;
 
-        // Used ring需要对齐到4字节边界
-        let used_offset = (avail_offset + avail_size + 3) & !3;
+        // Legacy 设备要求 used ring 按 queue_align 对齐；统一按 4096 对齐，兼容性更好
+        let queue_align: usize = 4096;
+        let used_offset = (avail_offset + avail_size + (queue_align - 1)) & !(queue_align - 1);
         // Used ring: flags(2) + idx(2) + ring[size](8*size) + avail_event(2)
         let used_size = 2 + 2 + 8 * size as usize + 2;
 
@@ -127,6 +132,7 @@ impl VirtQueue {
         debug!("[VirtQueue] Allocating {} pages for queue", pages_needed);
         let frame_tracker = frame_allocator::alloc_contiguous(pages_needed)?;
 
+        let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
 
         let desc = va.as_usize() as *mut VirtqDesc;
@@ -174,6 +180,9 @@ impl VirtQueue {
             queue_token,
             desc_shadow,
             _frame_tracker: frame_tracker,
+            mem_paddr: base_pa,
+            avail_offset,
+            used_offset,
             stats: VirtQueueStats::default(),
             creation_time: 0, // 简化实现，后续可以对接RTC
         })
@@ -192,6 +201,15 @@ impl VirtQueue {
         let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
 
         PhysicalAddress::from(pa)
+    }
+
+    /// 返回需要写入MMIO的队列三段物理地址
+    pub fn mmio_addresses(&self) -> (u64, u64, u64) {
+        let base = self.mem_paddr.as_usize() as u64;
+        let desc = base;
+        let avail = base + self.avail_offset as u64;
+        let used = base + self.used_offset as u64;
+        (desc, avail, used)
     }
 
     // Write descriptor from shadow to actual - inspired by virtio-drivers
@@ -422,7 +440,7 @@ impl VirtQueue {
     pub fn health_check(&self) -> Result<(), VirtQueueError> {
         // 检查基本队列状态
         if self.num_free > self.size {
-            error!("[VirtQueue] Invalid state: num_free ({}) > size ({})", 
+            error!("[VirtQueue] Invalid state: num_free ({}) > size ({})",
                    self.num_free, self.size);
             return Err(VirtQueueError::InvalidDescriptor);
         }
@@ -450,7 +468,7 @@ impl VirtQueue {
     pub fn record_request_start(&mut self, bytes: usize) {
         self.stats.total_requests += 1;
         self.stats.bytes_transferred += bytes as u64;
-        
+
         if self.num_free == 0 {
             self.stats.queue_full_events += 1;
         }
@@ -481,8 +499,8 @@ impl VirtQueue {
     pub fn debug_info(&self) -> alloc::string::String {
         use alloc::format;
         format!("VirtQueue[token={}]: size={}, free={}, utilization={}%, requests={}/{}, errors={}",
-                self.queue_token, 
-                self.size, 
+                self.queue_token,
+                self.size,
                 self.num_free,
                 self.utilization_percent(),
                 self.stats.completed_requests,
@@ -508,6 +526,15 @@ impl VirtQueue {
     /// 获取可用描述符数量占比
     pub fn free_descriptor_ratio(&self) -> f32 {
         (self.num_free as f32) / (self.size as f32)
+    }
+
+    /// 返回当前 used.idx 与 avail.idx（用于调试等待）
+    pub fn indices(&self) -> (u16, u16) {
+        unsafe {
+            let used_idx = (*self.used).idx.load(Ordering::Acquire);
+            let avail_idx = (*self.avail).idx.load(Ordering::Acquire);
+            (used_idx, avail_idx)
+        }
     }
 }
 
