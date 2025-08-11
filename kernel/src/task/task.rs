@@ -676,12 +676,17 @@ impl TaskControlBlock {
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
             },
             file: self.file.clone(),
-            sched: Mutex::new(Sched {
-                nice: self.sched.lock().nice,
-                vruntime: 0,
-                priority: self.sched.lock().priority,
-                time_slice: self.sched.lock().time_slice,
-            }),
+            // 注意：不能在同一表达式里多次 self.sched.lock()，否则自旋锁可能因临时值生命周期导致重入死锁。
+            // 这里一次性获取父任务的调度信息，避免重复加锁。
+            sched: {
+                let parent_sched = self.sched.lock();
+                Mutex::new(Sched {
+                    nice: parent_sched.nice,
+                    vruntime: 0,
+                    priority: parent_sched.priority,
+                    time_slice: parent_sched.time_slice,
+                })
+            },
             signal_state: Mutex::new(SignalState::new()),
             tgid: AtomicUsize::new(self.tgid()),
             thread_slot: AtomicUsize::new(slot),
