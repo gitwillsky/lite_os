@@ -19,7 +19,10 @@ fn main() -> i32 {
     let mut cwd = [0u8; 256];
     let n = getcwd(&mut cwd);
     test_assert!(n > 0, "getcwd 失败: {}", n);
-    let s = core::str::from_utf8(&cwd[..n as usize]).unwrap_or("");
+    let len = n as usize;
+    let mut slice = &cwd[..len];
+    if let Some(pos) = slice.iter().position(|&b| b == 0) { slice = &slice[..pos]; }
+    let s = core::str::from_utf8(slice).unwrap_or("");
     test_assert!(s.ends_with("/tmp_test") || s == "/tmp_test", "cwd 异常: {}", s);
 
     // 2. 创建并写入文件
