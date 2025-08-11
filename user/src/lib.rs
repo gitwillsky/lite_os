@@ -7,6 +7,7 @@ pub mod syscall;
 pub mod console;
 pub mod heap;
 pub mod gfx;
+pub mod testutil;
 
 mod lang_item;
 

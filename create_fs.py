@@ -97,14 +97,17 @@ def collect_binaries():
             user_elfs.append(elf_file)
 
     # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill', 'test']
-    bin_entries = []  # (src, '/bin/name')
-    root_entries = [] # (src, '/name')
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill']
+    bin_entries = []   # (src, '/bin/name')
+    root_entries = []  # (src, '/name')
+    test_entries = []  # (src, '/tests/name')
     if user_elfs:
         print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")
         for elf_file in user_elfs:
             basename = os.path.basename(elf_file)
-            if basename in bin_commands:
+            if basename.startswith('tests_'):
+                test_entries.append((elf_file, f"/tests/{basename[6:]}"))
+            elif basename in bin_commands:
                 bin_entries.append((elf_file, f"/bin/{basename}"))
             else:
                 root_entries.append((elf_file, f"/{basename}"))
@@ -150,17 +153,18 @@ def collect_binaries():
                 if os.path.isfile(font):
                     font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
 
-    return bin_entries, root_entries + font_sources
+    return bin_entries, root_entries + font_sources, test_entries
 
 def copy_files_to_ext2(image_path, debugfs_bin):
     """通过 debugfs 将文件写入 ext2 镜像。"""
-    bin_entries, root_entries = collect_binaries()
+    bin_entries, root_entries, test_entries = collect_binaries()
 
     # 构建 debugfs 命令脚本
     commands = []
     commands.append("mkdir /bin")
     commands.append("mkdir /fonts")
-    for src, dst in bin_entries + root_entries:
+    commands.append("mkdir /tests")
+    for src, dst in bin_entries + root_entries + test_entries:
         # debugfs 的 write 语法: write <native_file> <dest_file>
         commands.append(f"write {src} {dst}")
 

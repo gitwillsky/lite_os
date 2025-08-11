@@ -111,7 +111,7 @@ pub fn sys_sbrk(increment: isize) -> isize {
         match current_brk.checked_add(increment as usize) {
             Some(addr) => addr,
             None => {
-                error!("sys_sbrk: increment overflow");
+                debug!("sys_sbrk: increment overflow");
                 return -ENOMEM;
             }
         }
@@ -119,7 +119,7 @@ pub fn sys_sbrk(increment: isize) -> isize {
         match current_brk.checked_sub((-increment) as usize) {
             Some(addr) => addr,
             None => {
-                error!("sys_sbrk: decrement underflow");
+                debug!("sys_sbrk: decrement underflow");
                 return -EINVAL;
             }
         }
