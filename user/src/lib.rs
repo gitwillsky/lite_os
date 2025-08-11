@@ -16,6 +16,7 @@ extern crate alloc;
 
 
 pub use syscall::*;
+pub use testutil::TestStats;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
