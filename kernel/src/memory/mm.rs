@@ -198,11 +198,24 @@ impl MemorySet {
     }
 
     pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), MemoryError> {
-        map_area.map(&mut self.page_table)?;
+        // 先尝试映射；若中途失败，需要回滚已映射的页面，避免留下半映射导致后续查找空闲区域极慢
+        let start_vpn = map_area.vpn_range.start.as_usize();
+        let end_vpn = map_area.vpn_range.end.as_usize();
+        let pages = end_vpn.saturating_sub(start_vpn);
+        if let Err(e) = map_area.map(&mut self.page_table) {
+
+            // 回滚：解除已经映射的页面
+            map_area.unmap(&mut self.page_table);
+            return Err(e);
+        }
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
+        debug!(
+            "MemorySet::push: mapping succeeded for vpn=[{:#x}, {:#x}) ({} pages)",
+            start_vpn, end_vpn, pages
+        );
         Ok(())
     }
 
@@ -335,14 +348,22 @@ impl MemorySet {
     }
 
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
+        debug!("MemorySet::remove_area_with_start_vpn: start_vpn={:?}", start_vpn);
         if let Some((idx, area)) = self
             .areas
             .iter_mut()
             .enumerate()
             .find(|(_, area)| area.vpn_range.start == start_vpn)
         {
+            debug!(
+                "MemorySet::remove_area_with_start_vpn: found area vpn=[{:#x}, {:#x})",
+                area.vpn_range.start.as_usize(),
+                area.vpn_range.end.as_usize()
+            );
             area.unmap(&mut self.page_table);
             self.areas.remove(idx);
+        } else {
+            debug!("MemorySet::remove_area_with_start_vpn: area not found for start_vpn={:?}", start_vpn);
         }
     }
 

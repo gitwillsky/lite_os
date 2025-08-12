@@ -142,7 +142,7 @@ impl StackFrameAllocator {
         let total_pages = self.end_ppn.as_usize() - self.start_ppn.as_usize();
         let allocated_pages = self.current_start_ppn.as_usize() - self.start_ppn.as_usize() - self.recycled_ppns.len();
         let free_pages = total_pages - allocated_pages;
-        
+
         // 返回页数
         (total_pages, allocated_pages, free_pages)
     }
@@ -151,7 +151,7 @@ impl StackFrameAllocator {
     pub fn get_memory_stats_bytes(&self) -> (usize, usize, usize) {
         let (total_pages, allocated_pages, free_pages) = self.get_memory_stats();
         let page_size = 4096; // RISC-V页面大小为4KB
-        
+
         (
             total_pages * page_size,
             allocated_pages * page_size,
