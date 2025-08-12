@@ -176,7 +176,12 @@ impl PageTable {
         if pte.is_valid() {
             return Err(PageTableError::AlreadyMapped);
         }
-        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+        // 默认为新映射设置 Accessed 位；若可写则同时设置 Dirty 位，避免在不支持硬件 A/D 位的环境中出现首次访问陷入
+        let mut final_flags = flags | PTEFlags::V | PTEFlags::A;
+        if flags.contains(PTEFlags::W) {
+            final_flags |= PTEFlags::D;
+        }
+        *pte = PageTableEntry::new(ppn, final_flags);
         Ok(())
     }
 

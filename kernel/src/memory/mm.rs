@@ -267,37 +267,32 @@ impl MemorySet {
         self.page_table.translate(vpn)
     }
 
-    /// 在用户地址空间中查找空闲区域（从高地址向低地址）
-    /// 上界为 `TRAP_CONTEXT_BASE`，避免与 trap 上下文/跳板冲突
+    /// 在用户地址空间中查找空闲区域（按 VPN，从高到低）
     pub fn find_free_area_user(&self, length: usize) -> VirtualAddress {
-        if length == 0 || length > config::TRAP_CONTEXT_BASE {
-            return VirtualAddress::from(0);
-        }
+        if length == 0 { return VirtualAddress::from(0); }
 
-        let aligned_len = (length + config::PAGE_SIZE - 1) & !(config::PAGE_SIZE - 1);
-        let upper_limit = config::TRAP_CONTEXT_BASE;
-        let mut current_addr = (upper_limit.saturating_sub(aligned_len)) & !(config::PAGE_SIZE - 1);
+        let page_count = (length + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
+        // 用户空间仅使用低半区：bit38=0 的 canonical 范围
+        // 直接使用低半区的最高 VPN 作为上界，避免误用高半区常量的低位（例如 TRAP_CONTEXT_BASE 的低 39 位）
+        let upper_vpn_usize = ((1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE) - 1;
+        if page_count == 0 || page_count > upper_vpn_usize { return VirtualAddress::from(0); }
 
-        while current_addr + aligned_len <= upper_limit {
-            let start_vpn = VirtualAddress::from(current_addr).floor();
-            let end_vpn = VirtualAddress::from(current_addr + aligned_len).ceil();
-
+        // 从最高可用 VPN 开始向下探测
+        let mut start_vpn_usize = upper_vpn_usize.saturating_sub(page_count);
+        while start_vpn_usize + page_count <= upper_vpn_usize {
             let mut is_free = true;
-            for vpn in start_vpn.as_usize()..end_vpn.as_usize() {
-                if self.translate(VirtualPageNumber::from_vpn(vpn)).is_some() {
+            for vpn_usize in start_vpn_usize..start_vpn_usize + page_count {
+                if self.translate(VirtualPageNumber::from_vpn(vpn_usize)).is_some() {
                     is_free = false;
                     break;
                 }
             }
-
             if is_free {
-                return VirtualAddress::from(current_addr);
+                return VirtualPageNumber::from_vpn(start_vpn_usize).into();
             }
-
-            if current_addr < config::PAGE_SIZE { break; }
-            current_addr -= config::PAGE_SIZE;
+            if start_vpn_usize == 0 { break; }
+            start_vpn_usize -= 1;
         }
-
         VirtualAddress::from(0)
     }
 

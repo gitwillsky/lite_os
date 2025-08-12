@@ -62,10 +62,13 @@ impl From<PhysicalAddress> for usize {
 
 impl From<VirtualAddress> for usize {
     fn from(addr: VirtualAddress) -> Self {
-        if addr.0 >= ((1 << config::VIRTUAL_ADDRESS_WIDTH) - 1) {
-            addr.0 | (!(1 << config::VIRTUAL_ADDRESS_WIDTH) - 1)
+        // Sv39: 若最高有效位 bit(VA_WIDTH-1) 为 1，需要进行符号扩展
+        let sign_bit = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        let low_mask = (1usize << config::VIRTUAL_ADDRESS_WIDTH) - 1;
+        if (addr.0 & sign_bit) != 0 {
+            addr.0 | (!low_mask)
         } else {
-            addr.0
+            addr.0 & low_mask
         }
     }
 }
