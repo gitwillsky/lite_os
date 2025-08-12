@@ -61,6 +61,8 @@ pub struct MapArea {
     data_frames: BTreeMap<VirtualPageNumber, FrameTracker>,
     map_type: MapType,
     map_permission: MapPermission,
+    /// 是否标记为全局页（G位）。仅用于内核空间映射。
+    global: bool,
 }
 
 impl MapArea {
@@ -80,7 +82,13 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_permission: permissions,
             map_type,
+            global: false,
         }
+    }
+
+    pub fn set_global(mut self, global: bool) -> Self {
+        self.global = global;
+        self
     }
 
     pub fn copy_data(&mut self, page_table: &PageTable, data: &[u8]) {
@@ -150,7 +158,10 @@ impl MapArea {
             }
         }
 
-        let pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
+        let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
+        if self.global {
+            pte_flags |= PTEFlags::G;
+        }
         page_table.map(vpn, ppn, pte_flags)?;
         Ok(())
     }
@@ -192,6 +203,7 @@ impl MapArea {
             data_frames: BTreeMap::new(),
             map_type: another.map_type,
             map_permission: another.map_permission,
+            global: another.global,
         }
     }
 }
@@ -257,7 +269,8 @@ impl MemorySet {
         let _ = self.page_table.map(
             trampoline_va.into(),
             strampoline_pa.into(),
-            PTEFlags::R | PTEFlags::X,
+            // Trampoline 在所有地址空间通用，标记为 Global，避免跨进程切换时TLB混淆
+            PTEFlags::R | PTEFlags::X | PTEFlags::G,
         );
     }
 

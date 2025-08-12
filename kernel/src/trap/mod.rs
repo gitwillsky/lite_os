@@ -16,7 +16,7 @@ use riscv::{
 };
 
 use crate::{
-    memory::{TRAMPOLINE, TRAP_CONTEXT},
+    memory::{TRAMPOLINE, TRAP_CONTEXT, KERNEL_SPACE, address::VirtualAddress},
     signal::{self, handle_signals, sig_return, SIG_RETURN_ADDR},
     syscall,
     task::{
@@ -318,9 +318,16 @@ extern "C" fn rust_trap_from_kernel() {
         }
         Trap::Exception(code) => {
             if let Ok(exception) = Exception::from_number(code) {
+                // 辅助调试：尝试解码 sepc/stval 的内核页表映射
+                let (sepc_map, stval_map) = {
+                    let kernel_space = KERNEL_SPACE.wait().lock();
+                    let sepc_pa = kernel_space.translate_va(VirtualAddress::from(sepc_val));
+                    let stval_pa = kernel_space.translate_va(VirtualAddress::from(stval_val));
+                    (sepc_pa, stval_pa)
+                };
                 error!(
-                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x}, sepc={:#x}",
-                    exception, scause_val, stval_val, sepc_val
+                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x} (PA={:?}), sepc={:#x} (PA={:?})",
+                    exception, scause_val, stval_val, stval_map, sepc_val, sepc_map
                 );
                 panic!("Kernel exception: {:?}", exception);
             } else {

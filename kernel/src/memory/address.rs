@@ -49,8 +49,9 @@ impl From<usize> for PhysicalAddress {
 
 impl From<usize> for VirtualAddress {
     fn from(addr: usize) -> Self {
-        // 仅低位有效
-        VirtualAddress(addr & ((1usize << config::VIRTUAL_ADDRESS_WIDTH) - 1))
+        // 保留传入地址的规范形式（canonical address）。
+        // 不再截断为低 39 位，防止高半区地址（如 TRAMPOLINE）被错误折叠到低半区。
+        VirtualAddress(addr)
     }
 }
 
@@ -62,10 +63,15 @@ impl From<PhysicalAddress> for usize {
 
 impl From<VirtualAddress> for usize {
     fn from(addr: VirtualAddress) -> Self {
-        if addr.0 >= ((1 << config::VIRTUAL_ADDRESS_WIDTH) - 1) {
-            addr.0 | (!(1 << config::VIRTUAL_ADDRESS_WIDTH) - 1)
+        // 对 Sv39 虚拟地址做正确的符号扩展：
+        // 若 bit[38] 为 1，则高位应填充为 1；否则填充为 0。
+        let mask: usize = (1usize << config::VIRTUAL_ADDRESS_WIDTH) - 1; // 低 39 位掩码
+        let sign_bit: usize = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1); // 第 38 位
+        let raw: usize = addr.0 & mask;
+        if (raw & sign_bit) != 0 {
+            raw | (!mask)
         } else {
-            addr.0
+            raw
         }
     }
 }

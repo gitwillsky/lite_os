@@ -138,7 +138,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             (etext as usize).into(),
             mm::MapType::Identical,
             MapPermission::R | MapPermission::X,
-        ),
+        ).set_global(true),
         None,
     ).expect("Failed to map kernel .text section");
 
@@ -155,7 +155,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             (erodata as usize).into(),
             mm::MapType::Identical,
             MapPermission::R,
-        ),
+        ).set_global(true),
         None,
     ).expect("Failed to map kernel .rodata section");
 
@@ -172,7 +172,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             (edata as usize).into(),
             mm::MapType::Identical,
             MapPermission::R | MapPermission::W,
-        ),
+        ).set_global(true),
         None,
     ).expect("Failed to map kernel .data section");
 
@@ -189,7 +189,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             (ebss as usize).into(),
             mm::MapType::Identical,
             MapPermission::R | MapPermission::W,
-        ),
+        ).set_global(true),
         None,
     ).expect("Failed to map kernel .bss section");
 
