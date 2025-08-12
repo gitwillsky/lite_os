@@ -221,9 +221,15 @@ impl VirtioInputDevice {
             }
         }
         if posted_any {
-            // 在完全释放队列锁后再通知设备，避免中断处理在持锁时重入造成死锁
-            let _ = self.device.notify_queue(0);
+            // 重要：不要在此处通知设备。若此时尚未注册IRQ处理器，会触发外部中断风暴，
+            // 导致在注册IRQ时竞争PLIC自旋锁而饥饿。首次通知延后到IRQ注册完成后。
+            debug!("[VirtIO-Input] RX buffers posted (notification deferred until IRQ ready)");
         }
+    }
+
+    pub fn enable_notifications(&self) {
+        debug!("[VirtIO-Input] Enabling notifications (post IRQ registration)");
+        let _ = self.device.notify_queue(0);
     }
 
     fn recycle_and_renew(&self, id: u16) {
