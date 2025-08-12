@@ -152,28 +152,54 @@ impl VirtualFileSystem {
     }
 
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        // 先检查挂载点前缀匹配（最长匹配）
+        let filesystems = self.filesystems.lock();
+        let mut best_match_len: isize = -1;
+        let mut best_fs: Option<Arc<dyn FileSystem>> = None;
+        for (mpath, fs) in filesystems.iter() {
+            if mpath == "/" {
+                continue; // 根挂载由 root_fs 负责
+            }
+            if path == mpath {
+                // 精确匹配挂载点
+                best_match_len = mpath.len() as isize;
+                best_fs = Some(fs.clone());
+                break;
+            } else if path.starts_with(mpath) && path.as_bytes().get(mpath.len()) == Some(&b'/') {
+                // 前缀匹配，且边界为 '/'
+                let len = mpath.len() as isize;
+                if len > best_match_len { best_match_len = len; best_fs = Some(fs.clone()); }
+            }
+        }
+        drop(filesystems);
+
+        if let Some(fs) = best_fs {
+            let mut current = fs.root_inode();
+            if best_match_len as usize == path.len() {
+                return Ok(current);
+            }
+            let mut remain = &path[best_match_len as usize + 1..]; // skip the '/'
+            if remain.starts_with('/') { remain = &remain[1..]; }
+            if remain.is_empty() { return Ok(current); }
+            for component in remain.split('/') {
+                if component.is_empty() { continue; }
+                current = current.find_child(component)?;
+            }
+            return Ok(current);
+        }
+
+        // 否则走根文件系统
         let root_fs = self.root_fs.lock();
         let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
 
         let mut current = fs.root_inode();
 
-        let path = if path.starts_with('/') {
-            &path[1..] // Remove leading '/'
-        } else {
-            path // Treat relative paths as relative to root
-        };
-
-        if path.is_empty() {
-            return Ok(current);
-        }
-
+        let path = if path.starts_with('/') { &path[1..] } else { path };
+        if path.is_empty() { return Ok(current); }
         for component in path.split('/') {
-            if component.is_empty() {
-                continue;
-            }
+            if component.is_empty() { continue; }
             current = current.find_child(component)?;
         }
-
         Ok(current)
     }
 

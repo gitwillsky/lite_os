@@ -125,6 +125,11 @@ pub fn open_input_device(path: &str) -> Result<Arc<dyn Inode>, FileSystemError> 
     reg.get(path).map(|n| n.clone() as Arc<dyn Inode>).ok_or(FileSystemError::NotFound)
 }
 
+pub fn list_input_nodes() -> alloc::vec::Vec<alloc::string::String> {
+    let reg = INPUT_REGISTRY.lock();
+    reg.keys().cloned().collect()
+}
+
 /// Virtio 输入设备
 pub struct VirtioInputDevice {
     device: VirtIODevice,

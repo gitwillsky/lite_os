@@ -7,9 +7,11 @@ pub mod flock;
 pub mod inode;
 pub mod vfs;
 pub mod ext2;
+pub mod devfs;
 
 pub use fat32::FAT32FileSystem;
 pub use ext2::Ext2FileSystem;
+pub use devfs::DevFileSystem;
 pub use flock::{FileLock, FileLockManager, LockType, LockOp, LockError, file_lock_manager};
 pub use inode::{Inode, InodeType};
 

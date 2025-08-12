@@ -46,8 +46,20 @@ pub fn init() {
     scan_and_init_devices();
     // 初始化文件系统
     init_filesystems();
+    // 挂载 devfs 到 /dev，提供可列举的设备目录
+    init_devfs();
 
     info!("[DeviceManager] Device initialization completed");
+}
+
+fn init_devfs() {
+    let devfs = crate::fs::DevFileSystem::new();
+    let _ = vfs().create_directory("/dev");
+    if let Err(e) = vfs().mount("/dev", devfs.clone()) {
+        warn!("[DeviceManager] Failed to mount devfs at /dev: {:?}", e);
+    } else {
+        info!("[DeviceManager] devfs mounted at /dev");
+    }
 }
 
 /// 注册所有驱动程序
