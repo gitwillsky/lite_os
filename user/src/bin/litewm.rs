@@ -4,7 +4,8 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{sleep_ms, shm_create, shm_map, mmap_flags, shm_close};
+use user_lib::{sleep_ms, shm_create, shm_map, mmap_flags, shm_close, open, read, mkfifo, mkdir, munmap};
+use user_lib::open_flags;
 use user_lib::gfx;
 
 #[unsafe(no_mangle)]
@@ -68,9 +69,19 @@ fn main() -> i32 {
     // 刷新一次
     gfx::gui_flush();
 
+    // 确保 /tmp 与 FIFO 存在
+    let mk1 = mkdir("/tmp");
+    if mk1 < 0 { println!("litewm: mkdir /tmp failed: {}", mk1); }
+    let mkf = mkfifo("/tmp/litewm.fifo", 0o666);
+    if mkf < 0 { println!("litewm: mkfifo failed: {}", mkf); }
+    // 打开FIFO的读端（阻塞等待客户端）
+    let fifo_rd = open("/tmp/litewm.fifo", open_flags::O_RDONLY) as i32;
+    // 也打开写端，避免无写者时读端返回EOF
+    let _fifo_wr_guard = open("/tmp/litewm.fifo", open_flags::O_WRONLY);
+
     // 简单心跳动画：在右下角闪烁一个小方块
     let mut on = true;
-    for _ in 0..120 { // ~2秒
+    for _ in 0..30 { // 短暂闪烁后进入事件循环
         let size = 10;
         let x = w as i32 - size - 8;
         let y = h as i32 - size - 8;
@@ -81,7 +92,37 @@ fn main() -> i32 {
         sleep_ms(16);
     }
 
-    0
+    // 事件循环：处理客户端消息（简化：仅一种消息 AttachShmAndBlit）
+    loop {
+        // 消息格式（小端）：
+        // kind:u32=1, handle:u32, w:u32, h:u32, stride:u32, dst_x:i32, dst_y:i32
+        let mut buf = [0u8; 28];
+        let mut off = 0usize;
+        while off < buf.len() {
+            let n = read(fifo_rd as usize, &mut buf[off..]);
+            if n <= 0 { user_lib::yield_(); continue; }
+            off += n as usize;
+        }
+        let leu32 = |i: usize| -> u32 { u32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
+        let lei32 = |i: usize| -> i32 { i32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
+        let kind = leu32(0);
+        if kind == 1 {
+            let handle = leu32(4) as usize;
+            let bw = leu32(8);
+            let bh = leu32(12);
+            let stride = leu32(16) as usize;
+            let dx = lei32(20);
+            let dy = lei32(24);
+            let va = shm_map(handle, mmap_flags::PROT_READ);
+            if va > 0 {
+                gfx::blit_rgba(dx, dy, bw, bh, va as *const u8, stride);
+                gfx::gui_flush();
+                // 解除映射并关闭句柄（配合简化的内核实现）
+                let _ = munmap(va as usize, (stride * bh as usize) as usize);
+                let _ = shm_close(handle);
+            }
+        }
+    }
 }
 
 

@@ -2063,6 +2063,10 @@ impl Ext2Inode {
         name: &str,
         file_type: u8,
     ) -> Result<(), FileSystemError> {
+        // 新增：再次防重（上层已查过，这里双保险）
+        if let Ok(_) = self.find_child(name) {
+            return Err(FileSystemError::AlreadyExists);
+        }
         // Validate input parameters
         if child_inode == 0 {
             return Err(FileSystemError::InvalidFileSystem);
@@ -2442,6 +2446,12 @@ impl Inode for Ext2Inode {
         if name.is_empty() || name.len() > 255 {
             return Err(FileSystemError::InvalidFileSystem);
         }
+        // 新增：防止同名目录项反复插入（标准行为：若已存在则返回 AlreadyExists）
+        match self.find_child(name) {
+            Ok(_) => return Err(FileSystemError::AlreadyExists),
+            Err(FileSystemError::NotFound) => { /* ok, continue create */ }
+            Err(e) => return Err(e),
+        }
         // Try to allocate inode in same group as parent inode, fallback to any group
         let (group, _) = self.fs.group_index_and_local_inode(self.inode_num);
         let child_ino_num = match self.fs.allocate_inode_in_group(group) {
@@ -2479,6 +2489,12 @@ impl Inode for Ext2Inode {
         }
         if name.is_empty() || name.len() > 255 {
             return Err(FileSystemError::InvalidFileSystem);
+        }
+        // 新增：防止同名目录项反复插入（标准行为：若已存在则返回 AlreadyExists）
+        match self.find_child(name) {
+            Ok(_) => return Err(FileSystemError::AlreadyExists),
+            Err(FileSystemError::NotFound) => { /* ok */ }
+            Err(e) => return Err(e),
         }
         let (group, _) = self.fs.group_index_and_local_inode(self.inode_num);
         let child_ino_num = match self.fs.allocate_inode_in_group(group) {

@@ -350,19 +350,30 @@ pub fn sys_mkdir(path: *const u8) -> isize {
         }
     };
 
-    match vfs().create_directory(&path_str) {
-        Ok(_) => 0,
-        Err(e) => {
-            // Return more specific error codes
-            match e {
-                FileSystemError::AlreadyExists => -17,    // EEXIST
-                FileSystemError::PermissionDenied => -13, // EACCES
-                FileSystemError::NotFound => -2,          // ENOENT (parent directory not found)
-                FileSystemError::NotDirectory => -20,     // ENOTDIR
-                FileSystemError::NoSpace => -28,          // ENOSPC
-                _ => -1,                                  // Generic error
+    // 标准行为：若目标已存在且为目录，则视为成功（POSIX: mkdir 应返回 EEXIST，但实际常见脚本期望幂等
+    // 这里做兼容：已存在目录返回 0；已存在非目录返回 EEXIST）
+    match vfs().open(&path_str) {
+        Ok(inode) => {
+            if matches!(inode.inode_type(), InodeType::Directory) {
+                return 0; // 幂等
+            } else {
+                return -17; // EEXIST - 非目录存在
             }
         }
+        Err(FileSystemError::NotFound) => { /* 继续创建 */ }
+        Err(_) => { /* ignore, 尝试创建 */ }
+    }
+
+    match vfs().create_directory(&path_str) {
+        Ok(_) => 0,
+        Err(e) => match e {
+            FileSystemError::AlreadyExists => 0,          // 幂等
+            FileSystemError::PermissionDenied => -13,     // EACCES
+            FileSystemError::NotFound => -2,              // ENOENT (parent directory not found)
+            FileSystemError::NotDirectory => -20,         // ENOTDIR
+            FileSystemError::NoSpace => -28,              // ENOSPC
+            _ => -1,
+        },
     }
 }
 
