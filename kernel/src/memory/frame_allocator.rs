@@ -67,11 +67,15 @@ struct StackFrameAllocator {
 impl StackFrameAllocator {
     pub fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
+        // 预留较大的回收列表容量，避免在持有分配器锁时发生小块内存扩容，
+        // 触发SLAB分配从而重入帧分配器导致死锁。
+        let mut recycled_ppns = Vec::with_capacity(8192);
+        recycled_ppns.clear();
         Self {
             start_ppn: start,
             current_start_ppn: start,
             end_ppn: end_addr.floor(),
-            recycled_ppns: Vec::new(),
+            recycled_ppns,
         }
     }
 

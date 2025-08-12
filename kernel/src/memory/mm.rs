@@ -113,8 +113,27 @@ impl MapArea {
     }
 
     pub fn unmap(&mut self, page_table: &mut PageTable) {
-        for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
+        let start = self.vpn_range.start.as_usize();
+        let end = self.vpn_range.end.as_usize();
+        let total = end.saturating_sub(start);
+
+        // 第一阶段：仅解除页表映射（不触发 FrameTracker Drop）
+        for vpn_usize in start..end {
+            let vpn = VirtualPageNumber::from_vpn(vpn_usize);
+            let _ = page_table.unmap(vpn);
+        }
+
+        // 第二阶段：集中回收物理帧，避免与容器节点释放的堆操作交织，降低锁递归风险
+        if matches!(self.map_type, MapType::Framed) {
+            let mut reclaimed_frames: Vec<FrameTracker> = Vec::new();
+            for vpn_usize in start..end {
+                let vpn = VirtualPageNumber::from_vpn(vpn_usize);
+                if let Some(frame) = self.data_frames.remove(&vpn) {
+                    reclaimed_frames.push(frame);
+                }
+            }
+            // 在此处统一 Drop 帧，确保在不再持有 BTreeMap 节点的同时释放物理页，避免潜在死锁
+            drop(reclaimed_frames);
         }
     }
 
@@ -137,14 +156,13 @@ impl MapArea {
     }
 
     fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) {
-        match self.map_type {
-            MapType::Framed => {
-                self.data_frames.remove(&vpn);
-            }
-            MapType::Identical => {}
-        }
-        // 忽略unmap错误，在某些情况下页面可能已经被unmap了
         let _ = page_table.unmap(vpn);
+        if let MapType::Framed = self.map_type {
+            // 改为在 MapArea::unmap 中统一批量释放，避免与容器释放交错
+            if let Some(frame) = self.data_frames.remove(&vpn) {
+                core::mem::forget(frame);
+            }
+        }
     }
 
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
@@ -212,10 +230,6 @@ impl MemorySet {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
-        debug!(
-            "MemorySet::push: mapping succeeded for vpn=[{:#x}, {:#x}) ({} pages)",
-            start_vpn, end_vpn, pages
-        );
         Ok(())
     }
 
@@ -377,22 +391,14 @@ impl MemorySet {
     }
 
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
-        debug!("MemorySet::remove_area_with_start_vpn: start_vpn={:?}", start_vpn);
-        if let Some((idx, area)) = self
+        if let Some(idx) = self
             .areas
-            .iter_mut()
-            .enumerate()
-            .find(|(_, area)| area.vpn_range.start == start_vpn)
+            .iter()
+            .position(|area| area.vpn_range.start == start_vpn)
         {
-            debug!(
-                "MemorySet::remove_area_with_start_vpn: found area vpn=[{:#x}, {:#x})",
-                area.vpn_range.start.as_usize(),
-                area.vpn_range.end.as_usize()
-            );
+            // 将目标区域移出容器后再执行 unmap，规避潜在别名问题
+            let mut area = self.areas.remove(idx);
             area.unmap(&mut self.page_table);
-            self.areas.remove(idx);
-        } else {
-            debug!("MemorySet::remove_area_with_start_vpn: area not found for start_vpn={:?}", start_vpn);
         }
     }
 
