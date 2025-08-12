@@ -1,8 +1,9 @@
 use crate::drivers::{get_global_framebuffer, with_global_framebuffer, framebuffer::Rect};
 use crate::memory::page_table::translated_byte_buffer;
 use crate::memory::{KERNEL_SPACE, address::VirtualAddress};
-use crate::task::current_user_token;
+use crate::task::{current_user_token, current_task};
 use crate::drivers::PixelFormat;
+use spin::Mutex;
 
 pub const SYSCALL_GUI_CREATE_CONTEXT: usize = 300;
 pub const SYSCALL_GUI_DESTROY_CONTEXT: usize = 301;
@@ -26,20 +27,55 @@ pub struct GuiScreenInfo {
     pub format: u32,
 }
 
-pub fn sys_gui_create_context() -> isize {
-    if get_global_framebuffer().is_some() {
-        1 // Return a dummy context ID
-    } else {
-        error!("[GUI] No framebuffer available");
-        -1
+// GUI 上下文独占：记录拥有者 PID，确保只有一个进程控制显示输出
+static GUI_OWNER_TGID: Mutex<Option<usize>> = Mutex::new(None);
+
+fn current_tgid() -> Option<usize> {
+    current_task().map(|t| t.tgid())
+}
+
+fn acquire_gui_ownership() -> bool {
+    let tgid = match current_tgid() { Some(p) => p, None => return false };
+    let mut owner = GUI_OWNER_TGID.lock();
+    match *owner {
+        None => { *owner = Some(tgid); true }
+        Some(cur) if cur == tgid => true,
+        _ => false,
     }
 }
 
+fn require_gui_owner() -> bool {
+    let tgid = match current_tgid() { Some(p) => p, None => return false };
+    let owner = GUI_OWNER_TGID.lock();
+    owner.map(|v| v == tgid).unwrap_or(false)
+}
+
+/// 供任务退出路径调用：若指定 pid 为当前 GUI 拥有者，则释放
+pub fn sys_gui_release_owner_for_tgid(tgid: usize) {
+    let mut owner = GUI_OWNER_TGID.lock();
+    if owner.is_some() && owner.unwrap() == tgid {
+        *owner = None;
+        // 不做额外清屏/flush，留给下一个拥有者处理
+    }
+}
+
+pub fn sys_gui_create_context() -> isize {
+    if get_global_framebuffer().is_none() {
+        error!("[GUI] No framebuffer available");
+        return -1;
+    }
+    if acquire_gui_ownership() { 1 } else { -1 }
+}
+
 pub fn sys_gui_destroy_context(_context_id: usize) -> isize {
-    0
+    if let Some(tgid) = current_tgid() {
+        sys_gui_release_owner_for_tgid(tgid);
+        0
+    } else { -1 }
 }
 
 pub fn sys_gui_clear_screen(color: u32) -> isize {
+    if !require_gui_owner() { return -1; }
     match with_global_framebuffer(|fb| fb.clear(color)) {
         Some(Ok(_)) => 0,
         _ => -1,
@@ -48,6 +84,7 @@ pub fn sys_gui_clear_screen(color: u32) -> isize {
 
 // 以 RGBA8888（u32: 0xAARRGGBB）整帧提交到帧缓冲
 pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
+    if !require_gui_owner() { return -1; }
     let token = current_user_token();
     let mut user_bufs = translated_byte_buffer(token, buf_ptr, buf_len);
 
@@ -121,6 +158,7 @@ pub fn sys_gui_present(buf_ptr: *const u8, buf_len: usize) -> isize {
 }
 
 pub fn sys_gui_flush() -> isize {
+    if !require_gui_owner() { return -1; }
     match with_global_framebuffer(|fb| fb.flush()) {
         Some(Ok(_)) => 0,
         _ => -1,
@@ -128,6 +166,7 @@ pub fn sys_gui_flush() -> isize {
 }
 
 pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
+    if !require_gui_owner() { return -1; }
     if rects_ptr.is_null() || rects_len == 0 { return sys_gui_flush(); }
     let token = current_user_token();
     let bytes = core::mem::size_of::<Rect>() * rects_len;
@@ -154,6 +193,7 @@ pub fn sys_gui_flush_rects(rects_ptr: *const Rect, rects_len: usize) -> isize {
 
 // 以 RGBA8888 提交若干矩形，buf 中紧密按行存放每个矩形的像素，无行间 padding
 pub fn sys_gui_present_rects(buf_ptr: *const u8, buf_len: usize, rects_ptr: *const Rect, rects_len: usize) -> isize {
+    if !require_gui_owner() { return -1; }
     if buf_ptr.is_null() || rects_ptr.is_null() || rects_len == 0 { return -1; }
     let token = current_user_token();
     // 读取矩形数组
@@ -248,6 +288,7 @@ pub fn sys_gui_present_rects(buf_ptr: *const u8, buf_len: usize, rects_ptr: *con
 // 将设备帧缓冲映射到当前进程的用户空间，返回用户虚拟地址
 // 不考虑兼容性：直接将整个帧缓冲区映射为用户可读写
 pub fn sys_gui_map_framebuffer(user_addr_out: *mut usize) -> isize {
+    if !require_gui_owner() { return -1; }
     let (fb_va, fb_size) = match with_global_framebuffer(|fb| {
         let info = fb.info().clone();
         let va = VirtualAddress::from(fb.buffer_ptr() as usize);

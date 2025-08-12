@@ -1,5 +1,5 @@
 mod fs;
-mod graphics;
+pub mod graphics;
 mod process;
 mod signal;
 mod timer;

@@ -97,7 +97,7 @@ def collect_binaries():
             user_elfs.append(elf_file)
 
     # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill']
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill', 'litewm']
     bin_entries = []   # (src, '/bin/name')
     root_entries = []  # (src, '/name')
     test_entries = []  # (src, '/tests/name')

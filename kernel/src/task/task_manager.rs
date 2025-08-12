@@ -14,6 +14,8 @@ use crate::{
     task::{self, context::TaskContext, current_processor, processor::CORE_MANAGER, TaskControlBlock, TaskStatus},
     timer::{get_time_ns, get_time_us},
 };
+// 引入 GUI 所有权释放函数，用于进程退出时自动释放显示控制权
+use crate::syscall::graphics::sys_gui_release_owner_for_tgid;
 
 /// 调度策略
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -481,6 +483,9 @@ pub fn perform_task_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32, f
 
     // 关闭所有文件描述符并清理文件锁
     task.file.lock().close_all_fds_and_cleanup_locks(pid);
+
+    // 若该进程组持有 GUI 上下文所有权，释放之
+    sys_gui_release_owner_for_tgid(task.tgid());
 
     // 重新父化子进程到init进程
     reparent_children_to_init(task);

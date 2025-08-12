@@ -5,113 +5,15 @@
 extern crate user_lib;
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use user_lib::{exec, exit, fork, gfx, wait, yield_, open, read, close};
-use user_lib::open_flags;
+use user_lib::{exec, exit, fork, wait, yield_};
 
-// 简单的 GUI 引导：在用户态驱动所有可视化
-#[inline(always)]
-fn gui_create() -> bool {
-    gfx::gui_create_context()
-}
-#[inline(always)]
-fn gui_clear(color: u32) {
-    gfx::gui_clear(color)
-}
-// 保留但按需启用；避免 dead_code 警告
-// #[inline(always)]
-// fn gui_fill_rect(x: i32, y: i32, w: u32, h: u32, color: u32) {
-//     gfx::gui_fill_rect_xywh(x, y, w, h, color)
-// }
-#[inline(always)]
-fn gui_draw_text_big(x: i32, y: i32, text: &str, color: u32, scale: u32) {
-    gfx::draw_string_scaled(x, y, text, color, scale)
-}
-#[inline(always)]
-fn gui_flush() {
-    gfx::gui_flush()
-}
+// GUI Splash 逻辑移除，交由独立合成器 litewm 负责
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // 先启动交互式 shell，避免大字体加载期间界面长时间黑屏
+    // 启动合成器与交互式 shell
+    spawn_litewm();
     spawn_shell();
-
-    if gui_create() {
-        // 避免一上来全屏清屏，先绘制小块占位文字减少内存触碰
-        gui_draw_text_big(40, 60, "Loading font...", 0xFFFFFFFF, 2);
-        gui_draw_text_big(40, 90, "Launching Shell...", 0xFFFFFFFF, 2);
-        gui_flush();
-        let candidates = [
-            "/fonts/SourceHanSansCN-VF.ttf",
-            "/fonts/NotoSans-Regular.ttf",
-        ];
-        let mut loaded = false;
-        // 增大读取块并尽量减少 sys 调用，load_font_static 内部会 yield
-        for &path in &candidates {
-            if let Some(bytes) = load_font_static(path) {
-                gfx::set_default_font(bytes);
-                loaded = true;
-                break;
-            }
-        }
-
-        // 阶段1：核心初始化提示
-        if loaded {
-            let _ = gfx::draw_text(40, 60, "Kernel starting...", 24, 0xFFFFFFFF);
-            let _ = gfx::draw_text(40, 90, "Initializing drivers...", 24, 0xFFFFFFFF);
-        } else {
-            gui_draw_text_big(40, 60, "Kernel starting...", 0xFFFFFFFF, 2);
-            gui_draw_text_big(40, 90, "Initializing drivers...", 0xFFFFFFFF, 2);
-        }
-        gui_flush();
-
-        // 阶段2：加载界面（简化的全屏进度条）
-        let (mut w, mut h) = gfx::screen_size();
-        if w == 0 || h == 0 {
-            w = 1280;
-            h = 800;
-        }
-        // for p in 0..=100 {
-        //     // 背景条纹蓝色
-        //     for i in 0..10 {
-        //         let y = (h / 10 * i) as i32;
-        //         let c = 0xFF003C64u32 + ((9 - i) as u32) * 0x00010102;
-        //         gui_fill_rect(0, y, w, h / 10, c);
-        //     }
-        //     let bw = w * 3 / 5;
-        //     let bh = 22u32;
-        //     let bx = (w - bw) / 2;
-        //     let by = h * 2 / 3;
-        //     gui_fill_rect(bx as i32, by as i32, bw as u32, bh as u32, 0xFF3A3A3A);
-        //     let filled = bw * p / 100;
-        //     if filled > 0 {
-        //         gui_fill_rect(bx as i32 + 1, by as i32 + 1, filled - 1, bh - 2, 0xFF0A56B5);
-        //     }
-        //     gui_draw_text_big(
-        //         (w / 2 - 40) as i32,
-        //         (by + bh + 28) as i32,
-        //         "Loading...",
-        //         0xFFFFFFFF,
-        //         2,
-        //     );
-        //     gui_flush();
-        // }
-
-        // 阶段3：展示中文/UTF-8 文本（使用默认字体）
-        // 需要时再清屏
-        gui_clear(0xFF000000);
-        let msg = "你好, LiteOS! 🌟 (TTF/UTF-8 渲染成功)";
-        let y = (h / 2 + 10) as i32;
-        if !gfx::draw_text(40, y, msg, 32, 0xFFFFFFFF) {
-            // 回退：ASCII 位图字体
-            gui_draw_text_big((w / 2 - 90) as i32, (h / 2) as i32, "Launching Shell", 0xFFFFFFFF, 2);
-        }
-        gui_flush();
-    }
-
-    // shell 已启动，无需再次启动
 
     // Main process reaping loop
     loop {
@@ -137,28 +39,16 @@ fn spawn_shell() {
     }
 }
 
-const MAX_FONT_BYTES: usize = 40 * 1024 * 1024; // 限制最大字体大小，避免>20MB卡顿
-
-// 以小块读取字体；系统已支持按需扩栈，栈/堆方案均可，这里使用堆缓冲以保持占用可控
-fn load_font_static(path: &str) -> Option<&'static [u8]> {
-    let fd = open(path, open_flags::O_RDONLY) as i32;
-    if fd < 0 { return None; }
-    let mut data: Vec<u8> = Vec::new();
-    let mut scratch = alloc::vec![0u8; 128 * 1024];
-    loop {
-        let n = read(fd as usize, &mut scratch);
-        if n <= 0 { break; }
-        let n_usize = n as usize;
-        data.extend_from_slice(&scratch[..n_usize]);
-        // 超过阈值则放弃加载该字体，避免卡顿
-        if data.len() > MAX_FONT_BYTES {
-            let _ = close(fd as usize);
-            return None;
-        }
-        // 让出CPU避免长时间独占
-        yield_();
-        if n_usize < scratch.len() { break; }
+fn spawn_litewm() {
+    let pid = fork();
+    if pid == 0 {
+        let exit_code = exec("/bin/litewm") as i32;
+        exit(exit_code);
+    } else if pid > 0 {
+        // litewm started
+    } else {
+        println!("init: failed to fork litewm process");
     }
-    let _ = close(fd as usize);
-    if data.is_empty() { None } else { Some(Box::leak(data.into_boxed_slice())) }
 }
+
+// 删除早期 GUI Splash 相关的字体加载辅助函数
