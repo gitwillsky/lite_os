@@ -169,12 +169,13 @@ impl Pipe {
 
                         Some(Ok(()))
                     } else {
-                        // 缓冲区满，需要阻塞等待
-                        if let Some(current) = current_task() {
-                            inner.write_wait_queue.push(Arc::downgrade(&current));
-                            None // 表示需要阻塞
+                        // 缓冲区满
+                        if total_written > 0 {
+                            // 已有部分写入，本次调用到此为止，返回已写入字节数
+                            return Ok(total_written);
                         } else {
-                            Some(Err(FileSystemError::IoError))
+                            // 尚未写入任何数据，直接返回0，避免单线程死锁
+                            return Ok(0);
                         }
                     }
                 }
@@ -212,11 +213,13 @@ impl Pipe {
                     Self::wakeup_waiters(&mut inner.write_wait_queue);
 
                     Some(Ok(read_len))
-                } else if inner.write_closed || !has_writers {
-                    // 写端关闭且无数据，或者没有写入器连接，返回EOF
+                } else if inner.write_closed {
+                    // 写端关闭且无数据，返回EOF
                     Some(Ok(0))
                 } else {
-                    // 无数据且写端未关闭，需要阻塞等待
+                    // 无数据：
+                    // - 如果当前没有写入器连接（has_writers == false），按FIFO语义应当阻塞等待写入器连接
+                    // - 如果已有写入器但暂时无数据，同样阻塞等待数据
                     if let Some(current) = current_task() {
                         inner.read_wait_queue.push(Arc::downgrade(&current));
                         None // 表示需要阻塞
@@ -276,12 +279,13 @@ impl Pipe {
 
                         Some(Ok(()))
                     } else {
-                        // 缓冲区满，需要阻塞等待
-                        if let Some(current) = current_task() {
-                            inner.write_wait_queue.push(Arc::downgrade(&current));
-                            None // 表示需要阻塞
+                        // 缓冲区满
+                        if total_written > 0 {
+                            // 已有部分写入，本次调用到此为止
+                            return Ok(total_written);
                         } else {
-                            Some(Err(FileSystemError::IoError))
+                            // 尚未写入任何数据，直接返回0，避免单线程死锁
+                            return Ok(0);
                         }
                     }
                 }
@@ -299,6 +303,38 @@ impl Pipe {
         }
 
         Ok(total_written)
+    }
+
+    /// 等待写入器连接（用于FIFO阻塞式打开）
+    pub fn wait_for_writer_connection(&self) {
+        let need_block = {
+            let mut inner = self.inner.lock();
+            if let Some(current) = current_task() {
+                inner.read_open_wait_queue.push(Arc::downgrade(&current));
+                true
+            } else {
+                false
+            }
+        };
+        if need_block {
+            block_current_and_run_next();
+        }
+    }
+
+    /// 等待读取器连接（用于FIFO阻塞式打开）
+    pub fn wait_for_reader_connection(&self) {
+        let need_block = {
+            let mut inner = self.inner.lock();
+            if let Some(current) = current_task() {
+                inner.write_open_wait_queue.push(Arc::downgrade(&current));
+                true
+            } else {
+                false
+            }
+        };
+        if need_block {
+            block_current_and_run_next();
+        }
     }
 }
 
@@ -468,17 +504,25 @@ impl NamedPipe {
 
     /// Open for reading - blocks until a writer is available if needed
     pub fn open_read(self: &Arc<Self>) -> Arc<FifoReadHandle> {
-        self.read_count.fetch_add(1, atomic::Ordering::Relaxed);
-        // 通知管道有新的读取器连接
+        self.read_count.fetch_add(1, atomic::Ordering::AcqRel);
+        // 先通知写端，避免写端因没有读端而阻塞
         self.pipe.notify_reader_connected();
+        // 若当前尚无写入端，使用等待队列阻塞等待一次连接
+        if self.write_count.load(atomic::Ordering::Acquire) == 0 {
+            self.pipe.wait_for_writer_connection();
+        }
         Arc::new(FifoReadHandle::new(self.pipe.clone(), Arc::downgrade(self)))
     }
 
     /// Open for writing - blocks until a reader is available if needed
     pub fn open_write(self: &Arc<Self>) -> Arc<FifoWriteHandle> {
-        self.write_count.fetch_add(1, atomic::Ordering::Relaxed);
-        // 通知管道有新的写入器连接
+        self.write_count.fetch_add(1, atomic::Ordering::AcqRel);
+        // 先通知读端，避免读端因没有写端而阻塞
         self.pipe.notify_writer_connected();
+        // 若当前尚无读端，使用等待队列阻塞等待一次连接
+        if self.read_count.load(atomic::Ordering::Acquire) == 0 {
+            self.pipe.wait_for_reader_connection();
+        }
         Arc::new(FifoWriteHandle::new(self.pipe.clone(), Arc::downgrade(self)))
     }
 

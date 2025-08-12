@@ -555,24 +555,13 @@ fn reparent_children_to_init(task: &Arc<TaskControlBlock>) {
 }
 
 /// 处理进程退出时的父子关系
-fn handle_parent_child_relationship(task: &Arc<TaskControlBlock>, from_signal: bool) {
-    let Some(parent) = task.parent() else {
-        return;
-    };
-
-    let pid = task.pid();
-
-    // 如果是信号终止，需要从父进程的子进程列表中移除并转移给init
-    if from_signal {
-        let removed = remove_from_parent_children(&parent, task);
-
-        if removed {
-            transfer_to_init_if_needed(task, &parent);
-        }
+fn handle_parent_child_relationship(task: &Arc<TaskControlBlock>, _from_signal: bool) {
+    // 注意：无论进程因何退出（正常或被信号终止），都不应当把僵尸进程从父进程的
+    // 子进程列表中移除并转交给 init。父进程需要能够 wait()/waitpid() 收尸。
+    // 这里只唤醒可能正在等待的父进程。
+    if let Some(parent) = task.parent() {
+        wake_waiting_parent(&parent);
     }
-
-    // 唤醒等待的父进程
-    wake_waiting_parent(&parent);
 }
 
 /// 从父进程的子进程列表中移除指定任务
@@ -874,6 +863,9 @@ pub fn suspend_current_and_run_next() {
 /// 阻塞当前任务并切换到下一个任务
 pub fn block_current_and_run_next() {
     let task = take_current_task().expect("No current task to block");
+    // 对于阻塞场景，应当将任务状态设置为 Sleeping，
+    // 以便后续资源可用时通过 wakeup() 正确重新加入调度队列。
+    set_task_status(&task, TaskStatus::Sleeping);
     let task_cx_ptr = prepare_task_for_suspend(&task);
     schedule(task_cx_ptr);
 }
