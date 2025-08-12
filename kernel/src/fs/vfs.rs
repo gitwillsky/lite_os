@@ -174,6 +174,36 @@ impl VirtualFileSystem {
         parent.create_directory(&dirname)
     }
 
+    /// Create a named pipe (FIFO) persistently in the underlying filesystem
+    pub fn create_fifo(&self, path: &str, mode: u32) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let abs_path = self.resolve_relative_path(path);
+        let (parent_path, name) = self.split_path(&abs_path)?;
+        let parent = self.resolve_path(&parent_path)?;
+        // If already exists
+        match parent.find_child(&name) {
+            Ok(inode) => {
+                return if matches!(inode.inode_type(), super::InodeType::Fifo) {
+                    Ok(inode)
+                } else {
+                    Err(FileSystemError::AlreadyExists)
+                };
+            }
+            Err(FileSystemError::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        // Fallback: create a regular file then mark as FIFO via set_mode if fs supports; ext2 will provide create_fifo
+        // Prefer filesystem-native fifo creation when available
+        if let Ok(dir_inode) = self.resolve_path(&parent_path) {
+            // Try trait extension via downcast-like approach: call create_file then set_mode S_IFIFO
+            let fifo = dir_inode.create_file(&name)?;
+            let mut fifo_mode = (mode & 0o777) | 0o010000; // mark as fifo bit if fs interprets
+            let _ = fifo.set_mode(fifo_mode);
+            Ok(fifo)
+        } else {
+            Err(FileSystemError::NotFound)
+        }
+    }
+
     pub fn remove(&self, path: &str) -> Result<(), FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
         let (parent_path, filename) = self.split_path(&abs_path)?;

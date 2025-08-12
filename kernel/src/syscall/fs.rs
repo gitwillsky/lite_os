@@ -792,24 +792,18 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
     let token = current_user_token();
     let path_str = match translated_c_string(token, path) {
         Ok(path) => path,
-        Err(e) => {
-            return -36;
-        }
+        Err(_) => { return -36; }
     };
-    let _ = mode; // Mode parameter is currently ignored
 
-    match create_fifo(&path_str) {
+    // 标准化：在文件系统上创建持久化 FIFO 节点（目录项可见），若已存在且为 FIFO 则成功
+    match vfs().create_fifo(&path_str, mode) {
         Ok(_) => 0,
-        Err(e) => {
-            match e {
-                FileSystemError::AlreadyExists => -17,    // EEXIST
-                FileSystemError::PermissionDenied => -13, // EACCES
-                FileSystemError::NotFound => -2,          // ENOENT (parent directory not found)
-                FileSystemError::NotDirectory => -20,     // ENOTDIR
-                FileSystemError::NoSpace => -28,          // ENOSPC
-                _ => -1,                                  // Generic error
-            }
-        }
+        Err(FileSystemError::AlreadyExists) => -17,       // EEXIST（与 POSIX 一致）
+        Err(FileSystemError::PermissionDenied) => -13,    // EACCES
+        Err(FileSystemError::NotFound) => -2,             // ENOENT
+        Err(FileSystemError::NotDirectory) => -20,        // ENOTDIR
+        Err(FileSystemError::NoSpace) => -28,             // ENOSPC
+        Err(_) => -1,
     }
 }
 
