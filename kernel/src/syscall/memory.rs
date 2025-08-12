@@ -2,7 +2,7 @@ use core::sync::atomic;
 
 use crate::memory::{
     PAGE_SIZE,
-    address::{VirtualAddress, VirtualPageNumber},
+    address::VirtualAddress,
     mm::{MapArea, MapPermission, MapType},
 };
 use crate::syscall::errno::*;
@@ -181,8 +181,8 @@ pub fn sys_mmap(
 
     // 找到合适的虚拟地址
     let start_va = if addr == 0 {
-        // 自动分配地址
-        find_free_area(&task.mm.memory_set.lock(), aligned_length)
+        // 自动分配地址（委托给 MemorySet）
+        task.mm.memory_set.lock().find_free_area_user(aligned_length)
     } else {
         // 使用指定地址
         VirtualAddress::from(addr)
@@ -244,32 +244,4 @@ pub const MAP_SHARED: i32 = 1;
 pub const MAP_PRIVATE: i32 = 2;
 pub const MAP_ANONYMOUS: i32 = 0x20;
 
-/// 在内存集合中找到空闲区域
-fn find_free_area(memory_set: &crate::memory::mm::MemorySet, length: usize) -> VirtualAddress {
-    // 简单实现：从较高地址开始查找
-    let mut current_addr = 0x50000000usize;
-    let end_addr = 0x80000000usize;
-
-    while current_addr + length < end_addr {
-        let start_vpn = VirtualAddress::from(current_addr).floor();
-        let end_vpn = VirtualAddress::from(current_addr + length).ceil();
-
-        // 检查这个区域是否空闲
-        let mut is_free = true;
-        for vpn in usize::from(start_vpn)..usize::from(end_vpn) {
-            if memory_set.translate(VirtualPageNumber::from(vpn)).is_some() {
-                is_free = false;
-                break;
-            }
-        }
-
-        if is_free {
-            return VirtualAddress::from(current_addr);
-        }
-
-        current_addr += PAGE_SIZE;
-    }
-
-    // 如果没有找到合适的地址，返回错误地址
-    VirtualAddress::from(0)
-}
+// 原本的 find_free_area 已迁移至 MemorySet::find_free_area_user

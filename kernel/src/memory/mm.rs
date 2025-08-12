@@ -267,6 +267,40 @@ impl MemorySet {
         self.page_table.translate(vpn)
     }
 
+    /// 在用户地址空间中查找空闲区域（从高地址向低地址）
+    /// 上界为 `TRAP_CONTEXT_BASE`，避免与 trap 上下文/跳板冲突
+    pub fn find_free_area_user(&self, length: usize) -> VirtualAddress {
+        if length == 0 || length > config::TRAP_CONTEXT_BASE {
+            return VirtualAddress::from(0);
+        }
+
+        let aligned_len = (length + config::PAGE_SIZE - 1) & !(config::PAGE_SIZE - 1);
+        let upper_limit = config::TRAP_CONTEXT_BASE;
+        let mut current_addr = (upper_limit.saturating_sub(aligned_len)) & !(config::PAGE_SIZE - 1);
+
+        while current_addr + aligned_len <= upper_limit {
+            let start_vpn = VirtualAddress::from(current_addr).floor();
+            let end_vpn = VirtualAddress::from(current_addr + aligned_len).ceil();
+
+            let mut is_free = true;
+            for vpn in start_vpn.as_usize()..end_vpn.as_usize() {
+                if self.translate(VirtualPageNumber::from_vpn(vpn)).is_some() {
+                    is_free = false;
+                    break;
+                }
+            }
+
+            if is_free {
+                return VirtualAddress::from(current_addr);
+            }
+
+            if current_addr < config::PAGE_SIZE { break; }
+            current_addr -= config::PAGE_SIZE;
+        }
+
+        VirtualAddress::from(0)
+    }
+
     /// 分配DMA内存页面
     pub fn alloc_dma_pages(&mut self, page_count: usize) -> Result<PhysicalAddress, MemoryError> {
         if page_count == 0 {
