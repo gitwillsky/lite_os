@@ -203,6 +203,11 @@ impl SignalState {
         self.atomic_state.needs_trap_context_handling()
     }
 
+    /// 标记下一次触发特殊返回路径需要使用 trap context（用于 sigreturn 检测）
+    pub fn mark_trap_context_needed(&self, signal: super::core::Signal) {
+        self.atomic_state.set_needs_trap_context(signal);
+    }
+
     /// 为exec重置信号状态
     pub fn reset_for_exec(&mut self) {
         // 重置所有信号处理器为默认值

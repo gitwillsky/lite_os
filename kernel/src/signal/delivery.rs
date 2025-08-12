@@ -2,7 +2,10 @@
 
 use super::core::{Signal, SignalError};
 use crate::{
-    memory::page_table::{translated_byte_buffer, translated_ref_mut},
+    memory::{
+        address::VirtualAddress,
+        page_table::{translated_byte_buffer, PageTable},
+    },
     task::TaskControlBlock,
     trap::TrapContext,
 };
@@ -67,6 +70,11 @@ pub fn setup_signal_handler(
     trap_cx.sepc = handler_addr; // PC指向处理器
     trap_cx.x[2] = handler_sp; // 更新栈指针，为信号处理函数预留栈空间
     trap_cx.x[10] = signal as usize; // a0: 信号编号
+    // 将信号帧地址通过 a1 传递给用户态处理器，便于用户代码需要时获取
+    trap_cx.x[11] = signal_frame_addr; // a1: 指向 SignalFrame 的用户地址（非可靠用于返回）
+    // 同时把地址写入一个“被调用者保存”的寄存器（如 s11/x27），
+    // 以保证在函数返回时仍能恢复到原值，便于内核在 sigreturn 时可靠取回
+    trap_cx.x[27] = signal_frame_addr; // s11: callee-saved，作为 sigreturn 的权威来源
     trap_cx.x[1] = 0; // ra: 特殊返回地址，触发sigreturn
 
     debug!(
@@ -81,10 +89,12 @@ pub fn setup_signal_handler(
 
 /// 从信号处理函数返回
 pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<(), SignalError> {
-    // 当前栈指针指向信号处理函数的栈空间
-    // 信号帧位于栈指针 + 1024（预留空间）的位置
-    let user_sp = trap_cx.x[2];
-    let signal_frame_addr = user_sp + 1024; // 信号帧位置
+    // 优先从 callee-saved 的 s11(x27) 读取信号帧地址，最可靠
+    let mut signal_frame_addr = trap_cx.x[27];
+    if signal_frame_addr == 0 {
+        // 退而求其次：尝试 a1（可能被用户代码改写，非可靠）
+        signal_frame_addr = trap_cx.x[11];
+    }
 
     // 读取信号帧
     let signal_frame = read_signal_frame(task, signal_frame_addr)?;
@@ -129,9 +139,14 @@ fn write_signal_frame(task: &TaskControlBlock, addr: usize, frame: &SignalFrame)
 /// 从用户内存读取信号帧
 fn read_signal_frame(task: &TaskControlBlock, addr: usize) -> Result<SignalFrame, SignalError> {
     let token = task.mm.memory_set.lock().token();
-
-    let frame_ptr = translated_ref_mut::<SignalFrame>(token, addr as *mut SignalFrame);
-    Ok(*frame_ptr)
+    let page_table = PageTable::from_token(token);
+    let va = VirtualAddress::from(addr);
+    if let Some(pa) = page_table.translate_va(va) {
+        let frame_ptr: &mut SignalFrame = pa.get_mut();
+        Ok(*frame_ptr)
+    } else {
+        Err(SignalError::InvalidAddress)
+    }
 }
 
 /// 验证信号帧的完整性
