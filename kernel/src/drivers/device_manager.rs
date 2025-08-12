@@ -228,7 +228,8 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                     if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
                         // 注册 /dev/input/event0 节点（当前只挂一个）
                         let node = input_dev.node.clone();
-                        crate::drivers::register_input_node("/dev/input/event0", node);
+                        let path = crate::drivers::register_input_node_auto(node);
+                        info!("[DeviceManager] Registered input node at {}", path);
                         // 如有 PLIC，注册中断（若有效）
                         if let Some(plic_dev) = &board_info.plic_device {
                             let irq = virtio_dev.irq;

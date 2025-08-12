@@ -94,10 +94,13 @@ fn main() -> i32 {
     }
 
     // 事件循环：使用 poll 处理客户端消息 + 输入事件
-    let input_fd = open("/dev/input/event0", open_flags::O_RDONLY) as i32;
+    // 同时尝试 event0/event1（键盘/鼠标可能顺序不同）
+    let input0 = open("/dev/input/event0", open_flags::O_RDONLY) as i32;
+    let input1 = open("/dev/input/event1", open_flags::O_RDONLY) as i32;
     let mut pfds = [
         PollFd { fd: fifo_rd, events: poll_flags::POLLIN, revents: 0 },
-        PollFd { fd: input_fd, events: poll_flags::POLLIN, revents: 0 },
+        PollFd { fd: input0, events: poll_flags::POLLIN, revents: 0 },
+        PollFd { fd: input1, events: poll_flags::POLLIN, revents: 0 },
     ];
     loop {
         let nready = poll(&mut pfds, -1);
@@ -134,17 +137,20 @@ fn main() -> i32 {
             }
         }
         // 处理输入事件：每个事件 8 字节
-        if (pfds[1].revents & poll_flags::POLLIN) != 0 {
-            let mut buf = [0u8; 64];
-            let r = read(input_fd as usize, &mut buf);
-            if r > 0 {
-                let cnt = r as usize / 8;
-                for i in 0..cnt {
-                    let off = i * 8;
-                    let typ = u16::from_le_bytes([buf[off], buf[off+1]]);
-                    let code = u16::from_le_bytes([buf[off+2], buf[off+3]]);
-                    let val = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
-                    println!("[litewm] input: type={} code={} value={}", typ as usize, code as usize, val as usize);
+        for idx in 1..=2 {
+            if (pfds[idx].revents & poll_flags::POLLIN) != 0 && pfds[idx].fd >= 0 {
+                let mut buf = [0u8; 64];
+                let r = read(pfds[idx].fd as usize, &mut buf);
+                if r > 0 {
+                    let cnt = r as usize / 8;
+                    for i in 0..cnt {
+                        let off = i * 8;
+                        let typ = u16::from_le_bytes([buf[off], buf[off+1]]);
+                        let code = u16::from_le_bytes([buf[off+2], buf[off+3]]);
+                        let val_u = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+                        let val = val_u as i32; // 以有符号显示，便于区分按下(1)/抬起(0)/相对值(-1)
+                        println!("[litewm] input(fd={}): type={} code={} value={}", pfds[idx].fd, typ as usize, code as usize, val);
+                    }
                 }
             }
         }

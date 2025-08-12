@@ -71,7 +71,7 @@ pub use virtio_console::{
     is_virtio_console_available,
 };
 pub use virtio_gpu::{VirtioGpuDevice, DisplayMode};
-pub use virtio_input::{VirtioInputDevice, register_input_node, open_input_device};
+pub use virtio_input::{VirtioInputDevice, register_input_node_auto, open_input_device};
 pub use virtio_queue::{VirtQueue, VirtQueueError};
 
 // === Framebuffer导出 ===

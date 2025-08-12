@@ -23,6 +23,7 @@ run-with-timeout: build-kernel
 	-device virtio-blk-device,drive=x0 \
 	-device virtio-rng-device \
 	-device virtio-gpu-device \
+	-device virtio-keyboard-device \
 	-device virtio-mouse-device \
 	-rtc base=localtime \
 	-device virtio-net-device,netdev=net0 \
@@ -40,6 +41,7 @@ run: build-kernel
 	-device virtio-blk-device,drive=x0 \
 	-device virtio-rng-device \
 	-device virtio-gpu-device \
+	-device virtio-keyboard-device \
 	-device virtio-mouse-device \
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
@@ -55,6 +57,7 @@ run-gui: build-kernel
 	-device virtio-blk-device,drive=x0 \
 	-device virtio-rng-device \
 	-device virtio-gpu-device \
+	-device virtio-keyboard-device \
 	-device virtio-mouse-device \
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555 \

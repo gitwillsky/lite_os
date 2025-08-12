@@ -109,10 +109,15 @@ impl Inode for InputDeviceNode {
 
 /// 全局输入设备注册表：路径 -> 节点
 static INPUT_REGISTRY: Mutex<BTreeMap<String, Arc<InputDeviceNode>>> = Mutex::new(BTreeMap::new());
+static NEXT_EVENT_INDEX: spin::Mutex<u32> = spin::Mutex::new(0);
 
-pub fn register_input_node(path: &str, node: Arc<InputDeviceNode>) {
+pub fn register_input_node_auto(node: Arc<InputDeviceNode>) -> String {
+    let mut idx = NEXT_EVENT_INDEX.lock();
+    let name = alloc::format!("/dev/input/event{}", *idx);
+    *idx += 1;
     let mut reg = INPUT_REGISTRY.lock();
-    reg.insert(path.to_string(), node);
+    reg.insert(name.clone(), node);
+    name
 }
 
 pub fn open_input_device(path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
