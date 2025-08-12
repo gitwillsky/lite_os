@@ -228,23 +228,12 @@ impl File {
 
     /// 复制文件描述符（用于 dup 系统调用）
     pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
-        if let Some(file_desc) = self.fd_table.get(&fd) {
-            // 获取当前偏移量值
-            let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
-            // 创建新的 FileDescriptor，复制当前偏移量
-            let new_file_desc = Arc::new(FileDescriptor {
-                inode: file_desc.inode.clone(),
-                offset: atomic::AtomicU64::new(current_offset),
-                flags: file_desc.flags,
-                mode: file_desc.mode,
-                dirty_on_close: atomic::AtomicBool::new(
-                    file_desc.dirty_on_close.load(atomic::Ordering::Relaxed),
-                ),
-            });
-            self.alloc_fd(new_file_desc)
-        } else {
-            None
-        }
+        // 语义修正：dup 应与 oldfd 共享同一个“打开文件描述”（open file description），
+        // 包括共享偏移、标志等。这里直接克隆 Arc 引用，而不是新建一个 FileDescriptor。
+        self.fd_table
+            .get(&fd)
+            .cloned()
+            .and_then(|shared_desc| self.alloc_fd(shared_desc))
     }
 
     /// 复制文件描述符到指定的文件描述符号（用于 dup2 系统调用）
@@ -258,20 +247,10 @@ impl File {
             };
         }
 
-        // 首先获取 oldfd 的文件描述符信息
-        let (inode, current_offset, flags, mode, dirty) = {
-            if let Some(file_desc) = self.fd_table.get(&oldfd) {
-                let current_offset = file_desc.offset.load(atomic::Ordering::Relaxed);
-                (
-                    file_desc.inode.clone(),
-                    current_offset,
-                    file_desc.flags,
-                    file_desc.mode,
-                    file_desc.dirty_on_close.load(atomic::Ordering::Relaxed),
-                )
-            } else {
-                return None;
-            }
+        // 获取 oldfd 的共享文件描述符（open file description）
+        let shared_desc = match self.fd_table.get(&oldfd).cloned() {
+            Some(desc) => desc,
+            None => return None,
         };
 
         // 如果 newfd 已存在，先关闭它
@@ -279,15 +258,8 @@ impl File {
             self.fd_table.remove(&newfd);
         }
 
-        // 创建新的 FileDescriptor，复制当前偏移量
-        let new_file_desc = Arc::new(FileDescriptor {
-            inode,
-            offset: atomic::AtomicU64::new(current_offset),
-            flags,
-            mode,
-            dirty_on_close: atomic::AtomicBool::new(dirty),
-        });
-        self.fd_table.insert(newfd, new_file_desc);
+        // 共享相同的 FileDescriptor（共享偏移与标志）
+        self.fd_table.insert(newfd, shared_desc);
 
         // 更新 next_fd 以避免与新分配的 fd 冲突
         if newfd >= self.next_fd {
