@@ -504,3 +504,41 @@ pub fn draw_string_scaled(mut x: i32, y: i32, text: &str, color: u32, scale: u32
     }
 }
 
+/// 将一块 RGBA8888 源像素按行拷贝到帧缓冲指定位置（不缩放）
+/// src_stride: 源每行字节数（通常为 width*4）
+pub fn blit_rgba(dst_x: i32, dst_y: i32, width: u32, height: u32, src_ptr: *const u8, src_stride: usize) {
+    let mut guard = GFX.lock();
+    let Some(ref mut g) = *guard else { return };
+    let pitch = g.info.pitch as usize;
+    let bpp = g.info.bytes_per_pixel as usize;
+    if bpp != 4 { return; }
+    for row in 0..(height as i32) {
+        let y = dst_y + row;
+        if y < 0 || y >= g.info.height as i32 { continue; }
+        let dst_row = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
+        let src_row = unsafe { src_ptr.add((row as usize) * src_stride) };
+        for col in 0..(width as i32) {
+            let x = dst_x + col;
+            if x < 0 || x >= g.info.width as i32 { continue; }
+            let dp = unsafe { dst_row.add((x as usize) * bpp) };
+            let sp = unsafe { src_row.add((col as usize) * 4) };
+            // 源为 RGBA8888，目标根据格式转换
+            let r = unsafe { *sp.add(0) };
+            let gch = unsafe { *sp.add(1) };
+            let b = unsafe { *sp.add(2) };
+            let a = unsafe { *sp.add(3) };
+            write_pixel_rgba(dp, &g.info, r, gch, b, a);
+        }
+    }
+    g.dirty = true;
+    let x0 = dst_x.max(0); let y0 = dst_y.max(0);
+    let x1 = (dst_x + width as i32).min(g.info.width as i32);
+    let y1 = (dst_y + height as i32).min(g.info.height as i32);
+    if x0 < x1 && y0 < y1 {
+        g.dirty_rect = Some(match g.dirty_rect {
+            Some((ox0, oy0, ox1, oy1)) => (ox0.min(x0), oy0.min(y0), ox1.max(x1), oy1.max(y1)),
+            None => (x0, y0, x1, y1),
+        });
+    }
+}
+

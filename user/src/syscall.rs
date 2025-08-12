@@ -100,6 +100,10 @@ const SYSCALL_BRK: usize = 214;
 const SYSCALL_SBRK: usize = 215;
 const SYSCALL_MMAP: usize = 223;
 const SYSCALL_MUNMAP: usize = 216;
+// 共享内存
+const SYSCALL_SHM_CREATE: usize = 2300;
+const SYSCALL_SHM_MAP: usize = 2301;
+const SYSCALL_SHM_CLOSE: usize = 2302;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -565,6 +569,19 @@ pub mod mmap_flags {
     pub const PROT_WRITE: i32 = 2;
     pub const PROT_EXEC: i32 = 4;
     pub const PROT_NONE: i32 = 0;
+}
+
+// 共享内存封装
+pub fn shm_create(size: usize) -> isize {
+    syscall(SYSCALL_SHM_CREATE, [size, 0, 0])
+}
+
+pub fn shm_map(handle: usize, prot: i32) -> isize {
+    syscall(SYSCALL_SHM_MAP, [handle, prot as usize, 0])
+}
+
+pub fn shm_close(handle: usize) -> isize {
+    syscall(SYSCALL_SHM_CLOSE, [handle, 0, 0])
 }
 
 // 信号常量

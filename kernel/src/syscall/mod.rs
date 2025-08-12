@@ -92,6 +92,10 @@ const SYSCALL_BRK: usize = 214;
 const SYSCALL_SBRK: usize = 215;
 const SYSCALL_MMAP: usize = 223;
 const SYSCALL_MUNMAP: usize = 216;
+// 共享内存（简化版）
+const SYSCALL_SHM_CREATE: usize = 2300;
+const SYSCALL_SHM_MAP: usize = 2301;
+const SYSCALL_SHM_CLOSE: usize = 2302;
 
 // 进程监控系统调用
 const SYSCALL_GET_PROCESS_LIST: usize = 700;
@@ -188,6 +192,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_SBRK => sys_sbrk(args[0] as isize),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, 0, -1, 0),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
+        SYSCALL_SHM_CREATE => sys_shm_create(args[0]),
+        SYSCALL_SHM_MAP => sys_shm_map(args[0], args[1] as i32),
+        SYSCALL_SHM_CLOSE => sys_shm_close(args[0]),
 
         // 进程监控系统调用
         SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),

@@ -4,7 +4,7 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::sleep_ms;
+use user_lib::{sleep_ms, shm_create, shm_map, mmap_flags, shm_close};
 use user_lib::gfx;
 
 #[unsafe(no_mangle)]
@@ -34,6 +34,36 @@ fn main() -> i32 {
 
     // 标题
     gfx::draw_text(win_x + 16, win_y + 28, "Hello, Desktop!", 20, 0xFFFFFFFF);
+
+    // 共享内存自检：创建一块 200x100 RGBA8888，画渐变并贴到窗口内
+    let test_w: u32 = 200; let test_h: u32 = 100; let stride = (test_w * 4) as usize;
+    let size = (stride * test_h as usize) as usize;
+    let handle = shm_create(size as usize);
+    if handle > 0 {
+        let va = shm_map(handle as usize, mmap_flags::PROT_READ | mmap_flags::PROT_WRITE);
+        if va > 0 {
+            let ptr = va as *mut u8;
+            // 填充渐变
+            for y in 0..test_h {
+                for x in 0..test_w {
+                    let off = (y as usize) * stride + (x as usize) * 4;
+                    let r = (x * 255 / test_w) as u8;
+                    let gch = (y * 255 / test_h) as u8;
+                    let b = 64u8;
+                    unsafe {
+                        *ptr.add(off + 0) = r;
+                        *ptr.add(off + 1) = gch;
+                        *ptr.add(off + 2) = b;
+                        *ptr.add(off + 3) = 255;
+                    }
+                }
+            }
+            // 贴图到窗口内
+            gfx::blit_rgba(win_x + 24, win_y + 64, test_w, test_h, va as *const u8, stride);
+            // 不立即释放，留待进程退出时清理；此处演示 close 接口
+            let _ = shm_close(handle as usize);
+        }
+    }
 
     // 刷新一次
     gfx::gui_flush();
