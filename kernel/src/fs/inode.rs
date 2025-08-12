@@ -52,4 +52,16 @@ pub trait Inode: Send + Sync {
     fn set_gid(&self, _gid: u32) -> Result<(), super::FileSystemError> {
         Ok(())
     }
+
+    /// 事件就绪掩码（用于 poll/select）。默认认为可读可写。
+    /// 位定义与内核 sys_poll 常量一致：POLLIN=0x0001, POLLOUT=0x0004
+    fn poll_mask(&self) -> u32 {
+        0x0001 | 0x0004
+    }
+
+    /// 注册 poll 等待者（默认空实现）
+    fn register_poll_waiter(&self, _interests: u32, _task: alloc::sync::Arc<crate::task::TaskControlBlock>) {}
+
+    /// 取消注册 poll 等待者（默认空实现）
+    fn clear_poll_waiter(&self, _task_pid: usize) {}
 }

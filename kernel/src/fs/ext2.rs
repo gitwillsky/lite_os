@@ -2836,6 +2836,18 @@ impl Inode for Ext2Inode {
         self.fs.write_inode_disk(self.inode_num, &i)?;
         Ok(())
     }
+
+    fn poll_mask(&self) -> u32 {
+        match self.inode_type() {
+            InodeType::Directory | InodeType::File | InodeType::SymLink | InodeType::Device => {
+                0x0001 | 0x0004 // POLLIN | POLLOUT
+            }
+            InodeType::Fifo => {
+                // TODO: 结合管道等待队列返回精确掩码
+                0x0001 | 0x0004
+            }
+        }
+    }
 }
 
 impl FileSystem for Ext2FileSystem {

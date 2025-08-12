@@ -31,6 +31,8 @@ struct PipeInner {
     read_open_wait_queue: Vec<Weak<TaskControlBlock>>,
     /// 等待读取器连接的写入器队列（用于FIFO）
     write_open_wait_queue: Vec<Weak<TaskControlBlock>>,
+    /// poll 等待者：pid -> (弱引用任务, 关心的事件掩码)
+    poll_waiters: BTreeMap<usize, (Weak<TaskControlBlock>, u32)>,
 }
 
 impl Pipe {
@@ -45,6 +47,7 @@ impl Pipe {
                 write_wait_queue: Vec::new(),
                 read_open_wait_queue: Vec::new(),
                 write_open_wait_queue: Vec::new(),
+                poll_waiters: BTreeMap::new(),
             }),
         }
     }
@@ -92,6 +95,46 @@ impl Pipe {
         }
     }
 
+    fn wakeup_pollers(&self, mask: u32) {
+        let mut to_wakeup: Vec<Weak<TaskControlBlock>> = Vec::new();
+        {
+            let mut inner = self.inner.lock();
+            let mut dead: Vec<usize> = Vec::new();
+            for (pid, (weak, interests)) in inner.poll_waiters.iter() {
+                if (mask & *interests) != 0 {
+                    to_wakeup.push(weak.clone());
+                }
+                if weak.upgrade().is_none() {
+                    dead.push(*pid);
+                }
+            }
+            for pid in dead { inner.poll_waiters.remove(&pid); }
+        }
+        for w in to_wakeup {
+            if let Some(task) = w.upgrade() { task.wakeup(); }
+        }
+    }
+
+    /// 计算常规管道的 poll 就绪掩码
+    pub fn poll_mask(&self) -> u32 {
+        // 与 sys_poll 中的常量保持一致
+        const POLLIN: u32 = 0x0001;
+        const POLLOUT: u32 = 0x0004;
+        const POLLHUP: u32 = 0x0010;
+        let inner = self.inner.lock();
+        let mut mask = 0u32;
+        if !inner.buffer.is_empty() {
+            mask |= POLLIN;
+        }
+        if inner.buffer.len() < PIPE_BUF_SIZE && !inner.read_closed {
+            mask |= POLLOUT;
+        }
+        if inner.read_closed || inner.write_closed {
+            mask |= POLLHUP;
+        }
+        mask
+    }
+
     /// 从管道读取数据（阻塞式）
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         loop {
@@ -108,6 +151,9 @@ impl Pipe {
 
                     // 唤醒等待写入的任务
                     Self::wakeup_waiters(&mut inner.write_wait_queue);
+                    drop(inner);
+                    // POLLIN 触发
+                    self.wakeup_pollers(0x0001);
 
                     Some(Ok(read_len))
                 } else if inner.write_closed {
@@ -166,6 +212,9 @@ impl Pipe {
 
                         // 唤醒等待读取的任务
                         Self::wakeup_waiters(&mut inner.read_wait_queue);
+                        drop(inner);
+                        // POLLOUT 触发
+                        self.wakeup_pollers(0x0004);
 
                         Some(Ok(()))
                     } else {
@@ -588,6 +637,36 @@ impl Inode for NamedPipe {
 
     fn sync(&self) -> Result<(), FileSystemError> {
         Ok(())
+    }
+
+    fn poll_mask(&self) -> u32 {
+        const POLLIN: u32 = 0x0001;
+        const POLLOUT: u32 = 0x0004;
+        const POLLHUP: u32 = 0x0010;
+        let inner = self.pipe.inner.lock();
+        let mut mask = 0u32;
+        if !inner.buffer.is_empty() {
+            mask |= POLLIN;
+        }
+        // 对于命名管道，若存在读端则可写；这里以 read_closed 取代计数简化
+        if inner.buffer.len() < PIPE_BUF_SIZE && !inner.read_closed {
+            mask |= POLLOUT;
+        }
+        // 若无读端或无写端，报告 HUP（更完整可区分 R/W 端）
+        if inner.read_closed || inner.write_closed {
+            mask |= POLLHUP;
+        }
+        mask
+    }
+
+    fn register_poll_waiter(&self, interests: u32, task: Arc<crate::task::TaskControlBlock>) {
+        let mut inner = self.pipe.inner.lock();
+        inner.poll_waiters.insert(task.pid(), (Arc::downgrade(&task), interests));
+    }
+
+    fn clear_poll_waiter(&self, task_pid: usize) {
+        let mut inner = self.pipe.inner.lock();
+        inner.poll_waiters.remove(&task_pid);
     }
 }
 

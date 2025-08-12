@@ -104,6 +104,8 @@ const SYSCALL_MUNMAP: usize = 216;
 const SYSCALL_SHM_CREATE: usize = 2300;
 const SYSCALL_SHM_MAP: usize = 2301;
 const SYSCALL_SHM_CLOSE: usize = 2302;
+// 事件复用
+const SYSCALL_POLL: usize = 5070;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -582,6 +584,27 @@ pub fn shm_map(handle: usize, prot: i32) -> isize {
 
 pub fn shm_close(handle: usize) -> isize {
     syscall(SYSCALL_SHM_CLOSE, [handle, 0, 0])
+}
+
+// ========== poll ==========
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PollFd {
+    pub fd: i32,
+    pub events: u16,
+    pub revents: u16,
+}
+
+pub mod poll_flags {
+    pub const POLLIN: u16 = 0x0001;
+    pub const POLLOUT: u16 = 0x0004;
+    pub const POLLERR: u16 = 0x0008;
+    pub const POLLHUP: u16 = 0x0010;
+}
+
+pub fn poll(fds: &mut [PollFd], timeout_ms: isize) -> isize {
+    let ptr = fds.as_mut_ptr() as *mut PollFd as *mut u8;
+    syscall(SYSCALL_POLL, [ptr as usize, fds.len(), timeout_ms as usize])
 }
 
 // 信号常量

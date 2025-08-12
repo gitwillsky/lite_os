@@ -13,6 +13,12 @@ use crate::{
 const STD_OUT: usize = 1;
 const STD_IN: usize = 0;
 
+// poll/select 常量
+const POLLIN: u32 = 0x0001;  // 有数据可读
+const POLLOUT: u32 = 0x0004; // 可写
+const POLLERR: u32 = 0x0008; // 错误
+const POLLHUP: u32 = 0x0010; // 挂起
+
 /// write buf of length `len`  to a file with `fd`
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     match fd {
@@ -390,6 +396,66 @@ pub fn sys_remove(path: *const u8) -> isize {
     match vfs().remove(&path_str) {
         Ok(_) => 0,
         Err(_) => -1,
+    }
+}
+
+/// poll - 轮询一组 fd 的事件
+/// fds_ptr: 指向 {fd:i32, events:u16, revents:u16} 数组
+/// nfds: 数组长度；timeout_ms: 超时（毫秒），-1 无限
+pub fn sys_poll(fds_ptr: *mut u8, nfds: usize, timeout_ms: isize) -> isize {
+    if nfds == 0 { return 0; }
+    let token = current_user_token();
+    let entry_size = 8usize; // fd(4)+events(2)+revents(2)
+    let buf_len = entry_size * nfds;
+    let mut bufs = translated_byte_buffer(token, fds_ptr as *const u8, buf_len);
+    if bufs.is_empty() || bufs[0].len() < buf_len { return -14; }
+
+    let start_ms = crate::timer::get_time_msec() as usize;
+    loop {
+        let mut ready = 0isize;
+        let data = &mut bufs[0];
+        for i in 0..nfds {
+            let off = i * entry_size;
+            let fd = i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
+            let events = u16::from_le_bytes([data[off+4], data[off+5]]) as u32;
+            let revents_off = off + 6;
+            let mut revents: u32 = 0;
+            if let Some(task) = current_task() {
+                if let Some(desc) = task.file.lock().fd(fd) {
+                    let mask = desc.inode.poll_mask();
+                    if (events & POLLIN) != 0 && (mask & POLLIN) != 0 { revents |= POLLIN; }
+                    if (events & POLLOUT) != 0 && (mask & POLLOUT) != 0 { revents |= POLLOUT; }
+                    // 注册等待者（仅在尚未就绪情况下）
+                    if revents == 0 {
+                        desc.inode.register_poll_waiter(events, task.clone());
+                    }
+                } else {
+                    revents |= POLLERR;
+                }
+            }
+            if revents != 0 { ready += 1; }
+            let rev = (revents as u16).to_le_bytes();
+            data[revents_off] = rev[0]; data[revents_off+1] = rev[1];
+        }
+        if ready > 0 { return ready; }
+        if timeout_ms == 0 { return 0; }
+        if timeout_ms > 0 {
+            let now = crate::timer::get_time_msec() as usize;
+            if now - start_ms >= timeout_ms as usize { return 0; }
+        }
+        // 让出调度；被唤醒后清理等待者，避免遗留
+        suspend_current_and_run_next();
+        if let Some(task) = current_task() {
+            let pid = task.pid();
+            let data = &mut bufs[0];
+            for i in 0..nfds {
+                let off = i * entry_size;
+                let fd = i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
+                if let Some(desc) = task.file.lock().fd(fd) {
+                    desc.inode.clear_poll_waiter(pid);
+                }
+            }
+        }
     }
 }
 

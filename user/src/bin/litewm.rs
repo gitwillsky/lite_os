@@ -4,7 +4,8 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{sleep_ms, shm_create, shm_map, mmap_flags, shm_close, open, read, mkfifo, mkdir, munmap};
+use user_lib::{sleep_ms, shm_create, shm_map, mmap_flags, shm_close, open, read, mkfifo, mkdir, munmap, poll, PollFd};
+use user_lib::poll_flags;
 use user_lib::open_flags;
 use user_lib::gfx;
 
@@ -92,17 +93,20 @@ fn main() -> i32 {
         sleep_ms(16);
     }
 
-    // 事件循环：处理客户端消息（简化：仅一种消息 AttachShmAndBlit）
+    // 事件循环：使用 poll 处理客户端消息
+    let mut pfds = [PollFd { fd: fifo_rd, events: poll_flags::POLLIN, revents: 0 }];
     loop {
-        // 消息格式（小端）：
-        // kind:u32=1, handle:u32, w:u32, h:u32, stride:u32, dst_x:i32, dst_y:i32
+        let nready = poll(&mut pfds, -1);
+        if nready <= 0 { continue; }
+        // 消息格式（小端）：kind:u32=1, handle:u32, w:u32, h:u32, stride:u32, dst_x:i32, dst_y:i32
         let mut buf = [0u8; 28];
         let mut off = 0usize;
         while off < buf.len() {
             let n = read(fifo_rd as usize, &mut buf[off..]);
-            if n <= 0 { user_lib::yield_(); continue; }
+            if n <= 0 { break; }
             off += n as usize;
         }
+        if off < buf.len() { continue; }
         let leu32 = |i: usize| -> u32 { u32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
         let lei32 = |i: usize| -> i32 { i32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
         let kind = leu32(0);

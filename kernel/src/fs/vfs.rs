@@ -1,10 +1,16 @@
-use alloc::{collections::BTreeMap, format, string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use spin::Mutex;
 
 use crate::task;
 
 use super::{FileSystem, FileSystemError, Inode};
-use crate::ipc::{open_fifo};
+use crate::ipc::open_fifo;
 
 pub struct VirtualFileSystem {
     filesystems: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
@@ -93,7 +99,11 @@ impl VirtualFileSystem {
         self.open_with_flags(path, 0)
     }
 
-    pub fn open_with_flags(&self, path: &str, flags: u32) -> Result<Arc<dyn Inode>, FileSystemError> {
+    pub fn open_with_flags(
+        &self,
+        path: &str,
+        flags: u32,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let abs_path = self.resolve_relative_path(path);
 
         // Extract access mode from flags
@@ -191,17 +201,13 @@ impl VirtualFileSystem {
             Err(FileSystemError::NotFound) => {}
             Err(e) => return Err(e),
         }
-        // Fallback: create a regular file then mark as FIFO via set_mode if fs supports; ext2 will provide create_fifo
-        // Prefer filesystem-native fifo creation when available
-        if let Ok(dir_inode) = self.resolve_path(&parent_path) {
-            // Try trait extension via downcast-like approach: call create_file then set_mode S_IFIFO
-            let fifo = dir_inode.create_file(&name)?;
-            let mut fifo_mode = (mode & 0o777) | 0o010000; // mark as fifo bit if fs interprets
-            let _ = fifo.set_mode(fifo_mode);
-            Ok(fifo)
-        } else {
-            Err(FileSystemError::NotFound)
-        }
+        // 在底层文件系统中创建一个 FIFO 节点：采用 create_file 再 set_mode 的方式设置 S_IFIFO
+        let fifo = parent.create_file(&name)?;
+        // S_IFIFO: 0010000 (八进制) => 0x1000；ext2 使用 i_mode 的高位表示类型
+        let fifo_type_bits = 0x1000u32;
+        let perm_bits = mode & 0o777;
+        fifo.set_mode(fifo_type_bits | perm_bits)?;
+        Ok(fifo)
     }
 
     pub fn remove(&self, path: &str) -> Result<(), FileSystemError> {
