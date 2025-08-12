@@ -11,7 +11,7 @@ mod shell_modules;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use shell_modules::*;
-use user_lib::{check_keyboard_input, get_current_time, get_system_stats, getcwd, read, wait_pid, wait_pid_nb, yield_, SystemStats};
+use user_lib::{check_keyboard_input, get_current_time, get_system_stats, getcwd, read, yield_, SystemStats};
 
 // 控制字符常量
 const LF: u8 = b'\n';
@@ -413,6 +413,7 @@ fn main() -> i32 {
                 println!("");
                 let line = editor.content();
                 if !line.is_empty() {
+                    let mut suppress_prompt = false; // 是否抑制提示符（前台作业时不立即打印）
                     // 将命令添加到历史中
                     history.add_command(line.to_string());
 
@@ -447,6 +448,8 @@ fn main() -> i32 {
                             // 执行管道命令
                             let commands = parse_pipeline(&command_line);
                             execute_pipeline_with_jobs(commands, is_background, &mut job_manager);
+                            // 管道：前台在此已等待完成，应立即打印提示符；后台也应立即打印
+                            suppress_prompt = false;
                         } else {
                             // 执行外部程序，支持重定向和PATH查找
                             execute_command_with_jobs(
@@ -454,15 +457,25 @@ fn main() -> i32 {
                                 is_background,
                                 &mut job_manager,
                             );
+                            // 外部命令：前台不应立即打印提示符，等待异步完成；后台则立即打印
+                            suppress_prompt = !is_background;
                         }
                     }
                     editor.clear();
+                    // 清理已完成的作业
+                    job_manager.cleanup_finished_jobs();
+                    job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
+
+                    // 根据是否需要抑制提示符来决定是否立即打印
+                    if !suppress_prompt {
+                        let current_prompt = generate_prompt();
+                        print!("{}", current_prompt);
+                    }
+                } else {
+                    // 空命令行：直接重新显示提示符
+                    let current_prompt = generate_prompt();
+                    print!("{}", current_prompt);
                 }
-                // 清理已完成的作业并显示提示符
-                job_manager.cleanup_finished_jobs();
-                job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
-                let current_prompt = generate_prompt();
-                print!("{}", current_prompt);
             }
             TAB => {
                 // Tab补全功能

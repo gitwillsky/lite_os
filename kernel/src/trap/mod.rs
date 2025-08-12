@@ -318,16 +318,25 @@ extern "C" fn rust_trap_from_kernel() {
         }
         Trap::Exception(code) => {
             if let Ok(exception) = Exception::from_number(code) {
-                // 辅助调试：尝试解码 sepc/stval 的内核页表映射
-                let (sepc_map, stval_map) = {
+                // 辅助调试：尝试解码 sepc/stval 的内核页表映射与 PTE 标志
+                let (sepc_map, stval_map, sepc_flags, stval_flags) = {
                     let kernel_space = KERNEL_SPACE.wait().lock();
-                    let sepc_pa = kernel_space.translate_va(VirtualAddress::from(sepc_val));
-                    let stval_pa = kernel_space.translate_va(VirtualAddress::from(stval_val));
-                    (sepc_pa, stval_pa)
+                    let sepc_va = VirtualAddress::from(sepc_val);
+                    let stval_va = VirtualAddress::from(stval_val);
+                    let sepc_pa = kernel_space.translate_va(sepc_va);
+                    let stval_pa = kernel_space.translate_va(stval_va);
+                    let sepc_pte = kernel_space.translate(sepc_va.floor());
+                    let stval_pte = kernel_space.translate(stval_va.floor());
+                    (
+                        sepc_pa,
+                        stval_pa,
+                        sepc_pte.map(|p| p.flags()),
+                        stval_pte.map(|p| p.flags()),
+                    )
                 };
                 error!(
-                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x} (PA={:?}), sepc={:#x} (PA={:?})",
-                    exception, scause_val, stval_val, stval_map, sepc_val, sepc_map
+                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x} (PA={:?}, PTE={:?}), sepc={:#x} (PA={:?}, PTE={:?})",
+                    exception, scause_val, stval_val, stval_map, stval_flags, sepc_val, sepc_map, sepc_flags
                 );
                 panic!("Kernel exception: {:?}", exception);
             } else {
