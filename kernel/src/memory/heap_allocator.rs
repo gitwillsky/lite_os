@@ -19,6 +19,10 @@ pub struct HybridAllocator;
 
 unsafe impl GlobalAlloc for HybridAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Per Rust GlobalAlloc contract: size==0 may return any non-null, well-aligned pointer
+        if layout.size() == 0 {
+            return layout.align() as *mut u8;
+        }
         // Use SLAB allocator for small objects (<=2KB)
         if layout.size() <= 2048 {
             match SLAB_ALLOCATOR.alloc(layout) {
@@ -35,6 +39,11 @@ unsafe impl GlobalAlloc for HybridAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Per Rust GlobalAlloc contract: size==0 dealloc is a no-op; ptr may be dangling
+        if layout.size() == 0 {
+            return;
+        }
+
         if ptr.is_null() {
             return;
         }
