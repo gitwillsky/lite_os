@@ -226,19 +226,13 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                 18 => {
                     info!("[DeviceManager] Creating VirtioInputDevice at {:#x}", base_addr);
                     if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
-                        info!("[DeviceManager] VirtIO Input device created successfully");
                         // 注册 /dev/input/event0 节点（当前只挂一个）
                         let node = input_dev.node.clone();
-                        info!("[DeviceManager] Registering input node");
                         crate::drivers::register_input_node("/dev/input/event0", node);
-                        info!("[DeviceManager] Input node registered");
-                        // 如有 PLIC，注册中断（若有效） - 修复死锁问题
-                        info!("[DeviceManager] Checking for PLIC device");
+                        // 如有 PLIC，注册中断（若有效）
                         if let Some(plic_dev) = &board_info.plic_device {
                             let irq = virtio_dev.irq;
-                            info!("[DeviceManager] PLIC found, IRQ = {}", irq);
                             if irq != 0 {
-                                info!("[DeviceManager] Getting interrupt controller");
                                 // 仅在短作用域内获取控制器引用，避免长时间持有设备管理器锁
                                 let controller_opt = {
                                     let manager = device_manager();
@@ -246,7 +240,6 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                     dm.get_interrupt_controller()
                                 };
                                 if let Some(controller) = controller_opt {
-                                    info!("[DeviceManager] Interrupt controller found");
                                     // 直接把设备 Arc 交给中断处理器
                                     let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(input_dev.clone()));
                                     {
@@ -254,7 +247,6 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                         let sie_prev = register::sstatus::read().sie();
                                         unsafe { register::sstatus::clear_sie(); }
                                         let mut ctrl = controller.lock();
-                                        info!("[DeviceManager] Registering input IRQ handler on vector {}", irq);
                                         let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
                                             error!("[DeviceManager] Failed to register input IRQ handler: {:?}", e);
                                             Err(())
@@ -265,7 +257,6 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                             error!("[DeviceManager] Failed to enable input IRQ {}: {:?}", irq, e);
                                             Err(())
                                         } else {
-                                            info!("[DeviceManager] Registered input IRQ handler on vector {}", irq);
                                             Ok(())
                                         };
                                         drop(ctrl);
@@ -273,12 +264,11 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                                         let _ = res;
                                     }
                                     // 重要：释放中断控制器锁后再通知设备，避免中断回调与锁重入死锁
-                                    info!("[DeviceManager] Enabling input notifications after IRQ registration");
                                     input_dev.enable_notifications();
                                 }
                             }
                         }
-                        info!("[DeviceManager] VirtIO Input device initialization completed at {:#x}", base_addr);
+                        // 输入设备初始化完成
                     } else {
                         warn!("[DeviceManager] Failed to create VirtioInputDevice at {:#x}", base_addr);
                     }

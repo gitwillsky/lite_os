@@ -182,7 +182,6 @@ impl VirtioInputDevice {
 
         // 预投递接收缓冲区
         dev.setup_receive_buffers();
-        debug!("[VirtIO-Input] RX buffers posted");
         // 驱动就绪
         let status = dev.device.get_status().ok()?;
         dev.device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
@@ -221,14 +220,11 @@ impl VirtioInputDevice {
             }
         }
         if posted_any {
-            // 重要：不要在此处通知设备。若此时尚未注册IRQ处理器，会触发外部中断风暴，
-            // 导致在注册IRQ时竞争PLIC自旋锁而饥饿。首次通知延后到IRQ注册完成后。
-            debug!("[VirtIO-Input] RX buffers posted (notification deferred until IRQ ready)");
+            // 首次通知延后到IRQ注册完成后
         }
     }
 
     pub fn enable_notifications(&self) {
-        debug!("[VirtIO-Input] Enabling notifications (post IRQ registration)");
         let _ = self.device.notify_queue(0);
     }
 
