@@ -196,6 +196,40 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
                     }
                 }
 
+                // VirtIO Input device (0x12)
+                18 => {
+                    info!("[DeviceManager] Creating VirtioInputDevice at {:#x}", base_addr);
+                    if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
+                        // 注册 /dev/input/event0 节点（当前只挂一个）
+                        let node = input_dev.node.clone();
+                        crate::drivers::register_input_node("/dev/input/event0", node);
+                        // 如有 PLIC，注册中断（若有效）
+                        if let Some(plic_dev) = &board_info.plic_device {
+                            let irq = virtio_dev.irq;
+                            if irq != 0 {
+                                let manager = device_manager();
+                                let mut dm = manager.lock();
+                                if let Some(controller) = dm.get_interrupt_controller() {
+                                    // 直接把设备 Arc 交给中断处理器
+                                    let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(input_dev.clone()));
+                                    let mut ctrl = controller.lock();
+                                    if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
+                                        error!("[DeviceManager] Failed to register input IRQ handler: {:?}", e);
+                                    } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::Normal) {
+                                        error!("[DeviceManager] Failed to set input IRQ priority: {:?}", e);
+                                    } else if let Err(e) = ctrl.enable_interrupt(irq) {
+                                        error!("[DeviceManager] Failed to enable input IRQ {}: {:?}", irq, e);
+                                    } else {
+                                        info!("[DeviceManager] Registered input IRQ handler on vector {}", irq);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        warn!("[DeviceManager] Failed to create VirtioInputDevice at {:#x}", base_addr);
+                    }
+                }
+
                 _ => {
                     info!("[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}", device_id, base_addr);
                 }

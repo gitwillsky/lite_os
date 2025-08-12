@@ -9,6 +9,7 @@ pub mod device_manager;         // 设备管理器 - 统一设备管理
 pub mod virtio_blk;            // VirtIO块设备驱动
 pub mod virtio_console;        // VirtIO控制台驱动
 pub mod virtio_gpu;            // VirtIO GPU设备驱动
+pub mod virtio_input;          // VirtIO 输入设备驱动
 pub mod virtio_queue;          // VirtIO队列实现
 pub mod framebuffer;           // Framebuffer抽象层
 pub mod goldfish_rtc;          // Goldfish RTC驱动
@@ -70,6 +71,7 @@ pub use virtio_console::{
     is_virtio_console_available,
 };
 pub use virtio_gpu::{VirtioGpuDevice, DisplayMode};
+pub use virtio_input::{VirtioInputDevice, register_input_node, open_input_device};
 pub use virtio_queue::{VirtQueue, VirtQueueError};
 
 // === Framebuffer导出 ===

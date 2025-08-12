@@ -135,6 +135,13 @@ impl VirtualFileSystem {
             }
         }
 
+        // Input device nodes
+        if abs_path.starts_with("/dev/input/") {
+            if let Ok(node) = crate::drivers::open_input_device(&abs_path) {
+                return Ok(node);
+            }
+        }
+
         if abs_path == "/" {
             let root_fs = self.root_fs.lock();
             let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;

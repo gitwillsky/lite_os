@@ -93,37 +93,59 @@ fn main() -> i32 {
         sleep_ms(16);
     }
 
-    // 事件循环：使用 poll 处理客户端消息
-    let mut pfds = [PollFd { fd: fifo_rd, events: poll_flags::POLLIN, revents: 0 }];
+    // 事件循环：使用 poll 处理客户端消息 + 输入事件
+    let input_fd = open("/dev/input/event0", open_flags::O_RDONLY) as i32;
+    let mut pfds = [
+        PollFd { fd: fifo_rd, events: poll_flags::POLLIN, revents: 0 },
+        PollFd { fd: input_fd, events: poll_flags::POLLIN, revents: 0 },
+    ];
     loop {
         let nready = poll(&mut pfds, -1);
         if nready <= 0 { continue; }
-        // 消息格式（小端）：kind:u32=1, handle:u32, w:u32, h:u32, stride:u32, dst_x:i32, dst_y:i32
-        let mut buf = [0u8; 28];
-        let mut off = 0usize;
-        while off < buf.len() {
-            let n = read(fifo_rd as usize, &mut buf[off..]);
-            if n <= 0 { break; }
-            off += n as usize;
+        // 处理 FIFO
+        if (pfds[0].revents & poll_flags::POLLIN) != 0 {
+            // 消息格式（小端）：kind:u32=1, handle:u32, w:u32, h:u32, stride:u32, dst_x:i32, dst_y:i32
+            let mut buf = [0u8; 28];
+            let mut off = 0usize;
+            while off < buf.len() {
+                let n = read(fifo_rd as usize, &mut buf[off..]);
+                if n <= 0 { break; }
+                off += n as usize;
+            }
+            if off >= buf.len() {
+                let leu32 = |i: usize| -> u32 { u32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
+                let lei32 = |i: usize| -> i32 { i32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
+                let kind = leu32(0);
+                if kind == 1 {
+                    let handle = leu32(4) as usize;
+                    let bw = leu32(8);
+                    let bh = leu32(12);
+                    let stride = leu32(16) as usize;
+                    let dx = lei32(20);
+                    let dy = lei32(24);
+                    let va = shm_map(handle, mmap_flags::PROT_READ);
+                    if va > 0 {
+                        gfx::blit_rgba(dx, dy, bw, bh, va as *const u8, stride);
+                        gfx::gui_flush();
+                        let _ = munmap(va as usize, (stride * bh as usize) as usize);
+                        let _ = shm_close(handle);
+                    }
+                }
+            }
         }
-        if off < buf.len() { continue; }
-        let leu32 = |i: usize| -> u32 { u32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
-        let lei32 = |i: usize| -> i32 { i32::from_le_bytes([buf[i], buf[i+1], buf[i+2], buf[i+3]]) };
-        let kind = leu32(0);
-        if kind == 1 {
-            let handle = leu32(4) as usize;
-            let bw = leu32(8);
-            let bh = leu32(12);
-            let stride = leu32(16) as usize;
-            let dx = lei32(20);
-            let dy = lei32(24);
-            let va = shm_map(handle, mmap_flags::PROT_READ);
-            if va > 0 {
-                gfx::blit_rgba(dx, dy, bw, bh, va as *const u8, stride);
-                gfx::gui_flush();
-                // 解除映射并关闭句柄（配合简化的内核实现）
-                let _ = munmap(va as usize, (stride * bh as usize) as usize);
-                let _ = shm_close(handle);
+        // 处理输入事件：每个事件 8 字节
+        if (pfds[1].revents & poll_flags::POLLIN) != 0 {
+            let mut buf = [0u8; 64];
+            let r = read(input_fd as usize, &mut buf);
+            if r > 0 {
+                let cnt = r as usize / 8;
+                for i in 0..cnt {
+                    let off = i * 8;
+                    let typ = u16::from_le_bytes([buf[off], buf[off+1]]);
+                    let code = u16::from_le_bytes([buf[off+2], buf[off+3]]);
+                    let val = u32::from_le_bytes([buf[off+4], buf[off+5], buf[off+6], buf[off+7]]);
+                    println!("[litewm] input: type={} code={} value={}", typ as usize, code as usize, val as usize);
+                }
             }
         }
     }
