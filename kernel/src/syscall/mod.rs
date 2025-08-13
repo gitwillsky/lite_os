@@ -57,6 +57,9 @@ const SYSCALL_CHOWN: usize = 508;
 const SYSCALL_GET_ARGS: usize = 509;
 const SYSCALL_FCNTL: usize = 25;
 const SYSCALL_POLL: usize = 5070;
+const SYSCALL_UDS_LISTEN: usize = 5200;
+const SYSCALL_UDS_ACCEPT: usize = 5201;
+const SYSCALL_UDS_CONNECT: usize = 5202;
 
 // 调度相关系统调用
 const SYSCALL_SETPRIORITY: usize = 141;
@@ -158,6 +161,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_ARGS => sys_get_args(args[0] as *mut usize, args[1] as *mut u8, args[2]),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as i32, args[2]),
         SYSCALL_POLL => sys_poll(args[0] as *mut u8, args[1], args[2] as isize),
+
+        // UDS
+        SYSCALL_UDS_LISTEN => fs::sys_uds_listen(args[0] as *const u8, args[1]),
+        SYSCALL_UDS_ACCEPT => fs::sys_uds_accept(args[0] as *const u8),
+        SYSCALL_UDS_CONNECT => fs::sys_uds_connect(args[0] as *const u8),
 
         // 调度相关系统调用
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),

@@ -106,6 +106,10 @@ const SYSCALL_SHM_MAP: usize = 2301;
 const SYSCALL_SHM_CLOSE: usize = 2302;
 // 事件复用
 const SYSCALL_POLL: usize = 5070;
+// UDS
+const SYSCALL_UDS_LISTEN: usize = 5200;
+const SYSCALL_UDS_ACCEPT: usize = 5201;
+const SYSCALL_UDS_CONNECT: usize = 5202;
 
 // 信号相关系统调用
 const SYSCALL_KILL: usize = 129;
@@ -605,6 +609,20 @@ pub mod poll_flags {
 pub fn poll(fds: &mut [PollFd], timeout_ms: isize) -> isize {
     let ptr = fds.as_mut_ptr() as *mut PollFd as *mut u8;
     syscall(SYSCALL_POLL, [ptr as usize, fds.len(), timeout_ms as usize])
+}
+
+// ======== UDS (Unix Domain Socket) ========
+pub fn uds_listen(path: &str, backlog: usize) -> isize {
+    let cstr = alloc::ffi::CString::new(path).unwrap();
+    syscall(SYSCALL_UDS_LISTEN, [cstr.as_ptr() as usize, backlog, 0])
+}
+pub fn uds_accept(path: &str) -> isize {
+    let cstr = alloc::ffi::CString::new(path).unwrap();
+    syscall(SYSCALL_UDS_ACCEPT, [cstr.as_ptr() as usize, 0, 0])
+}
+pub fn uds_connect(path: &str) -> isize {
+    let cstr = alloc::ffi::CString::new(path).unwrap();
+    syscall(SYSCALL_UDS_CONNECT, [cstr.as_ptr() as usize, 0, 0])
 }
 
 // 信号常量

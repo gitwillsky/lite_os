@@ -5,7 +5,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use crate::{
     arch::sbi,
     fs::{FileSystemError, LockError, LockOp, LockType, file_lock_manager, vfs::vfs, FileStat, InodeType},
-    ipc::{create_fifo, create_pipe},
+    ipc::{create_fifo, create_pipe, uds_listen, uds_accept, uds_connect},
     memory::page_table::{translated_byte_buffer, translated_ref_mut},
     task::{FileDescriptor, current_task, current_user_token, suspend_current_and_run_next},
 };
@@ -869,6 +869,60 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
         Err(FileSystemError::NotFound) => -2,             // ENOENT
         Err(FileSystemError::NotDirectory) => -20,        // ENOTDIR
         Err(FileSystemError::NoSpace) => -28,             // ENOSPC
+        Err(_) => -1,
+    }
+}
+
+/// uds_listen: 在给定路径创建 Unix 域套接字监听端，返回一个可 poll 的监听 fd
+pub fn sys_uds_listen(path: *const u8, backlog: usize) -> isize {
+    let token = current_user_token();
+    let path_str = match translated_c_string(token, path) {
+        Ok(p) => p,
+        Err(_) => { return -36; }
+    };
+    match uds_listen(&path_str, backlog) {
+        Ok(inode) => {
+            if let Some(task) = current_task() {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(inode as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                    Some(fd) => fd as isize,
+                    None => -24, // EMFILE
+                }
+            } else { -1 }
+        }
+        Err(_) => -1,
+    }
+}
+
+/// uds_accept: 从监听路径接受一个连接，返回连接 fd
+pub fn sys_uds_accept(path: *const u8) -> isize {
+    let token = current_user_token();
+    let path_str = match translated_c_string(token, path) { Ok(p) => p, Err(_) => { return -36; } };
+    match uds_accept(&path_str) {
+        Ok(stream) => {
+            if let Some(task) = current_task() {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(stream as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                    Some(fd) => fd as isize,
+                    None => -24,
+                }
+            } else { -1 }
+        }
+        Err(_) => -1,
+    }
+}
+
+/// uds_connect: 连接到给定路径，返回连接 fd
+pub fn sys_uds_connect(path: *const u8) -> isize {
+    let token = current_user_token();
+    let path_str = match translated_c_string(token, path) { Ok(p) => p, Err(_) => { return -36; } };
+    match uds_connect(&path_str) {
+        Ok(stream) => {
+            if let Some(task) = current_task() {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(stream as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                    Some(fd) => fd as isize,
+                    None => -24,
+                }
+            } else { -1 }
+        }
         Err(_) => -1,
     }
 }
