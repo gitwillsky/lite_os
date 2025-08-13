@@ -58,8 +58,10 @@ impl Drop for KernelStack {
 
 /// 获取应用内核栈的地址范围，返回 (bottom, top)
 fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    let top = super::TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
-
+    // 关键修复：内核栈必须位于 TrapContext 预留窗口（[TRAP_CONTEXT_BASE, TRAMPOLINE)）之下，
+    // 之前以 TRAMPOLINE 为锚点导致在 128KB 栈尺寸时与 64*PAGE 的 TrapContext 窗口产生重叠（底部跨过 BASE 1 页）。
+    // 现在改为以 TRAP_CONTEXT_BASE 为锚点，向低地址递减分配，并保留 1 页守护页间隔。
+    let top = super::TRAP_CONTEXT_BASE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
     let bottom = top - KERNEL_STACK_SIZE;
     (bottom, top)
 }

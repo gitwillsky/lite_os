@@ -50,6 +50,8 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         timer::enable_timer_interrupt();
         // 使能外部中断与全局中断
         unsafe {
+            // 启用软件中断，用于处理IPI
+            register::sie::set_ssoft();
             register::sie::set_sext();
             register::sstatus::set_sie();
         }
@@ -69,6 +71,8 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         timer::enable_timer_interrupt();
         // 使能外部中断与全局中断（次核）
         unsafe {
+            // 启用软件中断，用于处理IPI
+            register::sie::set_ssoft();
             register::sie::set_sext();
             register::sstatus::set_sie();
         }

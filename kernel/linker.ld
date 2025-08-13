@@ -7,7 +7,7 @@ ENTRY(_start)
 BASE_ADDRESS = 0x80200000;
 
 /* 定义内核栈大小 */
-KERNEL_STACK_SIZE = 16K;
+KERNEL_STACK_SIZE = 128K;
 
 SECTIONS {
     . = BASE_ADDRESS;
@@ -58,7 +58,7 @@ SECTIONS {
     /* 为每个核心分配独立的启动栈 */
     . = ALIGN(16);
     boot_stack_bottom = .;
-    . += KERNEL_STACK_SIZE * 8; /* 8个核心，每个16KB */
+    . += KERNEL_STACK_SIZE * 8; /* 8个核心，每个128KB */
     boot_stack_top = .;
 
     ekernel = .;

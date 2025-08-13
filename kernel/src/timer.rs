@@ -135,7 +135,8 @@ pub fn get_time_ns() -> u64 {
 #[inline(always)]
 pub fn set_next_timer_interrupt() {
     let current_mtime = register::time::read64();
-    let next_mtime = current_mtime + unsafe { TICK_INTERVAL_VALUE };
+    // 避免在 debug 构建下触发算术溢出 panic：采用 wrapping 加法
+    let next_mtime = current_mtime.wrapping_add(unsafe { TICK_INTERVAL_VALUE });
 
     let _ = sbi::set_timer(next_mtime as usize);
 }
@@ -145,11 +146,13 @@ pub fn enable_timer_interrupt() {
     let time_base_freq = board::board_info().time_base_freq;
 
     unsafe {
-        TICK_INTERVAL_VALUE = time_base_freq / config::TICKS_PER_SEC as u64;
+        // 防御性计算：确保分母与结果不为 0
+        let ticks_per_sec = core::cmp::max(1u64, config::TICKS_PER_SEC as u64);
+        let mut interval = time_base_freq / ticks_per_sec;
+        if interval == 0 { interval = 1; }
+        TICK_INTERVAL_VALUE = interval;
         // 启用定时器中断
         register::sie::set_stimer();
-        // 启用软件中断，用于处理IPI
-        register::sie::set_ssoft();
     }
 
     set_next_timer_interrupt();
