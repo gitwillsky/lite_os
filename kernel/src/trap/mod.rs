@@ -1,4 +1,5 @@
 pub mod context;
+pub mod crashdump;
 
 use core::{
     arch::{asm, global_asm},
@@ -26,6 +27,14 @@ use crate::{
     timer, watchdog,
 };
 
+#[inline(always)]
+fn clear_ssip() {
+    let sip_val: usize;
+    unsafe { asm!("csrr {}, sip", out(reg) sip_val); }
+    let clear_ssip = sip_val & !(1 << 1);
+    unsafe { asm!("csrw sip, {}", in(reg) clear_ssip); }
+}
+
 global_asm!(include_str!("trap.S"));
 
 pub fn init() {
@@ -48,12 +57,12 @@ pub fn trap_handler() {
         if let Ok(interrupt) = Interrupt::from_number(code) {
             match interrupt {
                 Interrupt::SupervisorTimer => {
+                    if crate::trap::crashdump::panic_freeze_active() {
+                        timer::set_next_timer_interrupt();
+                        return;
+                    }
                     timer::set_next_timer_interrupt();
-
-                    // 检查 watchdog 状态
                     watchdog::check();
-
-                    // 检查并唤醒到期的睡眠任务
                     task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
 
                     // Check and handle pending signals before task switch
@@ -68,21 +77,19 @@ pub fn trap_handler() {
                     suspend_current_and_run_next();
                 }
                 Interrupt::SupervisorExternal => {
-                    // 处理外部中断（包括VirtIO设备中断）
+                    if crate::trap::crashdump::panic_freeze_active() {
+                        return;
+                    }
                     crate::drivers::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
-                    // 读取当前sip寄存器值
-                    let sip_val: usize;
-                    unsafe {
-                        asm!("csrr {}, sip", out(reg) sip_val);
+                    // 如果正在进行 panic 冻结，则将软中断视为 IPI 冻结入口
+                    if crate::trap::crashdump::panic_freeze_active() {
+                        // 不返回
+                        crate::trap::crashdump::ipi_freeze_entry();
                     }
-
                     // 清除SSIP位（位1）
-                    let clear_ssip = sip_val & !(1 << 1);
-                    unsafe {
-                        asm!("csrw sip, {}", in(reg) clear_ssip);
-                    }
+                    clear_ssip();
 
                     // 检查当前进程是否有待处理的信号
                     let cx = task::current_trap_context();
@@ -290,6 +297,10 @@ extern "C" fn rust_trap_from_kernel() {
             if let Ok(interrupt) = Interrupt::from_number(code) {
                 match interrupt {
                     Interrupt::SupervisorTimer => {
+                        if crate::trap::crashdump::panic_freeze_active() {
+                            timer::set_next_timer_interrupt();
+                            return;
+                        }
                         timer::set_next_timer_interrupt();
                         watchdog::check();
                         // 在内核态可能没有 current_task，避免访问 TrapContext
@@ -297,16 +308,19 @@ extern "C" fn rust_trap_from_kernel() {
                         // 不做任务切换，仅返回，让普通调度循环运行
                     }
                     Interrupt::SupervisorExternal => {
+                        if crate::trap::crashdump::panic_freeze_active() {
+                            return;
+                        }
                         // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
                         // 以便唤醒内核态等待 I/O 的任务，避免死等导致看门狗触发。
                         crate::drivers::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
+                        if crate::trap::crashdump::panic_freeze_active() {
+                            crate::trap::crashdump::ipi_freeze_entry();
+                        }
                         // 清SSIP
-                        let sip_val: usize;
-                        unsafe { asm!("csrr {}, sip", out(reg) sip_val); }
-                        let clear_ssip = sip_val & !(1 << 1);
-                        unsafe { asm!("csrw sip, {}", in(reg) clear_ssip); }
+                        clear_ssip();
                     }
                     _ => {
                         error!("[kernel] Unhandled kernel interrupt: {:?}", interrupt);
@@ -318,27 +332,11 @@ extern "C" fn rust_trap_from_kernel() {
         }
         Trap::Exception(code) => {
             if let Ok(exception) = Exception::from_number(code) {
-                // 辅助调试：尝试解码 sepc/stval 的内核页表映射与 PTE 标志
-                let (sepc_map, stval_map, sepc_flags, stval_flags) = {
-                    let kernel_space = KERNEL_SPACE.wait().lock();
-                    let sepc_va = VirtualAddress::from(sepc_val);
-                    let stval_va = VirtualAddress::from(stval_val);
-                    let sepc_pa = kernel_space.translate_va(sepc_va);
-                    let stval_pa = kernel_space.translate_va(stval_va);
-                    let sepc_pte = kernel_space.translate(sepc_va.floor());
-                    let stval_pte = kernel_space.translate(stval_va.floor());
-                    (
-                        sepc_pa,
-                        stval_pa,
-                        sepc_pte.map(|p| p.flags()),
-                        stval_pte.map(|p| p.flags()),
-                    )
-                };
-                error!(
-                    "[trap_from_kernel] exception={:?}, scause={:?}, stval={:#x} (PA={:?}, PTE={:?}), sepc={:#x} (PA={:?}, PTE={:?})",
-                    exception, scause_val, stval_val, stval_map, stval_flags, sepc_val, sepc_map, sepc_flags
+                // 交由统一的 panic 冻结/快照路径输出更详细的信息
+                panic!(
+                    "Kernel exception: {:?}, scause={:?}, stval={:#x}, sepc={:#x}",
+                    exception, scause_val, stval_val, sepc_val
                 );
-                panic!("Kernel exception: {:?}", exception);
             } else {
                 error!(
                     "[trap_from_kernel] invalid exception code: {:?}, scause={:?}, stval={:#x}, sepc={:#x}",

@@ -255,7 +255,7 @@ fn main() -> i32 {
     let mut job_manager = JobManager::new();
 
     // 打印欢迎信息
-    print_welcome_message();
+    // print_welcome_message();
 
     let prompt = generate_prompt();
     print!("{}", prompt);

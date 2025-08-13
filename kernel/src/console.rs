@@ -42,3 +42,29 @@ impl core::fmt::Write for ConsoleWriter {
         Ok(())
     }
 }
+
+//=============================================================================
+// Panic 直写通道：无锁、直接轮询写 UART（SBI console_putchar）
+// 注意：仅在 panic 路径中调用，避免与正常日志互相打乱
+//=============================================================================
+
+pub fn panic_print_fmt(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    let mut w = PanicConsoleWriter;
+    let _ = w.write_fmt(args);
+}
+
+pub fn panic_println_fmt(args: core::fmt::Arguments) {
+    panic_print_fmt(format_args!("{}\n", args));
+}
+
+struct PanicConsoleWriter;
+impl core::fmt::Write for PanicConsoleWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        // 直接轮询输出，避免拿锁
+        for b in s.bytes() {
+            let _ = sbi::console_putchar(b as usize);
+        }
+        Ok(())
+    }
+}
