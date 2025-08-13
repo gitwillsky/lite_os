@@ -223,22 +223,5 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         }
     }
 
-    // other memory
-    let ekernel_addr = ekernel as usize;
-    debug!(
-        "[init_kernel_space] other memory: {:#x} - {:#x}",
-        ekernel_addr,
-        memory_end_addr.as_usize()
-    );
-    memory_set.push(
-        MapArea::new(
-            (ekernel as usize).into(),
-            memory_end_addr.as_usize().into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::W,
-        ),
-        None,
-    ).expect("Failed to map kernel memory area");
-
     memory_set
 }

@@ -99,22 +99,7 @@ pub struct BottomHalf {
     statistics: Mutex<InterruptStatistics>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum SoftIrq {
-    Timer = 0,
-    Network = 1,
-    Block = 2,
-    Tasklet = 3,
-    Sched = 4,
-    Hrtimer = 5,
-    Rcu = 6,
-}
-
-impl SoftIrq {
-    pub fn as_index(&self) -> usize {
-        *self as usize
-    }
-}
+// 软中断类型在 `crate::softirq` 内定义，这里不重复定义
 
 pub struct SoftIrqManager {
     pending: AtomicU32,
@@ -145,6 +130,7 @@ pub trait InterruptController: Send + Sync {
     fn get_statistics(&self, vector: InterruptVector) -> Option<InterruptStatistics>;
     fn supports_msi(&self) -> bool { false }
     fn supports_cpu_affinity(&self) -> bool { false }
+    fn trigger_softirq(&self, _irq: crate::trap::softirq::SoftIrq) { }
 }
 
 pub struct SimpleInterruptHandler<F>

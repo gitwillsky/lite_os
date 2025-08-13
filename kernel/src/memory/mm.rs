@@ -282,6 +282,14 @@ impl MemorySet {
         }
     }
 
+    /// 跨核刷新：广播 IPI（SSIP）请求各核执行本地 sfence.vma
+    pub fn flush_tlb_all_cpus() {
+        // 本核先刷新
+        unsafe { asm!("sfence.vma") }
+        // 其他核通过 IPI 触发 SSIP，在软中断入口执行 sfence.vma
+        crate::arch::sbi::sbi_send_ipi(usize::MAX, 0).ok();
+    }
+
     pub fn get_page_table(&self) -> &PageTable {
         &self.page_table
     }
@@ -342,7 +350,7 @@ impl MemorySet {
     /// 映射DMA内存到虚拟地址空间
     pub fn map_dma(&mut self, phys_addr: PhysicalAddress, size: usize) -> Result<VirtualAddress, MemoryError> {
         // 在内核空间找一个合适的虚拟地址
-        // 简化实现：使用固定的DMA区域
+        // 简化实现：使用固定的DMA区域起点，并按 size 进行映射
         let dma_base = VirtualAddress::from(0x90000000usize);
         let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
 
@@ -357,6 +365,9 @@ impl MemorySet {
                 PTEFlags::R | PTEFlags::W,
             )?;
         }
+
+        // 本核刷新 TLB，其他核通过 SSIP 在软中断入口刷新
+        unsafe { asm!("sfence.vma") }
 
         Ok(dma_base)
     }

@@ -25,7 +25,6 @@ mod lang_item;
 mod id;
 mod memory;
 mod signal;
-mod sync;
 mod syscall;
 mod task;
 mod timer;

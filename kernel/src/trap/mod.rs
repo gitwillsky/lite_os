@@ -1,5 +1,6 @@
 pub mod context;
 pub mod crashdump;
+pub mod softirq;
 
 use core::{
     arch::{asm, global_asm},
@@ -61,20 +62,9 @@ pub fn trap_handler() {
                         timer::set_next_timer_interrupt();
                         return;
                     }
+                    // 仅做最小工作：重置下一次中断 + 通过 per-CPU softirq 登记并触发SSIP
                     timer::set_next_timer_interrupt();
-                    watchdog::check();
-                    task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
-
-                    // Check and handle pending signals before task switch
-                    {
-                        let cx = task::current_trap_context();
-                        if !check_signals_and_maybe_exit_with_cx(cx) {
-                            // Process was terminated, should not continue
-                            return;
-                        }
-                    }
-
-                    suspend_current_and_run_next();
+                    softirq::raise(softirq::SoftIrq::Timer);
                 }
                 Interrupt::SupervisorExternal => {
                     if crate::trap::crashdump::panic_freeze_active() {
@@ -88,15 +78,11 @@ pub fn trap_handler() {
                         // 不返回
                         crate::trap::crashdump::ipi_freeze_entry();
                     }
-                    // 清除SSIP位（位1）
+                    // 清除SSIP位（位1），并本地执行 sfence.vma（响应跨核TLB刷新）
                     clear_ssip();
-
-                    // 检查当前进程是否有待处理的信号
-                    let cx = task::current_trap_context();
-                    if !check_signals_and_maybe_exit_with_cx(cx) {
-                        // Process was terminated, should not continue
-                        return;
-                    }
+                    unsafe { core::arch::asm!("sfence.vma") }
+                    // 在软中断上下文分派当前核挂起的软中断
+                    softirq::dispatch_current_cpu();
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?} (code: {})", interrupt, code);

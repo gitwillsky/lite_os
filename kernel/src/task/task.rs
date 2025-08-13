@@ -22,7 +22,6 @@ use crate::{
         mm::{self, MemorySet},
     },
     signal::SignalState,
-    sync::UPSafeCell,
     task::{
         add_task,
         context::TaskContext,

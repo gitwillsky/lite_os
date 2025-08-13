@@ -8,7 +8,6 @@ use crate::{
         KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
         mm::MapPermission,
     },
-    sync::UPSafeCell,
 };
 
 pub const INIT_PID: usize = 1;

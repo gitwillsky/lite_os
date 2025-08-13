@@ -2,22 +2,22 @@ pub mod bus;
 pub mod device;
 pub mod interrupt;
 pub mod memory;
-pub mod virtio;
 pub mod power;
 pub mod resource;
+pub mod virtio;
 
-pub use bus::{Bus, BusType, BusError, MmioBus, PciBus, PlatformBus};
-pub use device::{Device, DeviceType, DeviceState, DeviceError, DeviceManager, GenericDevice};
+pub use bus::{Bus, BusError, BusType, MmioBus, PciBus, PlatformBus};
+pub use device::{Device, DeviceError, DeviceManager, DeviceState, DeviceType, GenericDevice};
 pub use interrupt::{
-    InterruptHandler, InterruptController, InterruptVector, InterruptError,
-    PlicInterruptController, BasicInterruptController, SimpleInterruptHandler,
-    InterruptPriority, WorkQueue, BottomHalf, SoftIrq,
+    BasicInterruptController, BottomHalf, InterruptController, InterruptError, InterruptHandler,
+    InterruptPriority, InterruptVector, PlicInterruptController, SimpleInterruptHandler, WorkQueue,
 };
 pub use memory::{
-    DmaBuffer, DmaManager, MemoryMapping, MemoryError, MemoryPermission,
-    CoherentDmaManager, NonCoherentDmaManager, IoRemap, MemoryAttributes,
-    HugePageAllocator, DmaPool,
+    CoherentDmaManager, DmaBuffer, DmaManager, DmaPool, HugePageAllocator, IoRemap,
+    MemoryAttributes, MemoryError, MemoryMapping, MemoryPermission, NonCoherentDmaManager,
+};
+pub use power::{DevicePowerManager, PowerError, PowerManagement, PowerState};
+pub use resource::{
+    IoPortRange, IrqResource, MemoryRange, Resource, ResourceError, ResourceManager, ResourceType,
 };
 pub use virtio::VirtIODevice;
-pub use power::{PowerManagement, PowerState, PowerError, DevicePowerManager};
-pub use resource::{Resource, ResourceManager, ResourceError, ResourceType, IoPortRange, MemoryRange, IrqResource};
