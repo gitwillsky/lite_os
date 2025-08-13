@@ -6,7 +6,7 @@ use crate::board::board_info;
 use riscv::register;
 use crate::drivers::hal::{
     DeviceManager, Device, DeviceType, DeviceError,
-    interrupt::{PlicInterruptController, InterruptPriority},
+    interrupt::{PlicInterruptController, InterruptPriority, InterruptHandler},
     resource::SystemResourceManager,
 };
 use crate::drivers::GenericBlockDriver;
@@ -91,8 +91,6 @@ fn scan_and_init_devices() {
 /// 初始化VirtIO设备
 fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
     info!("[DeviceManager] Scanning {} VirtIO devices", board_info.virtio_count);
-
-    // 输出详细的板级信息用于调试
     info!("[DeviceManager] Board info debug:\n{}", board_info);
 
     for i in 0..board_info.virtio_count {
@@ -101,197 +99,126 @@ fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
             info!("[DeviceManager] Attempting to probe VirtIO device {} at {:#x}, size={:#x}", i, base_addr, virtio_dev.size);
             info!("[DeviceManager] Processing VirtIO device {}/{}", i + 1, board_info.virtio_count);
 
-            // 首先检查设备类型，通过读取device ID
-            let device_id = unsafe {
-                core::ptr::read_volatile((base_addr + 0x08) as *const u32)
-            };
+            let device_id = read_virtio_device_id(base_addr);
             info!("[DeviceManager] VirtIO device {} has device ID: {:#x}", i, device_id);
 
             match device_id {
-                // VirtIO Block device (0x02)
-                2 => {
-                    info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
-                    if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
-                        // VirtIOBlockDevice 返回的是 Arc<Self>，我们需要将其转换
-                        let virtio_arc = virtio_block.clone();
-
-                        // 直接注册到块设备管理器
-                        match register_block_device(virtio_arc.clone()) {
-                            Ok(device_id) => {
-                                info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}",
-                                      device_id, base_addr);
-                            }
-                            Err(e) => {
-                                error!("[DeviceManager] Failed to register block device: {:?}", e);
-                            }
-                        }
-
-                        // 注册中断处理器（如果有PLIC）
-                        if let Some(_plic_dev) = &board_info.plic_device {
-                            let irq = virtio_dev.irq;
-                            if irq != 0 {
-                                // 仅在短作用域内获取控制器引用，避免长时间持有设备管理器锁
-                                let controller_opt = {
-                                    let manager = device_manager();
-                                    let dm = manager.lock();
-                                    dm.get_interrupt_controller()
-                                };
-                                if let Some(controller) = controller_opt {
-                                    let handler = virtio_block.irq_handler_for();
-                                    // 在注册/启用期间临时关闭本地中断，避免重入争用控制器锁
-                                    let sie_prev = register::sstatus::read().sie();
-                                    unsafe { register::sstatus::clear_sie(); }
-                                    let mut ctrl = controller.lock();
-                                    let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
-                                        error!("[DeviceManager] Failed to register blk IRQ handler: {:?}", e);
-                                        Err(())
-                                    } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::High) {
-                                        error!("[DeviceManager] Failed to set blk IRQ priority: {:?}", e);
-                                        Err(())
-                                    } else if let Err(e) = ctrl.enable_interrupt(irq) {
-                                        error!("[DeviceManager] Failed to enable blk IRQ {}: {:?}", irq, e);
-                                        Err(())
-                                    } else {
-                                        info!("[DeviceManager] Registered blk IRQ handler on vector {}", irq);
-                                        Ok(())
-                                    };
-                                    drop(ctrl);
-                                    if sie_prev { unsafe { register::sstatus::set_sie(); } }
-                                    let _ = res;
-                                }
-                            }
-                        }
-                    } else {
-                        warn!("[DeviceManager] Failed to create VirtIO Block device at {:#x}", base_addr);
-                    }
-                }
-
-                // VirtIO GPU device (0x10)
-                16 => {
-                    info!("[DeviceManager] Creating VirtioGpuDevice at {:#x}", base_addr);
-                    match VirtioGpuDevice::new(base_addr, 0) {
-                        Ok(mut gpu_device) => {
-                            // 探测设备
-                            if let Ok(true) = gpu_device.probe() {
-                                // 初始化设备
-                                if let Ok(()) = gpu_device.initialize() {
-                                    // 注册到设备管理器
-                                    let device = Box::new(gpu_device);
-                                    let manager = device_manager();
-                                    let mut mgr = manager.lock();
-
-                                    match mgr.add_device(device) {
-                                        Ok(device_id) => {
-                                            info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}",
-                                                  device_id, base_addr);
-                                            // 注册中断处理器（如果有PLIC）
-                                            if let Some(plic_dev) = &board_info.plic_device {
-                                                let irq = virtio_dev.irq;
-                                                if irq != 0 {
-                                                    // 仅在短作用域内获取控制器引用，避免长时间持有设备管理器锁
-                                                    let controller_opt = mgr.get_interrupt_controller();
-                                                    drop(mgr);
-                                                    if let Some(controller) = controller_opt {
-                                                        // 直接使用统一的 GPU IRQ 处理器
-                                                        let handler = Arc::new(crate::drivers::virtio_gpu::VirtioGpuIrqHandler);
-                                                        let sie_prev = register::sstatus::read().sie();
-                                                        unsafe { register::sstatus::clear_sie(); }
-                                                        let mut ctrl = controller.lock();
-                                                        let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
-                                                            error!("[DeviceManager] Failed to register GPU IRQ handler: {:?}", e);
-                                                            Err(())
-                                                        } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::High) {
-                                                            error!("[DeviceManager] Failed to set GPU IRQ priority: {:?}", e);
-                                                            Err(())
-                                                        } else if let Err(e) = ctrl.enable_interrupt(irq) {
-                                                            error!("[DeviceManager] Failed to enable GPU IRQ {}: {:?}", irq, e);
-                                                            Err(())
-                                                        } else {
-                                                            info!("[DeviceManager] Registered GPU IRQ handler on vector {}", irq);
-                                                            Ok(())
-                                                        };
-                                                        drop(ctrl);
-                                                        if sie_prev { unsafe { register::sstatus::set_sie(); } }
-                                                        let _ = res;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!("[DeviceManager] Failed to add GPU device: {:?}", e);
-                                        }
-                                    }
-                                } else {
-                                    error!("[DeviceManager] Failed to initialize GPU device at {:#x}", base_addr);
-                                }
-                            } else {
-                                warn!("[DeviceManager] GPU device probe failed at {:#x}", base_addr);
-                            }
-                        }
-                        Err(e) => {
-                            error!("[DeviceManager] Failed to create VirtIO GPU device at {:#x}: {:?}", base_addr, e);
-                        }
-                    }
-                }
-
-                // VirtIO Input device (0x12)
-                18 => {
-                    info!("[DeviceManager] Creating VirtioInputDevice at {:#x}", base_addr);
-                    if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
-                        // 注册 /dev/input/event0 节点（当前只挂一个）
-                        let node = input_dev.node.clone();
-                        let path = crate::drivers::register_input_node_auto(node);
-                        info!("[DeviceManager] Registered input node at {}", path);
-                        // 如有 PLIC，注册中断（若有效）
-                        if let Some(plic_dev) = &board_info.plic_device {
-                            let irq = virtio_dev.irq;
-                            if irq != 0 {
-                                // 仅在短作用域内获取控制器引用，避免长时间持有设备管理器锁
-                                let controller_opt = {
-                                    let manager = device_manager();
-                                    let dm = manager.lock();
-                                    dm.get_interrupt_controller()
-                                };
-                                if let Some(controller) = controller_opt {
-                                    // 直接把设备 Arc 交给中断处理器
-                                    let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(input_dev.clone()));
-                                    {
-                                        // 注册期间临时关闭本地中断，避免重入争用控制器锁
-                                        let sie_prev = register::sstatus::read().sie();
-                                        unsafe { register::sstatus::clear_sie(); }
-                                        let mut ctrl = controller.lock();
-                                        let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
-                                            error!("[DeviceManager] Failed to register input IRQ handler: {:?}", e);
-                                            Err(())
-                                        } else if let Err(e) = ctrl.set_priority(irq, InterruptPriority::Normal) {
-                                            error!("[DeviceManager] Failed to set input IRQ priority: {:?}", e);
-                                            Err(())
-                                        } else if let Err(e) = ctrl.enable_interrupt(irq) {
-                                            error!("[DeviceManager] Failed to enable input IRQ {}: {:?}", irq, e);
-                                            Err(())
-                                        } else {
-                                            Ok(())
-                                        };
-                                        drop(ctrl);
-                                        if sie_prev { unsafe { register::sstatus::set_sie(); } }
-                                        let _ = res;
-                                    }
-                                    // 重要：释放中断控制器锁后再通知设备，避免中断回调与锁重入死锁
-                                    input_dev.enable_notifications();
-                                }
-                            }
-                        }
-                        // 输入设备初始化完成
-                    } else {
-                        warn!("[DeviceManager] Failed to create VirtioInputDevice at {:#x}", base_addr);
-                    }
-                }
-
-                _ => {
-                    info!("[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}", device_id, base_addr);
-                }
+                2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
+                16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
+                18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
+                _ => info!("[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}", device_id, base_addr),
             }
         }
+    }
+}
+
+#[inline]
+fn read_virtio_device_id(base_addr: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((base_addr + 0x08) as *const u32) }
+}
+
+fn maybe_register_irq(
+    board_info: &crate::board::BoardInfo,
+    irq: u32,
+    handler: alloc::sync::Arc<dyn InterruptHandler>,
+    priority: InterruptPriority,
+    label: &str,
+) {
+    if board_info.plic_device.is_none() || irq == 0 { return; }
+
+    let controller_opt = {
+        let manager = device_manager();
+        let dm = manager.lock();
+        dm.get_interrupt_controller()
+    };
+    if let Some(controller) = controller_opt {
+        let sie_prev = register::sstatus::read().sie();
+        unsafe { register::sstatus::clear_sie(); }
+        let mut ctrl = controller.lock();
+        let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
+            error!("[DeviceManager] Failed to register {} IRQ handler: {:?}", label, e);
+            Err(())
+        } else if let Err(e) = ctrl.set_priority(irq, priority) {
+            error!("[DeviceManager] Failed to set {} IRQ priority: {:?}", label, e);
+            Err(())
+        } else if let Err(e) = ctrl.enable_interrupt(irq) {
+            error!("[DeviceManager] Failed to enable {} IRQ {}: {:?}", label, irq, e);
+            Err(())
+        } else {
+            info!("[DeviceManager] Registered {} IRQ handler on vector {}", label, irq);
+            Ok(())
+        };
+        drop(ctrl);
+        if sie_prev { unsafe { register::sstatus::set_sie(); } }
+        let _ = res;
+    }
+}
+
+fn init_virtio_blk_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+    info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
+    if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
+        let virtio_arc = virtio_block.clone();
+        match register_block_device(virtio_arc.clone()) {
+            Ok(device_id) => {
+                info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}", device_id, base_addr);
+            }
+            Err(e) => {
+                error!("[DeviceManager] Failed to register block device: {:?}", e);
+            }
+        }
+        maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), InterruptPriority::High, "blk");
+    } else {
+        warn!("[DeviceManager] Failed to create VirtIO Block device at {:#x}", base_addr);
+    }
+}
+
+fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+    info!("[DeviceManager] Creating VirtioGpuDevice at {:#x}", base_addr);
+    match VirtioGpuDevice::new(base_addr, 0) {
+        Ok(mut gpu_device) => {
+            if let Ok(true) = gpu_device.probe() {
+                if let Ok(()) = gpu_device.initialize() {
+                    let device = Box::new(gpu_device);
+                    let manager = device_manager();
+                    let mut mgr = manager.lock();
+                    match mgr.add_device(device) {
+                        Ok(device_id) => {
+                            info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}", device_id, base_addr);
+                        }
+                        Err(e) => {
+                            error!("[DeviceManager] Failed to add GPU device: {:?}", e);
+                        }
+                    }
+                    drop(mgr);
+                    let handler = alloc::sync::Arc::new(crate::drivers::virtio_gpu::VirtioGpuIrqHandler);
+                    maybe_register_irq(board_info, irq, handler, InterruptPriority::High, "GPU");
+                } else {
+                    error!("[DeviceManager] Failed to initialize GPU device at {:#x}", base_addr);
+                }
+            } else {
+                warn!("[DeviceManager] GPU device probe failed at {:#x}", base_addr);
+            }
+        }
+        Err(e) => {
+            error!("[DeviceManager] Failed to create VirtIO GPU device at {:#x}: {:?}", base_addr, e);
+        }
+    }
+}
+
+fn init_virtio_input_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+    info!("[DeviceManager] Creating VirtioInputDevice at {:#x}", base_addr);
+    if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
+        let node = input_dev.node.clone();
+        let path = crate::drivers::register_input_node_auto(node);
+        info!("[DeviceManager] Registered input node at {}", path);
+
+        let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(input_dev.clone()));
+        maybe_register_irq(board_info, irq, handler, InterruptPriority::Normal, "input");
+
+        // 重要：在 IRQ 完成注册后再通知设备，避免中断路径与锁重入
+        input_dev.enable_notifications();
+    } else {
+        warn!("[DeviceManager] Failed to create VirtioInputDevice at {:#x}", base_addr);
     }
 }
 
