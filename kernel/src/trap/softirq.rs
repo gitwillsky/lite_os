@@ -1,4 +1,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
+use alloc::vec::Vec;
+use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::{hart_id, MAX_CORES},
@@ -23,25 +25,13 @@ impl SoftIrq {
     pub fn as_index(&self) -> usize { *self as usize }
 }
 
-// 每核挂起的软中断位图
-static mut PENDING: *const AtomicU32 = core::ptr::null();
-
-#[inline(always)]
-fn ensure_init() -> &'static [AtomicU32] {
-    use core::mem::{align_of, size_of};
-    use crate::memory::{frame_allocator, PAGE_SIZE};
-    unsafe {
-        if PENDING.is_null() {
-            // 分配一页以上的内存用于保存 MAX_CORES 个 AtomicU32
-            let bytes = ((MAX_CORES * size_of::<AtomicU32>() + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-            let frame = frame_allocator::alloc_contiguous(bytes).expect("alloc softirq pending");
-            let base = (frame.ppn.as_usize() * PAGE_SIZE) as *mut u8;
-            // 零初始化
-            for i in 0..(bytes * PAGE_SIZE) { base.add(i).write_volatile(0); }
-            PENDING = base as *const AtomicU32;
-        }
-        core::slice::from_raw_parts(PENDING, MAX_CORES)
-    }
+// 每核挂起的软中断位图（驻留于堆内已映射内存，避免直接操作未映射物理地址）
+lazy_static! {
+    static ref PENDING: Vec<AtomicU32> = {
+        let mut v = Vec::with_capacity(MAX_CORES);
+        for _ in 0..MAX_CORES { v.push(AtomicU32::new(0)); }
+        v
+    };
 }
 
 #[inline(always)]
@@ -59,15 +49,13 @@ fn set_ssip() {
 pub fn raise(irq: SoftIrq) {
     let bit = 1u32 << irq.as_index();
     let cpu = hart_id();
-    let pending = ensure_init();
-    pending[cpu].fetch_or(bit, Ordering::AcqRel);
+    PENDING[cpu].fetch_or(bit, Ordering::AcqRel);
     set_ssip();
 }
 
 #[inline(always)]
 fn take_pending_for(cpu: usize) -> u32 {
-    let pending = ensure_init();
-    pending[cpu].swap(0, Ordering::AcqRel)
+    PENDING[cpu].swap(0, Ordering::AcqRel)
 }
 
 #[inline(always)]

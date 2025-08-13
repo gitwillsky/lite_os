@@ -223,5 +223,24 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         }
     }
 
+    // 后续可演进为受控的 physmap/kmap 方案，再逐步去除依赖。
+    {
+        let ekernel_addr = ekernel as usize;
+        debug!(
+            "[init_kernel_space] kernel physmap (RW, NX): {:#x} - {:#x}",
+            ekernel_addr,
+            memory_end_addr.as_usize()
+        );
+        memory_set.push(
+            MapArea::new(
+                (ekernel as usize).into(),
+                memory_end_addr.as_usize().into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        ).expect("Failed to map kernel phys memory area");
+    }
+
     memory_set
 }
