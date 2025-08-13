@@ -193,22 +193,35 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         None,
     ).expect("Failed to map kernel .bss section");
 
-    // kernel boot stack
+    // kernel boot stacks with per-hart guard pages at the bottom of each stack
+    // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题
     let boot_stack_bottom_addr = boot_stack_bottom as usize;
     let boot_stack_top_addr = boot_stack_top as usize;
     debug!(
-        "[init_kernel_space] boot stack: {:#x} - {:#x}",
+        "[init_kernel_space] boot stack region: {:#x} - {:#x}",
         boot_stack_bottom_addr, boot_stack_top_addr
     );
-    memory_set.push(
-        MapArea::new(
-            (boot_stack_bottom as usize).into(),
-            (boot_stack_top as usize).into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::W,
-        ),
-        None,
-    ).expect("Failed to map kernel boot stack");
+    {
+        use crate::arch::hart::MAX_CORES;
+        for hart in 0..MAX_CORES {
+            let stack_top = boot_stack_top_addr - hart * KERNEL_STACK_SIZE;
+            let stack_bottom = stack_top - KERNEL_STACK_SIZE;
+            let mapped_bottom = stack_bottom + PAGE_SIZE; // 保留 1 页守护页
+            debug!(
+                "[init_kernel_space] boot stack[{}]: {:#x} - {:#x} (guard @ {:#x})",
+                hart, mapped_bottom, stack_top, stack_bottom
+            );
+            memory_set.push(
+                MapArea::new(
+                    mapped_bottom.into(),
+                    stack_top.into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            ).expect("Failed to map per-hart kernel boot stack");
+        }
+    }
 
     // other memory
     let ekernel_addr = ekernel as usize;

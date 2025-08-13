@@ -13,10 +13,14 @@ impl KernelStack {
         let handle = KernelStackHandle(KernelStackHandleAllocator.lock().alloc());
         let (bottom, top) = kernel_stack_position(handle.0);
 
+        // 在栈底预留 1 页守护页，防止向下越界破坏相邻对象导致不可预期行为；
+        // 溢出将立刻触发缺页异常，便于定位问题
+        let mapped_bottom = bottom + PAGE_SIZE;
+
         KERNEL_SPACE
             .wait()
             .lock()
-            .insert_framed_area(bottom.into(), top.into(), MapPermission::R | MapPermission::W)
+            .insert_framed_area(mapped_bottom.into(), top.into(), MapPermission::R | MapPermission::W)
             .expect("Failed to allocate kernel stack memory");
 
         // 本地刷新TLB，确保新映射立即可见
@@ -46,10 +50,11 @@ impl KernelStack {
 impl Drop for KernelStack {
     fn drop(&mut self) {
         let (bottom, _) = kernel_stack_position(self.handle.0);
+        let mapped_bottom = bottom + PAGE_SIZE;
         KERNEL_SPACE
             .wait()
             .lock()
-            .remove_area_with_start_vpn(VirtualAddress::from(bottom).into());
+            .remove_area_with_start_vpn(VirtualAddress::from(mapped_bottom).into());
 
         // 本地刷新TLB，避免保留对已移除栈页的陈旧映射
         unsafe { core::arch::asm!("sfence.vma") }

@@ -272,6 +272,11 @@ pub fn trap_return() -> ! {
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
+    // 关键修复：在切换 stvec 到用户陷阱入口并跳转到 __restore 的窗口内，
+    // 若允许内核态中断，可能会误入用户态陷阱路径（__alltraps），
+    // 进而破坏当前内核栈/返回地址，最终随机出现内核 InstructionPageFault。
+    // 因此这里先关闭 S 模式中断，直到完成跳转为止。
+    unsafe { riscv::register::sstatus::clear_sie(); }
     set_user_trap_entry();
 
     unsafe {
