@@ -16,7 +16,7 @@ run-with-timeout: build-kernel
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \
-	-smp 1 \
+	-smp 8 \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
@@ -33,7 +33,7 @@ run: build-kernel
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \
-	-smp 1 \
+	-smp 8 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
@@ -49,7 +49,7 @@ run: build-kernel
 run-gui: build-kernel
 	qemu-system-riscv64 \
 	-machine virt \
-	-smp 1 \
+	-smp 8 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
