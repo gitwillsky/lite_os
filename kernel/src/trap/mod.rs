@@ -251,18 +251,21 @@ fn set_user_trap_entry() {
 
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
-    let user_satp = current_user_token();
+    // 关键修复：先关闭中断防止任务切换，然后获取必要信息
+    unsafe { riscv::register::sstatus::clear_sie(); }
+    
+    // 简化的原子获取方案：最小化锁持有时间
+    let current_task = crate::task::current_task().expect("No current task in trap_return");
+    let user_satp = current_task.mm.memory_set.lock().token();
+    let trap_context_va = current_task.trap_context_va();
+    
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
     }
     let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
 
-    // 关键修复：在切换 stvec 到用户陷阱入口并跳转到 __restore 的窗口内，
-    // 若允许内核态中断，可能会误入用户态陷阱路径（__alltraps），
-    // 进而破坏当前内核栈/返回地址，最终随机出现内核 InstructionPageFault。
-    // 因此这里先关闭 S 模式中断，直到完成跳转为止。
-    unsafe { riscv::register::sstatus::clear_sie(); }
+    // 设置用户陷阱入口
     set_user_trap_entry();
 
     unsafe {
@@ -270,7 +273,7 @@ pub fn trap_return() -> ! {
             "fence.i",
             "jr {restore_va}",
             restore_va = in(reg) restore_va,
-            in("x10") crate::task::current_task().unwrap().trap_context_va(),
+            in("x10") trap_context_va,
             in("x11") user_satp,
             options(noreturn)
         )

@@ -1,136 +1,130 @@
-# LiteOS - RISC-V 64 Operating System
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
 LiteOS is a sophisticated, Rust-based operating system designed for the RISC-V 64 architecture (`riscv64gc`). This project demonstrates modern OS development concepts including two-stage booting, multi-tasking, virtual memory management, and a comprehensive POSIX-compatible system call interface. The system features an integrated WebAssembly runtime environment and supports multiple programming languages.
 
-## Architecture
-
-### System Components
-
-The LiteOS system consists of four main components:
-
-1. **Bootloader** (`bootloader/`) - M-Mode SBI-compliant bootloader using RustSBI
-2. **Kernel** (`kernel/`) - S-Mode operating system kernel with full POSIX compatibility
-3. **User Programs** (`user/`) - Native user-space applications and shell
-4. **WASM Runtime** (`wasm_programs/`) - WebAssembly execution environment
-
-### Key Features
-
-- **RISC-V 64 Support**: Native `riscv64gc` architecture implementation
-- **Two-Stage Boot Process**: M-Mode bootloader → S-Mode kernel transition
-- **Virtual Memory Management**: Multi-level page tables with process isolation
-- **Process Management**: Unix-like process model with `fork()`, `exec()`, and `wait()`
-- **File System**: VFS layer with FAT32 support and VirtIO block devices
-- **Comprehensive System Calls**: 30+ implemented system calls covering all major POSIX interfaces
-- **Advanced Scheduling**: Multiple scheduling algorithms (FIFO, Priority, CFS) with priority control
-- **Multi-Core Hardware Support**: RISC-V HART management with up to 8 cores, SBI HSM compliance
-- **IPC Mechanisms**: Pipes, signals, and file locking
-- **WebAssembly Support**: WASI-compatible runtime for multi-language programs
-
-### Common Build Commands
+## Essential Build Commands
 
 ```bash
-# Individual component builds
-make build-bootloader    # Build M-Mode bootloader only
-make build-kernel       # Build S-Mode kernel only
-make build-user         # Build user programs only
-make run-with-timeout           # Automated testing with timeout
+# Complete build and run
+make build              # Build all components (bootloader, kernel, user) + filesystem
+make run                # Build kernel and run in QEMU (8 cores, no timeout)
+make run-gui            # Run with GUI display using Cocoa
+make run-with-timeout   # Run with 15-second timeout for automated testing
+make run-gdb            # Run with GDB debugging support
 
-# Filesystem management
+# Individual component builds  
+make build-bootloader   # Build M-Mode bootloader only
+make build-kernel       # Build S-Mode kernel only  
+make build-user         # Build user programs only
+
+# Filesystem and cleanup
 make create-fs          # Create FAT32 filesystem image
 python3 create_fs.py create  # Alternative filesystem creation
+make clean              # Clean all build artifacts
+
+# Debugging
+make gdb                # Connect GDB to running QEMU instance
+make addr2line ADDR=<address>  # Convert address to source location
 ```
 
-## Project Structure
+## Testing
 
-```
-lite_os/
-├── bootloader/              # M-Mode bootloader (RustSBI-based)
-│   ├── src/
-│   │   ├── main.rs         # Boot entry point
-│   │   ├── device_tree.rs  # Device tree parsing
-│   │   ├── uart16550.rs    # Serial console support
-│   │   ├── fast_trap/      # M-Mode trap handling
-│   │   ├── aclint.rs       # Advanced Core Local Interruptor
-│   │   ├── clint.rs        # Core Local Interruptor (multi-core IPI)
-│   │   ├── hsm_cell/       # Hardware State Management for multi-core
-│   │   ├── hart.rs         # RISC-V HART (hardware thread) management
-│   │   └── console.rs      # Console support
-│   └── linker.ld           # Bootloader memory layout
-│
-├── kernel/                  # S-Mode operating system kernel
-│   ├── src/
-│   │   ├── main.rs         # Kernel entry point
-│   │   ├── memory/         # Virtual memory management
-│   │   ├── task/           # Process/task management with advanced scheduling
-│   │   ├── syscall/        # Comprehensive POSIX system call implementation
-│   │   ├── fs/             # VFS layer with FAT32 and file locking support
-│   │   ├── drivers/        # VirtIO device drivers (block, console, GPU, etc.)
-│   │   ├── trap/           # Exception/interrupt handling
-│   │   ├── ipc/            # Inter-process communication (pipes)
-│   │   ├── sync/           # Synchronization primitives
-│   │   ├── arch/           # Architecture-specific code (RISC-V)
-│   │   └── board/          # Board support and device tree parsing
-│   └── linker.ld           # Kernel memory layout
-│
-├── user/                    # User-space programs and libraries
-│   ├── src/
-│   │   ├── lib.rs          # User library (system call wrappers)
-│   │   └── bin/            # Rich set of user programs
-│   │       ├── init.rs          # System initialization
-│   │       ├── shell.rs         # Advanced interactive shell
-│   │       ├── shell_modules/   # Shell components
-│   │       │   ├── builtins.rs     # Built-in commands
-│   │       │   ├── completion.rs   # Tab completion
-│   │       │   ├── editor.rs       # Command line editor
-│   │       │   ├── executor.rs     # Command execution
-│   │       │   ├── history.rs      # Command history
-│   │       │   └── jobs.rs         # Job control
-│   │       ├── vim.rs           # Built-in text editor
-│   │       ├── top.rs           # Process monitor
-│   │       ├── wasm_runtime.rs  # WebAssembly runtime
-│   │       ├── wasm_runtime/    # WASM runtime components
-│   │       │   ├── engine.rs       # WASM execution engine
-│   │       │   ├── filesystem.rs   # WASI filesystem interface
-│   │       │   ├── process.rs      # Process management
-│   │       │   └── wasi.rs         # WASI implementation
-│   │       ├── test.rs          # Comprehensive test suite
-│   │       ├── cat.rs           # File display utility
-│   │       ├── ls.rs            # Directory listing
-│   │       ├── mkdir.rs         # Directory creation
-│   │       ├── rm.rs            # File removal
-│   │       ├── pwd.rs           # Current directory
-│   │       ├── echo.rs          # Text output
-│   │       ├── kill.rs          # Process signaling
-│   │       └── exit.rs          # Clean shutdown
-│   └── linker.ld           # User program memory layout
-│
-├── wasm_programs/           # WebAssembly test programs
-│   ├── src/                # Rust WASM source code
-│   │   ├── hello_wasm.rs   # Basic WASM hello world
-│   │   ├── file_test.rs    # File I/O testing
-│   │   ├── math_test.rs    # Mathematical operations
-│   │   └── wasi_test.rs    # WASI interface testing
-│   ├── build.sh            # WASM build script
-│   └── wasm_output/        # Compiled .wasm files
-│
-├── Makefile                # Main build system
-├── Cargo.toml              # Workspace configuration
-├── rust-toolchain.toml     # Rust toolchain specification
-├── create_fs.py            # Filesystem creation utility
-├── virt-riscv64.dtb        # Device tree binary
-├── virt-riscv64.dts        # Device tree source
-├── README.md               # User documentation (Chinese)
-└── TODO.md                 # Development roadmap (Chinese)
+The system includes comprehensive test suites organized as user programs:
+
+- `tests_process` - Process management (fork, exec, wait)
+- `tests_memory` - Memory management and allocation
+- `tests_fs` - Filesystem operations and VFS
+- `tests_signal` - Signal handling and delivery
+- `tests_ipc` - Inter-process communication (pipes, sockets)
+- `tests_threads` - Thread creation and management
+- `tests_time` - Timer and time-related syscalls
+- `tests_system` - General system functionality
+- `tests_watchdog` - Watchdog timer functionality
+
+Tests are built automatically with `make build-user` and can be executed in the shell.
+
+## WebAssembly Support
+
+Build WASM programs:
+```bash
+cd wasm_programs
+./build.sh              # Builds all WASM test programs to wasm_output/
 ```
 
-记住：
+Execute WASM in LiteOS shell:
+```bash
+wasm_runtime <filename>.wasm
+```
 
-1. 你是一位专业的 Rust 程序员和操作系统开发者
-2. 合理组织源代码，每个源文件不超过 500 行
-3. 你的代码实现遵循 POSIX 规范、Unix 或 Linux 最佳实践
-4. 充分考虑并发、多核场景
-5. 遇到问题不要简化实现，直面问题，寻找根因，彻底解决
-6. 重构或者修改时，直接替换原有代码，不用考虑向前兼容
-7. 保持数据结构简洁清晰，命名规范合理
+## Architecture Overview
+
+### Multi-Component Boot Process
+- **Bootloader** (M-Mode): RustSBI-compliant, handles hardware initialization and HART management
+- **Kernel** (S-Mode): Full POSIX-compatible OS with advanced scheduling and VFS
+- **User Programs**: Native applications plus WebAssembly runtime
+
+### Key Subsystems
+
+**Memory Management** (`kernel/src/memory/`):
+- Multi-level page tables with process isolation
+- Slab allocator for kernel objects
+- Dynamic kernel heap allocation
+- Frame allocator for physical memory
+
+**Process Management** (`kernel/src/task/`):
+- Multiple schedulers: FIFO, Priority-based, CFS (Completely Fair Scheduler)
+- Unix-like process model with fork/exec/wait
+- Multi-core HART scheduling support
+
+**File Systems** (`kernel/src/fs/`):
+- VFS (Virtual File System) layer
+- FAT32 implementation with file locking
+- DevFS for device files
+- EXT2 support (partial)
+
+**Device Drivers** (`kernel/src/drivers/`):
+- VirtIO framework for all device types
+- Block storage, GPU, input, console, networking
+- Hardware abstraction layer (HAL)
+
+**System Calls** (`kernel/src/syscall/`):
+- 30+ POSIX-compatible system calls
+- Process control, memory management, file I/O
+- Signal handling, timer, graphics support
+
+### Multi-Core Support
+- RISC-V HART (Hardware Thread) management
+- SBI HSM (Supervisor Binary Interface Hart State Management)
+- Multi-core scheduling with load balancing
+- Core-local interrupt handling via CLINT/ACLINT
+
+## Development Guidelines
+
+### Code Organization
+- Keep source files under 500 lines for maintainability
+- Follow POSIX standards and Unix/Linux best practices
+- Design for multi-core and concurrent scenarios from the start
+- Use clear, descriptive naming conventions for data structures
+
+### Problem-Solving Approach
+- Address root causes rather than applying quick fixes
+- When refactoring, replace code completely rather than maintaining backward compatibility
+- Leverage Rust's ownership system and type safety for memory management
+
+### System Programming Practices
+- All kernel code must be interrupt-safe and SMP-aware
+- User programs should use the provided system call wrappers in `user/src/lib.rs`
+- Follow the existing VirtIO driver patterns when adding new device support
+- Maintain separation between M-Mode (bootloader), S-Mode (kernel), and U-Mode (user) code
+
+### Key Files for Understanding Codebase
+- `kernel/src/main.rs` - Kernel initialization and main loop
+- `kernel/src/task/mod.rs` - Process management interface
+- `kernel/src/syscall/mod.rs` - System call dispatch table
+- `kernel/src/memory/mod.rs` - Memory management interface
+- `user/src/lib.rs` - User-space system call wrappers
+- `bootloader/src/main.rs` - Boot sequence and hardware setup
