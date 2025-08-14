@@ -764,6 +764,17 @@ pub fn current_trap_context() -> &'static mut crate::trap::TrapContext {
         .trap_context()
 }
 
+/// 在持有当前任务 `MemorySet` 锁的情况下安全地访问并修改 TrapContext，
+/// 避免 SMP 下并发 unmap/exec 导致的 TrapContext 映射消失。
+pub fn with_current_trap_context<R>(f: impl FnOnce(&mut crate::trap::TrapContext) -> R) -> R {
+    let task = current_task().expect("No current task when getting trap context");
+    // 持有 MemorySet 锁，确保 TrapContext 所在页在整个闭包执行期间保持映射
+    let mut ms_guard = task.mm.memory_set.lock();
+    let ppn = ms_guard.trap_context_ppn(task.trap_context_va());
+    let cx: &mut crate::trap::TrapContext = ppn.get_mut();
+    f(cx)
+}
+
 /// 获取当前工作目录
 pub fn current_cwd() -> alloc::string::String {
     current_task()

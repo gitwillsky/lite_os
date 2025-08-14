@@ -191,7 +191,8 @@ impl VirtIOConsoleDevice {
 
         let buffer_len = core::cmp::min(data.len(), 1024);
         let mut temp_buffer = alloc::vec![0u8; buffer_len];
-        temp_buffer.copy_from_slice(&data[..buffer_len]);
+        assert!(buffer_len <= data.len());
+        temp_buffer[..buffer_len].copy_from_slice(&data[..buffer_len]);
 
         let inputs = [temp_buffer.as_slice()];
         let mut outputs: [&mut [u8]; 0] = [];

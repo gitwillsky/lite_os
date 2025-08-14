@@ -100,7 +100,8 @@ pub fn sys_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) ->
                     core::mem::size_of::<SigAction>(),
                 );
                 if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<SigAction>() {
-                    buffers[0].copy_from_slice(old_sigaction_bytes);
+                    assert!(buffers[0].len() >= old_sigaction_bytes.len());
+                    buffers[0][..old_sigaction_bytes.len()].copy_from_slice(old_sigaction_bytes);
                 } else {
                     return -1; // EFAULT
                 }
@@ -170,7 +171,8 @@ pub fn sys_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
             let mut buffers =
                 translated_byte_buffer(token, oldset as *mut u8, core::mem::size_of::<u64>());
             if !buffers.is_empty() && buffers[0].len() >= core::mem::size_of::<u64>() {
-                buffers[0].copy_from_slice(old_mask_bytes);
+                assert!(buffers[0].len() >= old_mask_bytes.len());
+                buffers[0][..old_mask_bytes.len()].copy_from_slice(old_mask_bytes);
             } else {
                 return -1; // EFAULT
             }

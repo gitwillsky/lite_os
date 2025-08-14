@@ -109,22 +109,23 @@ pub fn trap_handler() {
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
                     debug!("[trap_handler] Breakpoint exception");
-                    let cx = task::current_trap_context();
-                    cx.sepc += 4;
+                    task::with_current_trap_context(|cx| {
+                        cx.sepc += 4;
+                    });
                 }
                 Exception::UserEnvCall => {
-                    let cx = task::current_trap_context();
-                    let syscall_id = cx.x[17];
-                    let args = [cx.x[10], cx.x[11], cx.x[12]];
-
-                    cx.x[10] = {
+                    let (syscall_id, args) = task::with_current_trap_context(|cx| {
+                        (cx.x[17], [cx.x[10], cx.x[11], cx.x[12]])
+                    });
+                    let ret = syscall::syscall(syscall_id, args) as usize;
+                    // 回写 a0/sepc 需要在持锁下操作，避免并发变更
+                    let should_continue = task::with_current_trap_context(|cx| {
                         cx.sepc += 4;
-                        syscall::syscall(syscall_id, args) as usize
-                    };
-
-                    // Check and handle pending signals after syscall using the existing trap context
-                    if !check_signals_and_maybe_exit_with_cx(cx) {
-                        // Process was terminated, should not continue
+                        cx.x[10] = ret;
+                        // 使用已有的检查函数
+                        check_signals_and_maybe_exit_with_cx(cx)
+                    });
+                    if !should_continue {
                         return;
                     }
                 }
@@ -137,9 +138,8 @@ pub fn trap_handler() {
                         // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
                         debug!("Signal handler return detected (VA=0), calling sigreturn");
                         let task = task::current_task().expect("No current task");
-                        let mut cx = task::current_trap_context();
-
-                        match sig_return(&task, cx) {
+                        let result = task::with_current_trap_context(|cx| sig_return(&task, cx));
+                        match result {
                             Ok(()) => {
                                 debug!("Sigreturn successful, continuing execution");
                                 // 成功恢复，继续执行

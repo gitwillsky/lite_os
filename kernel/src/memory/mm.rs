@@ -98,13 +98,16 @@ impl MapArea {
         let len = data.len();
 
         loop {
-            let src = &data[start..len.min(start + config::PAGE_SIZE)];
+            let end = len.min(start + config::PAGE_SIZE);
+            assert!(end <= data.len());
+            let src = &data[start..end];
             let pte = page_table
                 .translate(current_vpn)
                 .expect("Page table entry not found during data copy");
             let ppn = pte.ppn();
-            let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
-            dst.copy_from_slice(src);
+            let dst = &mut ppn.get_bytes_array_mut();
+            assert!(src.len() <= dst.len());
+            dst[..src.len()].copy_from_slice(src);
             start += config::PAGE_SIZE;
             if start >= len {
                 break;
@@ -739,6 +742,8 @@ impl MemorySet {
                     let str_offset = str_start - addr;
                     let copy_len = str_end - str_start;
 
+                    assert!(page_offset + copy_len <= page_bytes.len());
+                    assert!(str_offset + copy_len <= s.as_bytes().len());
                     page_bytes[page_offset..page_offset + copy_len]
                         .copy_from_slice(&s.as_bytes()[str_offset..str_offset + copy_len]);
                 }
@@ -776,6 +781,8 @@ impl MemorySet {
                     let val_offset = val_start - addr;
                     let copy_len = val_end - val_start;
 
+                    assert!(page_offset + copy_len <= page_bytes.len());
+                    assert!(val_offset + copy_len <= bytes.len());
                     page_bytes[page_offset..page_offset + copy_len]
                         .copy_from_slice(&bytes[val_offset..val_offset + copy_len]);
                 }
@@ -802,9 +809,10 @@ impl MemorySet {
                     .translate(vpn)
                     .expect("Destination page table entry not found during clone")
                     .ppn();
-                dst_ppn
-                    .get_bytes_array_mut()
-                    .copy_from_slice(&src_ppn.get_bytes_array_mut());
+                let src_page = src_ppn.get_bytes_array_mut();
+                let dst_page = dst_ppn.get_bytes_array_mut();
+                assert_eq!(src_page.len(), dst_page.len());
+                dst_page.copy_from_slice(&src_page);
             }
         }
         Ok(memory_set)

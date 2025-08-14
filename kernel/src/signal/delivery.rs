@@ -129,7 +129,11 @@ fn write_signal_frame(task: &TaskControlBlock, addr: usize, frame: &SignalFrame)
     let buffers = translated_byte_buffer(token, addr as *const u8, frame_bytes.len());
     let mut offset = 0;
     for buffer in buffers {
-        let len = buffer.len().min(frame_bytes.len() - offset);
+        let remaining = frame_bytes.len().saturating_sub(offset);
+        let len = buffer.len().min(remaining);
+        // 边界断言，防止越界拷贝
+        assert!(len <= buffer.len());
+        assert!(offset + len <= frame_bytes.len());
         buffer[..len].copy_from_slice(&frame_bytes[offset..offset + len]);
         offset += len;
     }

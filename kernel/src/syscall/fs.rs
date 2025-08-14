@@ -634,7 +634,9 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
                             break;
                         }
                         let copy_len = buffer.len().min(bytes_read - offset);
-                        buffer[..copy_len].copy_from_slice(&temp_buf[offset..offset + copy_len]);
+                                    assert!(copy_len <= buffer.len());
+                                    assert!(offset + copy_len <= temp_buf.len());
+                                    buffer[..copy_len].copy_from_slice(&temp_buf[offset..offset + copy_len]);
                         offset += copy_len;
                     }
 
@@ -735,7 +737,9 @@ pub fn sys_getcwd(buf: *mut u8, len: usize) -> isize {
                 break;
             }
             let chunk_len = buffer.len().min(cwd_bytes.len() - offset);
-            buffer[..chunk_len].copy_from_slice(&cwd_bytes[offset..offset + chunk_len]);
+                                    assert!(chunk_len <= buffer.len());
+                                    assert!(offset + chunk_len <= cwd_bytes.len());
+                                    buffer[..chunk_len].copy_from_slice(&cwd_bytes[offset..offset + chunk_len]);
             offset += chunk_len;
         }
 

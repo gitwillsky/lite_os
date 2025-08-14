@@ -1144,8 +1144,16 @@ impl Ext2FileSystem {
 
         let mut buf = vec![0u8; self.block_size];
         self.read_fs_block(table_block + block_offset as u32, &mut buf)?;
-        let dst = unsafe { buf.as_mut_ptr().add(offset_in_block) as *mut Ext2InodeDisk };
-        unsafe { ptr::write_unaligned(dst, *inode) };
+        // 边界断言
+        assert!(offset_in_block + core::mem::size_of::<Ext2InodeDisk>() <= buf.len());
+        // 安全拷贝
+        let src_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                (inode as *const Ext2InodeDisk) as *const u8,
+                core::mem::size_of::<Ext2InodeDisk>(),
+            )
+        };
+        buf[offset_in_block..offset_in_block + src_bytes.len()].copy_from_slice(src_bytes);
         self.write_fs_block(table_block + block_offset as u32, &buf)
     }
 
@@ -1427,8 +1435,14 @@ impl Ext2FileSystem {
 
         let mut buf = vec![0u8; self.block_size];
         self.read_fs_block((gdt_start_block + block_offset) as u32, &mut buf)?;
-        let dst = unsafe { buf.as_mut_ptr().add(offset_in_block) as *mut Ext2GroupDesc };
-        unsafe { ptr::write_unaligned(dst, *gd) };
+        assert!(offset_in_block + core::mem::size_of::<Ext2GroupDesc>() <= buf.len());
+        let src_bytes: &[u8] = unsafe {
+            core::slice::from_raw_parts(
+                (gd as *const Ext2GroupDesc) as *const u8,
+                core::mem::size_of::<Ext2GroupDesc>(),
+            )
+        };
+        buf[offset_in_block..offset_in_block + src_bytes.len()].copy_from_slice(src_bytes);
         self.write_fs_block((gdt_start_block + block_offset) as u32, &buf)
     }
 }
@@ -1616,9 +1630,9 @@ impl Ext2Inode {
             let b = self.fs.allocate_block_in_group(group)?;
 
             // Update indirect block
-            unsafe {
-                ptr::write_unaligned((buf.as_mut_ptr() as *mut u32).add(idx as usize), b);
-            }
+            assert!(idx as usize * core::mem::size_of::<u32>() < buf.len());
+            let off = idx as usize * core::mem::size_of::<u32>();
+            buf[off..off + 4].copy_from_slice(&b.to_le_bytes());
             self.fs.write_fs_block(ind, &buf)?;
 
             // Update inode metadata
@@ -2131,12 +2145,9 @@ impl Ext2Inode {
                             name_len: name_bytes.len() as u8,
                             file_type,
                         };
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf[pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                                new_hdr,
-                            );
-                        }
+                        assert!(pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+                        let src: &[u8] = unsafe { core::slice::from_raw_parts((&new_hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+                        buf[pos..pos + src.len()].copy_from_slice(src);
 
                         let name_dst = pos + mem::size_of::<Ext2DirEntry2Header>();
                         if name_dst + name_bytes.len() <= self.fs.block_size {
@@ -2192,12 +2203,9 @@ impl Ext2Inode {
                             name_len: name_bytes.len() as u8,
                             file_type,
                         };
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf[pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                                used_hdr,
-                            );
-                        }
+                        assert!(pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+                        let src: &[u8] = unsafe { core::slice::from_raw_parts((&used_hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+                        buf[pos..pos + src.len()].copy_from_slice(src);
 
                         let name_dst = pos + mem::size_of::<Ext2DirEntry2Header>();
                         if name_dst + name_bytes.len() > self.fs.block_size {
@@ -2217,12 +2225,9 @@ impl Ext2Inode {
                                 file_type: 0,
                             };
                             if free_pos + mem::size_of::<Ext2DirEntry2Header>() <= self.fs.block_size {
-                                unsafe {
-                                    ptr::write_unaligned(
-                                        buf[free_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                                        free_hdr,
-                                    );
-                                }
+                                assert!(free_pos + core::mem::size_of::<Ext2DirEntry2Header>() <= self.fs.block_size);
+                                let src: &[u8] = unsafe { core::slice::from_raw_parts((&free_hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+                                buf[free_pos..free_pos + src.len()].copy_from_slice(src);
                             }
                         }
 
@@ -2258,12 +2263,9 @@ impl Ext2Inode {
 
                     // shrink current to ideal and insert new after it
                     hdr.rec_len = ideal as u16;
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf[pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                            hdr,
-                        );
-                    }
+                    assert!(pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+                    let src: &[u8] = unsafe { core::slice::from_raw_parts((&hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+                    buf[pos..pos + src.len()].copy_from_slice(src);
 
                     let new_hdr = Ext2DirEntry2Header {
                         inode: child_inode,
@@ -2271,12 +2273,9 @@ impl Ext2Inode {
                         name_len: name_bytes.len() as u8,
                         file_type,
                     };
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf[new_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                            new_hdr,
-                        );
-                    }
+                    assert!(new_pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+                    let src: &[u8] = unsafe { core::slice::from_raw_parts((&new_hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+                    buf[new_pos..new_pos + src.len()].copy_from_slice(src);
 
                     let name_dst = new_pos + mem::size_of::<Ext2DirEntry2Header>();
 
@@ -2535,8 +2534,9 @@ impl Inode for Ext2Inode {
         };
         let dot_len = align_up(mem::size_of::<Ext2DirEntry2Header>() + dot_name.len(), 4);
         dot.rec_len = dot_len as u16;
-        unsafe {
-            ptr::write_unaligned(buf.as_mut_ptr() as *mut Ext2DirEntry2Header, dot);
+        {
+            let hdr_bytes: &[u8] = unsafe { core::slice::from_raw_parts((&dot) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+            buf[..hdr_bytes.len()].copy_from_slice(hdr_bytes);
         }
         buf[mem::size_of::<Ext2DirEntry2Header>()..mem::size_of::<Ext2DirEntry2Header>() + 1]
             .copy_from_slice(dot_name);
@@ -2549,8 +2549,10 @@ impl Inode for Ext2Inode {
             file_type: 2,
         };
         let off2 = dot_len;
-        unsafe {
-            ptr::write_unaligned(buf[off2..].as_mut_ptr() as *mut Ext2DirEntry2Header, dotdot);
+        {
+            assert!(off2 + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+            let hdr_bytes: &[u8] = unsafe { core::slice::from_raw_parts((&dotdot) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+            buf[off2..off2 + hdr_bytes.len()].copy_from_slice(hdr_bytes);
         }
         let name_off2 = off2 + mem::size_of::<Ext2DirEntry2Header>();
         buf[name_off2..name_off2 + 2].copy_from_slice(dotdot_name);
@@ -2628,9 +2630,9 @@ impl Inode for Ext2Inode {
                 ptr::read_unaligned(buf[cur_pos..].as_ptr() as *const Ext2DirEntry2Header)
             };
             hdr.inode = 0;
-            unsafe {
-                ptr::write_unaligned(buf[cur_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header, hdr)
-            };
+            assert!(cur_pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+            let src: &[u8] = unsafe { core::slice::from_raw_parts((&hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+            buf[cur_pos..cur_pos + src.len()].copy_from_slice(src);
         } else {
             let mut prev_hdr: Ext2DirEntry2Header = unsafe {
                 ptr::read_unaligned(buf[prev_pos..].as_ptr() as *const Ext2DirEntry2Header)
@@ -2639,12 +2641,9 @@ impl Inode for Ext2Inode {
                 ptr::read_unaligned(buf[cur_pos..].as_ptr() as *const Ext2DirEntry2Header)
             };
             prev_hdr.rec_len = (prev_hdr.rec_len as usize + cur_hdr.rec_len as usize) as u16;
-            unsafe {
-                ptr::write_unaligned(
-                    buf[prev_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
-                    prev_hdr,
-                )
-            };
+            assert!(prev_pos + core::mem::size_of::<Ext2DirEntry2Header>() <= buf.len());
+            let src: &[u8] = unsafe { core::slice::from_raw_parts((&prev_hdr) as *const _ as *const u8, core::mem::size_of::<Ext2DirEntry2Header>()) };
+            buf[prev_pos..prev_pos + src.len()].copy_from_slice(src);
         }
         self.fs.write_fs_block(blk, &buf)?;
 
@@ -2762,12 +2761,9 @@ impl Inode for Ext2Inode {
                             self.fs.free_block(block_ptr)?;
 
                             // Clear the pointer in indirect block
-                            unsafe {
-                                ptr::write_unaligned(
-                                    (ibuf.as_mut_ptr() as *mut u32).add(idx),
-                                    0u32
-                                );
-                            }
+                            let off = idx * core::mem::size_of::<u32>();
+                            assert!(off + 4 <= ibuf.len());
+                            ibuf[off..off + 4].copy_from_slice(&0u32.to_le_bytes());
                             self.fs.write_fs_block(ind, &ibuf)?;
                         }
                     }

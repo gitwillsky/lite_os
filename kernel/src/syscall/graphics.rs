@@ -394,6 +394,8 @@ pub fn sys_gui_get_screen_info(info_ptr: *mut GuiScreenInfo) -> isize {
     for seg in buffers.iter_mut() {
         let remain = size - copied;
         let to_copy = core::cmp::min(remain, seg.len());
+        assert!(to_copy <= seg.len());
+        assert!(copied + to_copy <= src_bytes.len());
         seg[..to_copy].copy_from_slice(&src_bytes[copied..copied + to_copy]);
         copied += to_copy;
         if copied >= size { break; }

@@ -440,10 +440,12 @@ impl DynamicLinker {
 
             // Write the 64-bit value
             if page_offset + 8 <= super::config::PAGE_SIZE {
+                assert!(page_offset + 8 <= page_bytes.len());
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&value_bytes);
             } else {
                 // Value spans across page boundary - need to handle carefully
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
+                assert!(first_part_len <= page_bytes.len() - page_offset);
                 page_bytes[page_offset..].copy_from_slice(&value_bytes[..first_part_len]);
 
                 // Handle second page if needed
@@ -452,6 +454,7 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
+                    assert!(remaining_len <= next_page_bytes.len());
                     next_page_bytes[..remaining_len].copy_from_slice(&value_bytes[first_part_len..]);
                 }
             }
@@ -489,10 +492,12 @@ impl DynamicLinker {
 
             // Write the address to the GOT entry
             if page_offset + 8 <= super::config::PAGE_SIZE {
+                assert!(page_offset + 8 <= page_bytes.len());
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&address_bytes);
             } else {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
+                assert!(first_part_len <= page_bytes.len() - page_offset);
                 page_bytes[page_offset..].copy_from_slice(&address_bytes[..first_part_len]);
 
                 let next_vpn = got_entry_vpn.next();
@@ -500,6 +505,7 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
+                    assert!(remaining_len <= next_page_bytes.len());
                     next_page_bytes[..remaining_len].copy_from_slice(&address_bytes[first_part_len..]);
                 }
             }
@@ -530,10 +536,12 @@ impl DynamicLinker {
 
             // Write the value
             if page_offset + 8 <= super::config::PAGE_SIZE {
+                assert!(page_offset + 8 <= page_bytes.len());
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&value_bytes);
             } else {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
+                assert!(first_part_len <= page_bytes.len() - page_offset);
                 page_bytes[page_offset..].copy_from_slice(&value_bytes[..first_part_len]);
 
                 let next_vpn = target_vpn.next();
@@ -541,6 +549,7 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
+                    assert!(remaining_len <= next_page_bytes.len());
                     next_page_bytes[..remaining_len].copy_from_slice(&value_bytes[first_part_len..]);
                 }
             }
@@ -579,10 +588,12 @@ impl DynamicLinker {
 
             // Write the address
             if page_offset + 8 <= super::config::PAGE_SIZE {
+                assert!(page_offset + 8 <= page_bytes.len());
                 page_bytes[page_offset..page_offset + 8].copy_from_slice(&address_bytes);
             } else {
                 // Handle page boundary crossing
                 let first_part_len = super::config::PAGE_SIZE - page_offset;
+                assert!(first_part_len <= page_bytes.len() - page_offset);
                 page_bytes[page_offset..].copy_from_slice(&address_bytes[..first_part_len]);
 
                 let next_vpn = target_vpn.next();
@@ -590,6 +601,7 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
+                    assert!(remaining_len <= next_page_bytes.len());
                     next_page_bytes[..remaining_len].copy_from_slice(&address_bytes[first_part_len..]);
                 }
             }

@@ -148,6 +148,7 @@ impl VirtIOBlockDevice {
         let req_bytes = unsafe {
             core::slice::from_raw_parts(&req as *const _ as *const u8, core::mem::size_of::<VirtIOBlkReq>())
         };
+        assert_eq!(req_bytes.len(), core::mem::size_of::<VirtIOBlkReq>());
 
         let mut status = [0u8; 1];
 

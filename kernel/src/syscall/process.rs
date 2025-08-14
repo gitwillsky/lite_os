@@ -518,6 +518,7 @@ pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> 
                 arg_bytes.len(),
             );
             if !buffers.is_empty() && buffers[0].len() >= arg_bytes.len() {
+                assert!(arg_bytes.len() <= buffers[0].len());
                 buffers[0][..arg_bytes.len()].copy_from_slice(arg_bytes);
 
                 // Add null terminator
@@ -631,6 +632,7 @@ pub fn sys_get_process_list(pids: *mut u32, max_count: usize) -> isize {
 
         if !pid_buffers.is_empty() && pid_buffers[0].len() >= core::mem::size_of::<u32>() {
             let pid_bytes = (all_pids[i] as u32).to_le_bytes();
+            assert!(4 <= pid_buffers[0].len());
             pid_buffers[0][..4].copy_from_slice(&pid_bytes);
         }
     }
@@ -749,6 +751,7 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
                 core::mem::size_of::<ProcessInfo>()
             )
         };
+        assert!(core::mem::size_of::<ProcessInfo>() <= info_buffers[0].len());
         info_buffers[0][..core::mem::size_of::<ProcessInfo>()].copy_from_slice(info_bytes);
         0
     } else {
@@ -836,6 +839,7 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
                 core::mem::size_of::<SystemStats>()
             )
         };
+        assert!(core::mem::size_of::<SystemStats>() <= stats_buffers[0].len());
         stats_buffers[0][..core::mem::size_of::<SystemStats>()].copy_from_slice(stats_bytes);
         0
     } else {
@@ -865,6 +869,7 @@ pub fn sys_get_cpu_core_info(core_info: *mut CpuCoreInfo) -> isize {
                 core::mem::size_of::<CpuCoreInfo>()
             )
         };
+        assert!(core::mem::size_of::<CpuCoreInfo>() <= info_buffers[0].len());
         info_buffers[0][..core::mem::size_of::<CpuCoreInfo>()].copy_from_slice(info_bytes);
         0
     } else {

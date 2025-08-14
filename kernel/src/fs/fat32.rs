@@ -474,6 +474,7 @@ impl ClusterManager {
         let masked_value = value & 0x0FFFFFFF;
         let bytes = masked_value.to_le_bytes();
         let sector_buf = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
+        assert!(entry_offset + 4 <= sector_buf.len());
         sector_buf[entry_offset..entry_offset + 4].copy_from_slice(&bytes);
 
         self.block_device
