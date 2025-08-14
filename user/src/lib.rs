@@ -7,11 +7,12 @@ pub mod syscall;
 pub mod console;
 pub mod heap;
 pub mod gfx;
+pub mod protocol;
+pub mod litegui;
 pub mod testutil;
 
 mod lang_item;
 
-#[macro_use]
 extern crate alloc;
 
 
