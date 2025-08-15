@@ -1,5 +1,4 @@
 pub mod context;
-pub mod crashdump;
 pub mod softirq;
 
 use core::{
@@ -58,26 +57,14 @@ pub fn trap_handler() {
         if let Ok(interrupt) = Interrupt::from_number(code) {
             match interrupt {
                 Interrupt::SupervisorTimer => {
-                    if crate::trap::crashdump::panic_freeze_active() {
-                        timer::set_next_timer_interrupt();
-                        return;
-                    }
                     // 仅做最小工作：重置下一次中断 + 通过 per-CPU softirq 登记并触发SSIP
                     timer::set_next_timer_interrupt();
                     softirq::raise(softirq::SoftIrq::Timer);
                 }
                 Interrupt::SupervisorExternal => {
-                    if crate::trap::crashdump::panic_freeze_active() {
-                        return;
-                    }
                     crate::drivers::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
-                    // 如果正在进行 panic 冻结，则将软中断视为 IPI 冻结入口
-                    if crate::trap::crashdump::panic_freeze_active() {
-                        // 不返回
-                        crate::trap::crashdump::ipi_freeze_entry();
-                    }
                     // 清除SSIP位（位1），并本地执行 sfence.vma（响应跨核TLB刷新）
                     clear_ssip();
                     unsafe { core::arch::asm!("sfence.vma") }
@@ -253,12 +240,12 @@ fn set_user_trap_entry() {
 pub fn trap_return() -> ! {
     // 关键修复：先关闭中断防止任务切换，然后获取必要信息
     unsafe { riscv::register::sstatus::clear_sie(); }
-    
+
     // 简化的原子获取方案：最小化锁持有时间
     let current_task = crate::task::current_task().expect("No current task in trap_return");
     let user_satp = current_task.mm.memory_set.lock().token();
     let trap_context_va = current_task.trap_context_va();
-    
+
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
@@ -291,10 +278,6 @@ extern "C" fn rust_trap_from_kernel() {
             if let Ok(interrupt) = Interrupt::from_number(code) {
                 match interrupt {
                     Interrupt::SupervisorTimer => {
-                        if crate::trap::crashdump::panic_freeze_active() {
-                            timer::set_next_timer_interrupt();
-                            return;
-                        }
                         timer::set_next_timer_interrupt();
                         watchdog::check();
                         // 在内核态可能没有 current_task，避免访问 TrapContext
@@ -302,17 +285,11 @@ extern "C" fn rust_trap_from_kernel() {
                         // 不做任务切换，仅返回，让普通调度循环运行
                     }
                     Interrupt::SupervisorExternal => {
-                        if crate::trap::crashdump::panic_freeze_active() {
-                            return;
-                        }
                         // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
                         // 以便唤醒内核态等待 I/O 的任务，避免死等导致看门狗触发。
                         crate::drivers::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
-                        if crate::trap::crashdump::panic_freeze_active() {
-                            crate::trap::crashdump::ipi_freeze_entry();
-                        }
                         // 清SSIP
                         clear_ssip();
                     }
