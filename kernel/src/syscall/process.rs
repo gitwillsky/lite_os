@@ -692,26 +692,7 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
     name_bytes[..name_len].copy_from_slice(&name_str.as_bytes()[..name_len]);
     // name_bytes[name_len] = 0; // 已经初始化为0了
 
-    // 获取进程当前运行的核心ID（如果正在运行），否则使用调用者的核心ID
-    let core_id = if matches!(*status, crate::task::TaskStatus::Running) {
-        // 对于正在运行的任务，尝试找到它所在的核心
-        let mut running_core_id = 0;
-        for i in 0..crate::arch::hart::MAX_CORES {
-            if let Some(processor) = crate::task::processor::CORE_MANAGER.get_processor(i) {
-                let proc = processor.lock();
-                if let Some(current_task) = &proc.current {
-                    if current_task.pid() == task.pid() {
-                        running_core_id = i;
-                        break;
-                    }
-                }
-            }
-        }
-        running_core_id as u32
-    } else {
-        // 对于非运行状态的任务，使用当前调用者的核心ID
-        crate::arch::hart::hart_id() as u32
-    };
+    let core_id = crate::arch::hart::hart_id() as u32;
 
     let process_info = ProcessInfo {
         pid: task.pid() as u32,
