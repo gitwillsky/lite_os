@@ -8,10 +8,19 @@ use crate::{
     task::{
         context::TaskContext,
         scheduler::{Scheduler, cfs_scheduler::CFScheduler},
-        task::{TaskControlBlock, TaskStatus},
+        TaskControlBlock, TaskStatus,
     },
     timer::get_time_us,
 };
+
+/// idle返回函数 - 当从任务切换回idle时执行
+/// 这个函数永远不应该被调用，因为idle循环不会切换回来
+/// 但我们需要一个有效的返回地址以避免异常
+#[unsafe(no_mangle)]
+pub extern "C" fn idle_return() -> ! {
+    // 如果执行到这里，说明出现了严重错误
+    panic!("idle_return should never be called!");
+}
 
 pub struct Processor {
     /// 当前核心ID
@@ -30,10 +39,16 @@ pub struct Processor {
 
 impl Processor {
     pub fn new(hart_id: usize) -> Self {
+        // 创建一个有效的idle上下文
+        // 重要：idle上下文的ra必须指向一个有效的返回地址
+        let mut idle_ctx = TaskContext::zero_init();
+        // 设置返回地址为idle_return函数
+        idle_ctx.set_ra(idle_return as usize);
+        
         Self {
             hart_id,
             current: None,
-            idle_context: TaskContext::zero_init(),
+            idle_context: idle_ctx,
             scheduler: Box::new(CFScheduler::new()),
             task_count: AtomicUsize::new(0),
             active: AtomicBool::new(false),
@@ -69,8 +84,28 @@ impl Processor {
     /// 尝试窃取一个任务
     pub fn steal_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         // 只有当任务数量大于1时才允许窃取
-        if self.task_count() > 1 {
-            self.fetch_task()
+        // 使用原子操作检查任务数量，避免竞态
+        let count = self.task_count.load(Ordering::Acquire);
+        if count > 1 {
+            // 尝试获取任务，如果成功则减少计数
+            if let Some(task) = self.scheduler.fetch_task() {
+                self.task_count.fetch_sub(1, Ordering::Release);
+                
+                // 验证任务状态，确保不窃取正在运行或睡眠的任务
+                let status = task.task_status.lock();
+                if *status != TaskStatus::Ready {
+                    // 任务状态不合适，放回并恢复计数
+                    drop(status);
+                    self.scheduler.add_task(task.clone());
+                    self.task_count.fetch_add(1, Ordering::Release);
+                    return None;
+                }
+                drop(status);
+                
+                Some(task)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -171,14 +206,18 @@ impl MultiProcessorManager {
 
     /// 工作窃取 - 从其他核心窃取任务
     pub fn steal_work(&self, idle_hart: usize) -> Option<Arc<TaskControlBlock>> {
-        // 收集所有活跃核心的负载信息
+        // 使用更细粒度的锁策略，减少持锁时间
         let mut loaded_cores = Vec::new();
+        
+        // 快速收集负载信息，不持有锁
         for hart in 0..MAX_CORES {
             if hart != idle_hart {
                 if let Some(processor) = self.get_processor(hart) {
-                    let proc = processor.lock();
-                    if proc.active.load(Ordering::Relaxed) {
-                        let load = proc.task_count();
+                    // 快速检查活跃状态和负载
+                    let is_active = processor.lock().active.load(Ordering::Acquire);
+                    if is_active {
+                        // 原子读取任务计数，避免长时间持锁
+                        let load = processor.lock().task_count.load(Ordering::Acquire);
                         if load > 1 { // 只从有多个任务的核心窃取
                             loaded_cores.push((hart, load));
                         }
@@ -193,9 +232,13 @@ impl MultiProcessorManager {
         // 尝试从负载最重的核心窃取任务
         for (hart, _load) in loaded_cores {
             if let Some(processor) = self.get_processor(hart) {
-                let mut proc = processor.lock();
-                if let Some(task) = proc.steal_task() {
-                    return Some(task);
+                // 使用try_lock避免死锁
+                if let Some(mut proc) = processor.try_lock() {
+                    if let Some(task) = proc.steal_task() {
+                        // 内存屏障确保任务状态的可见性
+                        core::sync::atomic::fence(Ordering::Acquire);
+                        return Some(task);
+                    }
                 }
             }
         }

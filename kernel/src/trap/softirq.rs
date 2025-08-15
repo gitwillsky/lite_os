@@ -1,10 +1,9 @@
-use core::sync::atomic::{AtomicU32, Ordering};
-use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
 use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::{hart_id, MAX_CORES},
-    task,
+    task::{self, TaskStatus},
     timer,
     watchdog,
 };
@@ -25,14 +24,19 @@ impl SoftIrq {
     pub fn as_index(&self) -> usize { *self as usize }
 }
 
-// 每核挂起的软中断位图（驻留于堆内已映射内存，避免直接操作未映射物理地址）
+// 每核挂起的软中断位图 - 使用固定大小数组避免Vec的潜在问题
 lazy_static! {
-    static ref PENDING: Vec<AtomicU32> = {
-        let mut v = Vec::with_capacity(MAX_CORES);
-        for _ in 0..MAX_CORES { v.push(AtomicU32::new(0)); }
-        v
-    };
+    static ref PENDING: [AtomicU32; MAX_CORES] = [
+        AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+        AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    ];
 }
+
+// 软中断处理状态，防止重入
+static SOFTIRQ_ACTIVE: [AtomicBool; MAX_CORES] = [
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+];
 
 #[inline(always)]
 fn set_ssip() {
@@ -49,19 +53,48 @@ fn set_ssip() {
 pub fn raise(irq: SoftIrq) {
     let bit = 1u32 << irq.as_index();
     let cpu = hart_id();
-    PENDING[cpu].fetch_or(bit, Ordering::AcqRel);
-    set_ssip();
+    if cpu < MAX_CORES {
+        PENDING[cpu].fetch_or(bit, Ordering::AcqRel);
+        // 内存屏障确保位图更新在中断触发前完成
+        core::sync::atomic::fence(Ordering::Release);
+        set_ssip();
+    }
 }
 
 #[inline(always)]
 fn take_pending_for(cpu: usize) -> u32 {
-    PENDING[cpu].swap(0, Ordering::AcqRel)
+    if cpu < MAX_CORES {
+        PENDING[cpu].swap(0, Ordering::AcqRel)
+    } else {
+        0
+    }
 }
 
 #[inline(always)]
 pub fn dispatch_current_cpu() {
     let cpu = hart_id();
+    if cpu >= MAX_CORES {
+        return;
+    }
+    
+    // 防止软中断重入 - 但允许在不同CPU上并发处理
+    if SOFTIRQ_ACTIVE[cpu].compare_exchange(
+        false, 
+        true, 
+        Ordering::Acquire, 
+        Ordering::Relaxed
+    ).is_err() {
+        // 已经在处理软中断，避免重入
+        return;
+    }
+    
     let mask = take_pending_for(cpu);
+    
+    // 先释放软中断锁，允许后续软中断
+    // 这很重要，因为handle_timer_softirq可能会切换任务
+    SOFTIRQ_ACTIVE[cpu].store(false, Ordering::Release);
+    
+    // 然后处理软中断
     if (mask & (1u32 << SoftIrq::Timer.as_index())) != 0 {
         handle_timer_softirq();
     }
@@ -69,13 +102,19 @@ pub fn dispatch_current_cpu() {
 
 #[inline(always)]
 fn handle_timer_softirq() {
-    // 看门狗、睡眠唤醒、信号检查与调度
+    // 看门狗、睡眠唤醒
     watchdog::check();
     task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
-    let cx = task::current_trap_context();
-    // 退回公开接口：软中断仅做唤醒，不在此处退出进程，避免访问私有函数
-    let _ = cx; // 保留现有语义：调度点触发调度
-    super::task::suspend_current_and_run_next();
+    
+    // 重要：只在有当前任务且不在内核关键路径时才触发调度
+    // 避免在idle循环或其他特殊上下文中调度
+    if let Some(task) = task::current_task() {
+        // 检查任务是否有效且不是zombie
+        if !task.is_zombie() && *task.task_status.lock() == TaskStatus::Running {
+            // 进行任务切换，让其他任务有机会运行
+            task::suspend_current_and_run_next();
+        }
+    }
 }
 
 
