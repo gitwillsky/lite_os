@@ -82,11 +82,15 @@ pub fn trap_handler() {
         if let Ok(exception) = Exception::from_number(code) {
             match exception {
                 Exception::IllegalInstruction => {
-                    let sepc = task::current_trap_context().sepc;
-                    error!(
-                        "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
-                        sepc
-                    );
+                    if let Some(current) = task::current_task() {
+                        let sepc = current.mm.trap_context().sepc;
+                        error!(
+                            "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
+                            sepc
+                        );
+                    } else {
+                        error!("[kernel] IllegalInstruction with no current task");
+                    }
                     exit_current_and_run_next(-2);
                 }
                 Exception::Breakpoint => {
@@ -96,23 +100,31 @@ pub fn trap_handler() {
                     // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
                     // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
                     debug!("[trap_handler] Breakpoint exception");
-                    let cx = task::current_trap_context();
-                    cx.sepc += 4;
+                    if let Some(current) = task::current_task() {
+                        let cx = current.mm.trap_context();
+                        cx.sepc += 4;
+                    }
                 }
                 Exception::UserEnvCall => {
-                    let cx = task::current_trap_context();
-                    let syscall_id = cx.x[17];
-                    let args = [cx.x[10], cx.x[11], cx.x[12]];
+                    // Check if there's a current task before accessing trap context
+                    if let Some(current) = task::current_task() {
+                        let cx = current.mm.trap_context();
+                        let syscall_id = cx.x[17];
+                        let args = [cx.x[10], cx.x[11], cx.x[12]];
 
-                    cx.x[10] = {
-                        cx.sepc += 4;
-                        syscall::syscall(syscall_id, args) as usize
-                    };
+                        cx.x[10] = {
+                            cx.sepc += 4;
+                            syscall::syscall(syscall_id, args) as usize
+                        };
 
-                    // Check and handle pending signals after syscall using the existing trap context
-                    if !check_signals_and_maybe_exit_with_cx(cx) {
-                        // Process was terminated, should not continue
-                        return;
+                        // Check and handle pending signals after syscall using the existing trap context
+                        if !check_signals_and_maybe_exit_with_cx(cx) {
+                            // Process was terminated, should not continue
+                            return;
+                        }
+                    } else {
+                        error!("[kernel] UserEnvCall with no current task, terminating");
+                        panic!("UserEnvCall with no current task");
                     }
                 }
                 Exception::InstructionPageFault => {
@@ -124,7 +136,7 @@ pub fn trap_handler() {
                         // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
                         debug!("Signal handler return detected (VA=0), calling sigreturn");
                         let task = task::current_task().expect("No current task");
-                        let mut cx = task::current_trap_context();
+                        let mut cx = task.mm.trap_context();
 
                         match sig_return(&task, cx) {
                             Ok(()) => {
@@ -145,12 +157,20 @@ pub fn trap_handler() {
                 | Exception::LoadPageFault
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
-                    error!(
-                        "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, core dumped.",
-                        scause_val,
-                        stval,
-                        task::current_trap_context().sepc,
-                    );
+                    if let Some(current) = task::current_task() {
+                        error!(
+                            "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, core dumped.",
+                            scause_val,
+                            stval,
+                            current.mm.trap_context().sepc,
+                        );
+                    } else {
+                        error!(
+                            "[kernel] {:?} with no current task, bad addr = {:#x}, core dumped.",
+                            scause_val,
+                            stval,
+                        );
+                    }
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);

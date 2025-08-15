@@ -1,5 +1,4 @@
 use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
-use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::{hart_id, MAX_CORES},
@@ -25,12 +24,10 @@ impl SoftIrq {
 }
 
 // 每核挂起的软中断位图 - 使用固定大小数组避免Vec的潜在问题
-lazy_static! {
-    static ref PENDING: [AtomicU32; MAX_CORES] = [
-        AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-        AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
-    ];
-}
+static PENDING: [AtomicU32; MAX_CORES] = [
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+    AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0),
+];
 
 // 软中断处理状态，防止重入
 static SOFTIRQ_ACTIVE: [AtomicBool; MAX_CORES] = [
@@ -52,30 +49,23 @@ fn set_ssip() {
 #[inline(always)]
 pub fn raise(irq: SoftIrq) {
     let bit = 1u32 << irq.as_index();
-    let cpu = hart_id();
-    if cpu < MAX_CORES {
-        PENDING[cpu].fetch_or(bit, Ordering::AcqRel);
-        // 内存屏障确保位图更新在中断触发前完成
-        core::sync::atomic::fence(Ordering::Release);
-        set_ssip();
-    }
+    let cpu = hart_id(); // hart_id()现在已经有边界检查
+    
+    PENDING[cpu].fetch_or(bit, Ordering::AcqRel);
+    // 内存屏障确保位图更新在中断触发前完成
+    core::sync::atomic::fence(Ordering::Release);
+    set_ssip();
 }
 
 #[inline(always)]
 fn take_pending_for(cpu: usize) -> u32 {
-    if cpu < MAX_CORES {
-        PENDING[cpu].swap(0, Ordering::AcqRel)
-    } else {
-        0
-    }
+    // cpu已经由hart_id()保证在范围内
+    PENDING[cpu].swap(0, Ordering::AcqRel)
 }
 
 #[inline(always)]
 pub fn dispatch_current_cpu() {
-    let cpu = hart_id();
-    if cpu >= MAX_CORES {
-        return;
-    }
+    let cpu = hart_id(); // hart_id()现在已经有边界检查
     
     // 防止软中断重入 - 但允许在不同CPU上并发处理
     if SOFTIRQ_ACTIVE[cpu].compare_exchange(
