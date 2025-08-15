@@ -781,7 +781,7 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
     let system_uptime = current_time; // 系统运行时间
 
     // 获取当前激活的核心数量
-    let active_cores = crate::task::processor::CORE_MANAGER.active_core_count();
+    let active_cores = crate::task::processor::active_core_count();
     let total_active_cpu_time = total_cpu_user_time + total_cpu_kernel_time;
 
     // 在多核系统中，总可用CPU时间 = 系统时间 × 核心数
@@ -852,7 +852,7 @@ pub fn sys_get_cpu_core_info(core_info: *mut CpuCoreInfo) -> isize {
 
     let cpu_core_info = CpuCoreInfo {
         total_cores: crate::arch::hart::MAX_CORES as u32,
-        active_cores: crate::task::processor::CORE_MANAGER.active_core_count() as u32,
+        active_cores: crate::task::processor::active_core_count() as u32,
     };
 
     // 将核心信息写入用户空间

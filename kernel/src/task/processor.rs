@@ -44,7 +44,7 @@ impl Processor {
         let mut idle_ctx = TaskContext::zero_init();
         // 设置返回地址为idle_return函数
         idle_ctx.set_ra(idle_return as usize);
-        
+
         Self {
             hart_id,
             current: None,
@@ -90,7 +90,7 @@ impl Processor {
             // 尝试获取任务，如果成功则减少计数
             if let Some(task) = self.scheduler.fetch_task() {
                 self.task_count.fetch_sub(1, Ordering::Release);
-                
+
                 // 验证任务状态，确保不窃取正在运行或睡眠的任务
                 let status = task.task_status.lock();
                 if *status != TaskStatus::Ready {
@@ -101,7 +101,7 @@ impl Processor {
                     return None;
                 }
                 drop(status);
-                
+
                 Some(task)
             } else {
                 None
@@ -208,7 +208,7 @@ impl MultiProcessorManager {
     pub fn steal_work(&self, idle_hart: usize) -> Option<Arc<TaskControlBlock>> {
         // 使用更细粒度的锁策略，减少持锁时间
         let mut loaded_cores = Vec::new();
-        
+
         // 快速收集负载信息，不持有锁
         for hart in 0..MAX_CORES {
             if hart != idle_hart {
@@ -309,18 +309,29 @@ impl MultiProcessorManager {
     }
 }
 
-lazy_static! {
-    pub static ref CORE_MANAGER: MultiProcessorManager = MultiProcessorManager::new();
+// Per-CPU 变量，每个核心完全独立
+static mut PER_CPU_PROCESSORS: [Option<Processor>; MAX_CORES] = [const { None }; MAX_CORES];
+static ACTIVE_CORES: AtomicUsize = AtomicUsize::new(0);
+
+/// 无锁访问当前 CPU 的处理器
+pub fn current_processor() -> &'static mut Processor {
+    let hart = hart_id();
+    unsafe {
+        if PER_CPU_PROCESSORS[hart].is_none() {
+            PER_CPU_PROCESSORS[hart] = Some(Processor::new(hart));
+        }
+        PER_CPU_PROCESSORS[hart].as_mut().unwrap()
+    }
 }
 
-/// 获取当前核心的处理器
-pub fn current_processor() -> &'static Mutex<Processor> {
-    CORE_MANAGER.current_processor()
+/// 获取活跃核心数量
+pub fn active_core_count() -> usize {
+    ACTIVE_CORES.load(Ordering::Relaxed)
 }
 
-/// 获取指定核心的处理器
-pub fn get_processor(hart_id: usize) -> Option<&'static Mutex<Processor>> {
-    CORE_MANAGER.get_processor(hart_id)
+/// 标记核心为活跃状态
+pub fn mark_core_active() {
+    ACTIVE_CORES.fetch_add(1, Ordering::Relaxed);
 }
 
 

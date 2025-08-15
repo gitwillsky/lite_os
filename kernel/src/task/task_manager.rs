@@ -17,7 +17,7 @@ static NEED_RESCHED: [AtomicBool; MAX_CORES] = [
 
 use crate::{
     arch::hart::{hart_id, MAX_CORES},
-    task::{self, context::TaskContext, current_processor, processor::CORE_MANAGER, TaskControlBlock, TaskStatus},
+    task::{self, context::TaskContext, current_processor, TaskControlBlock, TaskStatus},
     timer::{get_time_ns, get_time_us},
 };
 // 引入 GUI 所有权释放函数，用于进程退出时自动释放显示控制权
@@ -88,7 +88,7 @@ impl TaskManager {
         let status = *task.task_status.lock();
         match status {
             TaskStatus::Ready => {
-                CORE_MANAGER.add_task(task);
+                current_processor().add_task(task);
             }
             TaskStatus::Sleeping => {
                 // 睡眠任务通过wake_time_ns字段管理，无需额外处理
@@ -192,11 +192,10 @@ impl TaskManager {
 
     /// 获取在特定核心上运行的进程
     pub fn task_on_core(&self, core_id: usize) -> Option<Arc<TaskControlBlock>> {
-        if let Some(processor) = CORE_MANAGER.get_processor(core_id) {
-            let proc = processor.lock();
-            proc.current.clone()
+        if core_id == hart_id() {
+            current_processor().current.clone()
         } else {
-            None
+            None // 跨核心查询在 Per-CPU 设计中不支持
         }
     }
 
@@ -224,8 +223,7 @@ impl TaskManager {
                     // 任务已经从调度器中移除，无需额外操作
                 }
                 (TaskStatus::Running, TaskStatus::Ready) => {
-                    // 从某个核心的current移动到调度器队列
-                    CORE_MANAGER.add_task(task);
+                current_processor().add_task(task);
                 }
                 (TaskStatus::Running, TaskStatus::Sleeping) => {
                     // 从某个核心的current移动到睡眠队列，由 timer 模块处理
@@ -235,14 +233,14 @@ impl TaskManager {
                 }
                 (TaskStatus::Sleeping, TaskStatus::Ready) => {
                     // 从睡眠队列移动到调度器队列
-                    CORE_MANAGER.add_task(task);
+                current_processor().add_task(task);
                 }
                 (TaskStatus::Sleeping, TaskStatus::Stopped) => {
                     // 从睡眠状态移动到停止状态，不参与调度
                 }
                 (TaskStatus::Stopped, TaskStatus::Ready) => {
                     // 从停止状态恢复到调度器队列
-                    CORE_MANAGER.add_task(task);
+                current_processor().add_task(task);
                 }
                 (_, TaskStatus::Zombie) => {
                     // 进程退出，不需要调度
@@ -762,12 +760,12 @@ pub fn check_and_clear_resched() -> bool {
 
 /// 获取并移除当前任务
 pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    current_processor().lock().current.take()
+    current_processor().current.take()
 }
 
 /// 获取当前任务的引用
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
-    current_processor().lock().current.clone()
+    current_processor().current.clone()
 }
 
 /// 获取当前任务的用户空间页表令牌
@@ -796,33 +794,31 @@ pub fn current_cwd() -> alloc::string::String {
 }
 
 pub fn run_tasks() -> ! {
-    let current_hart = hart_id();
-    CORE_MANAGER.activate_core(current_hart);
+    let processor = current_processor();
+    processor.active.store(true, Ordering::Relaxed);
+
+    // 标记当前核心为活跃状态
+    crate::task::processor::mark_core_active();
 
     loop {
         if let Err(_) = crate::watchdog::feed() {
             // Watchdog 可能被禁用，这是正常的
         }
 
-        // 1. 尝试从本地调度器获取任务
-        let task = {
-            let mut processor = current_processor().lock();
-            processor.fetch_task()
-        };
+        // 简单的本地调度，无工作窃取
+        let task = processor.fetch_task();
 
         if let Some(task) = task {
             if !task.is_zombie() {
                 // 处理信号检查
                 if task.signal_state.lock().has_deliverable_signals() {
                     if !handle_task_signals(&task) {
-                        // 信号处理后任务不应该继续调度（可能被终止或停止）
                         continue;
                     }
                 }
 
                 // 检查任务是否处于睡眠状态
                 if *task.task_status.lock() == TaskStatus::Sleeping {
-                    // 睡眠状态的任务不应该被调度，跳过
                     continue;
                 }
 
@@ -832,21 +828,7 @@ pub fn run_tasks() -> ! {
             }
         }
 
-        // 2. 尝试工作窃取
-        if let Some(stolen_task) = CORE_MANAGER.steal_work(current_hart) {
-            if !stolen_task.is_zombie() {
-                // 检查被窃取的任务是否处于睡眠状态
-                if *stolen_task.task_status.lock() == TaskStatus::Sleeping {
-                    // 睡眠状态的任务不应该被调度，跳过
-                    continue;
-                }
-
-                switch_to_task(stolen_task);
-                continue;
-            }
-        }
-
-        // 3. 没有任务，进入空闲状态
+        // 没有任务，进入空闲状态
         use riscv::asm::wfi;
         wfi();
     }
@@ -891,13 +873,13 @@ pub fn suspend_current_and_run_next() {
             return;
         }
     };
-    
+
     // 验证任务有效性
     if task.is_zombie() {
         // Zombie任务不应该被调度
         return;
     }
-    
+
     // 更新运行时间统计 - 使用安全的原子操作
     let end_time = get_time_us();
     let last_runtime = task.last_runtime.load(Ordering::Acquire);
@@ -905,27 +887,27 @@ pub fn suspend_current_and_run_next() {
         let runtime = end_time - last_runtime;
         task.sched.lock().update_vruntime(runtime);
     }
-    
+
     // 获取任务上下文指针
     // 重要：TaskContext存储在TaskControlBlock内部，由Arc保护
     let task_cx_ptr = {
         let task_cx = task.mm.task_cx.lock();
         let ptr = &*task_cx as *const TaskContext as *mut TaskContext;
-        
+
         // 验证指针有效性
         if ptr.is_null() {
             panic!("Task context pointer is null for task {}", task.pid());
         }
-        
+
         ptr
     };
-    
+
     // 处理任务状态 - 保持Arc引用确保内存有效
     suspend_task_and_reschedule_if_needed(task.clone());
-    
+
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
-    
+
     // 切换到其他任务
     schedule(task_cx_ptr);
 }
@@ -933,24 +915,24 @@ pub fn suspend_current_and_run_next() {
 /// 阻塞当前任务并切换到下一个任务
 pub fn block_current_and_run_next() {
     let task = take_current_task().expect("No current task to block");
-    
+
     // 更新运行时间统计
     let end_time = get_time_us();
     let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
     task.sched.lock().update_vruntime(runtime);
-    
+
     // 对于阻塞场景，应当将任务状态设置为 Sleeping
     set_task_status(&task, TaskStatus::Sleeping);
-    
+
     // 获取任务上下文指针
     let task_cx_ptr = {
         let task_cx = task.mm.task_cx.lock();
         &*task_cx as *const TaskContext as *mut TaskContext
     };
-    
+
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
-    
+
     // 切换到其他任务（task的Arc引用确保内存有效）
     schedule(task_cx_ptr);
 }
@@ -968,14 +950,14 @@ pub fn exit_current_and_run_next(exit_code: i32) {
 
 /// 切换到指定任务
 fn switch_to_task(task: Arc<TaskControlBlock>) {
-    // 获取处理器锁 - 必须在整个切换过程中持有
-    let mut processor = current_processor().lock();
-    
+    // 直接访问 Per-CPU 数据，无锁
+    let processor = current_processor();
+
     // 检查是否已有当前任务
     if processor.current.is_some() {
         return;
     }
-    
+
     // 检查并设置任务状态
     {
         let mut status = task.task_status.lock();
@@ -985,46 +967,31 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
         }
         *status = TaskStatus::Running;
     }
-    
+
     // 记录任务开始运行的时间
     let start_time = get_time_us();
     task.last_runtime.store(start_time, Ordering::Relaxed);
-    
+
     // 设置当前任务
     processor.current = Some(task.clone());
-    
+
     // 获取idle上下文指针
     let idle_task_cx_ptr = processor.idle_context_ptr();
-    
+
     // 获取任务上下文地址
     let next_task_cx_ptr = {
         let task_cx = task.mm.task_cx.lock();
         &*task_cx as *const TaskContext
     };
-    
+
     // 验证指针有效性
     if next_task_cx_ptr.is_null() {
         panic!("Invalid task context pointer");
     }
-    
-    // Linux风格：在关键调度路径禁用中断
-    let sie_enabled = riscv::register::sstatus::read().sie();
-    unsafe { riscv::register::sstatus::clear_sie(); }
-    
-    // 释放processor锁
-    drop(processor);
-    
-    // 内存屏障
-    core::sync::atomic::fence(Ordering::SeqCst);
-    
-    // 执行上下文切换（在中断禁用状态下）
+
+    // 直接执行切换，无锁竞争
     unsafe {
         crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
-    }
-    
-    // 恢复中断状态（实际上这行不会执行，因为已经切换了）
-    if sie_enabled {
-        unsafe { riscv::register::sstatus::set_sie(); }
     }
 }
 
@@ -1034,19 +1001,12 @@ fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     if switched_task_cx_ptr.is_null() {
         panic!("Invalid task context pointer in schedule");
     }
-    
-    
-    // 获取idle上下文指针
-    let idle_task_cx_ptr = {
-        let mut processor = current_processor().lock();
-        processor.idle_context_ptr()
-    };
-    
-    // 编译器和内存屏障，确保所有操作在切换前完成
-    core::sync::atomic::compiler_fence(Ordering::SeqCst);
-    core::sync::atomic::fence(Ordering::SeqCst);
-    
-    // 执行切换
+
+
+    // 直接访问 Per-CPU idle context
+    let processor = current_processor();
+    let idle_task_cx_ptr = processor.idle_context_ptr();
+
     unsafe {
         crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }

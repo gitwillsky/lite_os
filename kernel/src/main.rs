@@ -3,7 +3,7 @@
 #![feature(alloc_error_handler)]
 #![allow(unused)]
 
-use crate::{memory::KERNEL_SPACE, task::CORE_MANAGER};
+use crate::memory::KERNEL_SPACE;
 use riscv::register;
 
 extern crate alloc;
@@ -60,8 +60,6 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         signal::init();
         task::init();
 
-        CORE_MANAGER.activate_core(hart_id);
-
         task::run_tasks();
     } else {
         board::init(dtb_addr);
@@ -75,8 +73,6 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
             register::sie::set_sext();
             register::sstatus::set_sie();
         }
-
-        CORE_MANAGER.activate_core(hart_id);
 
         task::run_tasks();
     }
