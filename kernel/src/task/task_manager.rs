@@ -993,7 +993,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     // 设置当前任务
     processor.current = Some(task.clone());
     
-    // 获取idle上下文指针 - 在持有锁的情况下是安全的
+    // 获取idle上下文指针
     let idle_task_cx_ptr = processor.idle_context_ptr();
     
     // 获取任务上下文地址
@@ -1002,23 +1002,29 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
         &*task_cx as *const TaskContext
     };
     
-    // 验证指针
+    // 验证指针有效性
     if next_task_cx_ptr.is_null() {
         panic!("Invalid task context pointer");
     }
     
-    // 在切换前释放processor锁
-    // 这是安全的，因为：
-    // 1. idle_context是processor的一部分，只要不重新分配processor就是有效的
-    // 2. 任务上下文由Arc保护，是有效的
+    // Linux风格：在关键调度路径禁用中断
+    let sie_enabled = riscv::register::sstatus::read().sie();
+    unsafe { riscv::register::sstatus::clear_sie(); }
+    
+    // 释放processor锁
     drop(processor);
     
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
     
-    // 执行上下文切换
+    // 执行上下文切换（在中断禁用状态下）
     unsafe {
         crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
+    }
+    
+    // 恢复中断状态（实际上这行不会执行，因为已经切换了）
+    if sie_enabled {
+        unsafe { riscv::register::sstatus::set_sie(); }
     }
 }
 
@@ -1029,15 +1035,18 @@ fn schedule(switched_task_cx_ptr: *mut TaskContext) {
         panic!("Invalid task context pointer in schedule");
     }
     
+    
+    // 获取idle上下文指针
     let idle_task_cx_ptr = {
         let mut processor = current_processor().lock();
-        let ptr = processor.idle_context_ptr();
-        
-        // 内存屏障，确保所有操作在切换前完成
-        core::sync::atomic::fence(Ordering::SeqCst);
-        ptr
+        processor.idle_context_ptr()
     };
-
+    
+    // 编译器和内存屏障，确保所有操作在切换前完成
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    core::sync::atomic::fence(Ordering::SeqCst);
+    
+    // 执行切换
     unsafe {
         crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }

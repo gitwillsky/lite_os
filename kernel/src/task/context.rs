@@ -1,8 +1,8 @@
 use crate::trap::trap_return;
 
 /// Task context structure containing some registers
-#[repr(C)]
-#[derive(Debug)]
+#[repr(C, align(8))]
+#[derive(Debug, Clone, Copy)]
 pub struct TaskContext {
     /// return address
     ra: usize,
@@ -28,12 +28,12 @@ impl TaskContext {
             s: [0; 12],
         }
     }
-    
+
     /// 设置返回地址
     pub fn set_ra(&mut self, ra: usize) {
         self.ra = ra;
     }
-    
+
     /// 设置栈指针
     pub fn set_sp(&mut self, sp: usize) {
         self.kernel_sp = sp;
