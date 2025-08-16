@@ -5,7 +5,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 use crate::{
     arch::sbi,
     fs::{FileSystemError, LockError, LockOp, LockType, file_lock_manager, vfs::vfs, FileStat, InodeType},
-    ipc::{create_fifo, create_pipe, uds_listen, uds_accept, uds_connect},
+    ipc::{create_fifo, remove_fifo, create_pipe, uds_listen, uds_accept, uds_connect},
     memory::page_table::{translated_byte_buffer, translated_ref_mut},
     task::{FileDescriptor, current_task, current_user_token, suspend_current_and_run_next},
 };
@@ -393,10 +393,14 @@ pub fn sys_remove(path: *const u8) -> isize {
         }
     };
 
-    match vfs().remove(&path_str) {
+    // 先尝试从底层文件系统移除目录项
+    let res = match vfs().remove(&path_str) {
         Ok(_) => 0,
         Err(_) => -1,
-    }
+    };
+    // 无论 FS 移除结果如何，最佳努力地清理 FIFO 注册表，避免残留与阻塞
+    let _ = remove_fifo(&path_str);
+    res
 }
 
 /// poll - 轮询一组 fd 的事件
@@ -863,7 +867,15 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
 
     // 标准化：在文件系统上创建持久化 FIFO 节点（目录项可见），若已存在且为 FIFO 则成功
     match vfs().create_fifo(&path_str, mode) {
-        Ok(_) => 0,
+        Ok(_) => {
+            // 在 IPC 注册表中注册命名管道；若已存在则忽略
+            match create_fifo(&path_str) {
+                Ok(_) => {}
+                Err(FileSystemError::AlreadyExists) => {}
+                Err(_) => {}
+            }
+            0
+        }
         Err(FileSystemError::AlreadyExists) => -17,       // EEXIST（与 POSIX 一致）
         Err(FileSystemError::PermissionDenied) => -13,    // EACCES
         Err(FileSystemError::NotFound) => -2,             // ENOENT

@@ -10,7 +10,7 @@ use spin::Mutex;
 use crate::task;
 
 use super::{FileSystem, FileSystemError, Inode};
-use crate::ipc::open_fifo;
+use crate::ipc::{open_fifo, create_fifo};
 
 pub struct VirtualFileSystem {
     filesystems: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
@@ -112,27 +112,15 @@ impl VirtualFileSystem {
         const O_RDWR: u32 = 0o2;
         let access_mode = flags & 0o3;
 
-        // First check if this is a named pipe (FIFO)
+        // 若路径在 FIFO 注册表中，直接返回 FIFO 端点
         if let Ok(fifo) = open_fifo(&abs_path) {
-            match access_mode {
-                O_RDONLY => {
-                    // Return a read handle for the FIFO
-                    return Ok(fifo.open_read() as Arc<dyn Inode>);
-                }
-                O_WRONLY => {
-                    // Return a write handle for the FIFO
-                    return Ok(fifo.open_write() as Arc<dyn Inode>);
-                }
-                O_RDWR => {
-                    // For read-write mode, return the FIFO itself (implementation dependent)
-                    // In most systems, FIFOs don't support O_RDWR, but we'll allow it
-                    return Ok(fifo as Arc<dyn Inode>);
-                }
-                _ => {
-                    // Default to read-only
-                    return Ok(fifo.open_read() as Arc<dyn Inode>);
-                }
-            }
+            let nonblock = (flags & 0o4000) != 0; // O_NONBLOCK
+            return match access_mode {
+                O_RDONLY => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+                O_WRONLY => Ok(if nonblock { fifo.open_write_with_flags(true) } else { fifo.open_write() } as Arc<dyn Inode>),
+                O_RDWR => Ok(fifo as Arc<dyn Inode>),
+                _ => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+            };
         }
 
         // Input device nodes
@@ -148,7 +136,31 @@ impl VirtualFileSystem {
             return Ok(fs.root_inode());
         }
 
-        self.resolve_path(&abs_path)
+        // 解析路径；若为底层文件系统中的 FIFO 节点，则确保在注册表中创建对应的命名管道对象
+        match self.resolve_path(&abs_path) {
+            Ok(inode) => {
+                if matches!(inode.inode_type(), super::InodeType::Fifo) {
+                    // 在注册表中创建（若已存在则忽略），随后按访问模式返回 FIFO 端点
+                    let _ = create_fifo(&abs_path);
+                    if let Ok(fifo) = open_fifo(&abs_path) {
+                        // 将底层权限信息携带到 FIFO 对象，保持 stat/权限检查一致
+                        let perm = inode.mode();
+                        let uid = inode.uid();
+                        let gid = inode.gid();
+                        fifo.maybe_init_meta(perm, uid, gid);
+                        let nonblock = (flags & 0o4000) != 0; // O_NONBLOCK
+                        return match access_mode {
+                            O_RDONLY => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+                            O_WRONLY => Ok(if nonblock { fifo.open_write_with_flags(true) } else { fifo.open_write() } as Arc<dyn Inode>),
+                            O_RDWR => Ok(fifo as Arc<dyn Inode>),
+                            _ => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+                        };
+                    }
+                }
+                Ok(inode)
+            }
+            Err(e) => Err(e)
+        }
     }
 
     fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {

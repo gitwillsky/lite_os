@@ -540,6 +540,12 @@ pub struct NamedPipe {
     read_count: atomic::AtomicUsize,
     /// Number of write handles currently open
     write_count: atomic::AtomicUsize,
+    /// Permission bits (including type bits as created). 0 means uninitialized
+    mode: atomic::AtomicU32,
+    /// Owner uid
+    owner_uid: atomic::AtomicU32,
+    /// Owner gid
+    owner_gid: atomic::AtomicU32,
 }
 
 impl NamedPipe {
@@ -548,31 +554,64 @@ impl NamedPipe {
             pipe: Arc::new(Pipe::new()),
             read_count: atomic::AtomicUsize::new(0),
             write_count: atomic::AtomicUsize::new(0),
+            mode: atomic::AtomicU32::new(0),
+            owner_uid: atomic::AtomicU32::new(0),
+            owner_gid: atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// 是否有读取端连接
+    pub fn has_readers(&self) -> bool {
+        self.read_count.load(atomic::Ordering::Acquire) > 0
+    }
+
+    /// 是否有写入端连接
+    pub fn has_writers(&self) -> bool {
+        self.write_count.load(atomic::Ordering::Acquire) > 0
+    }
+
+    /// Initialize or update metadata (mode/uid/gid). Used by VFS when binding to FS node
+    pub fn maybe_init_meta(&self, mode: u32, uid: u32, gid: u32) {
+        // Only write once if not initialized
+        if self.mode.load(atomic::Ordering::Acquire) == 0 {
+            self.mode.store(mode, atomic::Ordering::Release);
+            self.owner_uid.store(uid, atomic::Ordering::Release);
+            self.owner_gid.store(gid, atomic::Ordering::Release);
         }
     }
 
     /// Open for reading - blocks until a writer is available if needed
     pub fn open_read(self: &Arc<Self>) -> Arc<FifoReadHandle> {
+        self.open_read_with_flags(false)
+    }
+
+    /// Open for reading with nonblock option
+    pub fn open_read_with_flags(self: &Arc<Self>, nonblock: bool) -> Arc<FifoReadHandle> {
         self.read_count.fetch_add(1, atomic::Ordering::AcqRel);
         // 先通知写端，避免写端因没有读端而阻塞
         self.pipe.notify_reader_connected();
         // 若当前尚无写入端，使用等待队列阻塞等待一次连接
-        if self.write_count.load(atomic::Ordering::Acquire) == 0 {
+        if !nonblock && self.write_count.load(atomic::Ordering::Acquire) == 0 {
             self.pipe.wait_for_writer_connection();
         }
-        Arc::new(FifoReadHandle::new(self.pipe.clone(), Arc::downgrade(self)))
+        Arc::new(FifoReadHandle::new(self.pipe.clone(), self.clone()))
     }
 
     /// Open for writing - blocks until a reader is available if needed
     pub fn open_write(self: &Arc<Self>) -> Arc<FifoWriteHandle> {
+        self.open_write_with_flags(false)
+    }
+
+    /// Open for writing with nonblock option
+    pub fn open_write_with_flags(self: &Arc<Self>, nonblock: bool) -> Arc<FifoWriteHandle> {
         self.write_count.fetch_add(1, atomic::Ordering::AcqRel);
         // 先通知读端，避免读端因没有写端而阻塞
         self.pipe.notify_writer_connected();
         // 若当前尚无读端，使用等待队列阻塞等待一次连接
-        if self.read_count.load(atomic::Ordering::Acquire) == 0 {
+        if !nonblock && self.read_count.load(atomic::Ordering::Acquire) == 0 {
             self.pipe.wait_for_reader_connection();
         }
-        Arc::new(FifoWriteHandle::new(self.pipe.clone(), Arc::downgrade(self)))
+        Arc::new(FifoWriteHandle::new(self.pipe.clone(), self.clone()))
     }
 
     fn close_reader(&self) {
@@ -639,6 +678,10 @@ impl Inode for NamedPipe {
         Ok(())
     }
 
+    fn mode(&self) -> u32 { self.mode.load(atomic::Ordering::Acquire) }
+    fn uid(&self) -> u32 { self.owner_uid.load(atomic::Ordering::Acquire) }
+    fn gid(&self) -> u32 { self.owner_gid.load(atomic::Ordering::Acquire) }
+
     fn poll_mask(&self) -> u32 {
         const POLLIN: u32 = 0x0001;
         const POLLOUT: u32 = 0x0004;
@@ -673,11 +716,11 @@ impl Inode for NamedPipe {
 /// FIFO read handle
 pub struct FifoReadHandle {
     pipe: Arc<Pipe>,
-    fifo: Weak<NamedPipe>,
+    fifo: Arc<NamedPipe>,
 }
 
 impl FifoReadHandle {
-    fn new(pipe: Arc<Pipe>, fifo: Weak<NamedPipe>) -> Self {
+    fn new(pipe: Arc<Pipe>, fifo: Arc<NamedPipe>) -> Self {
         Self { pipe, fifo }
     }
 }
@@ -693,11 +736,7 @@ impl Inode for FifoReadHandle {
 
     fn read_at(&self, _offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         // 检查是否有写入器连接
-        let has_writers = if let Some(fifo) = self.fifo.upgrade() {
-            fifo.write_count.load(atomic::Ordering::Acquire) > 0
-        } else {
-            false
-        };
+        let has_writers = self.fifo.write_count.load(atomic::Ordering::Acquire) > 0;
         self.pipe.fifo_read(buf, has_writers)
     }
 
@@ -732,24 +771,25 @@ impl Inode for FifoReadHandle {
     fn sync(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
+    fn mode(&self) -> u32 { self.fifo.mode.load(atomic::Ordering::Acquire) }
+    fn uid(&self) -> u32 { self.fifo.owner_uid.load(atomic::Ordering::Acquire) }
+    fn gid(&self) -> u32 { self.fifo.owner_gid.load(atomic::Ordering::Acquire) }
 }
 
 impl Drop for FifoReadHandle {
     fn drop(&mut self) {
-        if let Some(fifo) = self.fifo.upgrade() {
-            fifo.close_reader();
-        }
+        self.fifo.close_reader();
     }
 }
 
 /// FIFO write handle
 pub struct FifoWriteHandle {
     pipe: Arc<Pipe>,
-    fifo: Weak<NamedPipe>,
+    fifo: Arc<NamedPipe>,
 }
 
 impl FifoWriteHandle {
-    fn new(pipe: Arc<Pipe>, fifo: Weak<NamedPipe>) -> Self {
+    fn new(pipe: Arc<Pipe>, fifo: Arc<NamedPipe>) -> Self {
         Self { pipe, fifo }
     }
 }
@@ -769,11 +809,7 @@ impl Inode for FifoWriteHandle {
 
     fn write_at(&self, _offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
         // 检查是否有读取器连接
-        let has_readers = if let Some(fifo) = self.fifo.upgrade() {
-            fifo.read_count.load(atomic::Ordering::Acquire) > 0
-        } else {
-            false
-        };
+        let has_readers = self.fifo.read_count.load(atomic::Ordering::Acquire) > 0;
         self.pipe.fifo_write(buf, has_readers)
     }
 
@@ -804,13 +840,14 @@ impl Inode for FifoWriteHandle {
     fn sync(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
+    fn mode(&self) -> u32 { self.fifo.mode.load(atomic::Ordering::Acquire) }
+    fn uid(&self) -> u32 { self.fifo.owner_uid.load(atomic::Ordering::Acquire) }
+    fn gid(&self) -> u32 { self.fifo.owner_gid.load(atomic::Ordering::Acquire) }
 }
 
 impl Drop for FifoWriteHandle {
     fn drop(&mut self) {
-        if let Some(fifo) = self.fifo.upgrade() {
-            fifo.close_writer();
-        }
+        self.fifo.close_writer();
     }
 }
 
