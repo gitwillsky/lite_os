@@ -27,12 +27,12 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
             let mut total_written = 0;
 
             for buffer in buffers {
-                // 直接使用SBI输出，简单可靠
-                let s = core::str::from_utf8(buffer).unwrap();
-                for c in s.bytes() {
-                    sbi::console_putchar(c as usize);
+                // 直接输出字节，不需要UTF-8转换
+                let len = buffer.len();
+                for byte in buffer {
+                    sbi::console_putchar(*byte as usize);
                 }
-                total_written += buffer.len();
+                total_written += len;
             }
             total_written as isize
         }
