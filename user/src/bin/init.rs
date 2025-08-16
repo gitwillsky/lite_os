@@ -11,8 +11,8 @@ use user_lib::{exec, exit, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // 启动合成器与交互式 shell
-    spawn_litewm();
+    // 启动 Web 桌面合成器与交互式 shell
+    spawn_webwm();
     spawn_shell();
 
     // Main process reaping loop
@@ -39,15 +39,15 @@ fn spawn_shell() {
     }
 }
 
-fn spawn_litewm() {
+fn spawn_webwm() {
     let pid = fork();
     if pid == 0 {
-        let exit_code = exec("/bin/litewm") as i32;
+        let exit_code = exec("/bin/webwm") as i32;
         exit(exit_code);
     } else if pid > 0 {
-        // litewm started
+        // webwm started
     } else {
-        println!("init: failed to fork litewm process");
+        println!("init: failed to fork webwm process");
     }
 }
 

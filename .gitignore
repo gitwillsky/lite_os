@@ -1,3 +1,5 @@
+assets/desktop/.DS_Store
+**/.DS_Store
 target/
 .gdb_history
 link_app.S

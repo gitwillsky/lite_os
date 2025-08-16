@@ -97,7 +97,7 @@ def collect_binaries():
             user_elfs.append(elf_file)
 
     # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill', 'litewm']
+    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill', 'litewm', 'webwm']
     bin_entries = []   # (src, '/bin/name')
     root_entries = []  # (src, '/name')
     test_entries = []  # (src, '/tests/name')
@@ -153,7 +153,18 @@ def collect_binaries():
                 if os.path.isfile(font):
                     font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
 
-    return bin_entries, root_entries + font_sources, test_entries
+    # 追加桌面资源到 /usr/share/desktop
+    desktop_assets = []
+    if os.path.isdir('assets/desktop'):
+        for root, dirs, files in os.walk('assets/desktop'):
+            for f in files:
+                if f.startswith('._'):
+                    continue
+                src = os.path.join(root, f)
+                rel = os.path.relpath(src, 'assets/desktop')
+                desktop_assets.append((src, f"/usr/share/desktop/{rel}"))
+
+    return bin_entries, root_entries + font_sources + desktop_assets, test_entries
 
 def copy_files_to_ext2(image_path, debugfs_bin):
     """通过 debugfs 将文件写入 ext2 镜像。"""
@@ -167,6 +178,11 @@ def copy_files_to_ext2(image_path, debugfs_bin):
     for src, dst in bin_entries + root_entries + test_entries:
         # debugfs 的 write 语法: write <native_file> <dest_file>
         commands.append(f"write {src} {dst}")
+
+    # 确保资源目录存在
+    commands.insert(0, "mkdir /usr")
+    commands.insert(1, "mkdir /usr/share")
+    commands.insert(2, "mkdir /usr/share/desktop")
 
     # 写入临时脚本并执行
     with tempfile.NamedTemporaryFile('w', delete=False) as tf:
