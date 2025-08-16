@@ -11,7 +11,9 @@ mod shell_modules;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use shell_modules::*;
-use user_lib::{check_keyboard_input, get_current_time, get_system_stats, getcwd, read, yield_, SystemStats};
+use user_lib::{
+    check_keyboard_input, getcwd, read, yield_,
+};
 
 // 控制字符常量
 const LF: u8 = b'\n';
@@ -105,157 +107,12 @@ fn generate_prompt() -> String {
     String::from("$ ")
 }
 
-/// 打印美化的欢迎信息
-fn print_welcome_message() {
-    let mut system_stats = SystemStats {
-        total_processes: 0,
-        running_processes: 0,
-        sleeping_processes: 0,
-        zombie_processes: 0,
-        total_memory: 0,
-        used_memory: 0,
-        free_memory: 0,
-        system_uptime: 0,
-        cpu_user_time: 0,
-        cpu_system_time: 0,
-        cpu_idle_time: 0,
-        cpu_usage_percent: 0,
-    };
-
-    let time_info = get_current_time();
-    let _ = get_system_stats(&mut system_stats);
-
-    // 计算系统运行时间
-    let uptime_seconds = system_stats.system_uptime / 1_000_000;
-    let uptime_hours = uptime_seconds / 3600;
-    let uptime_minutes = (uptime_seconds % 3600) / 60;
-    let uptime_secs = uptime_seconds % 60;
-
-    // 计算内存使用率
-    let memory_usage_percent = if system_stats.total_memory > 0 {
-        (system_stats.used_memory * 100) / system_stats.total_memory
-    } else {
-        0
-    };
-
-    // CPU使用率 (从0-10000转换到0-100)
-    let cpu_usage = system_stats.cpu_usage_percent / 100;
-
-    // 格式化当前时间
-    let timestamp = format_unix_timestamp(time_info.tv_sec as u64);
-
-    println!("");
-    println!("╔═══════════════════════════════════════════════════════════════════════════════╗");
-    println!("║  ██╗     ██╗████████╗███████╗ ██████╗ ███████╗                                ║");
-    println!("║  ██║     ██║╚══██╔══╝██╔════╝██╔═══██╗██╔════╝   RISC-V 64-bit OS             ║");
-    println!("║  ██║     ██║   ██║   █████╗  ██║   ██║███████╗   Unix-like Shell              ║");
-    println!("║  ██║     ██║   ██║   ██╔══╝  ██║   ██║╚════██║                                ║");
-    println!("║  ███████╗██║   ██║   ███████╗╚██████╔╝███████║                                ║");
-    println!("║  ╚══════╝╚═╝   ╚═╝   ╚══════╝ ╚═════╝ ╚══════╝                                ║");
-    println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║ 🕒 Current Time: {:<60} ║", timestamp);
-    println!(
-        "║ ⏱️  System Uptime: {:02}h {:02}m {:02}s{:<48} ║",
-        uptime_hours, uptime_minutes, uptime_secs, ""
-    );
-    println!(
-        "║ 🖥️  CPU Usage: {:3}% | Memory: {:4}/{:4}KB ({:2}%){:<29} ║",
-        cpu_usage,
-        system_stats.used_memory / 1024,
-        system_stats.total_memory / 1024,
-        memory_usage_percent,
-        ""
-    );
-    println!(
-        "║ 🎯 Processes: {:2} total ({:2} running, {:2} sleeping){:<29} ║",
-        system_stats.total_processes,
-        system_stats.running_processes,
-        system_stats.sleeping_processes,
-        ""
-    );
-    println!("╠═══════════════════════════════════════════════════════════════════════════════╣");
-    println!("║ Features: ✓ Tab Completion ✓ History ✓ Job Control ✓ WASM Runtime             ║");
-    println!("║ Commands: help | ls | cd | jobs | <file>.wasm | <cmd> & (background)          ║");
-    println!("║ Keys: Tab=Complete ↑↓=History Ctrl+C=Interrupt Ctrl+Z=Suspend Ctrl+D=Exit     ║");
-    println!("╚═══════════════════════════════════════════════════════════════════════════════╝");
-}
-
-/// 将Unix时间戳转换为标准日期时间格式
-fn format_unix_timestamp(timestamp: u64) -> String {
-    // Unix纪元开始时间：1970-01-01 00:00:00 UTC
-    const EPOCH_YEAR: u64 = 1970;
-    const SECONDS_PER_DAY: u64 = 86400;
-    const SECONDS_PER_HOUR: u64 = 3600;
-    const SECONDS_PER_MINUTE: u64 = 60;
-
-    // 计算距离纪元的天数
-    let mut days_since_epoch = timestamp / SECONDS_PER_DAY;
-
-    // 计算当天的时间
-    let remaining_seconds = timestamp % SECONDS_PER_DAY;
-    let hours = remaining_seconds / SECONDS_PER_HOUR;
-    let minutes = (remaining_seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
-    let seconds = remaining_seconds % SECONDS_PER_MINUTE;
-
-    // 计算年份（简化算法，不考虑闰年的复杂性）
-    let mut year = EPOCH_YEAR;
-    let mut days_in_year;
-
-    loop {
-        // 简单的闰年判断
-        days_in_year = if is_leap_year(year) { 366 } else { 365 };
-
-        if days_since_epoch >= days_in_year {
-            days_since_epoch -= days_in_year;
-            year += 1;
-        } else {
-            break;
-        }
-    }
-
-    // 计算月份和日期
-    let (month, day) = calculate_month_day(days_since_epoch + 1, is_leap_year(year));
-
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        year, month, day, hours, minutes, seconds
-    )
-}
-
-/// 简单的闰年判断
-fn is_leap_year(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-/// 根据一年中的第几天计算月份和日期
-fn calculate_month_day(day_of_year: u64, is_leap: bool) -> (u64, u64) {
-    let days_in_months = if is_leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut remaining_days = day_of_year;
-
-    for (month_idx, &days_in_month) in days_in_months.iter().enumerate() {
-        if remaining_days <= days_in_month {
-            return (month_idx as u64 + 1, remaining_days);
-        }
-        remaining_days -= days_in_month;
-    }
-
-    // 如果出现错误，返回12月31日
-    (12, 31)
-}
-
 #[unsafe(no_mangle)]
 fn main() -> i32 {
     let mut editor = LineEditor::new();
     let mut history = CommandHistory::new(100); // 保存最多100条历史命令
     let mut job_manager = JobManager::new();
 
-    // 打印欢迎信息
-    // print_welcome_message();
 
     let prompt = generate_prompt();
     print!("{}", prompt);

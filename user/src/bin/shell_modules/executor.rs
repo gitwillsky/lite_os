@@ -1,9 +1,7 @@
-//! 命令执行模块
-
+use super::jobs::{JobManager, JobStatus};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use user_lib::{close, dup2, execve, fork, open, pipe, wait_pid};
-use super::jobs::{JobManager, JobStatus};
 
 /// 检查命令行是否包含管道
 pub fn has_pipe(line: &str) -> bool {
@@ -62,11 +60,6 @@ pub fn parse_command_with_redirection(line: &str) -> (String, Option<String>, Op
     (command, output_file, input_file)
 }
 
-/// 检查是否为 WASM 文件
-pub fn is_wasm_file(filename: &str) -> bool {
-    filename.ends_with(".wasm")
-}
-
 /// 检查文件是否存在（简化版本）
 pub fn file_exists(filename: &str) -> bool {
     let fd = open(filename, 0); // O_RDONLY
@@ -106,11 +99,7 @@ pub fn find_in_path(command: &str) -> Option<String> {
 }
 
 /// 执行带作业控制的命令
-pub fn execute_command_with_jobs(
-    line: &str,
-    background: bool,
-    job_manager: &mut JobManager,
-) {
+pub fn execute_command_with_jobs(line: &str, background: bool, job_manager: &mut JobManager) {
     let (command, output_file, input_file) = parse_command_with_redirection(line);
 
     if command.is_empty() {
@@ -124,41 +113,6 @@ pub fn execute_command_with_jobs(
     }
 
     let first_part = parts[0];
-
-    // 检查是否为直接执行 WASM 文件
-    if is_wasm_file(first_part) {
-        if file_exists(first_part) {
-            // 构造新的命令：wasm_runtime <wasm_file> [args...]
-            let mut wasm_command = String::from("/bin/wasm_runtime ");
-            wasm_command.push_str(&command);
-            execute_wasm_command_with_jobs(&wasm_command, output_file, input_file, background, job_manager);
-            return;
-        } else {
-            println!("shell: {}: No such file or directory", first_part);
-            return;
-        }
-    }
-
-    // 如果命令以 ./ 开头且是 .wasm 文件，也自动使用 wasm_runtime
-    if first_part.starts_with("./") && is_wasm_file(first_part) {
-        let wasm_file = &first_part[2..]; // 去掉 "./"
-        if file_exists(wasm_file) {
-            let mut wasm_command = String::from("/bin/wasm_runtime ");
-            wasm_command.push_str(wasm_file);
-
-            // 添加其他参数
-            for i in 1..parts.len() {
-                wasm_command.push(' ');
-                wasm_command.push_str(parts[i]);
-            }
-
-            execute_wasm_command_with_jobs(&wasm_command, output_file, input_file, background, job_manager);
-            return;
-        } else {
-            println!("shell: {}: No such file or directory", wasm_file);
-            return;
-        }
-    }
 
     // 使用PATH查找命令
     let executable_path = if let Some(path) = find_in_path(first_part) {
@@ -231,84 +185,6 @@ pub fn execute_command_with_jobs(
     } else if pid > 0 {
         // 父进程：添加作业
         let job_id = job_manager.add_job(pid, String::from(line), background);
-
-        if background {
-            println!("[{}] {}", job_id, pid);
-        }
-    } else {
-        println!("shell: failed to fork");
-    }
-}
-
-/// 执行带作业控制的WASM命令
-pub fn execute_wasm_command_with_jobs(
-    wasm_command: &str,
-    output_file: Option<String>,
-    input_file: Option<String>,
-    background: bool,
-    job_manager: &mut JobManager,
-) {
-    // 解析命令和参数
-    let parts: Vec<&str> = wasm_command.split_whitespace().collect();
-    if parts.is_empty() {
-        return;
-    }
-
-    let program = parts[0]; // "wasm_runtime"
-    let args: Vec<&str> = parts.iter().map(|&s| s).collect();
-
-    let pid = fork();
-    if pid == 0 {
-        // 子进程：设置重定向并执行 WASM 运行时
-
-        // 设置输入重定向
-        if let Some(input_filename) = input_file {
-            let mut input_filename_with_null = input_filename;
-            input_filename_with_null.push('\0');
-            let input_fd = open(input_filename_with_null.as_str(), 0);
-            if input_fd < 0 {
-                println!(
-                    "shell: {}: No such file or directory",
-                    input_filename_with_null.trim_end_matches('\0')
-                );
-                return;
-            }
-            if dup2(input_fd as usize, 0) < 0 {
-                println!("shell: failed to redirect input");
-                close(input_fd as usize);
-                return;
-            }
-            close(input_fd as usize);
-        }
-
-        // 设置输出重定向
-        if let Some(output_filename) = output_file {
-            let mut output_filename_with_null = output_filename;
-            output_filename_with_null.push('\0');
-            let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
-            if output_fd < 0 {
-                println!(
-                    "shell: failed to create output file: {}",
-                    output_filename_with_null.trim_end_matches('\0')
-                );
-                return;
-            }
-            if dup2(output_fd as usize, 1) < 0 {
-                println!("shell: failed to redirect output");
-                close(output_fd as usize);
-                return;
-            }
-            close(output_fd as usize);
-        }
-
-        // 执行 WASM 运行时 - 使用 execve 来传递参数
-        let empty_env: Vec<&str> = vec![];
-        if execve(program, &args, &empty_env) == -1 {
-            println!("wasm_runtime not found - please ensure wasm_runtime is in the filesystem");
-        }
-    } else if pid > 0 {
-        // 父进程：添加作业
-        let job_id = job_manager.add_job(pid, String::from(wasm_command), background);
 
         if background {
             println!("[{}] {}", job_id, pid);
