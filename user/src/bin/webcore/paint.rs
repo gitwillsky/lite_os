@@ -20,8 +20,14 @@ fn paint_block(lb: &LayoutBox) {
         let color = lb.style.color.0;
         let font_px = lb.style.font_size_px as u32;
         let baseline_y = lb.rect.y + (font_px as i32);
-        let _ = gfx::draw_text(lb.rect.x, baseline_y, text, font_px, color);
+        let ok = gfx::draw_text(lb.rect.x, baseline_y, text, font_px, color);
+        if !ok {
+            // TTF 失败时回退到内置位图字体（ASCII 可见）
+            let scale = core::cmp::max(1u32, font_px / 8);
+            gfx::draw_string_scaled(lb.rect.x, lb.rect.y, text, color, scale);
+        }
     }
+    for c in &lb.children { paint_block(c); }
 }
 
 fn is_dark(c: u32) -> bool {

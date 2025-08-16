@@ -43,11 +43,53 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
         let x = margin[3] + padding[3];
         let y = cur_y + margin[0] + padding[0];
         let rect = Rect { x, y, w, h };
-        let lb = if child.node.tag.is_empty() {
+        let mut lb = if child.node.tag.is_empty() {
             LayoutBox { rect, style: child.style.clone(), children: Vec::new(), text: child.node.text.clone() }
         } else {
             LayoutBox { rect, style: child.style.clone(), children: Vec::new(), text: None }
         };
+        // 递归铺排：将元素的子节点（文本与子元素）转换为子 LayoutBox
+        if !child.node.tag.is_empty() {
+            let mut inner_y = y + padding[0];
+            let inner_w = (w - padding[1] - padding[3]).max(0);
+            for gc in child.children.iter_mut() {
+                let gm = gc.style.margin; let gp = gc.style.padding;
+                let avail_w2 = inner_w - gm[1] - gm[3] - gp[1] - gp[3];
+                let gw = gc.style.width.unwrap_or(avail_w2.max(0));
+                let mut gh = gc.style.height.unwrap_or(0);
+                if gh == 0 {
+                    if gc.node.tag.is_empty() {
+                        let line_h = (gc.style.font_size_px as i32).max(16);
+                        gh = line_h + gp[0] + gp[2];
+                    } else {
+                        gh = 24 + gp[0] + gp[2];
+                    }
+                }
+                let gx = lb.rect.x + gm[3] + gp[3];
+                let gy = inner_y + gm[0] + gp[0];
+                let grec = Rect { x: gx, y: gy, w: gw, h: gh };
+                let mut glb = if gc.node.tag.is_empty() {
+                    LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: gc.node.text.clone() }
+                } else {
+                    LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: None }
+                };
+                // 子元素的直接文本
+                if !gc.node.tag.is_empty() {
+                    let mut text_y = gy + gp[0];
+                    for tc in gc.children.iter_mut() {
+                        if tc.node.tag.is_empty() {
+                            let th = (tc.style.font_size_px as i32).max(16);
+                            let trec = Rect { x: gx, y: text_y, w: gw, h: th };
+                            let tlb = LayoutBox { rect: trec, style: tc.style.clone(), children: Vec::new(), text: tc.node.text.clone() };
+                            text_y += th;
+                            glb.children.push(tlb);
+                        }
+                    }
+                }
+                inner_y = gy + gh + gp[2] + gm[2];
+                lb.children.push(glb);
+            }
+        }
         cur_y = y + h + padding[2] + margin[2];
         container.children.push(lb);
     }
