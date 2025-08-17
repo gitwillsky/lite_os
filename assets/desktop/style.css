@@ -1,3 +1,32 @@
-body { background: #202225; color: #dcdfe4; }
-#splash { background: #00309C; }
+/* 全局 */
+body { margin: 0; background: #DCDCDC; color: #111; font-size: 14px; }
+
+/* 启动画面容器：填满屏幕，竖直布局 */
+#splash {
+  position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: stretch;
+  background: #F2F2F2; /* Windows 2000 白灰背景 */
+}
+
+.top-spacer { height: 48px; }
+
+.content { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+/* 标志区域：图像在视觉上约 512px 宽，自适应上限 */
+.hero { width: 100%; display: flex; justify-content: center; }
+#logo { width: 512px; max-width: calc(100% - 120px); height: auto; image-rendering: auto; }
+
+.caption { font-size: 18px; color: #000; letter-spacing: 0.5px; }
+
+.bottom { display: flex; flex-direction: column; gap: 8px; padding: 0 24px 24px; }
+
+/* 进度条外观 */
+.progress-wrap {
+  height: 20px; max-width: 520px; width: 80%; margin: 0 auto; box-sizing: border-box;
+  border: 1px solid #9AA9C7; background: #1E3C7E; padding: 2px;
+}
+#bar { height: 100%; width: 45%; background: #99CCFF; }
+
+.footline { display: flex; justify-content: space-between; align-items: center; max-width: 800px; width: 90%; margin: 0 auto; color: #000; }
+.copy { color: #333; }
 

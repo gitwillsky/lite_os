@@ -5,9 +5,9 @@ pub mod css;
 pub mod style;
 pub mod layout;
 pub mod paint;
+pub mod loader;
+pub mod document;
 
-pub use html::DomNode;
-pub use css::{StyleSheet, ComputedStyle, Color};
-pub use layout::LayoutBox;
+// Re-exports 暂时移除，模块由上层按需引入，降低耦合
 
 

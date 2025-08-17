@@ -46,7 +46,7 @@ run: build-kernel
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
-run-gui: build-kernel build-user
+run-gui: build-kernel build-user create-fs
 	qemu-system-riscv64 \
 	-machine virt \
 	-smp 8 \
