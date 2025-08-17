@@ -1,4 +1,4 @@
-use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, vec};
+use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, vec, format};
 use core::{fmt, cmp::Ordering};
 
 //==============================================================================
@@ -54,6 +54,63 @@ pub trait Element {
     fn classes(&self) -> &[String];
     fn parent(&self) -> Option<&dyn Element>;
     fn index(&self) -> usize;
+
+    // 扩展：属性访问
+    fn get_attribute(&self, name: &str) -> Option<&str>;
+    fn has_attribute(&self, name: &str) -> bool;
+    fn attributes(&self) -> &[(String, String)];
+
+    // 扩展：兄弟元素访问
+    fn previous_sibling(&self) -> Option<&dyn Element>;
+    fn next_sibling(&self) -> Option<&dyn Element>;
+    fn first_child(&self) -> Option<&dyn Element>;
+    fn last_child(&self) -> Option<&dyn Element>;
+    fn children(&self) -> Vec<&dyn Element>;
+
+    // 扩展：状态访问（伪类支持）
+    fn is_hover(&self) -> bool { false }
+    fn is_active(&self) -> bool { false }
+    fn is_focus(&self) -> bool { false }
+    fn is_visited(&self) -> bool { false }
+    fn is_link(&self) -> bool { false }
+    fn is_checked(&self) -> bool { false }
+    fn is_disabled(&self) -> bool { false }
+    fn is_enabled(&self) -> bool { !self.is_disabled() }
+    fn is_first_child(&self) -> bool {
+        if let Some(_parent) = self.parent() {
+            // 简化实现：使用索引比较而不是指针比较
+            self.index() == 0
+        } else {
+            true // 根元素是第一个子元素
+        }
+    }
+    fn is_last_child(&self) -> bool {
+        if let Some(_parent) = self.parent() {
+            let siblings = _parent.children();
+            if !siblings.is_empty() {
+                self.index() == siblings.len() - 1
+            } else {
+                true
+            }
+        } else {
+            true // 根元素是最后一个子元素
+        }
+    }
+    fn is_only_child(&self) -> bool {
+        if let Some(parent) = self.parent() {
+            parent.children().len() == 1
+        } else {
+            true
+        }
+    }
+    fn is_nth_child(&self, n: usize) -> bool {
+        if let Some(_parent) = self.parent() {
+            // 使用索引比较（从1开始计数）
+            self.index() + 1 == n
+        } else {
+            n == 1
+        }
+    }
 }
 
 //==============================================================================
@@ -506,8 +563,102 @@ pub enum Cursor {
     ZoomOut,
 }
 
+//==============================================================================
+// Flexbox数据类型 (Flexbox Data Types)
+//==============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FlexDirection {
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FlexWrap {
+    NoWrap,
+    Wrap,
+    WrapReverse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum JustifyContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlignItems {
+    FlexStart,
+    FlexEnd,
+    Center,
+    Baseline,
+    Stretch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlignContent {
+    FlexStart,
+    FlexEnd,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+    Stretch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AlignSelf {
+    Auto,
+    FlexStart,
+    FlexEnd,
+    Center,
+    Baseline,
+    Stretch,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FlexBasis {
+    Auto,
+    Content,
+    Length(Length),
+}
+
 impl Default for Cursor {
     fn default() -> Self { Cursor::Auto }
+}
+
+impl Default for FlexDirection {
+    fn default() -> Self { FlexDirection::Row }
+}
+
+impl Default for FlexWrap {
+    fn default() -> Self { FlexWrap::NoWrap }
+}
+
+impl Default for JustifyContent {
+    fn default() -> Self { JustifyContent::FlexStart }
+}
+
+impl Default for AlignItems {
+    fn default() -> Self { AlignItems::Stretch }
+}
+
+impl Default for AlignContent {
+    fn default() -> Self { AlignContent::Stretch }
+}
+
+impl Default for AlignSelf {
+    fn default() -> Self { AlignSelf::Auto }
+}
+
+impl Default for FlexBasis {
+    fn default() -> Self { FlexBasis::Auto }
 }
 
 //==============================================================================
@@ -616,6 +767,12 @@ pub enum PseudoClass {
     Root,
     Empty,
     Lang(String),
+    // 表单相关伪类
+    Checked,
+    Disabled,
+    Enabled,
+    // 简化的选择器否定
+    Not(Box<SimpleSelector>),
 }
 
 /// 伪元素
@@ -845,6 +1002,23 @@ pub struct ComputedStyle {
     pub list_style_position: ListStylePosition,
     pub list_style_image: Option<String>,
 
+    // Flexbox容器属性
+    pub flex_direction: FlexDirection,
+    pub flex_wrap: FlexWrap,
+    pub justify_content: JustifyContent,
+    pub align_items: AlignItems,
+    pub align_content: AlignContent,
+    pub gap: Length,
+    pub row_gap: Length,
+    pub column_gap: Length,
+
+    // Flexbox项目属性
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: FlexBasis,
+    pub align_self: AlignSelf,
+    pub order: i32,
+
     // 其他
     pub box_sizing: BoxSizing,
     pub cursor: Cursor,
@@ -919,6 +1093,24 @@ impl Default for ComputedStyle {
             list_style_type: ListStyleType::default(),
             list_style_position: ListStylePosition::default(),
             list_style_image: None,
+
+            // Flexbox容器属性默认值
+            flex_direction: FlexDirection::default(),
+            flex_wrap: FlexWrap::default(),
+            justify_content: JustifyContent::default(),
+            align_items: AlignItems::default(),
+            align_content: AlignContent::default(),
+            gap: Length::Px(0.0),
+            row_gap: Length::Px(0.0),
+            column_gap: Length::Px(0.0),
+
+            // Flexbox项目属性默认值
+            flex_grow: 0.0,
+            flex_shrink: 1.0,
+            flex_basis: FlexBasis::default(),
+            align_self: AlignSelf::default(),
+            order: 0,
+
             box_sizing: BoxSizing::default(),
             cursor: Cursor::default(),
             outline_width: Length::default(),
@@ -2087,5 +2279,487 @@ fn parse_font_weight_value(value: &str) -> FontWeight {
         "bolder" => FontWeight::Bolder,
         "lighter" => FontWeight::Lighter,
         _ => FontWeight::Normal,
+    }
+}
+
+//==============================================================================
+// 接口的具体实现增强 (Enhanced Interface Implementations)
+//==============================================================================
+
+// 为现有的StandardSelectorMatcher扩展功能
+impl StandardSelectorMatcher {
+    /// 增强的选择器匹配，支持复杂选择器
+    pub fn matches_enhanced(&self, selector: &Selector, element: &dyn Element) -> bool {
+        self.matches_complex_enhanced(&selector.complex, element)
+    }
+
+    fn matches_complex_enhanced(&self, complex: &ComplexSelector, element: &dyn Element) -> bool {
+        // 检查基础选择器
+        if !self.matches_simple_enhanced(&complex.simple, element) {
+            return false;
+        }
+
+        // 检查组合符
+        if let Some(ref next_complex) = complex.next {
+            if let Some(ref combinator) = complex.combinator {
+                return self.matches_combinator_enhanced(combinator, next_complex, element);
+            }
+        }
+
+        true
+    }
+
+    fn matches_simple_enhanced(&self, simple: &SimpleSelector, element: &dyn Element) -> bool {
+        // 元素名匹配
+        if let Some(ref element_name) = simple.element_name {
+            if let Some(tag) = element.tag_name() {
+                if tag != element_name {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        // ID匹配
+        if let Some(ref id) = simple.id {
+            if let Some(element_id) = element.id() {
+                if element_id != id {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        // 类匹配
+        for class in &simple.classes {
+            if !element.classes().iter().any(|c| c == class) {
+                return false;
+            }
+        }
+
+        // 属性选择器匹配
+        for attribute in &simple.attributes {
+            if !self.matches_attribute(attribute, element) {
+                return false;
+            }
+        }
+
+        // 伪类匹配
+        for pseudo_class in &simple.pseudo_classes {
+            if !self.matches_pseudo_class(pseudo_class, element) {
+                return false;
+            }
+        }
+
+        // 伪元素暂时不支持，需要在渲染时处理
+        // 如果有伪元素选择器，当前简化为匹配父元素
+        if !simple.pseudo_elements.is_empty() {
+            // 简化：伪元素选择器总是匹配（在实际浏览器中需要特殊处理）
+            println!("[CSS] Pseudo-element selectors detected, simplified matching");
+        }
+
+        true
+    }
+
+    fn matches_attribute(&self, attribute: &AttributeSelector, element: &dyn Element) -> bool {
+        match attribute.operator {
+            AttributeOperator::Equals => {
+                // [attr=value]
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    attr_value == attribute.value.as_deref().unwrap_or("")
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::Contains => {
+                // [attr~=value] - 属性值包含指定词
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    if let Some(target) = &attribute.value {
+                        attr_value.split_whitespace().any(|word| word == target)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::DashMatch => {
+                // [attr|=value] - 属性值等于value或以value-开头
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    if let Some(target) = &attribute.value {
+                        attr_value == target || attr_value.starts_with(&format!("{}-", target))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::PrefixMatch => {
+                // [attr^=value] - 属性值以value开头
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    if let Some(target) = &attribute.value {
+                        attr_value.starts_with(target)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::SuffixMatch => {
+                // [attr$=value] - 属性值以value结尾
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    if let Some(target) = &attribute.value {
+                        attr_value.ends_with(target)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::SubstringMatch => {
+                // [attr*=value] - 属性值包含value
+                if let Some(attr_value) = element.get_attribute(&attribute.name) {
+                    if let Some(target) = &attribute.value {
+                        attr_value.contains(target)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            },
+            AttributeOperator::Exists => {
+                // [attr] - 仅检查属性是否存在
+                element.has_attribute(&attribute.name)
+            },
+        }
+    }
+
+    /// 匹配伪类选择器
+    fn matches_pseudo_class(&self, pseudo_class: &PseudoClass, element: &dyn Element) -> bool {
+        match pseudo_class {
+            PseudoClass::Hover => element.is_hover(),
+            PseudoClass::Active => element.is_active(),
+            PseudoClass::Focus => element.is_focus(),
+            PseudoClass::Visited => element.is_visited(),
+            PseudoClass::Link => element.is_link(),
+            PseudoClass::Checked => element.is_checked(),
+            PseudoClass::Disabled => element.is_disabled(),
+            PseudoClass::Enabled => element.is_enabled(),
+            PseudoClass::FirstChild => element.is_first_child(),
+            PseudoClass::LastChild => element.is_last_child(),
+            PseudoClass::OnlyChild => element.is_only_child(),
+            PseudoClass::FirstOfType => self.is_first_of_type(element),
+            PseudoClass::LastOfType => self.is_last_of_type(element),
+            PseudoClass::OnlyOfType => self.is_only_of_type(element),
+            PseudoClass::Empty => self.is_empty(element),
+            PseudoClass::Root => element.parent().is_none(),
+            PseudoClass::NthChild(_a, b) => element.is_nth_child(*b as usize), // 简化：只使用b值
+            PseudoClass::NthLastChild(_a, b) => {
+                // 简化实现：从最后开始的第n个子元素
+                if let Some(parent) = element.parent() {
+                    let siblings = parent.children();
+                    let from_end = siblings.len() - element.index();
+                    from_end == *b as usize
+                } else {
+                    *b == 1
+                }
+            },
+            PseudoClass::NthOfType(_a, b) => self.is_nth_of_type(element, *b as usize), // 简化：只使用b值
+            PseudoClass::NthLastOfType(_a, b) => {
+                // 简化实现：从最后开始的第n个同类型元素
+                self.is_nth_last_of_type(element, *b as usize)
+            },
+            PseudoClass::Lang(lang) => {
+                // 简化实现：检查lang属性
+                element.get_attribute("lang").map_or(false, |l| l == lang)
+            },
+            PseudoClass::Not(simple_selector) => !self.matches_simple(simple_selector, element),
+        }
+    }
+
+    /// 检查是否是第一个同类型元素
+    fn is_first_of_type(&self, element: &dyn Element) -> bool {
+        if let Some(parent) = element.parent() {
+            let tag_name = element.tag_name();
+            let element_index = element.index();
+            for (i, child) in parent.children().iter().enumerate() {
+                if child.tag_name() == tag_name {
+                    return i == element_index;
+                }
+            }
+        }
+        true
+    }
+
+    /// 检查是否是最后一个同类型元素
+    fn is_last_of_type(&self, element: &dyn Element) -> bool {
+        if let Some(parent) = element.parent() {
+            let tag_name = element.tag_name();
+            let element_index = element.index();
+            for (i, child) in parent.children().iter().enumerate().rev() {
+                if child.tag_name() == tag_name {
+                    return i == element_index;
+                }
+            }
+        }
+        true
+    }
+
+    /// 检查是否是唯一的同类型元素
+    fn is_only_of_type(&self, element: &dyn Element) -> bool {
+        if let Some(parent) = element.parent() {
+            let tag_name = element.tag_name();
+            let count = parent.children().iter()
+                .filter(|child| child.tag_name() == tag_name)
+                .count();
+            count == 1
+        } else {
+            true
+        }
+    }
+
+    /// 检查是否是第n个同类型元素
+    fn is_nth_of_type(&self, element: &dyn Element, n: usize) -> bool {
+        if let Some(parent) = element.parent() {
+            let tag_name = element.tag_name();
+            let element_index = element.index();
+            let mut count = 0;
+            for (i, child) in parent.children().iter().enumerate() {
+                if child.tag_name() == tag_name {
+                    count += 1;
+                    if count == n {
+                        return i == element_index;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 检查元素是否为空
+    fn is_empty(&self, element: &dyn Element) -> bool {
+        element.children().is_empty()
+    }
+
+    /// 检查是否是从最后开始的第n个同类型元素
+    fn is_nth_last_of_type(&self, element: &dyn Element, n: usize) -> bool {
+        if let Some(parent) = element.parent() {
+            let tag_name = element.tag_name();
+            let element_index = element.index();
+            let mut count = 0;
+            for (i, child) in parent.children().iter().enumerate().rev() {
+                if child.tag_name() == tag_name {
+                    count += 1;
+                    if count == n {
+                        return i == element_index;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// 匹配简单选择器（为:not()伪类提供支持）
+    fn matches_simple(&self, simple: &SimpleSelector, element: &dyn Element) -> bool {
+        self.matches_simple_enhanced(simple, element)
+    }
+
+    fn matches_combinator_enhanced(&self, combinator: &Combinator, next: &ComplexSelector, element: &dyn Element) -> bool {
+        match combinator {
+            Combinator::Descendant => {
+                // 后代选择器
+                let mut current = element.parent();
+                while let Some(parent) = current {
+                    if self.matches_complex_enhanced(next, parent) {
+                        return true;
+                    }
+                    current = parent.parent();
+                }
+                false
+            },
+            Combinator::Child => {
+                // 直接子选择器
+                if let Some(parent) = element.parent() {
+                    self.matches_complex_enhanced(next, parent)
+                } else {
+                    false
+                }
+            },
+            _ => false, // 其他组合符需要更多DOM支持
+        }
+    }
+
+    /// 增强的特异性计算
+    pub fn calculate_specificity_enhanced(&self, complex: &ComplexSelector) -> Specificity {
+        let mut specificity = self.simple_specificity_enhanced(&complex.simple);
+
+        if let Some(ref next) = complex.next {
+            let next_spec = self.calculate_specificity_enhanced(next);
+            specificity.a += next_spec.a;
+            specificity.b += next_spec.b;
+            specificity.c += next_spec.c;
+            specificity.d += next_spec.d;
+        }
+
+        specificity
+    }
+
+    fn simple_specificity_enhanced(&self, simple: &SimpleSelector) -> Specificity {
+        let mut spec = Specificity { a: 0, b: 0, c: 0, d: 0 };
+
+        // ID选择器
+        if simple.id.is_some() {
+            spec.b += 1;
+        }
+
+        // 类选择器、属性选择器、伪类
+        spec.c += simple.classes.len() as u32;
+        spec.c += simple.attributes.len() as u32;
+        spec.c += simple.pseudo_classes.len() as u32;
+
+        // 元素选择器和伪元素
+        if simple.element_name.is_some() {
+            spec.d += 1;
+        }
+        spec.d += simple.pseudo_elements.len() as u32;
+
+        spec
+    }
+}
+
+// 为现有的StandardCascadeCalculator扩展CSS继承功能
+impl StandardCascadeCalculator {
+    /// 检查属性是否可继承
+    pub fn is_inherited_property(property: &str) -> bool {
+        match property {
+            // 字体相关属性
+            "color" | "font-family" | "font-size" | "font-style" |
+            "font-weight" | "line-height" | "text-align" |
+            "text-indent" | "text-transform" | "letter-spacing" |
+            "word-spacing" | "text-decoration" => true,
+
+            // 列表相关属性
+            "list-style-type" | "list-style-position" | "list-style-image" => true,
+
+            // 表格相关属性
+            "border-collapse" | "border-spacing" | "caption-side" |
+            "empty-cells" | "table-layout" => true,
+
+            // 其他继承属性
+            "visibility" | "cursor" => true,
+
+            // 大多数属性不继承
+            _ => false,
+        }
+    }
+
+    /// 应用CSS继承
+    pub fn apply_inheritance(&self, computed: &mut ComputedStyle, parent_style: Option<&ComputedStyle>) {
+        if let Some(parent) = parent_style {
+            // 应用可继承的属性
+            computed.color = parent.color;
+            computed.font_family = parent.font_family.clone();
+            computed.font_size = parent.font_size;
+            computed.font_style = parent.font_style;
+            computed.font_weight = parent.font_weight;
+            computed.line_height = parent.line_height;
+            computed.text_align = parent.text_align;
+            computed.text_decoration = parent.text_decoration;
+            computed.text_transform = parent.text_transform;
+            computed.letter_spacing = parent.letter_spacing;
+            computed.word_spacing = parent.word_spacing;
+            computed.visibility = parent.visibility;
+            computed.cursor = parent.cursor;
+
+            // 列表样式继承
+            computed.list_style_type = parent.list_style_type;
+            computed.list_style_position = parent.list_style_position;
+            computed.list_style_image = parent.list_style_image.clone();
+
+            // 表格样式继承
+            computed.border_collapse = parent.border_collapse;
+            computed.border_spacing = parent.border_spacing;
+            computed.caption_side = parent.caption_side;
+            computed.empty_cells = parent.empty_cells;
+            computed.table_layout = parent.table_layout;
+        }
+    }
+}
+
+//==============================================================================
+// CSS值解析器扩展 (Extended CSS Value Parsers)
+//==============================================================================
+
+/// 扩展CSS值解析功能
+pub fn parse_css_value_extended(property: &str, value: &str) -> Result<CSSValue, ParseError> {
+    let trimmed = value.trim();
+
+    // 根据属性类型进行特定解析
+    match property {
+        "color" | "background-color" | "border-color" |
+        "border-top-color" | "border-right-color" |
+        "border-bottom-color" | "border-left-color" => {
+            if let Some(color) = parse_color(trimmed) {
+                Ok(CSSValue::Color(color))
+            } else {
+                parse_css_value(value)
+            }
+        },
+
+        "font-size" | "line-height" | "margin" | "margin-top" |
+        "margin-right" | "margin-bottom" | "margin-left" |
+        "padding" | "padding-top" | "padding-right" |
+        "padding-bottom" | "padding-left" | "width" | "height" |
+        "border-width" | "border-top-width" | "border-right-width" |
+        "border-bottom-width" | "border-left-width" => {
+            if let Some(length) = parse_length(trimmed) {
+                Ok(CSSValue::Length(length))
+            } else {
+                parse_css_value(value)
+            }
+        },
+
+        "display" => {
+            Ok(CSSValue::Keyword(trimmed.to_string()))
+        },
+
+        _ => parse_css_value(value)
+    }
+}
+
+//==============================================================================
+// 布局相关的辅助函数 (Layout Helper Functions)
+//==============================================================================
+
+/// 计算百分比值
+pub fn resolve_percentage(percentage: f32, base_value: f32) -> f32 {
+    (percentage / 100.0) * base_value
+}
+
+/// 计算em值到px
+pub fn em_to_px(em_value: f32, font_size: f32) -> f32 {
+    em_value * font_size
+}
+
+/// 计算ex值到px
+pub fn ex_to_px(ex_value: f32, font_size: f32) -> f32 {
+    ex_value * font_size * 0.5 // ex大约是字体高度的一半
+}
+
+/// 物理单位转换为像素
+pub fn physical_to_px(value: f32, unit: &str) -> f32 {
+    match unit {
+        "in" => value * 96.0,  // 1 inch = 96px (96 DPI)
+        "cm" => value * 37.8,  // 1 cm = 37.8px
+        "mm" => value * 3.78,  // 1 mm = 3.78px
+        "pt" => value * 1.33,  // 1 point = 1.33px
+        "pc" => value * 16.0,  // 1 pica = 16px
+        _ => value, // 默认返回原值
     }
 }

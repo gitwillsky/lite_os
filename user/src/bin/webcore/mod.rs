@@ -5,4 +5,5 @@ pub mod layout;
 pub mod paint;
 pub mod loader;
 pub mod document;
+pub mod image;
 

@@ -34,6 +34,45 @@ impl Element for DomNode {
     fn index(&self) -> usize {
         0 // 简化实现
     }
+
+    // 扩展的Element接口实现
+    fn get_attribute(&self, name: &str) -> Option<&str> {
+        // 搜索attributes向量中的指定属性
+        for (attr_name, attr_value) in &self.attributes {
+            if attr_name == name {
+                return Some(attr_value);
+            }
+        }
+        None
+    }
+
+    fn has_attribute(&self, name: &str) -> bool {
+        self.attributes.iter().any(|(attr_name, _)| attr_name == name)
+    }
+
+    fn attributes(&self) -> &[(String, String)] {
+        &self.attributes
+    }
+
+    fn previous_sibling(&self) -> Option<&dyn Element> {
+        None // 简化：需要实际的兄弟元素指针
+    }
+
+    fn next_sibling(&self) -> Option<&dyn Element> {
+        None // 简化：需要实际的兄弟元素指针
+    }
+
+    fn first_child(&self) -> Option<&dyn Element> {
+        self.children.first().map(|child| child as &dyn Element)
+    }
+
+    fn last_child(&self) -> Option<&dyn Element> {
+        self.children.last().map(|child| child as &dyn Element)
+    }
+
+    fn children(&self) -> Vec<&dyn Element> {
+        self.children.iter().map(|child| child as &dyn Element).collect()
+    }
 }
 
 /// 计算样式树
