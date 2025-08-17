@@ -1,11 +1,11 @@
 /* 全局 */
-body { margin: 0; background: #DCDCDC; color: #111; font-size: 14px; }
+body { margin: 0; background: #00309C; color: #111; font-size: 14px; }
 
 /* 启动画面容器：填满屏幕，竖直布局 */
 #splash {
   position: absolute; left: 0; top: 0; right: 0; bottom: 0;
   display: flex; flex-direction: column; justify-content: space-between; align-items: stretch;
-  background: #F2F2F2; /* Windows 2000 白灰背景 */
+  background: #00309C;
 }
 
 .top-spacer { height: 48px; }

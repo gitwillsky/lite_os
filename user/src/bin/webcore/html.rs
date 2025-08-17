@@ -45,6 +45,20 @@ pub fn parse_document(input: &str) -> DomNode {
         // 标签
         *i += 1; // '<'
         if *i < b.len() && b[*i] == b'/' { return None; } // 遇到结束标签由上层处理
+        
+        // 处理注释 <!--
+        if *i + 2 < b.len() && b[*i] == b'!' && b[*i+1] == b'-' && b[*i+2] == b'-' {
+            *i += 3; // skip "!--"
+            // 找到结束的 "-->"
+            while *i + 2 < b.len() {
+                if b[*i] == b'-' && b[*i+1] == b'-' && b[*i+2] == b'>' {
+                    *i += 3;
+                    break;
+                }
+                *i += 1;
+            }
+            return None; // 忽略注释
+        }
         let tag = read_ident(b, i);
         let mut node = DomNode::elem(&tag);
         // 读属性（仅支持 id、class、style="..."）
@@ -95,8 +109,17 @@ pub fn parse_document(input: &str) -> DomNode {
         Some(node)
     }
 
-    let mut root = DomNode::elem("body");
-    while let Some(n) = parse_node(bytes, &mut i) { root.children.push(n); }
+    let mut root = DomNode::elem("html");
+    while let Some(n) = parse_node(bytes, &mut i) { 
+        // 如果解析到<body>标签，将其子元素提升到根级别
+        if n.tag == "body" {
+            for child in n.children {
+                root.children.push(child);
+            }
+        } else {
+            root.children.push(n);
+        }
+    }
     root
 }
 

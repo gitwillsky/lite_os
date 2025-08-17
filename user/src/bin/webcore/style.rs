@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use super::html::DomNode;
 use super::css::{StyleSheet, ComputedStyle, Color, Display, FlexDirection, JustifyContent, AlignItems, Selector, Combinator, parse_color, parse_px, parse_display, parse_flex_direction, parse_justify_content, parse_align_items, parse_border_width, parse_flex_wrap, parse_box4, parse_border_shorthand, parse_bool_visible_hidden};
@@ -163,6 +164,24 @@ pub fn build_style_tree<'a>(node: &'a DomNode, sheet: &StyleSheet, parent: Optio
     if let Some(inline) = node.inline_style.as_ref() { apply_inline_style(&mut style, inline); }
     let mut children = Vec::new();
     for c in &node.children { children.push(build_style_tree(c, sheet, Some(&style))); }
+    // 日志：根与关键节点
+    if parent.is_none() {
+        println!("[webcore::style] root computed: bg={:#x} font={} display={:?}", style.background_color.0, style.font_size_px, style.display);
+    }
+    // 日志：splash 元素
+    if node.id.as_ref().map(|s| s == "splash").unwrap_or(false) {
+        println!("[webcore::style] #splash computed: bg={:#x} position_absolute={} left={:?} top={:?} right={:?} bottom={:?} display={:?}",
+            style.background_color.0, style.position_absolute, style.left, style.top, style.right, style.bottom, style.display);
+    }
+    // 日志：关键子元素
+    if node.class_list.contains(&"progress-wrap".to_string()) {
+        println!("[webcore::style] .progress-wrap computed: bg={:#x} width={:?} height={:?}",
+            style.background_color.0, style.width, style.height);
+    }
+    if node.id.as_ref().map(|s| s == "bar").unwrap_or(false) {
+        println!("[webcore::style] #bar computed: bg={:#x} width={:?} height={:?}",
+            style.background_color.0, style.width, style.height);
+    }
     StyledNode { node, style, children }
 }
 

@@ -34,16 +34,22 @@ fn main() -> i32 {
     }
 
     // 准备页面（HTML + CSS 外链加载与合并）
+    println!("[webwm] About to call load_and_prepare...");
     let page = document::load_and_prepare(
         "/usr/share/desktop/index.html",
         b"<body><div style='background:#00309C;position:absolute;left:0;top:0;right:0;bottom:0'></div></body>"
     );
+    println!("[webwm] load_and_prepare completed");
 
     // 应用样式并布局
+    println!("[webwm] About to layout...");
     let (sw, sh) = gfx::screen_size();
     let layout_root = page.layout(sw as i32, sh as i32);
+    println!("[webwm] About to paint...");
     webcore::paint::paint_tree(&layout_root);
+    println!("[webwm] About to flush...");
     gfx::gui_flush();
+    println!("[webwm] GUI flushed");
 
     // 简单事件循环：保持运行并消费输入事件
     let input0 = user_lib::open("/dev/input/event0", open_flags::O_RDONLY) as i32;

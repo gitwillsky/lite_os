@@ -3,27 +3,27 @@ use alloc::{string::{String, ToString}, vec::Vec};
 #[derive(Clone, Copy, Default)]
 pub struct Color(pub u32); // 0xAARRGGBB
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Display { Block, Flex }
 
 impl Default for Display { fn default() -> Self { Display::Block } }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FlexDirection { Row, Column }
 
 impl Default for FlexDirection { fn default() -> Self { FlexDirection::Row } }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JustifyContent { Start, Center, End, SpaceBetween }
 
 impl Default for JustifyContent { fn default() -> Self { JustifyContent::Start } }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AlignItems { Start, Center, End }
 
 impl Default for AlignItems { fn default() -> Self { AlignItems::Start } }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FlexWrap { NoWrap, Wrap }
 
 impl Default for FlexWrap { fn default() -> Self { FlexWrap::NoWrap } }
@@ -229,6 +229,8 @@ fn parse_selector_list(bytes: &[u8], i: &mut usize) -> alloc::vec::Vec<Selector>
             // 循环直到遇到空白/'>',','或'{' break 在下一轮处理
             skip_ws(bytes, i);
             if *i < bytes.len() && (bytes[*i] == b',' || bytes[*i] == b'{' ) { break; }
+            // 防止无限循环：如果没有找到有效字符，强制退出
+            if *i < bytes.len() && !bytes[*i].is_ascii_alphanumeric() && bytes[*i] != b'>' && bytes[*i] != b'.' && bytes[*i] != b'#' { break; }
             // 若中间存在空白则视为后代组合符
         }
         tmp.reverse();
@@ -247,14 +249,20 @@ pub fn parse_stylesheet(input: &str) -> StyleSheet {
     let mut i = 0usize;
     fn skip_ws(b: &[u8], i: &mut usize) { while *i < b.len() && (b[*i] == b' '||b[*i]==b'\n'||b[*i]==b'\t'||b[*i]==b'\r') { *i += 1; } }
     fn read_until(b: &[u8], i: &mut usize, delim: u8) -> String { let s=*i; while *i<b.len() && b[*i]!=delim { *i+=1; } let out=core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string(); if *i<b.len(){*i+=1;} out }
-    fn read_ident(b: &[u8], i: &mut usize) -> String { let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_'||b[*i]==b'.'||b[*i]==b'#') { *i+=1; } core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string() }
+    fn read_ident(b: &[u8], i: &mut usize) -> String { let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_') { *i+=1; } core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string() }
 
     while i < bytes.len() {
+        let old_i = i; // 防止无限循环
         skip_ws(bytes, &mut i);
         if i >= bytes.len() { break; }
         let selectors = parse_selector_list(bytes, &mut i);
         skip_ws(bytes, &mut i);
-        if i >= bytes.len() || bytes[i] != b'{' { break; }
+        if i >= bytes.len() || bytes[i] != b'{' { 
+            // 如果没有找到 '{', 跳过这一行避免无限循环
+            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            if i < bytes.len() { i += 1; }
+            continue;
+        }
         i += 1;
         let mut decls: Vec<(String, String)> = Vec::new();
         loop {
@@ -268,6 +276,11 @@ pub fn parse_stylesheet(input: &str) -> StyleSheet {
             decls.push((prop, val.trim().to_string()));
         }
         rules.push(Rule { selectors, declarations: decls });
+        
+        // 安全检查：确保索引有进展
+        if i <= old_i {
+            i = old_i + 1; // 强制进展，避免无限循环
+        }
     }
     StyleSheet { rules }
 }

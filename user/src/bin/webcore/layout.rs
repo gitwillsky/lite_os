@@ -59,13 +59,14 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
         };
         // 绝对定位：覆盖位置与尺寸（以视口为 containing block）
         // 兼容性增强：若缺少 position:absolute 但提供了 left/top/right/bottom 中任意项，也按绝对定位处理
-        if !child.node.tag.is_empty()
+        let is_absolute = !child.node.tag.is_empty()
             && (child.style.position_absolute
                 || child.style.left.is_some()
                 || child.style.top.is_some()
                 || child.style.right.is_some()
-                || child.style.bottom.is_some())
-        {
+                || child.style.bottom.is_some());
+        
+        if is_absolute {
             let left = child.style.left.unwrap_or(0);
             let top = child.style.top.unwrap_or(0);
             let right = child.style.right.unwrap_or(0);
@@ -74,6 +75,12 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
             let mut ah = child.style.height.unwrap_or(viewport_h - top - bottom);
             if aw < 0 { aw = 0; } if ah < 0 { ah = 0; }
             lb.rect = Rect { x: left, y: top, w: aw, h: ah };
+            
+            // 调试：绝对定位元素尺寸
+            if child.node.id.as_ref().map(|s| s == "splash").unwrap_or(false) {
+                println!("[webcore::layout] #splash absolute: x={} y={} w={} h={} (viewport={}x{})", 
+                    left, top, aw, ah, viewport_w, viewport_h);
+            }
         }
         // 递归铺排：块级布局 + 基础 flex 布局
         if !child.node.tag.is_empty() {
@@ -121,6 +128,12 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
                     let cross_base = if is_row { inner_y0 } else { inner_x };
                     let mut line_cross_size = 0i32; // 单行交叉尺寸
                     let mut first_in_line = true;
+                    
+                    // 调试：flex容器
+                    if child.node.id.as_ref().map(|s| s == "splash").unwrap_or(false) {
+                        println!("[webcore::layout] #splash flex: inner_x={} inner_y0={} inner_w={} children={}", 
+                            inner_x, inner_y0, inner_w, child.children.len());
+                    }
                     for gc in child.children.iter_mut() {
                         let gm = gc.style.margin; let gp = gc.style.padding;
                         let max_main = if is_row { inner_w } else { lb.rect.h - padding[0] - padding[2] } - gm[1] - gm[3] - gp[1] - gp[3];
@@ -142,7 +155,11 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
                         }
                         let (gx, gy, bw, bh) = if is_row { (main_pos + (if first_in_line { 0 } else { gap }) + gm[3] + gp[3], cross_base + gm[0] + gp[0], gw, gh) } else { (cross_base + gm[3] + gp[3], main_pos + (if first_in_line { 0 } else { gap }) + gm[0] + gp[0], gw, gh) };
                         let grec = Rect { x: gx, y: gy, w: bw, h: bh };
-                        let glb = if gc.node.tag.is_empty() { LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: gc.node.text.clone(), image_src: None } } else { LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: None, image_src: if gc.node.tag == "img" { gc.node.src.clone() } else { None } } };
+                        let mut glb = if gc.node.tag.is_empty() { LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: gc.node.text.clone(), image_src: None } } else { LayoutBox { rect: grec, style: gc.style.clone(), children: Vec::new(), text: None, image_src: if gc.node.tag == "img" { gc.node.src.clone() } else { None } } };
+                        // 递归处理子元素
+                        if !gc.node.tag.is_empty() && !gc.children.is_empty() {
+                            glb = layout_tree(gc, bw, bh);
+                        }
                         line_cross_size = line_cross_size.max(if is_row { bh } else { bw });
                         main_pos += (if is_row { bw } else { bh }) + if first_in_line { 0 } else { gap };
                         first_in_line = false;
@@ -160,7 +177,7 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
                 }
             }
         }
-        if !child.style.position_absolute {
+        if !is_absolute {
             cur_y = y + h + padding[2] + margin[2];
         }
         container.children.push(lb);
