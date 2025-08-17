@@ -349,10 +349,35 @@ impl MemorySet {
 
     /// 映射DMA内存到虚拟地址空间
     pub fn map_dma(&mut self, phys_addr: PhysicalAddress, size: usize) -> Result<VirtualAddress, MemoryError> {
-        // 在内核空间找一个合适的虚拟地址
-        // 简化实现：使用固定的DMA区域起点，并按 size 进行映射
-        let dma_base = VirtualAddress::from(0x90000000usize);
+        // 选择位于低半区、远离内核物理恒等映射 (physmap) 的基址，避免与其重叠
+        // 动态下界：max(4GiB, 物理内存末尾向上页对齐)
+        let phys_end = crate::board::board_info().mem.end;
+        let phys_end_aligned = (phys_end + config::PAGE_SIZE - 1) & !(config::PAGE_SIZE - 1);
+        let mut base_candidate: usize = core::cmp::max(0x1_0000_0000usize, phys_end_aligned);
         let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
+
+        // Sv39 低半区上界（不含），避免越界
+        let low_half_limit: usize = 1usize << config::VIRTUAL_ADDRESS_WIDTH; // 2^39
+
+        // 向上寻找一段连续未映射的虚拟区间
+        'search: loop {
+            // 越界保护：耗尽低半区虚拟地址空间
+            if base_candidate + page_count * config::PAGE_SIZE > low_half_limit {
+                return Err(MemoryError::OutOfMemory);
+            }
+            for i in 0..page_count {
+                let va = VirtualAddress::from(base_candidate + i * config::PAGE_SIZE);
+                if self.page_table.translate(va.floor()).is_some() {
+                    // 该候选区间中存在已映射页，跳到下一候选窗口
+                    base_candidate = base_candidate
+                        .saturating_add(page_count * config::PAGE_SIZE);
+                    continue 'search;
+                }
+            }
+            break; // 找到可用窗口
+        }
+
+        let dma_base = VirtualAddress::from(base_candidate);
 
         // 映射物理页面到虚拟地址
         for i in 0..page_count {

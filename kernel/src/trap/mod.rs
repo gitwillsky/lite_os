@@ -158,11 +158,14 @@ pub fn trap_handler() {
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
                     if let Some(current) = task::current_task() {
+                        let sepc_val = current.mm.trap_context().sepc;
+                        let sstatus_val = riscv::register::sstatus::read();
                         error!(
-                            "[kernel] {:?} in application, bad addr = {:#x}, bad instruction = {:#x}, core dumped.",
+                            "[kernel] {:?} in application, bad addr = {:#x}, sepc = {:#x}, sstatus = {:#x}, core dumped.",
                             scause_val,
                             stval,
-                            current.mm.trap_context().sepc,
+                            sepc_val,
+                            sstatus_val.bits(),
                         );
                     } else {
                         error!(
@@ -171,6 +174,7 @@ pub fn trap_handler() {
                             stval,
                         );
                     }
+                    exit_current_and_run_next(-5);
                 }
                 _ => {
                     panic!("Trap exception: {:?} Not implemented", exception);
