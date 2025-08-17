@@ -13,6 +13,11 @@ pub fn paint_layout_box(lb: &LayoutBox) {
         lb.rect.x, lb.rect.y, lb.rect.w, lb.rect.h, lb.style.background_color);
 
     paint_block(lb);
+    
+    // 绘制文本内容
+    if let Some(ref text) = lb.text {
+        paint_text(lb, text);
+    }
 
     for child in &lb.children {
         paint_layout_box(child);
@@ -76,5 +81,35 @@ fn paint_block(lb: &LayoutBox) {
             lb.rect.h as u32,
             border_color,
         );
+    }
+}
+
+fn paint_text(lb: &LayoutBox, text: &str) {
+    // 获取文本属性
+    let font_size = match lb.style.font_size {
+        super::css::Length::Px(size) => size as u32,
+        _ => 16, // 默认字体大小
+    };
+    
+    let text_color = lb.style.color.to_u32();
+    
+    // 计算文本位置（考虑垂直居中）
+    let text_x = lb.rect.x + 2; // 留一点左边距
+    let text_y = lb.rect.y + (lb.rect.h - font_size as i32) / 2; // 垂直居中
+    
+    // 确保文本在可视区域内
+    if text_x >= 0 && text_y >= 0 && text_x < 1280 && text_y < 800 {
+        println!("[paint] Drawing text '{}' at ({}, {}) size={} color={:#x}", 
+            text, text_x, text_y, font_size, text_color);
+        
+        // 调用gfx模块绘制文本
+        if !gfx::draw_text(text_x, text_y, text, font_size, text_color) {
+            println!("[paint] Text drawing failed, falling back to basic text");
+            // 如果TTF绘制失败，使用基础字体
+            let scale = if font_size >= 16 { font_size / 8 } else { 1 };
+            gfx::draw_string_scaled(text_x, text_y, text, text_color, scale);
+        }
+    } else {
+        println!("[paint] Text '{}' position out of bounds: ({}, {})", text, text_x, text_y);
     }
 }

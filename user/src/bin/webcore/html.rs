@@ -445,11 +445,6 @@ pub fn parse_document(input: &str) -> DomNode {
                 }
 
                 if let Some(child) = parse_element(chars, pos) {
-                    if child.tag.is_empty() && child.text.is_some() {
-                        println!("[webcore::html] Adding text node '{}' to '{}'", child.text.as_ref().unwrap(), tag_name);
-                    } else {
-                        println!("[webcore::html] Adding child element '{}' to '{}'", child.tag, tag_name);
-                    }
                     element.children.push(child);
                 } else {
                     // 如果无法解析子元素，检查是否有文本内容
@@ -461,7 +456,6 @@ pub fn parse_document(input: &str) -> DomNode {
                         let text = chars[start..*pos].iter().collect::<String>();
                         let text = text.trim();
                         if !text.is_empty() {
-                            println!("[webcore::html] Adding text '{}' to '{}'", text, tag_name);
                             let text_node = DomNode::text(text);
                             element.children.push(text_node);
                         }
