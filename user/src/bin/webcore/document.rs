@@ -28,7 +28,7 @@ pub fn load_and_prepare(html_path: &str, fallback_html: &[u8]) -> PreparedPage {
 	// 调试：递归打印DOM结构
 	fn print_dom(node: &html::DomNode, depth: usize) {
 		let indent = "  ".repeat(depth);
-		println!("[webcore::document] {}tag='{}' id={:?} classes={:?} children={}", 
+		println!("[webcore::document] {}tag='{}' id={:?} classes={:?} children={}",
 			indent, node.tag, node.id, node.class_list, node.children.len());
 		for child in &node.children {
 			print_dom(child, depth + 1);
@@ -43,8 +43,14 @@ pub fn load_and_prepare(html_path: &str, fallback_html: &[u8]) -> PreparedPage {
 		println!("[webcore::document] About to parse CSS, {} bytes", css_bytes.len());
 		let css_str = core::str::from_utf8(&css_bytes).unwrap_or("");
 		println!("[webcore::document] CSS string length: {}", css_str.len());
+
+		// 添加超时检测机制
+		println!("[webcore::document] Starting CSS parse...");
+
+		// 使用完整的CSS解析器
 		let extra = css::parse_stylesheet(css_str);
-		println!("[webcore::document] CSS parsed, {} rules", extra.rules.len());
+		println!("[webcore::document] CSS parse completed! {} rules", extra.rules.len());
+
 		let count = extra.rules.len();
 		let mut rules = extra.rules;
 		stylesheet.rules.append(&mut rules);

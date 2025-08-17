@@ -28,12 +28,28 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
     let mut container = LayoutBox { rect: Rect { x: 0, y: 0, w: viewport_w, h: viewport_h }, style: styled.style.clone(), children: Vec::new(), text: None, image_src: None };
     for child in styled.children.iter_mut() {
         // 文本节点：作为一个块绘制，后续可改为 inline 布局
-        let margin = child.style.margin; let padding = child.style.padding;
-        let avail_w = viewport_w - margin[1] - margin[3] - padding[1] - padding[3];
-        let w = child.style.width.unwrap_or(avail_w.max(0));
-        let mut h = child.style.height.unwrap_or(0);
+        let margin = child.style.margin; let padding = child.style.padding; let border = child.style.border_width;
+
+        // box-sizing 计算
+        let (content_w, content_h) = match child.style.box_sizing {
+            super::css::BoxSizing::ContentBox => {
+                let avail_w = viewport_w - margin[1] - margin[3] - padding[1] - padding[3] - border[1] - border[3];
+                let w = child.style.width.unwrap_or(avail_w.max(0));
+                (w, child.style.height.unwrap_or(0))
+            },
+            super::css::BoxSizing::BorderBox => {
+                let total_w = child.style.width.unwrap_or(viewport_w - margin[1] - margin[3]);
+                let total_h = child.style.height.unwrap_or(0);
+                let content_w = (total_w - padding[1] - padding[3] - border[1] - border[3]).max(0);
+                let content_h = if total_h > 0 { (total_h - padding[0] - padding[2] - border[0] - border[2]).max(0) } else { 0 };
+                (content_w, content_h)
+            }
+        };
+
+        let w = content_w + padding[1] + padding[3] + border[1] + border[3];
+        let mut h = content_h + padding[0] + padding[2] + border[0] + border[2];
         // 如果子节点是文本节点，则用字体大小估高
-        if h == 0 {
+        if content_h == 0 {
             if child.node.tag.is_empty() {
                 let text = child.node.text.as_deref().unwrap_or("");
                 let line_h = (child.style.font_size_px as i32).max(16);
@@ -65,7 +81,7 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
                 || child.style.top.is_some()
                 || child.style.right.is_some()
                 || child.style.bottom.is_some());
-        
+
         if is_absolute {
             let left = child.style.left.unwrap_or(0);
             let top = child.style.top.unwrap_or(0);
@@ -75,10 +91,10 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
             let mut ah = child.style.height.unwrap_or(viewport_h - top - bottom);
             if aw < 0 { aw = 0; } if ah < 0 { ah = 0; }
             lb.rect = Rect { x: left, y: top, w: aw, h: ah };
-            
+
             // 调试：绝对定位元素尺寸
             if child.node.id.as_ref().map(|s| s == "splash").unwrap_or(false) {
-                println!("[webcore::layout] #splash absolute: x={} y={} w={} h={} (viewport={}x{})", 
+                println!("[webcore::layout] #splash absolute: x={} y={} w={} h={} (viewport={}x{})",
                     left, top, aw, ah, viewport_w, viewport_h);
             }
         }
@@ -128,10 +144,10 @@ pub fn layout_tree(styled: &mut StyledNode, viewport_w: i32, viewport_h: i32) ->
                     let cross_base = if is_row { inner_y0 } else { inner_x };
                     let mut line_cross_size = 0i32; // 单行交叉尺寸
                     let mut first_in_line = true;
-                    
+
                     // 调试：flex容器
                     if child.node.id.as_ref().map(|s| s == "splash").unwrap_or(false) {
-                        println!("[webcore::layout] #splash flex: inner_x={} inner_y0={} inner_w={} children={}", 
+                        println!("[webcore::layout] #splash flex: inner_x={} inner_y0={} inner_w={} children={}",
                             inner_x, inner_y0, inner_w, child.children.len());
                     }
                     for gc in child.children.iter_mut() {

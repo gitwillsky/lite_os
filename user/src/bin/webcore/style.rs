@@ -1,7 +1,7 @@
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use super::html::DomNode;
-use super::css::{StyleSheet, ComputedStyle, Color, Display, FlexDirection, JustifyContent, AlignItems, Selector, Combinator, parse_color, parse_px, parse_display, parse_flex_direction, parse_justify_content, parse_align_items, parse_border_width, parse_flex_wrap, parse_box4, parse_border_shorthand, parse_bool_visible_hidden};
+use super::css::{StyleSheet, ComputedStyle, Color, Display, FlexDirection, JustifyContent, AlignItems, Selector, Combinator, BoxSizing, BackgroundType, parse_color, parse_px, parse_display, parse_flex_direction, parse_justify_content, parse_align_items, parse_border_width, parse_flex_wrap, parse_box4, parse_border_shorthand, parse_bool_visible_hidden, parse_box_sizing, parse_font_weight, parse_linear_gradient, parse_text_shadow, parse_box_shadow};
 
 #[derive(Clone)]
 pub struct StyledNode<'a> {
@@ -76,9 +76,27 @@ fn apply_inline_style(style: &mut ComputedStyle, inline: &str) {
         let k = it.next().unwrap_or("").trim();
         let v = it.next().unwrap_or("").trim();
         match k {
-            "background" | "background-color" => if let Some(c) = parse_color(v) { style.background_color = c; },
+            "background" | "background-color" => {
+                if let Some(grad) = parse_linear_gradient(v) {
+                    println!("[webcore::style] inline gradient: angle={}, stops={}", grad.angle_deg, grad.stops.len());
+                    style.background_type = BackgroundType::LinearGradient;
+                    style.background_gradient = Some(grad);
+                } else if let Some(c) = parse_color(v) {
+                    style.background_type = BackgroundType::Solid;
+                    style.background_color = c;
+                }
+            },
             "color" => if let Some(c) = parse_color(v) { style.color = c; },
             "font-size" => if let Some(px) = parse_px(v) { style.font_size_px = px; },
+            "font-weight" => if let Some(w) = parse_font_weight(v) { style.font_weight = w; },
+            "text-shadow" => {
+                let (x, y, blur, color) = parse_text_shadow(v);
+                style.text_shadow_offset_x = x;
+                style.text_shadow_offset_y = y;
+                style.text_shadow_blur = blur;
+                style.text_shadow_color = color;
+            },
+            "letter-spacing" => if let Some(px) = parse_px(v) { style.letter_spacing_px = px; },
             "display" => if let Some(d) = parse_display(v) { style.display = d; },
             "flex-direction" => if let Some(d) = parse_flex_direction(v) { style.flex_direction = d; },
             "justify-content" => if let Some(j) = parse_justify_content(v) { style.justify_content = j; },
@@ -93,6 +111,8 @@ fn apply_inline_style(style: &mut ComputedStyle, inline: &str) {
             "border" => { let (w,c) = parse_border_shorthand(v); if let Some(px)=w { style.border_width=[px,px,px,px]; } if let Some(col)=c { style.border_color=col; } },
             "border-width" => if let Some(px) = parse_border_width(v) { style.border_width = [px,px,px,px]; },
             "border-color" => if let Some(c) = parse_color(v) { style.border_color = c; },
+            "box-sizing" => if let Some(bs) = parse_box_sizing(v) { style.box_sizing = bs; },
+            "box-shadow" => { style.box_shadow = parse_box_shadow(v); },
             // 定位
             "position" => { if v.trim()=="absolute" { style.position_absolute = true; } },
             "left" => { style.left = parse_px(v); },
@@ -108,9 +128,27 @@ fn apply_inline_style(style: &mut ComputedStyle, inline: &str) {
 
 fn apply_rule(style: &mut ComputedStyle, prop: &str, val: &str) {
     match prop {
-        "background" | "background-color" => if let Some(c) = parse_color(val) { style.background_color = c; },
+        "background" | "background-color" => {
+            if let Some(grad) = parse_linear_gradient(val) {
+                println!("[webcore::style] parsed gradient: angle={}, stops={}", grad.angle_deg, grad.stops.len());
+                style.background_type = BackgroundType::LinearGradient;
+                style.background_gradient = Some(grad);
+            } else if let Some(c) = parse_color(val) {
+                style.background_type = BackgroundType::Solid;
+                style.background_color = c;
+            }
+        },
         "color" => if let Some(c) = parse_color(val) { style.color = c; },
         "font-size" => if let Some(px) = parse_px(val) { style.font_size_px = px; },
+        "font-weight" => if let Some(w) = parse_font_weight(val) { style.font_weight = w; },
+        "text-shadow" => {
+            let (x, y, blur, color) = parse_text_shadow(val);
+            style.text_shadow_offset_x = x;
+            style.text_shadow_offset_y = y;
+            style.text_shadow_blur = blur;
+            style.text_shadow_color = color;
+        },
+        "letter-spacing" => if let Some(px) = parse_px(val) { style.letter_spacing_px = px; },
         "display" => if let Some(d) = parse_display(val) { style.display = d; },
         "flex-direction" => if let Some(d) = parse_flex_direction(val) { style.flex_direction = d; },
         "justify-content" => if let Some(j) = parse_justify_content(val) { style.justify_content = j; },
@@ -122,8 +160,10 @@ fn apply_rule(style: &mut ComputedStyle, prop: &str, val: &str) {
         "height" => style.height = parse_px(val),
         "margin" => if let Some(m) = parse_box4(val) { style.margin = m; },
         "padding" => if let Some(p) = parse_box4(val) { style.padding = p; },
-        "border" | "border-width" => { if let Some(px) = parse_border_width(val) { style.border_width = [px,px,px,px]; } }
+        "border" | "border-width" => { if let Some(px) = parse_border_width(val) { style.border_width = [px,px,px,px]; } },
         "border-color" => if let Some(c) = parse_color(val) { style.border_color = c; },
+        "box-sizing" => if let Some(bs) = parse_box_sizing(val) { style.box_sizing = bs; },
+        "box-shadow" => { style.box_shadow = parse_box_shadow(val); },
         // 定位
         "position" => { if val.trim()=="absolute" { style.position_absolute = true; } },
         "left" => { style.left = parse_px(val); },
@@ -140,8 +180,16 @@ pub fn build_style_tree<'a>(node: &'a DomNode, sheet: &StyleSheet, parent: Optio
     // 以继承初值创建（color/font-size 继承；其余使用初始值）
     let mut style = ComputedStyle {
         background_color: Color(0x00000000),
+        background_type: BackgroundType::Solid,
+        background_gradient: None,
         color: parent.map(|p| p.color).unwrap_or(Color(0xFFFFFFFF)),
         font_size_px: parent.map(|p| p.font_size_px).unwrap_or(16),
+        font_weight: parent.map(|p| p.font_weight).unwrap_or(400),
+        text_shadow_color: Color(0x00000000),
+        text_shadow_offset_x: 0,
+        text_shadow_offset_y: 0,
+        text_shadow_blur: 0,
+        letter_spacing_px: 0,
         display: Display::Block,
         flex_direction: FlexDirection::Row,
         justify_content: JustifyContent::Start,
@@ -151,6 +199,8 @@ pub fn build_style_tree<'a>(node: &'a DomNode, sheet: &StyleSheet, parent: Optio
         line_height_px: None,
         width: None, height: None,
         margin: [0;4], padding: [0;4], border_width: [0;4], border_color: Color(0xFFFFFFFF),
+        box_sizing: BoxSizing::ContentBox,
+        box_shadow: Vec::new(),
         position_absolute: false, left: None, top: None, right: None, bottom: None, z_index: 0, overflow_hidden: false };
     // 级联：根据 specificity 和规则顺序应用
     let mut matched: alloc::vec::Vec<((u32,u32,u32), usize, &super::css::Rule)> = alloc::vec::Vec::new();

@@ -1,6 +1,6 @@
 use alloc::{string::{String, ToString}, vec::Vec};
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug)]
 pub struct Color(pub u32); // 0xAARRGGBB
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -28,11 +28,45 @@ pub enum FlexWrap { NoWrap, Wrap }
 
 impl Default for FlexWrap { fn default() -> Self { FlexWrap::NoWrap } }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoxSizing { ContentBox, BorderBox }
+
+impl Default for BoxSizing { fn default() -> Self { BoxSizing::ContentBox } }
+
+#[derive(Clone, Debug)]
+pub struct Gradient {
+    pub angle_deg: f32,
+    pub stops: Vec<(f32, Color)>, // position (0.0-1.0), color
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundType { Solid, LinearGradient }
+
+impl Default for BackgroundType { fn default() -> Self { BackgroundType::Solid } }
+
+#[derive(Clone, Debug)]
+pub struct BoxShadow {
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub blur_radius: i32,
+    pub spread_radius: i32,
+    pub color: Color,
+    pub inset: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct ComputedStyle {
     pub background_color: Color,
+    pub background_type: BackgroundType,
+    pub background_gradient: Option<Gradient>,
     pub color: Color,
     pub font_size_px: i32,
+    pub font_weight: i32,  // 100-900
+    pub text_shadow_color: Color,
+    pub text_shadow_offset_x: i32,
+    pub text_shadow_offset_y: i32,
+    pub text_shadow_blur: i32,
+    pub letter_spacing_px: i32,
     pub display: Display,
     pub flex_direction: FlexDirection,
     pub justify_content: JustifyContent,
@@ -46,6 +80,8 @@ pub struct ComputedStyle {
     pub padding: [i32; 4],
     pub border_width: [i32; 4],
     pub border_color: Color,
+    pub box_sizing: BoxSizing,
+    pub box_shadow: Vec<BoxShadow>,
     // positioning
     pub position_absolute: bool,
     pub left: Option<i32>,
@@ -87,25 +123,122 @@ pub struct StyleSheet {
 
 pub fn parse_color(s: &str) -> Option<Color> {
     let t = s.trim();
+
+    // #RRGGBB 或 #AARRGGBB
     if t.starts_with('#') {
         let hex = &t[1..];
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some(match hex.len() {
-            6 => Color(0xFF00_0000u32 | v),
+            3 => {
+                let r = (v >> 8) & 0xF;
+                let g = (v >> 4) & 0xF;
+                let b = v & 0xF;
+                Color(0xFF000000 | (r << 20) | (r << 16) | (g << 12) | (g << 8) | (b << 4) | b)
+            },
+            6 => Color(0xFF000000u32 | v),
             8 => Color(v),
             _ => Color(0xFF000000),
         });
     }
+
+    // rgb() 函数
+    if t.starts_with("rgb(") && t.ends_with(')') {
+        let inner = &t[4..t.len()-1];
+        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 3 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            return Some(Color(0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+        }
+    }
+
+    // rgba() 函数
+    if t.starts_with("rgba(") && t.ends_with(')') {
+        let inner = &t[5..t.len()-1];
+        let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
+        if parts.len() == 4 {
+            let r = parts[0].parse::<u8>().ok()?;
+            let g = parts[1].parse::<u8>().ok()?;
+            let b = parts[2].parse::<u8>().ok()?;
+            let a = (parts[3].parse::<f32>().ok()? * 255.0) as u8;
+            return Some(Color(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+        }
+    }
+
+    // 颜色关键字
     match t {
         "black" => Some(Color(0xFF000000)),
         "white" => Some(Color(0xFFFFFFFF)),
+        "red" => Some(Color(0xFFFF0000)),
+        "green" => Some(Color(0xFF00FF00)),
+        "blue" => Some(Color(0xFF0000FF)),
+        "transparent" => Some(Color(0x00000000)),
         _ => None,
     }
 }
 
 pub fn parse_px(s: &str) -> Option<i32> {
     let t = s.trim();
-    if let Some(px) = t.strip_suffix("px") { px.parse::<i32>().ok() } else { t.parse::<i32>().ok() }
+
+    // calc() 函数支持
+    if t.starts_with("calc(") && t.ends_with(')') {
+        let inner = &t[5..t.len()-1];
+        return parse_calc_expression(inner);
+    }
+
+    // 普通数值
+    if let Some(px) = t.strip_suffix("px") {
+        px.parse::<i32>().ok()
+    } else if let Some(percent) = t.strip_suffix('%') {
+        // 百分比暂时按0处理，需要上下文计算
+        percent.parse::<f32>().ok().map(|_| 0)
+    } else {
+        t.parse::<i32>().ok()
+    }
+}
+
+fn parse_calc_expression(expr: &str) -> Option<i32> {
+    // 简化的calc表达式解析器
+    // 支持: 100% - 120px, 50% + 10px 等基本运算
+    let expr = expr.trim();
+
+    // 查找运算符
+    let ops = [" + ", " - ", " * ", " / "];
+    for op in &ops {
+        if let Some(pos) = expr.find(op) {
+            let left = expr[..pos].trim();
+            let right = expr[pos + op.len()..].trim();
+
+            let left_val = parse_calc_value(left)?;
+            let right_val = parse_calc_value(right)?;
+
+            return match op.trim() {
+                "+" => Some(left_val + right_val),
+                "-" => Some(left_val - right_val),
+                "*" => Some(left_val * right_val),
+                "/" => if right_val != 0 { Some(left_val / right_val) } else { None },
+                _ => None,
+            };
+        }
+    }
+
+    // 单个值
+    parse_calc_value(expr)
+}
+
+fn parse_calc_value(s: &str) -> Option<i32> {
+    let s = s.trim();
+
+    if s.ends_with("px") {
+        s.strip_suffix("px")?.parse::<i32>().ok()
+    } else if s.ends_with('%') {
+        // 百分比值暂时假设基于视口宽度1280px
+        let percent = s.strip_suffix('%')?.parse::<f32>().ok()?;
+        Some((1280.0 * percent / 100.0) as i32)
+    } else {
+        s.parse::<i32>().ok()
+    }
 }
 
 pub fn parse_display(s: &str) -> Option<Display> {
@@ -185,6 +318,159 @@ pub fn parse_bool_visible_hidden(s: &str) -> Option<bool> {
     }
 }
 
+pub fn parse_box_sizing(s: &str) -> Option<BoxSizing> {
+    match s.trim() {
+        "content-box" => Some(BoxSizing::ContentBox),
+        "border-box" => Some(BoxSizing::BorderBox),
+        _ => None,
+    }
+}
+
+pub fn parse_font_weight(s: &str) -> Option<i32> {
+    match s.trim() {
+        "normal" => Some(400),
+        "bold" => Some(700),
+        "lighter" => Some(300),
+        "bolder" => Some(600),
+        w => w.parse::<i32>().ok().filter(|&n| n >= 100 && n <= 900),
+    }
+}
+
+pub fn parse_linear_gradient(s: &str) -> Option<Gradient> {
+    let s = s.trim();
+    if !s.starts_with("linear-gradient(") || !s.ends_with(')') {
+        return None;
+    }
+
+    let inner = &s[16..s.len()-1]; // 去掉 "linear-gradient(" 和 ")"
+
+    // 处理多行格式：清理换行符和多余空白
+    let normalized = inner.replace('\n', " ").replace('\r', " ");
+    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let parts: Vec<&str> = normalized.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+    if parts.len() < 2 { return None; }
+
+    // 添加长度检查，避免过度复杂的渐变
+    if parts.len() > 20 { return None; }
+
+    let mut angle_deg = 180.0; // 默认向下
+    let mut color_start_idx = 0;
+
+    // 检查第一个参数是否是角度或方向
+    if let Some(first) = parts.first() {
+        let first = first.trim();
+        if first.ends_with("deg") {
+            if let Ok(angle) = first.trim_end_matches("deg").parse::<f32>() {
+                angle_deg = angle;
+                color_start_idx = 1;
+            }
+        } else if first.starts_with("to ") {
+            // 处理 "to bottom", "to right" 等方向
+            match first {
+                "to bottom" => { angle_deg = 180.0; color_start_idx = 1; },
+                "to top" => { angle_deg = 0.0; color_start_idx = 1; },
+                "to right" => { angle_deg = 90.0; color_start_idx = 1; },
+                "to left" => { angle_deg = 270.0; color_start_idx = 1; },
+                _ => { color_start_idx = 1; }, // 保持默认角度
+            }
+        }
+    }
+
+    let mut stops = Vec::new();
+    for (i, part) in parts.iter().skip(color_start_idx).enumerate() {
+        let part = part.trim();
+
+        // 解析颜色和可能的位置 (如 "#FF0000 50%")
+        let color_parts: Vec<&str> = part.split_whitespace().collect();
+        if let Some(color) = parse_color(color_parts[0]) {
+            let position = if color_parts.len() > 1 && color_parts[1].ends_with('%') {
+                // 显式指定的百分比位置
+                color_parts[1].trim_end_matches('%').parse::<f32>().unwrap_or(0.0) / 100.0
+            } else {
+                // 自动计算位置
+                if i == 0 { 0.0 }
+                else if i == parts.len() - color_start_idx - 1 { 1.0 }
+                else { i as f32 / (parts.len() - color_start_idx - 1) as f32 }
+            };
+
+            stops.push((position.clamp(0.0, 1.0), color));
+        }
+    }
+
+    if stops.len() >= 2 {
+        // 确保停靠点按位置排序
+        stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+        Some(Gradient { angle_deg, stops })
+    } else {
+        None
+    }
+}
+
+pub fn parse_text_shadow(s: &str) -> (i32, i32, i32, Color) {
+    // 简化解析 "offset-x offset-y blur-radius color"
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() >= 4 {
+        let x = parse_px(parts[0]).unwrap_or(0);
+        let y = parse_px(parts[1]).unwrap_or(0);
+        let blur = parse_px(parts[2]).unwrap_or(0);
+        let color = parse_color(parts[3]).unwrap_or(Color(0xFF000000));
+        (x, y, blur, color)
+    } else {
+        (0, 0, 0, Color(0x00000000))
+    }
+}
+
+pub fn parse_box_shadow(s: &str) -> Vec<BoxShadow> {
+    let mut shadows = Vec::new();
+
+    // 支持多个阴影，用逗号分隔
+    for shadow_str in s.split(',') {
+        let shadow_str = shadow_str.trim();
+        if shadow_str.is_empty() { continue; }
+
+        let mut parts: Vec<&str> = shadow_str.split_whitespace().collect();
+        if parts.is_empty() { continue; }
+
+        let mut inset = false;
+        if parts[0] == "inset" {
+            inset = true;
+            parts.remove(0);
+        }
+
+        if parts.len() >= 2 {
+            let offset_x = parse_px(parts[0]).unwrap_or(0);
+            let offset_y = parse_px(parts[1]).unwrap_or(0);
+            let blur_radius = if parts.len() >= 3 { parse_px(parts[2]).unwrap_or(0) } else { 0 };
+            let spread_radius = if parts.len() >= 4 && !parts[3].starts_with('#') && !parts[3].starts_with("rgb") {
+                parse_px(parts[3]).unwrap_or(0)
+            } else {
+                0
+            };
+
+            // 查找颜色
+            let mut color = Color(0xFF000000); // 默认黑色
+            for part in &parts {
+                if let Some(c) = parse_color(part) {
+                    color = c;
+                    break;
+                }
+            }
+
+            shadows.push(BoxShadow {
+                offset_x,
+                offset_y,
+                blur_radius,
+                spread_radius,
+                color,
+                inset,
+            });
+        }
+    }
+
+    shadows
+}
+
 fn parse_simple_selector(b: &[u8], i: &mut usize) -> SimpleSelector {
     let mut tag: Option<String> = None; let mut id: Option<String> = None; let mut classes: alloc::vec::Vec<String> = alloc::vec::Vec::new();
     // 读 tag
@@ -205,6 +491,7 @@ fn parse_simple_selector(b: &[u8], i: &mut usize) -> SimpleSelector {
 fn parse_selector_list(bytes: &[u8], i: &mut usize) -> alloc::vec::Vec<Selector> {
     fn skip_ws(b: &[u8], i: &mut usize) { while *i < b.len() && (b[*i] == b' '||b[*i]==b'\n'||b[*i]==b'\t'||b[*i]==b'\r') { *i += 1; } }
     let mut selectors: alloc::vec::Vec<Selector> = alloc::vec::Vec::new();
+    println!("[webcore::css] parse_selector_list starting at position {}", *i);
     loop {
         skip_ws(bytes, i);
         let mut parts: alloc::vec::Vec<(Combinator, SimpleSelector)> = alloc::vec::Vec::new();
@@ -244,6 +531,7 @@ fn parse_selector_list(bytes: &[u8], i: &mut usize) -> alloc::vec::Vec<Selector>
 }
 
 pub fn parse_stylesheet(input: &str) -> StyleSheet {
+    println!("[webcore::css] Starting parse_stylesheet, input length: {}", input.len());
     let mut rules = Vec::new();
     let bytes = input.as_bytes();
     let mut i = 0usize;
@@ -251,36 +539,84 @@ pub fn parse_stylesheet(input: &str) -> StyleSheet {
     fn read_until(b: &[u8], i: &mut usize, delim: u8) -> String { let s=*i; while *i<b.len() && b[*i]!=delim { *i+=1; } let out=core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string(); if *i<b.len(){*i+=1;} out }
     fn read_ident(b: &[u8], i: &mut usize) -> String { let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_') { *i+=1; } core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string() }
 
-    while i < bytes.len() {
+    println!("[webcore::css] About to start parsing loop");
+
+    let mut iteration_count = 0;
+    let max_iterations = 100; // 防止无限循环，先设小一点
+
+    while i < bytes.len() && iteration_count < max_iterations {
+        iteration_count += 1;
+        if iteration_count % 10 == 0 {
+            println!("[webcore::css] Parsing iteration {}, position {}/{}", iteration_count, i, bytes.len());
+        }
+
         let old_i = i; // 防止无限循环
         skip_ws(bytes, &mut i);
         if i >= bytes.len() { break; }
+
+        // 解析选择器，增加超时保护
+        println!("[webcore::css] Parsing selectors at position {}", i);
         let selectors = parse_selector_list(bytes, &mut i);
+        println!("[webcore::css] Selectors parsed: {} found", selectors.len());
+
+        if selectors.is_empty() {
+            // 选择器解析失败，跳过到下一个规则或行尾
+            println!("[webcore::css] Empty selectors, skipping to next rule");
+            while i < bytes.len() && bytes[i] != b'{' && bytes[i] != b'\n' { i += 1; }
+            if i < bytes.len() && bytes[i] == b'\n' { i += 1; }
+            continue;
+        }
+
         skip_ws(bytes, &mut i);
-        if i >= bytes.len() || bytes[i] != b'{' { 
+        if i >= bytes.len() || bytes[i] != b'{' {
             // 如果没有找到 '{', 跳过这一行避免无限循环
             while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
             if i < bytes.len() { i += 1; }
             continue;
         }
         i += 1;
+
+        // 解析声明块
         let mut decls: Vec<(String, String)> = Vec::new();
+        let mut decl_count = 0;
+        let max_decls = 100; // 限制每个规则的声明数量
+
         loop {
+            if decl_count >= max_decls { break; }
             skip_ws(bytes, &mut i);
             if i >= bytes.len() { break; }
             if bytes[i] == b'}' { i += 1; break; }
+
             let prop = read_ident(bytes, &mut i);
+            if prop.is_empty() {
+                // 跳过无效属性直到分号或右大括号
+                while i < bytes.len() && bytes[i] != b';' && bytes[i] != b'}' { i += 1; }
+                if i < bytes.len() && bytes[i] == b';' { i += 1; }
+                continue;
+            }
+
             skip_ws(bytes, &mut i);
             if i < bytes.len() && bytes[i] == b':' { i += 1; }
+
             let val = read_until(bytes, &mut i, b';');
-            decls.push((prop, val.trim().to_string()));
+            if !val.trim().is_empty() {
+                decls.push((prop, val.trim().to_string()));
+            }
+            decl_count += 1;
         }
-        rules.push(Rule { selectors, declarations: decls });
-        
+
+        if !decls.is_empty() {
+            rules.push(Rule { selectors, declarations: decls });
+        }
+
         // 安全检查：确保索引有进展
         if i <= old_i {
             i = old_i + 1; // 强制进展，避免无限循环
         }
+    }
+
+    if iteration_count >= max_iterations {
+        println!("[webcore::css] CSS parsing timeout, stopping at {} rules", rules.len());
     }
     StyleSheet { rules }
 }

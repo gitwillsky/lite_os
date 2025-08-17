@@ -1,24 +1,33 @@
-<body>
+<!DOCTYPE html>
+<html>
+<head>
   <link rel="stylesheet" href="/usr/share/desktop/style.css">
+</head>
+<body>
   <!-- 纯 HTML/CSS 复刻 Windows 2000 启动画面 -->
   <div id="splash">
+    <div class="branding">Microsoft</div>
     <div class="top-spacer"></div>
     <div class="content">
-      <div class="hero">
-        <img id="logo" src="/usr/share/desktop/w2k_logo.png" />
+      <div class="logo-box">
+        <div class="hero">
+          <img id="logo" src="/usr/share/desktop/w2k_logo.png" />
+        </div>
+        <div class="caption">Built on NT Technology</div>
       </div>
-      <div class="caption">Built on NT Technology</div>
     </div>
     <div class="bottom">
       <div class="progress-wrap">
         <div id="bar"></div>
       </div>
       <div class="footline">
-        <span>Starting up...</span>
-        <span class="copy">Copyright © 1985-2000&nbsp;&nbsp;Microsoft Corporation</span>
+        <div class="status">Starting up...</div>
+        <div class="copy">Copyright © 1985-2000 Microsoft Corporation</div>
       </div>
     </div>
+    <div class="right-band"></div>
   </div>
 </body>
+</html>
 
 
