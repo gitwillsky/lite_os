@@ -1033,7 +1033,12 @@ pub struct StandardSelectorMatcher;
 
 impl SelectorMatcher for StandardSelectorMatcher {
     fn matches(&self, selector: &Selector, element: &dyn Element) -> bool {
-        match_complex_selector(&selector.complex, element)
+        let matches = match_complex_selector(&selector.complex, element);
+        if matches {
+            println!("[css] Selector matched element '{}' (id={:?}, classes={:?})",
+                element.tag_name().unwrap_or(""), element.id(), element.classes());
+        }
+        matches
     }
 
     fn specificity(&self, selector: &Selector) -> Specificity {
@@ -1236,6 +1241,8 @@ impl StyleComputer {
         declaration: &Declaration,
         context: &ComputationContext,
     ) {
+        println!("[css] Applying declaration: {} = {:?}", declaration.property, declaration.value);
+
         match declaration.property.as_str() {
             "display" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
@@ -1252,26 +1259,114 @@ impl StyleComputer {
                     computed.background_color = *color;
                 }
             },
+            "background" => {
+                // 处理background简写属性，提取颜色部分
+                match &declaration.value {
+                    CSSValue::Color(color) => {
+                        computed.background_color = *color;
+                        println!("[css] Applied solid background color: {:?}", color);
+                    },
+                    CSSValue::Function(name, args) if name == "linear-gradient" => {
+                        // 从linear-gradient中提取第一个颜色作为fallback
+                        println!("[css] Processing linear-gradient with {} args", args.len());
+                        for (i, arg) in args.iter().enumerate() {
+                            println!("[css]   Arg {}: {:?}", i, arg);
+                            match arg {
+                                CSSValue::Color(color) => {
+                                    computed.background_color = *color;
+                                    println!("[css] Extracted color from linear-gradient: {:?}", color);
+                                    break;
+                                },
+                                CSSValue::List(list) => {
+                                    // 在列表中查找颜色（如 [Color, Percent] 的组合）
+                                    for item in list {
+                                        if let CSSValue::Color(color) = item {
+                                            computed.background_color = *color;
+                                            println!("[css] Extracted color from gradient list: {:?}", color);
+                                            return; // 直接返回，找到第一个颜色就够了
+                                        }
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                    },
+                    CSSValue::List(values) => {
+                        // 在列表中查找颜色值
+                        for value in values {
+                            if let CSSValue::Color(color) = value {
+                                computed.background_color = *color;
+                                println!("[css] Applied background color from list: {:?}", color);
+                                break;
+                            }
+                        }
+                    },
+                    CSSValue::Keyword(keyword) if keyword == "transparent" => {
+                        computed.background_color = Color::new(0, 0, 0, 0);
+                        println!("[css] Applied transparent background");
+                    },
+                    _ => {
+                        println!("[css] Unhandled background value: {:?}", declaration.value);
+                    }
+                }
+            },
             "font-size" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.font_size = self.length_computer.compute(length, context);
                 }
             },
             "width" => {
-                if let CSSValue::Length(length) = &declaration.value {
-                    computed.width = self.length_computer.compute(length, context);
+                match &declaration.value {
+                    CSSValue::Length(length) => {
+                        computed.width = self.length_computer.compute(length, context);
+                        println!("[css] Applied width: {:?} -> {:?}", length, computed.width);
+                    },
+                    CSSValue::Keyword(keyword) if keyword == "auto" => {
+                        // auto width 保持默认值
+                        println!("[css] Applied auto width");
+                    },
+                    _ => {
+                        println!("[css] Unhandled width value: {:?}", declaration.value);
+                    }
                 }
             },
             "height" => {
-                if let CSSValue::Length(length) = &declaration.value {
-                    computed.height = self.length_computer.compute(length, context);
+                match &declaration.value {
+                    CSSValue::Length(length) => {
+                        computed.height = self.length_computer.compute(length, context);
+                        println!("[css] Applied height: {:?} -> {:?}", length, computed.height);
+                    },
+                    CSSValue::Keyword(keyword) if keyword == "auto" => {
+                        // auto height 保持默认值
+                        println!("[css] Applied auto height");
+                    },
+                    _ => {
+                        println!("[css] Unhandled height value: {:?}", declaration.value);
+                    }
                 }
             },
             "margin" => {
                 // 处理margin简写属性
-                self.apply_box_property(&mut computed.margin_top, &mut computed.margin_right,
-                                      &mut computed.margin_bottom, &mut computed.margin_left,
-                                      &declaration.value, context);
+                match &declaration.value {
+                    CSSValue::Length(length) => {
+                        let computed_length = self.length_computer.compute(length, context);
+                        computed.margin_top = computed_length;
+                        computed.margin_right = computed_length;
+                        computed.margin_bottom = computed_length;
+                        computed.margin_left = computed_length;
+                    },
+                    CSSValue::Number(n) if *n == 0.0 => {
+                        computed.margin_top = Length::Px(0.0);
+                        computed.margin_right = Length::Px(0.0);
+                        computed.margin_bottom = Length::Px(0.0);
+                        computed.margin_left = Length::Px(0.0);
+                    },
+                    _ => {
+                        self.apply_box_property(&mut computed.margin_top, &mut computed.margin_right,
+                                              &mut computed.margin_bottom, &mut computed.margin_left,
+                                              &declaration.value, context);
+                    }
+                }
             },
             "margin-top" => {
                 if let CSSValue::Length(length) = &declaration.value {
@@ -1328,6 +1423,31 @@ impl StyleComputer {
             "position" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     computed.position = parse_position_value(value);
+                    println!("[css] Applied position: {}", value);
+                }
+            },
+            "left" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.left = self.length_computer.compute(length, context);
+                    println!("[css] Applied left: {:?} -> {:?}", length, computed.left);
+                }
+            },
+            "top" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.top = self.length_computer.compute(length, context);
+                    println!("[css] Applied top: {:?} -> {:?}", length, computed.top);
+                }
+            },
+            "right" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.right = self.length_computer.compute(length, context);
+                    println!("[css] Applied right: {:?} -> {:?}", length, computed.right);
+                }
+            },
+            "bottom" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.bottom = self.length_computer.compute(length, context);
+                    println!("[css] Applied bottom: {:?} -> {:?}", length, computed.bottom);
                 }
             },
             "font-weight" => {
@@ -1624,7 +1744,18 @@ fn parse_function_args(args: &str) -> Result<Vec<CSSValue>, ParseError> {
 
     for part in parts {
         if !part.is_empty() {
-            values.push(parse_css_value(part)?);
+            // 对于linear-gradient，尝试解析每个部分
+            // 如果解析失败，跳过这个参数
+            match parse_css_value(part) {
+                Ok(value) => values.push(value),
+                Err(_) => {
+                    println!("[css] Skipping unparseable function arg: '{}'", part);
+                    // 如果包含百分比或度数，尝试解析为关键字
+                    if part.contains('%') || part.contains("deg") {
+                        values.push(CSSValue::Keyword(part.to_string()));
+                    }
+                }
+            }
         }
     }
 
@@ -1661,7 +1792,12 @@ fn parse_complex_selector(input: &str) -> Result<ComplexSelector, ParseError> {
 fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
     let mut selector = SimpleSelector::default();
     let mut i = 0;
-    let bytes = input.as_bytes();
+    let bytes = input.trim().as_bytes();
+
+    // 跳过开头空白
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
 
     while i < bytes.len() {
         match bytes[i] {
@@ -1673,7 +1809,9 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     i += 1;
                 }
                 if i > start {
-                    selector.id = Some(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                    let id = String::from_utf8_lossy(&bytes[start..i]).to_string();
+                    println!("[css] Parsed ID selector: #{}", id);
+                    selector.id = Some(id);
                 }
             },
             b'.' => {
@@ -1684,7 +1822,9 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     i += 1;
                 }
                 if i > start {
-                    selector.classes.push(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                    let class = String::from_utf8_lossy(&bytes[start..i]).to_string();
+                    println!("[css] Parsed class selector: .{}", class);
+                    selector.classes.push(class);
                 }
             },
             b if b.is_ascii_alphabetic() => {
@@ -1694,20 +1834,31 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     i += 1;
                 }
                 if i > start {
-                    selector.element_name = Some(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                    let element = String::from_utf8_lossy(&bytes[start..i]).to_string();
+                    println!("[css] Parsed element selector: {}", element);
+                    selector.element_name = Some(element);
                 }
             },
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                // 跳过空白字符
+                i += 1;
+            },
             _ => {
+                // 跳过其他字符（如伪类等暂不支持）
                 i += 1;
             }
         }
     }
+
+    println!("[css] Final simple selector: element={:?} id={:?} classes={:?}",
+        selector.element_name, selector.id, selector.classes);
 
     Ok(selector)
 }
 
 /// 解析样式表
 pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
+    println!("[css] Starting stylesheet parse, input length: {}", input.len());
     let mut stylesheet = StyleSheet::default();
     let mut rules = Vec::new();
 
@@ -1722,8 +1873,24 @@ pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
 
         // 解析规则
         match parse_rule(bytes, &mut i) {
-            Ok(rule) => rules.push(rule),
-            Err(_) => {
+            Ok(rule) => {
+                println!("[css] Parsed rule with {} selectors and {} declarations",
+                    rule.selectors.len(), rule.declarations.len());
+                // 只显示第一个选择器
+                if let Some(selector) = rule.selectors.first() {
+                    println!("[css]   First selector: {:?}", selector);
+                }
+                // 只显示前几个声明
+                for (idx, decl) in rule.declarations.iter().take(3).enumerate() {
+                    println!("[css]   Declaration {}: {} = {:?}", idx, decl.property, decl.value);
+                }
+                if rule.declarations.len() > 3 {
+                    println!("[css]   ... and {} more declarations", rule.declarations.len() - 3);
+                }
+                rules.push(rule);
+            },
+            Err(e) => {
+                println!("[css] Failed to parse rule: {:?}", e);
                 // 跳过错误的规则
                 skip_to_next_rule(bytes, &mut i);
             }

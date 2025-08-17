@@ -44,7 +44,9 @@ fn main() -> i32 {
     // 应用样式并布局
     println!("[webwm] About to layout...");
     let (sw, sh) = gfx::screen_size();
+    println!("[webwm] Screen size: {}x{}", sw, sh);
     let layout_root = page.layout(sw as i32, sh as i32);
+    println!("[webwm] Layout completed, root size: {}x{}", layout_root.rect.w, layout_root.rect.h);
     println!("[webwm] About to paint...");
     webcore::paint::paint_layout_box(&layout_root);
     println!("[webwm] About to flush...");

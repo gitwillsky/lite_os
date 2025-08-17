@@ -68,18 +68,74 @@ pub fn layout_tree<'a>(
 
 /// 计算盒子基本尺寸
 fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
+    println!("[layout] Computing size for element, containing_block: {}x{}",
+        containing_block.w, containing_block.h);
+
     // 计算宽度
     let width = match layout_box.style.width {
-        Length::Px(w) => w as i32,
-        Length::Percent(p) => (containing_block.w as f32 * p / 100.0) as i32,
-        _ => containing_block.w, // 默认填满容器
+        Length::Px(w) if w > 0.0 => {
+            println!("[layout] Using explicit width: {}px", w);
+            w as i32
+        },
+        Length::Percent(p) => {
+            let computed = (containing_block.w as f32 * p / 100.0) as i32;
+            println!("[layout] Using percentage width: {}% = {}px", p, computed);
+            computed
+        },
+        _ => {
+            // 检查是否是绝对定位且有left/right约束
+            if layout_box.style.position == super::css::Position::Absolute {
+                // 对于绝对定位，如果有left和right，计算宽度
+                let has_left = !matches!(layout_box.style.left, Length::Px(0.0));
+                let has_right = !matches!(layout_box.style.right, Length::Px(0.0));
+                if has_left && has_right {
+                    let left_px = get_length_px(&layout_box.style.left, containing_block.w);
+                    let right_px = get_length_px(&layout_box.style.right, containing_block.w);
+                    let computed = containing_block.w - left_px - right_px;
+                    println!("[layout] Computed width from left/right constraints: {}px", computed);
+                    computed.max(0)
+                } else {
+                    println!("[layout] Using default width (fill container): {}px", containing_block.w);
+                    containing_block.w
+                }
+            } else {
+                println!("[layout] Using default width (fill container): {}px", containing_block.w);
+                containing_block.w // 默认填满容器
+            }
+        }
     };
 
     // 计算高度
     let height = match layout_box.style.height {
-        Length::Px(h) => h as i32,
-        Length::Percent(p) => (containing_block.h as f32 * p / 100.0) as i32,
-        _ => 0, // 高度由内容决定
+        Length::Px(h) if h > 0.0 => {
+            println!("[layout] Using explicit height: {}px", h);
+            h as i32
+        },
+        Length::Percent(p) => {
+            let computed = (containing_block.h as f32 * p / 100.0) as i32;
+            println!("[layout] Using percentage height: {}% = {}px", p, computed);
+            computed
+        },
+        _ => {
+            // 检查是否是绝对定位且有top/bottom约束
+            if layout_box.style.position == super::css::Position::Absolute {
+                let has_top = !matches!(layout_box.style.top, Length::Px(0.0));
+                let has_bottom = !matches!(layout_box.style.bottom, Length::Px(0.0));
+                if has_top && has_bottom {
+                    let top_px = get_length_px(&layout_box.style.top, containing_block.h);
+                    let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
+                    let computed = containing_block.h - top_px - bottom_px;
+                    println!("[layout] Computed height from top/bottom constraints: {}px", computed);
+                    computed.max(0)
+                } else {
+                    println!("[layout] Using auto height (will be set by content)");
+                    20 // 默认最小高度
+                }
+            } else {
+                println!("[layout] Using auto height (will be set by content)");
+                20 // 默认最小高度
+            }
+        }
     };
 
     // 计算外边距
@@ -96,13 +152,42 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
     layout_box.rect.w = width;
     layout_box.rect.h = height;
 
+    println!("[layout] Final box: x={} y={} w={} h={} (margins: {},{} padding: {},{})",
+        layout_box.rect.x, layout_box.rect.y, layout_box.rect.w, layout_box.rect.h,
+        margin_left, margin_top, padding_left, padding_top);
+
     // 处理绝对定位
     if layout_box.style.position == Position::Absolute {
-        if let Length::Px(left) = layout_box.style.left {
-            layout_box.rect.x = left as i32;
+        println!("[layout] Processing absolute positioning");
+
+        // 处理left/right约束
+        match (&layout_box.style.left, &layout_box.style.right) {
+            (Length::Px(left), Length::Px(right)) if *left == 0.0 && *right == 0.0 => {
+                // left: 0, right: 0 - 填满整个宽度
+                layout_box.rect.x = 0;
+                layout_box.rect.w = containing_block.w;
+                println!("[layout] Applied left:0 right:0 -> x=0 w={}", containing_block.w);
+            },
+            (Length::Px(left), _) => {
+                layout_box.rect.x = *left as i32;
+                println!("[layout] Applied left: {}px", left);
+            },
+            _ => {}
         }
-        if let Length::Px(top) = layout_box.style.top {
-            layout_box.rect.y = top as i32;
+
+        // 处理top/bottom约束
+        match (&layout_box.style.top, &layout_box.style.bottom) {
+            (Length::Px(top), Length::Px(bottom)) if *top == 0.0 && *bottom == 0.0 => {
+                // top: 0, bottom: 0 - 填满整个高度
+                layout_box.rect.y = 0;
+                layout_box.rect.h = containing_block.h;
+                println!("[layout] Applied top:0 bottom:0 -> y=0 h={}", containing_block.h);
+            },
+            (Length::Px(top), _) => {
+                layout_box.rect.y = *top as i32;
+                println!("[layout] Applied top: {}px", top);
+            },
+            _ => {}
         }
     }
 }
@@ -111,9 +196,15 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
 fn layout_block(layout_box: &mut LayoutBox) {
     let mut y_offset = 0;
 
+    println!("[layout] Block layout for container: {}x{}", layout_box.rect.w, layout_box.rect.h);
+
     for child in &mut layout_box.children {
+        // 设置子元素位置 - 垂直排列
         child.rect.x = layout_box.rect.x;
         child.rect.y = layout_box.rect.y + y_offset;
+
+        println!("[layout] Positioned child at x={} y={} (y_offset={})",
+            child.rect.x, child.rect.y, y_offset);
 
         // 如果子元素没有明确高度，设置默认值
         if child.rect.h == 0 {
@@ -127,6 +218,7 @@ fn layout_block(layout_box: &mut LayoutBox) {
     // 如果容器没有明确高度，根据内容调整
     if layout_box.rect.h == 0 {
         layout_box.rect.h = y_offset;
+        println!("[layout] Adjusted container height to content: {}px", y_offset);
     }
 }
 
