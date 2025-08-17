@@ -1,125 +1,1415 @@
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, vec};
+use core::{fmt, cmp::Ordering};
 
-#[derive(Clone, Copy, Default, Debug)]
-pub struct Color(pub u32); // 0xAARRGGBB
+//==============================================================================
+// 核心接口定义 (Core Interfaces)
+//==============================================================================
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Display { Block, Flex }
+/// CSS值解析器接口
+pub trait CSSValueParser<T> {
+    /// 解析CSS值
+    fn parse(&self, input: &str, context: &ComputationContext) -> Result<T, ParseError>;
 
-impl Default for Display { fn default() -> Self { Display::Block } }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FlexDirection { Row, Column }
-
-impl Default for FlexDirection { fn default() -> Self { FlexDirection::Row } }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum JustifyContent { Start, Center, End, SpaceBetween }
-
-impl Default for JustifyContent { fn default() -> Self { JustifyContent::Start } }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AlignItems { Start, Center, End }
-
-impl Default for AlignItems { fn default() -> Self { AlignItems::Start } }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FlexWrap { NoWrap, Wrap }
-
-impl Default for FlexWrap { fn default() -> Self { FlexWrap::NoWrap } }
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BoxSizing { ContentBox, BorderBox }
-
-impl Default for BoxSizing { fn default() -> Self { BoxSizing::ContentBox } }
-
-#[derive(Clone, Debug)]
-pub struct Gradient {
-    pub angle_deg: f32,
-    pub stops: Vec<(f32, Color)>, // position (0.0-1.0), color
+    /// 验证值是否有效
+    fn validate(&self, value: &T) -> bool;
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BackgroundType { Solid, LinearGradient }
-
-impl Default for BackgroundType { fn default() -> Self { BackgroundType::Solid } }
-
-#[derive(Clone, Debug)]
-pub struct BoxShadow {
-    pub offset_x: i32,
-    pub offset_y: i32,
-    pub blur_radius: i32,
-    pub spread_radius: i32,
-    pub color: Color,
-    pub inset: bool,
+/// CSS值计算器接口
+pub trait CSSValueComputer<T> {
+    /// 计算相对值到绝对值
+    fn compute(&self, value: &T, context: &ComputationContext) -> T;
 }
 
-#[derive(Clone, Default)]
-pub struct ComputedStyle {
-    pub background_color: Color,
-    pub background_type: BackgroundType,
-    pub background_gradient: Option<Gradient>,
-    pub color: Color,
-    pub font_size_px: i32,
-    pub font_weight: i32,  // 100-900
-    pub text_shadow_color: Color,
-    pub text_shadow_offset_x: i32,
-    pub text_shadow_offset_y: i32,
-    pub text_shadow_blur: i32,
-    pub letter_spacing_px: i32,
-    pub display: Display,
-    pub flex_direction: FlexDirection,
-    pub justify_content: JustifyContent,
-    pub align_items: AlignItems,
-    pub flex_wrap: FlexWrap,
-    pub gap_px: i32,
-    pub line_height_px: Option<i32>,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
-    pub margin: [i32; 4],   // top right bottom left
-    pub padding: [i32; 4],
-    pub border_width: [i32; 4],
-    pub border_color: Color,
-    pub box_sizing: BoxSizing,
-    pub box_shadow: Vec<BoxShadow>,
-    // positioning
-    pub position_absolute: bool,
-    pub left: Option<i32>,
-    pub top: Option<i32>,
-    pub right: Option<i32>,
-    pub bottom: Option<i32>,
-    pub z_index: i32,
-    pub overflow_hidden: bool,
+/// 选择器匹配器接口
+pub trait SelectorMatcher {
+    /// 检查选择器是否匹配元素
+    fn matches(&self, selector: &Selector, element: &dyn Element) -> bool;
+
+    /// 计算选择器特异性
+    fn specificity(&self, selector: &Selector) -> Specificity;
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum Combinator { Descendant, Child }
+/// CSS解析器接口
+pub trait CSSParser {
+    /// 解析样式表
+    fn parse_stylesheet(&self, input: &str) -> Result<StyleSheet, ParseError>;
 
-#[derive(Clone, Debug, Default)]
-pub struct SimpleSelector { pub tag: Option<String>, pub id: Option<String>, pub classes: alloc::vec::Vec<String> }
+    /// 解析选择器
+    fn parse_selector(&self, input: &str) -> Result<Selector, ParseError>;
 
-#[derive(Clone, Debug)]
-pub struct Selector { pub parts: alloc::vec::Vec<(Combinator, SimpleSelector)> } // 从右到左，第一个 combinator 为当前与上一个的关系
+    /// 解析声明
+    fn parse_declaration(&self, property: &str, value: &str) -> Result<Declaration, ParseError>;
+}
 
-impl Selector {
-    pub fn specificity(&self) -> (u32, u32, u32) {
-        let mut a=0u32; let mut b=0u32; let mut c=0u32;
-        for (_, s) in &self.parts {
-            if s.id.is_some() { a += 1; }
-            b += s.classes.len() as u32;
-            if s.tag.is_some() { c += 1; }
-        }
-        (a, b, c)
+/// 层叠计算器接口
+pub trait CascadeCalculator {
+    /// 计算层叠后的样式
+    fn cascade(&self, rules: &[&Rule], element: &dyn Element) -> Vec<Declaration>;
+}
+
+/// 元素接口（由DOM提供）
+pub trait Element {
+    fn tag_name(&self) -> Option<&str>;
+    fn id(&self) -> Option<&str>;
+    fn classes(&self) -> &[String];
+    fn parent(&self) -> Option<&dyn Element>;
+    fn index(&self) -> usize;
+}
+
+//==============================================================================
+// 基础数据类型 (Basic Data Types)
+//==============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    pub message: &'static str,
+    pub position: usize,
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CSS Parse Error at {}: {}", self.position, self.message)
     }
 }
 
-#[derive(Clone)]
-pub struct Rule { pub selectors: alloc::vec::Vec<Selector>, pub declarations: Vec<(String, String)> }
+/// CSS颜色值 - 符合CSS 2.1标准
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
 
-#[derive(Clone, Default)]
+impl Color {
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self::new(r, g, b, 255)
+    }
+
+    pub fn to_u32(&self) -> u32 {
+        ((self.a as u32) << 24) | ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
+    }
+
+    pub fn from_u32(value: u32) -> Self {
+        Self {
+            a: ((value >> 24) & 0xFF) as u8,
+            r: ((value >> 16) & 0xFF) as u8,
+            g: ((value >> 8) & 0xFF) as u8,
+            b: (value & 0xFF) as u8,
+        }
+    }
+}
+
+/// CSS长度值
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Length {
+    /// 像素值
+    Px(f32),
+    /// em单位 (相对于字体大小)
+    Em(f32),
+    /// ex单位 (相对于字符x高度)
+    Ex(f32),
+    /// 英寸
+    In(f32),
+    /// 厘米
+    Cm(f32),
+    /// 毫米
+    Mm(f32),
+    /// 点 (1/72英寸)
+    Pt(f32),
+    /// pica (12点)
+    Pc(f32),
+    /// 百分比
+    Percent(f32),
+}
+
+impl Default for Length {
+    fn default() -> Self { Length::Px(0.0) }
+}
+
+/// CSS显示类型 - 符合CSS 2.1
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Display {
+    None,
+    Inline,
+    Block,
+    ListItem,
+    InlineBlock,
+    Table,
+    InlineTable,
+    TableRowGroup,
+    TableHeaderGroup,
+    TableFooterGroup,
+    TableRow,
+    TableColumnGroup,
+    TableColumn,
+    TableCell,
+    TableCaption,
+}
+
+impl Default for Display {
+    fn default() -> Self { Display::Inline }
+}
+
+/// CSS定位类型
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Position {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+}
+
+impl Default for Position {
+    fn default() -> Self { Position::Static }
+}
+
+/// CSS浮动
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Float {
+    None,
+    Left,
+    Right,
+}
+
+impl Default for Float {
+    fn default() -> Self { Float::None }
+}
+
+/// CSS清除
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Clear {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+impl Default for Clear {
+    fn default() -> Self { Clear::None }
+}
+
+/// CSS可见性
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Visibility {
+    Visible,
+    Hidden,
+    Collapse,
+}
+
+impl Default for Visibility {
+    fn default() -> Self { Visibility::Visible }
+}
+
+/// CSS溢出处理
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Overflow {
+    Visible,
+    Hidden,
+    Scroll,
+    Auto,
+}
+
+impl Default for Overflow {
+    fn default() -> Self { Overflow::Visible }
+}
+
+/// 字体样式
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FontStyle {
+    Normal,
+    Italic,
+    Oblique,
+}
+
+impl Default for FontStyle {
+    fn default() -> Self { FontStyle::Normal }
+}
+
+/// 字体粗细
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FontWeight {
+    Normal,      // 400
+    Bold,        // 700
+    Bolder,
+    Lighter,
+    Weight(u16), // 100-900
+}
+
+impl Default for FontWeight {
+    fn default() -> Self { FontWeight::Normal }
+}
+
+impl FontWeight {
+    pub fn to_numeric(&self) -> u16 {
+        match self {
+            FontWeight::Normal => 400,
+            FontWeight::Bold => 700,
+            FontWeight::Weight(w) => *w,
+            FontWeight::Bolder => 700, // 简化处理
+            FontWeight::Lighter => 300, // 简化处理
+        }
+    }
+}
+
+/// 文本装饰
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextDecoration {
+    None,
+    Underline,
+    Overline,
+    LineThrough,
+    Blink,
+}
+
+impl Default for TextDecoration {
+    fn default() -> Self { TextDecoration::None }
+}
+
+/// 文本对齐
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextAlign {
+    Left,
+    Right,
+    Center,
+    Justify,
+}
+
+impl Default for TextAlign {
+    fn default() -> Self { TextAlign::Left }
+}
+
+/// 垂直对齐
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum VerticalAlign {
+    Baseline,
+    Sub,
+    Super,
+    Top,
+    TextTop,
+    Middle,
+    Bottom,
+    TextBottom,
+    Length(Length),
+    Percent(f32),
+}
+
+impl Default for VerticalAlign {
+    fn default() -> Self { VerticalAlign::Baseline }
+}
+
+/// 边框样式
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BorderStyle {
+    None,
+    Hidden,
+    Dotted,
+    Dashed,
+    Solid,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl Default for BorderStyle {
+    fn default() -> Self { BorderStyle::None }
+}
+
+/// 盒模型
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoxSizing {
+    ContentBox,
+    BorderBox,
+}
+
+impl Default for BoxSizing {
+    fn default() -> Self { BoxSizing::ContentBox }
+}
+
+/// 背景重复
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundRepeat {
+    Repeat,
+    RepeatX,
+    RepeatY,
+    NoRepeat,
+}
+
+impl Default for BackgroundRepeat {
+    fn default() -> Self { BackgroundRepeat::Repeat }
+}
+
+/// 背景附着
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BackgroundAttachment {
+    Scroll,
+    Fixed,
+}
+
+impl Default for BackgroundAttachment {
+    fn default() -> Self { BackgroundAttachment::Scroll }
+}
+
+/// 背景位置
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BackgroundPosition {
+    pub x: Length,
+    pub y: Length,
+}
+
+impl Default for BackgroundPosition {
+    fn default() -> Self {
+        Self {
+            x: Length::Percent(0.0),
+            y: Length::Percent(0.0),
+        }
+    }
+}
+
+/// 文本转换
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextTransform {
+    None,
+    Capitalize,
+    Uppercase,
+    Lowercase,
+}
+
+impl Default for TextTransform {
+    fn default() -> Self { TextTransform::None }
+}
+
+/// 表格布局
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TableLayout {
+    Auto,
+    Fixed,
+}
+
+impl Default for TableLayout {
+    fn default() -> Self { TableLayout::Auto }
+}
+
+/// 边框合并
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BorderCollapse {
+    Separate,
+    Collapse,
+}
+
+impl Default for BorderCollapse {
+    fn default() -> Self { BorderCollapse::Separate }
+}
+
+/// 空单元格
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EmptyCells {
+    Show,
+    Hide,
+}
+
+impl Default for EmptyCells {
+    fn default() -> Self { EmptyCells::Show }
+}
+
+/// 标题位置
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CaptionSide {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl Default for CaptionSide {
+    fn default() -> Self { CaptionSide::Top }
+}
+
+/// 列表样式类型
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListStyleType {
+    None,
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+    DecimalLeadingZero,
+    LowerRoman,
+    UpperRoman,
+    LowerGreek,
+    LowerAlpha,
+    UpperAlpha,
+    LowerLatin,
+    UpperLatin,
+}
+
+impl Default for ListStyleType {
+    fn default() -> Self { ListStyleType::Disc }
+}
+
+/// 列表样式位置
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListStylePosition {
+    Inside,
+    Outside,
+}
+
+impl Default for ListStylePosition {
+    fn default() -> Self { ListStylePosition::Outside }
+}
+
+/// 光标样式
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Cursor {
+    Auto,
+    Default,
+    None,
+    ContextMenu,
+    Help,
+    Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    EResize,
+    NResize,
+    NeResize,
+    NwResize,
+    SResize,
+    SeResize,
+    SwResize,
+    WResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ColResize,
+    RowResize,
+    AllScroll,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl Default for Cursor {
+    fn default() -> Self { Cursor::Auto }
+}
+
+//==============================================================================
+// 选择器系统 (Selector System)
+//==============================================================================
+
+/// 选择器特异性
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Specificity {
+    pub a: u32, // inline styles
+    pub b: u32, // IDs
+    pub c: u32, // classes, attributes, pseudo-classes
+    pub d: u32, // elements, pseudo-elements
+}
+
+impl Specificity {
+    pub fn new() -> Self {
+        Self { a: 0, b: 0, c: 0, d: 0 }
+    }
+}
+
+impl Ord for Specificity {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.a.cmp(&other.a)
+            .then_with(|| self.b.cmp(&other.b))
+            .then_with(|| self.c.cmp(&other.c))
+            .then_with(|| self.d.cmp(&other.d))
+    }
+}
+
+impl PartialOrd for Specificity {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// 组合符
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Combinator {
+    /// 后代选择器 (空格)
+    Descendant,
+    /// 子元素选择器 (>)
+    Child,
+    /// 相邻兄弟选择器 (+)
+    AdjacentSibling,
+    /// 通用兄弟选择器 (~)
+    GeneralSibling,
+}
+
+/// 简单选择器
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SimpleSelector {
+    pub element_name: Option<String>,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub attributes: Vec<AttributeSelector>,
+    pub pseudo_classes: Vec<PseudoClass>,
+    pub pseudo_elements: Vec<PseudoElement>,
+}
+
+/// 属性选择器
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributeSelector {
+    pub name: String,
+    pub operator: AttributeOperator,
+    pub value: Option<String>,
+    pub case_insensitive: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttributeOperator {
+    /// [attr]
+    Exists,
+    /// [attr=value]
+    Equals,
+    /// [attr~=value]
+    Contains,
+    /// [attr|=value]
+    DashMatch,
+    /// [attr^=value]
+    PrefixMatch,
+    /// [attr$=value]
+    SuffixMatch,
+    /// [attr*=value]
+    SubstringMatch,
+}
+
+/// 伪类
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PseudoClass {
+    Link,
+    Visited,
+    Hover,
+    Active,
+    Focus,
+    FirstChild,
+    LastChild,
+    NthChild(i32, i32), // an + b
+    NthLastChild(i32, i32),
+    FirstOfType,
+    LastOfType,
+    NthOfType(i32, i32),
+    NthLastOfType(i32, i32),
+    OnlyChild,
+    OnlyOfType,
+    Root,
+    Empty,
+    Lang(String),
+}
+
+/// 伪元素
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PseudoElement {
+    FirstLine,
+    FirstLetter,
+    Before,
+    After,
+}
+
+/// 复合选择器
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComplexSelector {
+    pub simple: SimpleSelector,
+    pub combinator: Option<Combinator>,
+    pub next: Option<Box<ComplexSelector>>,
+}
+
+/// 选择器
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Selector {
+    pub complex: ComplexSelector,
+}
+
+impl Selector {
+    pub fn specificity(&self) -> Specificity {
+        let mut spec = Specificity::new();
+        self.calculate_specificity(&self.complex, &mut spec);
+        spec
+    }
+
+    fn calculate_specificity(&self, complex: &ComplexSelector, spec: &mut Specificity) {
+        let simple = &complex.simple;
+
+        // ID选择器
+        if simple.id.is_some() {
+            spec.b += 1;
+        }
+
+        // 类选择器、属性选择器、伪类
+        spec.c += simple.classes.len() as u32;
+        spec.c += simple.attributes.len() as u32;
+        spec.c += simple.pseudo_classes.len() as u32;
+
+        // 元素选择器、伪元素
+        if simple.element_name.is_some() {
+            spec.d += 1;
+        }
+        spec.d += simple.pseudo_elements.len() as u32;
+
+        // 递归处理复合选择器
+        if let Some(ref next) = complex.next {
+            self.calculate_specificity(next, spec);
+        }
+    }
+}
+
+//==============================================================================
+// CSS规则和样式表 (Rules and Stylesheets)
+//==============================================================================
+
+/// CSS声明
+#[derive(Clone, Debug, PartialEq)]
+pub struct Declaration {
+    pub property: String,
+    pub value: CSSValue,
+    pub important: bool,
+}
+
+/// CSS值的统一表示
+#[derive(Clone, Debug, PartialEq)]
+pub enum CSSValue {
+    Color(Color),
+    Length(Length),
+    Number(f32),
+    Integer(i32),
+    String(String),
+    Keyword(String),
+    Function(String, Vec<CSSValue>),
+    List(Vec<CSSValue>),
+}
+
+/// CSS规则
+#[derive(Clone, Debug)]
+pub struct Rule {
+    pub selectors: Vec<Selector>,
+    pub declarations: Vec<Declaration>,
+}
+
+/// 样式表
+#[derive(Clone, Default, Debug)]
 pub struct StyleSheet {
     pub rules: Vec<Rule>,
+    pub origin: Origin,
 }
+
+/// 样式来源
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    UserAgent,
+    User,
+    Author,
+}
+
+impl Default for Origin {
+    fn default() -> Self { Origin::Author }
+}
+
+//==============================================================================
+// 计算上下文 (Computation Context)
+//==============================================================================
+
+/// 计算上下文 - 提供计算CSS值所需的环境信息
+#[derive(Clone, Debug)]
+pub struct ComputationContext {
+    pub viewport_width: f32,
+    pub viewport_height: f32,
+    pub font_size: f32,
+    pub parent_font_size: f32,
+    pub root_font_size: f32,
+    pub dpi: f32,
+}
+
+impl Default for ComputationContext {
+    fn default() -> Self {
+        Self {
+            viewport_width: 1024.0,
+            viewport_height: 768.0,
+            font_size: 16.0,
+            parent_font_size: 16.0,
+            root_font_size: 16.0,
+            dpi: 96.0,
+        }
+    }
+}
+
+//==============================================================================
+// 计算样式 (Computed Style)
+//==============================================================================
+
+/// 完整的计算样式 - 符合CSS 2.1所有属性
+#[derive(Clone, Debug)]
+pub struct ComputedStyle {
+    // 显示和可见性
+    pub display: Display,
+    pub visibility: Visibility,
+    pub overflow: Overflow,
+
+    // 定位
+    pub position: Position,
+    pub top: Length,
+    pub right: Length,
+    pub bottom: Length,
+    pub left: Length,
+    pub z_index: i32,
+
+    // 浮动和清除
+    pub float: Float,
+    pub clear: Clear,
+
+    // 盒模型
+    pub width: Length,
+    pub height: Length,
+    pub min_width: Length,
+    pub max_width: Length,
+    pub min_height: Length,
+    pub max_height: Length,
+
+    // 外边距
+    pub margin_top: Length,
+    pub margin_right: Length,
+    pub margin_bottom: Length,
+    pub margin_left: Length,
+
+    // 内边距
+    pub padding_top: Length,
+    pub padding_right: Length,
+    pub padding_bottom: Length,
+    pub padding_left: Length,
+
+    // 边框
+    pub border_top_width: Length,
+    pub border_right_width: Length,
+    pub border_bottom_width: Length,
+    pub border_left_width: Length,
+    pub border_top_style: BorderStyle,
+    pub border_right_style: BorderStyle,
+    pub border_bottom_style: BorderStyle,
+    pub border_left_style: BorderStyle,
+    pub border_top_color: Color,
+    pub border_right_color: Color,
+    pub border_bottom_color: Color,
+    pub border_left_color: Color,
+
+    // 背景
+    pub background_color: Color,
+    pub background_image: Option<String>,
+    pub background_repeat: BackgroundRepeat,
+    pub background_attachment: BackgroundAttachment,
+    pub background_position: BackgroundPosition,
+
+    // 字体和文本
+    pub font_family: Vec<String>,
+    pub font_style: FontStyle,
+    pub font_weight: FontWeight,
+    pub font_size: Length,
+    pub line_height: Length,
+    pub color: Color,
+    pub text_decoration: TextDecoration,
+    pub text_align: TextAlign,
+    pub text_indent: Length,
+    pub text_transform: TextTransform,
+    pub vertical_align: VerticalAlign,
+    pub letter_spacing: Length,
+    pub word_spacing: Length,
+
+    // 表格
+    pub table_layout: TableLayout,
+    pub border_collapse: BorderCollapse,
+    pub border_spacing: (Length, Length),
+    pub empty_cells: EmptyCells,
+    pub caption_side: CaptionSide,
+
+    // 列表
+    pub list_style_type: ListStyleType,
+    pub list_style_position: ListStylePosition,
+    pub list_style_image: Option<String>,
+
+    // 其他
+    pub box_sizing: BoxSizing,
+    pub cursor: Cursor,
+    pub outline_width: Length,
+    pub outline_style: BorderStyle,
+    pub outline_color: Color,
+}
+
+impl Default for ComputedStyle {
+    fn default() -> Self {
+        Self {
+            display: Display::default(),
+            visibility: Visibility::default(),
+            overflow: Overflow::default(),
+            position: Position::default(),
+            top: Length::default(),
+            right: Length::default(),
+            bottom: Length::default(),
+            left: Length::default(),
+            z_index: 0,
+            float: Float::default(),
+            clear: Clear::default(),
+            width: Length::default(),
+            height: Length::default(),
+            min_width: Length::default(),
+            max_width: Length::default(),
+            min_height: Length::default(),
+            max_height: Length::default(),
+            margin_top: Length::default(),
+            margin_right: Length::default(),
+            margin_bottom: Length::default(),
+            margin_left: Length::default(),
+            padding_top: Length::default(),
+            padding_right: Length::default(),
+            padding_bottom: Length::default(),
+            padding_left: Length::default(),
+            border_top_width: Length::default(),
+            border_right_width: Length::default(),
+            border_bottom_width: Length::default(),
+            border_left_width: Length::default(),
+            border_top_style: BorderStyle::default(),
+            border_right_style: BorderStyle::default(),
+            border_bottom_style: BorderStyle::default(),
+            border_left_style: BorderStyle::default(),
+            border_top_color: Color::default(),
+            border_right_color: Color::default(),
+            border_bottom_color: Color::default(),
+            border_left_color: Color::default(),
+            background_color: Color::default(),
+            background_image: None,
+            background_repeat: BackgroundRepeat::default(),
+            background_attachment: BackgroundAttachment::default(),
+            background_position: BackgroundPosition::default(),
+            font_family: vec!["serif".to_string()],
+            font_style: FontStyle::default(),
+            font_weight: FontWeight::default(),
+            font_size: Length::Px(16.0),
+            line_height: Length::Px(18.0),
+            color: Color::rgb(0, 0, 0),
+            text_decoration: TextDecoration::default(),
+            text_align: TextAlign::default(),
+            text_indent: Length::default(),
+            text_transform: TextTransform::default(),
+            vertical_align: VerticalAlign::default(),
+            letter_spacing: Length::default(),
+            word_spacing: Length::default(),
+            table_layout: TableLayout::default(),
+            border_collapse: BorderCollapse::default(),
+            border_spacing: (Length::Px(2.0), Length::Px(2.0)),
+            empty_cells: EmptyCells::default(),
+            caption_side: CaptionSide::default(),
+            list_style_type: ListStyleType::default(),
+            list_style_position: ListStylePosition::default(),
+            list_style_image: None,
+            box_sizing: BoxSizing::default(),
+            cursor: Cursor::default(),
+            outline_width: Length::default(),
+            outline_style: BorderStyle::default(),
+            outline_color: Color::default(),
+        }
+    }
+}
+
+//==============================================================================
+// CSS值解析器实现 (Value Parsers Implementation)
+//==============================================================================
+
+/// 颜色解析器
+pub struct ColorParser;
+
+impl CSSValueParser<Color> for ColorParser {
+    fn parse(&self, input: &str, _context: &ComputationContext) -> Result<Color, ParseError> {
+        parse_color(input).ok_or(ParseError {
+            message: "Invalid color value",
+            position: 0,
+        })
+    }
+
+    fn validate(&self, _value: &Color) -> bool {
+        true // 所有Color实例都是有效的
+    }
+}
+
+/// 长度解析器
+pub struct LengthParser;
+
+impl CSSValueParser<Length> for LengthParser {
+    fn parse(&self, input: &str, _context: &ComputationContext) -> Result<Length, ParseError> {
+        parse_length(input).ok_or(ParseError {
+            message: "Invalid length value",
+            position: 0,
+        })
+    }
+
+    fn validate(&self, value: &Length) -> bool {
+        match value {
+            Length::Px(v) | Length::Em(v) | Length::Ex(v) | Length::In(v) |
+            Length::Cm(v) | Length::Mm(v) | Length::Pt(v) | Length::Pc(v) |
+            Length::Percent(v) => v.is_finite(),
+        }
+    }
+}
+
+/// 长度计算器
+pub struct LengthComputer;
+
+impl CSSValueComputer<Length> for LengthComputer {
+    fn compute(&self, value: &Length, context: &ComputationContext) -> Length {
+        match *value {
+            Length::Px(v) => Length::Px(v),
+            Length::Em(v) => Length::Px(v * context.font_size),
+            Length::Ex(v) => Length::Px(v * context.font_size * 0.5), // 近似值
+            Length::In(v) => Length::Px(v * context.dpi),
+            Length::Cm(v) => Length::Px(v * context.dpi / 2.54),
+            Length::Mm(v) => Length::Px(v * context.dpi / 25.4),
+            Length::Pt(v) => Length::Px(v * context.dpi / 72.0),
+            Length::Pc(v) => Length::Px(v * context.dpi / 6.0),
+            Length::Percent(v) => Length::Percent(v), // 百分比需要上下文处理
+        }
+    }
+}
+
+//==============================================================================
+// CSS解析器实现 (Parser Implementation)
+//==============================================================================
+
+/// 标准CSS解析器
+pub struct StandardCSSParser {
+    color_parser: ColorParser,
+    length_parser: LengthParser,
+}
+
+impl Default for StandardCSSParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StandardCSSParser {
+    pub fn new() -> Self {
+        Self {
+            color_parser: ColorParser,
+            length_parser: LengthParser,
+        }
+    }
+}
+
+impl CSSParser for StandardCSSParser {
+    fn parse_stylesheet(&self, input: &str) -> Result<StyleSheet, ParseError> {
+        parse_stylesheet(input)
+    }
+
+    fn parse_selector(&self, input: &str) -> Result<Selector, ParseError> {
+        parse_selector(input)
+    }
+
+    fn parse_declaration(&self, property: &str, value: &str) -> Result<Declaration, ParseError> {
+        parse_declaration(property, value)
+    }
+}
+
+//==============================================================================
+// 选择器匹配器实现 (Selector Matcher Implementation)
+//==============================================================================
+
+pub struct StandardSelectorMatcher;
+
+impl SelectorMatcher for StandardSelectorMatcher {
+    fn matches(&self, selector: &Selector, element: &dyn Element) -> bool {
+        match_complex_selector(&selector.complex, element)
+    }
+
+    fn specificity(&self, selector: &Selector) -> Specificity {
+        selector.specificity()
+    }
+}
+
+fn match_complex_selector(complex: &ComplexSelector, element: &dyn Element) -> bool {
+    // 首先匹配当前简单选择器
+    if !match_simple_selector(&complex.simple, element) {
+        return false;
+    }
+
+    // 如果没有下一个选择器，匹配成功
+    let Some(ref next) = complex.next else {
+        return true;
+    };
+
+    let Some(combinator) = complex.combinator else {
+        return false;
+    };
+
+    match combinator {
+        Combinator::Descendant => {
+            // 查找任意祖先元素
+            let mut current = element.parent();
+            while let Some(parent) = current {
+                if match_complex_selector(next, parent) {
+                    return true;
+                }
+                current = parent.parent();
+            }
+            false
+        },
+        Combinator::Child => {
+            // 查找直接父元素
+            if let Some(parent) = element.parent() {
+                match_complex_selector(next, parent)
+            } else {
+                false
+            }
+        },
+        // 简化实现，暂不支持兄弟选择器
+        Combinator::AdjacentSibling | Combinator::GeneralSibling => false,
+    }
+}
+
+fn match_simple_selector(simple: &SimpleSelector, element: &dyn Element) -> bool {
+    // 匹配元素名
+    if let Some(ref name) = simple.element_name {
+        if let Some(tag) = element.tag_name() {
+            if name != tag {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // 匹配ID
+    if let Some(ref id) = simple.id {
+        if let Some(element_id) = element.id() {
+            if id != element_id {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    // 匹配类名
+    for class in &simple.classes {
+        if !element.classes().contains(class) {
+            return false;
+        }
+    }
+
+    // TODO: 实现属性选择器和伪类匹配
+
+    true
+}
+
+//==============================================================================
+// 层叠计算器实现 (Cascade Calculator Implementation)
+//==============================================================================
+
+pub struct StandardCascadeCalculator {
+    matcher: StandardSelectorMatcher,
+}
+
+impl Default for StandardCascadeCalculator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StandardCascadeCalculator {
+    pub fn new() -> Self {
+        Self {
+            matcher: StandardSelectorMatcher,
+        }
+    }
+}
+
+impl CascadeCalculator for StandardCascadeCalculator {
+    fn cascade(&self, rules: &[&Rule], element: &dyn Element) -> Vec<Declaration> {
+        let mut matched_declarations = Vec::new();
+
+        // 收集所有匹配的声明
+        for rule in rules {
+            for selector in &rule.selectors {
+                if self.matcher.matches(selector, element) {
+                    let specificity = self.matcher.specificity(selector);
+                    for declaration in &rule.declarations {
+                        matched_declarations.push((declaration.clone(), specificity, rule.declarations.len()));
+                    }
+                }
+            }
+        }
+
+        // 按特异性和源顺序排序
+        matched_declarations.sort_by(|a, b| {
+            // 首先比较!important
+            b.0.important.cmp(&a.0.important)
+                .then_with(|| a.1.cmp(&b.1))  // 特异性
+                .then_with(|| a.2.cmp(&b.2))  // 源顺序
+        });
+
+        // 去重，保留最高优先级的声明
+        let mut final_declarations = Vec::new();
+        let mut seen_properties = Vec::new();
+
+        for (declaration, _, _) in matched_declarations {
+            if !seen_properties.contains(&declaration.property) {
+                seen_properties.push(declaration.property.clone());
+                final_declarations.push(declaration);
+            }
+        }
+
+        final_declarations
+    }
+}
+
+//==============================================================================
+// 样式计算器实现 (Style Computation Implementation)
+//==============================================================================
+
+/// 计算样式生成器
+pub struct StyleComputer {
+    cascade_calculator: StandardCascadeCalculator,
+    length_computer: LengthComputer,
+}
+
+impl Default for StyleComputer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StyleComputer {
+    pub fn new() -> Self {
+        Self {
+            cascade_calculator: StandardCascadeCalculator::new(),
+            length_computer: LengthComputer,
+        }
+    }
+
+    /// 计算元素的完整样式
+    pub fn compute_style(
+        &self,
+        element: &dyn Element,
+        stylesheets: &[&StyleSheet],
+        context: &ComputationContext,
+    ) -> ComputedStyle {
+        let mut computed = ComputedStyle::default();
+
+        // 收集所有适用的规则
+        let mut all_rules = Vec::new();
+        for stylesheet in stylesheets {
+            for rule in &stylesheet.rules {
+                all_rules.push(rule);
+            }
+        }
+
+        // 执行层叠算法
+        let declarations = self.cascade_calculator.cascade(&all_rules, element);
+
+        // 应用声明到计算样式
+        for declaration in declarations {
+            self.apply_declaration(&mut computed, &declaration, context);
+        }
+
+        computed
+    }
+
+    /// 应用单个声明到计算样式
+    fn apply_declaration(
+        &self,
+        computed: &mut ComputedStyle,
+        declaration: &Declaration,
+        context: &ComputationContext,
+    ) {
+        match declaration.property.as_str() {
+            "display" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    computed.display = parse_display_value(value);
+                }
+            },
+            "color" => {
+                if let CSSValue::Color(color) = &declaration.value {
+                    computed.color = *color;
+                }
+            },
+            "background-color" => {
+                if let CSSValue::Color(color) = &declaration.value {
+                    computed.background_color = *color;
+                }
+            },
+            "font-size" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.font_size = self.length_computer.compute(length, context);
+                }
+            },
+            "width" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.width = self.length_computer.compute(length, context);
+                }
+            },
+            "height" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.height = self.length_computer.compute(length, context);
+                }
+            },
+            "margin" => {
+                // 处理margin简写属性
+                self.apply_box_property(&mut computed.margin_top, &mut computed.margin_right,
+                                      &mut computed.margin_bottom, &mut computed.margin_left,
+                                      &declaration.value, context);
+            },
+            "margin-top" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.margin_top = self.length_computer.compute(length, context);
+                }
+            },
+            "margin-right" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.margin_right = self.length_computer.compute(length, context);
+                }
+            },
+            "margin-bottom" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.margin_bottom = self.length_computer.compute(length, context);
+                }
+            },
+            "margin-left" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.margin_left = self.length_computer.compute(length, context);
+                }
+            },
+            "padding" => {
+                // 处理padding简写属性
+                self.apply_box_property(&mut computed.padding_top, &mut computed.padding_right,
+                                      &mut computed.padding_bottom, &mut computed.padding_left,
+                                      &declaration.value, context);
+            },
+            "padding-top" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.padding_top = self.length_computer.compute(length, context);
+                }
+            },
+            "padding-right" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.padding_right = self.length_computer.compute(length, context);
+                }
+            },
+            "padding-bottom" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.padding_bottom = self.length_computer.compute(length, context);
+                }
+            },
+            "padding-left" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.padding_left = self.length_computer.compute(length, context);
+                }
+            },
+            "border-width" => {
+                // 处理border-width简写属性
+                self.apply_box_property(&mut computed.border_top_width, &mut computed.border_right_width,
+                                      &mut computed.border_bottom_width, &mut computed.border_left_width,
+                                      &declaration.value, context);
+            },
+            "position" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    computed.position = parse_position_value(value);
+                }
+            },
+            "font-weight" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    computed.font_weight = parse_font_weight_value(value);
+                } else if let CSSValue::Integer(weight) = &declaration.value {
+                    if *weight >= 100 && *weight <= 900 {
+                        computed.font_weight = FontWeight::Weight(*weight as u16);
+                    }
+                }
+            },
+            _ => {
+                // 未识别的属性暂时忽略
+            }
+        }
+    }
+
+    /// 应用盒模型属性（margin, padding, border-width等）
+    fn apply_box_property(
+        &self,
+        top: &mut Length,
+        right: &mut Length,
+        bottom: &mut Length,
+        left: &mut Length,
+        value: &CSSValue,
+        context: &ComputationContext,
+    ) {
+        match value {
+            CSSValue::Length(length) => {
+                // 单个值，应用到所有四边
+                let computed_length = self.length_computer.compute(length, context);
+                *top = computed_length;
+                *right = computed_length;
+                *bottom = computed_length;
+                *left = computed_length;
+            },
+            CSSValue::List(values) => {
+                // 多个值，按CSS规则展开
+                let lengths: Vec<Length> = values.iter().filter_map(|v| {
+                    if let CSSValue::Length(length) = v {
+                        Some(self.length_computer.compute(length, context))
+                    } else {
+                        None
+                    }
+                }).collect();
+
+                match lengths.len() {
+                    1 => {
+                        *top = lengths[0];
+                        *right = lengths[0];
+                        *bottom = lengths[0];
+                        *left = lengths[0];
+                    },
+                    2 => {
+                        *top = lengths[0];
+                        *bottom = lengths[0];
+                        *right = lengths[1];
+                        *left = lengths[1];
+                    },
+                    3 => {
+                        *top = lengths[0];
+                        *right = lengths[1];
+                        *bottom = lengths[2];
+                        *left = lengths[1];
+                    },
+                    4 => {
+                        *top = lengths[0];
+                        *right = lengths[1];
+                        *bottom = lengths[2];
+                        *left = lengths[3];
+                    },
+                    _ => {}
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+//==============================================================================
+// 解析函数实现 (Parsing Functions Implementation)
+//==============================================================================
 
 pub fn parse_color(s: &str) -> Option<Color> {
     let t = s.trim();
@@ -130,14 +1420,25 @@ pub fn parse_color(s: &str) -> Option<Color> {
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some(match hex.len() {
             3 => {
-                let r = (v >> 8) & 0xF;
-                let g = (v >> 4) & 0xF;
-                let b = v & 0xF;
-                Color(0xFF000000 | (r << 20) | (r << 16) | (g << 12) | (g << 8) | (b << 4) | b)
+                let r = ((v >> 8) & 0xF) as u8;
+                let g = ((v >> 4) & 0xF) as u8;
+                let b = (v & 0xF) as u8;
+                Color::new(r * 17, g * 17, b * 17, 255) // 将4位扩展到8位
             },
-            6 => Color(0xFF000000u32 | v),
-            8 => Color(v),
-            _ => Color(0xFF000000),
+            6 => {
+                let r = ((v >> 16) & 0xFF) as u8;
+                let g = ((v >> 8) & 0xFF) as u8;
+                let b = (v & 0xFF) as u8;
+                Color::new(r, g, b, 255)
+            },
+            8 => {
+                let a = ((v >> 24) & 0xFF) as u8;
+                let r = ((v >> 16) & 0xFF) as u8;
+                let g = ((v >> 8) & 0xFF) as u8;
+                let b = (v & 0xFF) as u8;
+                Color::new(r, g, b, a)
+            },
+            _ => return None,
         });
     }
 
@@ -149,7 +1450,7 @@ pub fn parse_color(s: &str) -> Option<Color> {
             let r = parts[0].parse::<u8>().ok()?;
             let g = parts[1].parse::<u8>().ok()?;
             let b = parts[2].parse::<u8>().ok()?;
-            return Some(Color(0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+            return Some(Color::new(r, g, b, 255));
         }
     }
 
@@ -161,464 +1462,456 @@ pub fn parse_color(s: &str) -> Option<Color> {
             let r = parts[0].parse::<u8>().ok()?;
             let g = parts[1].parse::<u8>().ok()?;
             let b = parts[2].parse::<u8>().ok()?;
-            let a = (parts[3].parse::<f32>().ok()? * 255.0) as u8;
-            return Some(Color(((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)));
+            let a = (parts[3].parse::<f32>().ok()?.clamp(0.0, 1.0) * 255.0) as u8;
+            return Some(Color::new(r, g, b, a));
         }
     }
 
-    // 颜色关键字
-    match t {
-        "black" => Some(Color(0xFF000000)),
-        "white" => Some(Color(0xFFFFFFFF)),
-        "red" => Some(Color(0xFFFF0000)),
-        "green" => Some(Color(0xFF00FF00)),
-        "blue" => Some(Color(0xFF0000FF)),
-        "transparent" => Some(Color(0x00000000)),
+    // 颜色关键字 - 符合CSS 2.1标准
+    match t.to_lowercase().as_str() {
+        "black" => Some(Color::rgb(0, 0, 0)),
+        "silver" => Some(Color::rgb(192, 192, 192)),
+        "gray" => Some(Color::rgb(128, 128, 128)),
+        "white" => Some(Color::rgb(255, 255, 255)),
+        "maroon" => Some(Color::rgb(128, 0, 0)),
+        "red" => Some(Color::rgb(255, 0, 0)),
+        "purple" => Some(Color::rgb(128, 0, 128)),
+        "fuchsia" => Some(Color::rgb(255, 0, 255)),
+        "green" => Some(Color::rgb(0, 128, 0)),
+        "lime" => Some(Color::rgb(0, 255, 0)),
+        "olive" => Some(Color::rgb(128, 128, 0)),
+        "yellow" => Some(Color::rgb(255, 255, 0)),
+        "navy" => Some(Color::rgb(0, 0, 128)),
+        "blue" => Some(Color::rgb(0, 0, 255)),
+        "teal" => Some(Color::rgb(0, 128, 128)),
+        "aqua" => Some(Color::rgb(0, 255, 255)),
+        "transparent" => Some(Color::new(0, 0, 0, 0)),
         _ => None,
     }
 }
 
-pub fn parse_px(s: &str) -> Option<i32> {
+pub fn parse_length(s: &str) -> Option<Length> {
     let t = s.trim();
 
-    // calc() 函数支持
-    if t.starts_with("calc(") && t.ends_with(')') {
-        let inner = &t[5..t.len()-1];
-        return parse_calc_expression(inner);
+    if t == "0" {
+        return Some(Length::Px(0.0));
     }
 
-    // 普通数值
-    if let Some(px) = t.strip_suffix("px") {
-        px.parse::<i32>().ok()
-    } else if let Some(percent) = t.strip_suffix('%') {
-        // 百分比暂时按0处理，需要上下文计算
-        percent.parse::<f32>().ok().map(|_| 0)
-    } else {
-        t.parse::<i32>().ok()
+    // 像素
+    if let Some(value) = t.strip_suffix("px") {
+        return value.parse::<f32>().ok().map(Length::Px);
     }
+
+    // em单位
+    if let Some(value) = t.strip_suffix("em") {
+        return value.parse::<f32>().ok().map(Length::Em);
+    }
+
+    // ex单位
+    if let Some(value) = t.strip_suffix("ex") {
+        return value.parse::<f32>().ok().map(Length::Ex);
+    }
+
+    // 英寸
+    if let Some(value) = t.strip_suffix("in") {
+        return value.parse::<f32>().ok().map(Length::In);
+    }
+
+    // 厘米
+    if let Some(value) = t.strip_suffix("cm") {
+        return value.parse::<f32>().ok().map(Length::Cm);
+    }
+
+    // 毫米
+    if let Some(value) = t.strip_suffix("mm") {
+        return value.parse::<f32>().ok().map(Length::Mm);
+    }
+
+    // 点
+    if let Some(value) = t.strip_suffix("pt") {
+        return value.parse::<f32>().ok().map(Length::Pt);
+    }
+
+    // pica
+    if let Some(value) = t.strip_suffix("pc") {
+        return value.parse::<f32>().ok().map(Length::Pc);
+    }
+
+    // 百分比
+    if let Some(value) = t.strip_suffix('%') {
+        return value.parse::<f32>().ok().map(Length::Percent);
+    }
+
+    // 纯数字（当作像素）
+    t.parse::<f32>().ok().map(Length::Px)
 }
 
-fn parse_calc_expression(expr: &str) -> Option<i32> {
-    // 简化的calc表达式解析器
-    // 支持: 100% - 120px, 50% + 10px 等基本运算
-    let expr = expr.trim();
+/// 解析CSS声明
+pub fn parse_declaration(property: &str, value: &str) -> Result<Declaration, ParseError> {
+    let css_value = parse_css_value(value)?;
+    Ok(Declaration {
+        property: property.to_string(),
+        value: css_value,
+        important: value.contains("!important"),
+    })
+}
 
-    // 查找运算符
-    let ops = [" + ", " - ", " * ", " / "];
-    for op in &ops {
-        if let Some(pos) = expr.find(op) {
-            let left = expr[..pos].trim();
-            let right = expr[pos + op.len()..].trim();
+/// 解析CSS值
+pub fn parse_css_value(value: &str) -> Result<CSSValue, ParseError> {
+    let trimmed = value.trim().replace("!important", "").trim().to_string();
 
-            let left_val = parse_calc_value(left)?;
-            let right_val = parse_calc_value(right)?;
+    // 尝试解析为颜色
+    if let Some(color) = parse_color(&trimmed) {
+        return Ok(CSSValue::Color(color));
+    }
 
-            return match op.trim() {
-                "+" => Some(left_val + right_val),
-                "-" => Some(left_val - right_val),
-                "*" => Some(left_val * right_val),
-                "/" => if right_val != 0 { Some(left_val / right_val) } else { None },
-                _ => None,
-            };
+    // 尝试解析为长度
+    if let Some(length) = parse_length(&trimmed) {
+        return Ok(CSSValue::Length(length));
+    }
+
+    // 尝试解析为数字
+    if let Ok(number) = trimmed.parse::<f32>() {
+        return Ok(CSSValue::Number(number));
+    }
+
+    // 尝试解析为整数
+    if let Ok(integer) = trimmed.parse::<i32>() {
+        return Ok(CSSValue::Integer(integer));
+    }
+
+    // 函数值
+    if trimmed.contains('(') && trimmed.ends_with(')') {
+        let parts: Vec<&str> = trimmed.splitn(2, '(').collect();
+        if parts.len() == 2 {
+            let func_name = parts[0].trim();
+            let func_args = &parts[1][..parts[1].len()-1];
+
+            let args = parse_function_args(func_args)?;
+            return Ok(CSSValue::Function(func_name.to_string(), args));
         }
     }
 
-    // 单个值
-    parse_calc_value(expr)
-}
+    // 列表值（用空格或逗号分隔）
+    if trimmed.contains(' ') || trimmed.contains(',') {
+        let separator = if trimmed.contains(',') { ',' } else { ' ' };
+        let parts: Vec<&str> = trimmed.split(separator).map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
 
-fn parse_calc_value(s: &str) -> Option<i32> {
-    let s = s.trim();
-
-    if s.ends_with("px") {
-        s.strip_suffix("px")?.parse::<i32>().ok()
-    } else if s.ends_with('%') {
-        // 百分比值暂时假设基于视口宽度1280px
-        let percent = s.strip_suffix('%')?.parse::<f32>().ok()?;
-        Some((1280.0 * percent / 100.0) as i32)
-    } else {
-        s.parse::<i32>().ok()
-    }
-}
-
-pub fn parse_display(s: &str) -> Option<Display> {
-    match s.trim() {
-        "block" => Some(Display::Block),
-        "flex" => Some(Display::Flex),
-        _ => None,
-    }
-}
-
-pub fn parse_flex_direction(s: &str) -> Option<FlexDirection> {
-    match s.trim() {
-        "row" => Some(FlexDirection::Row),
-        "column" => Some(FlexDirection::Column),
-        _ => None,
-    }
-}
-
-pub fn parse_justify_content(s: &str) -> Option<JustifyContent> {
-    match s.trim() {
-        "flex-start" | "start" => Some(JustifyContent::Start),
-        "center" => Some(JustifyContent::Center),
-        "flex-end" | "end" => Some(JustifyContent::End),
-        "space-between" => Some(JustifyContent::SpaceBetween),
-        _ => None,
-    }
-}
-
-pub fn parse_align_items(s: &str) -> Option<AlignItems> {
-    match s.trim() {
-        "flex-start" | "start" => Some(AlignItems::Start),
-        "center" => Some(AlignItems::Center),
-        "flex-end" | "end" => Some(AlignItems::End),
-        _ => None,
-    }
-}
-
-pub fn parse_border_width(s: &str) -> Option<i32> { parse_px(s) }
-
-pub fn parse_flex_wrap(s: &str) -> Option<FlexWrap> {
-    match s.trim() {
-        "nowrap" => Some(FlexWrap::NoWrap),
-        "wrap" => Some(FlexWrap::Wrap),
-        _ => None,
-    }
-}
-
-pub fn parse_box4(s: &str) -> Option<[i32;4]> {
-    // CSS 1-4 值展开
-    let parts: alloc::vec::Vec<&str> = s.split_whitespace().filter(|t| !t.is_empty()).collect();
-    if parts.is_empty() { return None; }
-    let p2i = |p: &str| parse_px(p);
-    match parts.len() {
-        1 => p2i(parts[0]).map(|v| [v,v,v,v]),
-        2 => match (p2i(parts[0]), p2i(parts[1])) { (Some(v), Some(h)) => Some([v,h,v,h]), _ => None },
-        3 => match (p2i(parts[0]), p2i(parts[1]), p2i(parts[2])) { (Some(t), Some(h), Some(b)) => Some([t,h,b,h]), _ => None },
-        _ => match (p2i(parts[0]), p2i(parts[1]), p2i(parts[2]), p2i(parts[3])) { (Some(t),Some(r),Some(b),Some(l)) => Some([t,r,b,l]), _ => None },
-    }
-}
-
-pub fn parse_border_shorthand(s: &str) -> (Option<i32>, Option<Color>) {
-    // 支持 "1px solid #RRGGBB" 或 "1 #RRGGBB"（忽略样式名）
-    let mut w: Option<i32> = None; let mut c: Option<Color> = None;
-    for token in s.split(|ch: char| ch.is_whitespace()) {
-        if token.is_empty() { continue; }
-        if w.is_none() { if let Some(px) = parse_px(token) { w = Some(px); continue; } }
-        if c.is_none() { if let Some(col) = parse_color(token) { c = Some(col); continue; } }
-    }
-    (w, c)
-}
-
-pub fn parse_bool_visible_hidden(s: &str) -> Option<bool> {
-    match s.trim() {
-        "visible" => Some(false),
-        "hidden" => Some(true),
-        _ => None,
-    }
-}
-
-pub fn parse_box_sizing(s: &str) -> Option<BoxSizing> {
-    match s.trim() {
-        "content-box" => Some(BoxSizing::ContentBox),
-        "border-box" => Some(BoxSizing::BorderBox),
-        _ => None,
-    }
-}
-
-pub fn parse_font_weight(s: &str) -> Option<i32> {
-    match s.trim() {
-        "normal" => Some(400),
-        "bold" => Some(700),
-        "lighter" => Some(300),
-        "bolder" => Some(600),
-        w => w.parse::<i32>().ok().filter(|&n| n >= 100 && n <= 900),
-    }
-}
-
-pub fn parse_linear_gradient(s: &str) -> Option<Gradient> {
-    let s = s.trim();
-    if !s.starts_with("linear-gradient(") || !s.ends_with(')') {
-        return None;
-    }
-
-    let inner = &s[16..s.len()-1]; // 去掉 "linear-gradient(" 和 ")"
-
-    // 处理多行格式：清理换行符和多余空白
-    let normalized = inner.replace('\n', " ").replace('\r', " ");
-    let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    let parts: Vec<&str> = normalized.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-    if parts.len() < 2 { return None; }
-
-    // 添加长度检查，避免过度复杂的渐变
-    if parts.len() > 20 { return None; }
-
-    let mut angle_deg = 180.0; // 默认向下
-    let mut color_start_idx = 0;
-
-    // 检查第一个参数是否是角度或方向
-    if let Some(first) = parts.first() {
-        let first = first.trim();
-        if first.ends_with("deg") {
-            if let Ok(angle) = first.trim_end_matches("deg").parse::<f32>() {
-                angle_deg = angle;
-                color_start_idx = 1;
+        if parts.len() > 1 {
+            let mut values = Vec::new();
+            for part in parts {
+                values.push(parse_css_value(part)?);
             }
-        } else if first.starts_with("to ") {
-            // 处理 "to bottom", "to right" 等方向
-            match first {
-                "to bottom" => { angle_deg = 180.0; color_start_idx = 1; },
-                "to top" => { angle_deg = 0.0; color_start_idx = 1; },
-                "to right" => { angle_deg = 90.0; color_start_idx = 1; },
-                "to left" => { angle_deg = 270.0; color_start_idx = 1; },
-                _ => { color_start_idx = 1; }, // 保持默认角度
+            return Ok(CSSValue::List(values));
+        }
+    }
+
+    // 字符串值（引号包围）
+    if (trimmed.starts_with('"') && trimmed.ends_with('"')) ||
+       (trimmed.starts_with('\'') && trimmed.ends_with('\'')) {
+        let content = &trimmed[1..trimmed.len()-1];
+        return Ok(CSSValue::String(content.to_string()));
+    }
+
+    // 关键字
+    Ok(CSSValue::Keyword(trimmed))
+}
+
+/// 解析函数参数
+fn parse_function_args(args: &str) -> Result<Vec<CSSValue>, ParseError> {
+    let mut values = Vec::new();
+    let parts: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
+
+    for part in parts {
+        if !part.is_empty() {
+            values.push(parse_css_value(part)?);
+        }
+    }
+
+    Ok(values)
+}
+
+/// 解析选择器
+pub fn parse_selector(input: &str) -> Result<Selector, ParseError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ParseError {
+            message: "Empty selector",
+            position: 0,
+        });
+    }
+
+    let complex = parse_complex_selector(trimmed)?;
+    Ok(Selector { complex })
+}
+
+/// 解析复合选择器
+fn parse_complex_selector(input: &str) -> Result<ComplexSelector, ParseError> {
+    // 简化实现：先解析简单选择器，不支持组合符
+    let simple = parse_simple_selector(input)?;
+
+    Ok(ComplexSelector {
+        simple,
+        combinator: None,
+        next: None,
+    })
+}
+
+/// 解析简单选择器
+fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
+    let mut selector = SimpleSelector::default();
+    let mut i = 0;
+    let bytes = input.as_bytes();
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'#' => {
+                // ID选择器
+                i += 1;
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if i > start {
+                    selector.id = Some(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                }
+            },
+            b'.' => {
+                // 类选择器
+                i += 1;
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if i > start {
+                    selector.classes.push(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                }
+            },
+            b if b.is_ascii_alphabetic() => {
+                // 元素选择器
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-') {
+                    i += 1;
+                }
+                if i > start {
+                    selector.element_name = Some(String::from_utf8_lossy(&bytes[start..i]).to_string());
+                }
+            },
+            _ => {
+                i += 1;
             }
         }
     }
 
-    let mut stops = Vec::new();
-    for (i, part) in parts.iter().skip(color_start_idx).enumerate() {
-        let part = part.trim();
+    Ok(selector)
+}
 
-        // 解析颜色和可能的位置 (如 "#FF0000 50%")
-        let color_parts: Vec<&str> = part.split_whitespace().collect();
-        if let Some(color) = parse_color(color_parts[0]) {
-            let position = if color_parts.len() > 1 && color_parts[1].ends_with('%') {
-                // 显式指定的百分比位置
-                color_parts[1].trim_end_matches('%').parse::<f32>().unwrap_or(0.0) / 100.0
-            } else {
-                // 自动计算位置
-                if i == 0 { 0.0 }
-                else if i == parts.len() - color_start_idx - 1 { 1.0 }
-                else { i as f32 / (parts.len() - color_start_idx - 1) as f32 }
-            };
+/// 解析样式表
+pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
+    let mut stylesheet = StyleSheet::default();
+    let mut rules = Vec::new();
 
-            stops.push((position.clamp(0.0, 1.0), color));
+    let bytes = input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        skip_whitespace(bytes, &mut i);
+        if i >= bytes.len() {
+            break;
+        }
+
+        // 解析规则
+        match parse_rule(bytes, &mut i) {
+            Ok(rule) => rules.push(rule),
+            Err(_) => {
+                // 跳过错误的规则
+                skip_to_next_rule(bytes, &mut i);
+            }
         }
     }
 
-    if stops.len() >= 2 {
-        // 确保停靠点按位置排序
-        stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
-        Some(Gradient { angle_deg, stops })
-    } else {
-        None
-    }
+    stylesheet.rules = rules;
+    Ok(stylesheet)
 }
 
-pub fn parse_text_shadow(s: &str) -> (i32, i32, i32, Color) {
-    // 简化解析 "offset-x offset-y blur-radius color"
-    let parts: Vec<&str> = s.split_whitespace().collect();
-    if parts.len() >= 4 {
-        let x = parse_px(parts[0]).unwrap_or(0);
-        let y = parse_px(parts[1]).unwrap_or(0);
-        let blur = parse_px(parts[2]).unwrap_or(0);
-        let color = parse_color(parts[3]).unwrap_or(Color(0xFF000000));
-        (x, y, blur, color)
-    } else {
-        (0, 0, 0, Color(0x00000000))
+/// 解析CSS规则
+fn parse_rule(bytes: &[u8], i: &mut usize) -> Result<Rule, ParseError> {
+    // 解析选择器列表
+    let selector_start = *i;
+    let mut selector_end = *i;
+
+    // 查找开括号
+    while selector_end < bytes.len() && bytes[selector_end] != b'{' {
+        selector_end += 1;
     }
-}
 
-pub fn parse_box_shadow(s: &str) -> Vec<BoxShadow> {
-    let mut shadows = Vec::new();
+    if selector_end >= bytes.len() {
+        return Err(ParseError {
+            message: "Missing opening brace",
+            position: *i,
+        });
+    }
 
-    // 支持多个阴影，用逗号分隔
-    for shadow_str in s.split(',') {
-        let shadow_str = shadow_str.trim();
-        if shadow_str.is_empty() { continue; }
+    let selector_str = String::from_utf8_lossy(&bytes[selector_start..selector_end]);
+    let selectors = parse_selector_list(&selector_str)?;
 
-        let mut parts: Vec<&str> = shadow_str.split_whitespace().collect();
-        if parts.is_empty() { continue; }
+    *i = selector_end + 1; // 跳过开括号
 
-        let mut inset = false;
-        if parts[0] == "inset" {
-            inset = true;
-            parts.remove(0);
+    // 解析声明块
+    let mut declarations = Vec::new();
+
+    while *i < bytes.len() {
+        skip_whitespace(bytes, i);
+        if *i >= bytes.len() || bytes[*i] == b'}' {
+            break;
         }
 
-        if parts.len() >= 2 {
-            let offset_x = parse_px(parts[0]).unwrap_or(0);
-            let offset_y = parse_px(parts[1]).unwrap_or(0);
-            let blur_radius = if parts.len() >= 3 { parse_px(parts[2]).unwrap_or(0) } else { 0 };
-            let spread_radius = if parts.len() >= 4 && !parts[3].starts_with('#') && !parts[3].starts_with("rgb") {
-                parse_px(parts[3]).unwrap_or(0)
-            } else {
-                0
-            };
+        match parse_declaration_from_bytes(bytes, i) {
+            Ok(declaration) => declarations.push(declaration),
+            Err(_) => {
+                // 跳过错误的声明
+                skip_to_next_declaration(bytes, i);
+            }
+        }
+    }
 
-            // 查找颜色
-            let mut color = Color(0xFF000000); // 默认黑色
-            for part in &parts {
-                if let Some(c) = parse_color(part) {
-                    color = c;
+    if *i < bytes.len() && bytes[*i] == b'}' {
+        *i += 1; // 跳过闭括号
+    }
+
+    Ok(Rule { selectors, declarations })
+}
+
+/// 解析选择器列表
+fn parse_selector_list(input: &str) -> Result<Vec<Selector>, ParseError> {
+    let parts: Vec<&str> = input.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let mut selectors = Vec::new();
+
+    for part in parts {
+        selectors.push(parse_selector(part)?);
+    }
+
+    if selectors.is_empty() {
+        return Err(ParseError {
+            message: "No valid selectors found",
+            position: 0,
+        });
+    }
+
+    Ok(selectors)
+}
+
+/// 从字节流解析声明
+fn parse_declaration_from_bytes(bytes: &[u8], i: &mut usize) -> Result<Declaration, ParseError> {
+    // 解析属性名
+    let prop_start = *i;
+    while *i < bytes.len() && bytes[*i] != b':' && bytes[*i] != b';' && bytes[*i] != b'}' {
+        *i += 1;
+    }
+
+    if *i >= bytes.len() || bytes[*i] != b':' {
+        return Err(ParseError {
+            message: "Expected colon after property name",
+            position: *i,
+        });
+    }
+
+    let property = String::from_utf8_lossy(&bytes[prop_start..*i]).trim().to_string();
+    *i += 1; // 跳过冒号
+
+    // 解析属性值
+    skip_whitespace(bytes, i);
+    let value_start = *i;
+    while *i < bytes.len() && bytes[*i] != b';' && bytes[*i] != b'}' {
+        *i += 1;
+    }
+
+    let value = String::from_utf8_lossy(&bytes[value_start..*i]).trim().to_string();
+
+    if *i < bytes.len() && bytes[*i] == b';' {
+        *i += 1; // 跳过分号
+    }
+
+    parse_declaration(&property, &value)
+}
+
+/// 跳过空白字符
+fn skip_whitespace(bytes: &[u8], i: &mut usize) {
+    while *i < bytes.len() && (bytes[*i] == b' ' || bytes[*i] == b'\n' || bytes[*i] == b'\t' || bytes[*i] == b'\r') {
+        *i += 1;
+    }
+}
+
+/// 跳到下一个规则
+fn skip_to_next_rule(bytes: &[u8], i: &mut usize) {
+    let mut brace_count = 0;
+    while *i < bytes.len() {
+        match bytes[*i] {
+            b'{' => brace_count += 1,
+            b'}' => {
+                brace_count -= 1;
+                if brace_count <= 0 {
+                    *i += 1;
                     break;
                 }
-            }
-
-            shadows.push(BoxShadow {
-                offset_x,
-                offset_y,
-                blur_radius,
-                spread_radius,
-                color,
-                inset,
-            });
+            },
+            _ => {}
         }
+        *i += 1;
     }
-
-    shadows
 }
 
-fn parse_simple_selector(b: &[u8], i: &mut usize) -> SimpleSelector {
-    let mut tag: Option<String> = None; let mut id: Option<String> = None; let mut classes: alloc::vec::Vec<String> = alloc::vec::Vec::new();
-    // 读 tag
-    let start = *i; while *i < b.len() && (b[*i].is_ascii_alphanumeric() || b[*i] == b'-' as u8 || b[*i] == b'_') { *i += 1; }
-    if *i > start { tag = Some(core::str::from_utf8(&b[start..*i]).unwrap_or("").to_string()); }
-    // 读 #id 和 .class
-    loop {
-        if *i >= b.len() { break; }
-        match b[*i] {
-            b'#' => { *i += 1; let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_'){*i+=1;} id=Some(core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string()); },
-            b'.' => { *i += 1; let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_'){*i+=1;} classes.push(core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string()); },
-            _ => break,
-        }
+/// 跳到下一个声明
+fn skip_to_next_declaration(bytes: &[u8], i: &mut usize) {
+    while *i < bytes.len() && bytes[*i] != b';' && bytes[*i] != b'}' {
+        *i += 1;
     }
-    SimpleSelector { tag, id, classes }
+    if *i < bytes.len() && bytes[*i] == b';' {
+        *i += 1;
+    }
 }
 
-fn parse_selector_list(bytes: &[u8], i: &mut usize) -> alloc::vec::Vec<Selector> {
-    fn skip_ws(b: &[u8], i: &mut usize) { while *i < b.len() && (b[*i] == b' '||b[*i]==b'\n'||b[*i]==b'\t'||b[*i]==b'\r') { *i += 1; } }
-    let mut selectors: alloc::vec::Vec<Selector> = alloc::vec::Vec::new();
-    println!("[webcore::css] parse_selector_list starting at position {}", *i);
-    loop {
-        skip_ws(bytes, i);
-        let mut parts: alloc::vec::Vec<(Combinator, SimpleSelector)> = alloc::vec::Vec::new();
-        // 从左到右解析，再反转为右到左
-        let mut tmp: alloc::vec::Vec<(Combinator, SimpleSelector)> = alloc::vec::Vec::new();
-        let mut first = true;
-        let mut pending_combinator = Combinator::Descendant;
-        loop {
-            skip_ws(bytes, i);
-            if *i >= bytes.len() { break; }
-            if !first {
-                if bytes[*i] == b'>' { pending_combinator = Combinator::Child; *i += 1; }
-                else { pending_combinator = Combinator::Descendant; }
-                skip_ws(bytes, i);
-            }
-            if *i >= bytes.len() { break; }
-            if bytes[*i] == b',' || bytes[*i] == b'{' { break; }
-            let sel = parse_simple_selector(bytes, i);
-            tmp.push((pending_combinator, sel));
-            first = false;
-            // 连续的选择器片段（如 div#id.class）由 parse_simple_selector 内部处理
-            // 循环直到遇到空白/'>',','或'{' break 在下一轮处理
-            skip_ws(bytes, i);
-            if *i < bytes.len() && (bytes[*i] == b',' || bytes[*i] == b'{' ) { break; }
-            // 防止无限循环：如果没有找到有效字符，强制退出
-            if *i < bytes.len() && !bytes[*i].is_ascii_alphanumeric() && bytes[*i] != b'>' && bytes[*i] != b'.' && bytes[*i] != b'#' { break; }
-            // 若中间存在空白则视为后代组合符
-        }
-        tmp.reverse();
-        parts.extend(tmp.into_iter());
-        selectors.push(Selector { parts });
-        skip_ws(bytes, i);
-        if *i >= bytes.len() || bytes[*i] != b',' { break; }
-        *i += 1; // 跳过逗号，继续下一个选择器
+//==============================================================================
+// 属性值解析辅助函数 (Property Value Parsing Helpers)
+//==============================================================================
+
+fn parse_display_value(value: &str) -> Display {
+    match value.trim().to_lowercase().as_str() {
+        "none" => Display::None,
+        "inline" => Display::Inline,
+        "block" => Display::Block,
+        "list-item" => Display::ListItem,
+        "inline-block" => Display::InlineBlock,
+        "table" => Display::Table,
+        "inline-table" => Display::InlineTable,
+        "table-row-group" => Display::TableRowGroup,
+        "table-header-group" => Display::TableHeaderGroup,
+        "table-footer-group" => Display::TableFooterGroup,
+        "table-row" => Display::TableRow,
+        "table-column-group" => Display::TableColumnGroup,
+        "table-column" => Display::TableColumn,
+        "table-cell" => Display::TableCell,
+        "table-caption" => Display::TableCaption,
+        _ => Display::Inline,
     }
-    selectors
 }
 
-pub fn parse_stylesheet(input: &str) -> StyleSheet {
-    println!("[webcore::css] Starting parse_stylesheet, input length: {}", input.len());
-    let mut rules = Vec::new();
-    let bytes = input.as_bytes();
-    let mut i = 0usize;
-    fn skip_ws(b: &[u8], i: &mut usize) { while *i < b.len() && (b[*i] == b' '||b[*i]==b'\n'||b[*i]==b'\t'||b[*i]==b'\r') { *i += 1; } }
-    fn read_until(b: &[u8], i: &mut usize, delim: u8) -> String { let s=*i; while *i<b.len() && b[*i]!=delim { *i+=1; } let out=core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string(); if *i<b.len(){*i+=1;} out }
-    fn read_ident(b: &[u8], i: &mut usize) -> String { let s=*i; while *i<b.len() && (b[*i].is_ascii_alphanumeric()||b[*i]==b'-'||b[*i]==b'_') { *i+=1; } core::str::from_utf8(&b[s..*i]).unwrap_or("").to_string() }
-
-    println!("[webcore::css] About to start parsing loop");
-
-    let mut iteration_count = 0;
-    let max_iterations = 100; // 防止无限循环，先设小一点
-
-    while i < bytes.len() && iteration_count < max_iterations {
-        iteration_count += 1;
-        if iteration_count % 10 == 0 {
-            println!("[webcore::css] Parsing iteration {}, position {}/{}", iteration_count, i, bytes.len());
-        }
-
-        let old_i = i; // 防止无限循环
-        skip_ws(bytes, &mut i);
-        if i >= bytes.len() { break; }
-
-        // 解析选择器，增加超时保护
-        println!("[webcore::css] Parsing selectors at position {}", i);
-        let selectors = parse_selector_list(bytes, &mut i);
-        println!("[webcore::css] Selectors parsed: {} found", selectors.len());
-
-        if selectors.is_empty() {
-            // 选择器解析失败，跳过到下一个规则或行尾
-            println!("[webcore::css] Empty selectors, skipping to next rule");
-            while i < bytes.len() && bytes[i] != b'{' && bytes[i] != b'\n' { i += 1; }
-            if i < bytes.len() && bytes[i] == b'\n' { i += 1; }
-            continue;
-        }
-
-        skip_ws(bytes, &mut i);
-        if i >= bytes.len() || bytes[i] != b'{' {
-            // 如果没有找到 '{', 跳过这一行避免无限循环
-            while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
-            if i < bytes.len() { i += 1; }
-            continue;
-        }
-        i += 1;
-
-        // 解析声明块
-        let mut decls: Vec<(String, String)> = Vec::new();
-        let mut decl_count = 0;
-        let max_decls = 100; // 限制每个规则的声明数量
-
-        loop {
-            if decl_count >= max_decls { break; }
-            skip_ws(bytes, &mut i);
-            if i >= bytes.len() { break; }
-            if bytes[i] == b'}' { i += 1; break; }
-
-            let prop = read_ident(bytes, &mut i);
-            if prop.is_empty() {
-                // 跳过无效属性直到分号或右大括号
-                while i < bytes.len() && bytes[i] != b';' && bytes[i] != b'}' { i += 1; }
-                if i < bytes.len() && bytes[i] == b';' { i += 1; }
-                continue;
-            }
-
-            skip_ws(bytes, &mut i);
-            if i < bytes.len() && bytes[i] == b':' { i += 1; }
-
-            let val = read_until(bytes, &mut i, b';');
-            if !val.trim().is_empty() {
-                decls.push((prop, val.trim().to_string()));
-            }
-            decl_count += 1;
-        }
-
-        if !decls.is_empty() {
-            rules.push(Rule { selectors, declarations: decls });
-        }
-
-        // 安全检查：确保索引有进展
-        if i <= old_i {
-            i = old_i + 1; // 强制进展，避免无限循环
-        }
+fn parse_position_value(value: &str) -> Position {
+    match value.trim().to_lowercase().as_str() {
+        "static" => Position::Static,
+        "relative" => Position::Relative,
+        "absolute" => Position::Absolute,
+        "fixed" => Position::Fixed,
+        _ => Position::Static,
     }
-
-    if iteration_count >= max_iterations {
-        println!("[webcore::css] CSS parsing timeout, stopping at {} rules", rules.len());
-    }
-    StyleSheet { rules }
 }
 
-
+fn parse_font_weight_value(value: &str) -> FontWeight {
+    match value.trim().to_lowercase().as_str() {
+        "normal" => FontWeight::Normal,
+        "bold" => FontWeight::Bold,
+        "bolder" => FontWeight::Bolder,
+        "lighter" => FontWeight::Lighter,
+        _ => FontWeight::Normal,
+    }
+}

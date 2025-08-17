@@ -325,6 +325,7 @@ pub fn parse_document(input: &str) -> DomNode {
             let text = chars[start..*pos].iter().collect::<String>();
             let text = text.trim();
             if !text.is_empty() {
+                println!("[webcore::html] Found text content: '{}'", text);
                 return Some(DomNode::text(text));
             } else {
                 return None;
@@ -367,14 +368,16 @@ pub fn parse_document(input: &str) -> DomNode {
                     == "doctype"
             {
                 println!("[webcore::html] Found DOCTYPE declaration");
-                *pos += 7;
-                // 跳过到 >
+                // 回退到 '<' 位置
+                *pos -= 1;
+                // 跳过整个DOCTYPE声明
                 while *pos < chars.len() && chars[*pos] != '>' {
                     *pos += 1;
                 }
                 if *pos < chars.len() {
-                    *pos += 1;
+                    *pos += 1; // 跳过 '>'
                 }
+                println!("[webcore::html] Skipped DOCTYPE, position now: {}", *pos);
                 return None; // 忽略DOCTYPE，但继续解析
             }
 
@@ -413,27 +416,59 @@ pub fn parse_document(input: &str) -> DomNode {
 
             // 解析子元素
             loop {
+                skip_whitespace(chars, pos);
+                if *pos >= chars.len() {
+                    break;
+                }
+
                 // 检查结束标签
                 if *pos + 1 < chars.len() && chars[*pos] == '<' && chars[*pos + 1] == '/' {
-                    *pos += 2; // 跳过 '</'
-                    let end_tag = read_tag_name(chars, pos);
-                    // 跳过到 '>'
-                    while *pos < chars.len() && chars[*pos] != '>' {
-                        *pos += 1;
-                    }
-                    if *pos < chars.len() {
-                        *pos += 1;
-                    }
+                    let temp_pos = *pos + 2; // 跳过 '</'
+                    let mut end_pos = temp_pos;
+                    let end_tag = read_tag_name(chars, &mut end_pos);
+
+                    println!("[webcore::html] Found end tag: '{}' for current '{}'", end_tag, tag_name);
 
                     if end_tag == tag_name {
-                        break; // 找到匹配的结束标签
+                        // 找到匹配的结束标签，更新位置并结束
+                        *pos = end_pos;
+                        // 跳过到 '>'
+                        while *pos < chars.len() && chars[*pos] != '>' {
+                            *pos += 1;
+                        }
+                        if *pos < chars.len() {
+                            *pos += 1; // 跳过 '>'
+                        }
+                        println!("[webcore::html] Closed tag '{}' at position {}", tag_name, *pos);
+                        break;
                     }
                 }
 
                 if let Some(child) = parse_element(chars, pos) {
+                    if child.tag.is_empty() && child.text.is_some() {
+                        println!("[webcore::html] Adding text node '{}' to '{}'", child.text.as_ref().unwrap(), tag_name);
+                    } else {
+                        println!("[webcore::html] Adding child element '{}' to '{}'", child.tag, tag_name);
+                    }
                     element.children.push(child);
                 } else {
-                    break;
+                    // 如果无法解析子元素，检查是否有文本内容
+                    let start = *pos;
+                    while *pos < chars.len() && chars[*pos] != '<' {
+                        *pos += 1;
+                    }
+                    if start < *pos {
+                        let text = chars[start..*pos].iter().collect::<String>();
+                        let text = text.trim();
+                        if !text.is_empty() {
+                            println!("[webcore::html] Adding text '{}' to '{}'", text, tag_name);
+                            let text_node = DomNode::text(text);
+                            element.children.push(text_node);
+                        }
+                    }
+                    if start == *pos {
+                        break; // 避免无限循环
+                    }
                 }
             }
 
@@ -443,18 +478,35 @@ pub fn parse_document(input: &str) -> DomNode {
         }
     }
 
+    // 寻找根HTML元素，如果没有就创建
     let mut document = DomNode::elem("html");
+    let mut found_html_root = false;
 
     // 解析所有顶级元素
     while pos < chars.len() {
+        skip_whitespace(&chars, &mut pos);
+        if pos >= chars.len() {
+            break;
+        }
+
         if let Some(element) = parse_element(&chars, &mut pos) {
-            println!("[webcore::html] Parsed element: {} with {} children", element.tag, element.children.len());
-            document.children.push(element);
+            println!("[webcore::html] Parsed top-level element: '{}' with {} children", element.tag, element.children.len());
+
+            // 如果找到html根元素，使用它作为文档根
+            if element.tag == "html" && !found_html_root {
+                document = element;
+                found_html_root = true;
+                println!("[webcore::html] Using parsed html element as document root");
+            } else if !element.tag.is_empty() {
+                // 其他非空元素添加到文档
+                document.children.push(element);
+            }
         } else {
             // 如果没有解析到元素，手动前进位置避免无限循环
+            let old_pos = pos;
             skip_whitespace(&chars, &mut pos);
-            if pos < chars.len() {
-                pos += 1;
+            if pos == old_pos && pos < chars.len() {
+                pos += 1; // 强制前进
             }
         }
     }
@@ -473,10 +525,16 @@ pub fn parse_document(input: &str) -> DomNode {
 // 调试工具：打印DOM树结构
 fn print_dom_tree(node: &DomNode, depth: usize) {
     let indent = "  ".repeat(depth);
-    if node.tag.is_empty() {
+    if node.tag.is_empty() && node.text.is_some() {
         // 文本节点
         if let Some(ref text) = node.text {
             println!("{}[TEXT]: \"{}\"", indent, text.trim());
+        }
+    } else if node.tag.is_empty() {
+        // 空节点（应该避免）
+        println!("{}[EMPTY_NODE] children={}", indent, node.children.len());
+        for child in &node.children {
+            print_dom_tree(child, depth + 1);
         }
     } else {
         // 元素节点

@@ -46,7 +46,7 @@ fn main() -> i32 {
     let (sw, sh) = gfx::screen_size();
     let layout_root = page.layout(sw as i32, sh as i32);
     println!("[webwm] About to paint...");
-    webcore::paint::paint_tree(&layout_root);
+    webcore::paint::paint_layout_box(&layout_root);
     println!("[webwm] About to flush...");
     gfx::gui_flush();
     println!("[webwm] GUI flushed");
