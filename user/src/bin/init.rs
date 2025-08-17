@@ -11,7 +11,6 @@ use user_lib::{exec, exit, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // 启动 Web 桌面合成器与交互式 shell
     spawn_webwm();
     spawn_shell();
 
@@ -51,4 +50,3 @@ fn spawn_webwm() {
     }
 }
 
-// 删除早期 GUI Splash 相关的字体加载辅助函数

@@ -419,6 +419,55 @@ pub fn draw_text(x: i32, y: i32, text: &str, size_px: u32, color: u32) -> bool {
     if let Some(bytes) = font_opt { draw_text_ttf(x, y, text, size_px, color, bytes) } else { false }
 }
 
+// ============ 文本测量（用于布局换行） ============
+
+fn measure_with_face(text: &str, size_px: u32, font_bytes: &'static [u8]) -> Option<i32> {
+    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+    let upem = face.units_per_em() as f32; if upem <= 0.0 { return None; }
+    let scale = size_px as f32 / upem;
+    let mut width: f32 = 0.0;
+    for ch in text.chars() {
+        let gid = match face.glyph_index(ch) {
+            Some(id) => id,
+            None => face.glyph_index('*').unwrap_or(ttf_parser::GlyphId(0)),
+        };
+        let adv_units = face.glyph_hor_advance(gid).unwrap_or(0) as f32;
+        width += adv_units * scale;
+    }
+    Some(libm::roundf(width) as i32)
+}
+
+pub fn measure_text(text: &str, size_px: u32) -> i32 {
+    let font_opt: Option<&'static [u8]> = {
+        let guard = GFX.lock();
+        if let Some(ref g) = *guard { g.default_font } else { None }
+    };
+    if let Some(bytes) = font_opt { measure_with_face(text, size_px, bytes).unwrap_or(0) }
+    else {
+        // 位图字体近似宽度：8px * scale
+        let scale = if size_px >= 8 { (size_px / 8) as i32 } else { 1 };
+        (text.len() as i32) * 8 * scale
+    }
+}
+
+pub fn measure_char(ch: char, size_px: u32) -> i32 {
+    let font_opt: Option<&'static [u8]> = {
+        let guard = GFX.lock();
+        if let Some(ref g) = *guard { g.default_font } else { None }
+    };
+    if let Some(bytes) = font_opt {
+        let face = match ttf_parser::Face::parse(bytes, 0) { Ok(f) => f, Err(_) => return 0 };
+        let upem = face.units_per_em() as f32; if upem <= 0.0 { return 0; }
+        let scale = size_px as f32 / upem;
+        let gid = face.glyph_index(ch).or_else(|| face.glyph_index('*')).unwrap_or(ttf_parser::GlyphId(0));
+        let adv_units = face.glyph_hor_advance(gid).unwrap_or(0) as f32;
+        libm::roundf(adv_units * scale) as i32
+    } else {
+        let scale = if size_px >= 8 { (size_px / 8) as i32 } else { 1 };
+        8 * scale
+    }
+}
+
 pub const FONT_WIDTH: u32 = 8;
 pub const FONT_HEIGHT: u32 = 16;
 

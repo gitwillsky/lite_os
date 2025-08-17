@@ -6,16 +6,19 @@ pub struct DomNode {
     pub id: Option<String>,
     pub class_list: Vec<String>,
     pub inline_style: Option<String>,
+    pub src: Option<String>,          // for <img>
+    pub attr_width: Option<i32>,      // width attribute in px
+    pub attr_height: Option<i32>,     // height attribute in px
     pub text: Option<String>,
     pub children: Vec<DomNode>,
 }
 
 impl DomNode {
     pub fn text(text: &str) -> Self {
-        Self { tag: String::new(), id: None, class_list: Vec::new(), inline_style: None, text: Some(text.to_string()), children: Vec::new() }
+        Self { tag: String::new(), id: None, class_list: Vec::new(), inline_style: None, src: None, attr_width: None, attr_height: None, text: Some(text.to_string()), children: Vec::new() }
     }
     pub fn elem(tag: &str) -> Self {
-        Self { tag: tag.to_string(), id: None, class_list: Vec::new(), inline_style: None, text: None, children: Vec::new() }
+        Self { tag: tag.to_string(), id: None, class_list: Vec::new(), inline_style: None, src: None, attr_width: None, attr_height: None, text: None, children: Vec::new() }
     }
 }
 
@@ -59,6 +62,9 @@ pub fn parse_document(input: &str) -> DomNode {
                 "id" => node.id = Some(value),
                 "class" => { node.class_list = value.split(' ').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect(); },
                 "style" => node.inline_style = Some(value),
+                "src" => node.src = Some(value),
+                "width" => { if let Ok(px) = value.parse::<i32>() { node.attr_width = Some(px); } },
+                "height" => { if let Ok(px) = value.parse::<i32>() { node.attr_height = Some(px); } },
                 _ => {}
             }
         }

@@ -46,10 +46,11 @@ run: build-kernel
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
-run-gui: build-kernel
+run-gui: build-kernel build-user
 	qemu-system-riscv64 \
 	-machine virt \
 	-smp 8 \
+	-m 1024 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
