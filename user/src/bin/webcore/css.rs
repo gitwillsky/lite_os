@@ -1340,6 +1340,11 @@ impl StyleComputer {
                         // auto height 保持默认值
                         println!("[css] Applied auto height");
                     },
+                    CSSValue::Number(n) if *n == 100.0 => {
+                        // 处理 100% (可能被解析为数字)
+                        computed.height = Length::Percent(100.0);
+                        println!("[css] Applied 100% height");
+                    },
                     _ => {
                         println!("[css] Unhandled height value: {:?}", declaration.value);
                     }
@@ -1868,7 +1873,7 @@ pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
     while i < bytes.len() {
         skip_whitespace(bytes, &mut i);
         if i >= bytes.len() {
-            break;
+                    break;
         }
 
         // 解析规则
@@ -1958,7 +1963,7 @@ fn parse_selector_list(input: &str) -> Result<Vec<Selector>, ParseError> {
         selectors.push(parse_selector(part)?);
     }
 
-    if selectors.is_empty() {
+        if selectors.is_empty() {
         return Err(ParseError {
             message: "No valid selectors found",
             position: 0,

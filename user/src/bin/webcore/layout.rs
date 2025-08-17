@@ -56,11 +56,23 @@ pub fn layout_tree<'a>(
     }
 
     // 根据显示类型进行布局
+    println!("[layout] Display type: {:?}", layout_box.style.display);
     match layout_box.style.display {
-        Display::Block => layout_block(&mut layout_box),
-        Display::Inline => layout_inline(&mut layout_box),
-        Display::None => {}, // 不显示
-        _ => layout_block(&mut layout_box), // 其他类型按块级处理
+        Display::Block => {
+            println!("[layout] Using block layout");
+            layout_block(&mut layout_box);
+        },
+        Display::Inline => {
+            println!("[layout] Using inline layout");
+            layout_inline(&mut layout_box);
+        },
+        Display::None => {
+            println!("[layout] Element is hidden (display: none)");
+        }, // 不显示
+        _ => {
+            println!("[layout] Using default block layout for {:?}", layout_box.style.display);
+            layout_block(&mut layout_box);
+        }, // 其他类型按块级处理
     }
 
     layout_box
@@ -178,7 +190,7 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         // 处理top/bottom约束
         match (&layout_box.style.top, &layout_box.style.bottom) {
             (Length::Px(top), Length::Px(bottom)) if *top == 0.0 && *bottom == 0.0 => {
-                // top: 0, bottom: 0 - 填满整个高度
+                // top: 0, bottom: 0 - 填满包含块高度
                 layout_box.rect.y = 0;
                 layout_box.rect.h = containing_block.h;
                 println!("[layout] Applied top:0 bottom:0 -> y=0 h={}", containing_block.h);

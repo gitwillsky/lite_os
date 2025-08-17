@@ -9,9 +9,9 @@ fn get_border_width(length: &super::css::Length) -> i32 {
 }
 
 pub fn paint_layout_box(lb: &LayoutBox) {
-    println!("[paint] Painting box: x={} y={} w={} h={} bg_color={:?}", 
+    println!("[paint] Painting box: x={} y={} w={} h={} bg_color={:?}",
         lb.rect.x, lb.rect.y, lb.rect.w, lb.rect.h, lb.style.background_color);
-    
+
     paint_block(lb);
 
     for child in &lb.children {
@@ -23,7 +23,7 @@ fn paint_block(lb: &LayoutBox) {
     // 背景色：仅当背景不透明时绘制
     if lb.style.background_color.a > 0 {
         let color_u32 = lb.style.background_color.to_u32();
-        println!("[paint] Drawing background: x={} y={} w={} h={} color={:#x}", 
+        println!("[paint] Drawing background: x={} y={} w={} h={} color={:#x}",
             lb.rect.x, lb.rect.y, lb.rect.w, lb.rect.h, color_u32);
         gfx::gui_fill_rect_xywh(
             lb.rect.x,

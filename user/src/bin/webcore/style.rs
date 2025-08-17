@@ -48,8 +48,8 @@ pub fn style_tree<'a>(
     // 将单个样式表包装成Vec
     let stylesheets = vec![stylesheet];
     let computed = computer.compute_style(root, &stylesheets, &context);
-    
-    println!("[style] Element '{}' computed style: bg_color={:?}", 
+
+    println!("[style] Element '{}' computed style: bg_color={:?}",
         root.tag, computed.background_color);
 
     StyledNode {

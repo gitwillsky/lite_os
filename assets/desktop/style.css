@@ -1,6 +1,6 @@
 /* 全局 */
-html { margin: 0; background: linear-gradient(180deg, #00309C 0%, #002C87 60%, #001F66 100%); color: #111; font-size: 14px; font-family: Tahoma, Verdana, Segoe UI, Arial, sans-serif; }
-body { margin: 0; background: linear-gradient(180deg, #00309C 0%, #002C87 60%, #001F66 100%); color: #111; font-size: 14px; font-family: Tahoma, Verdana, Segoe UI, Arial, sans-serif; }
+html { margin: 0; height: 100%; background: linear-gradient(180deg, #00309C 0%, #002C87 60%, #001F66 100%); color: #111; font-size: 14px; font-family: Tahoma, Verdana, Segoe UI, Arial, sans-serif; }
+body { margin: 0; height: 100%; background: linear-gradient(180deg, #00309C 0%, #002C87 60%, #001F66 100%); color: #111; font-size: 14px; font-family: Tahoma, Verdana, Segoe UI, Arial, sans-serif; }
 
 /* 启动画面容器：填满屏幕，竖直布局 */
 #splash {
