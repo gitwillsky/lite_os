@@ -805,7 +805,7 @@ fn estimate_text_width(text: &Option<String>, font_size: i32) -> i32 {
             let safe_font_size = font_size.max(8).min(72) as u32;
 
             // 使用gfx模块的文本测量（添加边界检查）
-            use user_lib::gfx;
+            use crate::gfx;
             let measured_width = gfx::measure_text(t, safe_font_size);
 
             // 合理性检查：确保测量结果不会过大

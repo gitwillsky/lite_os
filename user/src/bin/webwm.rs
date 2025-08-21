@@ -5,16 +5,11 @@
 extern crate user_lib;
 extern crate alloc;
 
-use alloc::boxed::Box;
-// use alloc::string::String;
 use user_lib::gfx;
 use user_lib::syscall::{open_flags, poll, PollFd};
 use user_lib::read;
-
-mod webcore;
-use webcore::{loader, document};
-
-// 读取逻辑已抽到 webcore::loader
+use user_lib::webcore::{RenderEngine, StandardRenderEngine};
+use alloc::boxed::Box;
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -27,33 +22,89 @@ fn main() -> i32 {
     gfx::gui_clear(0xFF202225);
     gfx::gui_flush();
 
-    // 加载字体并注册为默认字体
-    if let Some(font) = loader::read_all("/fonts/SourceHanSansCN-VF.ttf").or_else(|| loader::read_all("/fonts/NotoSans-Regular.ttf")) {
-        let leaked: &'static [u8] = Box::leak(font.into_boxed_slice());
-        gfx::set_default_font(leaked);
-    }
+    // 创建渲染引擎
+    let mut engine = StandardRenderEngine::new();
 
-    // 准备页面（HTML + CSS 外链加载与合并）
-    println!("[webwm] About to call load_and_prepare...");
-    let page = document::load_and_prepare(
-        "/usr/share/desktop/index.html",
-        b"<body><div style='background:#00309C;position:absolute;left:0;top:0;right:0;bottom:0'></div></body>"
-    );
-    println!("[webwm] load_and_prepare completed");
-
-    // 应用样式并布局
-    println!("[webwm] About to layout...");
+    // 设置视口大小
     let (sw, sh) = gfx::screen_size();
     println!("[webwm] Screen size: {}x{}", sw, sh);
-    let layout_root = page.layout(sw as i32, sh as i32);
-    println!("[webwm] Layout completed, root size: {}x{}", layout_root.rect.w, layout_root.rect.h);
-    println!("[webwm] About to paint...");
-    webcore::paint::paint_layout_box(&layout_root);
-    println!("[webwm] About to flush...");
-    gfx::gui_flush();
-    println!("[webwm] GUI flushed");
+    engine.set_viewport(sw, sh);
 
-    // 简单事件循环：保持运行并消费输入事件
+    // 从文件系统加载桌面HTML
+    // 渲染引擎会自动处理HTML中的CSS链接和字体引用
+    println!("[webwm] Loading desktop HTML from filesystem...");
+    if !engine.load_html_from_file("/usr/share/desktop/desktop.html") {
+        println!("[webwm] Failed to load desktop HTML, using fallback");
+        engine.load_html(r#"<html><body><h1>WebWM</h1><p>Failed to load desktop.html</p></body></html>"#);
+    }
+
+    // 处理字体加载
+    let font_paths = engine.get_font_paths();
+    if !font_paths.is_empty() {
+        println!("[webwm] Loading {} fonts...", font_paths.len());
+        for font_path in font_paths {
+            load_font(&font_path);
+        }
+    } else {
+        // 加载默认字体
+        load_font("/fonts/SourceHanSansCN-VF.ttf");
+        load_font("/fonts/NotoSans-Regular.ttf");
+    }
+
+    // 执行渲染
+    println!("[webwm] Rendering desktop...");
+    let render_result = engine.render();
+
+    // 执行绘制命令
+    execute_draw_commands(&render_result);
+    gfx::gui_flush();
+    println!("[webwm] Desktop rendered");
+
+    // 事件循环
+    run_event_loop(&mut engine);
+
+    0
+}
+
+fn load_font(path: &str) {
+    use user_lib::webcore::loader;
+    println!("[webwm] Loading font: {}", path);
+    if let Some(font_data) = loader::read_all(path) {
+        let leaked: &'static [u8] = Box::leak(font_data.into_boxed_slice());
+        gfx::set_default_font(leaked);
+        println!("[webwm] Font loaded: {}", path);
+    } else {
+        println!("[webwm] Failed to load font: {}", path);
+    }
+}
+
+fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
+    use user_lib::webcore::paint::DrawCommand;
+
+    for cmd in &result.commands {
+        match cmd {
+            DrawCommand::FillRect { x, y, width, height, color } => {
+                gfx::gui_fill_rect_xywh(*x, *y, *width, *height, *color);
+            }
+            DrawCommand::DrawText { x, y, text, color, size } => {
+                if !gfx::draw_text(*x, *y, text, *size, *color) {
+                    let scale = if *size >= 16 { *size / 8 } else { 1 };
+                    gfx::draw_string_scaled(*x, *y, text, *color, scale);
+                }
+            }
+            DrawCommand::DrawImage { x, y, width, height, .. } => {
+                // 暂时绘制占位符
+                gfx::gui_fill_rect_xywh(*x, *y, *width, *height, 0xFF808080);
+            }
+            DrawCommand::DrawLine { x1, y1, x2, y2, color, width } => {
+                // TODO: 实现线条绘制
+                let _ = (x1, y1, x2, y2, color, width);
+            }
+        }
+    }
+}
+
+fn run_event_loop(engine: &mut StandardRenderEngine) {
     let input0 = user_lib::open("/dev/input/event0", open_flags::O_RDONLY) as i32;
     let input1 = user_lib::open("/dev/input/event1", open_flags::O_RDONLY) as i32;
     let mut pfds: [PollFd; 2] = [
@@ -61,14 +112,22 @@ fn main() -> i32 {
         PollFd { fd: input1, events: user_lib::poll_flags::POLLIN, revents: 0 },
     ];
     let mut tmp = [0u8; 128];
+
     loop {
         let _ = poll(&mut pfds, 1000);
         for i in 0..2 {
             if pfds[i].fd >= 0 && (pfds[i].revents & user_lib::poll_flags::POLLIN) != 0 {
                 let _ = read(pfds[i].fd as usize, &mut tmp);
+                // TODO: 解析输入事件并传递给引擎
             }
+        }
+
+        // 更新引擎状态（动画等）
+        let update_result = engine.update(16); // 假设 60 FPS
+        if update_result.redraw_needed {
+            let render_result = engine.render();
+            execute_draw_commands(&render_result);
+            gfx::gui_flush();
         }
     }
 }
-
-

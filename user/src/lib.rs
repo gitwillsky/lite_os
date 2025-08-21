@@ -10,6 +10,7 @@ pub mod gfx;
 pub mod protocol;
 pub mod litegui;
 pub mod testutil;
+pub mod webcore;
 
 mod lang_item;
 

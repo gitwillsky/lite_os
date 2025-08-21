@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
-use user_lib::{open, read, close};
-use user_lib::syscall::open_flags;
+use crate::{open, read, close};
+use crate::syscall::open_flags;
 
 pub fn read_all(path: &str) -> Option<Vec<u8>> {
 	let fd = open(path, open_flags::O_RDONLY) as i32;

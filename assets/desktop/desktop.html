@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LiteOS Desktop</title>
+    <link rel="stylesheet" href="/usr/share/desktop/desktop.css">
+</head>
+<body>
+    <div id="desktop">
+        <!-- 桌面图标区域 -->
+        <div id="desktop-icons">
+            <div class="desktop-icon" data-app="terminal">
+                <div class="icon-image"></div>
+                <span class="icon-label">Terminal</span>
+            </div>
+            <div class="desktop-icon" data-app="editor">
+                <div class="icon-image"></div>
+                <span class="icon-label">Editor</span>
+            </div>
+            <div class="desktop-icon" data-app="files">
+                <div class="icon-image"></div>
+                <span class="icon-label">Files</span>
+            </div>
+        </div>
+
+        <!-- 任务栏 -->
+        <div id="taskbar">
+            <!-- 开始按钮 -->
+            <div class="start-button">
+                <span>Start</span>
+            </div>
+
+            <!-- 任务列表 -->
+            <div class="task-list">
+                <!-- 动态添加运行中的任务 -->
+            </div>
+
+            <!-- 系统托盘 -->
+            <div class="system-tray">
+                <span class="clock" id="clock">00:00</span>
+                <div class="tray-icons">
+                    <span class="tray-icon network"></span>
+                    <span class="tray-icon volume"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 开始菜单（默认隐藏） -->
+        <div id="start-menu" class="hidden">
+            <div class="menu-header">
+                <h2>LiteOS</h2>
+            </div>
+            <div class="menu-items">
+                <div class="menu-item" data-app="terminal">Terminal</div>
+                <div class="menu-item" data-app="editor">Text Editor</div>
+                <div class="menu-item" data-app="files">File Manager</div>
+                <div class="menu-item" data-app="settings">Settings</div>
+                <div class="menu-separator"></div>
+                <div class="menu-item" data-action="shutdown">Shutdown</div>
+            </div>
+        </div>
+
+        <!-- 窗口容器 -->
+        <div id="window-container">
+            <!-- 动态创建的窗口将放置在这里 -->
+        </div>
+    </div>
+</body>
+</html>
