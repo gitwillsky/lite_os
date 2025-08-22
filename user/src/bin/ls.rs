@@ -8,7 +8,8 @@ extern crate user_lib;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use user_lib::{exit, get_args, getcwd, listdir, stat};
+use core::cmp::max;
+use user_lib::{get_args, listdir, stat};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -65,20 +66,31 @@ fn format_permissions(mode: u32, file_type: InodeType) -> String {
 }
 
 fn format_size(size: u64) -> String {
-    if size < 1024 {
-        format!("{}", size)
-    } else if size < 1024 * 1024 {
-        format!("{}K", size / 1024)
-    } else if size < 1024 * 1024 * 1024 {
-        format!("{}M", size / (1024 * 1024))
+    format!("{}", size)
+}
+
+fn owner_name(uid: u32) -> String {
+    if uid == 0 {
+        String::from("root")
     } else {
-        format!("{}G", size / (1024 * 1024 * 1024))
+        format!("{}", uid)
     }
 }
 
+fn group_name(gid: u32) -> String {
+    if gid == 0 {
+        String::from("root")
+    } else {
+        format!("{}", gid)
+    }
+}
+
+fn format_time(_ts: u64) -> String {
+    String::from("Jan  1 00:00")
+}
+
 fn list_long_format(path: &str) -> i32 {
-    // Get directory listing first
-    let mut buf = [0u8; 1024];
+    let mut buf = [0u8; 8192];
     let len = listdir(path, &mut buf);
     if len < 0 {
         match len {
@@ -90,36 +102,104 @@ fn list_long_format(path: &str) -> i32 {
         return 1;
     }
 
-    let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
-    let entries: Vec<&str> = contents.split('\n').filter(|s| !s.is_empty()).collect();
+    let mut entries: Vec<String> = core::str::from_utf8(&buf[..len as usize])
+        .unwrap_or("")
+        .split('\n')
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from(s))
+        .collect();
+    entries.sort();
 
-    for entry in entries {
-        // Build full path for stat
+    struct Row {
+        name: String,
+        stat_ok: bool,
+        st: FileStat,
+    }
+
+    let mut rows: Vec<Row> = Vec::new();
+    for entry in &entries {
         let full_path = if path == "." {
             String::from(entry)
         } else {
             format!("{}/{}", path, entry)
         };
-
-        // Get file stats
         let mut stat_buf = [0u8; core::mem::size_of::<FileStat>()];
-        let stat_result = stat(&full_path, &mut stat_buf);
+        let r = stat(&full_path, &mut stat_buf);
+        if r == 0 {
+            let st = unsafe { *(stat_buf.as_ptr() as *const FileStat) };
+            rows.push(Row {
+                name: entry.clone(),
+                stat_ok: true,
+                st,
+            });
+        } else {
+            rows.push(Row {
+                name: entry.clone(),
+                stat_ok: false,
+                st: FileStat {
+                    size: 0,
+                    file_type: InodeType::File,
+                    mode: 0,
+                    nlink: 1,
+                    uid: 0,
+                    gid: 0,
+                    atime: 0,
+                    mtime: 0,
+                    ctime: 0,
+                },
+            });
+        }
+    }
 
-        if stat_result == 0 {
-            // Parse stat buffer
-            let file_stat = unsafe { *(stat_buf.as_ptr() as *const FileStat) };
+    let mut nlink_w = 1usize;
+    let mut owner_w = 1usize;
+    let mut group_w = 1usize;
+    let mut size_w = 1usize;
+    for r in &rows {
+        if r.stat_ok {
+            nlink_w = max(nlink_w, format!("{}", r.st.nlink).len());
+            owner_w = max(owner_w, owner_name(r.st.uid).len());
+            group_w = max(group_w, group_name(r.st.gid).len());
+            size_w = max(size_w, format_size(r.st.size).len());
+        }
+    }
 
-            // Format and print long format
-            let perms = format_permissions(file_stat.mode, file_stat.file_type);
-            let size_str = format_size(file_stat.size);
-
+    for r in rows {
+        if r.stat_ok {
+            let perms = format_permissions(r.st.mode, r.st.file_type);
+            let nlink_s = format!("{}", r.st.nlink);
+            let owner_s = owner_name(r.st.uid);
+            let group_s = group_name(r.st.gid);
+            let size_s = format_size(r.st.size);
+            let time_s = format_time(r.st.mtime);
             println!(
-                "{} {} {} {} {} {}",
-                perms, file_stat.nlink, file_stat.uid, file_stat.gid, size_str, entry
+                "{} {:>n$} {:>o$} {:>g$} {:>s$} {} {}",
+                perms,
+                nlink_s,
+                owner_s,
+                group_s,
+                size_s,
+                time_s,
+                r.name,
+                n = nlink_w,
+                o = owner_w,
+                g = group_w,
+                s = size_w
             );
         } else {
-            // If stat fails, just print the name with unknown permissions
-            println!("?????????? 1 0 0 ? {}", entry);
+            println!(
+                "?????????? {:>n$} {:>o$} {:>g$} {:>s$} {} {}",
+                "1",
+                "0",
+                "0",
+                "0",
+                "Jan  1 00:00",
+                r.name,
+                n = nlink_w,
+                o = owner_w,
+                g = group_w,
+                s = size_w
+            );
         }
     }
 
@@ -167,12 +247,22 @@ fn main() -> i32 {
     if long_format {
         list_long_format(path)
     } else {
-        // 执行普通ls操作
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; 8192];
         let len = listdir(path, &mut buf);
         if len >= 0 {
-            let contents = core::str::from_utf8(&buf[..len as usize]).unwrap_or("Invalid UTF-8");
-            print!("{}", contents);
+            let mut entries: Vec<&str> = core::str::from_utf8(&buf[..len as usize])
+                .unwrap_or("")
+                .split('\n')
+                .filter(|s| !s.is_empty())
+                .collect();
+            entries.sort();
+            for (i, e) in entries.iter().enumerate() {
+                if i > 0 {
+                    print!("\n");
+                }
+                print!("{}", e);
+            }
+            print!("\n");
             0
         } else {
             match len {

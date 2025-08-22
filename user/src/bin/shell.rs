@@ -115,19 +115,35 @@ fn main() -> i32 {
     print!("{}", prompt);
     loop {
         let c = check_keyboard_input(true).unwrap_or(0);
-        match c {
-            0 => {
-                // 检查作业状态，即使没有输入
+
+        // 如果有前台作业，忽略除Ctrl+C/Ctrl+Z之外的输入
+        if job_manager.get_foreground_job().is_some() {
+            if c == 0 {
                 let foreground_completed = job_manager.check_job_status();
                 job_manager.cleanup_finished_jobs();
-                job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
-
-                // 如果前台作业完成，打印提示符
+                job_manager.reap_zombies();
                 if foreground_completed {
                     let current_prompt = generate_prompt();
                     print!("{}", current_prompt);
                 }
+                yield_();
+                continue;
+            }
+            if c != CTRL_C && c != CTRL_Z {
+                yield_();
+                continue;
+            }
+        }
 
+        match c {
+            0 => {
+                let foreground_completed = job_manager.check_job_status();
+                job_manager.cleanup_finished_jobs();
+                job_manager.reap_zombies();
+                if foreground_completed {
+                    let current_prompt = generate_prompt();
+                    print!("{}", current_prompt);
+                }
                 yield_();
                 continue;
             }
@@ -267,11 +283,9 @@ fn main() -> i32 {
                 println!("");
                 let line = editor.content();
                 if !line.is_empty() {
-                    let mut suppress_prompt = false; // 是否抑制提示符（前台作业时不立即打印）
-                    // 将命令添加到历史中
+                    let mut suppress_prompt = false;
                     history.add_command(line.to_string());
 
-                    // 处理内置命令
                     if line.starts_with("cd") {
                         handle_cd_command(line);
                     } else if line.starts_with("help") {
@@ -280,15 +294,20 @@ fn main() -> i32 {
                         print!("\x1b[2J\x1b[H");
                     } else if line == "jobs" {
                         job_manager.list_jobs();
+                    } else if line == "exit" || line.starts_with("exit ") {
+                        let code = line
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(0);
+                        return code;
                     } else if line.starts_with("fg") {
                         handle_fg_command(line, &mut job_manager);
-                        // fg 命令后不立即显示提示符，让前台作业运行
                         editor.clear();
                         continue;
                     } else if line.starts_with("bg") {
                         handle_bg_command(line, &mut job_manager);
                     } else {
-                        // 检查是否为后台命令
                         let (command_line, is_background) = if line.trim_end().ends_with('&') {
                             let cmd = line.trim_end();
                             let cmd = cmd[..cmd.len() - 1].trim_end();
@@ -297,36 +316,28 @@ fn main() -> i32 {
                             (String::from(line), false)
                         };
 
-                        // 检查是否包含管道
                         if has_pipe(&command_line) {
-                            // 执行管道命令
                             let commands = parse_pipeline(&command_line);
                             execute_pipeline_with_jobs(commands, is_background, &mut job_manager);
-                            // 管道：前台在此已等待完成，应立即打印提示符；后台也应立即打印
                             suppress_prompt = false;
                         } else {
-                            // 执行外部程序，支持重定向和PATH查找
                             execute_command_with_jobs(
                                 &command_line,
                                 is_background,
                                 &mut job_manager,
                             );
-                            // 外部命令：前台不应立即打印提示符，等待异步完成；后台则立即打印
                             suppress_prompt = !is_background;
                         }
                     }
                     editor.clear();
-                    // 清理已完成的作业
                     job_manager.cleanup_finished_jobs();
-                    job_manager.reap_zombies(); // 主动回收任何未跟踪的zombie进程
+                    job_manager.reap_zombies();
 
-                    // 根据是否需要抑制提示符来决定是否立即打印
                     if !suppress_prompt {
                         let current_prompt = generate_prompt();
                         print!("{}", current_prompt);
                     }
                 } else {
-                    // 空命令行：直接重新显示提示符
                     let current_prompt = generate_prompt();
                     print!("{}", current_prompt);
                 }

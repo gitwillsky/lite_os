@@ -37,17 +37,22 @@ pub fn check_keyboard_input(nonblock: bool) -> Option<u8> {
     use crate::syscall::{errno, fcntl_getfl, fcntl_setfl, open_flags};
 
     let current_flags = fcntl_getfl(0);
-    let new_flags = (current_flags as u32) | if nonblock { open_flags::O_NONBLOCK } else { 1 };
-    if current_flags >= 0 && new_flags != current_flags as u32 {
-        fcntl_setfl(0, new_flags);
+    if current_flags >= 0 {
+        let mut flags = current_flags as u32;
+        if nonblock {
+            flags |= open_flags::O_NONBLOCK;
+        } else {
+            flags &= !open_flags::O_NONBLOCK;
+        }
+        if flags != current_flags as u32 {
+            fcntl_setfl(0, flags);
+        }
     }
 
     let mut buffer = [0u8; 1];
-
-    // 尝试非阻塞读取
     match read(0, &mut buffer) {
-        1 => Some(buffer[0]),                            // 成功读取到一个字符
-        err if err == -(errno::EAGAIN as isize) => None, // 没有数据可读
-        _ => None,                                       // 其他错误
+        1 => Some(buffer[0]),
+        err if err == -(errno::EAGAIN as isize) => None,
+        _ => None,
     }
 }

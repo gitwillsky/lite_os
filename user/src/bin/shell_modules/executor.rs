@@ -1,7 +1,7 @@
 use super::jobs::{JobManager, JobStatus};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{close, dup2, execve, fork, open, pipe, wait_pid};
+use user_lib::{close, dup2, execve, fork, open, open_flags, pipe, wait_pid};
 
 /// 检查命令行是否包含管道
 pub fn has_pipe(line: &str) -> bool {
@@ -161,7 +161,10 @@ pub fn execute_command_with_jobs(line: &str, background: bool, job_manager: &mut
         if let Some(output_filename) = output_file {
             let mut output_filename_with_null = output_filename;
             output_filename_with_null.push('\0');
-            let output_fd = open(output_filename_with_null.as_str(), 1); // Open for write
+            let output_fd = open(
+                output_filename_with_null.as_str(),
+                open_flags::O_WRONLY | open_flags::O_CREAT | open_flags::O_TRUNC,
+            );
             if output_fd < 0 {
                 println!(
                     "shell: failed to create output file: {}",

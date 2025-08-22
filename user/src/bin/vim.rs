@@ -8,12 +8,11 @@ extern crate alloc;
 extern crate user_lib;
 
 use alloc::{
-    format,
     string::{String, ToString},
     vec,
     vec::Vec,
 };
-use user_lib::{close, exit, open, println, read, write};
+use user_lib::{println, read};
 
 /// Get a single character from stdin
 fn getchar() -> u8 {
@@ -24,27 +23,15 @@ fn getchar() -> u8 {
     byte[0]
 }
 
-/// File open flags
-pub struct OpenFlags;
-
-impl OpenFlags {
-    pub const RDONLY: u32 = 0o0;
-    pub const WRONLY: u32 = 0o1;
-    pub const RDWR: u32 = 0o2;
-    pub const CREATE: u32 = 0o100;
-    pub const TRUNC: u32 = 0o1000;
-    pub const APPEND: u32 = 0o2000;
-}
-
 mod editor {
-    use crate::{OpenFlags, getchar};
+    use crate::getchar;
     use alloc::{
         format,
         string::{String, ToString},
         vec,
         vec::Vec,
     };
-    use user_lib::{close, exit, open, print, read, write};
+    use user_lib::{close, exit, open, open_flags, print, read, write};
 
     /// Editor modes matching Vim's modal system
     #[derive(Clone, Copy, PartialEq, Debug, Hash)]
@@ -85,7 +72,7 @@ mod editor {
         }
 
         pub fn from_file(filename: &str) -> Result<Self, &'static str> {
-            let fd = open(filename, OpenFlags::RDONLY);
+            let fd = open(filename, open_flags::O_RDONLY);
             if fd < 0 {
                 return Ok(Self {
                     lines: vec![String::new()],
@@ -124,7 +111,7 @@ mod editor {
             let filename = self.filename.as_ref().ok_or("No filename")?;
 
             // 尝试以创建+写入+截断模式打开文件
-            let flags = OpenFlags::CREATE | OpenFlags::WRONLY | OpenFlags::TRUNC;
+            let flags = open_flags::O_CREAT | open_flags::O_WRONLY | open_flags::O_TRUNC;
             let fd = open(filename, flags);
             if fd < 0 {
                 return Err("Cannot create or open file for writing");
@@ -282,7 +269,10 @@ mod editor {
 
             // In a real implementation, we would read the response
             // For now, use common terminal size
-            Self { rows: 24, cols: 80 }
+            Self {
+                rows: 60,
+                cols: 120,
+            }
         }
     }
 
@@ -751,7 +741,7 @@ mod editor {
                         .char_indices()
                         .nth(search_start)
                         .map(|(i, _)| i)
-                        .unwrap_or(0);
+                        .unwrap_or(line.len());
                     if let Some(pos) = line[byte_start..].find(term) {
                         let byte_pos = byte_start + pos;
                         // Convert byte index back to char index
@@ -891,7 +881,7 @@ mod editor {
             );
 
             // Truncate status at char boundary
-            let display_status = if status_text.len() > self.terminal_size.cols {
+            let display_status = if status_text.chars().count() > self.terminal_size.cols {
                 let take_len = self.terminal_size.cols.saturating_sub(3);
                 let mut chars = status_text.chars().take(take_len);
                 let safe_prefix: String = chars.collect();

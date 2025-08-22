@@ -21,8 +21,9 @@ impl TabCompletion {
         // 获取补全候选
         let candidates = Self::get_completion_candidates(content, word_start, &word);
 
-        if candidates.len() > 1 && candidates.len() < 5 {
-            for candidate in candidates.iter() {
+        if candidates.len() > 1 && candidates.len() <= 100 {
+            println!("");
+            for candidate in candidates.iter().take(100) {
                 println!("{}", candidate);
             }
         }
@@ -214,7 +215,7 @@ impl TabCompletion {
 
     /// 列出目录项
     fn list_directory_entries(dir_path: &str) -> Result<Vec<String>, i32> {
-        let mut buffer = [0u8; 4096];
+        let mut buffer = [0u8; 8192];
         let result = listdir(dir_path, &mut buffer);
 
         if result < 0 {
