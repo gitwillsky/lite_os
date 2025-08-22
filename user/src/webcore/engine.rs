@@ -238,6 +238,18 @@ impl RenderEngine for StandardRenderEngine {
         
         let mut commands = Vec::new();
         if let Some(ref layout) = self.layout {
+            let clear_color = if layout.style.background_color.a > 0 {
+                layout.style.background_color.to_u32()
+            } else {
+                0xFF1E3A5F
+            };
+            commands.push(DrawCommand::FillRect {
+                x: 0,
+                y: 0,
+                width: self.viewport_width as u32,
+                height: self.viewport_height as u32,
+                color: clear_color,
+            });
             super::paint::collect_draw_commands(layout, &mut commands);
         }
         

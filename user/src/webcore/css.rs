@@ -1725,6 +1725,68 @@ impl StyleComputer {
                     computed.column_gap = self.length_computer.compute(length, context);
                 }
             },
+            "flex-grow" => {
+                match &declaration.value {
+                    CSSValue::Number(n) => { computed.flex_grow = *n; },
+                    CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
+                    _ => {}
+                }
+            },
+            "flex-basis" => {
+                match &declaration.value {
+                    CSSValue::Length(len) => { computed.flex_basis = FlexBasis::Length(self.length_computer.compute(len, context)); },
+                    CSSValue::Keyword(k) => {
+                        match k.trim().to_lowercase().as_str() {
+                            "auto" => computed.flex_basis = FlexBasis::Auto,
+                            "content" => computed.flex_basis = FlexBasis::Content,
+                            _ => {}
+                        }
+                    },
+                    _ => {}
+                }
+            },
+            "flex-shrink" => {
+                match &declaration.value {
+                    CSSValue::Number(n) => {},
+                    CSSValue::Integer(_i) => {},
+                    _ => {}
+                }
+            },
+            "flex" => {
+                match &declaration.value {
+                    CSSValue::Number(n) => { computed.flex_grow = *n; },
+                    CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
+                    CSSValue::Keyword(k) => {
+                        match k.trim().to_lowercase().as_str() {
+                            "none" => { computed.flex_grow = 0.0; computed.flex_basis = FlexBasis::Auto; },
+                            "auto" => { computed.flex_grow = 1.0; },
+                            _ => {}
+                        }
+                    },
+                    CSSValue::List(list) => {
+                        let mut grow: Option<f32> = None;
+                        let mut basis: Option<FlexBasis> = None;
+                        for v in list {
+                            match v {
+                                CSSValue::Number(n) => { if grow.is_none() { grow = Some(*n); } },
+                                CSSValue::Integer(i) => { if grow.is_none() { grow = Some(*i as f32); } },
+                                CSSValue::Length(len) => { basis = Some(FlexBasis::Length(self.length_computer.compute(len, context))); },
+                                CSSValue::Keyword(k) => {
+                                    match k.trim().to_lowercase().as_str() {
+                                        "auto" => basis = Some(FlexBasis::Auto),
+                                        "content" => basis = Some(FlexBasis::Content),
+                                        _ => {}
+                                    }
+                                },
+                                _ => {}
+                            }
+                        }
+                        if let Some(g) = grow { computed.flex_grow = g; }
+                        if let Some(b) = basis { computed.flex_basis = b; }
+                    },
+                    _ => {}
+                }
+            },
             _ => {
             }
         }
