@@ -23,8 +23,10 @@ pub fn collect_draw_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
     collect_block_commands(lb, commands);
 
     // 收集文本绘制命令
-    if let Some(ref text) = lb.text {
-        collect_text_commands(lb, text, commands);
+    if lb.children.is_empty() {
+        if let Some(ref text) = lb.text {
+            collect_text_commands(lb, text, commands);
+        }
     }
 
     // 收集图片绘制命令
@@ -39,7 +41,7 @@ pub fn collect_draw_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
 
 fn collect_block_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
     // 收集背景色绘制命令
-    if lb.style.background_color.a > 0 {
+    if lb.style.background_color.a > 0 && lb.children.is_empty() {
         let color_u32 = lb.style.background_color.to_u32();
 
         let bg_x = lb.rect.x + lb.box_model.margin.left + lb.box_model.border.left;
@@ -125,14 +127,14 @@ fn collect_text_commands(lb: &LayoutBox, text: &str, commands: &mut Vec<DrawComm
     let (content_x_offset, content_y_offset) = lb.box_model.content_offset();
     let content_x = lb.rect.x + content_x_offset;
     let content_y = lb.rect.y + content_y_offset;
-    let content_h = lb.rect.h - lb.box_model.total_vertical();
 
     let text_x = content_x + 2;
-    let text_y = content_y + (content_h - font_size as i32) / 2;
+    let ascent = crate::gfx::font_ascent(font_size);
+    let baseline_y = content_y + ascent;
 
     commands.push(DrawCommand::DrawText {
         x: text_x,
-        y: text_y,
+        y: baseline_y,
         text: text.to_string(),
         color: text_color,
         size: font_size,

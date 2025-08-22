@@ -26,18 +26,14 @@ impl Element for DomNode {
     }
 
     fn parent(&self) -> Option<&dyn Element> {
-        // DOM节点没有父指针，这里返回None
-        // 实际应用中需要修改DomNode结构来支持父指针
         None
     }
 
     fn index(&self) -> usize {
-        0 // 简化实现
+        0
     }
 
-    // 扩展的Element接口实现
     fn get_attribute(&self, name: &str) -> Option<&str> {
-        // 搜索attributes向量中的指定属性
         for (attr_name, attr_value) in &self.attributes {
             if attr_name == name {
                 return Some(attr_value);
@@ -55,11 +51,11 @@ impl Element for DomNode {
     }
 
     fn previous_sibling(&self) -> Option<&dyn Element> {
-        None // 简化：需要实际的兄弟元素指针
+        None
     }
 
     fn next_sibling(&self) -> Option<&dyn Element> {
-        None // 简化：需要实际的兄弟元素指针
+        None
     }
 
     fn first_child(&self) -> Option<&dyn Element> {
@@ -75,27 +71,43 @@ impl Element for DomNode {
     }
 }
 
-/// 计算样式树
 pub fn style_tree<'a>(
     root: &'a DomNode,
     stylesheet: &StyleSheet
 ) -> StyledNode<'a> {
-    // 使用新的CSS架构
     let computer = StyleComputer::new();
     let context = ComputationContext::default();
-
-    // 将单个样式表包装成Vec
     let stylesheets = vec![stylesheet];
-    let computed = computer.compute_style(root, &stylesheets, &context);
-
-    println!("[style] Element '{}' computed style: bg_color={:?}",
-        root.tag, computed.background_color);
-
+    println!("[style] Computing style for element: {} (id={:?}, classes={:?})",
+        root.tag, root.id, root.class_list);
+    println!("[style] Using {} stylesheets with total {} rules", 
+        stylesheets.len(), 
+        stylesheets.iter().map(|s| s.rules.len()).sum::<usize>());
+    let computed = computer.compute_style(root, &stylesheets, &context, None);
+    println!("[style] Element '{}' computed style: color=({},{},{}) bg_color=({},{},{}) font_size={:?}",
+        root.tag, 
+        computed.color.r, computed.color.g, computed.color.b,
+        computed.background_color.r, computed.background_color.g, computed.background_color.b,
+        computed.font_size);
     StyledNode {
         node: root,
-        style: computed,
-        children: root.children.iter().map(|child| {
-            style_tree(child, stylesheet)
-        }).collect(),
+        style: computed.clone(),
+        children: root.children.iter().map(|child| style_tree_with_parent(child, stylesheet, &computed)).collect(),
+    }
+}
+
+fn style_tree_with_parent<'a>(
+    node: &'a DomNode,
+    stylesheet: &StyleSheet,
+    parent_style: &ComputedStyle,
+) -> StyledNode<'a> {
+    let computer = StyleComputer::new();
+    let context = ComputationContext::default();
+    let stylesheets = vec![stylesheet];
+    let computed = computer.compute_style(node, &stylesheets, &context, Some(parent_style));
+    StyledNode {
+        node,
+        style: computed.clone(),
+        children: node.children.iter().map(|c| style_tree_with_parent(c, stylesheet, &computed)).collect(),
     }
 }

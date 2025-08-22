@@ -10,6 +10,7 @@ html, body {
     height: 100%;
     font-family: sans-serif;
     font-size: 14px;
+    color: white; /* 设置默认文本颜色为白色 */
 }
 
 /* 桌面容器 */

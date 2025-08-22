@@ -1227,9 +1227,10 @@ pub struct StandardSelectorMatcher;
 impl SelectorMatcher for StandardSelectorMatcher {
     fn matches(&self, selector: &Selector, element: &dyn Element) -> bool {
         let matches = match_complex_selector(&selector.complex, element);
-        if matches {
-            println!("[css] Selector matched element '{}' (id={:?}, classes={:?})",
-                element.tag_name().unwrap_or(""), element.id(), element.classes());
+        let tag = element.tag_name().unwrap_or("");
+        if matches && tag != "" && tag != "style" && tag != "head" {
+            println!("[css] Selector MATCHED element '{}' (id={:?}, classes={:?})",
+                tag, element.id(), element.classes());
         }
         matches
     }
@@ -1341,12 +1342,14 @@ impl CascadeCalculator for StandardCascadeCalculator {
         let mut matched_declarations = Vec::new();
 
         // 收集所有匹配的声明
-        for rule in rules {
+        for (rule_index, rule) in rules.iter().enumerate() {
             for selector in &rule.selectors {
                 if self.matcher.matches(selector, element) {
                     let specificity = self.matcher.specificity(selector);
+                    println!("[css] Rule matched element with {} declarations", rule.declarations.len());
                     for declaration in &rule.declarations {
-                        matched_declarations.push((declaration.clone(), specificity, rule.declarations.len()));
+                        println!("[css]   Adding declaration: {} = {:?}", declaration.property, declaration.value);
+                        matched_declarations.push((declaration.clone(), specificity, rule_index));
                     }
                 }
             }
@@ -1356,8 +1359,8 @@ impl CascadeCalculator for StandardCascadeCalculator {
         matched_declarations.sort_by(|a, b| {
             // 首先比较!important
             b.0.important.cmp(&a.0.important)
-                .then_with(|| a.1.cmp(&b.1))  // 特异性
-                .then_with(|| a.2.cmp(&b.2))  // 源顺序
+                .then_with(|| b.1.cmp(&a.1))  // 特异性降序
+                .then_with(|| b.2.cmp(&a.2))  // 源顺序降序
         });
 
         // 去重，保留最高优先级的声明
@@ -1405,10 +1408,14 @@ impl StyleComputer {
         element: &dyn Element,
         stylesheets: &[&StyleSheet],
         context: &ComputationContext,
+        parent_style: Option<&ComputedStyle>,
     ) -> ComputedStyle {
         let mut computed = ComputedStyle::default();
 
-        // 收集所有适用的规则
+        if let Some(parent) = parent_style {
+            self.cascade_calculator.apply_inheritance(&mut computed, Some(parent));
+        }
+
         let mut all_rules = Vec::new();
         for stylesheet in stylesheets {
             for rule in &stylesheet.rules {
@@ -1416,10 +1423,8 @@ impl StyleComputer {
             }
         }
 
-        // 执行层叠算法
         let declarations = self.cascade_calculator.cascade(&all_rules, element);
 
-        // 应用声明到计算样式
         for declaration in declarations {
             self.apply_declaration(&mut computed, &declaration, context);
         }

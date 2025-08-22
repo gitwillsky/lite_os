@@ -84,6 +84,9 @@ pub trait RenderEngine {
     
     /// 获取所有加载的字体文件路径
     fn get_font_paths(&self) -> Vec<String>;
+    
+    /// 获取样式表（用于调试）
+    fn get_stylesheet(&self) -> Option<&StyleSheet>;
 }
 
 /// 标准渲染引擎实现
@@ -99,7 +102,7 @@ pub struct StandardRenderEngine {
 
 impl StandardRenderEngine {
     pub fn new() -> Self {
-        Self {
+        let mut s = Self {
             dom: None,
             stylesheet: StyleSheet::default(),
             layout: None,
@@ -107,15 +110,21 @@ impl StandardRenderEngine {
             viewport_height: 600,
             dirty: true,
             font_paths: Vec::new(),
+        };
+        s.init_ua_styles();
+        s
+    }
+
+    fn init_ua_styles(&mut self) {
+        let ua_css = "html, body { display: block; } h1, h2, h3, h4, h5, h6, p, div, section, article, header, footer, nav, main { display: block; } span, b, i, u, strong, em, a { display: inline; }";
+        if let Ok(mut stylesheet) = super::css::parse_stylesheet(ua_css) {
+            let mut rules = stylesheet.rules;
+            self.stylesheet.rules.append(&mut rules);
         }
     }
     
-    /// 处理DOM中的资源引用（字体、CSS等）
     fn process_dom_resources(&mut self, dom: &DomNode) {
-        // 处理顶级元素
         self.process_node_resources(dom);
-        
-        // 递归处理子元素
         for child in &dom.children {
             self.process_dom_resources(child);
         }
@@ -124,7 +133,6 @@ impl StandardRenderEngine {
     fn process_node_resources(&mut self, node: &DomNode) {
         match node.tag.as_str() {
             "link" => {
-                // 处理CSS链接
                 if node.rel.as_ref().map(|s| s.as_str() == "stylesheet").unwrap_or(false) {
                     if let Some(href) = node.src.as_ref() {
                         println!("[webcore] Loading stylesheet: {}", href);
@@ -141,22 +149,39 @@ impl StandardRenderEngine {
                 }
             }
             "style" => {
-                // 处理内联CSS
-                if let Some(ref text) = node.text {
-                    if let Ok(stylesheet) = super::css::parse_stylesheet(text) {
+                let css_text = self.collect_text_from_children(node);
+                if !css_text.is_empty() {
+                    println!("[webcore] Processing style tag CSS, length: {}", css_text.len());
+                    if let Ok(stylesheet) = super::css::parse_stylesheet(&css_text) {
+                        println!("[webcore] Parsed {} rules from inline style", stylesheet.rules.len());
                         let mut rules = stylesheet.rules;
                         self.stylesheet.rules.append(&mut rules);
-                        println!("[webcore] Loaded {} rules from inline style", rules.len());
                     }
                 }
             }
             _ => {}
         }
         
-        // 处理子元素
         for child in &node.children {
             self.process_node_resources(child);
         }
+    }
+    
+    fn collect_text_from_children(&self, node: &DomNode) -> String {
+        let mut text = String::new();
+        println!("[webcore] Collecting text from {} children of {}", node.children.len(), node.tag);
+        for child in &node.children {
+            if child.tag.is_empty() {
+                if let Some(ref child_text) = child.text {
+                    println!("[webcore]   Found text node with {} chars", child_text.len());
+                    text.push_str(child_text);
+                }
+            } else {
+                println!("[webcore]   Skipping non-text child: {}", child.tag);
+            }
+        }
+        println!("[webcore] Collected total {} chars", text.len());
+        text
     }
 }
 
@@ -248,5 +273,9 @@ impl RenderEngine for StandardRenderEngine {
     
     fn get_font_paths(&self) -> Vec<String> {
         self.font_paths.clone()
+    }
+    
+    fn get_stylesheet(&self) -> Option<&StyleSheet> {
+        Some(&self.stylesheet)
     }
 }

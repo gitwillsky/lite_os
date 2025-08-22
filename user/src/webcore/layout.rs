@@ -3,6 +3,11 @@ use super::style::StyledNode;
 use super::css::{ComputedStyle, Display, Position, Length};
 use alloc::string::String;
 
+/// 检查是否是不应渲染文本内容的元素
+fn is_non_rendering_element(tag: &str) -> bool {
+    matches!(tag, "style" | "script" | "head" | "meta" | "link" | "title")
+}
+
 #[derive(Clone)]
 pub struct LayoutBox {
     pub rect: Rect,
@@ -31,14 +36,15 @@ pub fn layout_tree<'a>(
     styled_node: &StyledNode<'a>,
     containing_block: Rect
 ) -> LayoutBox {
-    layout_tree_with_depth(styled_node, containing_block, 0)
+    layout_tree_with_depth(styled_node, containing_block, 0, false)
 }
 
 /// 内部递归函数，带深度保护
 fn layout_tree_with_depth<'a>(
     styled_node: &StyledNode<'a>,
     containing_block: Rect,
-    depth: usize
+    depth: usize,
+    suppress_text: bool
 ) -> LayoutBox {
     // 防止递归过深导致栈溢出
     if depth > 100 {
@@ -47,7 +53,7 @@ fn layout_tree_with_depth<'a>(
             rect: Rect::new(0, 0, 0, 0),
             style: styled_node.style.clone(),
             children: Vec::new(),
-            text: styled_node.node.text.clone(),
+            text: None,
             box_model: calculate_box_model_dimensions(&styled_node.style, containing_block),
         };
     }
@@ -59,11 +65,15 @@ fn layout_tree_with_depth<'a>(
         box_model: calculate_box_model_dimensions(&styled_node.style, containing_block),
     };
 
-    // 获取节点文本内容
-    if let Some(ref text) = styled_node.node.text {
-        if !text.is_empty() {
-            layout_box.text = Some(text.clone());
-            println!("[layout] Text node found: '{}'", text);
+    let current_non_render = is_non_rendering_element(&styled_node.node.tag);
+    let allow_text = !suppress_text && !current_non_render;
+
+    if allow_text {
+        if let Some(ref text) = styled_node.node.text {
+            if !text.is_empty() {
+                layout_box.text = Some(text.clone());
+                println!("[layout] Text node found: '{}'", text);
+            }
         }
     }
 
@@ -74,7 +84,7 @@ fn layout_tree_with_depth<'a>(
     let temp_containing_block = layout_box.rect;
     for child in &styled_node.children {
         if child.style.display != Display::None {
-            let child_layout = layout_tree_with_depth(child, temp_containing_block, depth + 1);
+            let child_layout = layout_tree_with_depth(child, temp_containing_block, depth + 1, suppress_text || current_non_render);
             layout_box.children.push(child_layout);
         }
     }

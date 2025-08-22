@@ -89,7 +89,9 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
             DrawCommand::DrawText { x, y, text, color, size } => {
                 if !gfx::draw_text(*x, *y, text, *size, *color) {
                     let scale = if *size >= 16 { *size / 8 } else { 1 };
-                    gfx::draw_string_scaled(*x, *y, text, *color, scale);
+                    let asc = gfx::font_ascent(*size);
+                    let top_y = *y - (asc * scale as i32);
+                    gfx::draw_string_scaled(*x, top_y, text, *color, scale);
                 }
             }
             DrawCommand::DrawImage { x, y, width, height, .. } => {

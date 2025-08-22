@@ -444,11 +444,37 @@ pub fn measure_text(text: &str, size_px: u32) -> i32 {
     };
     if let Some(bytes) = font_opt { measure_with_face(text, size_px, bytes).unwrap_or(0) }
     else {
-        // 位图字体近似宽度：8px * scale
         let scale = if size_px >= 8 { (size_px / 8) as i32 } else { 1 };
         (text.len() as i32) * 8 * scale
     }
 }
+
+pub fn font_metrics(size_px: u32) -> (i32, i32, i32, i32) {
+    let font_opt: Option<&'static [u8]> = {
+        let guard = GFX.lock();
+        if let Some(ref g) = *guard { g.default_font } else { None }
+    };
+    if let Some(bytes) = font_opt {
+        if let Ok(face) = ttf_parser::Face::parse(bytes, 0) {
+            let upem = face.units_per_em() as f32;
+            if upem > 0.0 {
+                let scale = size_px as f32 / upem;
+                let asc = libm::roundf((face.ascender() as f32) * scale) as i32;
+                let desc = libm::roundf((-face.descender() as f32) * scale) as i32;
+                let gap = libm::roundf((face.line_gap() as f32) * scale) as i32;
+                let line_height = (asc + desc + gap).max(size_px as i32);
+                return (asc.max(0), desc.max(0), gap.max(0), line_height.max(1));
+            }
+        }
+    }
+    let asc = ((size_px as f32) * 0.8) as i32;
+    let desc = ((size_px as f32) * 0.2) as i32;
+    let gap = ((size_px as f32) * 0.1) as i32;
+    let line_height = size_px as i32;
+    (asc.max(1), desc.max(0), gap.max(0), line_height.max(1))
+}
+
+pub fn font_ascent(size_px: u32) -> i32 { font_metrics(size_px).0 }
 
 pub fn measure_char(ch: char, size_px: u32) -> i32 {
     let font_opt: Option<&'static [u8]> = {
