@@ -143,9 +143,8 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         _ => {
             // 检查是否是绝对定位且有left/right约束
             if layout_box.style.position == super::css::Position::Absolute {
-                // 对于绝对定位，如果有left和right，计算宽度
-                let has_left = !matches!(layout_box.style.left, Length::Px(0.0));
-                let has_right = !matches!(layout_box.style.right, Length::Px(0.0));
+                let has_left = layout_box.style.left_specified;
+                let has_right = layout_box.style.right_specified;
                 if has_left && has_right {
                     let left_px = get_length_px(&layout_box.style.left, containing_block.w);
                     let right_px = get_length_px(&layout_box.style.right, containing_block.w);
@@ -177,8 +176,8 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         _ => {
             // 检查是否是绝对定位且有top/bottom约束
             if layout_box.style.position == super::css::Position::Absolute {
-                let has_top = !matches!(layout_box.style.top, Length::Px(0.0));
-                let has_bottom = !matches!(layout_box.style.bottom, Length::Px(0.0));
+                let has_top = layout_box.style.top_specified;
+                let has_bottom = layout_box.style.bottom_specified;
                 if has_top && has_bottom {
                     let top_px = get_length_px(&layout_box.style.top, containing_block.h);
                     let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
@@ -219,33 +218,41 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         println!("[layout] Processing absolute positioning");
 
         // 处理left/right约束
-        match (&layout_box.style.left, &layout_box.style.right) {
-            (Length::Px(left), Length::Px(right)) if *left == 0.0 && *right == 0.0 => {
-                // left: 0, right: 0 - 填满整个宽度
-                layout_box.rect.x = 0;
-                layout_box.rect.w = containing_block.w;
-                println!("[layout] Applied left:0 right:0 -> x=0 w={}", containing_block.w);
-            },
-            (Length::Px(left), _) => {
-                layout_box.rect.x = *left as i32;
-                println!("[layout] Applied left: {}px", left);
-            },
-            _ => {}
+        let left_spec = layout_box.style.left_specified;
+        let right_spec = layout_box.style.right_specified;
+        if left_spec && right_spec {
+            let left_px = get_length_px(&layout_box.style.left, containing_block.w);
+            let right_px = get_length_px(&layout_box.style.right, containing_block.w);
+            layout_box.rect.x = left_px;
+            layout_box.rect.w = (containing_block.w - left_px - right_px).max(0);
+            println!("[layout] Applied left/right -> x={} w={}", layout_box.rect.x, layout_box.rect.w);
+        } else if left_spec {
+            let left_px = get_length_px(&layout_box.style.left, containing_block.w);
+            layout_box.rect.x = left_px;
+            println!("[layout] Applied left: {}px", left_px);
+        } else if right_spec {
+            let right_px = get_length_px(&layout_box.style.right, containing_block.w);
+            layout_box.rect.x = (containing_block.w - right_px - layout_box.rect.w).max(0);
+            println!("[layout] Applied right: {}px -> x={} (w={})", right_px, layout_box.rect.x, layout_box.rect.w);
         }
 
         // 处理top/bottom约束
-        match (&layout_box.style.top, &layout_box.style.bottom) {
-            (Length::Px(top), Length::Px(bottom)) if *top == 0.0 && *bottom == 0.0 => {
-                // top: 0, bottom: 0 - 填满包含块高度
-                layout_box.rect.y = 0;
-                layout_box.rect.h = containing_block.h;
-                println!("[layout] Applied top:0 bottom:0 -> y=0 h={}", containing_block.h);
-            },
-            (Length::Px(top), _) => {
-                layout_box.rect.y = *top as i32;
-                println!("[layout] Applied top: {}px", top);
-            },
-            _ => {}
+        let top_spec = layout_box.style.top_specified;
+        let bottom_spec = layout_box.style.bottom_specified;
+        if top_spec && bottom_spec {
+            let top_px = get_length_px(&layout_box.style.top, containing_block.h);
+            let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
+            layout_box.rect.y = top_px;
+            layout_box.rect.h = (containing_block.h - top_px - bottom_px).max(0);
+            println!("[layout] Applied top/bottom -> y={} h={}", layout_box.rect.y, layout_box.rect.h);
+        } else if top_spec {
+            let top_px = get_length_px(&layout_box.style.top, containing_block.h);
+            layout_box.rect.y = top_px;
+            println!("[layout] Applied top: {}px", top_px);
+        } else if bottom_spec {
+            let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
+            layout_box.rect.y = (containing_block.h - bottom_px - layout_box.rect.h).max(0);
+            println!("[layout] Applied bottom: {}px -> y={} (h={})", bottom_px, layout_box.rect.y, layout_box.rect.h);
         }
     }
 }

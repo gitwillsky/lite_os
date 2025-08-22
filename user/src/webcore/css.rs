@@ -928,6 +928,10 @@ pub struct ComputedStyle {
     pub right: Length,
     pub bottom: Length,
     pub left: Length,
+    pub top_specified: bool,
+    pub right_specified: bool,
+    pub bottom_specified: bool,
+    pub left_specified: bool,
     pub z_index: i32,
 
     // 浮动和清除
@@ -1038,6 +1042,10 @@ impl Default for ComputedStyle {
             right: Length::default(),
             bottom: Length::default(),
             left: Length::default(),
+            top_specified: false,
+            right_specified: false,
+            bottom_specified: false,
+            left_specified: false,
             z_index: 0,
             float: Float::default(),
             clear: Clear::default(),
@@ -1632,24 +1640,28 @@ impl StyleComputer {
             "left" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.left = self.length_computer.compute(length, context);
+                    computed.left_specified = true;
                     println!("[css] Applied left: {:?} -> {:?}", length, computed.left);
                 }
             },
             "top" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.top = self.length_computer.compute(length, context);
+                    computed.top_specified = true;
                     println!("[css] Applied top: {:?} -> {:?}", length, computed.top);
                 }
             },
             "right" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.right = self.length_computer.compute(length, context);
+                    computed.right_specified = true;
                     println!("[css] Applied right: {:?} -> {:?}", length, computed.right);
                 }
             },
             "bottom" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.bottom = self.length_computer.compute(length, context);
+                    computed.bottom_specified = true;
                     println!("[css] Applied bottom: {:?} -> {:?}", length, computed.bottom);
                 }
             },
@@ -1662,8 +1674,58 @@ impl StyleComputer {
                     }
                 }
             },
+            "flex-direction" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    match value.trim().to_lowercase().as_str() {
+                        "row" => computed.flex_direction = FlexDirection::Row,
+                        "row-reverse" => computed.flex_direction = FlexDirection::RowReverse,
+                        "column" => computed.flex_direction = FlexDirection::Column,
+                        "column-reverse" => computed.flex_direction = FlexDirection::ColumnReverse,
+                        _ => {}
+                    }
+                }
+            },
+            "justify-content" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    match value.trim().to_lowercase().as_str() {
+                        "flex-start" => computed.justify_content = JustifyContent::FlexStart,
+                        "flex-end" => computed.justify_content = JustifyContent::FlexEnd,
+                        "center" => computed.justify_content = JustifyContent::Center,
+                        "space-between" => computed.justify_content = JustifyContent::SpaceBetween,
+                        "space-around" => computed.justify_content = JustifyContent::SpaceAround,
+                        "space-evenly" => computed.justify_content = JustifyContent::SpaceEvenly,
+                        _ => {}
+                    }
+                }
+            },
+            "align-items" => {
+                if let CSSValue::Keyword(value) = &declaration.value {
+                    match value.trim().to_lowercase().as_str() {
+                        "flex-start" => computed.align_items = AlignItems::FlexStart,
+                        "flex-end" => computed.align_items = AlignItems::FlexEnd,
+                        "center" => computed.align_items = AlignItems::Center,
+                        "baseline" => computed.align_items = AlignItems::Baseline,
+                        "stretch" => computed.align_items = AlignItems::Stretch,
+                        _ => {}
+                    }
+                }
+            },
+            "gap" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.gap = self.length_computer.compute(length, context);
+                }
+            },
+            "row-gap" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.row_gap = self.length_computer.compute(length, context);
+                }
+            },
+            "column-gap" => {
+                if let CSSValue::Length(length) = &declaration.value {
+                    computed.column_gap = self.length_computer.compute(length, context);
+                }
+            },
             _ => {
-                // 未识别的属性暂时忽略
             }
         }
     }
