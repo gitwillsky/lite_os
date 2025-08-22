@@ -217,7 +217,9 @@ fn collect_image_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
         - lb.box_model.border.bottom)
         .max(1) as u32;
 
-    let Some(ref src) = lb.image_src else { return; };
+    let Some(ref src) = lb.image_src else {
+        return;
+    };
 
     with_image_cache(|cache| {
         let decoded = cache.get_image(src);

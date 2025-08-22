@@ -119,10 +119,30 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
                 image_data,
             } => {
                 if *target_width == *width && *target_height == *height {
-                    gfx::blit_rgba(*x, *y, *width, *height, image_data.as_ptr(), (*width as usize) * 4);
+                    gfx::blit_rgba(
+                        *x,
+                        *y,
+                        *width,
+                        *height,
+                        image_data.as_ptr(),
+                        (*width as usize) * 4,
+                    );
                 } else {
-                    let scaled = scale_rgba_nearest(image_data, *width, *height, *target_width, *target_height);
-                    gfx::blit_rgba(*x, *y, *target_width, *target_height, scaled.as_ptr(), (*target_width as usize) * 4);
+                    let scaled = scale_rgba_nearest(
+                        image_data,
+                        *width,
+                        *height,
+                        *target_width,
+                        *target_height,
+                    );
+                    gfx::blit_rgba(
+                        *x,
+                        *y,
+                        *target_width,
+                        *target_height,
+                        scaled.as_ptr(),
+                        (*target_width as usize) * 4,
+                    );
                 }
             }
             DrawCommand::DrawLine {
@@ -143,7 +163,9 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
 fn scale_rgba_nearest(src: &Vec<u8>, sw: u32, sh: u32, tw: u32, th: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((tw as usize) * (th as usize) * 4);
     out.resize((tw as usize) * (th as usize) * 4, 0);
-    if sw == 0 || sh == 0 || tw == 0 || th == 0 { return out; }
+    if sw == 0 || sh == 0 || tw == 0 || th == 0 {
+        return out;
+    }
     for ty in 0..th {
         let sy = (ty as u64 * sh as u64 / th as u64) as u32;
         let src_row = (sy as usize) * (sw as usize) * 4;
