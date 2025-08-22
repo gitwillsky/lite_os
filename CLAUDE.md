@@ -2,181 +2,88 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Quick commands
 
-This is a RISC-V 64-bit operating system kernel written in Rust, featuring a two-stage boot process with an M-Mode bootloader and S-Mode kernel. The OS supports multi-tasking, virtual memory management, system calls, and user-space programs.
+- Build everything: make build
+- Run (headless, serial console): make run
+- Run with GUI (Cocoa on macOS): make run-gui
+- Clean: make clean
+- Build individual parts:
+  - Kernel: make build-kernel
+  - User programs: make build-user
+  - Bootloader: make build-bootloader
+- Rebuild filesystem image from built user ELFs: make create-fs
+- GDB debug: make run-gdb (terminal 1), then make gdb (terminal 2)
+- Resolve a kernel backtrace address: make addr2line ADDR=0xXXXXXXXXXXXX
 
-## Build Commands
+### Development loops
 
-### Basic Build and Run
+- Kernel-only changes: make run
+- User program changes: make build-user && make create-fs && make run or make run-gui
+- Bootloader changes: make build-bootloader && make run or make run-gui
 
-- `make build` - Build all components (bootloader, kernel, user programs, filesystem)
-- `make run` - Build and run the OS in QEMU (8 cores, no GUI)
-- `make run-gui` - Build and run with GUI support (Cocoa display on macOS)
-- `make clean` - Clean all build artifacts
+### Linting/formatting
 
-### Individual Components
+- Toolchain is pinned in rust-toolchain.toml (nightly; rustfmt/clippy are included)
+- Workspace (kernel + user): cargo +nightly fmt --all; cargo +nightly fmt --all --check
+- Clippy (kernel): (cd kernel && cargo +nightly clippy)
+- Clippy (user): (cd user && cargo +nightly clippy)
+- Bootloader is a separate crate: (cd bootloader && cargo +nightly fmt --all && cargo +nightly clippy)
 
-- `make build-bootloader` - Build only the M-Mode bootloader
-- `make build-kernel` - Build only the S-Mode kernel (debug mode)
-- `make build-user` - Build all user programs and convert to binaries
-- `make create-fs` - Create filesystem image using Python script
+### Testing inside the OS (there are no cargo test targets)
 
-### Debugging
+- Tests are shipped as user-space binaries placed under /tests in the fs image (create_fs.py maps tests_*.rs -> /tests/<name>).
+- Run a single test after booting (make run or make run-gui):
+  - /tests/fs
+  - /tests/process
+  - /tests/memory
+  - /tests/signal
+  - /tests/threads
+  - /tests/time
+  - /tests/watchdog
+  - /tests/ipc
+  - /tests/system
+- List available tests in the guest: ls /tests
+- Automated run with a 15s guard: make run-with-timeout
 
-- `make run-gdb` - Start QEMU with GDB server (paused at first instruction)
-- `make gdb` - Connect GDB to running QEMU instance
-- `make addr2line ADDR=<address>` - Convert address to source location (requires hex address)
+## High-level architecture
 
-### Testing
+### Three components
 
-- `make run-with-timeout` - Run with 15-second timeout (kills QEMU automatically)
+1) Bootloader (bootloader/) — RustSBI-based M-mode loader that sets up machine state and enters the S-mode kernel. It is its own Cargo project (excluded from the workspace).
+2) Kernel (kernel/) — S-mode OS kernel (no_std) targeting riscv64gc-unknown-none-elf. Default member of the workspace.
+3) User (user/) — no_std userland crate producing multiple binaries (user/src/bin/*) that run on the kernel.
 
-## Architecture
+### Kernel big picture
 
-### Three-Component Structure
+- Entry and init: kernel/src/main.rs contains kmain; low-level entry in kernel/src/entry.rs. Platform specifics under kernel/src/arch/.
+- Syscalls: kernel/src/syscall/mod.rs dispatches 200+ calls grouped by domain (fs, process, signal, timer, memory, graphics, watchdog, IPC).
+- Tasks and scheduling: kernel/src/task/ implements processes/threads with per-CPU execution; schedulers live in kernel/src/task/scheduler/ (CFS, FIFO, Priority). Task management and load balancing are in kernel/src/task/task_manager.rs and processor.rs.
+- Memory management: SV39 page tables and address translation in kernel/src/memory/page_table.rs; address types in address.rs; virtual memory areas in mm.rs; frame allocation via buddy allocator (frame_allocator.rs); kernel object allocation via SLAB (slab_allocator.rs); per-CPU stacks and guard pages.
+- Filesystems and VFS: kernel/src/fs/ provides a VFS layer (vfs.rs) with FAT32 (fat32.rs), EXT2 (ext2.rs), and DevFS (devfs.rs). Common inode and flock support under fs/.
+- Drivers and devices: VirtIO stack under kernel/src/drivers/ (blk, gpu, input, console, queue, hal). Framebuffer and GPU support back GUI syscalls. Device/interrupt/memory abstraction in drivers/hal/.
+- Traps, timers, signals: kernel/src/trap/ for interrupts/exceptions/softirq; timers in timer.rs and goldfish_rtc.rs; POSIX-like signal handling in kernel/src/signal/.
+- IPC: pipes and Unix-domain sockets in kernel/src/ipc/.
 
-1. **Bootloader** (`bootloader/`) - M-Mode SBI implementation using RustSBI
-2. **Kernel** (`kernel/`) - S-Mode operating system kernel
-3. **User Programs** (`user/`) - User-space applications and libraries
+### Graphics/GUI
 
-### Key Kernel Modules
+- Kernel exposes GUI/Framebuffer syscalls (kernel/src/syscall/graphics.rs) and rect-based flush APIs.
+- Userland has a minimal 2D stack in user/src/gfx.rs and a tiny GUI toolkit (user/src/litegui.rs).
+- Window managers: user/src/bin/litewm.rs and user/src/bin/webwm.rs; init.rs often starts a GUI session by spawning the WM.
 
-- `task/` - Process/thread management with CFS, FIFO, and priority schedulers
-  - `processor.rs` - Per-CPU task execution and scheduling
-  - `scheduler/` - Multiple scheduling algorithms (CFS, FIFO, Priority)
-  - `task_manager.rs` - Global task management and multi-core load balancing
-- `memory/` - Virtual memory management with multi-level page tables
-  - `frame_allocator.rs` - Buddy system for physical memory allocation
-  - `slab_allocator.rs` - SLAB allocator for kernel objects
-  - `mm.rs` - Memory set and map area management
-  - `page_table.rs` - SV39 page table implementation
-- `syscall/` - System call interface (200+ syscalls including POSIX-like calls)
-  - Organized by category: fs, process, signal, timer, memory, graphics, etc.
-- `fs/` - Virtual filesystem with FAT32, EXT2, DevFS support
-  - `vfs.rs` - Virtual filesystem layer with mount support
-  - `fat32/` - FAT32 filesystem implementation
-  - `ext2/` - EXT2 filesystem implementation
-  - `devfs/` - Device filesystem (/dev)
-- `drivers/` - VirtIO device drivers (block, GPU, input, console)
-- `signal/` - POSIX-style signal handling
-- `trap/` - Interrupt and exception handling
-- `ipc/` - Inter-process communication (pipes, Unix domain sockets)
+### Userland runtime and apps
 
-### Memory Layout
+- The user crate (user/) is no_std with a thin libc-like syscall veneer in user/src/syscall.rs and program entry in user/src/lib.rs.
+- CLI utilities (ls, cat, mkdir, rm, pwd, echo, kill, top, exit) and shell (user/src/bin/shell.rs) live under user/src/bin/.
+- Web rendering engine (WebCore) under user/src/webcore/ implements HTML/CSS parsing, style, layout, and painting; see user/src/webcore/README.md for details. Demo apps: css_test.rs, text_test.rs, webwm.rs.
 
-- Kernel uses identity mapping for physical memory access
-- Per-CPU kernel stacks with guard pages
-- Separate user address spaces with demand paging
-- SLAB allocator for kernel objects, buddy allocator for frames
+## Build/toolchain notes
 
-### Multi-Core Support
+- Workspace root Cargo.toml includes kernel and user; bootloader is a separate crate (exclude) with its own .cargo/config.toml and linker script.
+- All crates target riscv64gc-unknown-none-elf via per-crate .cargo/config.toml; linker scripts live under kernel/linker.ld and user/linker.ld.
+- QEMU is configured for an 8-core virt machine; GUI mode adds Cocoa display and maps devices (VirtIO block/GPU/input/net/RNG). Network forwards host 5555 to guest 5555.
 
-- SMP support for up to 8 cores (configurable in QEMU)
-- Per-CPU task scheduling with load balancing
-- Lock-free Per-CPU design for improved performance
+## Troubleshooting
 
-## User Programs
-
-User programs are located in `user/src/bin/` and include:
-
-- `init.rs` - Init process (PID 1)
-- `shell.rs` - Interactive shell with command parsing and job control
-- Standard utilities: `ls`, `cat`, `mkdir`, `rm`, `pwd`, `echo`, `kill`, `top`, `exit`
-- Test suites: `tests_*.rs` for various subsystems
-  - `tests_fs.rs` - File system operations
-  - `tests_process.rs` - Process management
-  - `tests_memory.rs` - Memory management
-  - `tests_signal.rs` - Signal handling
-  - `tests_threads.rs` - Multi-threading
-  - `tests_time.rs` - Time functions
-  - `tests_watchdog.rs` - Watchdog timer
-  - `tests_ipc.rs` - Inter-process communication
-  - `tests_system.rs` - System-wide tests
-- GUI applications: `gui_demo.rs`, `litewm.rs` (window manager), `webwm.rs`
-- Text editor: `vim.rs`
-
-## System Calls
-
-The kernel implements 200+ system calls organized by category:
-
-- Process management: `fork`, `exec`, `wait`, `exit`, `getpid`
-- File I/O: `open`, `read`, `write`, `close`, `lseek`, `stat`
-- Memory management: `mmap`, `munmap`, `brk`, `sbrk`
-- Signal handling: `kill`, `signal`, `sigaction`, `sigprocmask`
-- Time functions: `gettimeofday`, `nanosleep`, various time getters
-- Graphics: GUI context management and framebuffer access
-- Watchdog: Hardware watchdog timer control
-
-## Development Notes
-
-### Toolchain Requirements
-
-- Rust nightly toolchain (required for no_std features)
-- QEMU with RISC-V support (`qemu-system-riscv64`)
-- RISC-V GNU toolchain for debugging (`riscv64-elf-gdb`, `riscv64-unknown-elf-addr2line`)
-- Python 3 (for filesystem image creation)
-- Optional: E2fsprogs (for EXT2 filesystem support on macOS)
-
-### Key Files to Understand
-
-- `kernel/src/main.rs:35` - Kernel entry point (`kmain`)
-- `kernel/src/syscall/mod.rs:126` - System call dispatcher
-- `kernel/src/task/mod.rs:32` - Task subsystem initialization
-- `kernel/src/memory/mod.rs:44` - Memory management initialization
-- `bootloader/src/main.rs:50` - Bootloader main function
-
-### Debugging Tips
-
-- Use `make addr2line ADDR=<hex_address>` to resolve panic addresses
-- Enable specific logging with environment variables in kernel build
-- GDB debugging requires two terminals (one for QEMU, one for GDB)
-- Check `fs.img` filesystem contents with `python3 create_fs.py` commands
-- Default log level is set in `kernel/src/config/mod.rs`
-- Disable specific module logging with `log::disable_module()` in `kernel/src/main.rs`
-- For timeout testing, use `make run-with-timeout` (15-second auto-kill)
-
-### Common Patterns
-
-- Error handling uses custom error types, not `std::error`
-- Kernel uses `spin` crate for synchronization primitives (Mutex, Once)
-- Memory allocation uses custom allocators (buddy + SLAB)
-- Device drivers follow VirtIO specification
-- User programs link against custom `user` library crate
-- Per-CPU design for scalability (kernel stacks, task queues)
-- Lazy initialization with `spin::Once` for global resources
-- File paths are resolved relative to current working directory
-- System calls use usize arrays for arguments, isize for returns
-
-## Testing
-
-Run individual test suites in the OS:
-
-- File system tests: run `tests_fs` in shell
-- Process tests: run `tests_process` in shell
-- Memory tests: run `tests_memory` in shell
-- Signal tests: run `tests_signal` in shell
-- Thread tests: run `tests_threads` in shell
-- Time tests: run `tests_time` in shell
-- Watchdog tests: run `tests_watchdog` in shell
-- IPC tests: run `tests_ipc` in shell
-- System tests: run `tests_system` in shell
-
-For automated testing with timeout: `make run-with-timeout`
-
-## Filesystem Image Creation
-
-The `create_fs.py` script manages filesystem images:
-
-- `python3 create_fs.py create` - Create new fs.img with user binaries
-- Supports both FAT32 and EXT2 filesystem formats
-- Automatically copies user binaries from `target/riscv64gc-unknown-none-elf/release/*.bin`
-- Cleans up macOS AppleDouble files (._*) automatically
-
-## QEMU Configuration
-
-- Default: 8 cores, no GUI (`make run`)
-- GUI mode: Adds Cocoa display on macOS (`make run-gui`)
-- Memory: 1GB in GUI mode
-- Devices: VirtIO block, GPU, keyboard, mouse, network, RNG
-- Network: Port forwarding localhost:5555 -> guest:5555
+- If user binaries don’t appear in the guest, re-run: make build-user && make create-fs
+- If symbols don’t resolve from panic addresses, ensure kernel is a fresh debug build (make build-kernel) before make addr2line ADDR=...

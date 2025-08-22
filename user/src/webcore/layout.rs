@@ -287,7 +287,8 @@ fn layout_block(layout_box: &mut LayoutBox) {
         // 处理文本节点的特殊尺寸
         if child.text.is_some() && child.rect.h <= 20 {
             let font_size = get_font_size(&child.style);
-            child.rect.h = font_size + child.box_model.total_vertical();
+            let (_asc, _desc, _gap, line_h) = crate::gfx::font_metrics(font_size as u32);
+            child.rect.h = line_h + child.box_model.total_vertical();
             if child.rect.w == 0 {
                 let text_width = estimate_text_width(&child.text, font_size);
                 child.rect.w = (text_width + child.box_model.total_horizontal()).min(available_width);
@@ -375,7 +376,8 @@ fn layout_flex_column(layout_box: &mut LayoutBox, padding_top: i32, padding_left
         // 处理文本节点
         if child.text.is_some() && child.rect.h <= 20 {
             let font_size = get_font_size(&child.style);
-            child.rect.h = font_size + 4;
+            let (_asc, _desc, _gap, line_h) = crate::gfx::font_metrics(font_size as u32);
+            child.rect.h = line_h;
         }
 
         println!("[layout] Flex child positioned: x={} y={} w={} h={}",
@@ -427,7 +429,8 @@ fn layout_flex_row(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i
 /// 内联布局
 fn layout_inline(layout_box: &mut LayoutBox) {
     let mut x_offset = 0;
-    let line_height = get_font_size(&layout_box.style);
+    let fs = get_font_size(&layout_box.style);
+    let (_asc, _desc, _gap, line_height) = crate::gfx::font_metrics(fs as u32);
 
     for child in &mut layout_box.children {
         let old_x = child.rect.x;
@@ -569,7 +572,18 @@ impl BoxModelDimensions {
 fn get_font_size(style: &ComputedStyle) -> i32 {
     match style.font_size {
         Length::Px(size) => size as i32,
-        _ => 16, // 默认字体大小
+        _ => 16,
+    }
+}
+
+fn get_line_height(style: &ComputedStyle) -> i32 {
+    match style.line_height {
+        Length::Px(v) if v > 0.0 => v as i32,
+        _ => {
+            let fs = get_font_size(style).max(1) as u32;
+            let (_asc, _desc, _gap, lh) = crate::gfx::font_metrics(fs);
+            lh
+        }
     }
 }
 
@@ -701,8 +715,7 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
             },
             _ => {
                 if child.rect.h == 0 {
-                    let font_size = get_font_size(&child.style);
-                    child.rect.h = font_size + 4;
+                    child.rect.h = get_line_height(&child.style);
                 }
             },
         }
