@@ -223,16 +223,16 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         if left_spec && right_spec {
             let left_px = get_length_px(&layout_box.style.left, containing_block.w);
             let right_px = get_length_px(&layout_box.style.right, containing_block.w);
-            layout_box.rect.x = left_px;
+            layout_box.rect.x = containing_block.x + left_px;
             layout_box.rect.w = (containing_block.w - left_px - right_px).max(0);
             println!("[layout] Applied left/right -> x={} w={}", layout_box.rect.x, layout_box.rect.w);
         } else if left_spec {
             let left_px = get_length_px(&layout_box.style.left, containing_block.w);
-            layout_box.rect.x = left_px;
+            layout_box.rect.x = containing_block.x + left_px;
             println!("[layout] Applied left: {}px", left_px);
         } else if right_spec {
             let right_px = get_length_px(&layout_box.style.right, containing_block.w);
-            layout_box.rect.x = (containing_block.w - right_px - layout_box.rect.w).max(0);
+            layout_box.rect.x = containing_block.x + (containing_block.w - right_px - layout_box.rect.w).max(0);
             println!("[layout] Applied right: {}px -> x={} (w={})", right_px, layout_box.rect.x, layout_box.rect.w);
         }
 
@@ -242,16 +242,16 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         if top_spec && bottom_spec {
             let top_px = get_length_px(&layout_box.style.top, containing_block.h);
             let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
-            layout_box.rect.y = top_px;
+            layout_box.rect.y = containing_block.y + top_px;
             layout_box.rect.h = (containing_block.h - top_px - bottom_px).max(0);
             println!("[layout] Applied top/bottom -> y={} h={}", layout_box.rect.y, layout_box.rect.h);
         } else if top_spec {
             let top_px = get_length_px(&layout_box.style.top, containing_block.h);
-            layout_box.rect.y = top_px;
+            layout_box.rect.y = containing_block.y + top_px;
             println!("[layout] Applied top: {}px", top_px);
         } else if bottom_spec {
             let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
-            layout_box.rect.y = (containing_block.h - bottom_px - layout_box.rect.h).max(0);
+            layout_box.rect.y = containing_block.y + (containing_block.h - bottom_px - layout_box.rect.h).max(0);
             println!("[layout] Applied bottom: {}px -> y={} (h={})", bottom_px, layout_box.rect.y, layout_box.rect.h);
         }
     }
@@ -711,7 +711,7 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
 
     // 第一轮：计算固定和内容尺寸的项目
     let mut total_flex_grow = 0.0;
-    let mut total_fixed_width = 0;
+    let mut total_base_width = 0;
     let mut flexible_items = Vec::new();
 
     for (index, child) in layout_box.children.iter_mut().enumerate() {
@@ -730,11 +730,21 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
         // 处理flex-basis宽度
         let basis_width = match &child.style.flex_basis {
             super::css::FlexBasis::Auto => {
-                if child.rect.w > 0 { child.rect.w } else {
-                    if let Some(ref text) = child.text {
-                        let font_size = get_font_size(&child.style);
-                        estimate_text_width(&Some(text.clone()), font_size)
-                    } else { 100 }
+                // Prefer explicit width if provided; otherwise derive from content
+                match child.style.width {
+                    super::css::Length::Px(w) if w > 0.0 => w as i32,
+                    super::css::Length::Percent(_) => get_length_px(&child.style.width, layout_box.rect.w),
+                    _ => {
+                        // Ignore prefilled container-wide widths from initial sizing
+                        if child.rect.w > 0 && child.rect.w < layout_box.rect.w {
+                            child.rect.w
+                        } else if let Some(ref text) = child.text {
+                            let font_size = get_font_size(&child.style);
+                            estimate_text_width(&Some(text.clone()), font_size)
+                        } else {
+                            100
+                        }
+                    }
                 }
             },
             super::css::FlexBasis::Content => {
@@ -753,17 +763,16 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
         if child.style.flex_grow > 0.0 {
             total_flex_grow += child.style.flex_grow;
             flexible_items.push(index);
-        } else {
-            total_fixed_width += child.rect.w;
         }
 
+        total_base_width += child.rect.w;
         if index > 0 {
-            total_fixed_width += column_gap;
+            total_base_width += column_gap;
         }
     }
 
     // 第二轮：分配剩余空间
-    let available_flex_space = (layout_box.rect.w - layout_box.box_model.total_horizontal() - total_fixed_width).max(0);
+    let available_flex_space = (layout_box.rect.w - layout_box.box_model.total_horizontal() - total_base_width).max(0);
 
     if total_flex_grow > 0.0 && available_flex_space > 0 {
         for &index in &flexible_items {

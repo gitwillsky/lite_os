@@ -1729,6 +1729,7 @@ impl StyleComputer {
                 match &declaration.value {
                     CSSValue::Number(n) => { computed.flex_grow = *n; },
                     CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
+                    CSSValue::Length(Length::Px(v)) => { computed.flex_grow = *v; },
                     _ => {}
                 }
             },
@@ -1756,6 +1757,7 @@ impl StyleComputer {
                 match &declaration.value {
                     CSSValue::Number(n) => { computed.flex_grow = *n; },
                     CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
+                    CSSValue::Length(Length::Px(v)) => { computed.flex_grow = *v; },
                     CSSValue::Keyword(k) => {
                         match k.trim().to_lowercase().as_str() {
                             "none" => { computed.flex_grow = 0.0; computed.flex_basis = FlexBasis::Auto; },
