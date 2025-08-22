@@ -122,7 +122,10 @@ impl StandardRenderEngine {
     }
 
     fn init_ua_styles(&mut self) {
-        let ua_css = "html, body { display: block; } h1, h2, h3, h4, h5, h6, p, div, section, article, header, footer, nav, main { display: block; } span, b, i, u, strong, em, a { display: inline; }";
+        let ua_css = "html, body { display: block; } \
+  h1, h2, h3, h4, h5, h6, p, div, section, article, header, footer, nav, main { display: block; } \
+  span, b, i, u, strong, em, a { display: inline; } \
+  img { display: inline-block; }";
         if let Ok(mut stylesheet) = super::css::parse_stylesheet(ua_css) {
             let mut rules = stylesheet.rules;
             self.stylesheet.rules.append(&mut rules);

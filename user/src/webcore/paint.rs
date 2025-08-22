@@ -1,9 +1,33 @@
-use super::image::{DecodedImage, ImageCache};
+use super::image::ImageCache;
 use super::layout::LayoutBox;
 use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+struct ImageCacheSlot(UnsafeCell<MaybeUninit<ImageCache>>);
+unsafe impl Sync for ImageCacheSlot {}
+
+static IMAGE_CACHE_SLOT: ImageCacheSlot = ImageCacheSlot(UnsafeCell::new(MaybeUninit::uninit()));
+static IMAGE_CACHE_INIT: AtomicBool = AtomicBool::new(false);
+
+fn with_image_cache<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut ImageCache) -> R,
+{
+    unsafe {
+        if !IMAGE_CACHE_INIT.load(Ordering::Acquire) {
+            *IMAGE_CACHE_SLOT.0.get() = MaybeUninit::new(ImageCache::new());
+            IMAGE_CACHE_INIT.store(true, Ordering::Release);
+        }
+        let cache_ptr = (*IMAGE_CACHE_SLOT.0.get()).as_mut_ptr();
+        let cache_ref: &mut ImageCache = &mut *cache_ptr;
+        f(cache_ref)
+    }
+}
 
 /// 绘制命令
 #[derive(Clone, Debug)]
@@ -27,6 +51,8 @@ pub enum DrawCommand {
         y: i32,
         width: u32,
         height: u32,
+        target_width: u32,
+        target_height: u32,
         image_data: Vec<u8>,
     },
     DrawLine {
@@ -169,15 +195,7 @@ fn collect_text_commands(lb: &LayoutBox, text: &str, commands: &mut Vec<DrawComm
 
 /// 检查是否是图片元素
 fn is_image_element(lb: &LayoutBox) -> bool {
-    // 这里需要访问DOM节点信息来判断是否是img标签
-    // 由于当前LayoutBox没有保存DOM标签信息，我们先简化实现
-    // 如果宽度和高度都明确设置且没有文本内容，可能是图片
-    lb.text.is_none()
-        && lb.children.is_empty()
-        && lb.rect.w > 0
-        && lb.rect.h > 0
-        && (lb.style.width != super::css::Length::Px(0.0)
-            || lb.style.height != super::css::Length::Px(0.0))
+    lb.node_tag == "img" && lb.image_src.is_some()
 }
 
 /// 收集图片绘制命令
@@ -185,19 +203,35 @@ fn collect_image_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
     let (content_x_offset, content_y_offset) = lb.box_model.content_offset();
     let img_x = lb.rect.x + content_x_offset;
     let img_y = lb.rect.y + content_y_offset;
-    let img_w = lb.rect.w - lb.box_model.total_horizontal();
-    let img_h = lb.rect.h - lb.box_model.total_vertical();
 
-    if img_w <= 0 || img_h <= 0 {
-        return;
-    }
+    let content_w = (lb.rect.w
+        - lb.box_model.padding.left
+        - lb.box_model.padding.right
+        - lb.box_model.border.left
+        - lb.box_model.border.right)
+        .max(1) as u32;
+    let content_h = (lb.rect.h
+        - lb.box_model.padding.top
+        - lb.box_model.padding.bottom
+        - lb.box_model.border.top
+        - lb.box_model.border.bottom)
+        .max(1) as u32;
 
-    // 暂时生成占位符命令
-    commands.push(DrawCommand::FillRect {
-        x: img_x,
-        y: img_y,
-        width: img_w as u32,
-        height: img_h as u32,
-        color: 0xFF808080, // 灰色占位符
+    let Some(ref src) = lb.image_src else { return; };
+
+    with_image_cache(|cache| {
+        let decoded = cache.get_image(src);
+        if decoded.width == 0 || decoded.height == 0 {
+            return;
+        }
+        commands.push(DrawCommand::DrawImage {
+            x: img_x,
+            y: img_y,
+            width: decoded.width,
+            height: decoded.height,
+            target_width: content_w,
+            target_height: content_h,
+            image_data: decoded.data.clone(),
+        });
     });
 }

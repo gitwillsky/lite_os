@@ -15,6 +15,10 @@ pub struct LayoutBox {
     pub children: Vec<LayoutBox>,
     pub text: Option<String>,
     pub box_model: BoxModelDimensions,
+    pub node_tag: String,
+    pub image_src: Option<String>,
+    pub attr_width: Option<i32>,
+    pub attr_height: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,6 +59,10 @@ fn layout_tree_with_depth<'a>(
             children: Vec::new(),
             text: None,
             box_model: calculate_box_model_dimensions(&styled_node.style, containing_block),
+            node_tag: styled_node.node.tag.clone(),
+            image_src: styled_node.node.src.clone(),
+            attr_width: styled_node.node.attr_width,
+            attr_height: styled_node.node.attr_height,
         };
     }
     let mut layout_box = LayoutBox {
@@ -63,6 +71,10 @@ fn layout_tree_with_depth<'a>(
         children: Vec::new(),
         text: None,
         box_model: calculate_box_model_dimensions(&styled_node.style, containing_block),
+        node_tag: styled_node.node.tag.clone(),
+        image_src: styled_node.node.src.clone(),
+        attr_width: styled_node.node.attr_width,
+        attr_height: styled_node.node.attr_height,
     };
 
     let current_non_render = is_non_rendering_element(&styled_node.node.tag);
@@ -79,6 +91,21 @@ fn layout_tree_with_depth<'a>(
 
     // 计算盒子尺寸
     calculate_box_size(&mut layout_box, containing_block);
+
+    // For replaced element <img>, prefer HTML attributes if CSS width/height are 'auto'
+    if layout_box.node_tag == "img" {
+        use super::css::Length;
+        if matches!(layout_box.style.width, Length::Px(v) if v == 0.0) {
+            if let Some(w) = layout_box.attr_width {
+                layout_box.rect.w = w.max(1);
+            }
+        }
+        if matches!(layout_box.style.height, Length::Px(v) if v == 0.0) {
+            if let Some(h) = layout_box.attr_height {
+                layout_box.rect.h = h.max(1);
+            }
+        }
+    }
 
     // 先创建子元素布局树，但使用临时的containing_block
     let temp_containing_block = layout_box.rect;
