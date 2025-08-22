@@ -205,8 +205,8 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
     let padding_left = get_length_px(&layout_box.style.padding_left, containing_block.w);
 
     // 设置位置和尺寸
-    layout_box.rect.x = containing_block.x + margin_left + padding_left;
-    layout_box.rect.y = containing_block.y + margin_top + padding_top;
+    layout_box.rect.x = containing_block.x + margin_left;
+    layout_box.rect.y = containing_block.y + margin_top;
     layout_box.rect.w = width;
     layout_box.rect.h = height;
 
@@ -261,14 +261,18 @@ fn layout_block(layout_box: &mut LayoutBox) {
         content_x_start, content_y_offset);
 
     for child in &mut layout_box.children {
-        // 处理子元素的margin_top
         y_offset += child.box_model.margin.top;
 
-        // 定位子元素
+        let old_x = child.rect.x;
+        let old_y = child.rect.y;
+
         child.rect.x = content_x_start + child.box_model.margin.left;
         child.rect.y = layout_box.rect.y + y_offset;
 
-        // 计算可用宽度（排除padding、border、margin）
+        let dx = child.rect.x - old_x;
+        let dy = child.rect.y - old_y;
+        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+
         let available_width = layout_box.rect.w
             - layout_box.box_model.total_horizontal()
             - child.box_model.margin.left
@@ -426,12 +430,18 @@ fn layout_inline(layout_box: &mut LayoutBox) {
     let line_height = get_font_size(&layout_box.style);
 
     for child in &mut layout_box.children {
+        let old_x = child.rect.x;
+        let old_y = child.rect.y;
+
         child.rect.x = layout_box.rect.x + x_offset;
         child.rect.y = layout_box.rect.y;
         child.rect.h = line_height;
 
+        let dx = child.rect.x - old_x;
+        let dy = child.rect.y - old_y;
+        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+
         if child.rect.w == 0 {
-            // 根据文本内容估算宽度
             child.rect.w = estimate_text_width(&child.text, line_height);
         }
 
@@ -537,8 +547,8 @@ pub struct EdgeSizes {
 impl BoxModelDimensions {
     /// 获取内容区域的偏移
     pub fn content_offset(&self) -> (i32, i32) {
-        let x_offset = self.margin.left + self.border.left + self.padding.left;
-        let y_offset = self.margin.top + self.border.top + self.padding.top;
+        let x_offset = self.border.left + self.padding.left;
+        let y_offset = self.border.top + self.padding.top;
         (x_offset, y_offset)
     }
 
@@ -638,7 +648,9 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
             y_offset += row_gap;
         }
 
-        // 水平对齐
+        let old_x = child.rect.x;
+        let old_y = child.rect.y;
+
         match layout_box.style.align_items {
             super::css::AlignItems::FlexStart => {
                 child.rect.x = layout_box.rect.x + padding_left;
@@ -659,6 +671,11 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
         }
 
         child.rect.y = layout_box.rect.y + y_offset;
+
+        let dx = child.rect.x - old_x;
+        let dy = child.rect.y - old_y;
+        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+
         y_offset += child.rect.h;
 
         println!("[layout] Flex column item {}: x={} y={} w={} h={} (flex-grow={})",
@@ -743,9 +760,11 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
             x_offset += column_gap;
         }
 
+        let old_x = child.rect.x;
+        let old_y = child.rect.y;
+
         child.rect.x = layout_box.rect.x + x_offset;
 
-        // 垂直对齐
         match layout_box.style.align_items {
             super::css::AlignItems::FlexStart => {
                 child.rect.y = layout_box.rect.y + padding_top;
@@ -764,6 +783,10 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
                 child.rect.y = layout_box.rect.y + padding_top;
             },
         }
+
+        let dx = child.rect.x - old_x;
+        let dy = child.rect.y - old_y;
+        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
 
         x_offset += child.rect.w;
 
@@ -799,6 +822,14 @@ fn reverse_children_positions_horizontal(layout_box: &mut LayoutBox) {
 }
 
 /// 估算文本宽度
+fn offset_descendants(lb: &mut LayoutBox, dx: i32, dy: i32) {
+    for c in &mut lb.children {
+        c.rect.x += dx;
+        c.rect.y += dy;
+        offset_descendants(c, dx, dy);
+    }
+}
+
 fn estimate_text_width(text: &Option<String>, font_size: i32) -> i32 {
     match text {
         Some(t) => {
