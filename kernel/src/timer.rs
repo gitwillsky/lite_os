@@ -141,7 +141,6 @@ pub fn set_next_timer_interrupt() {
     let _ = sbi::set_timer(next_mtime as usize);
 }
 
-
 pub fn enable_timer_interrupt() {
     let time_base_freq = board::board_info().time_base_freq;
 
@@ -149,7 +148,9 @@ pub fn enable_timer_interrupt() {
         // 防御性计算：确保分母与结果不为 0
         let ticks_per_sec = core::cmp::max(1u64, config::TICKS_PER_SEC as u64);
         let mut interval = time_base_freq / ticks_per_sec;
-        if interval == 0 { interval = 1; }
+        if interval == 0 {
+            interval = 1;
+        }
         TICK_INTERVAL_VALUE = interval;
         // 启用定时器中断
         register::sie::set_stimer();

@@ -1,5 +1,5 @@
-use crate::task::current_task;
 use crate::memory::page_table::translated_str;
+use crate::task::current_task;
 
 /// dlopen - Load a shared library
 ///
@@ -16,7 +16,10 @@ pub fn sys_dlopen(filename: *const u8, flags: i32) -> isize {
     // Get filename from user space
     let filename_str = translated_str(token, filename);
 
-    info!("dlopen: Loading library '{}' with flags 0x{:x}", filename_str, flags);
+    info!(
+        "dlopen: Loading library '{}' with flags 0x{:x}",
+        filename_str, flags
+    );
 
     // Get current task's memory set and load the shared library
     let base_address = match task.mm.memory_set.lock().load_shared_library(&filename_str) {
@@ -47,11 +50,18 @@ pub fn sys_dlsym(handle: usize, symbol: *const u8) -> isize {
     // Get symbol name from user space
     let symbol_str = translated_str(token, symbol);
 
-    debug!("dlsym: Looking up symbol '{}' in handle 0x{:x}", symbol_str, handle);
+    debug!(
+        "dlsym: Looking up symbol '{}' in handle 0x{:x}",
+        symbol_str, handle
+    );
 
     // Resolve the symbol using the dynamic linker
     if let Some(address) = task.mm.memory_set.lock().resolve_symbol(&symbol_str) {
-        debug!("dlsym: Resolved symbol '{}' to address 0x{:x}", symbol_str, usize::from(address));
+        debug!(
+            "dlsym: Resolved symbol '{}' to address 0x{:x}",
+            symbol_str,
+            usize::from(address)
+        );
         usize::from(address) as isize
     } else {
         warn!("dlsym: Symbol '{}' not found", symbol_str);
@@ -83,22 +93,22 @@ pub fn sys_dlclose(handle: usize) -> isize {
 
 /// Constants for dlopen flags (matching POSIX)
 #[allow(dead_code)]
-pub const RTLD_LAZY: i32 = 0x1;        // Perform lazy binding
+pub const RTLD_LAZY: i32 = 0x1; // Perform lazy binding
 #[allow(dead_code)]
-pub const RTLD_NOW: i32 = 0x2;         // Perform immediate binding
+pub const RTLD_NOW: i32 = 0x2; // Perform immediate binding
 #[allow(dead_code)]
-pub const RTLD_GLOBAL: i32 = 0x100;    // Make symbols available globally
+pub const RTLD_GLOBAL: i32 = 0x100; // Make symbols available globally
 #[allow(dead_code)]
-pub const RTLD_LOCAL: i32 = 0x000;     // Keep symbols local to this library
+pub const RTLD_LOCAL: i32 = 0x000; // Keep symbols local to this library
 #[allow(dead_code)]
 pub const RTLD_NODELETE: i32 = 0x1000; // Don't unload library on dlclose
 #[allow(dead_code)]
-pub const RTLD_NOLOAD: i32 = 0x4;      // Don't load library, just return handle if already loaded
+pub const RTLD_NOLOAD: i32 = 0x4; // Don't load library, just return handle if already loaded
 #[allow(dead_code)]
-pub const RTLD_DEEPBIND: i32 = 0x8;    // Use deep binding
+pub const RTLD_DEEPBIND: i32 = 0x8; // Use deep binding
 
 /// Special handles for dlsym
 #[allow(dead_code)]
-pub const RTLD_DEFAULT: usize = 0;     // Search in default library search order
+pub const RTLD_DEFAULT: usize = 0; // Search in default library search order
 #[allow(dead_code)]
 pub const RTLD_NEXT: usize = usize::MAX; // Search in libraries after the current one

@@ -1,5 +1,5 @@
-use core::sync::atomic::{self, AtomicUsize, Ordering};
 use alloc::{collections::BTreeMap, vec::Vec};
+use core::sync::atomic::{self, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::memory::{
@@ -7,9 +7,9 @@ use crate::memory::{
     address::VirtualAddress,
     mm::{MapArea, MapPermission, MapType},
 };
+use crate::memory::{frame_allocator::alloc as alloc_frame, page_table::PTEFlags};
 use crate::syscall::errno::*;
 use crate::task::current_task;
-use crate::memory::{frame_allocator::alloc as alloc_frame, page_table::PTEFlags};
 
 /// 用户程序堆的起始地址（在用户空间的高地址）
 const USER_HEAP_BASE: usize = 0x40000000;
@@ -27,16 +27,24 @@ pub fn sys_brk(new_brk: usize) -> isize {
     if new_brk == 0 {
         // 如果堆还没有初始化，先初始化
         if task.mm.heap_top.load(atomic::Ordering::Relaxed) == 0 {
-            task.mm.heap_top.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
-            task.mm.heap_base.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+            task.mm
+                .heap_top
+                .store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+            task.mm
+                .heap_base
+                .store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
         }
         return task.mm.heap_top.load(atomic::Ordering::Relaxed) as isize;
     }
 
     // 初始化堆（如果是第一次调用）
     if task.mm.heap_top.load(atomic::Ordering::Relaxed) == 0 {
-        task.mm.heap_top.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
-        task.mm.heap_base.store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+        task.mm
+            .heap_top
+            .store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
+        task.mm
+            .heap_base
+            .store(USER_HEAP_BASE, atomic::Ordering::Relaxed);
     }
 
     // 检查新的堆顶是否小于堆基址
@@ -185,7 +193,10 @@ pub fn sys_mmap(
     // 找到合适的虚拟地址
     let start_va = if addr == 0 {
         // 自动分配地址（委托给 MemorySet）
-        task.mm.memory_set.lock().find_free_area_user(aligned_length)
+        task.mm
+            .memory_set
+            .lock()
+            .find_free_area_user(aligned_length)
     } else {
         // 使用指定地址
         VirtualAddress::from(addr)
@@ -260,13 +271,18 @@ struct ShmSegment {
 static SHM_REGISTRY: Mutex<BTreeMap<usize, ShmSegment>> = Mutex::new(BTreeMap::new());
 static SHM_ID_GEN: AtomicUsize = AtomicUsize::new(1);
 
-fn next_shm_id() -> usize { SHM_ID_GEN.fetch_add(1, Ordering::AcqRel) }
+fn next_shm_id() -> usize {
+    SHM_ID_GEN.fetch_add(1, Ordering::AcqRel)
+}
 
 pub fn sys_shm_create(size: usize) -> isize {
-    if size == 0 { return -EINVAL; }
+    if size == 0 {
+        return -EINVAL;
+    }
     let aligned_len = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let page_count = aligned_len / PAGE_SIZE;
-    let mut frames: Vec<crate::memory::frame_allocator::FrameTracker> = Vec::with_capacity(page_count);
+    let mut frames: Vec<crate::memory::frame_allocator::FrameTracker> =
+        Vec::with_capacity(page_count);
     for _ in 0..page_count {
         match alloc_frame() {
             Some(f) => frames.push(f),
@@ -274,24 +290,38 @@ pub fn sys_shm_create(size: usize) -> isize {
         }
     }
     let id = next_shm_id();
-    let seg = ShmSegment { frames, size: aligned_len, refcnt: 1 };
+    let seg = ShmSegment {
+        frames,
+        size: aligned_len,
+        refcnt: 1,
+    };
     SHM_REGISTRY.lock().insert(id, seg);
     id as isize
 }
 
 pub fn sys_shm_map(handle: usize, prot: i32) -> isize {
     let mut reg = SHM_REGISTRY.lock();
-    let Some(seg) = reg.get_mut(&handle) else { return -ENOENT; };
+    let Some(seg) = reg.get_mut(&handle) else {
+        return -ENOENT;
+    };
 
     let mut perm = MapPermission::U;
-    if prot & PROT_READ != 0 { perm |= MapPermission::R; }
-    if prot & PROT_WRITE != 0 { perm |= MapPermission::W; }
-    if prot & PROT_EXEC != 0 { perm |= MapPermission::X; }
+    if prot & PROT_READ != 0 {
+        perm |= MapPermission::R;
+    }
+    if prot & PROT_WRITE != 0 {
+        perm |= MapPermission::W;
+    }
+    if prot & PROT_EXEC != 0 {
+        perm |= MapPermission::X;
+    }
 
     let task = current_task().unwrap();
     let length = seg.size;
     let user_base = task.mm.memory_set.lock().find_free_area_user(length);
-    if user_base.as_usize() == 0 { return -ENOMEM; }
+    if user_base.as_usize() == 0 {
+        return -ENOMEM;
+    }
 
     let page_count = seg.frames.len();
     let mut ms_guard = task.mm.memory_set.lock();
@@ -301,15 +331,26 @@ pub fn sys_shm_map(handle: usize, prot: i32) -> isize {
     for i in 0..page_count {
         let va = VirtualAddress::from(user_base.as_usize() + i * PAGE_SIZE);
         let ppn = seg.frames[i].ppn;
-        let mut flags = PTEFlags::from_bits(perm.bits()).unwrap_or(PTEFlags::U | PTEFlags::R | PTEFlags::W);
+        let mut flags =
+            PTEFlags::from_bits(perm.bits()).unwrap_or(PTEFlags::U | PTEFlags::R | PTEFlags::W);
         flags |= PTEFlags::U; // 明确用户可访问
-        if (prot & PROT_READ) == 0 { flags.remove(PTEFlags::R); }
-        if (prot & PROT_WRITE) == 0 { flags.remove(PTEFlags::W); }
-        if (prot & PROT_EXEC) == 0 { flags.remove(PTEFlags::X); }
-        if let Err(_) = pt.map(va.into(), ppn.into(), flags) { return -ENOMEM; }
+        if (prot & PROT_READ) == 0 {
+            flags.remove(PTEFlags::R);
+        }
+        if (prot & PROT_WRITE) == 0 {
+            flags.remove(PTEFlags::W);
+        }
+        if (prot & PROT_EXEC) == 0 {
+            flags.remove(PTEFlags::X);
+        }
+        if let Err(_) = pt.map(va.into(), ppn.into(), flags) {
+            return -ENOMEM;
+        }
     }
 
-    unsafe { core::arch::asm!("sfence.vma"); }
+    unsafe {
+        core::arch::asm!("sfence.vma");
+    }
 
     // 引用计数 +1
     seg.refcnt += 1;

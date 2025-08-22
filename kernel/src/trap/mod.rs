@@ -17,12 +17,12 @@ use riscv::{
 };
 
 use crate::{
-    memory::{TRAMPOLINE, TRAP_CONTEXT, KERNEL_SPACE, address::VirtualAddress},
-    signal::{self, handle_signals, sig_return, SIG_RETURN_ADDR},
+    memory::{KERNEL_SPACE, TRAMPOLINE, TRAP_CONTEXT, address::VirtualAddress},
+    signal::{self, SIG_RETURN_ADDR, handle_signals, sig_return},
     syscall,
     task::{
-        self, current_user_token, exit_current_and_run_next, mark_kernel_entry,
-        mark_kernel_exit, suspend_current_and_run_next,
+        self, current_user_token, exit_current_and_run_next, mark_kernel_entry, mark_kernel_exit,
+        suspend_current_and_run_next,
     },
     timer, watchdog,
 };
@@ -30,9 +30,13 @@ use crate::{
 #[inline(always)]
 fn clear_ssip() {
     let sip_val: usize;
-    unsafe { asm!("csrr {}, sip", out(reg) sip_val); }
+    unsafe {
+        asm!("csrr {}, sip", out(reg) sip_val);
+    }
     let clear_ssip = sip_val & !(1 << 1);
-    unsafe { asm!("csrw sip, {}", in(reg) clear_ssip); }
+    unsafe {
+        asm!("csrw sip, {}", in(reg) clear_ssip);
+    }
 }
 
 global_asm!(include_str!("trap.S"));
@@ -170,8 +174,7 @@ pub fn trap_handler() {
                     } else {
                         error!(
                             "[kernel] {:?} with no current task, bad addr = {:#x}, core dumped.",
-                            scause_val,
-                            stval,
+                            scause_val, stval,
                         );
                     }
                     exit_current_and_run_next(-5);
@@ -263,7 +266,9 @@ fn set_user_trap_entry() {
 #[unsafe(no_mangle)]
 pub fn trap_return() -> ! {
     // 关键修复：先关闭中断防止任务切换，然后获取必要信息
-    unsafe { riscv::register::sstatus::clear_sie(); }
+    unsafe {
+        riscv::register::sstatus::clear_sie();
+    }
 
     // 简化的原子获取方案：最小化锁持有时间
     let current_task = crate::task::current_task().expect("No current task in trap_return");

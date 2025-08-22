@@ -3,11 +3,9 @@ use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::{
-    memory::{
-        KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
-        mm::MapPermission,
-    },
+use crate::memory::{
+    KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
+    mm::MapPermission,
 };
 
 pub const INIT_PID: usize = 1;
@@ -24,7 +22,9 @@ impl Drop for PidHandle {
 impl PidHandle {
     /// 获取原始PID数值（不移动所有权）
     #[inline]
-    pub fn raw(&self) -> usize { self.0 }
+    pub fn raw(&self) -> usize {
+        self.0
+    }
 }
 
 pub fn alloc_pid() -> PidHandle {

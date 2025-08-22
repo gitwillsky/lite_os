@@ -2,25 +2,25 @@
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{kill, wait_pid_nb, wait_pid};
+use user_lib::{kill, wait_pid, wait_pid_nb};
 
 /// 作业状态
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum JobStatus {
-    Running,     // 运行中
-    Stopped,     // 暂停
-    Done,        // 完成
-    Terminated,  // 被终止
+    Running,    // 运行中
+    Stopped,    // 暂停
+    Done,       // 完成
+    Terminated, // 被终止
 }
 
 /// 作业信息
 #[derive(Debug, Clone)]
 pub struct Job {
-    pub id: usize,           // 作业编号
-    pub pid: isize,          // 进程 ID
-    pub command: String,     // 命令行
-    pub status: JobStatus,   // 状态
-    pub background: bool,    // 是否为后台作业
+    pub id: usize,         // 作业编号
+    pub pid: isize,        // 进程 ID
+    pub command: String,   // 命令行
+    pub status: JobStatus, // 状态
+    pub background: bool,  // 是否为后台作业
 }
 
 /// 作业管理器
@@ -88,7 +88,8 @@ impl JobManager {
             if job.id == job_id {
                 if job.status == JobStatus::Stopped {
                     // 发送SIGCONT信号继续执行
-                    if kill(job.pid as usize, 18) != 0 { // SIGCONT = 18
+                    if kill(job.pid as usize, 18) != 0 {
+                        // SIGCONT = 18
                         return Err(format!("无法继续作业 {}", job_id));
                     }
                     job.status = JobStatus::Running;
@@ -117,7 +118,8 @@ impl JobManager {
             if job.id == job_id {
                 if job.status == JobStatus::Stopped {
                     // 发送SIGCONT信号继续执行
-                    if kill(job.pid as usize, 18) != 0 { // SIGCONT = 18
+                    if kill(job.pid as usize, 18) != 0 {
+                        // SIGCONT = 18
                         return Err(format!("无法继续作业 {}", job_id));
                     }
                     job.status = JobStatus::Running;
@@ -141,19 +143,22 @@ impl JobManager {
         for job in &self.jobs {
             if job.status != JobStatus::Done {
                 let status_str = match job.status {
-                    JobStatus::Running => if job.background { "Running" } else { "Foreground" },
+                    JobStatus::Running => {
+                        if job.background {
+                            "Running"
+                        } else {
+                            "Foreground"
+                        }
+                    }
                     JobStatus::Stopped => "Stopped",
                     JobStatus::Done => "Done",
                     JobStatus::Terminated => "Terminated",
                 };
 
                 let bg_indicator = if job.background { " &" } else { "" };
-                println!("[{}] {} ({}) {}{}",
-                    job.id,
-                    job.pid,
-                    status_str,
-                    job.command,
-                    bg_indicator
+                println!(
+                    "[{}] {} ({}) {}{}",
+                    job.id, job.pid, status_str, job.command, bg_indicator
                 );
             }
         }
@@ -161,7 +166,8 @@ impl JobManager {
 
     /// 清理已完成的作业
     pub fn cleanup_finished_jobs(&mut self) {
-        self.jobs.retain(|job| job.status != JobStatus::Done && job.status != JobStatus::Terminated);
+        self.jobs
+            .retain(|job| job.status != JobStatus::Done && job.status != JobStatus::Terminated);
     }
 
     /// 尝试回收所有可能的zombie子进程（使用非阻塞wait_pid_nb）
@@ -170,21 +176,21 @@ impl JobManager {
             let mut exit_code = 0i32;
             // 使用非阻塞的wait_pid_nb(-1)尝试回收任何zombie子进程
             let result = wait_pid_nb(-1isize as usize, &mut exit_code);
-            
+
             if result <= 0 {
                 // 没有更多zombie进程需要回收，或者没有子进程
                 break;
             }
-            
+
             // 如果找到了zombie进程，用阻塞的wait_pid实际回收它
             let mut actual_exit_code = 0i32;
             let reap_result = wait_pid(result as usize, &mut actual_exit_code);
-            
+
             if reap_result <= 0 {
                 // 回收失败，可能已经被其他地方回收了
                 break;
             }
-            
+
             // 如果这个进程不在我们的作业列表中，说明是一个"孤儿"zombie
             let found_in_jobs = self.jobs.iter().any(|job| job.pid == result as isize);
             if !found_in_jobs {
@@ -208,14 +214,23 @@ impl JobManager {
                     // 作业已终止，现在使用wait_pid实际回收zombie进程
                     let mut actual_exit_code = 0i32;
                     let reap_result = wait_pid(job.pid as usize, &mut actual_exit_code);
-                    
+
                     if reap_result == job.pid {
                         // 成功回收了zombie进程
-                        job.status = if actual_exit_code == 0 { JobStatus::Done } else { JobStatus::Terminated };
+                        job.status = if actual_exit_code == 0 {
+                            JobStatus::Done
+                        } else {
+                            JobStatus::Terminated
+                        };
                         if job.background {
-                            println!("[{}] {} {}",
+                            println!(
+                                "[{}] {} {}",
                                 job.id,
-                                if actual_exit_code == 0 { "Done" } else { "Terminated" },
+                                if actual_exit_code == 0 {
+                                    "Done"
+                                } else {
+                                    "Terminated"
+                                },
                                 job.command
                             );
                         }
@@ -264,7 +279,8 @@ impl JobManager {
             }
 
             // 发送SIGTSTP信号
-            if kill(job_pid as usize, 20) == 0 { // SIGTSTP = 20
+            if kill(job_pid as usize, 20) == 0 {
+                // SIGTSTP = 20
                 // 更新作业状态
                 for job in &mut self.jobs {
                     if job.id == job_id {
@@ -289,7 +305,8 @@ impl JobManager {
         if let Some(job_id) = self.foreground_job {
             if let Some(job) = self.get_job_mut(job_id) {
                 // 发送SIGINT信号
-                if kill(job.pid as usize, 2) == 0 { // SIGINT = 2
+                if kill(job.pid as usize, 2) == 0 {
+                    // SIGINT = 2
                     job.status = JobStatus::Terminated;
                     self.foreground_job = None;
                     Ok(())

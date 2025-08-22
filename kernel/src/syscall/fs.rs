@@ -4,8 +4,11 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use crate::{
     arch::sbi,
-    fs::{FileSystemError, LockError, LockOp, LockType, file_lock_manager, vfs::vfs, FileStat, InodeType},
-    ipc::{create_fifo, remove_fifo, create_pipe, uds_listen, uds_accept, uds_connect},
+    fs::{
+        FileStat, FileSystemError, InodeType, LockError, LockOp, LockType, file_lock_manager,
+        vfs::vfs,
+    },
+    ipc::{create_fifo, create_pipe, remove_fifo, uds_accept, uds_connect, uds_listen},
     memory::page_table::{translated_byte_buffer, translated_ref_mut},
     task::{FileDescriptor, current_task, current_user_token, suspend_current_and_run_next},
 };
@@ -14,7 +17,7 @@ const STD_OUT: usize = 1;
 const STD_IN: usize = 0;
 
 // poll/select 常量
-const POLLIN: u32 = 0x0001;  // 有数据可读
+const POLLIN: u32 = 0x0001; // 有数据可读
 const POLLOUT: u32 = 0x0004; // 可写
 const POLLERR: u32 = 0x0008; // 错误
 const POLLHUP: u32 = 0x0010; // 挂起
@@ -82,7 +85,8 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
                     None => {
                         // stdin 不在文件描述符表中，检查是否有全局的 stdin 非阻塞标志
                         // 为简化实现，我们使用任务的临时标志位
-                        task.stdin_nonblock.load(core::sync::atomic::Ordering::Relaxed)
+                        task.stdin_nonblock
+                            .load(core::sync::atomic::Ordering::Relaxed)
                     }
                 }
             } else {
@@ -373,11 +377,11 @@ pub fn sys_mkdir(path: *const u8) -> isize {
     match vfs().create_directory(&path_str) {
         Ok(_) => 0,
         Err(e) => match e {
-            FileSystemError::AlreadyExists => 0,          // 幂等
-            FileSystemError::PermissionDenied => -13,     // EACCES
-            FileSystemError::NotFound => -2,              // ENOENT (parent directory not found)
-            FileSystemError::NotDirectory => -20,         // ENOTDIR
-            FileSystemError::NoSpace => -28,              // ENOSPC
+            FileSystemError::AlreadyExists => 0,      // 幂等
+            FileSystemError::PermissionDenied => -13, // EACCES
+            FileSystemError::NotFound => -2,          // ENOENT (parent directory not found)
+            FileSystemError::NotDirectory => -20,     // ENOTDIR
+            FileSystemError::NoSpace => -28,          // ENOSPC
             _ => -1,
         },
     }
@@ -407,12 +411,16 @@ pub fn sys_remove(path: *const u8) -> isize {
 /// fds_ptr: 指向 {fd:i32, events:u16, revents:u16} 数组
 /// nfds: 数组长度；timeout_ms: 超时（毫秒），-1 无限
 pub fn sys_poll(fds_ptr: *mut u8, nfds: usize, timeout_ms: isize) -> isize {
-    if nfds == 0 { return 0; }
+    if nfds == 0 {
+        return 0;
+    }
     let token = current_user_token();
     let entry_size = 8usize; // fd(4)+events(2)+revents(2)
     let buf_len = entry_size * nfds;
     let mut bufs = translated_byte_buffer(token, fds_ptr as *const u8, buf_len);
-    if bufs.is_empty() || bufs[0].len() < buf_len { return -14; }
+    if bufs.is_empty() || bufs[0].len() < buf_len {
+        return -14;
+    }
 
     let start_ms = crate::timer::get_time_msec() as usize;
     loop {
@@ -420,15 +428,20 @@ pub fn sys_poll(fds_ptr: *mut u8, nfds: usize, timeout_ms: isize) -> isize {
         let data = &mut bufs[0];
         for i in 0..nfds {
             let off = i * entry_size;
-            let fd = i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
-            let events = u16::from_le_bytes([data[off+4], data[off+5]]) as u32;
+            let fd = i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+                as usize;
+            let events = u16::from_le_bytes([data[off + 4], data[off + 5]]) as u32;
             let revents_off = off + 6;
             let mut revents: u32 = 0;
             if let Some(task) = current_task() {
                 if let Some(desc) = task.file.lock().fd(fd) {
                     let mask = desc.inode.poll_mask();
-                    if (events & POLLIN) != 0 && (mask & POLLIN) != 0 { revents |= POLLIN; }
-                    if (events & POLLOUT) != 0 && (mask & POLLOUT) != 0 { revents |= POLLOUT; }
+                    if (events & POLLIN) != 0 && (mask & POLLIN) != 0 {
+                        revents |= POLLIN;
+                    }
+                    if (events & POLLOUT) != 0 && (mask & POLLOUT) != 0 {
+                        revents |= POLLOUT;
+                    }
                     // 注册等待者（仅在尚未就绪情况下）
                     if revents == 0 {
                         desc.inode.register_poll_waiter(events, task.clone());
@@ -437,15 +450,24 @@ pub fn sys_poll(fds_ptr: *mut u8, nfds: usize, timeout_ms: isize) -> isize {
                     revents |= POLLERR;
                 }
             }
-            if revents != 0 { ready += 1; }
+            if revents != 0 {
+                ready += 1;
+            }
             let rev = (revents as u16).to_le_bytes();
-            data[revents_off] = rev[0]; data[revents_off+1] = rev[1];
+            data[revents_off] = rev[0];
+            data[revents_off + 1] = rev[1];
         }
-        if ready > 0 { return ready; }
-        if timeout_ms == 0 { return 0; }
+        if ready > 0 {
+            return ready;
+        }
+        if timeout_ms == 0 {
+            return 0;
+        }
         if timeout_ms > 0 {
             let now = crate::timer::get_time_msec() as usize;
-            if now - start_ms >= timeout_ms as usize { return 0; }
+            if now - start_ms >= timeout_ms as usize {
+                return 0;
+            }
         }
         // 让出调度；被唤醒后清理等待者，避免遗留
         suspend_current_and_run_next();
@@ -454,7 +476,9 @@ pub fn sys_poll(fds_ptr: *mut u8, nfds: usize, timeout_ms: isize) -> isize {
             let data = &mut bufs[0];
             for i in 0..nfds {
                 let off = i * entry_size;
-                let fd = i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]]) as usize;
+                let fd =
+                    i32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
+                        as usize;
                 if let Some(desc) = task.file.lock().fd(fd) {
                     desc.inode.clear_poll_waiter(pid);
                 }
@@ -862,7 +886,9 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
     let token = current_user_token();
     let path_str = match translated_c_string(token, path) {
         Ok(path) => path,
-        Err(_) => { return -36; }
+        Err(_) => {
+            return -36;
+        }
     };
 
     // 标准化：在文件系统上创建持久化 FIFO 节点（目录项可见），若已存在且为 FIFO 则成功
@@ -876,11 +902,11 @@ pub fn sys_mkfifo(path: *const u8, mode: u32) -> isize {
             }
             0
         }
-        Err(FileSystemError::AlreadyExists) => -17,       // EEXIST（与 POSIX 一致）
-        Err(FileSystemError::PermissionDenied) => -13,    // EACCES
-        Err(FileSystemError::NotFound) => -2,             // ENOENT
-        Err(FileSystemError::NotDirectory) => -20,        // ENOTDIR
-        Err(FileSystemError::NoSpace) => -28,             // ENOSPC
+        Err(FileSystemError::AlreadyExists) => -17, // EEXIST（与 POSIX 一致）
+        Err(FileSystemError::PermissionDenied) => -13, // EACCES
+        Err(FileSystemError::NotFound) => -2,       // ENOENT
+        Err(FileSystemError::NotDirectory) => -20,  // ENOTDIR
+        Err(FileSystemError::NoSpace) => -28,       // ENOSPC
         Err(_) => -1,
     }
 }
@@ -890,16 +916,23 @@ pub fn sys_uds_listen(path: *const u8, backlog: usize) -> isize {
     let token = current_user_token();
     let path_str = match translated_c_string(token, path) {
         Ok(p) => p,
-        Err(_) => { return -36; }
+        Err(_) => {
+            return -36;
+        }
     };
     match uds_listen(&path_str, backlog) {
         Ok(inode) => {
             if let Some(task) = current_task() {
-                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(inode as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(
+                    inode as Arc<dyn crate::fs::inode::Inode>,
+                    0,
+                ))) {
                     Some(fd) => fd as isize,
                     None => -24, // EMFILE
                 }
-            } else { -1 }
+            } else {
+                -1
+            }
         }
         Err(_) => -1,
     }
@@ -908,15 +941,25 @@ pub fn sys_uds_listen(path: *const u8, backlog: usize) -> isize {
 /// uds_accept: 从监听路径接受一个连接，返回连接 fd
 pub fn sys_uds_accept(path: *const u8) -> isize {
     let token = current_user_token();
-    let path_str = match translated_c_string(token, path) { Ok(p) => p, Err(_) => { return -36; } };
+    let path_str = match translated_c_string(token, path) {
+        Ok(p) => p,
+        Err(_) => {
+            return -36;
+        }
+    };
     match uds_accept(&path_str) {
         Ok(stream) => {
             if let Some(task) = current_task() {
-                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(stream as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(
+                    stream as Arc<dyn crate::fs::inode::Inode>,
+                    0,
+                ))) {
                     Some(fd) => fd as isize,
                     None => -24,
                 }
-            } else { -1 }
+            } else {
+                -1
+            }
         }
         Err(_) => -1,
     }
@@ -925,15 +968,25 @@ pub fn sys_uds_accept(path: *const u8) -> isize {
 /// uds_connect: 连接到给定路径，返回连接 fd
 pub fn sys_uds_connect(path: *const u8) -> isize {
     let token = current_user_token();
-    let path_str = match translated_c_string(token, path) { Ok(p) => p, Err(_) => { return -36; } };
+    let path_str = match translated_c_string(token, path) {
+        Ok(p) => p,
+        Err(_) => {
+            return -36;
+        }
+    };
     match uds_connect(&path_str) {
         Ok(stream) => {
             if let Some(task) = current_task() {
-                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(stream as Arc<dyn crate::fs::inode::Inode>, 0))) {
+                match task.file.lock().alloc_fd(Arc::new(FileDescriptor::new(
+                    stream as Arc<dyn crate::fs::inode::Inode>,
+                    0,
+                ))) {
                     Some(fd) => fd as isize,
                     None => -24,
                 }
-            } else { -1 }
+            } else {
+                -1
+            }
         }
         Err(_) => -1,
     }
@@ -1019,10 +1072,10 @@ pub fn sys_chown(path: *const u8, uid: u32, gid: u32) -> isize {
 /// fcntl - 文件控制操作
 pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
     // fcntl 命令常量
-    const F_GETFL: i32 = 3;  // 获取文件状态标志
-    const F_SETFL: i32 = 4;  // 设置文件状态标志
-    const F_GETFD: i32 = 1;  // 获取文件描述符标志
-    const F_SETFD: i32 = 2;  // 设置文件描述符标志
+    const F_GETFL: i32 = 3; // 获取文件状态标志
+    const F_SETFL: i32 = 4; // 设置文件状态标志
+    const F_GETFD: i32 = 1; // 获取文件描述符标志
+    const F_SETFD: i32 = 2; // 设置文件描述符标志
 
     // 文件描述符标志
     const FD_CLOEXEC: usize = 1; // close-on-exec
@@ -1037,23 +1090,22 @@ pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
             match cmd {
                 F_GETFL => {
                     // 检查 stdin 的非阻塞状态
-                    let nonblock = task.stdin_nonblock.load(core::sync::atomic::Ordering::Relaxed);
-                    if nonblock {
-                        O_NONBLOCK as isize
-                    } else {
-                        0
-                    }
+                    let nonblock = task
+                        .stdin_nonblock
+                        .load(core::sync::atomic::Ordering::Relaxed);
+                    if nonblock { O_NONBLOCK as isize } else { 0 }
                 }
                 F_SETFL => {
                     // 设置 stdin 的非阻塞状态
                     let new_flags = arg as u32;
                     let is_nonblock = (new_flags & O_NONBLOCK) != 0;
-                    task.stdin_nonblock.store(is_nonblock, core::sync::atomic::Ordering::Relaxed);
+                    task.stdin_nonblock
+                        .store(is_nonblock, core::sync::atomic::Ordering::Relaxed);
                     0
                 }
                 F_GETFD => 0, // stdin 没有特殊的文件描述符标志
                 F_SETFD => 0, // stdin 不允许设置 close-on-exec 等标志
-                _ => -22, // EINVAL - 无效的命令
+                _ => -22,     // EINVAL - 无效的命令
             }
         } else if let Some(file_desc) = task.file.lock().fd(fd) {
             match cmd {
@@ -1072,7 +1124,8 @@ pub fn sys_fcntl(fd: usize, cmd: i32, arg: usize) -> isize {
                     let updated_flags = access_mode | other_flags | (new_flags & allowed_flags);
 
                     // 使用原子操作更新标志
-                    let file_desc_ptr = Arc::as_ptr(&file_desc) as *const FileDescriptor as *mut FileDescriptor;
+                    let file_desc_ptr =
+                        Arc::as_ptr(&file_desc) as *const FileDescriptor as *mut FileDescriptor;
                     unsafe {
                         (*file_desc_ptr).flags = updated_flags;
                     }

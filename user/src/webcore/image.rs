@@ -1,5 +1,8 @@
-use alloc::{vec::Vec, string::{String, ToString}};
 use super::loader;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 //==============================================================================
 // 图片解码器接口 (Image Decoder Interface)
@@ -57,9 +60,15 @@ impl ImageDecoder for PngDecoder {
 
     fn can_decode(&self, data: &[u8]) -> bool {
         // PNG文件签名: 89 50 4E 47 0D 0A 1A 0A
-        data.len() >= 8 &&
-        data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
-        data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A
+        data.len() >= 8
+            && data[0] == 0x89
+            && data[1] == 0x50
+            && data[2] == 0x4E
+            && data[3] == 0x47
+            && data[4] == 0x0D
+            && data[5] == 0x0A
+            && data[6] == 0x1A
+            && data[7] == 0x0A
     }
 }
 
@@ -89,8 +98,8 @@ impl PngDecoder {
 
         for _ in 0..pixel_count {
             image_data.push(255); // R
-            image_data.push(0);   // G
-            image_data.push(0);   // B
+            image_data.push(0); // G
+            image_data.push(0); // B
             image_data.push(255); // A
         }
 
@@ -102,13 +111,18 @@ impl PngDecoder {
         })
     }
 
-    fn read_ihdr_chunk(&self, data: &[u8], pos: &mut usize) -> Result<Option<(u32, u32)>, ImageError> {
+    fn read_ihdr_chunk(
+        &self,
+        data: &[u8],
+        pos: &mut usize,
+    ) -> Result<Option<(u32, u32)>, ImageError> {
         if *pos + 21 > data.len() {
             return Err(ImageError::InvalidData);
         }
 
         // 读取chunk长度
-        let length = u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+        let length =
+            u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
         *pos += 4;
 
         // 读取chunk类型
@@ -121,9 +135,11 @@ impl PngDecoder {
             }
 
             // 读取宽度和高度
-            let width = u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            let width =
+                u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
             *pos += 4;
-            let height = u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            let height =
+                u32::from_be_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
             *pos += 4;
 
             return Ok(Some((width, height)));
@@ -170,8 +186,8 @@ impl JpegDecoder {
         let mut image_data = Vec::with_capacity(pixel_count * 4);
 
         for _ in 0..pixel_count {
-            image_data.push(0);   // R
-            image_data.push(0);   // G
+            image_data.push(0); // R
+            image_data.push(0); // G
             image_data.push(255); // B
             image_data.push(255); // A
         }
@@ -236,7 +252,7 @@ impl ImageManager {
                 image_data.push(gray); // R
                 image_data.push(gray); // G
                 image_data.push(gray); // B
-                image_data.push(255);  // A
+                image_data.push(255); // A
             }
         }
 
@@ -281,9 +297,12 @@ impl ImageCache {
                 println!("[image] Loaded and cached: {}", path);
                 self.cache.insert(path.to_string(), image.clone());
                 image
-            },
+            }
             Err(err) => {
-                println!("[image] Failed to load {}: {:?}, using placeholder", path, err);
+                println!(
+                    "[image] Failed to load {}: {:?}, using placeholder",
+                    path, err
+                );
                 // 返回占位符
                 let placeholder = self.manager.create_placeholder(100, 100);
                 self.cache.insert(path.to_string(), placeholder.clone());

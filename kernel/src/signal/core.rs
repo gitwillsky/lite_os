@@ -7,8 +7,7 @@ use crate::{
     trap::TrapContext,
 };
 
-use super::{state::SignalState, delivery, multicore};
-
+use super::{delivery, multicore, state::SignalState};
 
 /// 信号类型
 #[repr(u8)]
@@ -71,15 +70,14 @@ pub enum SignalAction {
     Handler(usize),
 }
 
+pub const SIG_DFL: usize = 0; // 默认处理
+pub const SIG_IGN: usize = 1; // 忽略信号
 
-pub const SIG_DFL: usize = 0;  // 默认处理
-pub const SIG_IGN: usize = 1;  // 忽略信号
+pub const SIG_BLOCK: i32 = 0; // 阻塞信号
+pub const SIG_UNBLOCK: i32 = 1; // 解除阻塞
+pub const SIG_SETMASK: i32 = 2; // 设置信号掩码
 
-pub const SIG_BLOCK: i32 = 0;    // 阻塞信号
-pub const SIG_UNBLOCK: i32 = 1;  // 解除阻塞
-pub const SIG_SETMASK: i32 = 2;  // 设置信号掩码
-
-const SIG_RETURN_ADDR: usize = 0;  // 信号返回地址
+const SIG_RETURN_ADDR: usize = 0; // 信号返回地址
 
 /// 信号处理引擎
 pub struct SignalCore {
@@ -96,8 +94,7 @@ impl SignalCore {
     /// 发送信号到指定进程
     pub fn send_signal(&self, pid: usize, signal: Signal) -> Result<(), SignalError> {
         // 查找目标任务
-        let task = task::find_task_by_pid(pid)
-            .ok_or(SignalError::ProcessNotFound)?;
+        let task = task::find_task_by_pid(pid).ok_or(SignalError::ProcessNotFound)?;
 
         // 处理不可捕获的信号
         if signal.is_uncatchable() {
@@ -135,9 +132,18 @@ impl SignalCore {
                     TaskStatus::Stopped => {
                         // 对停止的进程，某些信号需要立即处理
                         match signal {
-                            Signal::SIGKILL | Signal::SIGTERM | Signal::SIGINT | Signal::SIGQUIT | 
-                            Signal::SIGABRT | Signal::SIGBUS | Signal::SIGFPE | Signal::SIGSEGV |
-                            Signal::SIGILL | Signal::SIGTRAP | Signal::SIGPIPE | Signal::SIGALRM => {
+                            Signal::SIGKILL
+                            | Signal::SIGTERM
+                            | Signal::SIGINT
+                            | Signal::SIGQUIT
+                            | Signal::SIGABRT
+                            | Signal::SIGBUS
+                            | Signal::SIGFPE
+                            | Signal::SIGSEGV
+                            | Signal::SIGILL
+                            | Signal::SIGTRAP
+                            | Signal::SIGPIPE
+                            | Signal::SIGALRM => {
                                 // 这些致命信号应该立即唤醒进程以便处理
                                 task.wakeup();
                                 Ok(())
@@ -152,7 +158,7 @@ impl SignalCore {
                             }
                         }
                     }
-                    _ => Ok(())
+                    _ => Ok(()),
                 }
             }
         }
@@ -162,7 +168,7 @@ impl SignalCore {
     pub fn handle_signals(
         &self,
         task: &TaskControlBlock,
-        trap_cx: Option<&mut TrapContext>
+        trap_cx: Option<&mut TrapContext>,
     ) -> (bool, Option<i32>) {
         let mut signal_state = task.signal_state.lock();
 
@@ -177,12 +183,8 @@ impl SignalCore {
 
         // 根据信号处理方式进行处理
         match handler.action {
-            SignalAction::Ignore => {
-                (true, None)
-            }
-            SignalAction::Terminate => {
-                (false, Some(signal.default_exit_code()))
-            }
+            SignalAction::Ignore => (true, None),
+            SignalAction::Terminate => (false, Some(signal.default_exit_code())),
             SignalAction::Stop => {
                 self.stop_task(task);
                 (false, None)
@@ -194,7 +196,9 @@ impl SignalCore {
             SignalAction::Handler(handler_addr) => {
                 if let Some(trap_cx) = trap_cx {
                     // 有trap context，可以设置用户信号处理器
-                    if let Err(_) = delivery::setup_signal_handler(task, signal, handler_addr, trap_cx) {
+                    if let Err(_) =
+                        delivery::setup_signal_handler(task, signal, handler_addr, trap_cx)
+                    {
                         // 设置失败，发送SIGSEGV
                         task.signal_state.lock().add_pending_signal(Signal::SIGSEGV);
                     }
@@ -213,7 +217,7 @@ impl SignalCore {
         &self,
         task: &TaskControlBlock,
         signal: Signal,
-        handler: usize
+        handler: usize,
     ) -> Result<usize, SignalError> {
         if !signal.is_valid() {
             return Err(SignalError::InvalidSignal);
@@ -233,11 +237,14 @@ impl SignalCore {
         let mut signal_state = task.signal_state.lock();
         let old_handler = signal_state.get_handler(signal);
 
-        signal_state.set_handler(signal, super::state::SignalDisposition {
-            action,
-            mask: SignalSet(0),
-            flags: 0,
-        });
+        signal_state.set_handler(
+            signal,
+            super::state::SignalDisposition {
+                action,
+                mask: SignalSet(0),
+                flags: 0,
+            },
+        );
 
         let old_addr = match old_handler.action {
             SignalAction::Handler(addr) => addr,
@@ -254,7 +261,7 @@ impl SignalCore {
         task: &TaskControlBlock,
         how: i32,
         set: Option<&SignalSet>,
-        oldset: Option<&mut SignalSet>
+        oldset: Option<&mut SignalSet>,
     ) -> Result<(), SignalError> {
         let mut signal_state = task.signal_state.lock();
 
@@ -281,7 +288,11 @@ impl SignalCore {
     }
 
     /// 处理不可捕获的信号
-    fn handle_uncatchable_signal(&self, task: &Arc<TaskControlBlock>, signal: Signal) -> Result<(), SignalError> {
+    fn handle_uncatchable_signal(
+        &self,
+        task: &Arc<TaskControlBlock>,
+        signal: Signal,
+    ) -> Result<(), SignalError> {
         match signal {
             Signal::SIGKILL => {
                 task.signal_state.lock().add_pending_signal(signal);
@@ -343,7 +354,7 @@ pub fn send_signal(pid: usize, signal: Signal) -> Result<(), SignalError> {
 /// 处理当前任务的待处理信号
 pub fn handle_signals(
     task: &TaskControlBlock,
-    trap_cx: Option<&mut TrapContext>
+    trap_cx: Option<&mut TrapContext>,
 ) -> (bool, Option<i32>) {
     SIGNAL_CORE.handle_signals(task, trap_cx)
 }
@@ -352,7 +363,7 @@ pub fn handle_signals(
 pub fn set_signal_handler(
     task: &TaskControlBlock,
     signal: Signal,
-    handler: usize
+    handler: usize,
 ) -> Result<usize, SignalError> {
     SIGNAL_CORE.set_signal_handler(task, signal, handler)
 }
@@ -362,7 +373,7 @@ pub fn set_signal_mask(
     task: &TaskControlBlock,
     how: i32,
     set: Option<&SignalSet>,
-    oldset: Option<&mut SignalSet>
+    oldset: Option<&mut SignalSet>,
 ) -> Result<(), SignalError> {
     SIGNAL_CORE.set_signal_mask(task, how, set, oldset)
 }
@@ -422,14 +433,19 @@ impl Signal {
 
     /// 判断是否为停止信号
     pub fn is_stop_signal(self) -> bool {
-        matches!(self, Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU)
+        matches!(
+            self,
+            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU
+        )
     }
 
     /// 获取信号的默认动作
     pub fn default_action(self) -> SignalAction {
         match self {
             Signal::SIGCHLD | Signal::SIGURG | Signal::SIGWINCH => SignalAction::Ignore,
-            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => SignalAction::Stop,
+            Signal::SIGSTOP | Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU => {
+                SignalAction::Stop
+            }
             Signal::SIGCONT => SignalAction::Continue,
             _ => SignalAction::Terminate,
         }

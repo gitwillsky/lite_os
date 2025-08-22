@@ -8,7 +8,7 @@ extern crate user_lib;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use user_lib::{kill, get_args, exit, signals};
+use user_lib::{exit, get_args, kill, signals};
 
 fn print_usage() {
     println!("Usage: kill [-SIGNAL] PID");
@@ -97,7 +97,7 @@ fn parse_signal(signal_str: &str) -> Option<u32> {
 fn parse_args() -> (Vec<String>, i32) {
     let mut argc: usize = 0;
     let mut argv_buf = [0u8; 4096];
-    
+
     let result = get_args(&mut argc, &mut argv_buf);
     if result < 0 {
         return (Vec::new(), -1);
@@ -105,7 +105,7 @@ fn parse_args() -> (Vec<String>, i32) {
 
     let mut args = Vec::new();
     let mut start = 0;
-    
+
     for i in 0..argv_buf.len() {
         if argv_buf[i] == 0 {
             if start < i {
@@ -149,7 +149,7 @@ fn main() -> i32 {
     // Parse arguments
     while i < args.len() {
         let arg = &args[i];
-        
+
         if arg.starts_with('-') && arg.len() > 1 {
             if arg == "-s" {
                 // -s SIGNAL format

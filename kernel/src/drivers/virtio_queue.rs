@@ -1,9 +1,9 @@
+use crate::drivers::hal::memory::{DmaBuffer, MemoryError};
 use crate::memory::{
+    PAGE_SIZE,
     address::{PhysicalAddress, VirtualAddress},
     frame_allocator::{self, FrameTracker},
-    PAGE_SIZE,
 };
-use crate::drivers::hal::memory::{DmaBuffer, MemoryError};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
@@ -106,11 +106,17 @@ pub struct VirtQueue {
 impl VirtQueue {
     pub fn new(size: u16, queue_token: usize) -> Option<Self> {
         if size == 0 || size & (size - 1) != 0 {
-            error!("[VirtQueue] Invalid queue size: {} (must be power of 2)", size);
+            error!(
+                "[VirtQueue] Invalid queue size: {} (must be power of 2)",
+                size
+            );
             return None; // 队列大小必须是2的幂
         }
 
-        debug!("[VirtQueue] Creating queue with size={}, token={}", size, queue_token);
+        debug!(
+            "[VirtQueue] Creating queue with size={}, token={}",
+            size, queue_token
+        );
 
         // 计算需要的内存大小 - 严格按照VirtIO规范进行对齐
         let desc_size = size_of::<VirtqDesc>() * size as usize;
@@ -168,7 +174,10 @@ impl VirtQueue {
             (*used).idx = AtomicU16::new(0);
         }
 
-        debug!("[VirtQueue] Successfully created queue: size={}, num_free={}", size, size);
+        debug!(
+            "[VirtQueue] Successfully created queue: size={}, num_free={}",
+            size, size
+        );
         Some(VirtQueue {
             size,
             desc,
@@ -224,7 +233,9 @@ impl VirtQueue {
     // Simple HAL-like buffer sharing following virtio-drivers pattern
     fn va_to_pa_segments(&self, ptr: *const u8, len: usize) -> alloc::vec::Vec<(u64, u32)> {
         let mut segments: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
-        if len == 0 { return segments; }
+        if len == 0 {
+            return segments;
+        }
         let mut processed: usize = 0;
         while processed < len {
             let cur_va = VirtualAddress::from(ptr as usize + processed);
@@ -260,7 +271,9 @@ impl VirtQueue {
         }
 
         let total_needed = (in_segs.len() + out_segs.len()) as u16;
-        if total_needed == 0 { return None; }
+        if total_needed == 0 {
+            return None;
+        }
         if self.num_free < total_needed {
             error!(
                 "[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
@@ -296,7 +309,9 @@ impl VirtQueue {
         for (seg_i, (addr, len)) in out_segs.iter().enumerate() {
             let is_last_out = seg_i == out_segs.len() - 1;
             let mut flags: u16 = VIRTQ_DESC_F_WRITE;
-            if !is_last_out { flags |= VIRTQ_DESC_F_NEXT; }
+            if !is_last_out {
+                flags |= VIRTQ_DESC_F_NEXT;
+            }
 
             let desc = &mut self.desc_shadow[desc_idx as usize];
             desc.addr = *addr;
@@ -305,7 +320,9 @@ impl VirtQueue {
 
             let next_idx = desc.next;
             self.write_desc(desc_idx);
-            if !is_last_out { desc_idx = next_idx; }
+            if !is_last_out {
+                desc_idx = next_idx;
+            }
         }
 
         // 更新free_head与计数
@@ -438,8 +455,10 @@ impl VirtQueue {
     pub fn health_check(&self) -> Result<(), VirtQueueError> {
         // 检查基本队列状态
         if self.num_free > self.size {
-            error!("[VirtQueue] Invalid state: num_free ({}) > size ({})",
-                   self.num_free, self.size);
+            error!(
+                "[VirtQueue] Invalid state: num_free ({}) > size ({})",
+                self.num_free, self.size
+            );
             return Err(VirtQueueError::InvalidDescriptor);
         }
 
@@ -496,14 +515,16 @@ impl VirtQueue {
     /// 获取队列信息用于调试
     pub fn debug_info(&self) -> alloc::string::String {
         use alloc::format;
-        format!("VirtQueue[token={}]: size={}, free={}, utilization={}%, requests={}/{}, errors={}",
-                self.queue_token,
-                self.size,
-                self.num_free,
-                self.utilization_percent(),
-                self.stats.completed_requests,
-                self.stats.total_requests,
-                self.stats.failed_requests)
+        format!(
+            "VirtQueue[token={}]: size={}, free={}, utilization={}%, requests={}/{}, errors={}",
+            self.queue_token,
+            self.size,
+            self.num_free,
+            self.utilization_percent(),
+            self.stats.completed_requests,
+            self.stats.total_requests,
+            self.stats.failed_requests
+        )
     }
 
     /// 检查队列是否接近满载

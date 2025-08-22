@@ -8,8 +8,8 @@ use alloc::{
 use core::{mem, slice};
 use spin::{Mutex, RwLock};
 
+use super::{FileStat, FileSystem, FileSystemError, Inode, InodeType};
 use crate::drivers::{BlockDevice, block::BlockError};
-use super::{FileSystem, FileSystemError, Inode, InodeType, FileStat};
 
 const SECTOR_SIZE: usize = 512;
 const FAT32_SIGNATURE: u16 = 0xAA55;
@@ -80,10 +80,8 @@ impl DirectoryEntry {
     pub const ATTR_VOLUME_ID: u8 = 0x08;
     pub const ATTR_DIRECTORY: u8 = 0x10;
     pub const ATTR_ARCHIVE: u8 = 0x20;
-    pub const ATTR_LONG_NAME: u8 = Self::ATTR_READ_ONLY
-        | Self::ATTR_HIDDEN
-        | Self::ATTR_SYSTEM
-        | Self::ATTR_VOLUME_ID;
+    pub const ATTR_LONG_NAME: u8 =
+        Self::ATTR_READ_ONLY | Self::ATTR_HIDDEN | Self::ATTR_SYSTEM | Self::ATTR_VOLUME_ID;
 
     pub fn is_valid(&self) -> bool {
         self.name[0] != 0x00 && self.name[0] != 0xE5
@@ -110,13 +108,17 @@ impl DirectoryEntry {
         let mut name = String::new();
 
         for i in 0..8 {
-            if self.name[i] == b' ' { break; }
+            if self.name[i] == b' ' {
+                break;
+            }
             name.push(self.name[i] as char);
         }
 
         let mut ext = String::new();
         for i in 8..11 {
-            if self.name[i] == b' ' { break; }
+            if self.name[i] == b' ' {
+                break;
+            }
             ext.push(self.name[i] as char);
         }
 
@@ -190,7 +192,8 @@ impl DirectoryEntry {
                     result.push(ch);
                 }
                 // FAT32允许的特殊字符
-                '!' | '#' | '$' | '%' | '&' | '\'' | '(' | ')' | '-' | '@' | '^' | '_' | '`' | '{' | '}' | '~' => {
+                '!' | '#' | '$' | '%' | '&' | '\'' | '(' | ')' | '-' | '@' | '^' | '_' | '`'
+                | '{' | '}' | '~' => {
                     result.push(ch);
                 }
                 // 空格在短文件名中不允许，忽略
@@ -232,20 +235,20 @@ impl DirectoryEntry {
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy)]
 pub struct FSInfo {
-    pub signature1: u32,        // 0x41615252
+    pub signature1: u32, // 0x41615252
     pub reserved1: [u8; 480],
-    pub signature2: u32,        // 0x61417272
-    pub free_count: u32,        // 空闲簇数量，0xFFFFFFFF表示未知
-    pub next_free: u32,         // 下次分配搜索起始位置
+    pub signature2: u32, // 0x61417272
+    pub free_count: u32, // 空闲簇数量，0xFFFFFFFF表示未知
+    pub next_free: u32,  // 下次分配搜索起始位置
     pub reserved2: [u8; 12],
-    pub signature3: u32,        // 0xAA550000
+    pub signature3: u32, // 0xAA550000
 }
 
 impl FSInfo {
     pub fn is_valid(&self) -> bool {
-        self.signature1 == FSINFO_SIGNATURE1 &&
-        self.signature2 == FSINFO_SIGNATURE2 &&
-        (self.signature3 & 0xFFFF0000) == (FSINFO_SIGNATURE3 & 0xFFFF0000)
+        self.signature1 == FSINFO_SIGNATURE1
+            && self.signature2 == FSINFO_SIGNATURE2
+            && (self.signature3 & 0xFFFF0000) == (FSINFO_SIGNATURE3 & 0xFFFF0000)
     }
 }
 
@@ -285,10 +288,7 @@ impl core::fmt::Debug for ClusterManager {
 }
 
 impl ClusterManager {
-    pub fn new(
-        boot_sector: &Fat32BootSector,
-        block_device: Arc<dyn BlockDevice>,
-    ) -> Self {
+    pub fn new(boot_sector: &Fat32BootSector, block_device: Arc<dyn BlockDevice>) -> Self {
         let fat_start_sector = boot_sector.reserved_sector_count as u32;
         let root_dir_sectors = 0;
         let first_data_sector = fat_start_sector
@@ -305,7 +305,8 @@ impl ClusterManager {
         let total_clusters = data_sectors / boot_sector.sectors_per_cluster as u32;
 
         let fsinfo_sector = boot_sector.fs_info as u32;
-        let (next_free, free_count) = Self::load_fsinfo(&block_device, fsinfo_sector, total_clusters);
+        let (next_free, free_count) =
+            Self::load_fsinfo(&block_device, fsinfo_sector, total_clusters);
 
         Self {
             fat_start_sector,
@@ -323,7 +324,11 @@ impl ClusterManager {
         }
     }
 
-    fn load_fsinfo(block_device: &Arc<dyn BlockDevice>, fsinfo_sector: u32, total_clusters: u32) -> (u32, u32) {
+    fn load_fsinfo(
+        block_device: &Arc<dyn BlockDevice>,
+        fsinfo_sector: u32,
+        total_clusters: u32,
+    ) -> (u32, u32) {
         let block_size = block_device.block_size();
         let sectors_per_block = block_size / SECTOR_SIZE;
         let block_id = fsinfo_sector as usize / sectors_per_block;
@@ -334,29 +339,31 @@ impl ClusterManager {
         if block_device.read_block(block_id, &mut block_buf).is_ok() {
             let fsinfo_data = &block_buf[sector_offset..sector_offset + SECTOR_SIZE];
             if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
-                let fsinfo = unsafe {
-                    *(fsinfo_data.as_ptr() as *const FSInfo)
-                };
+                let fsinfo = unsafe { *(fsinfo_data.as_ptr() as *const FSInfo) };
 
                 if fsinfo.is_valid() {
-                    let next_free = if fsinfo.next_free < 2 || fsinfo.next_free >= total_clusters + 2 {
-                        2  // 默认从簇2开始
-                    } else {
-                        fsinfo.next_free
-                    };
+                    let next_free =
+                        if fsinfo.next_free < 2 || fsinfo.next_free >= total_clusters + 2 {
+                            2 // 默认从簇2开始
+                        } else {
+                            fsinfo.next_free
+                        };
 
                     // FSInfo 的空闲簇计数可能不准确，需要通过实际扫描来验证
                     // 为了启动性能，我们仍使用FSInfo的值，但设置保守的估计
-                    let free_count = if fsinfo.free_count == 0xFFFFFFFF || fsinfo.free_count > total_clusters {
-                        // 未知或不合理，进行保守估计
-                        total_clusters / 2  // 假设一半为空闲
-                    } else {
-                        // 使用FSInfo的值，但如果太大则进行限制
-                        fsinfo.free_count.min(total_clusters)
-                    };
+                    let free_count =
+                        if fsinfo.free_count == 0xFFFFFFFF || fsinfo.free_count > total_clusters {
+                            // 未知或不合理，进行保守估计
+                            total_clusters / 2 // 假设一半为空闲
+                        } else {
+                            // 使用FSInfo的值，但如果太大则进行限制
+                            fsinfo.free_count.min(total_clusters)
+                        };
 
-                    debug!("Loaded FSInfo: next_free={}, free_count={}, total_clusters={}",
-                          next_free, free_count, total_clusters);
+                    debug!(
+                        "Loaded FSInfo: next_free={}, free_count={}, total_clusters={}",
+                        next_free, free_count, total_clusters
+                    );
                     return (next_free, free_count);
                 }
             }
@@ -387,17 +394,14 @@ impl ClusterManager {
         if let Ok(_) = self.block_device.read_block(block_id, &mut block_buf) {
             let fsinfo_data = &mut block_buf[sector_offset..sector_offset + SECTOR_SIZE];
             if fsinfo_data.len() >= core::mem::size_of::<FSInfo>() {
-                let fsinfo = unsafe {
-                    &mut *(fsinfo_data.as_mut_ptr() as *mut FSInfo)
-                };
+                let fsinfo = unsafe { &mut *(fsinfo_data.as_mut_ptr() as *mut FSInfo) };
 
                 if fsinfo.is_valid() {
                     fsinfo.next_free = next_free;
                     fsinfo.free_count = free_count;
 
                     match self.block_device.write_block(block_id, &block_buf) {
-                        Ok(_) => {
-                        },
+                        Ok(_) => {}
                         Err(_) => {
                             debug!("FSInfo write failed, will retry later");
                         }
@@ -508,7 +512,10 @@ impl ClusterManager {
         let (should_attempt_search, search_attempts) = if alloc_data.free_cluster_count == 0 {
             // FSInfo显示无空间，但仍尝试有限搜索以处理FSInfo不准确的情况
             let limited_attempts = (max_search_attempts / 4).max(512);
-            debug!("FSInfo shows no free clusters, attempting limited search for {} attempts", limited_attempts);
+            debug!(
+                "FSInfo shows no free clusters, attempting limited search for {} attempts",
+                limited_attempts
+            );
             (true, limited_attempts)
         } else {
             // FSInfo显示有空间，正常搜索
@@ -524,7 +531,7 @@ impl ClusterManager {
         let start_cluster = if base_start + search_offset < self.total_clusters + 2 {
             base_start + search_offset
         } else {
-            2 + (search_offset % (self.total_clusters / 4))  // 在前1/4区域内分散
+            2 + (search_offset % (self.total_clusters / 4)) // 在前1/4区域内分散
         };
 
         let mut current = start_cluster;
@@ -602,7 +609,10 @@ impl ClusterManager {
         }
 
         // 搜索失败后的智能处理
-        warn!("CPU-{} no free clusters found after {} attempts", cpu_id, search_attempts);
+        warn!(
+            "CPU-{} no free clusters found after {} attempts",
+            cpu_id, search_attempts
+        );
 
         // 检查是否需要校准FSInfo（在关键情况下进行完整扫描）
         let should_calibrate = self.should_calibrate_fsinfo(1);
@@ -629,12 +639,15 @@ impl ClusterManager {
         if old_count > 0 {
             // 减少计数，但保留一些余量用于处理FSInfo不准确的情况
             alloc_data.free_cluster_count = (old_count.saturating_sub(search_attempts / 4)).max(0);
-            debug!("Conservatively reduced free_cluster_count from {} to {}",
-                   old_count, alloc_data.free_cluster_count);
+            debug!(
+                "Conservatively reduced free_cluster_count from {} to {}",
+                old_count, alloc_data.free_cluster_count
+            );
         }
 
         // 调整搜索起始位置，避免下次从相同位置开始
-        alloc_data.next_free_cluster = (alloc_data.next_free_cluster + search_attempts / 2) % self.total_clusters + 2;
+        alloc_data.next_free_cluster =
+            (alloc_data.next_free_cluster + search_attempts / 2) % self.total_clusters + 2;
 
         let next_free = alloc_data.next_free_cluster;
         let free_count = alloc_data.free_cluster_count;
@@ -665,7 +678,10 @@ impl ClusterManager {
 
             // 防止死循环
             if freed_count > self.total_clusters {
-                warn!("Suspicious cluster chain length {} for start_cluster {}", freed_count, start_cluster);
+                warn!(
+                    "Suspicious cluster chain length {} for start_cluster {}",
+                    freed_count, start_cluster
+                );
                 break;
             }
         }
@@ -676,8 +692,9 @@ impl ClusterManager {
             let old_count = alloc_data.free_cluster_count;
 
             // 安全地更新计数，避免溢出
-            alloc_data.free_cluster_count = (alloc_data.free_cluster_count.saturating_add(freed_count))
-                .min(self.total_clusters);
+            alloc_data.free_cluster_count =
+                (alloc_data.free_cluster_count.saturating_add(freed_count))
+                    .min(self.total_clusters);
 
             // 优化搜索起始位置：选择较早的簇作为下次搜索起点
             if start_cluster < alloc_data.next_free_cluster {
@@ -687,8 +704,10 @@ impl ClusterManager {
             let next_free = alloc_data.next_free_cluster;
             let free_count = alloc_data.free_cluster_count;
 
-            debug!("Freed {} clusters starting from {}, free_count: {} -> {}, next_free: {}",
-                   freed_count, start_cluster, old_count, free_count, next_free);
+            debug!(
+                "Freed {} clusters starting from {}, free_count: {} -> {}, next_free: {}",
+                freed_count, start_cluster, old_count, free_count, next_free
+            );
 
             drop(alloc_data);
 
@@ -715,10 +734,13 @@ impl ClusterManager {
                     if first_free_cluster.is_none() {
                         first_free_cluster = Some(cluster);
                     }
-                },
-                Ok(_) => {}, // 已占用的簇
+                }
+                Ok(_) => {} // 已占用的簇
                 Err(e) => {
-                    warn!("Error reading FAT entry during calibration for cluster {}: {:?}", cluster, e);
+                    warn!(
+                        "Error reading FAT entry during calibration for cluster {}: {:?}",
+                        cluster, e
+                    );
                     continue;
                 }
             }
@@ -740,8 +762,10 @@ impl ClusterManager {
                 alloc_data.next_free_cluster = first_free;
             }
 
-            info!("FSInfo calibration completed: free_count {} -> {}, next_free {} -> {}",
-                  old_free_count, actual_free_count, old_next_free, alloc_data.next_free_cluster);
+            info!(
+                "FSInfo calibration completed: free_count {} -> {}, next_free {} -> {}",
+                old_free_count, actual_free_count, old_next_free, alloc_data.next_free_cluster
+            );
 
             let next_free = alloc_data.next_free_cluster;
             let free_count = alloc_data.free_cluster_count;
@@ -766,10 +790,12 @@ impl ClusterManager {
 
         let free_ratio = (alloc_data.free_cluster_count as f32) / (self.total_clusters as f32);
 
-        failed_attempts > 2 && (
-            alloc_data.free_cluster_count == 0 || // FSInfo显示完全没有空间
-            free_ratio < 0.05 // 或者显示空闲空间不足5%
-        )
+        failed_attempts > 2
+            && (
+                alloc_data.free_cluster_count == 0 || // FSInfo显示完全没有空间
+            free_ratio < 0.05
+                // 或者显示空闲空间不足5%
+            )
     }
 
     /// 为多核环境优化的非阻塞分配尝试
@@ -781,14 +807,20 @@ impl ClusterManager {
         let mut alloc_data = match self.allocation_data.try_lock() {
             Some(data) => data,
             None => {
-                debug!("CPU-{} allocation blocked by lock contention, returning None", cpu_id);
+                debug!(
+                    "CPU-{} allocation blocked by lock contention, returning None",
+                    cpu_id
+                );
                 return None; // 锁竞争，让调用者稍后重试
             }
         };
 
         // 快速检查和CPU偏移搜索
         if alloc_data.free_cluster_count == 0 {
-            debug!("CPU-{} FSInfo shows no free space, skipping nonblocking attempt", cpu_id);
+            debug!(
+                "CPU-{} FSInfo shows no free space, skipping nonblocking attempt",
+                cpu_id
+            );
             return Some(Err(FileSystemError::NoSpace));
         }
 
@@ -816,17 +848,23 @@ impl ClusterManager {
                         if let Some(mut data) = self.allocation_data.try_lock() {
                             data.free_cluster_count = data.free_cluster_count.saturating_sub(1);
                             data.next_free_cluster = current + 1;
-                            debug!("CPU-{} nonblocking allocation succeeded: cluster {}", cpu_id, current);
+                            debug!(
+                                "CPU-{} nonblocking allocation succeeded: cluster {}",
+                                cpu_id, current
+                            );
                         }
                         return Some(Ok(current));
                     }
                 }
-                Ok(_) => continue, // 已占用
+                Ok(_) => continue,  // 已占用
                 Err(_) => continue, // 读取错误
             }
         }
 
-        debug!("CPU-{} nonblocking allocation failed after {} attempts", cpu_id, limited_attempts);
+        debug!(
+            "CPU-{} nonblocking allocation failed after {} attempts",
+            cpu_id, limited_attempts
+        );
         Some(Err(FileSystemError::NoSpace))
     }
 
@@ -841,7 +879,10 @@ impl ClusterManager {
         while current >= 2 && current < FAT32_END_OF_CHAIN && chain.len() < MAX_CHAIN_LENGTH {
             // 检测循环引用
             if seen.contains(&current) {
-                warn!("Detected circular reference in FAT chain at cluster {}", current);
+                warn!(
+                    "Detected circular reference in FAT chain at cluster {}",
+                    current
+                );
                 break;
             }
             seen.insert(current);
@@ -911,8 +952,9 @@ impl ClusterManager {
                 .map_err(|_| FileSystemError::IoError)?;
 
             let buf_offset = i as usize * SECTOR_SIZE;
-            buf[buf_offset..buf_offset + SECTOR_SIZE]
-                .copy_from_slice(&block_buf[sector_offset_in_block..sector_offset_in_block + SECTOR_SIZE]);
+            buf[buf_offset..buf_offset + SECTOR_SIZE].copy_from_slice(
+                &block_buf[sector_offset_in_block..sector_offset_in_block + SECTOR_SIZE],
+            );
         }
 
         Ok(())
@@ -1004,7 +1046,11 @@ pub struct Fat32RootInode {
 }
 
 impl Fat32RootInode {
-    pub fn new(root_cluster: u32, cluster_size: usize, cluster_manager: Arc<ClusterManager>) -> Self {
+    pub fn new(
+        root_cluster: u32,
+        cluster_size: usize,
+        cluster_manager: Arc<ClusterManager>,
+    ) -> Self {
         Self {
             root_cluster,
             cluster_size,
@@ -1040,14 +1086,14 @@ impl Inode for Fat32RootInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1079,14 +1125,14 @@ impl Inode for Fat32RootInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1134,14 +1180,14 @@ impl Inode for Fat32RootInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1183,7 +1229,11 @@ impl Inode for Fat32RootInode {
 }
 
 impl Fat32RootInode {
-    fn create_entry(&self, name: &str, is_directory: bool) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn create_entry(
+        &self,
+        name: &str,
+        is_directory: bool,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         if self.root_cluster == 0 {
             return Err(FileSystemError::IoError);
         }
@@ -1196,7 +1246,11 @@ impl Fat32RootInode {
 
         let mut new_entry = DirectoryEntry {
             name: [b' '; 11],
-            attributes: if is_directory { DirectoryEntry::ATTR_DIRECTORY } else { 0 },
+            attributes: if is_directory {
+                DirectoryEntry::ATTR_DIRECTORY
+            } else {
+                0
+            },
             nt_reserved: 0,
             creation_time_tenth: 0,
             creation_time: 0,
@@ -1250,14 +1304,14 @@ impl Fat32RootInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     *dir_entry = new_entry;
@@ -1309,7 +1363,8 @@ impl Fat32SimpleInode {
         let entry = self.entry.lock();
 
         let mut cluster_buf = vec![0u8; self.cluster_size];
-        self.cluster_manager.read_cluster(self.parent_cluster, &mut cluster_buf)?;
+        self.cluster_manager
+            .read_cluster(self.parent_cluster, &mut cluster_buf)?;
 
         let entry_bytes = unsafe {
             slice::from_raw_parts(
@@ -1322,7 +1377,8 @@ impl Fat32SimpleInode {
         let end = start + mem::size_of::<DirectoryEntry>();
         cluster_buf[start..end].copy_from_slice(entry_bytes);
 
-        self.cluster_manager.write_cluster(self.parent_cluster, &cluster_buf)?;
+        self.cluster_manager
+            .write_cluster(self.parent_cluster, &cluster_buf)?;
 
         Ok(())
     }
@@ -1370,7 +1426,8 @@ impl Inode for Fat32SimpleInode {
             }
 
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let read_start = file_offset;
             let read_end = self.cluster_size.min(read_start + buf.len() - buf_offset);
@@ -1425,7 +1482,8 @@ impl Inode for Fat32SimpleInode {
             let mut cluster_buf = vec![0u8; self.cluster_size];
 
             if file_offset > 0 || buf.len() - buf_offset < self.cluster_size - file_offset {
-                self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+                self.cluster_manager
+                    .read_cluster(cluster, &mut cluster_buf)?;
             }
 
             let write_start = file_offset;
@@ -1470,14 +1528,14 @@ impl Inode for Fat32SimpleInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1519,14 +1577,14 @@ impl Inode for Fat32SimpleInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { *(cluster_buf.as_ptr().add(offset) as *const DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1582,14 +1640,14 @@ impl Inode for Fat32SimpleInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     if dir_entry.name[0] == 0x00 {
@@ -1635,7 +1693,11 @@ impl Inode for Fat32SimpleInode {
         }
 
         let cluster_size = self.cluster_size as u64;
-        let needed_clusters = if new_size == 0 { 0 } else { (new_size + cluster_size - 1) / cluster_size } as usize;
+        let needed_clusters = if new_size == 0 {
+            0
+        } else {
+            (new_size + cluster_size - 1) / cluster_size
+        } as usize;
 
         let cluster_chain = self.cluster_manager.get_cluster_chain(start_cluster)?;
 
@@ -1644,7 +1706,8 @@ impl Inode for Fat32SimpleInode {
             entry.set_first_cluster(0);
         } else if needed_clusters < cluster_chain.len() {
             let truncate_start = cluster_chain[needed_clusters];
-            self.cluster_manager.write_fat_entry(cluster_chain[needed_clusters - 1], FAT32_END_OF_CHAIN)?;
+            self.cluster_manager
+                .write_fat_entry(cluster_chain[needed_clusters - 1], FAT32_END_OF_CHAIN)?;
             self.cluster_manager.free_cluster_chain(truncate_start)?;
         }
 
@@ -1662,7 +1725,11 @@ impl Inode for Fat32SimpleInode {
 }
 
 impl Fat32SimpleInode {
-    fn create_entry(&self, name: &str, is_directory: bool) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn create_entry(
+        &self,
+        name: &str,
+        is_directory: bool,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let entry = self.entry.lock();
         if !entry.is_directory() {
             return Err(FileSystemError::NotDirectory);
@@ -1683,7 +1750,11 @@ impl Fat32SimpleInode {
 
         let mut new_entry = DirectoryEntry {
             name: [b' '; 11],
-            attributes: if is_directory { DirectoryEntry::ATTR_DIRECTORY } else { 0 },
+            attributes: if is_directory {
+                DirectoryEntry::ATTR_DIRECTORY
+            } else {
+                0
+            },
             nt_reserved: 0,
             creation_time_tenth: 0,
             creation_time: 0,
@@ -1737,14 +1808,14 @@ impl Fat32SimpleInode {
 
         for &cluster in &cluster_chain {
             let mut cluster_buf = vec![0u8; self.cluster_size];
-            self.cluster_manager.read_cluster(cluster, &mut cluster_buf)?;
+            self.cluster_manager
+                .read_cluster(cluster, &mut cluster_buf)?;
 
             let entries_per_cluster = self.cluster_size / mem::size_of::<DirectoryEntry>();
             for i in 0..entries_per_cluster {
                 let offset = i * mem::size_of::<DirectoryEntry>();
-                let dir_entry = unsafe {
-                    &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry)
-                };
+                let dir_entry =
+                    unsafe { &mut *(cluster_buf.as_mut_ptr().add(offset) as *mut DirectoryEntry) };
 
                 if !dir_entry.is_valid() {
                     *dir_entry = new_entry;
@@ -1775,11 +1846,19 @@ impl FileSystem for FAT32FileSystem {
         ))
     }
 
-    fn create_file(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn create_file(
+        &self,
+        parent: &Arc<dyn Inode>,
+        name: &str,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         parent.create_file(name)
     }
 
-    fn create_directory(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn create_directory(
+        &self,
+        parent: &Arc<dyn Inode>,
+        name: &str,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         parent.create_directory(name)
     }
 

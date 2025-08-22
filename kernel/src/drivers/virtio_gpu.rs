@@ -1,24 +1,43 @@
-use core::mem;
-use core::ptr;
-use alloc::{boxed::Box, sync::{Arc, Weak}, vec::Vec, format, string::{String, ToString}, vec, collections::BTreeMap};
-use spin::Mutex;
-use crate::memory::{KERNEL_SPACE, address::{PhysicalAddress, VirtualAddress}};
 use crate::drivers::{
-    Device, DeviceType, DeviceState, DeviceError, GenericDevice,
+    Device,
+    DeviceError,
+    DeviceState,
+    DeviceType,
+    FramebufferInfo,
+    GenericDevice,
     // 用于全局 Framebuffer 注册与信息
-    GenericFramebuffer, FramebufferInfo, PixelFormat, set_global_framebuffer,
+    GenericFramebuffer,
+    PixelFormat,
     // 设备查找（用于 flush 回调）
-    find_devices_by_type, get_device,
+    find_devices_by_type,
+    get_device,
     hal::{
+        bus::Bus,
         device::DeviceDriver,
         interrupt::{InterruptHandler, InterruptVector},
-        bus::{Bus},
         resource::{Resource, ResourceManager},
     },
+    set_global_framebuffer,
     virtio_queue::{VirtQueue, VirtQueueError},
 };
+use crate::memory::{
+    KERNEL_SPACE,
+    address::{PhysicalAddress, VirtualAddress},
+};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
+use core::mem;
+use core::ptr;
+use spin::Mutex;
 
-const VIRTIO_GPU_DEVICE_ID: u32 = 0x10;  // VirtIO GPU 子系统 ID
+const VIRTIO_GPU_DEVICE_ID: u32 = 0x10; // VirtIO GPU 子系统 ID
 const VIRTIO_GPU_F_VIRGL: u32 = 0;
 const VIRTIO_GPU_F_EDID: u32 = 1;
 
@@ -36,7 +55,7 @@ const MMIO_QUEUE_SEL: usize = 0x030;
 const MMIO_QUEUE_NUM_MAX: usize = 0x034;
 const MMIO_QUEUE_NUM: usize = 0x038;
 const MMIO_QUEUE_ALIGN: usize = 0x03c; // legacy only
-const MMIO_QUEUE_PFN: usize = 0x040;   // legacy only (PFN = phys_addr >> 12)
+const MMIO_QUEUE_PFN: usize = 0x040; // legacy only (PFN = phys_addr >> 12)
 const MMIO_QUEUE_READY: usize = 0x044;
 const MMIO_QUEUE_NOTIFY: usize = 0x050;
 const MMIO_STATUS: usize = 0x070;
@@ -48,7 +67,7 @@ const MMIO_QUEUE_USED_LOW: usize = 0x0a0;
 const MMIO_QUEUE_USED_HIGH: usize = 0x0a4;
 // virtio-mmio interrupt registers (legacy/modern share the same offsets)
 const MMIO_INTERRUPT_STATUS: usize = 0x060; // R: interrupt status bits
-const MMIO_INTERRUPT_ACK: usize = 0x064;    // W: write 1s to ack bits
+const MMIO_INTERRUPT_ACK: usize = 0x064; // W: write 1s to ack bits
 
 // Status bits
 const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
@@ -210,7 +229,9 @@ impl VirtioGpuDevice {
     fn irq_ack_and_drain(&mut self) {
         // 先尝试清除设备侧中断状态，避免中断线保持为高导致 PLIC 重复触发
         let isr = self.read32(MMIO_INTERRUPT_STATUS);
-        if isr != 0 { self.write32(MMIO_INTERRUPT_ACK, isr); }
+        if isr != 0 {
+            self.write32(MMIO_INTERRUPT_ACK, isr);
+        }
 
         if let Some(ref mut q) = self.ctrl_queue {
             while let Some((id, _len)) = q.used() {
@@ -224,7 +245,10 @@ impl VirtioGpuDevice {
         }
     }
     pub fn new(base_addr: usize, interrupt_vector: InterruptVector) -> Result<Self, DeviceError> {
-        info!("[VirtIO-GPU] Creating new VirtIO GPU device at {:#x}", base_addr);
+        info!(
+            "[VirtIO-GPU] Creating new VirtIO GPU device at {:#x}",
+            base_addr
+        );
 
         let device = VirtioGpuDevice {
             base: GenericDevice::new(
@@ -254,9 +278,7 @@ impl VirtioGpuDevice {
     }
 
     fn read32(&self, offset: usize) -> u32 {
-        unsafe {
-            ptr::read_volatile((self.base_addr + offset) as *const u32)
-        }
+        unsafe { ptr::read_volatile((self.base_addr + offset) as *const u32) }
     }
 
     fn write32(&self, offset: usize, value: u32) {
@@ -318,7 +340,10 @@ impl VirtioGpuDevice {
         // 验证设备是否接受FEATURES_OK
         let status = self.read32(MMIO_STATUS);
         if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
-            warn!("[VirtIO-GPU] Device did not accept FEATURES_OK, status={:#x}", status);
+            warn!(
+                "[VirtIO-GPU] Device did not accept FEATURES_OK, status={:#x}",
+                status
+            );
         }
 
         Ok(())
@@ -327,7 +352,9 @@ impl VirtioGpuDevice {
     fn setup_virtqueues(&mut self) -> Result<(), DeviceError> {
         // 工具：向下取2的幂（返回<=x的最大2次幂，x>0）
         fn pow2_down(mut x: u16) -> u16 {
-            if x == 0 { return 0; }
+            if x == 0 {
+                return 0;
+            }
             x |= x >> 1;
             x |= x >> 2;
             x |= x >> 4;
@@ -379,10 +406,7 @@ impl VirtioGpuDevice {
 
     fn send_command<T: Copy>(&mut self, cmd: &T) -> Result<VirtioGpuCtrlResponse, DeviceError> {
         let cmd_bytes = unsafe {
-            core::slice::from_raw_parts(
-                cmd as *const T as *const u8,
-                mem::size_of::<T>()
-            )
+            core::slice::from_raw_parts(cmd as *const T as *const u8, mem::size_of::<T>())
         };
 
         let mut response = VirtioGpuCtrlResponse {
@@ -396,13 +420,12 @@ impl VirtioGpuDevice {
         let response_bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 &mut response as *mut VirtioGpuCtrlResponse as *mut u8,
-                mem::size_of::<VirtioGpuCtrlResponse>()
+                mem::size_of::<VirtioGpuCtrlResponse>(),
             )
         };
 
         let desc_head = {
-            let ctrl_queue = self.ctrl_queue.as_mut()
-                .ok_or(DeviceError::InvalidState)?;
+            let ctrl_queue = self.ctrl_queue.as_mut().ok_or(DeviceError::InvalidState)?;
             let head = ctrl_queue.add_buffer(&[cmd_bytes], &mut [response_bytes]);
             if head.is_none() {
                 error!("[VirtIO-GPU] Failed to add buffer to queue");
@@ -427,13 +450,20 @@ impl VirtioGpuDevice {
         loop {
             let ctrl_queue = self.ctrl_queue.as_mut().unwrap();
             if let Some((desc_id, _len)) = ctrl_queue.used() {
-                if desc_id == desc_head { break; }
+                if desc_id == desc_head {
+                    break;
+                }
             }
             spins += 1;
             if spins % 1_000_000 == 0 {
                 let (used_idx, avail_idx) = ctrl_queue.indices();
-                warn!("[VirtIO-GPU] Waiting for control response... used_idx={}, avail_idx={}", used_idx, avail_idx);
-                unsafe { riscv::asm::wfi(); }
+                warn!(
+                    "[VirtIO-GPU] Waiting for control response... used_idx={}, avail_idx={}",
+                    used_idx, avail_idx
+                );
+                unsafe {
+                    riscv::asm::wfi();
+                }
             }
             if spins > 20_000_000 {
                 error!("[VirtIO-GPU] Timeout waiting for control response");
@@ -445,9 +475,13 @@ impl VirtioGpuDevice {
         // 请求完成，清理等待者
         self.pending_waiters.remove(&desc_head);
 
-        if response.response_type != VIRTIO_GPU_RESP_OK_NODATA &&
-           response.response_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
-            error!("[VirtIO-GPU] Command failed with response: {:#x}", response.response_type);
+        if response.response_type != VIRTIO_GPU_RESP_OK_NODATA
+            && response.response_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO
+        {
+            error!(
+                "[VirtIO-GPU] Command failed with response: {:#x}",
+                response.response_type
+            );
             return Err(DeviceError::OperationFailed);
         }
 
@@ -463,13 +497,12 @@ impl VirtioGpuDevice {
             padding: 0,
         };
 
-        let ctrl_queue = self.ctrl_queue.as_mut()
-            .ok_or(DeviceError::InvalidState)?;
+        let ctrl_queue = self.ctrl_queue.as_mut().ok_or(DeviceError::InvalidState)?;
 
         let cmd_bytes = unsafe {
             core::slice::from_raw_parts(
                 &cmd as *const VirtioGpuCtrlHeader as *const u8,
-                mem::size_of::<VirtioGpuCtrlHeader>()
+                mem::size_of::<VirtioGpuCtrlHeader>(),
             )
         };
 
@@ -482,7 +515,12 @@ impl VirtioGpuDevice {
                 padding: 0,
             },
             pmodes: [VirtioGpuDisplayOne {
-                r: VirtioGpuRect { x: 0, y: 0, width: 0, height: 0 },
+                r: VirtioGpuRect {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                },
                 enabled: 0,
                 flags: 0,
             }; VIRTIO_GPU_MAX_SCANOUTS],
@@ -491,7 +529,7 @@ impl VirtioGpuDevice {
         let response_bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 &mut response as *mut VirtioGpuRespDisplayInfo as *mut u8,
-                mem::size_of::<VirtioGpuRespDisplayInfo>()
+                mem::size_of::<VirtioGpuRespDisplayInfo>(),
             )
         };
 
@@ -522,7 +560,10 @@ impl VirtioGpuDevice {
             spins += 1;
             if spins % 1_000_000 == 0 {
                 let (used_idx, avail_idx) = ctrl_queue.indices();
-                warn!("[VirtIO-GPU] Waiting for display info... used_idx={}, avail_idx={}", used_idx, avail_idx);
+                warn!(
+                    "[VirtIO-GPU] Waiting for display info... used_idx={}, avail_idx={}",
+                    used_idx, avail_idx
+                );
             }
             if spins > 20_000_000 {
                 error!("[VirtIO-GPU] Timeout waiting for display info response");
@@ -532,7 +573,10 @@ impl VirtioGpuDevice {
         }
 
         if response.hdr.command_type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO {
-            error!("[VirtIO-GPU] Get display info failed with response: {:#x}", response.hdr.command_type);
+            error!(
+                "[VirtIO-GPU] Get display info failed with response: {:#x}",
+                response.hdr.command_type
+            );
             return Err(DeviceError::OperationFailed);
         }
 
@@ -617,14 +661,20 @@ impl VirtioGpuDevice {
 
         // 分配DMA内存
         let page_count = (framebuffer_size + 4095) / 4096;
-        let phys_addr = KERNEL_SPACE.get().unwrap().lock()
+        let phys_addr = KERNEL_SPACE
+            .get()
+            .unwrap()
+            .lock()
             .alloc_dma_pages(page_count)
             .map_err(|e| {
                 error!("[VirtIO-GPU] Failed to allocate DMA memory: {:?}", e);
                 DeviceError::OperationFailed
             })?;
 
-        let virt_addr = KERNEL_SPACE.get().unwrap().lock()
+        let virt_addr = KERNEL_SPACE
+            .get()
+            .unwrap()
+            .lock()
             .map_dma(phys_addr, framebuffer_size)
             .map_err(|e| {
                 error!("[VirtIO-GPU] Failed to map DMA memory: {:?}", e);
@@ -654,20 +704,19 @@ impl VirtioGpuDevice {
             nr_entries: 1,
         };
 
-        let ctrl_queue = self.ctrl_queue.as_mut()
-            .ok_or(DeviceError::InvalidState)?;
+        let ctrl_queue = self.ctrl_queue.as_mut().ok_or(DeviceError::InvalidState)?;
 
         let attach_cmd_bytes = unsafe {
             core::slice::from_raw_parts(
                 &attach_cmd as *const VirtioGpuResourceAttachBacking as *const u8,
-                mem::size_of::<VirtioGpuResourceAttachBacking>()
+                mem::size_of::<VirtioGpuResourceAttachBacking>(),
             )
         };
 
         let mem_entry_bytes = unsafe {
             core::slice::from_raw_parts(
                 &mem_entry as *const VirtioGpuMemEntry as *const u8,
-                mem::size_of::<VirtioGpuMemEntry>()
+                mem::size_of::<VirtioGpuMemEntry>(),
             )
         };
 
@@ -682,12 +731,13 @@ impl VirtioGpuDevice {
         let response_bytes = unsafe {
             core::slice::from_raw_parts_mut(
                 &mut response as *mut VirtioGpuCtrlResponse as *mut u8,
-                mem::size_of::<VirtioGpuCtrlResponse>()
+                mem::size_of::<VirtioGpuCtrlResponse>(),
             )
         };
 
         let desc_head = {
-            let head = ctrl_queue.add_buffer(&[attach_cmd_bytes, mem_entry_bytes], &mut [response_bytes]);
+            let head =
+                ctrl_queue.add_buffer(&[attach_cmd_bytes, mem_entry_bytes], &mut [response_bytes]);
             if head.is_none() {
                 error!("[VirtIO-GPU] Failed to add buffer to queue");
                 return Err(DeviceError::OperationFailed);
@@ -746,15 +796,23 @@ impl VirtioGpuDevice {
         self.current_width = width;
         self.current_height = height;
 
-        debug!("[VirtIO-GPU] Framebuffer setup complete: {}x{}, {} bytes",
-              width, height, framebuffer_size);
+        debug!(
+            "[VirtIO-GPU] Framebuffer setup complete: {}x{}, {} bytes",
+            width, height, framebuffer_size
+        );
 
         // 在 GPU 完成 framebuffer 建立后，创建并注册全局 Framebuffer，供 GUI 系统调用使用
         // 将格式映射为通用 Framebuffer 的像素格式
         let fb_format = match self.current_format {
-            VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM | VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM => PixelFormat::BGRA8888,
-            VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM | VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM => PixelFormat::BGRA8888,
-            VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM | VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM => PixelFormat::RGBA8888,
+            VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM | VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM => {
+                PixelFormat::BGRA8888
+            }
+            VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM | VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM => {
+                PixelFormat::BGRA8888
+            }
+            VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM | VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM => {
+                PixelFormat::RGBA8888
+            }
             _ => PixelFormat::RGBA8888,
         };
 
@@ -762,7 +820,13 @@ impl VirtioGpuDevice {
         let fb_buffer = virt_addr.as_usize();
 
         // flush 回调：找到 GPU 设备并触发 flush 到宿主端（支持可选矩形列表）
-        let flush_cb: Option<Box<dyn Fn(Option<&[crate::drivers::framebuffer::Rect]>) -> Result<(), DeviceError> + Send + Sync>> = Some(Box::new(|rects_opt| {
+        let flush_cb: Option<
+            Box<
+                dyn Fn(Option<&[crate::drivers::framebuffer::Rect]>) -> Result<(), DeviceError>
+                    + Send
+                    + Sync,
+            >,
+        > = Some(Box::new(|rects_opt| {
             let display_ids = find_devices_by_type(DeviceType::Display);
             for id in display_ids {
                 if let Some(dev_arc) = get_device(id) {
@@ -785,7 +849,8 @@ impl VirtioGpuDevice {
     }
 
     pub fn flush_framebuffer(&mut self) -> Result<(), DeviceError> {
-        let resource_id = self.framebuffer_resource_id
+        let resource_id = self
+            .framebuffer_resource_id
             .ok_or(DeviceError::InvalidState)?;
 
         let transfer_cmd = VirtioGpuTransferToHost2d {
@@ -840,15 +905,30 @@ impl VirtioGpuDevice {
         Ok(())
     }
 
-    pub fn flush_framebuffer_rects(&mut self, rects: &[crate::drivers::framebuffer::Rect]) -> Result<(), DeviceError> {
-        let resource_id = self.framebuffer_resource_id
+    pub fn flush_framebuffer_rects(
+        &mut self,
+        rects: &[crate::drivers::framebuffer::Rect],
+    ) -> Result<(), DeviceError> {
+        let resource_id = self
+            .framebuffer_resource_id
             .ok_or(DeviceError::InvalidState)?;
 
         // 对每个矩形执行 transfer + flush；可以进一步合并/裁剪
         for r in rects.iter() {
             let transfer_cmd = VirtioGpuTransferToHost2d {
-                hdr: VirtioGpuCtrlHeader { command_type: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
-                r: VirtioGpuRect { x: r.x as u32, y: r.y as u32, width: r.width as u32, height: r.height as u32 },
+                hdr: VirtioGpuCtrlHeader {
+                    command_type: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                r: VirtioGpuRect {
+                    x: r.x as u32,
+                    y: r.y as u32,
+                    width: r.width as u32,
+                    height: r.height as u32,
+                },
                 offset: 0,
                 resource_id,
                 padding: 0,
@@ -860,8 +940,19 @@ impl VirtioGpuDevice {
             }
 
             let flush_cmd = VirtioGpuResourceFlush {
-                hdr: VirtioGpuCtrlHeader { command_type: VIRTIO_GPU_CMD_RESOURCE_FLUSH, flags: 0, fence_id: 0, ctx_id: 0, padding: 0 },
-                r: VirtioGpuRect { x: r.x as u32, y: r.y as u32, width: r.width as u32, height: r.height as u32 },
+                hdr: VirtioGpuCtrlHeader {
+                    command_type: VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                r: VirtioGpuRect {
+                    x: r.x as u32,
+                    y: r.y as u32,
+                    width: r.width as u32,
+                    height: r.height as u32,
+                },
                 resource_id,
                 padding: 0,
             };
@@ -880,7 +971,8 @@ impl VirtioGpuDevice {
             return Err(DeviceError::OperationFailed);
         }
 
-        let virt_addr = self.framebuffer_virt_addr
+        let virt_addr = self
+            .framebuffer_virt_addr
             .ok_or(DeviceError::InvalidState)?;
 
         let offset = ((y * self.current_width + x) * 4) as usize;
@@ -893,7 +985,14 @@ impl VirtioGpuDevice {
         Ok(())
     }
 
-    pub fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) -> Result<(), DeviceError> {
+    pub fn fill_rect(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> Result<(), DeviceError> {
         for dy in 0..height {
             for dx in 0..width {
                 if let Err(e) = self.write_pixel(x + dx, y + dy, color) {
@@ -993,8 +1092,15 @@ impl Device for VirtioGpuDevice {
 
     fn remove(&mut self) -> Result<(), DeviceError> {
         // 清理framebuffer内存
-        if let (Some(virt_addr), Some(_phys_addr)) = (self.framebuffer_virt_addr, self.framebuffer_phys_addr) {
-            if let Err(e) = KERNEL_SPACE.get().unwrap().lock().unmap_dma(virt_addr, self.framebuffer_size) {
+        if let (Some(virt_addr), Some(_phys_addr)) =
+            (self.framebuffer_virt_addr, self.framebuffer_phys_addr)
+        {
+            if let Err(e) = KERNEL_SPACE
+                .get()
+                .unwrap()
+                .lock()
+                .unmap_dma(virt_addr, self.framebuffer_size)
+            {
                 error!("[VirtIO-GPU] Failed to unmap DMA memory: {:?}", e);
             }
         }
@@ -1025,22 +1131,26 @@ impl Device for VirtioGpuDevice {
 
     fn resources(&self) -> Vec<Resource> {
         use crate::drivers::hal::resource::MemoryRange;
-        vec![
-            Resource::Memory(MemoryRange::with_attributes(
-                self.base_addr,
-                0x1000,
-                false,  // not cached
-                true,   // writable
-                false,  // not executable
-            ))
-        ]
+        vec![Resource::Memory(MemoryRange::with_attributes(
+            self.base_addr,
+            0x1000,
+            false, // not cached
+            true,  // writable
+            false, // not executable
+        ))]
     }
 
-    fn request_resources(&mut self, _resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn request_resources(
+        &mut self,
+        _resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         Ok(())
     }
 
-    fn release_resources(&mut self, _resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn release_resources(
+        &mut self,
+        _resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         Ok(())
     }
 
@@ -1056,7 +1166,10 @@ impl Device for VirtioGpuDevice {
 // 简单的GPU中断处理器：确认中断并尝试推进控制队列 used ring，用于唤醒等待路径
 pub struct VirtioGpuIrqHandler;
 impl InterruptHandler for VirtioGpuIrqHandler {
-    fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), crate::drivers::hal::interrupt::InterruptError> {
+    fn handle_interrupt(
+        &self,
+        _vector: InterruptVector,
+    ) -> Result<(), crate::drivers::hal::interrupt::InterruptError> {
         // 遍历显示类设备，找到GPU并让其 drain used ring
         let display_ids = find_devices_by_type(DeviceType::Display);
         for id in display_ids {
@@ -1069,8 +1182,12 @@ impl InterruptHandler for VirtioGpuIrqHandler {
         }
         Ok(())
     }
-    fn can_handle(&self, _vector: InterruptVector) -> bool { true }
-    fn name(&self) -> &str { "virtio-gpu-irq" }
+    fn can_handle(&self, _vector: InterruptVector) -> bool {
+        true
+    }
+    fn name(&self) -> &str {
+        "virtio-gpu-irq"
+    }
 }
 
 // 简单的 Bus 实现用于 VirtIO GPU
@@ -1107,19 +1224,35 @@ impl Bus for DummyBus {
         Err(crate::drivers::hal::bus::BusError::NotSupported)
     }
 
-    fn write_u8(&self, _offset: usize, _value: u8) -> Result<(), crate::drivers::hal::bus::BusError> {
+    fn write_u8(
+        &self,
+        _offset: usize,
+        _value: u8,
+    ) -> Result<(), crate::drivers::hal::bus::BusError> {
         Err(crate::drivers::hal::bus::BusError::NotSupported)
     }
 
-    fn write_u16(&self, _offset: usize, _value: u16) -> Result<(), crate::drivers::hal::bus::BusError> {
+    fn write_u16(
+        &self,
+        _offset: usize,
+        _value: u16,
+    ) -> Result<(), crate::drivers::hal::bus::BusError> {
         Err(crate::drivers::hal::bus::BusError::NotSupported)
     }
 
-    fn write_u32(&self, _offset: usize, _value: u32) -> Result<(), crate::drivers::hal::bus::BusError> {
+    fn write_u32(
+        &self,
+        _offset: usize,
+        _value: u32,
+    ) -> Result<(), crate::drivers::hal::bus::BusError> {
         Err(crate::drivers::hal::bus::BusError::NotSupported)
     }
 
-    fn write_u64(&self, _offset: usize, _value: u64) -> Result<(), crate::drivers::hal::bus::BusError> {
+    fn write_u64(
+        &self,
+        _offset: usize,
+        _value: u64,
+    ) -> Result<(), crate::drivers::hal::bus::BusError> {
         Err(crate::drivers::hal::bus::BusError::NotSupported)
     }
 
@@ -1135,4 +1268,3 @@ impl Bus for DummyBus {
         false
     }
 }
-

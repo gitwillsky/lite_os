@@ -5,9 +5,9 @@
 extern crate user_lib;
 extern crate alloc;
 
+use alloc::boxed::Box;
 use user_lib::gfx;
 use user_lib::webcore::{RenderEngine, StandardRenderEngine};
-use alloc::boxed::Box;
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -25,7 +25,7 @@ fn main() -> i32 {
 
     // 创建渲染引擎
     let mut engine = StandardRenderEngine::new();
-    
+
     // 设置视口大小
     let (sw, sh) = gfx::screen_size();
     println!("[text_test] Screen size: {}x{}", sw, sh);
@@ -62,19 +62,22 @@ fn main() -> i32 {
             </body>
         </html>
     "#;
-    
+
     println!("[text_test] Loading test HTML...");
     engine.load_html(test_html);
 
     // 执行渲染
     println!("[text_test] Rendering...");
     let render_result = engine.render();
-    
+
     // 显示生成的绘制命令统计
-    println!("[text_test] Generated {} draw commands", render_result.commands.len());
+    println!(
+        "[text_test] Generated {} draw commands",
+        render_result.commands.len()
+    );
     let mut text_commands = 0;
     let mut rect_commands = 0;
-    
+
     for cmd in &render_result.commands {
         match cmd {
             user_lib::webcore::paint::DrawCommand::DrawText { .. } => text_commands += 1,
@@ -82,9 +85,12 @@ fn main() -> i32 {
             _ => {}
         }
     }
-    
-    println!("[text_test] Text commands: {}, Rect commands: {}", text_commands, rect_commands);
-    
+
+    println!(
+        "[text_test] Text commands: {}, Rect commands: {}",
+        text_commands, rect_commands
+    );
+
     // 执行绘制命令
     execute_draw_commands(&render_result);
     gfx::gui_flush();
@@ -95,8 +101,8 @@ fn main() -> i32 {
         tv_sec: 5,
         tv_nsec: 0,
     };
-    user_lib::syscall::nanosleep(&sleep_time, core::ptr::null_mut());  // 等待5秒
-    
+    user_lib::syscall::nanosleep(&sleep_time, core::ptr::null_mut()); // 等待5秒
+
     0
 }
 
@@ -114,15 +120,33 @@ fn load_font(path: &str) {
 
 fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
     use user_lib::webcore::paint::DrawCommand;
-    
+
     for (i, cmd) in result.commands.iter().enumerate() {
         match cmd {
-            DrawCommand::FillRect { x, y, width, height, color } => {
+            DrawCommand::FillRect {
+                x,
+                y,
+                width,
+                height,
+                color,
+            } => {
                 gfx::gui_fill_rect_xywh(*x, *y, *width, *height, *color);
-                println!("[text_test] FillRect #{}: ({}, {}) {}x{} color={:#x}", i, x, y, width, height, color);
+                println!(
+                    "[text_test] FillRect #{}: ({}, {}) {}x{} color={:#x}",
+                    i, x, y, width, height, color
+                );
             }
-            DrawCommand::DrawText { x, y, text, color, size } => {
-                println!("[text_test] DrawText #{}: ({}, {}) '{}' size={} color={:#x}", i, x, y, text, size, color);
+            DrawCommand::DrawText {
+                x,
+                y,
+                text,
+                color,
+                size,
+            } => {
+                println!(
+                    "[text_test] DrawText #{}: ({}, {}) '{}' size={} color={:#x}",
+                    i, x, y, text, size, color
+                );
                 if !gfx::draw_text(*x, *y, text, *size, *color) {
                     let scale = if *size >= 16 { *size / 8 } else { 1 };
                     let asc = gfx::font_ascent(*size);
@@ -130,11 +154,24 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
                     gfx::draw_string_scaled(*x, top_y, text, *color, scale);
                 }
             }
-            DrawCommand::DrawImage { x, y, width, height, .. } => {
+            DrawCommand::DrawImage {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
                 // 暂时绘制占位符
                 gfx::gui_fill_rect_xywh(*x, *y, *width, *height, 0xFF808080);
             }
-            DrawCommand::DrawLine { x1, y1, x2, y2, color, width } => {
+            DrawCommand::DrawLine {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => {
                 // TODO: 实现线条绘制
                 let _ = (x1, y1, x2, y2, color, width);
             }

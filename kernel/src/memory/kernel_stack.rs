@@ -20,7 +20,11 @@ impl KernelStack {
         KERNEL_SPACE
             .wait()
             .lock()
-            .insert_framed_area(mapped_bottom.into(), top.into(), MapPermission::R | MapPermission::W)
+            .insert_framed_area(
+                mapped_bottom.into(),
+                top.into(),
+                MapPermission::R | MapPermission::W,
+            )
             .expect("Failed to allocate kernel stack memory");
 
         // 本地刷新TLB，确保新映射立即可见

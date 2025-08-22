@@ -1,6 +1,6 @@
 //! 信号状态管理
-use core::sync::atomic::{AtomicU64, Ordering};
 use super::core::{Signal, SignalAction, SignalSet};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 信号处理器配置
 #[derive(Debug, Clone, Copy)]
@@ -233,7 +233,9 @@ impl SignalState {
         let new_atomic_state = AtomicSignalState {
             pending: AtomicU64::new(self.atomic_state.pending.load(Ordering::Acquire)),
             blocked: AtomicU64::new(self.atomic_state.blocked.load(Ordering::Acquire)),
-            needs_trap_context: AtomicU64::new(self.atomic_state.needs_trap_context.load(Ordering::Acquire)),
+            needs_trap_context: AtomicU64::new(
+                self.atomic_state.needs_trap_context.load(Ordering::Acquire),
+            ),
         };
 
         Self {

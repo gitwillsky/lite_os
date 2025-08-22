@@ -34,7 +34,10 @@ unsafe impl<T: Send> Sync for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
     const fn new(value: T) -> Self {
-        Self { locked: AtomicBool::new(false), value: UnsafeCell::new(value) }
+        Self {
+            locked: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
+        }
     }
 
     fn lock(&self) -> SpinLockGuard<'_, T> {
@@ -55,15 +58,21 @@ struct SpinLockGuard<'a, T> {
 
 impl<'a, T> core::ops::Deref for SpinLockGuard<'a, T> {
     type Target = T;
-    fn deref(&self) -> &Self::Target { unsafe { &*self.lock.value.get() } }
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.lock.value.get() }
+    }
 }
 
 impl<'a, T> core::ops::DerefMut for SpinLockGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target { unsafe { &mut *self.lock.value.get() } }
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.lock.value.get() }
+    }
 }
 
 impl<'a, T> Drop for SpinLockGuard<'a, T> {
-    fn drop(&mut self) { self.lock.locked.store(false, Ordering::Release); }
+    fn drop(&mut self) {
+        self.lock.locked.store(false, Ordering::Release);
+    }
 }
 
 static GFX: SpinLock<Option<GlobalGfx>> = SpinLock::new(None);
@@ -73,24 +82,47 @@ static GFX: SpinLock<Option<GlobalGfx>> = SpinLock::new(None);
 fn write_pixel_rgba(ptr: *mut u8, info: &GuiScreenInfo, r: u8, g: u8, b: u8, a: u8) {
     unsafe {
         match info.format {
-            0 => { // RGBA8888
-                *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b; *ptr.add(3) = a;
+            0 => {
+                // RGBA8888
+                *ptr.add(0) = r;
+                *ptr.add(1) = g;
+                *ptr.add(2) = b;
+                *ptr.add(3) = a;
             }
-            1 => { // BGRA8888
-                *ptr.add(0) = b; *ptr.add(1) = g; *ptr.add(2) = r; *ptr.add(3) = a;
+            1 => {
+                // BGRA8888
+                *ptr.add(0) = b;
+                *ptr.add(1) = g;
+                *ptr.add(2) = r;
+                *ptr.add(3) = a;
             }
-            2 => { // RGB888
-                *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b;
+            2 => {
+                // RGB888
+                *ptr.add(0) = r;
+                *ptr.add(1) = g;
+                *ptr.add(2) = b;
             }
-            3 => { // BGR888
-                *ptr.add(0) = b; *ptr.add(1) = g; *ptr.add(2) = r;
+            3 => {
+                // BGR888
+                *ptr.add(0) = b;
+                *ptr.add(1) = g;
+                *ptr.add(2) = r;
             }
-            4 => { // RGB565
-                let r5 = (r >> 3) & 0x1F; let g6 = (g >> 2) & 0x3F; let b5 = (b >> 3) & 0x1F;
+            4 => {
+                // RGB565
+                let r5 = (r >> 3) & 0x1F;
+                let g6 = (g >> 2) & 0x3F;
+                let b5 = (b >> 3) & 0x1F;
                 let v: u16 = ((r5 as u16) << 11) | ((g6 as u16) << 5) | (b5 as u16);
-                *ptr.add(0) = (v & 0xFF) as u8; *ptr.add(1) = (v >> 8) as u8;
+                *ptr.add(0) = (v & 0xFF) as u8;
+                *ptr.add(1) = (v >> 8) as u8;
             }
-            _ => { *ptr.add(0) = r; *ptr.add(1) = g; *ptr.add(2) = b; *ptr.add(3) = a; }
+            _ => {
+                *ptr.add(0) = r;
+                *ptr.add(1) = g;
+                *ptr.add(2) = b;
+                *ptr.add(3) = a;
+            }
         }
     }
 }
@@ -99,15 +131,22 @@ fn write_pixel_rgba(ptr: *mut u8, info: &GuiScreenInfo, r: u8, g: u8, b: u8, a: 
 fn read_pixel_rgba(ptr: *const u8, info: &GuiScreenInfo) -> (u8, u8, u8, u8) {
     unsafe {
         match info.format {
-            0 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3)),           // RGBA
-            1 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), *ptr.add(3)),           // BGRA -> RGBA
-            2 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), 0xFF),                  // RGB -> RGBA(opaque)
-            3 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), 0xFF),                  // BGR -> RGBA(opaque)
+            0 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3)), // RGBA
+            1 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), *ptr.add(3)), // BGRA -> RGBA
+            2 => (*ptr.add(0), *ptr.add(1), *ptr.add(2), 0xFF),        // RGB -> RGBA(opaque)
+            3 => (*ptr.add(2), *ptr.add(1), *ptr.add(0), 0xFF),        // BGR -> RGBA(opaque)
             4 => {
                 let v = (*ptr.add(0) as u16) | ((*ptr.add(1) as u16) << 8);
-                let r = ((v >> 11) & 0x1F) as u8; let g = ((v >> 5) & 0x3F) as u8; let b = (v & 0x1F) as u8;
+                let r = ((v >> 11) & 0x1F) as u8;
+                let g = ((v >> 5) & 0x3F) as u8;
+                let b = (v & 0x1F) as u8;
                 // 扩展到 8bit
-                (((r as u16 * 255 / 31) as u8), ((g as u16 * 255 / 63) as u8), ((b as u16 * 255 / 31) as u8), 0xFF)
+                (
+                    ((r as u16 * 255 / 31) as u8),
+                    ((g as u16 * 255 / 63) as u8),
+                    ((b as u16 * 255 / 31) as u8),
+                    0xFF,
+                )
             }
             _ => (*ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3)),
         }
@@ -116,11 +155,21 @@ fn read_pixel_rgba(ptr: *const u8, info: &GuiScreenInfo) -> (u8, u8, u8, u8) {
 
 #[inline(always)]
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    let af = a as f32; let bf = b as f32; let v = af * (1.0 - t) + bf * t; v.max(0.0).min(255.0) as u8
+    let af = a as f32;
+    let bf = b as f32;
+    let v = af * (1.0 - t) + bf * t;
+    v.max(0.0).min(255.0) as u8
 }
 
 #[inline(always)]
-fn blend_over(ptr: *mut u8, info: &GuiScreenInfo, src_r: u8, src_g: u8, src_b: u8, src_a_coverage: f32) {
+fn blend_over(
+    ptr: *mut u8,
+    info: &GuiScreenInfo,
+    src_r: u8,
+    src_g: u8,
+    src_b: u8,
+    src_a_coverage: f32,
+) {
     // 简易线性空间混合：dst = src * a + dst * (1-a)
     let (dr, dg, db, _da) = read_pixel_rgba(ptr as *const u8, info);
     let t = src_a_coverage.max(0.0).min(1.0);
@@ -131,12 +180,19 @@ fn blend_over(ptr: *mut u8, info: &GuiScreenInfo, src_r: u8, src_g: u8, src_b: u
 }
 // 几何与轮廓收集
 #[derive(Clone, Copy)]
-struct LineSeg { x0: f32, y0: f32, x1: f32, y1: f32 }
+struct LineSeg {
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
 
 struct OutlineCollector {
     edges: Vec<LineSeg>,
-    sx: f32, sy: f32,   // scale
-    ox: f32, oy: f32,   // offset
+    sx: f32,
+    sy: f32, // scale
+    ox: f32,
+    oy: f32, // offset
     last_x: f32,
     last_y: f32,
     start_x: f32,
@@ -145,55 +201,107 @@ struct OutlineCollector {
 
 impl OutlineCollector {
     fn new(scale: f32, ox: f32, oy: f32) -> Self {
-        Self { edges: Vec::new(), sx: scale, sy: scale, ox, oy, last_x: 0.0, last_y: 0.0, start_x: 0.0, start_y: 0.0 }
+        Self {
+            edges: Vec::new(),
+            sx: scale,
+            sy: scale,
+            ox,
+            oy,
+            last_x: 0.0,
+            last_y: 0.0,
+            start_x: 0.0,
+            start_y: 0.0,
+        }
     }
 }
 
 impl ttf_parser::OutlineBuilder for OutlineCollector {
     fn move_to(&mut self, _x: f32, _y: f32) {
         // TTF 坐标系 y 轴向上，屏幕 y 轴向下，因此需要对 y 取反
-        self.last_x = _x * self.sx + self.ox; self.last_y = self.oy - _y * self.sy;
-        self.start_x = self.last_x; self.start_y = self.last_y;
+        self.last_x = _x * self.sx + self.ox;
+        self.last_y = self.oy - _y * self.sy;
+        self.start_x = self.last_x;
+        self.start_y = self.last_y;
     }
     fn line_to(&mut self, _x: f32, _y: f32) {
-        let x = _x * self.sx + self.ox; let y = self.oy - _y * self.sy;
-        self.edges.push(LineSeg { x0: self.last_x, y0: self.last_y, x1: x, y1: y });
-        self.last_x = x; self.last_y = y;
+        let x = _x * self.sx + self.ox;
+        let y = self.oy - _y * self.sy;
+        self.edges.push(LineSeg {
+            x0: self.last_x,
+            y0: self.last_y,
+            x1: x,
+            y1: y,
+        });
+        self.last_x = x;
+        self.last_y = y;
     }
     fn quad_to(&mut self, _x1: f32, _y1: f32, _x: f32, _y: f32) {
         // 二次贝塞尔折线化（固定细分 N）
         let n = 16;
-        let mut px = self.last_x; let mut py = self.last_y;
-        let x1 = _x1 * self.sx + self.ox; let y1 = self.oy - _y1 * self.sy;
-        let x2 = _x * self.sx + self.ox; let y2 = self.oy - _y * self.sy;
+        let mut px = self.last_x;
+        let mut py = self.last_y;
+        let x1 = _x1 * self.sx + self.ox;
+        let y1 = self.oy - _y1 * self.sy;
+        let x2 = _x * self.sx + self.ox;
+        let y2 = self.oy - _y * self.sy;
         for i in 1..=n {
             let t = i as f32 / n as f32;
             let it = 1.0 - t;
-            let x = it*it* self.last_x + 2.0*it*t*x1 + t*t*x2;
-            let y = it*it* self.last_y + 2.0*it*t*y1 + t*t*y2;
-            self.edges.push(LineSeg { x0: px, y0: py, x1: x, y1: y });
-            px = x; py = y;
+            let x = it * it * self.last_x + 2.0 * it * t * x1 + t * t * x2;
+            let y = it * it * self.last_y + 2.0 * it * t * y1 + t * t * y2;
+            self.edges.push(LineSeg {
+                x0: px,
+                y0: py,
+                x1: x,
+                y1: y,
+            });
+            px = x;
+            py = y;
         }
-        self.last_x = x2; self.last_y = y2;
+        self.last_x = x2;
+        self.last_y = y2;
     }
     fn curve_to(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _x: f32, _y: f32) {
         // 三次贝塞尔折线化（固定细分 N）
         let n = 22;
-        let mut px = self.last_x; let mut py = self.last_y;
-        let x1 = _x1 * self.sx + self.ox; let y1 = self.oy - _y1 * self.sy;
-        let x2 = _x2 * self.sx + self.ox; let y2 = self.oy - _y2 * self.sy;
-        let x3 = _x * self.sx + self.ox; let y3 = self.oy - _y * self.sy;
+        let mut px = self.last_x;
+        let mut py = self.last_y;
+        let x1 = _x1 * self.sx + self.ox;
+        let y1 = self.oy - _y1 * self.sy;
+        let x2 = _x2 * self.sx + self.ox;
+        let y2 = self.oy - _y2 * self.sy;
+        let x3 = _x * self.sx + self.ox;
+        let y3 = self.oy - _y * self.sy;
         for i in 1..=n {
-            let t = i as f32 / n as f32; let it = 1.0 - t;
-            let x = it*it*it*self.last_x + 3.0*it*it*t*x1 + 3.0*it*t*t*x2 + t*t*t*x3;
-            let y = it*it*it*self.last_y + 3.0*it*it*t*y1 + 3.0*it*t*t*y2 + t*t*t*y3;
-            self.edges.push(LineSeg { x0: px, y0: py, x1: x, y1: y });
-            px = x; py = y;
+            let t = i as f32 / n as f32;
+            let it = 1.0 - t;
+            let x = it * it * it * self.last_x
+                + 3.0 * it * it * t * x1
+                + 3.0 * it * t * t * x2
+                + t * t * t * x3;
+            let y = it * it * it * self.last_y
+                + 3.0 * it * it * t * y1
+                + 3.0 * it * t * t * y2
+                + t * t * t * y3;
+            self.edges.push(LineSeg {
+                x0: px,
+                y0: py,
+                x1: x,
+                y1: y,
+            });
+            px = x;
+            py = y;
         }
-        self.last_x = x3; self.last_y = y3;
+        self.last_x = x3;
+        self.last_y = y3;
     }
     fn close(&mut self) {
-        self.edges.push(LineSeg { x0: self.last_x, y0: self.last_y, x1: self.start_x, y1: self.start_y });
+        self.edges.push(LineSeg {
+            x0: self.last_x,
+            y0: self.last_y,
+            x1: self.start_x,
+            y1: self.start_y,
+        });
     }
 }
 
@@ -203,12 +311,22 @@ fn point_in_fill(edges: &Vec<LineSeg>, sx: f32, sy: f32) -> bool {
     // odd-even 规则的水平射线测试
     let mut inside = false;
     for e in edges.iter() {
-        if libm::fabsf(e.y0 - e.y1) < 1e-6 { continue; }
-        let (ymin, ymax, x0, y0, x1, y1) = if e.y0 < e.y1 { (e.y0, e.y1, e.x0, e.y0, e.x1, e.y1) } else { (e.y1, e.y0, e.x1, e.y1, e.x0, e.y0) };
-        if sy < ymin || sy >= ymax { continue; }
+        if libm::fabsf(e.y0 - e.y1) < 1e-6 {
+            continue;
+        }
+        let (ymin, ymax, x0, y0, x1, y1) = if e.y0 < e.y1 {
+            (e.y0, e.y1, e.x0, e.y0, e.x1, e.y1)
+        } else {
+            (e.y1, e.y0, e.x1, e.y1, e.x0, e.y0)
+        };
+        if sy < ymin || sy >= ymax {
+            continue;
+        }
         let t = (sy - y0) / (y1 - y0);
         let x = x0 + t * (x1 - x0);
-        if x > sx { inside = !inside; }
+        if x > sx {
+            inside = !inside;
+        }
     }
     inside
 }
@@ -220,8 +338,10 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
     let (sw, sh) = (g.info.width as i32, g.info.height as i32);
 
     // 包围盒
-    let mut min_y = i32::MAX; let mut max_y = i32::MIN;
-    let mut min_x = i32::MAX; let mut max_x = i32::MIN;
+    let mut min_y = i32::MAX;
+    let mut max_y = i32::MIN;
+    let mut min_x = i32::MAX;
+    let mut max_x = i32::MIN;
     for e in edges.iter() {
         let y0f = libm::floorf(e.y0) as i32;
         let y1f = libm::floorf(e.y1) as i32;
@@ -229,13 +349,17 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
         let y1c = libm::ceilf(e.y1) as i32;
         min_y = min_y.min(y0f).min(y1f);
         max_y = max_y.max(y0c).max(y1c);
-        let x0f = libm::floorf(e.x0) as i32; let x1f = libm::floorf(e.x1) as i32;
-        let x0c = libm::ceilf(e.x0) as i32; let x1c = libm::ceilf(e.x1) as i32;
+        let x0f = libm::floorf(e.x0) as i32;
+        let x1f = libm::floorf(e.x1) as i32;
+        let x0c = libm::ceilf(e.x0) as i32;
+        let x1c = libm::ceilf(e.x1) as i32;
         min_x = min_x.min(x0f).min(x1f);
         max_x = max_x.max(x0c).max(x1c);
     }
-    min_y = min_y.max(0); max_y = max_y.min(sh - 1);
-    min_x = min_x.max(0); max_x = max_x.min(sw - 1);
+    min_y = min_y.max(0);
+    max_y = max_y.min(sh - 1);
+    min_x = min_x.max(0);
+    max_x = max_x.min(sw - 1);
 
     let r = ((color >> 16) & 0xFF) as u8;
     let gch = ((color >> 8) & 0xFF) as u8;
@@ -253,11 +377,21 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
             let sx0 = x as f32 + 0.25;
             let sx1 = x as f32 + 0.75;
             let mut cover = 0.0f32;
-            if point_in_fill(edges, sx0, sy0) { cover += 0.25; }
-            if point_in_fill(edges, sx1, sy0) { cover += 0.25; }
-            if point_in_fill(edges, sx0, sy1) { cover += 0.25; }
-            if point_in_fill(edges, sx1, sy1) { cover += 0.25; }
-            if cover <= 0.0 { continue; }
+            if point_in_fill(edges, sx0, sy0) {
+                cover += 0.25;
+            }
+            if point_in_fill(edges, sx1, sy0) {
+                cover += 0.25;
+            }
+            if point_in_fill(edges, sx0, sy1) {
+                cover += 0.25;
+            }
+            if point_in_fill(edges, sx1, sy1) {
+                cover += 0.25;
+            }
+            if cover <= 0.0 {
+                continue;
+            }
             let cover_adj = libm::powf(cover, 0.8) * a_norm; // 略加权使边更实
             let p = unsafe { row_ptr.add((x as usize) * bpp) };
             if cover_adj >= 0.999 {
@@ -271,17 +405,34 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
     g.dirty = true;
     let rect = (min_x, min_y, max_x + 1, max_y + 1);
     g.dirty_rect = Some(match g.dirty_rect {
-        Some((ox0, oy0, ox1, oy1)) => (ox0.min(rect.0), oy0.min(rect.1), ox1.max(rect.2), oy1.max(rect.3)),
+        Some((ox0, oy0, ox1, oy1)) => (
+            ox0.min(rect.0),
+            oy0.min(rect.1),
+            ox1.max(rect.2),
+            oy1.max(rect.3),
+        ),
         None => rect,
     });
 }
 
 // TTF 渲染：占位实现，后续将以 ttf-parser + 简易栅格化替换
-pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, _font_bytes: &'static [u8]) -> bool {
+pub fn draw_text_ttf(
+    _x: i32,
+    _y: i32,
+    _text: &str,
+    _size_px: u32,
+    _color: u32,
+    _font_bytes: &'static [u8],
+) -> bool {
     // 实现：使用 ttf-parser 解析字形轮廓，折线化后扫描线填充
-    let face = match ttf_parser::Face::parse(_font_bytes, 0) { Ok(f) => f, Err(_) => return false };
+    let face = match ttf_parser::Face::parse(_font_bytes, 0) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
     let upem = face.units_per_em() as f32;
-    if upem <= 0.0 { return false; }
+    if upem <= 0.0 {
+        return false;
+    }
     let scale = _size_px as f32 / upem;
 
     let mut pen_x = _x;
@@ -292,9 +443,13 @@ pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, 
         let gid = match face.glyph_index(ch) {
             Some(id) => id,
             None => {
-                if let Some(fb) = face.glyph_index('★') { fb }
-                else if let Some(ast) = face.glyph_index('*') { ast }
-                else { continue }
+                if let Some(fb) = face.glyph_index('★') {
+                    fb
+                } else if let Some(ast) = face.glyph_index('*') {
+                    ast
+                } else {
+                    continue;
+                }
             }
         };
         // 采集并栅格化字形
@@ -313,23 +468,39 @@ pub fn draw_text_ttf(_x: i32, _y: i32, _text: &str, _size_px: u32, _color: u32, 
 
 #[inline(always)]
 pub fn gui_create_context() -> bool {
-    let ok = syscall(300, [0,0,0]) >= 0;
-    if !ok { return false; }
+    let ok = syscall(300, [0, 0, 0]) >= 0;
+    if !ok {
+        return false;
+    }
     let mut info = GuiScreenInfo::default();
     let p = &mut info as *mut GuiScreenInfo as usize;
-    if syscall(311, [p, 0, 0]) < 0 { return false; }
+    if syscall(311, [p, 0, 0]) < 0 {
+        return false;
+    }
     let mut mapped_addr: usize = 0;
     let out_ptr = &mut mapped_addr as *mut usize as usize;
-    if syscall(315, [out_ptr, 0, 0]) < 0 { return false; }
+    if syscall(315, [out_ptr, 0, 0]) < 0 {
+        return false;
+    }
     let mut guard = GFX.lock();
-    *guard = Some(GlobalGfx { info, fb_ptr: mapped_addr, default_font: None, dirty: false, dirty_rect: None });
+    *guard = Some(GlobalGfx {
+        info,
+        fb_ptr: mapped_addr,
+        default_font: None,
+        dirty: false,
+        dirty_rect: None,
+    });
     true
 }
 
 #[inline(always)]
 pub fn screen_size() -> (u32, u32) {
     let guard = GFX.lock();
-    if let Some(ref g) = *guard { (g.info.width, g.info.height) } else { (0, 0) }
+    if let Some(ref g) = *guard {
+        (g.info.width, g.info.height)
+    } else {
+        (0, 0)
+    }
 }
 
 #[inline(always)]
@@ -369,7 +540,9 @@ pub fn gui_fill_rect_xywh(x: i32, y: i32, w: u32, h: u32, color: u32) {
         let y0 = y.max(0);
         let x1 = (x + w as i32).min(sw);
         let y1 = (y + h as i32).min(sh);
-        if x0 >= x1 || y0 >= y1 { return; }
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
         let pitch = g.info.pitch as usize;
         let bpp = g.info.bytes_per_pixel as usize;
         for yy in y0..y1 {
@@ -391,11 +564,23 @@ pub fn gui_fill_rect_xywh(x: i32, y: i32, w: u32, h: u32, color: u32) {
 pub fn gui_flush() {
     let mut guard = GFX.lock();
     if let Some(ref mut g) = *guard {
-        if !g.dirty { return; }
+        if !g.dirty {
+            return;
+        }
         if let Some((x0, y0, x1, y1)) = g.dirty_rect {
             #[repr(C)]
-            struct Rect { x: u32, y: u32, width: u32, height: u32 }
-            let rect = Rect { x: x0 as u32, y: y0 as u32, width: (x1 - x0) as u32, height: (y1 - y0) as u32 };
+            struct Rect {
+                x: u32,
+                y: u32,
+                width: u32,
+                height: u32,
+            }
+            let rect = Rect {
+                x: x0 as u32,
+                y: y0 as u32,
+                width: (x1 - x0) as u32,
+                height: (y1 - y0) as u32,
+            };
             let _ = syscall(313, [&rect as *const Rect as usize, 1, 0]); // 仅刷新矩形
         }
         g.dirty = false;
@@ -407,23 +592,36 @@ pub fn gui_flush() {
 
 pub fn set_default_font(font_bytes: &'static [u8]) {
     let mut guard = GFX.lock();
-    if let Some(ref mut g) = *guard { g.default_font = Some(font_bytes); }
+    if let Some(ref mut g) = *guard {
+        g.default_font = Some(font_bytes);
+    }
 }
 
 pub fn draw_text(x: i32, y: i32, text: &str, size_px: u32, color: u32) -> bool {
     // 读取默认字体后立刻释放锁，避免与栅格化中的回缓冲写入锁嵌套
     let font_opt: Option<&'static [u8]> = {
         let guard = GFX.lock();
-        if let Some(ref g) = *guard { g.default_font } else { None }
+        if let Some(ref g) = *guard {
+            g.default_font
+        } else {
+            None
+        }
     };
-    if let Some(bytes) = font_opt { draw_text_ttf(x, y, text, size_px, color, bytes) } else { false }
+    if let Some(bytes) = font_opt {
+        draw_text_ttf(x, y, text, size_px, color, bytes)
+    } else {
+        false
+    }
 }
 
 // ============ 文本测量（用于布局换行） ============
 
 fn measure_with_face(text: &str, size_px: u32, font_bytes: &'static [u8]) -> Option<i32> {
     let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
-    let upem = face.units_per_em() as f32; if upem <= 0.0 { return None; }
+    let upem = face.units_per_em() as f32;
+    if upem <= 0.0 {
+        return None;
+    }
     let scale = size_px as f32 / upem;
     let mut width: f32 = 0.0;
     for ch in text.chars() {
@@ -440,11 +638,20 @@ fn measure_with_face(text: &str, size_px: u32, font_bytes: &'static [u8]) -> Opt
 pub fn measure_text(text: &str, size_px: u32) -> i32 {
     let font_opt: Option<&'static [u8]> = {
         let guard = GFX.lock();
-        if let Some(ref g) = *guard { g.default_font } else { None }
+        if let Some(ref g) = *guard {
+            g.default_font
+        } else {
+            None
+        }
     };
-    if let Some(bytes) = font_opt { measure_with_face(text, size_px, bytes).unwrap_or(0) }
-    else {
-        let scale = if size_px >= 8 { (size_px / 8) as i32 } else { 1 };
+    if let Some(bytes) = font_opt {
+        measure_with_face(text, size_px, bytes).unwrap_or(0)
+    } else {
+        let scale = if size_px >= 8 {
+            (size_px / 8) as i32
+        } else {
+            1
+        };
         (text.len() as i32) * 8 * scale
     }
 }
@@ -452,7 +659,11 @@ pub fn measure_text(text: &str, size_px: u32) -> i32 {
 pub fn font_metrics(size_px: u32) -> (i32, i32, i32, i32) {
     let font_opt: Option<&'static [u8]> = {
         let guard = GFX.lock();
-        if let Some(ref g) = *guard { g.default_font } else { None }
+        if let Some(ref g) = *guard {
+            g.default_font
+        } else {
+            None
+        }
     };
     if let Some(bytes) = font_opt {
         if let Ok(face) = ttf_parser::Face::parse(bytes, 0) {
@@ -474,22 +685,41 @@ pub fn font_metrics(size_px: u32) -> (i32, i32, i32, i32) {
     (asc.max(1), desc.max(0), gap.max(0), line_height.max(1))
 }
 
-pub fn font_ascent(size_px: u32) -> i32 { font_metrics(size_px).0 }
+pub fn font_ascent(size_px: u32) -> i32 {
+    font_metrics(size_px).0
+}
 
 pub fn measure_char(ch: char, size_px: u32) -> i32 {
     let font_opt: Option<&'static [u8]> = {
         let guard = GFX.lock();
-        if let Some(ref g) = *guard { g.default_font } else { None }
+        if let Some(ref g) = *guard {
+            g.default_font
+        } else {
+            None
+        }
     };
     if let Some(bytes) = font_opt {
-        let face = match ttf_parser::Face::parse(bytes, 0) { Ok(f) => f, Err(_) => return 0 };
-        let upem = face.units_per_em() as f32; if upem <= 0.0 { return 0; }
+        let face = match ttf_parser::Face::parse(bytes, 0) {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+        let upem = face.units_per_em() as f32;
+        if upem <= 0.0 {
+            return 0;
+        }
         let scale = size_px as f32 / upem;
-        let gid = face.glyph_index(ch).or_else(|| face.glyph_index('*')).unwrap_or(ttf_parser::GlyphId(0));
+        let gid = face
+            .glyph_index(ch)
+            .or_else(|| face.glyph_index('*'))
+            .unwrap_or(ttf_parser::GlyphId(0));
         let adv_units = face.glyph_hor_advance(gid).unwrap_or(0) as f32;
         libm::roundf(adv_units * scale) as i32
     } else {
-        let scale = if size_px >= 8 { (size_px / 8) as i32 } else { 1 };
+        let scale = if size_px >= 8 {
+            (size_px / 8) as i32
+        } else {
+            1
+        };
         8 * scale
     }
 }
@@ -581,20 +811,33 @@ pub fn draw_string_scaled(mut x: i32, y: i32, text: &str, color: u32, scale: u32
 
 /// 将一块 RGBA8888 源像素按行拷贝到帧缓冲指定位置（不缩放）
 /// src_stride: 源每行字节数（通常为 width*4）
-pub fn blit_rgba(dst_x: i32, dst_y: i32, width: u32, height: u32, src_ptr: *const u8, src_stride: usize) {
+pub fn blit_rgba(
+    dst_x: i32,
+    dst_y: i32,
+    width: u32,
+    height: u32,
+    src_ptr: *const u8,
+    src_stride: usize,
+) {
     let mut guard = GFX.lock();
     let Some(ref mut g) = *guard else { return };
     let pitch = g.info.pitch as usize;
     let bpp = g.info.bytes_per_pixel as usize;
-    if bpp != 4 { return; }
+    if bpp != 4 {
+        return;
+    }
     for row in 0..(height as i32) {
         let y = dst_y + row;
-        if y < 0 || y >= g.info.height as i32 { continue; }
+        if y < 0 || y >= g.info.height as i32 {
+            continue;
+        }
         let dst_row = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
         let src_row = unsafe { src_ptr.add((row as usize) * src_stride) };
         for col in 0..(width as i32) {
             let x = dst_x + col;
-            if x < 0 || x >= g.info.width as i32 { continue; }
+            if x < 0 || x >= g.info.width as i32 {
+                continue;
+            }
             let dp = unsafe { dst_row.add((x as usize) * bpp) };
             let sp = unsafe { src_row.add((col as usize) * 4) };
             // 源为 RGBA8888，目标根据格式转换
@@ -606,7 +849,8 @@ pub fn blit_rgba(dst_x: i32, dst_y: i32, width: u32, height: u32, src_ptr: *cons
         }
     }
     g.dirty = true;
-    let x0 = dst_x.max(0); let y0 = dst_y.max(0);
+    let x0 = dst_x.max(0);
+    let y0 = dst_y.max(0);
     let x1 = (dst_x + width as i32).min(g.info.width as i32);
     let y1 = (dst_y + height as i32).min(g.info.height as i32);
     if x0 < x1 && y0 < y1 {
@@ -616,4 +860,3 @@ pub fn blit_rgba(dst_x: i32, dst_y: i32, width: u32, height: u32, src_ptr: *cons
         });
     }
 }
-

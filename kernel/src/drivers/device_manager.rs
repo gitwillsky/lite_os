@@ -1,20 +1,20 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 use crate::board::board_info;
-use riscv::register;
+use crate::drivers::GenericBlockDriver;
+use crate::drivers::VirtioGpuDevice;
+use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
 use crate::drivers::hal::{
-    DeviceManager, Device, DeviceType, DeviceError,
-    interrupt::{PlicInterruptController, InterruptPriority, InterruptHandler},
+    Device, DeviceError, DeviceManager, DeviceType,
+    interrupt::{InterruptHandler, InterruptPriority, PlicInterruptController},
     resource::SystemResourceManager,
 };
-use crate::drivers::GenericBlockDriver;
-use crate::drivers::{VirtIOBlockDevice, BlockDevice, register_block_device};
-use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
-use crate::drivers::VirtioGpuDevice;
-use crate::fs::{FAT32FileSystem, Ext2FileSystem};
+use crate::drivers::{BlockDevice, VirtIOBlockDevice, register_block_device};
 use crate::fs::vfs::vfs;
+use crate::fs::{Ext2FileSystem, FAT32FileSystem};
+use riscv::register;
 
 /// 全局HAL设备管理器
 static DEVICE_MANAGER: spin::Once<spin::Mutex<DeviceManager>> = spin::Once::new();
@@ -90,23 +90,39 @@ fn scan_and_init_devices() {
 
 /// 初始化VirtIO设备
 fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
-    info!("[DeviceManager] Scanning {} VirtIO devices", board_info.virtio_count);
+    info!(
+        "[DeviceManager] Scanning {} VirtIO devices",
+        board_info.virtio_count
+    );
     info!("[DeviceManager] Board info debug:\n{}", board_info);
 
     for i in 0..board_info.virtio_count {
         if let Some(virtio_dev) = &board_info.virtio_devices[i] {
             let base_addr = virtio_dev.base_addr;
-            info!("[DeviceManager] Attempting to probe VirtIO device {} at {:#x}, size={:#x}", i, base_addr, virtio_dev.size);
-            info!("[DeviceManager] Processing VirtIO device {}/{}", i + 1, board_info.virtio_count);
+            info!(
+                "[DeviceManager] Attempting to probe VirtIO device {} at {:#x}, size={:#x}",
+                i, base_addr, virtio_dev.size
+            );
+            info!(
+                "[DeviceManager] Processing VirtIO device {}/{}",
+                i + 1,
+                board_info.virtio_count
+            );
 
             let device_id = read_virtio_device_id(base_addr);
-            info!("[DeviceManager] VirtIO device {} has device ID: {:#x}", i, device_id);
+            info!(
+                "[DeviceManager] VirtIO device {} has device ID: {:#x}",
+                i, device_id
+            );
 
             match device_id {
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
                 16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
                 18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
-                _ => info!("[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}", device_id, base_addr),
+                _ => info!(
+                    "[DeviceManager] Unrecognized VirtIO device ID {:#x} at {:#x}",
+                    device_id, base_addr
+                ),
             }
         }
     }
@@ -124,7 +140,9 @@ fn maybe_register_irq(
     priority: InterruptPriority,
     label: &str,
 ) {
-    if board_info.plic_device.is_none() || irq == 0 { return; }
+    if board_info.plic_device.is_none() || irq == 0 {
+        return;
+    }
 
     let controller_opt = {
         let manager = device_manager();
@@ -133,47 +151,83 @@ fn maybe_register_irq(
     };
     if let Some(controller) = controller_opt {
         let sie_prev = register::sstatus::read().sie();
-        unsafe { register::sstatus::clear_sie(); }
+        unsafe {
+            register::sstatus::clear_sie();
+        }
         let mut ctrl = controller.lock();
         let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
-            error!("[DeviceManager] Failed to register {} IRQ handler: {:?}", label, e);
+            error!(
+                "[DeviceManager] Failed to register {} IRQ handler: {:?}",
+                label, e
+            );
             Err(())
         } else if let Err(e) = ctrl.set_priority(irq, priority) {
-            error!("[DeviceManager] Failed to set {} IRQ priority: {:?}", label, e);
+            error!(
+                "[DeviceManager] Failed to set {} IRQ priority: {:?}",
+                label, e
+            );
             Err(())
         } else if let Err(e) = ctrl.enable_interrupt(irq) {
-            error!("[DeviceManager] Failed to enable {} IRQ {}: {:?}", label, irq, e);
+            error!(
+                "[DeviceManager] Failed to enable {} IRQ {}: {:?}",
+                label, irq, e
+            );
             Err(())
         } else {
-            info!("[DeviceManager] Registered {} IRQ handler on vector {}", label, irq);
+            info!(
+                "[DeviceManager] Registered {} IRQ handler on vector {}",
+                label, irq
+            );
             Ok(())
         };
         drop(ctrl);
-        if sie_prev { unsafe { register::sstatus::set_sie(); } }
+        if sie_prev {
+            unsafe {
+                register::sstatus::set_sie();
+            }
+        }
         let _ = res;
     }
 }
 
 fn init_virtio_blk_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
-    info!("[DeviceManager] Creating VirtIOBlockDevice at {:#x}", base_addr);
+    info!(
+        "[DeviceManager] Creating VirtIOBlockDevice at {:#x}",
+        base_addr
+    );
     if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
         let virtio_arc = virtio_block.clone();
         match register_block_device(virtio_arc.clone()) {
             Ok(device_id) => {
-                info!("[DeviceManager] VirtIO Block device #{} registered at {:#x}", device_id, base_addr);
+                info!(
+                    "[DeviceManager] VirtIO Block device #{} registered at {:#x}",
+                    device_id, base_addr
+                );
             }
             Err(e) => {
                 error!("[DeviceManager] Failed to register block device: {:?}", e);
             }
         }
-        maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), InterruptPriority::High, "blk");
+        maybe_register_irq(
+            board_info,
+            irq,
+            virtio_block.irq_handler_for(),
+            InterruptPriority::High,
+            "blk",
+        );
     } else {
-        warn!("[DeviceManager] Failed to create VirtIO Block device at {:#x}", base_addr);
+        warn!(
+            "[DeviceManager] Failed to create VirtIO Block device at {:#x}",
+            base_addr
+        );
     }
 }
 
 fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
-    info!("[DeviceManager] Creating VirtioGpuDevice at {:#x}", base_addr);
+    info!(
+        "[DeviceManager] Creating VirtioGpuDevice at {:#x}",
+        base_addr
+    );
     match VirtioGpuDevice::new(base_addr, 0) {
         Ok(mut gpu_device) => {
             if let Ok(true) = gpu_device.probe() {
@@ -183,49 +237,73 @@ fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_a
                     let mut mgr = manager.lock();
                     match mgr.add_device(device) {
                         Ok(device_id) => {
-                            info!("[DeviceManager] VirtIO GPU device #{} registered at {:#x}", device_id, base_addr);
+                            info!(
+                                "[DeviceManager] VirtIO GPU device #{} registered at {:#x}",
+                                device_id, base_addr
+                            );
                         }
                         Err(e) => {
                             error!("[DeviceManager] Failed to add GPU device: {:?}", e);
                         }
                     }
                     drop(mgr);
-                    let handler = alloc::sync::Arc::new(crate::drivers::virtio_gpu::VirtioGpuIrqHandler);
+                    let handler =
+                        alloc::sync::Arc::new(crate::drivers::virtio_gpu::VirtioGpuIrqHandler);
                     maybe_register_irq(board_info, irq, handler, InterruptPriority::High, "GPU");
                 } else {
-                    error!("[DeviceManager] Failed to initialize GPU device at {:#x}", base_addr);
+                    error!(
+                        "[DeviceManager] Failed to initialize GPU device at {:#x}",
+                        base_addr
+                    );
                 }
             } else {
-                warn!("[DeviceManager] GPU device probe failed at {:#x}", base_addr);
+                warn!(
+                    "[DeviceManager] GPU device probe failed at {:#x}",
+                    base_addr
+                );
             }
         }
         Err(e) => {
-            error!("[DeviceManager] Failed to create VirtIO GPU device at {:#x}: {:?}", base_addr, e);
+            error!(
+                "[DeviceManager] Failed to create VirtIO GPU device at {:#x}: {:?}",
+                base_addr, e
+            );
         }
     }
 }
 
 fn init_virtio_input_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
-    info!("[DeviceManager] Creating VirtioInputDevice at {:#x}", base_addr);
+    info!(
+        "[DeviceManager] Creating VirtioInputDevice at {:#x}",
+        base_addr
+    );
     if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
         let node = input_dev.node.clone();
         let path = crate::drivers::register_input_node_auto(node);
         info!("[DeviceManager] Registered input node at {}", path);
 
-        let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(input_dev.clone()));
+        let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(
+            input_dev.clone(),
+        ));
         maybe_register_irq(board_info, irq, handler, InterruptPriority::Normal, "input");
 
         // 重要：在 IRQ 完成注册后再通知设备，避免中断路径与锁重入
         input_dev.enable_notifications();
     } else {
-        warn!("[DeviceManager] Failed to create VirtioInputDevice at {:#x}", base_addr);
+        warn!(
+            "[DeviceManager] Failed to create VirtioInputDevice at {:#x}",
+            base_addr
+        );
     }
 }
 
 /// 初始化RTC设备
 fn init_rtc_devices(board_info: &crate::board::BoardInfo) {
     if let Some(rtc_info) = board_info.rtc_device.as_ref() {
-        info!("[DeviceManager] Initializing RTC device at {:#x}", rtc_info.base_addr);
+        info!(
+            "[DeviceManager] Initializing RTC device at {:#x}",
+            rtc_info.base_addr
+        );
 
         match GoldfishRTCDevice::new(rtc_info.clone()) {
             Ok(rtc_device) => {
@@ -235,8 +313,10 @@ fn init_rtc_devices(board_info: &crate::board::BoardInfo) {
 
                 match mgr.add_device(device) {
                     Ok(device_id) => {
-                        info!("[DeviceManager] RTC device #{} registered at {:#x}",
-                              device_id, rtc_info.base_addr);
+                        info!(
+                            "[DeviceManager] RTC device #{} registered at {:#x}",
+                            device_id, rtc_info.base_addr
+                        );
                     }
                     Err(e) => {
                         error!("[DeviceManager] Failed to add RTC device: {:?}", e);
@@ -256,11 +336,16 @@ fn enumerate_devices() {
     let mgr = manager.lock();
 
     let devices = mgr.enumerate_devices();
-    info!("[DeviceManager] Total devices registered: {}", devices.len());
+    info!(
+        "[DeviceManager] Total devices registered: {}",
+        devices.len()
+    );
 
     for (id, device_type, name, state) in devices {
-        info!("[DeviceManager] Device #{}: {} ({:?}) - State: {:?}",
-              id, name, device_type, state);
+        info!(
+            "[DeviceManager] Device #{}: {} ({:?}) - State: {:?}",
+            id, name, device_type, state
+        );
     }
 
     // 显示设备统计
@@ -272,7 +357,7 @@ fn enumerate_devices() {
 
 /// 初始化文件系统
 fn init_filesystems() {
-    use crate::drivers::{get_primary_block_device, get_all_block_devices};
+    use crate::drivers::{get_all_block_devices, get_primary_block_device};
 
     let block_devices = get_all_block_devices();
     if block_devices.is_empty() {
@@ -280,7 +365,10 @@ fn init_filesystems() {
         return;
     }
 
-    info!("[DeviceManager] Found {} block device(s) for filesystem", block_devices.len());
+    info!(
+        "[DeviceManager] Found {} block device(s) for filesystem",
+        block_devices.len()
+    );
 
     // 使用第一个块设备初始化文件系统
     if let Some(primary_device) = get_primary_block_device() {
@@ -336,7 +424,10 @@ pub fn handle_external_interrupt() {
             let ctrl = controller.lock();
             if let Err(e) = ctrl.handle_interrupt(vector) {
                 #[cfg(debug_assertions)]
-                debug!("[DeviceManager] Interrupt {} handling failed: {:?}", vector, e);
+                debug!(
+                    "[DeviceManager] Interrupt {} handling failed: {:?}",
+                    vector, e
+                );
             }
             drop(ctrl);
         }

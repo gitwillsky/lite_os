@@ -1,5 +1,11 @@
-use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, vec, format};
-use core::{fmt, cmp::Ordering};
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::{cmp::Ordering, fmt};
 
 //==============================================================================
 // 核心接口定义 (Core Interfaces)
@@ -68,14 +74,30 @@ pub trait Element {
     fn children(&self) -> Vec<&dyn Element>;
 
     // 扩展：状态访问（伪类支持）
-    fn is_hover(&self) -> bool { false }
-    fn is_active(&self) -> bool { false }
-    fn is_focus(&self) -> bool { false }
-    fn is_visited(&self) -> bool { false }
-    fn is_link(&self) -> bool { false }
-    fn is_checked(&self) -> bool { false }
-    fn is_disabled(&self) -> bool { false }
-    fn is_enabled(&self) -> bool { !self.is_disabled() }
+    fn is_hover(&self) -> bool {
+        false
+    }
+    fn is_active(&self) -> bool {
+        false
+    }
+    fn is_focus(&self) -> bool {
+        false
+    }
+    fn is_visited(&self) -> bool {
+        false
+    }
+    fn is_link(&self) -> bool {
+        false
+    }
+    fn is_checked(&self) -> bool {
+        false
+    }
+    fn is_disabled(&self) -> bool {
+        false
+    }
+    fn is_enabled(&self) -> bool {
+        !self.is_disabled()
+    }
     fn is_first_child(&self) -> bool {
         if let Some(_parent) = self.parent() {
             // 简化实现：使用索引比较而不是指针比较
@@ -185,7 +207,9 @@ pub enum Length {
 }
 
 impl Default for Length {
-    fn default() -> Self { Length::Px(0.0) }
+    fn default() -> Self {
+        Length::Px(0.0)
+    }
 }
 
 /// CSS显示类型 - 符合CSS 2.1
@@ -210,7 +234,9 @@ pub enum Display {
 }
 
 impl Default for Display {
-    fn default() -> Self { Display::Inline }
+    fn default() -> Self {
+        Display::Inline
+    }
 }
 
 /// CSS定位类型
@@ -223,7 +249,9 @@ pub enum Position {
 }
 
 impl Default for Position {
-    fn default() -> Self { Position::Static }
+    fn default() -> Self {
+        Position::Static
+    }
 }
 
 /// CSS浮动
@@ -235,7 +263,9 @@ pub enum Float {
 }
 
 impl Default for Float {
-    fn default() -> Self { Float::None }
+    fn default() -> Self {
+        Float::None
+    }
 }
 
 /// CSS清除
@@ -248,7 +278,9 @@ pub enum Clear {
 }
 
 impl Default for Clear {
-    fn default() -> Self { Clear::None }
+    fn default() -> Self {
+        Clear::None
+    }
 }
 
 /// CSS可见性
@@ -260,7 +292,9 @@ pub enum Visibility {
 }
 
 impl Default for Visibility {
-    fn default() -> Self { Visibility::Visible }
+    fn default() -> Self {
+        Visibility::Visible
+    }
 }
 
 /// CSS溢出处理
@@ -273,7 +307,9 @@ pub enum Overflow {
 }
 
 impl Default for Overflow {
-    fn default() -> Self { Overflow::Visible }
+    fn default() -> Self {
+        Overflow::Visible
+    }
 }
 
 /// 字体样式
@@ -285,21 +321,25 @@ pub enum FontStyle {
 }
 
 impl Default for FontStyle {
-    fn default() -> Self { FontStyle::Normal }
+    fn default() -> Self {
+        FontStyle::Normal
+    }
 }
 
 /// 字体粗细
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FontWeight {
-    Normal,      // 400
-    Bold,        // 700
+    Normal, // 400
+    Bold,   // 700
     Bolder,
     Lighter,
     Weight(u16), // 100-900
 }
 
 impl Default for FontWeight {
-    fn default() -> Self { FontWeight::Normal }
+    fn default() -> Self {
+        FontWeight::Normal
+    }
 }
 
 impl FontWeight {
@@ -308,7 +348,7 @@ impl FontWeight {
             FontWeight::Normal => 400,
             FontWeight::Bold => 700,
             FontWeight::Weight(w) => *w,
-            FontWeight::Bolder => 700, // 简化处理
+            FontWeight::Bolder => 700,  // 简化处理
             FontWeight::Lighter => 300, // 简化处理
         }
     }
@@ -325,7 +365,9 @@ pub enum TextDecoration {
 }
 
 impl Default for TextDecoration {
-    fn default() -> Self { TextDecoration::None }
+    fn default() -> Self {
+        TextDecoration::None
+    }
 }
 
 /// 文本对齐
@@ -338,7 +380,9 @@ pub enum TextAlign {
 }
 
 impl Default for TextAlign {
-    fn default() -> Self { TextAlign::Left }
+    fn default() -> Self {
+        TextAlign::Left
+    }
 }
 
 /// 垂直对齐
@@ -357,7 +401,9 @@ pub enum VerticalAlign {
 }
 
 impl Default for VerticalAlign {
-    fn default() -> Self { VerticalAlign::Baseline }
+    fn default() -> Self {
+        VerticalAlign::Baseline
+    }
 }
 
 /// 边框样式
@@ -376,7 +422,9 @@ pub enum BorderStyle {
 }
 
 impl Default for BorderStyle {
-    fn default() -> Self { BorderStyle::None }
+    fn default() -> Self {
+        BorderStyle::None
+    }
 }
 
 /// 盒模型
@@ -387,7 +435,9 @@ pub enum BoxSizing {
 }
 
 impl Default for BoxSizing {
-    fn default() -> Self { BoxSizing::ContentBox }
+    fn default() -> Self {
+        BoxSizing::ContentBox
+    }
 }
 
 /// 背景重复
@@ -400,7 +450,9 @@ pub enum BackgroundRepeat {
 }
 
 impl Default for BackgroundRepeat {
-    fn default() -> Self { BackgroundRepeat::Repeat }
+    fn default() -> Self {
+        BackgroundRepeat::Repeat
+    }
 }
 
 /// 背景附着
@@ -411,7 +463,9 @@ pub enum BackgroundAttachment {
 }
 
 impl Default for BackgroundAttachment {
-    fn default() -> Self { BackgroundAttachment::Scroll }
+    fn default() -> Self {
+        BackgroundAttachment::Scroll
+    }
 }
 
 /// 背景位置
@@ -440,7 +494,9 @@ pub enum TextTransform {
 }
 
 impl Default for TextTransform {
-    fn default() -> Self { TextTransform::None }
+    fn default() -> Self {
+        TextTransform::None
+    }
 }
 
 /// 表格布局
@@ -451,7 +507,9 @@ pub enum TableLayout {
 }
 
 impl Default for TableLayout {
-    fn default() -> Self { TableLayout::Auto }
+    fn default() -> Self {
+        TableLayout::Auto
+    }
 }
 
 /// 边框合并
@@ -462,7 +520,9 @@ pub enum BorderCollapse {
 }
 
 impl Default for BorderCollapse {
-    fn default() -> Self { BorderCollapse::Separate }
+    fn default() -> Self {
+        BorderCollapse::Separate
+    }
 }
 
 /// 空单元格
@@ -473,7 +533,9 @@ pub enum EmptyCells {
 }
 
 impl Default for EmptyCells {
-    fn default() -> Self { EmptyCells::Show }
+    fn default() -> Self {
+        EmptyCells::Show
+    }
 }
 
 /// 标题位置
@@ -486,7 +548,9 @@ pub enum CaptionSide {
 }
 
 impl Default for CaptionSide {
-    fn default() -> Self { CaptionSide::Top }
+    fn default() -> Self {
+        CaptionSide::Top
+    }
 }
 
 /// 列表样式类型
@@ -508,7 +572,9 @@ pub enum ListStyleType {
 }
 
 impl Default for ListStyleType {
-    fn default() -> Self { ListStyleType::Disc }
+    fn default() -> Self {
+        ListStyleType::Disc
+    }
 }
 
 /// 列表样式位置
@@ -519,7 +585,9 @@ pub enum ListStylePosition {
 }
 
 impl Default for ListStylePosition {
-    fn default() -> Self { ListStylePosition::Outside }
+    fn default() -> Self {
+        ListStylePosition::Outside
+    }
 }
 
 /// 光标样式
@@ -630,35 +698,51 @@ pub enum FlexBasis {
 }
 
 impl Default for Cursor {
-    fn default() -> Self { Cursor::Auto }
+    fn default() -> Self {
+        Cursor::Auto
+    }
 }
 
 impl Default for FlexDirection {
-    fn default() -> Self { FlexDirection::Row }
+    fn default() -> Self {
+        FlexDirection::Row
+    }
 }
 
 impl Default for FlexWrap {
-    fn default() -> Self { FlexWrap::NoWrap }
+    fn default() -> Self {
+        FlexWrap::NoWrap
+    }
 }
 
 impl Default for JustifyContent {
-    fn default() -> Self { JustifyContent::FlexStart }
+    fn default() -> Self {
+        JustifyContent::FlexStart
+    }
 }
 
 impl Default for AlignItems {
-    fn default() -> Self { AlignItems::Stretch }
+    fn default() -> Self {
+        AlignItems::Stretch
+    }
 }
 
 impl Default for AlignContent {
-    fn default() -> Self { AlignContent::Stretch }
+    fn default() -> Self {
+        AlignContent::Stretch
+    }
 }
 
 impl Default for AlignSelf {
-    fn default() -> Self { AlignSelf::Auto }
+    fn default() -> Self {
+        AlignSelf::Auto
+    }
 }
 
 impl Default for FlexBasis {
-    fn default() -> Self { FlexBasis::Auto }
+    fn default() -> Self {
+        FlexBasis::Auto
+    }
 }
 
 //==============================================================================
@@ -676,13 +760,19 @@ pub struct Specificity {
 
 impl Specificity {
     pub fn new() -> Self {
-        Self { a: 0, b: 0, c: 0, d: 0 }
+        Self {
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+        }
     }
 }
 
 impl Ord for Specificity {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.a.cmp(&other.a)
+        self.a
+            .cmp(&other.a)
             .then_with(|| self.b.cmp(&other.b))
             .then_with(|| self.c.cmp(&other.c))
             .then_with(|| self.d.cmp(&other.d))
@@ -879,7 +969,9 @@ pub enum Origin {
 }
 
 impl Default for Origin {
-    fn default() -> Self { Origin::Author }
+    fn default() -> Self {
+        Origin::Author
+    }
 }
 
 //==============================================================================
@@ -1161,9 +1253,15 @@ impl CSSValueParser<Length> for LengthParser {
 
     fn validate(&self, value: &Length) -> bool {
         match value {
-            Length::Px(v) | Length::Em(v) | Length::Ex(v) | Length::In(v) |
-            Length::Cm(v) | Length::Mm(v) | Length::Pt(v) | Length::Pc(v) |
-            Length::Percent(v) => v.is_finite(),
+            Length::Px(v)
+            | Length::Em(v)
+            | Length::Ex(v)
+            | Length::In(v)
+            | Length::Cm(v)
+            | Length::Mm(v)
+            | Length::Pt(v)
+            | Length::Pc(v)
+            | Length::Percent(v) => v.is_finite(),
         }
     }
 }
@@ -1237,8 +1335,12 @@ impl SelectorMatcher for StandardSelectorMatcher {
         let matches = match_complex_selector(&selector.complex, element);
         let tag = element.tag_name().unwrap_or("");
         if matches && tag != "" && tag != "style" && tag != "head" {
-            println!("[css] Selector MATCHED element '{}' (id={:?}, classes={:?})",
-                tag, element.id(), element.classes());
+            println!(
+                "[css] Selector MATCHED element '{}' (id={:?}, classes={:?})",
+                tag,
+                element.id(),
+                element.classes()
+            );
         }
         matches
     }
@@ -1274,7 +1376,7 @@ fn match_complex_selector(complex: &ComplexSelector, element: &dyn Element) -> b
                 current = parent.parent();
             }
             false
-        },
+        }
         Combinator::Child => {
             // 查找直接父元素
             if let Some(parent) = element.parent() {
@@ -1282,7 +1384,7 @@ fn match_complex_selector(complex: &ComplexSelector, element: &dyn Element) -> b
             } else {
                 false
             }
-        },
+        }
         // 简化实现，暂不支持兄弟选择器
         Combinator::AdjacentSibling | Combinator::GeneralSibling => false,
     }
@@ -1354,9 +1456,15 @@ impl CascadeCalculator for StandardCascadeCalculator {
             for selector in &rule.selectors {
                 if self.matcher.matches(selector, element) {
                     let specificity = self.matcher.specificity(selector);
-                    println!("[css] Rule matched element with {} declarations", rule.declarations.len());
+                    println!(
+                        "[css] Rule matched element with {} declarations",
+                        rule.declarations.len()
+                    );
                     for declaration in &rule.declarations {
-                        println!("[css]   Adding declaration: {} = {:?}", declaration.property, declaration.value);
+                        println!(
+                            "[css]   Adding declaration: {} = {:?}",
+                            declaration.property, declaration.value
+                        );
                         matched_declarations.push((declaration.clone(), specificity, rule_index));
                     }
                 }
@@ -1366,9 +1474,10 @@ impl CascadeCalculator for StandardCascadeCalculator {
         // 按特异性和源顺序排序
         matched_declarations.sort_by(|a, b| {
             // 首先比较!important
-            b.0.important.cmp(&a.0.important)
-                .then_with(|| b.1.cmp(&a.1))  // 特异性降序
-                .then_with(|| b.2.cmp(&a.2))  // 源顺序降序
+            b.0.important
+                .cmp(&a.0.important)
+                .then_with(|| b.1.cmp(&a.1)) // 特异性降序
+                .then_with(|| b.2.cmp(&a.2)) // 源顺序降序
         });
 
         // 去重，保留最高优先级的声明
@@ -1421,7 +1530,8 @@ impl StyleComputer {
         let mut computed = ComputedStyle::default();
 
         if let Some(parent) = parent_style {
-            self.cascade_calculator.apply_inheritance(&mut computed, Some(parent));
+            self.cascade_calculator
+                .apply_inheritance(&mut computed, Some(parent));
         }
 
         let mut all_rules = Vec::new();
@@ -1447,31 +1557,34 @@ impl StyleComputer {
         declaration: &Declaration,
         context: &ComputationContext,
     ) {
-        println!("[css] Applying declaration: {} = {:?}", declaration.property, declaration.value);
+        println!(
+            "[css] Applying declaration: {} = {:?}",
+            declaration.property, declaration.value
+        );
 
         match declaration.property.as_str() {
             "display" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     computed.display = parse_display_value(value);
                 }
-            },
+            }
             "color" => {
                 if let CSSValue::Color(color) = &declaration.value {
                     computed.color = *color;
                 }
-            },
+            }
             "background-color" => {
                 if let CSSValue::Color(color) = &declaration.value {
                     computed.background_color = *color;
                 }
-            },
+            }
             "background" => {
                 // 处理background简写属性，提取颜色部分
                 match &declaration.value {
                     CSSValue::Color(color) => {
                         computed.background_color = *color;
                         println!("[css] Applied solid background color: {:?}", color);
-                    },
+                    }
                     CSSValue::Function(name, args) if name == "linear-gradient" => {
                         // 从linear-gradient中提取第一个颜色作为fallback
                         println!("[css] Processing linear-gradient with {} args", args.len());
@@ -1480,23 +1593,29 @@ impl StyleComputer {
                             match arg {
                                 CSSValue::Color(color) => {
                                     computed.background_color = *color;
-                                    println!("[css] Extracted color from linear-gradient: {:?}", color);
+                                    println!(
+                                        "[css] Extracted color from linear-gradient: {:?}",
+                                        color
+                                    );
                                     break;
-                                },
+                                }
                                 CSSValue::List(list) => {
                                     // 在列表中查找颜色（如 [Color, Percent] 的组合）
                                     for item in list {
                                         if let CSSValue::Color(color) = item {
                                             computed.background_color = *color;
-                                            println!("[css] Extracted color from gradient list: {:?}", color);
+                                            println!(
+                                                "[css] Extracted color from gradient list: {:?}",
+                                                color
+                                            );
                                             return; // 直接返回，找到第一个颜色就够了
                                         }
                                     }
-                                },
+                                }
                                 _ => {}
                             }
                         }
-                    },
+                    }
                     CSSValue::List(values) => {
                         // 在列表中查找颜色值
                         for value in values {
@@ -1506,56 +1625,59 @@ impl StyleComputer {
                                 break;
                             }
                         }
-                    },
+                    }
                     CSSValue::Keyword(keyword) if keyword == "transparent" => {
                         computed.background_color = Color::new(0, 0, 0, 0);
                         println!("[css] Applied transparent background");
-                    },
+                    }
                     _ => {
                         println!("[css] Unhandled background value: {:?}", declaration.value);
                     }
                 }
-            },
+            }
             "font-size" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.font_size = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "width" => {
                 match &declaration.value {
                     CSSValue::Length(length) => {
                         computed.width = self.length_computer.compute(length, context);
                         println!("[css] Applied width: {:?} -> {:?}", length, computed.width);
-                    },
+                    }
                     CSSValue::Keyword(keyword) if keyword == "auto" => {
                         // auto width 保持默认值
                         println!("[css] Applied auto width");
-                    },
+                    }
                     _ => {
                         println!("[css] Unhandled width value: {:?}", declaration.value);
                     }
                 }
-            },
+            }
             "height" => {
                 match &declaration.value {
                     CSSValue::Length(length) => {
                         computed.height = self.length_computer.compute(length, context);
-                        println!("[css] Applied height: {:?} -> {:?}", length, computed.height);
-                    },
+                        println!(
+                            "[css] Applied height: {:?} -> {:?}",
+                            length, computed.height
+                        );
+                    }
                     CSSValue::Keyword(keyword) if keyword == "auto" => {
                         // auto height 保持默认值
                         println!("[css] Applied auto height");
-                    },
+                    }
                     CSSValue::Number(n) if *n == 100.0 => {
                         // 处理 100% (可能被解析为数字)
                         computed.height = Length::Percent(100.0);
                         println!("[css] Applied 100% height");
-                    },
+                    }
                     _ => {
                         println!("[css] Unhandled height value: {:?}", declaration.value);
                     }
                 }
-            },
+            }
             "margin" => {
                 // 处理margin简写属性
                 match &declaration.value {
@@ -1565,106 +1687,124 @@ impl StyleComputer {
                         computed.margin_right = computed_length;
                         computed.margin_bottom = computed_length;
                         computed.margin_left = computed_length;
-                    },
+                    }
                     CSSValue::Number(n) if *n == 0.0 => {
                         computed.margin_top = Length::Px(0.0);
                         computed.margin_right = Length::Px(0.0);
                         computed.margin_bottom = Length::Px(0.0);
                         computed.margin_left = Length::Px(0.0);
-                    },
+                    }
                     _ => {
-                        self.apply_box_property(&mut computed.margin_top, &mut computed.margin_right,
-                                              &mut computed.margin_bottom, &mut computed.margin_left,
-                                              &declaration.value, context);
+                        self.apply_box_property(
+                            &mut computed.margin_top,
+                            &mut computed.margin_right,
+                            &mut computed.margin_bottom,
+                            &mut computed.margin_left,
+                            &declaration.value,
+                            context,
+                        );
                     }
                 }
-            },
+            }
             "margin-top" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.margin_top = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "margin-right" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.margin_right = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "margin-bottom" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.margin_bottom = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "margin-left" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.margin_left = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "padding" => {
                 // 处理padding简写属性
-                self.apply_box_property(&mut computed.padding_top, &mut computed.padding_right,
-                                      &mut computed.padding_bottom, &mut computed.padding_left,
-                                      &declaration.value, context);
-            },
+                self.apply_box_property(
+                    &mut computed.padding_top,
+                    &mut computed.padding_right,
+                    &mut computed.padding_bottom,
+                    &mut computed.padding_left,
+                    &declaration.value,
+                    context,
+                );
+            }
             "padding-top" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.padding_top = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "padding-right" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.padding_right = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "padding-bottom" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.padding_bottom = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "padding-left" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.padding_left = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "border-width" => {
                 // 处理border-width简写属性
-                self.apply_box_property(&mut computed.border_top_width, &mut computed.border_right_width,
-                                      &mut computed.border_bottom_width, &mut computed.border_left_width,
-                                      &declaration.value, context);
-            },
+                self.apply_box_property(
+                    &mut computed.border_top_width,
+                    &mut computed.border_right_width,
+                    &mut computed.border_bottom_width,
+                    &mut computed.border_left_width,
+                    &declaration.value,
+                    context,
+                );
+            }
             "position" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     computed.position = parse_position_value(value);
                     println!("[css] Applied position: {}", value);
                 }
-            },
+            }
             "left" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.left = self.length_computer.compute(length, context);
                     computed.left_specified = true;
                     println!("[css] Applied left: {:?} -> {:?}", length, computed.left);
                 }
-            },
+            }
             "top" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.top = self.length_computer.compute(length, context);
                     computed.top_specified = true;
                     println!("[css] Applied top: {:?} -> {:?}", length, computed.top);
                 }
-            },
+            }
             "right" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.right = self.length_computer.compute(length, context);
                     computed.right_specified = true;
                     println!("[css] Applied right: {:?} -> {:?}", length, computed.right);
                 }
-            },
+            }
             "bottom" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.bottom = self.length_computer.compute(length, context);
                     computed.bottom_specified = true;
-                    println!("[css] Applied bottom: {:?} -> {:?}", length, computed.bottom);
+                    println!(
+                        "[css] Applied bottom: {:?} -> {:?}",
+                        length, computed.bottom
+                    );
                 }
-            },
+            }
             "font-weight" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     computed.font_weight = parse_font_weight_value(value);
@@ -1673,7 +1813,7 @@ impl StyleComputer {
                         computed.font_weight = FontWeight::Weight(*weight as u16);
                     }
                 }
-            },
+            }
             "flex-direction" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     match value.trim().to_lowercase().as_str() {
@@ -1684,7 +1824,7 @@ impl StyleComputer {
                         _ => {}
                     }
                 }
-            },
+            }
             "justify-content" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     match value.trim().to_lowercase().as_str() {
@@ -1697,7 +1837,7 @@ impl StyleComputer {
                         _ => {}
                     }
                 }
-            },
+            }
             "align-items" => {
                 if let CSSValue::Keyword(value) = &declaration.value {
                     match value.trim().to_lowercase().as_str() {
@@ -1709,88 +1849,109 @@ impl StyleComputer {
                         _ => {}
                     }
                 }
-            },
+            }
             "gap" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.gap = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "row-gap" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.row_gap = self.length_computer.compute(length, context);
                 }
-            },
+            }
             "column-gap" => {
                 if let CSSValue::Length(length) = &declaration.value {
                     computed.column_gap = self.length_computer.compute(length, context);
                 }
-            },
-            "flex-grow" => {
-                match &declaration.value {
-                    CSSValue::Number(n) => { computed.flex_grow = *n; },
-                    CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
-                    CSSValue::Length(Length::Px(v)) => { computed.flex_grow = *v; },
-                    _ => {}
-                }
-            },
-            "flex-basis" => {
-                match &declaration.value {
-                    CSSValue::Length(len) => { computed.flex_basis = FlexBasis::Length(self.length_computer.compute(len, context)); },
-                    CSSValue::Keyword(k) => {
-                        match k.trim().to_lowercase().as_str() {
-                            "auto" => computed.flex_basis = FlexBasis::Auto,
-                            "content" => computed.flex_basis = FlexBasis::Content,
-                            _ => {}
-                        }
-                    },
-                    _ => {}
-                }
-            },
-            "flex-shrink" => {
-                match &declaration.value {
-                    CSSValue::Number(n) => {},
-                    CSSValue::Integer(_i) => {},
-                    _ => {}
-                }
-            },
-            "flex" => {
-                match &declaration.value {
-                    CSSValue::Number(n) => { computed.flex_grow = *n; },
-                    CSSValue::Integer(i) => { computed.flex_grow = *i as f32; },
-                    CSSValue::Length(Length::Px(v)) => { computed.flex_grow = *v; },
-                    CSSValue::Keyword(k) => {
-                        match k.trim().to_lowercase().as_str() {
-                            "none" => { computed.flex_grow = 0.0; computed.flex_basis = FlexBasis::Auto; },
-                            "auto" => { computed.flex_grow = 1.0; },
-                            _ => {}
-                        }
-                    },
-                    CSSValue::List(list) => {
-                        let mut grow: Option<f32> = None;
-                        let mut basis: Option<FlexBasis> = None;
-                        for v in list {
-                            match v {
-                                CSSValue::Number(n) => { if grow.is_none() { grow = Some(*n); } },
-                                CSSValue::Integer(i) => { if grow.is_none() { grow = Some(*i as f32); } },
-                                CSSValue::Length(len) => { basis = Some(FlexBasis::Length(self.length_computer.compute(len, context))); },
-                                CSSValue::Keyword(k) => {
-                                    match k.trim().to_lowercase().as_str() {
-                                        "auto" => basis = Some(FlexBasis::Auto),
-                                        "content" => basis = Some(FlexBasis::Content),
-                                        _ => {}
-                                    }
-                                },
-                                _ => {}
-                            }
-                        }
-                        if let Some(g) = grow { computed.flex_grow = g; }
-                        if let Some(b) = basis { computed.flex_basis = b; }
-                    },
-                    _ => {}
-                }
-            },
-            _ => {
             }
+            "flex-grow" => match &declaration.value {
+                CSSValue::Number(n) => {
+                    computed.flex_grow = *n;
+                }
+                CSSValue::Integer(i) => {
+                    computed.flex_grow = *i as f32;
+                }
+                CSSValue::Length(Length::Px(v)) => {
+                    computed.flex_grow = *v;
+                }
+                _ => {}
+            },
+            "flex-basis" => match &declaration.value {
+                CSSValue::Length(len) => {
+                    computed.flex_basis =
+                        FlexBasis::Length(self.length_computer.compute(len, context));
+                }
+                CSSValue::Keyword(k) => match k.trim().to_lowercase().as_str() {
+                    "auto" => computed.flex_basis = FlexBasis::Auto,
+                    "content" => computed.flex_basis = FlexBasis::Content,
+                    _ => {}
+                },
+                _ => {}
+            },
+            "flex-shrink" => match &declaration.value {
+                CSSValue::Number(n) => {}
+                CSSValue::Integer(_i) => {}
+                _ => {}
+            },
+            "flex" => match &declaration.value {
+                CSSValue::Number(n) => {
+                    computed.flex_grow = *n;
+                }
+                CSSValue::Integer(i) => {
+                    computed.flex_grow = *i as f32;
+                }
+                CSSValue::Length(Length::Px(v)) => {
+                    computed.flex_grow = *v;
+                }
+                CSSValue::Keyword(k) => match k.trim().to_lowercase().as_str() {
+                    "none" => {
+                        computed.flex_grow = 0.0;
+                        computed.flex_basis = FlexBasis::Auto;
+                    }
+                    "auto" => {
+                        computed.flex_grow = 1.0;
+                    }
+                    _ => {}
+                },
+                CSSValue::List(list) => {
+                    let mut grow: Option<f32> = None;
+                    let mut basis: Option<FlexBasis> = None;
+                    for v in list {
+                        match v {
+                            CSSValue::Number(n) => {
+                                if grow.is_none() {
+                                    grow = Some(*n);
+                                }
+                            }
+                            CSSValue::Integer(i) => {
+                                if grow.is_none() {
+                                    grow = Some(*i as f32);
+                                }
+                            }
+                            CSSValue::Length(len) => {
+                                basis = Some(FlexBasis::Length(
+                                    self.length_computer.compute(len, context),
+                                ));
+                            }
+                            CSSValue::Keyword(k) => match k.trim().to_lowercase().as_str() {
+                                "auto" => basis = Some(FlexBasis::Auto),
+                                "content" => basis = Some(FlexBasis::Content),
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                    if let Some(g) = grow {
+                        computed.flex_grow = g;
+                    }
+                    if let Some(b) = basis {
+                        computed.flex_basis = b;
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
         }
     }
 
@@ -1812,16 +1973,19 @@ impl StyleComputer {
                 *right = computed_length;
                 *bottom = computed_length;
                 *left = computed_length;
-            },
+            }
             CSSValue::List(values) => {
                 // 多个值，按CSS规则展开
-                let lengths: Vec<Length> = values.iter().filter_map(|v| {
-                    if let CSSValue::Length(length) = v {
-                        Some(self.length_computer.compute(length, context))
-                    } else {
-                        None
-                    }
-                }).collect();
+                let lengths: Vec<Length> = values
+                    .iter()
+                    .filter_map(|v| {
+                        if let CSSValue::Length(length) = v {
+                            Some(self.length_computer.compute(length, context))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
                 match lengths.len() {
                     1 => {
@@ -1829,28 +1993,28 @@ impl StyleComputer {
                         *right = lengths[0];
                         *bottom = lengths[0];
                         *left = lengths[0];
-                    },
+                    }
                     2 => {
                         *top = lengths[0];
                         *bottom = lengths[0];
                         *right = lengths[1];
                         *left = lengths[1];
-                    },
+                    }
                     3 => {
                         *top = lengths[0];
                         *right = lengths[1];
                         *bottom = lengths[2];
                         *left = lengths[1];
-                    },
+                    }
                     4 => {
                         *top = lengths[0];
                         *right = lengths[1];
                         *bottom = lengths[2];
                         *left = lengths[3];
-                    },
+                    }
                     _ => {}
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -1873,27 +2037,27 @@ pub fn parse_color(s: &str) -> Option<Color> {
                 let g = ((v >> 4) & 0xF) as u8;
                 let b = (v & 0xF) as u8;
                 Color::new(r * 17, g * 17, b * 17, 255) // 将4位扩展到8位
-            },
+            }
             6 => {
                 let r = ((v >> 16) & 0xFF) as u8;
                 let g = ((v >> 8) & 0xFF) as u8;
                 let b = (v & 0xFF) as u8;
                 Color::new(r, g, b, 255)
-            },
+            }
             8 => {
                 let a = ((v >> 24) & 0xFF) as u8;
                 let r = ((v >> 16) & 0xFF) as u8;
                 let g = ((v >> 8) & 0xFF) as u8;
                 let b = (v & 0xFF) as u8;
                 Color::new(r, g, b, a)
-            },
+            }
             _ => return None,
         });
     }
 
     // rgb() 函数
     if t.starts_with("rgb(") && t.ends_with(')') {
-        let inner = &t[4..t.len()-1];
+        let inner = &t[4..t.len() - 1];
         let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
         if parts.len() == 3 {
             let r = parts[0].parse::<u8>().ok()?;
@@ -1905,7 +2069,7 @@ pub fn parse_color(s: &str) -> Option<Color> {
 
     // rgba() 函数
     if t.starts_with("rgba(") && t.ends_with(')') {
-        let inner = &t[5..t.len()-1];
+        let inner = &t[5..t.len() - 1];
         let parts: Vec<&str> = inner.split(',').map(|p| p.trim()).collect();
         if parts.len() == 4 {
             let r = parts[0].parse::<u8>().ok()?;
@@ -2034,7 +2198,7 @@ pub fn parse_css_value(value: &str) -> Result<CSSValue, ParseError> {
         let parts: Vec<&str> = trimmed.splitn(2, '(').collect();
         if parts.len() == 2 {
             let func_name = parts[0].trim();
-            let func_args = &parts[1][..parts[1].len()-1];
+            let func_args = &parts[1][..parts[1].len() - 1];
 
             let args = parse_function_args(func_args)?;
             return Ok(CSSValue::Function(func_name.to_string(), args));
@@ -2044,7 +2208,11 @@ pub fn parse_css_value(value: &str) -> Result<CSSValue, ParseError> {
     // 列表值（用空格或逗号分隔）
     if trimmed.contains(' ') || trimmed.contains(',') {
         let separator = if trimmed.contains(',') { ',' } else { ' ' };
-        let parts: Vec<&str> = trimmed.split(separator).map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let parts: Vec<&str> = trimmed
+            .split(separator)
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         if parts.len() > 1 {
             let mut values = Vec::new();
@@ -2056,9 +2224,10 @@ pub fn parse_css_value(value: &str) -> Result<CSSValue, ParseError> {
     }
 
     // 字符串值（引号包围）
-    if (trimmed.starts_with('"') && trimmed.ends_with('"')) ||
-       (trimmed.starts_with('\'') && trimmed.ends_with('\'')) {
-        let content = &trimmed[1..trimmed.len()-1];
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        let content = &trimmed[1..trimmed.len() - 1];
         return Ok(CSSValue::String(content.to_string()));
     }
 
@@ -2134,7 +2303,9 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                 // ID选择器
                 i += 1;
                 let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
+                {
                     i += 1;
                 }
                 if i > start {
@@ -2142,12 +2313,14 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     println!("[css] Parsed ID selector: #{}", id);
                     selector.id = Some(id);
                 }
-            },
+            }
             b'.' => {
                 // 类选择器
                 i += 1;
                 let start = i;
-                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_') {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
+                {
                     i += 1;
                 }
                 if i > start {
@@ -2155,7 +2328,7 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     println!("[css] Parsed class selector: .{}", class);
                     selector.classes.push(class);
                 }
-            },
+            }
             b if b.is_ascii_alphabetic() => {
                 // 元素选择器
                 let start = i;
@@ -2167,11 +2340,11 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
                     println!("[css] Parsed element selector: {}", element);
                     selector.element_name = Some(element);
                 }
-            },
+            }
             b' ' | b'\t' | b'\n' | b'\r' => {
                 // 跳过空白字符
                 i += 1;
-            },
+            }
             _ => {
                 // 跳过其他字符（如伪类等暂不支持）
                 i += 1;
@@ -2179,15 +2352,20 @@ fn parse_simple_selector(input: &str) -> Result<SimpleSelector, ParseError> {
         }
     }
 
-    println!("[css] Final simple selector: element={:?} id={:?} classes={:?}",
-        selector.element_name, selector.id, selector.classes);
+    println!(
+        "[css] Final simple selector: element={:?} id={:?} classes={:?}",
+        selector.element_name, selector.id, selector.classes
+    );
 
     Ok(selector)
 }
 
 /// 解析样式表
 pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
-    println!("[css] Starting stylesheet parse, input length: {}", input.len());
+    println!(
+        "[css] Starting stylesheet parse, input length: {}",
+        input.len()
+    );
     let mut stylesheet = StyleSheet::default();
     let mut rules = Vec::new();
 
@@ -2197,27 +2375,36 @@ pub fn parse_stylesheet(input: &str) -> Result<StyleSheet, ParseError> {
     while i < bytes.len() {
         skip_whitespace(bytes, &mut i);
         if i >= bytes.len() {
-                    break;
+            break;
         }
 
         // 解析规则
         match parse_rule(bytes, &mut i) {
             Ok(rule) => {
-                println!("[css] Parsed rule with {} selectors and {} declarations",
-                    rule.selectors.len(), rule.declarations.len());
+                println!(
+                    "[css] Parsed rule with {} selectors and {} declarations",
+                    rule.selectors.len(),
+                    rule.declarations.len()
+                );
                 // 只显示第一个选择器
                 if let Some(selector) = rule.selectors.first() {
                     println!("[css]   First selector: {:?}", selector);
                 }
                 // 只显示前几个声明
                 for (idx, decl) in rule.declarations.iter().take(3).enumerate() {
-                    println!("[css]   Declaration {}: {} = {:?}", idx, decl.property, decl.value);
+                    println!(
+                        "[css]   Declaration {}: {} = {:?}",
+                        idx, decl.property, decl.value
+                    );
                 }
                 if rule.declarations.len() > 3 {
-                    println!("[css]   ... and {} more declarations", rule.declarations.len() - 3);
+                    println!(
+                        "[css]   ... and {} more declarations",
+                        rule.declarations.len() - 3
+                    );
                 }
                 rules.push(rule);
-            },
+            }
             Err(e) => {
                 println!("[css] Failed to parse rule: {:?}", e);
                 // 跳过错误的规则
@@ -2275,19 +2462,26 @@ fn parse_rule(bytes: &[u8], i: &mut usize) -> Result<Rule, ParseError> {
         *i += 1; // 跳过闭括号
     }
 
-    Ok(Rule { selectors, declarations })
+    Ok(Rule {
+        selectors,
+        declarations,
+    })
 }
 
 /// 解析选择器列表
 fn parse_selector_list(input: &str) -> Result<Vec<Selector>, ParseError> {
-    let parts: Vec<&str> = input.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = input
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut selectors = Vec::new();
 
     for part in parts {
         selectors.push(parse_selector(part)?);
     }
 
-        if selectors.is_empty() {
+    if selectors.is_empty() {
         return Err(ParseError {
             message: "No valid selectors found",
             position: 0,
@@ -2312,7 +2506,9 @@ fn parse_declaration_from_bytes(bytes: &[u8], i: &mut usize) -> Result<Declarati
         });
     }
 
-    let property = String::from_utf8_lossy(&bytes[prop_start..*i]).trim().to_string();
+    let property = String::from_utf8_lossy(&bytes[prop_start..*i])
+        .trim()
+        .to_string();
     *i += 1; // 跳过冒号
 
     // 解析属性值
@@ -2322,7 +2518,9 @@ fn parse_declaration_from_bytes(bytes: &[u8], i: &mut usize) -> Result<Declarati
         *i += 1;
     }
 
-    let value = String::from_utf8_lossy(&bytes[value_start..*i]).trim().to_string();
+    let value = String::from_utf8_lossy(&bytes[value_start..*i])
+        .trim()
+        .to_string();
 
     if *i < bytes.len() && bytes[*i] == b';' {
         *i += 1; // 跳过分号
@@ -2333,7 +2531,9 @@ fn parse_declaration_from_bytes(bytes: &[u8], i: &mut usize) -> Result<Declarati
 
 /// 跳过空白字符
 fn skip_whitespace(bytes: &[u8], i: &mut usize) {
-    while *i < bytes.len() && (bytes[*i] == b' ' || bytes[*i] == b'\n' || bytes[*i] == b'\t' || bytes[*i] == b'\r') {
+    while *i < bytes.len()
+        && (bytes[*i] == b' ' || bytes[*i] == b'\n' || bytes[*i] == b'\t' || bytes[*i] == b'\r')
+    {
         *i += 1;
     }
 }
@@ -2350,7 +2550,7 @@ fn skip_to_next_rule(bytes: &[u8], i: &mut usize) {
                     *i += 1;
                     break;
                 }
-            },
+            }
             _ => {}
         }
         *i += 1;
@@ -2503,7 +2703,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::Contains => {
                 // [attr~=value] - 属性值包含指定词
                 if let Some(attr_value) = element.get_attribute(&attribute.name) {
@@ -2515,7 +2715,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::DashMatch => {
                 // [attr|=value] - 属性值等于value或以value-开头
                 if let Some(attr_value) = element.get_attribute(&attribute.name) {
@@ -2527,7 +2727,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::PrefixMatch => {
                 // [attr^=value] - 属性值以value开头
                 if let Some(attr_value) = element.get_attribute(&attribute.name) {
@@ -2539,7 +2739,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::SuffixMatch => {
                 // [attr$=value] - 属性值以value结尾
                 if let Some(attr_value) = element.get_attribute(&attribute.name) {
@@ -2551,7 +2751,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::SubstringMatch => {
                 // [attr*=value] - 属性值包含value
                 if let Some(attr_value) = element.get_attribute(&attribute.name) {
@@ -2563,11 +2763,11 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             AttributeOperator::Exists => {
                 // [attr] - 仅检查属性是否存在
                 element.has_attribute(&attribute.name)
-            },
+            }
         }
     }
 
@@ -2600,16 +2800,16 @@ impl StandardSelectorMatcher {
                 } else {
                     *b == 1
                 }
-            },
+            }
             PseudoClass::NthOfType(_a, b) => self.is_nth_of_type(element, *b as usize), // 简化：只使用b值
             PseudoClass::NthLastOfType(_a, b) => {
                 // 简化实现：从最后开始的第n个同类型元素
                 self.is_nth_last_of_type(element, *b as usize)
-            },
+            }
             PseudoClass::Lang(lang) => {
                 // 简化实现：检查lang属性
                 element.get_attribute("lang").map_or(false, |l| l == lang)
-            },
+            }
             PseudoClass::Not(simple_selector) => !self.matches_simple(simple_selector, element),
         }
     }
@@ -2646,7 +2846,9 @@ impl StandardSelectorMatcher {
     fn is_only_of_type(&self, element: &dyn Element) -> bool {
         if let Some(parent) = element.parent() {
             let tag_name = element.tag_name();
-            let count = parent.children().iter()
+            let count = parent
+                .children()
+                .iter()
                 .filter(|child| child.tag_name() == tag_name)
                 .count();
             count == 1
@@ -2701,7 +2903,12 @@ impl StandardSelectorMatcher {
         self.matches_simple_enhanced(simple, element)
     }
 
-    fn matches_combinator_enhanced(&self, combinator: &Combinator, next: &ComplexSelector, element: &dyn Element) -> bool {
+    fn matches_combinator_enhanced(
+        &self,
+        combinator: &Combinator,
+        next: &ComplexSelector,
+        element: &dyn Element,
+    ) -> bool {
         match combinator {
             Combinator::Descendant => {
                 // 后代选择器
@@ -2713,7 +2920,7 @@ impl StandardSelectorMatcher {
                     current = parent.parent();
                 }
                 false
-            },
+            }
             Combinator::Child => {
                 // 直接子选择器
                 if let Some(parent) = element.parent() {
@@ -2721,7 +2928,7 @@ impl StandardSelectorMatcher {
                 } else {
                     false
                 }
-            },
+            }
             _ => false, // 其他组合符需要更多DOM支持
         }
     }
@@ -2742,7 +2949,12 @@ impl StandardSelectorMatcher {
     }
 
     fn simple_specificity_enhanced(&self, simple: &SimpleSelector) -> Specificity {
-        let mut spec = Specificity { a: 0, b: 0, c: 0, d: 0 };
+        let mut spec = Specificity {
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+        };
 
         // ID选择器
         if simple.id.is_some() {
@@ -2770,17 +2982,16 @@ impl StandardCascadeCalculator {
     pub fn is_inherited_property(property: &str) -> bool {
         match property {
             // 字体相关属性
-            "color" | "font-family" | "font-size" | "font-style" |
-            "font-weight" | "line-height" | "text-align" |
-            "text-indent" | "text-transform" | "letter-spacing" |
-            "word-spacing" | "text-decoration" => true,
+            "color" | "font-family" | "font-size" | "font-style" | "font-weight"
+            | "line-height" | "text-align" | "text-indent" | "text-transform"
+            | "letter-spacing" | "word-spacing" | "text-decoration" => true,
 
             // 列表相关属性
             "list-style-type" | "list-style-position" | "list-style-image" => true,
 
             // 表格相关属性
-            "border-collapse" | "border-spacing" | "caption-side" |
-            "empty-cells" | "table-layout" => true,
+            "border-collapse" | "border-spacing" | "caption-side" | "empty-cells"
+            | "table-layout" => true,
 
             // 其他继承属性
             "visibility" | "cursor" => true,
@@ -2791,7 +3002,11 @@ impl StandardCascadeCalculator {
     }
 
     /// 应用CSS继承
-    pub fn apply_inheritance(&self, computed: &mut ComputedStyle, parent_style: Option<&ComputedStyle>) {
+    pub fn apply_inheritance(
+        &self,
+        computed: &mut ComputedStyle,
+        parent_style: Option<&ComputedStyle>,
+    ) {
         if let Some(parent) = parent_style {
             // 应用可继承的属性
             computed.color = parent.color;
@@ -2833,34 +3048,49 @@ pub fn parse_css_value_extended(property: &str, value: &str) -> Result<CSSValue,
 
     // 根据属性类型进行特定解析
     match property {
-        "color" | "background-color" | "border-color" |
-        "border-top-color" | "border-right-color" |
-        "border-bottom-color" | "border-left-color" => {
+        "color"
+        | "background-color"
+        | "border-color"
+        | "border-top-color"
+        | "border-right-color"
+        | "border-bottom-color"
+        | "border-left-color" => {
             if let Some(color) = parse_color(trimmed) {
                 Ok(CSSValue::Color(color))
             } else {
                 parse_css_value(value)
             }
-        },
+        }
 
-        "font-size" | "line-height" | "margin" | "margin-top" |
-        "margin-right" | "margin-bottom" | "margin-left" |
-        "padding" | "padding-top" | "padding-right" |
-        "padding-bottom" | "padding-left" | "width" | "height" |
-        "border-width" | "border-top-width" | "border-right-width" |
-        "border-bottom-width" | "border-left-width" => {
+        "font-size"
+        | "line-height"
+        | "margin"
+        | "margin-top"
+        | "margin-right"
+        | "margin-bottom"
+        | "margin-left"
+        | "padding"
+        | "padding-top"
+        | "padding-right"
+        | "padding-bottom"
+        | "padding-left"
+        | "width"
+        | "height"
+        | "border-width"
+        | "border-top-width"
+        | "border-right-width"
+        | "border-bottom-width"
+        | "border-left-width" => {
             if let Some(length) = parse_length(trimmed) {
                 Ok(CSSValue::Length(length))
             } else {
                 parse_css_value(value)
             }
-        },
+        }
 
-        "display" => {
-            Ok(CSSValue::Keyword(trimmed.to_string()))
-        },
+        "display" => Ok(CSSValue::Keyword(trimmed.to_string())),
 
-        _ => parse_css_value(value)
+        _ => parse_css_value(value),
     }
 }
 
@@ -2886,11 +3116,11 @@ pub fn ex_to_px(ex_value: f32, font_size: f32) -> f32 {
 /// 物理单位转换为像素
 pub fn physical_to_px(value: f32, unit: &str) -> f32 {
     match unit {
-        "in" => value * 96.0,  // 1 inch = 96px (96 DPI)
-        "cm" => value * 37.8,  // 1 cm = 37.8px
-        "mm" => value * 3.78,  // 1 mm = 3.78px
-        "pt" => value * 1.33,  // 1 point = 1.33px
-        "pc" => value * 16.0,  // 1 pica = 16px
-        _ => value, // 默认返回原值
+        "in" => value * 96.0, // 1 inch = 96px (96 DPI)
+        "cm" => value * 37.8, // 1 cm = 37.8px
+        "mm" => value * 3.78, // 1 mm = 3.78px
+        "pt" => value * 1.33, // 1 point = 1.33px
+        "pc" => value * 16.0, // 1 pica = 16px
+        _ => value,           // 默认返回原值
     }
 }

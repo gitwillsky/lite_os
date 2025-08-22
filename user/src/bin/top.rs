@@ -85,7 +85,10 @@ fn display_system_stats() {
 
         // 显示CPU核心信息 - 需要通过系统调用获取
         if let Some(core_info) = get_cpu_core_info() {
-            println!("CPU Cores: {} active of {} total", core_info.active_cores, core_info.total_cores);
+            println!(
+                "CPU Cores: {} active of {} total",
+                core_info.active_cores, core_info.total_cores
+            );
         }
 
         if stats.cpu_user_time + stats.cpu_system_time > 0 {
@@ -105,8 +108,13 @@ fn display_system_stats() {
                 stats.cpu_usage_percent as f32 / 100.0
             } else if stats.system_uptime > 0 && total_time > 0 {
                 // 如果内核返回的总CPU使用率异常，使用单核计算的备用方法
-                let single_core_percent = (total_time as f64 * 100.0 / stats.system_uptime as f64) as f32;
-                if single_core_percent > 100.0 { 100.0 } else { single_core_percent }
+                let single_core_percent =
+                    (total_time as f64 * 100.0 / stats.system_uptime as f64) as f32;
+                if single_core_percent > 100.0 {
+                    100.0
+                } else {
+                    single_core_percent
+                }
             } else {
                 0.0
             };
@@ -359,7 +367,8 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
 
         if get_process_info(pid, &mut info) == 0 {
             // 验证进程信息的合理性
-            if info.pid > 0 && info.core_id < 8 {  // 假设最大8个核心
+            if info.pid > 0 && info.core_id < 8 {
+                // 假设最大8个核心
                 processes.push(info);
             }
         }
@@ -379,7 +388,6 @@ fn display_all_processes_sorted(sort_by: SortBy, reverse: bool) -> Result<(), &'
 
     Ok(())
 }
-
 
 // 交互模式主循环（自动刷新，支持键盘控制）
 fn interactive_mode() {

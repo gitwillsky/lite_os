@@ -1,8 +1,8 @@
-use core::fmt;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt;
 use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,17 +182,9 @@ struct ResourceAllocation {
 }
 
 pub trait ResourceManager: Send + Sync {
-    fn request_resource(
-        &mut self,
-        resource: Resource,
-        owner: &str,
-    ) -> Result<(), ResourceError>;
+    fn request_resource(&mut self, resource: Resource, owner: &str) -> Result<(), ResourceError>;
 
-    fn release_resource(
-        &mut self,
-        resource: &Resource,
-        owner: &str,
-    ) -> Result<(), ResourceError>;
+    fn release_resource(&mut self, resource: &Resource, owner: &str) -> Result<(), ResourceError>;
 
     fn find_free_memory(
         &self,
@@ -278,11 +270,7 @@ impl SystemResourceManager {
 }
 
 impl ResourceManager for SystemResourceManager {
-    fn request_resource(
-        &mut self,
-        resource: Resource,
-        owner: &str,
-    ) -> Result<(), ResourceError> {
+    fn request_resource(&mut self, resource: Resource, owner: &str) -> Result<(), ResourceError> {
         let conflicts = self.get_conflicts(&resource);
         if !conflicts.is_empty() {
             return Err(ResourceError::ConflictDetected);
@@ -306,7 +294,8 @@ impl ResourceManager for SystemResourceManager {
             }
             Resource::Interrupt(irq) => {
                 let mut interrupts = self.interrupts.lock();
-                interrupts.entry(irq.irq_num)
+                interrupts
+                    .entry(irq.irq_num)
                     .or_insert_with(Vec::new)
                     .push(owner.to_string());
             }
@@ -324,16 +313,13 @@ impl ResourceManager for SystemResourceManager {
         Ok(())
     }
 
-    fn release_resource(
-        &mut self,
-        resource: &Resource,
-        owner: &str,
-    ) -> Result<(), ResourceError> {
+    fn release_resource(&mut self, resource: &Resource, owner: &str) -> Result<(), ResourceError> {
         let mut allocations = self.allocations.lock();
 
         let initial_len = allocations.len();
         allocations.retain(|allocation| {
-            !(allocation.owner == owner && allocation.resource.resource_type() == resource.resource_type())
+            !(allocation.owner == owner
+                && allocation.resource.resource_type() == resource.resource_type())
         });
 
         if allocations.len() == initial_len {

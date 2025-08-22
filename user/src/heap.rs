@@ -1,9 +1,9 @@
 use crate::syscall::{brk, sbrk};
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
-use core::mem::size_of;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
+use core::mem::size_of;
+use core::ptr::null_mut;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const PAGE_SIZE: usize = 4096;
 const MIN_BLOCK_SIZE: usize = 32;
@@ -62,10 +62,10 @@ impl AllocatorStats {
 /// 改进的空闲块结构，支持双向链表和大小分类
 #[repr(C)]
 struct FreeBlock {
-    size: usize,              // 块大小（包含头部）
-    prev: *mut FreeBlock,     // 前一个空闲块
-    next: *mut FreeBlock,     // 后一个空闲块
-    magic: u32,               // 魔数用于调试和验证
+    size: usize,          // 块大小（包含头部）
+    prev: *mut FreeBlock, // 前一个空闲块
+    next: *mut FreeBlock, // 后一个空闲块
+    magic: u32,           // 魔数用于调试和验证
 }
 
 impl FreeBlock {
@@ -96,8 +96,8 @@ impl FreeBlock {
 /// 分配的块头部信息
 #[repr(C)]
 struct AllocatedBlock {
-    size: usize,    // 实际分配的大小
-    magic: u32,     // 魔数
+    size: usize, // 实际分配的大小
+    magic: u32,  // 魔数
 }
 
 impl AllocatedBlock {
@@ -125,8 +125,22 @@ impl AllocatedBlock {
 
 /// 大小类别数组，用于快速查找合适的空闲块
 const SIZE_CLASSES: [usize; 16] = [
-    32, 64, 128, 256, 512, 1024, 2048, 4096,
-    8192, 16384, 32768, 65536, 131072, 262144, 524288, usize::MAX
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    524288,
+    usize::MAX,
 ];
 
 /// 高效的用户态堆分配器
@@ -163,7 +177,11 @@ impl AdvancedHeapAllocator {
     /// 初始化堆分配器
     pub fn init(&self) {
         // 使用CAS确保只初始化一次
-        if self.initialized.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if self
+            .initialized
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             self.do_init();
         }
     }
@@ -175,7 +193,8 @@ impl AdvancedHeapAllocator {
             return;
         }
 
-        self.heap_start.store(current_brk as usize, Ordering::Release);
+        self.heap_start
+            .store(current_brk as usize, Ordering::Release);
         self.heap_end.store(current_brk as usize, Ordering::Release);
 
         // 分配初始堆空间
@@ -233,12 +252,17 @@ impl AdvancedHeapAllocator {
 
         // 只有当堆很大且使用率很低时才收缩
         let current_usage = self.stats.current_usage.load(Ordering::Relaxed);
-        let usage_ratio = if heap_size > 0 { (current_usage * 100) / heap_size } else { 100 };
+        let usage_ratio = if heap_size > 0 {
+            (current_usage * 100) / heap_size
+        } else {
+            100
+        };
 
         // 如果使用率低于25%且堆大于1MB，尝试收缩
         if usage_ratio < 25 && heap_size > 1024 * 1024 {
             let shrink_size = self.find_shrinkable_memory();
-            if shrink_size >= PAGE_SIZE * 4 { // 至少收缩16KB
+            if shrink_size >= PAGE_SIZE * 4 {
+                // 至少收缩16KB
                 if sbrk(-(shrink_size as isize)) > 0 {
                     self.heap_end.fetch_sub(shrink_size, Ordering::Release);
                     self.stats.record_shrink(shrink_size);
@@ -621,6 +645,11 @@ pub fn handle_alloc_error(layout: Layout) -> ! {
     let (usage, heap_size, alloc_count, free_count) = HEAP_ALLOCATOR.get_stats();
     panic!(
         "Memory allocation failed: size={}, align={}, usage={}/{}, allocs={}, frees={}",
-        layout.size(), layout.align(), usage, heap_size, alloc_count, free_count
+        layout.size(),
+        layout.align(),
+        usage,
+        heap_size,
+        alloc_count,
+        free_count
     );
 }

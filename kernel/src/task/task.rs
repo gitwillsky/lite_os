@@ -16,7 +16,7 @@ use spin::Mutex;
 use crate::{
     fs::inode::Inode,
     memory::{
-        KERNEL_SPACE, TRAP_CONTEXT, TRAP_CONTEXT_BASE, MAX_THREADS_PER_PROCESS, PAGE_SIZE,
+        KERNEL_SPACE, MAX_THREADS_PER_PROCESS, PAGE_SIZE, TRAP_CONTEXT, TRAP_CONTEXT_BASE,
         address::VirtualAddress,
         kernel_stack::KernelStack,
         mm::{self, MemorySet},
@@ -90,9 +90,7 @@ impl FileDescriptor {
             self.offset
                 .fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
             if bytes_written > 0 {
-                self
-                    .dirty_on_close
-                    .store(true, atomic::Ordering::Release);
+                self.dirty_on_close.store(true, atomic::Ordering::Release);
             }
         }
         result
@@ -131,19 +129,13 @@ impl Memory {
 
     pub fn set_trap_context(&self, trap_context: TrapContext) {
         let va = *self.trap_cx_va.lock();
-        let ppn = self
-            .memory_set
-            .lock()
-            .trap_context_ppn(va);
+        let ppn = self.memory_set.lock().trap_context_ppn(va);
         *ppn.get_mut() = trap_context;
     }
 
     pub fn trap_context(&self) -> &'static mut TrapContext {
         let va = *self.trap_cx_va.lock();
-        let ppn = self
-            .memory_set
-            .lock()
-            .trap_context_ppn(va);
+        let ppn = self.memory_set.lock().trap_context_ppn(va);
         ppn.get_mut()
     }
 
@@ -169,8 +161,11 @@ impl File {
         const MAX_FD_COUNT: usize = 1024; // 每个进程最多打开1024个文件
 
         if self.fd_table.len() >= MAX_FD_COUNT {
-            error!("[FD_ALLOC] CRITICAL: FD table full! {} open files (max {})",
-                   self.fd_table.len(), MAX_FD_COUNT);
+            error!(
+                "[FD_ALLOC] CRITICAL: FD table full! {} open files (max {})",
+                self.fd_table.len(),
+                MAX_FD_COUNT
+            );
             return None; // 达到上限，返回None表示分配失败
         }
 
@@ -185,16 +180,21 @@ impl File {
             // 修复：检查搜索次数而不是FD数值，防止FD编号大于MAX_FD_COUNT时错误退出
             // MAX_FD_COUNT是文件表大小限制，不是FD编号限制
             if search_count >= MAX_FD_COUNT {
-                error!("[FD_ALLOC] CRITICAL: FD search exhausted after {} attempts! Table has {} entries",
-                       search_count, self.fd_table.len());
+                error!(
+                    "[FD_ALLOC] CRITICAL: FD search exhausted after {} attempts! Table has {} entries",
+                    search_count,
+                    self.fd_table.len()
+                );
                 return None; // 防止无限循环
             }
         }
 
         // Log if search took a long time
         if search_count > 100 {
-            warn!("[FD_ALLOC] Slow FD search: {} attempts to find FD {} (table fragmented?)",
-                  search_count, fd);
+            warn!(
+                "[FD_ALLOC] Slow FD search: {} attempts to find FD {} (table fragmented?)",
+                search_count, fd
+            );
         }
 
         self.fd_table.insert(fd, file_desc);
@@ -592,7 +592,12 @@ impl TaskControlBlock {
 
     /// 在当前进程内创建线程
     /// entry: 用户函数入口地址；user_sp: 线程用户栈顶；arg: 传入a0
-    pub fn spawn_thread(self: &Arc<Self>, entry: usize, user_sp: usize, arg: usize) -> Result<Arc<Self>, Box<dyn Error>> {
+    pub fn spawn_thread(
+        self: &Arc<Self>,
+        entry: usize,
+        user_sp: usize,
+        arg: usize,
+    ) -> Result<Arc<Self>, Box<dyn Error>> {
         // 分配线程槽位
         let slot = {
             let mut slots = self.thread_slots.lock();
@@ -841,10 +846,7 @@ impl core::fmt::Debug for TaskControlBlock {
             self.pid(),
             self.name(),
             self.parent().map(|parent| parent.name()),
-            self.children
-                .lock()
-                .iter()
-                .collect::<Vec<_>>(),
+            self.children.lock().iter().collect::<Vec<_>>(),
             self.exit_code(),
             self.task_status.lock()
         )

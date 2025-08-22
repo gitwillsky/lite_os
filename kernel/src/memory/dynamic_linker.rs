@@ -1,27 +1,29 @@
-use alloc::{boxed::Box, collections::BTreeMap, string::{String, ToString}, vec::Vec, format};
-use core::error::Error;
-use xmas_elf::{dynamic, sections::SectionData, ElfFile, symbol_table::Entry};
-
-use crate::memory::{
-    address::VirtualAddress,
-    page_table::PageTable,
-    MapArea,
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    format,
+    string::{String, ToString},
+    vec::Vec,
 };
+use core::error::Error;
+use xmas_elf::{ElfFile, dynamic, sections::SectionData, symbol_table::Entry};
+
+use crate::memory::{MapArea, address::VirtualAddress, page_table::PageTable};
 
 use super::MemorySet;
 
 /// Dynamic linker configuration constants
 pub const PLT_ENTRY_SIZE: usize = 16; // Size of each PLT entry in bytes
-pub const GOT_ENTRY_SIZE: usize = 8;  // Size of each GOT entry (64-bit pointers)
+pub const GOT_ENTRY_SIZE: usize = 8; // Size of each GOT entry (64-bit pointers)
 
 /// Relocation types for RISC-V 64-bit
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum RelocationType {
-    R_RISCV_64 = 2,          // Direct 64-bit relocation
-    R_RISCV_JUMP_SLOT = 5,   // PLT/GOT jump slot
-    R_RISCV_RELATIVE = 3,    // Base-relative relocation
-    R_RISCV_GLOB_DAT = 6,    // Global data relocation
+    R_RISCV_64 = 2,        // Direct 64-bit relocation
+    R_RISCV_JUMP_SLOT = 5, // PLT/GOT jump slot
+    R_RISCV_RELATIVE = 3,  // Base-relative relocation
+    R_RISCV_GLOB_DAT = 6,  // Global data relocation
 }
 
 impl RelocationType {
@@ -39,31 +41,31 @@ impl RelocationType {
 /// Relocation entry for dynamic linking
 #[derive(Debug, Clone)]
 pub struct RelocationEntry {
-    pub offset: u64,         // Virtual address where to apply relocation
-    pub symbol_index: u32,   // Index into symbol table
+    pub offset: u64,       // Virtual address where to apply relocation
+    pub symbol_index: u32, // Index into symbol table
     pub reloc_type: RelocationType,
-    pub addend: i64,         // Addend for relocation calculation
+    pub addend: i64, // Addend for relocation calculation
 }
 
 /// Dynamic symbol information
 #[derive(Debug, Clone)]
 pub struct DynamicSymbol {
-    pub name: String,        // Symbol name
-    pub value: u64,          // Symbol value/address
-    pub size: u64,           // Symbol size
-    pub binding: u8,         // Symbol binding (local, global, weak)
-    pub symbol_type: u8,     // Symbol type (function, object, etc.)
-    pub section_index: u16,  // Section where symbol is defined
+    pub name: String,       // Symbol name
+    pub value: u64,         // Symbol value/address
+    pub size: u64,          // Symbol size
+    pub binding: u8,        // Symbol binding (local, global, weak)
+    pub symbol_type: u8,    // Symbol type (function, object, etc.)
+    pub section_index: u16, // Section where symbol is defined
 }
 
 /// Shared library/dynamic object information
 #[derive(Debug)]
 pub struct SharedLibrary {
-    pub name: String,                    // Library name (e.g., "libc.so.6")
-    pub base_address: VirtualAddress,    // Load base address
-    pub size: usize,                     // Total size in memory
+    pub name: String,                             // Library name (e.g., "libc.so.6")
+    pub base_address: VirtualAddress,             // Load base address
+    pub size: usize,                              // Total size in memory
     pub symbols: BTreeMap<String, DynamicSymbol>, // Exported symbols
-    pub memory_areas: Vec<MapArea>,      // Memory segments
+    pub memory_areas: Vec<MapArea>,               // Memory segments
     pub plt_address: Option<VirtualAddress>,      // PLT base address
     pub got_address: Option<VirtualAddress>,      // GOT base address
     pub dynamic_section: Option<VirtualAddress>,  // Dynamic section address
@@ -72,18 +74,18 @@ pub struct SharedLibrary {
 /// PLT (Procedure Linkage Table) entry
 #[derive(Debug, Clone)]
 pub struct PLTEntry {
-    pub symbol_name: String,     // Associated symbol name
-    pub got_offset: usize,       // Offset in GOT
-    pub plt_offset: usize,       // Offset in PLT
-    pub resolved: bool,          // Whether symbol is resolved
+    pub symbol_name: String,                    // Associated symbol name
+    pub got_offset: usize,                      // Offset in GOT
+    pub plt_offset: usize,                      // Offset in PLT
+    pub resolved: bool,                         // Whether symbol is resolved
     pub target_address: Option<VirtualAddress>, // Resolved target address
 }
 
 /// GOT (Global Offset Table) entry
 #[derive(Debug, Clone)]
 pub struct GOTEntry {
-    pub symbol_name: String,     // Associated symbol name
-    pub address: Option<VirtualAddress>, // Symbol address (if resolved)
+    pub symbol_name: String,                 // Associated symbol name
+    pub address: Option<VirtualAddress>,     // Symbol address (if resolved)
     pub relocation: Option<RelocationEntry>, // Associated relocation
 }
 
@@ -112,18 +114,18 @@ pub struct DynamicLinker {
 /// Information extracted from the dynamic section
 #[derive(Debug, Clone)]
 pub struct DynamicInfo {
-    pub needed_libraries: Vec<String>,   // Required shared libraries
-    pub init_function: Option<VirtualAddress>,     // Initialization function
-    pub fini_function: Option<VirtualAddress>,     // Finalization function
+    pub needed_libraries: Vec<String>, // Required shared libraries
+    pub init_function: Option<VirtualAddress>, // Initialization function
+    pub fini_function: Option<VirtualAddress>, // Finalization function
     pub init_array: Option<(VirtualAddress, usize)>, // Init function array
     pub fini_array: Option<(VirtualAddress, usize)>, // Fini function array
-    pub string_table: Option<VirtualAddress>,      // String table address
-    pub symbol_table: Option<VirtualAddress>,      // Symbol table address
-    pub hash_table: Option<VirtualAddress>,        // Hash table address
-    pub rela_table: Option<VirtualAddress>,        // Relocation table address
-    pub rela_table_size: usize,                    // Relocation table size
-    pub plt_relocations: Option<VirtualAddress>,   // PLT relocations address
-    pub plt_relocations_size: usize,               // PLT relocations size
+    pub string_table: Option<VirtualAddress>, // String table address
+    pub symbol_table: Option<VirtualAddress>, // Symbol table address
+    pub hash_table: Option<VirtualAddress>, // Hash table address
+    pub rela_table: Option<VirtualAddress>, // Relocation table address
+    pub rela_table_size: usize,        // Relocation table size
+    pub plt_relocations: Option<VirtualAddress>, // PLT relocations address
+    pub plt_relocations_size: usize,   // PLT relocations size
 }
 
 impl DynamicLinker {
@@ -140,9 +142,11 @@ impl DynamicLinker {
     }
 
     /// Parse ELF file and extract dynamic linking information
-    pub fn parse_dynamic_elf(&mut self, elf: &ElfFile, base_address: VirtualAddress)
-        -> Result<(), Box<dyn Error>> {
-
+    pub fn parse_dynamic_elf(
+        &mut self,
+        elf: &ElfFile,
+        base_address: VirtualAddress,
+    ) -> Result<(), Box<dyn Error>> {
         // Extract dynamic section information
         if let Some(dynamic_section) = elf.find_section_by_name(".dynamic") {
             self.parse_dynamic_section(elf, dynamic_section, base_address)?;
@@ -160,9 +164,12 @@ impl DynamicLinker {
     }
 
     /// Parse the dynamic section to extract library dependencies and other info
-    fn parse_dynamic_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress)
-        -> Result<(), Box<dyn Error>> {
-
+    fn parse_dynamic_section(
+        &mut self,
+        elf: &ElfFile,
+        section: xmas_elf::sections::SectionHeader,
+        _base_address: VirtualAddress,
+    ) -> Result<(), Box<dyn Error>> {
         let mut dynamic_info = DynamicInfo {
             needed_libraries: Vec::new(),
             init_function: None,
@@ -183,30 +190,39 @@ impl DynamicLinker {
                 match entry.get_tag() {
                     Ok(dynamic::Tag::Needed) => {
                         // Extract library name from string table
-                        if let Ok(name) = self.get_string_from_table(elf, entry.get_val().unwrap_or(0) as usize) {
+                        if let Ok(name) =
+                            self.get_string_from_table(elf, entry.get_val().unwrap_or(0) as usize)
+                        {
                             dynamic_info.needed_libraries.push(name);
                         }
                     }
                     Ok(dynamic::Tag::Init) => {
-                        dynamic_info.init_function = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.init_function =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::Fini) => {
-                        dynamic_info.fini_function = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.fini_function =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::StrTab) => {
-                        dynamic_info.string_table = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.string_table =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::SymTab) => {
-                        dynamic_info.symbol_table = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.symbol_table =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::Hash) => {
-                        dynamic_info.hash_table = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.hash_table =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::Rela) => {
-                        dynamic_info.rela_table = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.rela_table =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::JmpRel) => {
-                        dynamic_info.plt_relocations = Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        dynamic_info.plt_relocations =
+                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
                     }
                     Ok(dynamic::Tag::PltRelSize) => {
                         dynamic_info.plt_relocations_size = entry.get_val().unwrap_or(0) as usize;
@@ -223,9 +239,12 @@ impl DynamicLinker {
     }
 
     /// Parse symbol table to extract exported symbols
-    fn parse_symbol_table(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader, _base_address: VirtualAddress)
-        -> Result<(), Box<dyn Error>> {
-
+    fn parse_symbol_table(
+        &mut self,
+        elf: &ElfFile,
+        section: xmas_elf::sections::SectionHeader,
+        _base_address: VirtualAddress,
+    ) -> Result<(), Box<dyn Error>> {
         if let Ok(SectionData::SymbolTable64(symbols)) = section.get_data(elf) {
             for symbol in symbols {
                 let name = if let Ok(name) = symbol.get_name(elf) {
@@ -240,26 +259,22 @@ impl DynamicLinker {
                         value: symbol.value(),
                         size: symbol.size(),
                         binding: match symbol.get_binding() {
-                            Ok(binding) => {
-                                match binding {
-                                    xmas_elf::symbol_table::Binding::Local => 0,
-                                    xmas_elf::symbol_table::Binding::Global => 1,
-                                    xmas_elf::symbol_table::Binding::Weak => 2,
-                                    _ => 0,
-                                }
+                            Ok(binding) => match binding {
+                                xmas_elf::symbol_table::Binding::Local => 0,
+                                xmas_elf::symbol_table::Binding::Global => 1,
+                                xmas_elf::symbol_table::Binding::Weak => 2,
+                                _ => 0,
                             },
                             Err(_) => 0, // Default binding value
                         },
                         symbol_type: match symbol.get_type() {
-                            Ok(sym_type) => {
-                                match sym_type {
-                                    xmas_elf::symbol_table::Type::NoType => 0,
-                                    xmas_elf::symbol_table::Type::Object => 1,
-                                    xmas_elf::symbol_table::Type::Func => 2,
-                                    xmas_elf::symbol_table::Type::Section => 3,
-                                    xmas_elf::symbol_table::Type::File => 4,
-                                    _ => 0,
-                                }
+                            Ok(sym_type) => match sym_type {
+                                xmas_elf::symbol_table::Type::NoType => 0,
+                                xmas_elf::symbol_table::Type::Object => 1,
+                                xmas_elf::symbol_table::Type::Func => 2,
+                                xmas_elf::symbol_table::Type::Section => 3,
+                                xmas_elf::symbol_table::Type::File => 4,
+                                _ => 0,
                             },
                             Err(_) => 0, // Default type value
                         },
@@ -267,7 +282,8 @@ impl DynamicLinker {
                     };
 
                     // For now, assume all symbols belong to the main executable
-                    self.global_symbols.insert(name, ("main".to_string(), dynamic_symbol));
+                    self.global_symbols
+                        .insert(name, ("main".to_string(), dynamic_symbol));
                 }
             }
         }
@@ -276,9 +292,11 @@ impl DynamicLinker {
     }
 
     /// Parse relocation tables (both RELA and PLT relocations)
-    fn parse_relocations(&mut self, elf: &ElfFile, _base_address: VirtualAddress)
-        -> Result<(), Box<dyn Error>> {
-
+    fn parse_relocations(
+        &mut self,
+        elf: &ElfFile,
+        _base_address: VirtualAddress,
+    ) -> Result<(), Box<dyn Error>> {
         // Parse .rela.dyn section
         if let Some(rela_section) = elf.find_section_by_name(".rela.dyn") {
             self.parse_rela_section(elf, rela_section)?;
@@ -293,9 +311,11 @@ impl DynamicLinker {
     }
 
     /// Parse a RELA section and extract relocation entries
-    fn parse_rela_section(&mut self, elf: &ElfFile, section: xmas_elf::sections::SectionHeader)
-        -> Result<(), Box<dyn Error>> {
-
+    fn parse_rela_section(
+        &mut self,
+        elf: &ElfFile,
+        section: xmas_elf::sections::SectionHeader,
+    ) -> Result<(), Box<dyn Error>> {
         if let Ok(SectionData::Rela64(relocations)) = section.get_data(elf) {
             for relocation in relocations {
                 let reloc_type = RelocationType::from_u32(relocation.get_type());
@@ -317,7 +337,11 @@ impl DynamicLinker {
     }
 
     /// Get string from string table by offset
-    fn get_string_from_table(&self, elf: &ElfFile, offset: usize) -> Result<String, Box<dyn Error>> {
+    fn get_string_from_table(
+        &self,
+        elf: &ElfFile,
+        offset: usize,
+    ) -> Result<String, Box<dyn Error>> {
         // Find string table section
         if let Some(strtab_section) = elf.find_section_by_name(".dynstr") {
             if let Ok(data) = strtab_section.get_data(elf) {
@@ -359,7 +383,10 @@ impl DynamicLinker {
 
         // 防止路径遍历攻击
         if symbol_name.contains("..") || symbol_name.contains('/') || symbol_name.contains('\\') {
-            warn!("Symbol name contains path traversal characters: {}", symbol_name);
+            warn!(
+                "Symbol name contains path traversal characters: {}",
+                symbol_name
+            );
             return None;
         }
 
@@ -385,9 +412,7 @@ impl DynamicLinker {
     }
 
     /// Apply relocations
-    pub fn apply_relocations(&mut self, page_table: &PageTable)
-        -> Result<(), Box<dyn Error>> {
-
+    pub fn apply_relocations(&mut self, page_table: &PageTable) -> Result<(), Box<dyn Error>> {
         for relocation in &self.pending_relocations {
             match relocation.reloc_type {
                 RelocationType::R_RISCV_64 => {
@@ -414,9 +439,11 @@ impl DynamicLinker {
     }
 
     /// Apply direct 64-bit relocation
-    fn apply_direct_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
-        -> Result<(), Box<dyn Error>> {
-
+    fn apply_direct_relocation(
+        &self,
+        relocation: &RelocationEntry,
+        page_table: &PageTable,
+    ) -> Result<(), Box<dyn Error>> {
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
 
         if let Some(pte) = page_table.translate(target_vpn) {
@@ -452,20 +479,25 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
-                    next_page_bytes[..remaining_len].copy_from_slice(&value_bytes[first_part_len..]);
+                    next_page_bytes[..remaining_len]
+                        .copy_from_slice(&value_bytes[first_part_len..]);
                 }
             }
         }
 
-        debug!("Applied direct relocation at offset: 0x{:x}, value: 0x{:x}",
-                   relocation.offset, relocation.addend);
+        debug!(
+            "Applied direct relocation at offset: 0x{:x}, value: 0x{:x}",
+            relocation.offset, relocation.addend
+        );
         Ok(())
     }
 
     /// Apply PLT/GOT jump slot relocation
-    fn apply_jump_slot_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
-        -> Result<(), Box<dyn Error>> {
-
+    fn apply_jump_slot_relocation(
+        &self,
+        relocation: &RelocationEntry,
+        page_table: &PageTable,
+    ) -> Result<(), Box<dyn Error>> {
         // For jump slot relocations, we need to update the GOT entry with the target address
         let got_entry_vpn = VirtualAddress::from(relocation.offset as usize).floor();
 
@@ -500,20 +532,25 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
-                    next_page_bytes[..remaining_len].copy_from_slice(&address_bytes[first_part_len..]);
+                    next_page_bytes[..remaining_len]
+                        .copy_from_slice(&address_bytes[first_part_len..]);
                 }
             }
         }
 
-        debug!("Applied jump slot relocation at GOT offset: 0x{:x}, target: 0x{:x}",
-                   relocation.offset, relocation.addend);
+        debug!(
+            "Applied jump slot relocation at GOT offset: 0x{:x}, target: 0x{:x}",
+            relocation.offset, relocation.addend
+        );
         Ok(())
     }
 
     /// Apply base-relative relocation
-    fn apply_relative_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
-        -> Result<(), Box<dyn Error>> {
-
+    fn apply_relative_relocation(
+        &self,
+        relocation: &RelocationEntry,
+        page_table: &PageTable,
+    ) -> Result<(), Box<dyn Error>> {
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
 
         if let Some(pte) = page_table.translate(target_vpn) {
@@ -541,20 +578,25 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
-                    next_page_bytes[..remaining_len].copy_from_slice(&value_bytes[first_part_len..]);
+                    next_page_bytes[..remaining_len]
+                        .copy_from_slice(&value_bytes[first_part_len..]);
                 }
             }
         }
 
-        debug!("Applied relative relocation at offset: 0x{:x}, value: 0x{:x}",
-                   relocation.offset, relocation.addend);
+        debug!(
+            "Applied relative relocation at offset: 0x{:x}, value: 0x{:x}",
+            relocation.offset, relocation.addend
+        );
         Ok(())
     }
 
     /// Apply global data relocation
-    fn apply_global_data_relocation(&self, relocation: &RelocationEntry, page_table: &PageTable)
-        -> Result<(), Box<dyn Error>> {
-
+    fn apply_global_data_relocation(
+        &self,
+        relocation: &RelocationEntry,
+        page_table: &PageTable,
+    ) -> Result<(), Box<dyn Error>> {
         // Global data relocations are similar to jump slot relocations
         // but for data symbols instead of function symbols
         let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
@@ -590,20 +632,25 @@ impl DynamicLinker {
                     let next_ppn = next_pte.ppn();
                     let next_page_bytes = next_ppn.get_bytes_array_mut();
                     let remaining_len = 8 - first_part_len;
-                    next_page_bytes[..remaining_len].copy_from_slice(&address_bytes[first_part_len..]);
+                    next_page_bytes[..remaining_len]
+                        .copy_from_slice(&address_bytes[first_part_len..]);
                 }
             }
         }
 
-        debug!("Applied global data relocation at offset: 0x{:x}, target: 0x{:x}",
-                   relocation.offset, relocation.addend);
+        debug!(
+            "Applied global data relocation at offset: 0x{:x}, target: 0x{:x}",
+            relocation.offset, relocation.addend
+        );
         Ok(())
     }
 
     /// Initialize PLT entries for lazy binding
-    pub fn setup_plt(&mut self, plt_address: VirtualAddress, got_address: VirtualAddress)
-        -> Result<(), Box<dyn Error>> {
-
+    pub fn setup_plt(
+        &mut self,
+        plt_address: VirtualAddress,
+        got_address: VirtualAddress,
+    ) -> Result<(), Box<dyn Error>> {
         // Setup PLT resolver stub (first PLT entry)
         // In RISC-V, the PLT[0] entry contains the dynamic linker resolver
 
@@ -645,16 +692,21 @@ impl DynamicLinker {
         self.got_entries.push(got_entry_1);
         self.got_entries.push(got_entry_2);
 
-        info!("Setting up PLT at 0x{:x}, GOT at 0x{:x}",
-                   usize::from(plt_address), usize::from(got_address));
+        info!(
+            "Setting up PLT at 0x{:x}, GOT at 0x{:x}",
+            usize::from(plt_address),
+            usize::from(got_address)
+        );
 
         Ok(())
     }
 
     /// Load a shared library
-    pub fn load_shared_library(&mut self, _memory_set: &mut MemorySet, library_name: &str)
-        -> Result<VirtualAddress, Box<dyn Error>> {
-
+    pub fn load_shared_library(
+        &mut self,
+        _memory_set: &mut MemorySet,
+        library_name: &str,
+    ) -> Result<VirtualAddress, Box<dyn Error>> {
         // Check if library is already loaded
         if self.libraries.contains_key(library_name) {
             if let Some(lib) = self.libraries.get(library_name) {
@@ -692,24 +744,29 @@ impl DynamicLinker {
             name: format!("{}_function", library_name),
             value: usize::from(base_address) as u64 + 0x1000,
             size: 32,
-            binding: 1, // STB_GLOBAL
+            binding: 1,     // STB_GLOBAL
             symbol_type: 2, // STT_FUNC
             section_index: 1,
         };
 
-        library.symbols.insert(placeholder_symbol.name.clone(), placeholder_symbol.clone());
+        library
+            .symbols
+            .insert(placeholder_symbol.name.clone(), placeholder_symbol.clone());
 
         // Add to global symbol table
         self.global_symbols.insert(
             placeholder_symbol.name.clone(),
-            (library_name.to_string(), placeholder_symbol)
+            (library_name.to_string(), placeholder_symbol),
         );
 
         // Store the library
         self.libraries.insert(library_name.to_string(), library);
 
-        info!("Loaded shared library '{}' at base address 0x{:x}",
-                   library_name, usize::from(base_address));
+        info!(
+            "Loaded shared library '{}' at base address 0x{:x}",
+            library_name,
+            usize::from(base_address)
+        );
 
         Ok(base_address)
     }
@@ -726,8 +783,11 @@ impl DynamicLinker {
 
             // Run DT_INIT_ARRAY functions if present
             if let Some((init_array_addr, size)) = dynamic_info.init_array {
-                info!("Running DT_INIT_ARRAY functions at 0x{:x}, size: {}",
-                          usize::from(init_array_addr), size);
+                info!(
+                    "Running DT_INIT_ARRAY functions at 0x{:x}, size: {}",
+                    usize::from(init_array_addr),
+                    size
+                );
                 // In a real implementation, this would iterate and call each function
                 // The array contains function pointers, and we'd call each one
                 let function_count = size / core::mem::size_of::<usize>();
@@ -758,8 +818,10 @@ impl DynamicLinker {
 
         self.plt_entries.push(plt_entry);
 
-        debug!("Created PLT entry for symbol '{}' at offset 0x{:x}",
-                   symbol_name, plt_offset);
+        debug!(
+            "Created PLT entry for symbol '{}' at offset 0x{:x}",
+            symbol_name, plt_offset
+        );
 
         plt_offset
     }
@@ -787,8 +849,12 @@ impl DynamicLinker {
                 }
             }
 
-            debug!("Resolved PLT entry for '{}' from library '{}' to address 0x{:x}",
-                       symbol_name, lib_name, usize::from(symbol_address));
+            debug!(
+                "Resolved PLT entry for '{}' from library '{}' to address 0x{:x}",
+                symbol_name,
+                lib_name,
+                usize::from(symbol_address)
+            );
 
             Some(symbol_address)
         } else {

@@ -2,17 +2,17 @@ use alloc::sync::Arc;
 
 use crate::drivers::BlockDevice;
 
+pub mod devfs;
+pub mod ext2;
 pub mod fat32;
 pub mod flock;
 pub mod inode;
 pub mod vfs;
-pub mod ext2;
-pub mod devfs;
 
-pub use fat32::FAT32FileSystem;
-pub use ext2::Ext2FileSystem;
 pub use devfs::DevFileSystem;
-pub use flock::{FileLock, FileLockManager, LockType, LockOp, LockError, file_lock_manager};
+pub use ext2::Ext2FileSystem;
+pub use fat32::FAT32FileSystem;
+pub use flock::{FileLock, FileLockManager, LockError, LockOp, LockType, file_lock_manager};
 pub use inode::{Inode, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,13 +26,21 @@ pub enum FileSystemError {
     PermissionDenied,
     IoError,
     InvalidFileSystem,
-    InvalidOperation,  // 添加无效操作错误类型
+    InvalidOperation, // 添加无效操作错误类型
 }
 
 pub trait FileSystem: Send + Sync {
     fn root_inode(&self) -> Arc<dyn Inode>;
-    fn create_file(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<Arc<dyn Inode>, FileSystemError>;
-    fn create_directory(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<Arc<dyn Inode>, FileSystemError>;
+    fn create_file(
+        &self,
+        parent: &Arc<dyn Inode>,
+        name: &str,
+    ) -> Result<Arc<dyn Inode>, FileSystemError>;
+    fn create_directory(
+        &self,
+        parent: &Arc<dyn Inode>,
+        name: &str,
+    ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn remove(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<(), FileSystemError>;
     fn stat(&self, inode: &Arc<dyn Inode>) -> Result<FileStat, FileSystemError>;
     fn sync(&self) -> Result<(), FileSystemError>;

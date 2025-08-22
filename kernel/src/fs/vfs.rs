@@ -10,7 +10,7 @@ use spin::Mutex;
 use crate::task;
 
 use super::{FileSystem, FileSystemError, Inode};
-use crate::ipc::{open_fifo, create_fifo};
+use crate::ipc::{create_fifo, open_fifo};
 
 pub struct VirtualFileSystem {
     filesystems: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
@@ -116,10 +116,22 @@ impl VirtualFileSystem {
         if let Ok(fifo) = open_fifo(&abs_path) {
             let nonblock = (flags & 0o4000) != 0; // O_NONBLOCK
             return match access_mode {
-                O_RDONLY => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
-                O_WRONLY => Ok(if nonblock { fifo.open_write_with_flags(true) } else { fifo.open_write() } as Arc<dyn Inode>),
+                O_RDONLY => Ok(if nonblock {
+                    fifo.open_read_with_flags(true)
+                } else {
+                    fifo.open_read()
+                } as Arc<dyn Inode>),
+                O_WRONLY => Ok(if nonblock {
+                    fifo.open_write_with_flags(true)
+                } else {
+                    fifo.open_write()
+                } as Arc<dyn Inode>),
                 O_RDWR => Ok(fifo as Arc<dyn Inode>),
-                _ => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+                _ => Ok(if nonblock {
+                    fifo.open_read_with_flags(true)
+                } else {
+                    fifo.open_read()
+                } as Arc<dyn Inode>),
             };
         }
 
@@ -150,16 +162,28 @@ impl VirtualFileSystem {
                         fifo.maybe_init_meta(perm, uid, gid);
                         let nonblock = (flags & 0o4000) != 0; // O_NONBLOCK
                         return match access_mode {
-                            O_RDONLY => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
-                            O_WRONLY => Ok(if nonblock { fifo.open_write_with_flags(true) } else { fifo.open_write() } as Arc<dyn Inode>),
+                            O_RDONLY => Ok(if nonblock {
+                                fifo.open_read_with_flags(true)
+                            } else {
+                                fifo.open_read()
+                            } as Arc<dyn Inode>),
+                            O_WRONLY => Ok(if nonblock {
+                                fifo.open_write_with_flags(true)
+                            } else {
+                                fifo.open_write()
+                            } as Arc<dyn Inode>),
                             O_RDWR => Ok(fifo as Arc<dyn Inode>),
-                            _ => Ok(if nonblock { fifo.open_read_with_flags(true) } else { fifo.open_read() } as Arc<dyn Inode>),
+                            _ => Ok(if nonblock {
+                                fifo.open_read_with_flags(true)
+                            } else {
+                                fifo.open_read()
+                            } as Arc<dyn Inode>),
                         };
                     }
                 }
                 Ok(inode)
             }
-            Err(e) => Err(e)
+            Err(e) => Err(e),
         }
     }
 
@@ -180,7 +204,10 @@ impl VirtualFileSystem {
             } else if path.starts_with(mpath) && path.as_bytes().get(mpath.len()) == Some(&b'/') {
                 // 前缀匹配，且边界为 '/'
                 let len = mpath.len() as isize;
-                if len > best_match_len { best_match_len = len; best_fs = Some(fs.clone()); }
+                if len > best_match_len {
+                    best_match_len = len;
+                    best_fs = Some(fs.clone());
+                }
             }
         }
         drop(filesystems);
@@ -191,10 +218,16 @@ impl VirtualFileSystem {
                 return Ok(current);
             }
             let mut remain = &path[best_match_len as usize + 1..]; // skip the '/'
-            if remain.starts_with('/') { remain = &remain[1..]; }
-            if remain.is_empty() { return Ok(current); }
+            if remain.starts_with('/') {
+                remain = &remain[1..];
+            }
+            if remain.is_empty() {
+                return Ok(current);
+            }
             for component in remain.split('/') {
-                if component.is_empty() { continue; }
+                if component.is_empty() {
+                    continue;
+                }
                 current = current.find_child(component)?;
             }
             return Ok(current);
@@ -206,10 +239,18 @@ impl VirtualFileSystem {
 
         let mut current = fs.root_inode();
 
-        let path = if path.starts_with('/') { &path[1..] } else { path };
-        if path.is_empty() { return Ok(current); }
+        let path = if path.starts_with('/') {
+            &path[1..]
+        } else {
+            path
+        };
+        if path.is_empty() {
+            return Ok(current);
+        }
         for component in path.split('/') {
-            if component.is_empty() { continue; }
+            if component.is_empty() {
+                continue;
+            }
             current = current.find_child(component)?;
         }
         Ok(current)

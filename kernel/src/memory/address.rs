@@ -1,8 +1,8 @@
 use crate::memory::page_table::PageTableEntry;
 
 use super::config::{self};
-use core::fmt::Debug;
 use alloc::format;
+use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PhysicalAddress(usize);
@@ -133,7 +133,8 @@ impl PhysicalAddress {
         assert!(ptr.is_aligned(), "Physical address pointer is not aligned");
 
         unsafe {
-            ptr.as_mut().expect("Failed to convert physical address to mutable reference")
+            ptr.as_mut()
+                .expect("Failed to convert physical address to mutable reference")
         }
     }
 }
@@ -203,7 +204,10 @@ impl PhysicalPageNumber {
             error!("  PA: {:#x}", pa.0);
             error!("  PTR: {:p}", ptr);
             error!("  This indicates a bug in frame allocation or page table management");
-            panic!("Physical address pointer is null (PPN: {:#x}, PA: {:#x})", self.0, pa.0);
+            panic!(
+                "Physical address pointer is null (PPN: {:#x}, PA: {:#x})",
+                self.0, pa.0
+            );
         }
 
         // 检查页面大小
@@ -213,7 +217,10 @@ impl PhysicalPageNumber {
 
         // 检查对齐 - 物理页面应该按页面大小对齐
         if pa.0 % config::PAGE_SIZE != 0 {
-            panic!("Physical address not page-aligned (PPN: {:#x}, PA: {:#x})", self.0, pa.0);
+            panic!(
+                "Physical address not page-aligned (PPN: {:#x}, PA: {:#x})",
+                self.0, pa.0
+            );
         }
 
         unsafe { core::slice::from_raw_parts_mut(ptr, config::PAGE_SIZE) }
@@ -229,7 +236,10 @@ impl PhysicalPageNumber {
 
         // 验证数组大小不超过限制
         let array_size = 512 * core::mem::size_of::<PageTableEntry>();
-        assert!(array_size <= isize::MAX as usize, "PTE array size exceeds isize::MAX");
+        assert!(
+            array_size <= isize::MAX as usize,
+            "PTE array size exceeds isize::MAX"
+        );
 
         unsafe { core::slice::from_raw_parts_mut(ptr, 512) }
     }
@@ -243,7 +253,8 @@ impl PhysicalPageNumber {
         assert!(ptr.is_aligned(), "Physical address pointer is not aligned");
 
         unsafe {
-            ptr.as_mut().expect("Failed to convert physical address to mutable reference")
+            ptr.as_mut()
+                .expect("Failed to convert physical address to mutable reference")
         }
     }
 

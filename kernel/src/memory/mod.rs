@@ -11,10 +11,10 @@ mod config;
 pub mod dynamic_linker;
 pub mod frame_allocator;
 pub mod heap_allocator;
+pub mod kernel_stack;
 pub mod mm;
 pub mod page_table;
 pub mod slab_allocator;
-pub mod kernel_stack;
 
 pub use config::*;
 unsafe extern "C" {
@@ -80,49 +80,57 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
             min_addr, max_addr
         );
-        memory_set.push(
-            MapArea::new(
-                min_addr.into(),
-                max_addr.into(),
-                mm::MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        ).expect("Failed to map VirtIO MMIO memory");
+        memory_set
+            .push(
+                MapArea::new(
+                    min_addr.into(),
+                    max_addr.into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .expect("Failed to map VirtIO MMIO memory");
     }
 
     // RTC 设备映射
     if let Some(rtc_dev) = &board_info.rtc_device {
         debug!(
             "[init_kernel_space] RTC MMIO: {:#x} - {:#x}",
-            rtc_dev.base_addr, rtc_dev.base_addr + rtc_dev.size
+            rtc_dev.base_addr,
+            rtc_dev.base_addr + rtc_dev.size
         );
-        memory_set.push(
-            MapArea::new(
-                rtc_dev.base_addr.into(),
-                (rtc_dev.base_addr + rtc_dev.size).into(),
-                mm::MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        ).expect("Failed to map RTC MMIO memory");
+        memory_set
+            .push(
+                MapArea::new(
+                    rtc_dev.base_addr.into(),
+                    (rtc_dev.base_addr + rtc_dev.size).into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .expect("Failed to map RTC MMIO memory");
     }
 
     // PLIC 中断控制器映射
     if let Some(plic_dev) = &board_info.plic_device {
         debug!(
             "[init_kernel_space] PLIC MMIO: {:#x} - {:#x}",
-            plic_dev.base_addr, plic_dev.base_addr + plic_dev.size
+            plic_dev.base_addr,
+            plic_dev.base_addr + plic_dev.size
         );
-        memory_set.push(
-            MapArea::new(
-                plic_dev.base_addr.into(),
-                (plic_dev.base_addr + plic_dev.size).into(),
-                mm::MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        ).expect("Failed to map PLIC MMIO memory");
+        memory_set
+            .push(
+                MapArea::new(
+                    plic_dev.base_addr.into(),
+                    (plic_dev.base_addr + plic_dev.size).into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .expect("Failed to map PLIC MMIO memory");
     }
 
     // kernel text section
@@ -132,15 +140,18 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         "[init_kernel_space] .text section: {:#x} - {:#x}",
         stext_addr, etext_addr
     );
-    memory_set.push(
-        MapArea::new(
-            (stext as usize).into(),
-            (etext as usize).into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::X,
-        ).set_global(true),
-        None,
-    ).expect("Failed to map kernel .text section");
+    memory_set
+        .push(
+            MapArea::new(
+                (stext as usize).into(),
+                (etext as usize).into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::X,
+            )
+            .set_global(true),
+            None,
+        )
+        .expect("Failed to map kernel .text section");
 
     // kernel read only data
     let srodata_addr = srodata as usize;
@@ -149,15 +160,18 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         "[init_kernel_space] .rodata section: {:#x} - {:#x}",
         srodata_addr, erodata_addr
     );
-    memory_set.push(
-        MapArea::new(
-            (srodata as usize).into(),
-            (erodata as usize).into(),
-            mm::MapType::Identical,
-            MapPermission::R,
-        ).set_global(true),
-        None,
-    ).expect("Failed to map kernel .rodata section");
+    memory_set
+        .push(
+            MapArea::new(
+                (srodata as usize).into(),
+                (erodata as usize).into(),
+                mm::MapType::Identical,
+                MapPermission::R,
+            )
+            .set_global(true),
+            None,
+        )
+        .expect("Failed to map kernel .rodata section");
 
     // kernel data
     let sdata_addr = sdata as usize;
@@ -166,15 +180,18 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         "[init_kernel_space] .data section: {:#x} - {:#x}",
         sdata_addr, edata_addr
     );
-    memory_set.push(
-        MapArea::new(
-            (sdata as usize).into(),
-            (edata as usize).into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::W,
-        ).set_global(true),
-        None,
-    ).expect("Failed to map kernel .data section");
+    memory_set
+        .push(
+            MapArea::new(
+                (sdata as usize).into(),
+                (edata as usize).into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            )
+            .set_global(true),
+            None,
+        )
+        .expect("Failed to map kernel .data section");
 
     // kernel bss section
     let sbss_addr = sbss as usize;
@@ -183,15 +200,18 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         "[init_kernel_space] .bss section: {:#x} - {:#x}",
         sbss_addr, ebss_addr
     );
-    memory_set.push(
-        MapArea::new(
-            (sbss as usize).into(),
-            (ebss as usize).into(),
-            mm::MapType::Identical,
-            MapPermission::R | MapPermission::W,
-        ).set_global(true),
-        None,
-    ).expect("Failed to map kernel .bss section");
+    memory_set
+        .push(
+            MapArea::new(
+                (sbss as usize).into(),
+                (ebss as usize).into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            )
+            .set_global(true),
+            None,
+        )
+        .expect("Failed to map kernel .bss section");
 
     // kernel boot stacks with per-hart guard pages at the bottom of each stack
     // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题
@@ -211,15 +231,17 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
                 "[init_kernel_space] boot stack[{}]: {:#x} - {:#x} (guard @ {:#x})",
                 hart, mapped_bottom, stack_top, stack_bottom
             );
-            memory_set.push(
-                MapArea::new(
-                    mapped_bottom.into(),
-                    stack_top.into(),
-                    mm::MapType::Identical,
-                    MapPermission::R | MapPermission::W,
-                ),
-                None,
-            ).expect("Failed to map per-hart kernel boot stack");
+            memory_set
+                .push(
+                    MapArea::new(
+                        mapped_bottom.into(),
+                        stack_top.into(),
+                        mm::MapType::Identical,
+                        MapPermission::R | MapPermission::W,
+                    ),
+                    None,
+                )
+                .expect("Failed to map per-hart kernel boot stack");
         }
     }
 
@@ -231,15 +253,17 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
             ekernel_addr,
             memory_end_addr.as_usize()
         );
-        memory_set.push(
-            MapArea::new(
-                (ekernel as usize).into(),
-                memory_end_addr.as_usize().into(),
-                mm::MapType::Identical,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        ).expect("Failed to map kernel phys memory area");
+        memory_set
+            .push(
+                MapArea::new(
+                    (ekernel as usize).into(),
+                    memory_end_addr.as_usize().into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .expect("Failed to map kernel phys memory area");
     }
 
     memory_set

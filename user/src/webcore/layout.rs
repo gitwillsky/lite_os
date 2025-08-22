@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
+use super::css::{ComputedStyle, Display, Length, Position};
 use super::style::StyledNode;
-use super::css::{ComputedStyle, Display, Position, Length};
 use alloc::string::String;
+use alloc::vec::Vec;
 
 /// 检查是否是不应渲染文本内容的元素
 fn is_non_rendering_element(tag: &str) -> bool {
@@ -32,10 +32,7 @@ impl Rect {
 }
 
 /// 从样式树构建布局树
-pub fn layout_tree<'a>(
-    styled_node: &StyledNode<'a>,
-    containing_block: Rect
-) -> LayoutBox {
+pub fn layout_tree<'a>(styled_node: &StyledNode<'a>, containing_block: Rect) -> LayoutBox {
     layout_tree_with_depth(styled_node, containing_block, 0, false)
 }
 
@@ -44,11 +41,14 @@ fn layout_tree_with_depth<'a>(
     styled_node: &StyledNode<'a>,
     containing_block: Rect,
     depth: usize,
-    suppress_text: bool
+    suppress_text: bool,
 ) -> LayoutBox {
     // 防止递归过深导致栈溢出
     if depth > 100 {
-        println!("[layout] Warning: layout tree depth limit reached ({}), truncating", depth);
+        println!(
+            "[layout] Warning: layout tree depth limit reached ({}), truncating",
+            depth
+        );
         return LayoutBox {
             rect: Rect::new(0, 0, 0, 0),
             style: styled_node.style.clone(),
@@ -84,7 +84,12 @@ fn layout_tree_with_depth<'a>(
     let temp_containing_block = layout_box.rect;
     for child in &styled_node.children {
         if child.style.display != Display::None {
-            let child_layout = layout_tree_with_depth(child, temp_containing_block, depth + 1, suppress_text || current_non_render);
+            let child_layout = layout_tree_with_depth(
+                child,
+                temp_containing_block,
+                depth + 1,
+                suppress_text || current_non_render,
+            );
             layout_box.children.push(child_layout);
         }
     }
@@ -95,22 +100,25 @@ fn layout_tree_with_depth<'a>(
         Display::Block => {
             println!("[layout] Using block layout");
             layout_block(&mut layout_box);
-        },
+        }
         Display::Flex => {
             println!("[layout] Using flex layout");
             layout_flex(&mut layout_box);
-        },
+        }
         Display::Inline => {
             println!("[layout] Using inline layout");
             layout_inline(&mut layout_box);
-        },
+        }
         Display::None => {
             println!("[layout] Element is hidden (display: none)");
-        },
+        }
         _ => {
-            println!("[layout] Using default block layout for {:?}", layout_box.style.display);
+            println!(
+                "[layout] Using default block layout for {:?}",
+                layout_box.style.display
+            );
             layout_block(&mut layout_box);
-        },
+        }
     }
 
     layout_box
@@ -118,12 +126,17 @@ fn layout_tree_with_depth<'a>(
 
 /// 计算盒子基本尺寸
 fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
-    println!("[layout] Computing size for element, containing_block: {}x{}",
-        containing_block.w, containing_block.h);
+    println!(
+        "[layout] Computing size for element, containing_block: {}x{}",
+        containing_block.w, containing_block.h
+    );
 
     // 安全检查：确保containing_block不是负数或过大
-    if containing_block.w < 0 || containing_block.h < 0 ||
-       containing_block.w > 100000 || containing_block.h > 100000 {
+    if containing_block.w < 0
+        || containing_block.h < 0
+        || containing_block.w > 100000
+        || containing_block.h > 100000
+    {
         println!("[layout] Warning: invalid containing_block size, using defaults");
         layout_box.rect = Rect::new(0, 0, 100, 20);
         return;
@@ -134,12 +147,12 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         Length::Px(w) if w > 0.0 => {
             println!("[layout] Using explicit width: {}px", w);
             w as i32
-        },
+        }
         Length::Percent(p) => {
             let computed = (containing_block.w as f32 * p / 100.0) as i32;
             println!("[layout] Using percentage width: {}% = {}px", p, computed);
             computed
-        },
+        }
         _ => {
             // 检查是否是绝对定位且有left/right约束
             if layout_box.style.position == super::css::Position::Absolute {
@@ -149,14 +162,23 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
                     let left_px = get_length_px(&layout_box.style.left, containing_block.w);
                     let right_px = get_length_px(&layout_box.style.right, containing_block.w);
                     let computed = containing_block.w - left_px - right_px;
-                    println!("[layout] Computed width from left/right constraints: {}px", computed);
+                    println!(
+                        "[layout] Computed width from left/right constraints: {}px",
+                        computed
+                    );
                     computed.max(0)
                 } else {
-                    println!("[layout] Using default width (fill container): {}px", containing_block.w);
+                    println!(
+                        "[layout] Using default width (fill container): {}px",
+                        containing_block.w
+                    );
                     containing_block.w
                 }
             } else {
-                println!("[layout] Using default width (fill container): {}px", containing_block.w);
+                println!(
+                    "[layout] Using default width (fill container): {}px",
+                    containing_block.w
+                );
                 containing_block.w // 默认填满容器
             }
         }
@@ -167,12 +189,12 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
         Length::Px(h) if h > 0.0 => {
             println!("[layout] Using explicit height: {}px", h);
             h as i32
-        },
+        }
         Length::Percent(p) => {
             let computed = (containing_block.h as f32 * p / 100.0) as i32;
             println!("[layout] Using percentage height: {}% = {}px", p, computed);
             computed
-        },
+        }
         _ => {
             // 检查是否是绝对定位且有top/bottom约束
             if layout_box.style.position == super::css::Position::Absolute {
@@ -182,7 +204,10 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
                     let top_px = get_length_px(&layout_box.style.top, containing_block.h);
                     let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
                     let computed = containing_block.h - top_px - bottom_px;
-                    println!("[layout] Computed height from top/bottom constraints: {}px", computed);
+                    println!(
+                        "[layout] Computed height from top/bottom constraints: {}px",
+                        computed
+                    );
                     computed.max(0)
                 } else {
                     println!("[layout] Using auto height (will be set by content)");
@@ -209,9 +234,17 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
     layout_box.rect.w = width;
     layout_box.rect.h = height;
 
-    println!("[layout] Final box: x={} y={} w={} h={} (margins: {},{} padding: {},{})",
-        layout_box.rect.x, layout_box.rect.y, layout_box.rect.w, layout_box.rect.h,
-        margin_left, margin_top, padding_left, padding_top);
+    println!(
+        "[layout] Final box: x={} y={} w={} h={} (margins: {},{} padding: {},{})",
+        layout_box.rect.x,
+        layout_box.rect.y,
+        layout_box.rect.w,
+        layout_box.rect.h,
+        margin_left,
+        margin_top,
+        padding_left,
+        padding_top
+    );
 
     // 处理绝对定位
     if layout_box.style.position == Position::Absolute {
@@ -225,15 +258,22 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
             let right_px = get_length_px(&layout_box.style.right, containing_block.w);
             layout_box.rect.x = containing_block.x + left_px;
             layout_box.rect.w = (containing_block.w - left_px - right_px).max(0);
-            println!("[layout] Applied left/right -> x={} w={}", layout_box.rect.x, layout_box.rect.w);
+            println!(
+                "[layout] Applied left/right -> x={} w={}",
+                layout_box.rect.x, layout_box.rect.w
+            );
         } else if left_spec {
             let left_px = get_length_px(&layout_box.style.left, containing_block.w);
             layout_box.rect.x = containing_block.x + left_px;
             println!("[layout] Applied left: {}px", left_px);
         } else if right_spec {
             let right_px = get_length_px(&layout_box.style.right, containing_block.w);
-            layout_box.rect.x = containing_block.x + (containing_block.w - right_px - layout_box.rect.w).max(0);
-            println!("[layout] Applied right: {}px -> x={} (w={})", right_px, layout_box.rect.x, layout_box.rect.w);
+            layout_box.rect.x =
+                containing_block.x + (containing_block.w - right_px - layout_box.rect.w).max(0);
+            println!(
+                "[layout] Applied right: {}px -> x={} (w={})",
+                right_px, layout_box.rect.x, layout_box.rect.w
+            );
         }
 
         // 处理top/bottom约束
@@ -244,15 +284,22 @@ fn calculate_box_size(layout_box: &mut LayoutBox, containing_block: Rect) {
             let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
             layout_box.rect.y = containing_block.y + top_px;
             layout_box.rect.h = (containing_block.h - top_px - bottom_px).max(0);
-            println!("[layout] Applied top/bottom -> y={} h={}", layout_box.rect.y, layout_box.rect.h);
+            println!(
+                "[layout] Applied top/bottom -> y={} h={}",
+                layout_box.rect.y, layout_box.rect.h
+            );
         } else if top_spec {
             let top_px = get_length_px(&layout_box.style.top, containing_block.h);
             layout_box.rect.y = containing_block.y + top_px;
             println!("[layout] Applied top: {}px", top_px);
         } else if bottom_spec {
             let bottom_px = get_length_px(&layout_box.style.bottom, containing_block.h);
-            layout_box.rect.y = containing_block.y + (containing_block.h - bottom_px - layout_box.rect.h).max(0);
-            println!("[layout] Applied bottom: {}px -> y={} (h={})", bottom_px, layout_box.rect.y, layout_box.rect.h);
+            layout_box.rect.y =
+                containing_block.y + (containing_block.h - bottom_px - layout_box.rect.h).max(0);
+            println!(
+                "[layout] Applied bottom: {}px -> y={} (h={})",
+                bottom_px, layout_box.rect.y, layout_box.rect.h
+            );
         }
     }
 }
@@ -264,8 +311,10 @@ fn layout_block(layout_box: &mut LayoutBox) {
     let mut y_offset = content_y_offset;
     let content_x_start = layout_box.rect.x + content_x_offset;
 
-    println!("[layout] Block layout starting: content_x_start={} content_y_offset={}",
-        content_x_start, content_y_offset);
+    println!(
+        "[layout] Block layout starting: content_x_start={} content_y_offset={}",
+        content_x_start, content_y_offset
+    );
 
     for child in &mut layout_box.children {
         y_offset += child.box_model.margin.top;
@@ -278,7 +327,9 @@ fn layout_block(layout_box: &mut LayoutBox) {
 
         let dx = child.rect.x - old_x;
         let dy = child.rect.y - old_y;
-        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+        if dx != 0 || dy != 0 {
+            offset_descendants(child, dx, dy);
+        }
 
         let available_width = layout_box.rect.w
             - layout_box.box_model.total_horizontal()
@@ -288,7 +339,10 @@ fn layout_block(layout_box: &mut LayoutBox) {
         // 如果子元素没有明确宽度，让它填满可用空间
         if child.rect.w == 0 || child.rect.w > available_width {
             child.rect.w = available_width.max(0);
-            println!("[layout] Child width adjusted to fit container: {}", child.rect.w);
+            println!(
+                "[layout] Child width adjusted to fit container: {}",
+                child.rect.w
+            );
         }
 
         // 处理文本节点的特殊尺寸
@@ -298,16 +352,28 @@ fn layout_block(layout_box: &mut LayoutBox) {
             child.rect.h = line_h + child.box_model.total_vertical();
             if child.rect.w == 0 {
                 let text_width = estimate_text_width(&child.text, font_size);
-                child.rect.w = (text_width + child.box_model.total_horizontal()).min(available_width);
+                child.rect.w =
+                    (text_width + child.box_model.total_horizontal()).min(available_width);
             }
-            println!("[layout] Text node sized: {}x{} for '{}'",
-                child.rect.w, child.rect.h, child.text.as_ref().unwrap());
+            println!(
+                "[layout] Text node sized: {}x{} for '{}'",
+                child.rect.w,
+                child.rect.h,
+                child.text.as_ref().unwrap()
+            );
         }
 
-        println!("[layout] Positioned child at x={} y={} w={} h={} (margins: t={} r={} b={} l={})",
-            child.rect.x, child.rect.y, child.rect.w, child.rect.h,
-            child.box_model.margin.top, child.box_model.margin.right,
-            child.box_model.margin.bottom, child.box_model.margin.left);
+        println!(
+            "[layout] Positioned child at x={} y={} w={} h={} (margins: t={} r={} b={} l={})",
+            child.rect.x,
+            child.rect.y,
+            child.rect.w,
+            child.rect.h,
+            child.box_model.margin.top,
+            child.box_model.margin.right,
+            child.box_model.margin.bottom,
+            child.box_model.margin.left
+        );
 
         // 更新y_offset
         y_offset += child.rect.h + child.box_model.margin.bottom;
@@ -317,8 +383,7 @@ fn layout_block(layout_box: &mut LayoutBox) {
     y_offset += layout_box.box_model.padding.bottom + layout_box.box_model.border.bottom;
 
     // 如果容器高度是auto，设置为内容高度
-    if layout_box.style.height == Length::Px(0.0) ||
-       (layout_box.rect.h <= 20 && y_offset > 20) {
+    if layout_box.style.height == Length::Px(0.0) || (layout_box.rect.h <= 20 && y_offset > 20) {
         layout_box.rect.h = y_offset;
         println!("[layout] Updated container height to {}", y_offset);
     }
@@ -326,7 +391,10 @@ fn layout_block(layout_box: &mut LayoutBox) {
 
 /// Flexbox布局
 fn layout_flex(layout_box: &mut LayoutBox) {
-    println!("[layout] Implementing flex layout with direction: {:?}", layout_box.style.flex_direction);
+    println!(
+        "[layout] Implementing flex layout with direction: {:?}",
+        layout_box.style.flex_direction
+    );
 
     // 使用盒模型计算padding
     let padding_top = layout_box.box_model.padding.top;
@@ -349,29 +417,68 @@ fn layout_flex(layout_box: &mut LayoutBox) {
     // 根据flex-direction选择布局方向
     match layout_box.style.flex_direction {
         super::css::FlexDirection::Column => {
-            layout_flex_column_enhanced(layout_box, padding_top, padding_left, padding_right, padding_bottom, actual_row_gap);
-        },
+            layout_flex_column_enhanced(
+                layout_box,
+                padding_top,
+                padding_left,
+                padding_right,
+                padding_bottom,
+                actual_row_gap,
+            );
+        }
         super::css::FlexDirection::ColumnReverse => {
-            layout_flex_column_enhanced(layout_box, padding_top, padding_left, padding_right, padding_bottom, actual_row_gap);
+            layout_flex_column_enhanced(
+                layout_box,
+                padding_top,
+                padding_left,
+                padding_right,
+                padding_bottom,
+                actual_row_gap,
+            );
             // 反转子元素顺序
             reverse_children_positions_vertical(layout_box);
-        },
+        }
         super::css::FlexDirection::Row => {
-            layout_flex_row_enhanced(layout_box, padding_top, padding_left, padding_right, padding_bottom, actual_column_gap);
-        },
+            layout_flex_row_enhanced(
+                layout_box,
+                padding_top,
+                padding_left,
+                padding_right,
+                padding_bottom,
+                actual_column_gap,
+            );
+        }
         super::css::FlexDirection::RowReverse => {
-            layout_flex_row_enhanced(layout_box, padding_top, padding_left, padding_right, padding_bottom, actual_column_gap);
+            layout_flex_row_enhanced(
+                layout_box,
+                padding_top,
+                padding_left,
+                padding_right,
+                padding_bottom,
+                actual_column_gap,
+            );
             // 反转子元素顺序
             reverse_children_positions_horizontal(layout_box);
-        },
+        }
     }
 }
 
-fn layout_flex_column(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i32, _padding_right: i32, padding_bottom: i32) {
+fn layout_flex_column(
+    layout_box: &mut LayoutBox,
+    padding_top: i32,
+    padding_left: i32,
+    _padding_right: i32,
+    padding_bottom: i32,
+) {
     let mut y_offset = padding_top;
-    let available_width = layout_box.rect.w - padding_left - get_length_px(&layout_box.style.padding_right, layout_box.rect.w);
+    let available_width = layout_box.rect.w
+        - padding_left
+        - get_length_px(&layout_box.style.padding_right, layout_box.rect.w);
 
-    println!("[layout] Flex column layout: available_width={}", available_width);
+    println!(
+        "[layout] Flex column layout: available_width={}",
+        available_width
+    );
 
     for child in &mut layout_box.children {
         // align-items: center => 水平居中
@@ -387,8 +494,10 @@ fn layout_flex_column(layout_box: &mut LayoutBox, padding_top: i32, padding_left
             child.rect.h = line_h;
         }
 
-        println!("[layout] Flex child positioned: x={} y={} w={} h={}",
-            child.rect.x, child.rect.y, child.rect.w, child.rect.h);
+        println!(
+            "[layout] Flex child positioned: x={} y={} w={} h={}",
+            child.rect.x, child.rect.y, child.rect.w, child.rect.h
+        );
 
         y_offset += child.rect.h;
         // 这里可以加上gap spacing
@@ -402,11 +511,22 @@ fn layout_flex_column(layout_box: &mut LayoutBox, padding_top: i32, padding_left
     }
 }
 
-fn layout_flex_row(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i32, padding_right: i32, _padding_bottom: i32) {
+fn layout_flex_row(
+    layout_box: &mut LayoutBox,
+    padding_top: i32,
+    padding_left: i32,
+    padding_right: i32,
+    _padding_bottom: i32,
+) {
     let mut x_offset = padding_left;
-    let available_height = layout_box.rect.h - padding_top - get_length_px(&layout_box.style.padding_bottom, layout_box.rect.w);
+    let available_height = layout_box.rect.h
+        - padding_top
+        - get_length_px(&layout_box.style.padding_bottom, layout_box.rect.w);
 
-    println!("[layout] Flex row layout: available_height={}", available_height);
+    println!(
+        "[layout] Flex row layout: available_height={}",
+        available_height
+    );
 
     for child in &mut layout_box.children {
         child.rect.x = layout_box.rect.x + x_offset;
@@ -419,8 +539,10 @@ fn layout_flex_row(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i
             child.rect.w = estimate_text_width(&child.text, font_size);
         }
 
-        println!("[layout] Flex row child positioned: x={} y={} w={} h={}",
-            child.rect.x, child.rect.y, child.rect.w, child.rect.h);
+        println!(
+            "[layout] Flex row child positioned: x={} y={} w={} h={}",
+            child.rect.x, child.rect.y, child.rect.w, child.rect.h
+        );
 
         x_offset += child.rect.w;
     }
@@ -449,10 +571,12 @@ fn layout_inline(layout_box: &mut LayoutBox) {
 
         let dx = child.rect.x - old_x;
         let dy = child.rect.y - old_y;
-        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+        if dx != 0 || dy != 0 {
+            offset_descendants(child, dx, dy);
+        }
 
         if child.rect.w == 0 {
-            child.rect.w = estimate_text_width(&child.text, line_height);
+            child.rect.w = estimate_text_width(&child.text, fs);
         }
 
         x_offset += child.rect.w;
@@ -494,7 +618,10 @@ fn get_length_px_height(length: &Length, containing_height: i32, font_size: i32)
 }
 
 /// 计算完整的盒模型尺寸
-fn calculate_box_model_dimensions(style: &ComputedStyle, containing_block: Rect) -> BoxModelDimensions {
+fn calculate_box_model_dimensions(
+    style: &ComputedStyle,
+    containing_block: Rect,
+) -> BoxModelDimensions {
     let font_size = get_font_size(style);
 
     // 计算margin
@@ -564,14 +691,22 @@ impl BoxModelDimensions {
 
     /// 获取总的水平空间占用
     pub fn total_horizontal(&self) -> i32 {
-        self.margin.left + self.border.left + self.padding.left +
-        self.padding.right + self.border.right + self.margin.right
+        self.margin.left
+            + self.border.left
+            + self.padding.left
+            + self.padding.right
+            + self.border.right
+            + self.margin.right
     }
 
     /// 获取总的垂直空间占用
     pub fn total_vertical(&self) -> i32 {
-        self.margin.top + self.border.top + self.padding.top +
-        self.padding.bottom + self.border.bottom + self.margin.bottom
+        self.margin.top
+            + self.border.top
+            + self.padding.top
+            + self.padding.bottom
+            + self.border.bottom
+            + self.margin.bottom
     }
 }
 
@@ -595,7 +730,14 @@ fn get_line_height(style: &ComputedStyle) -> i32 {
 }
 
 /// 增强的Flexbox列布局（支持flex-grow、flex-shrink、align-items等）
-fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i32, _padding_right: i32, _padding_bottom: i32, row_gap: i32) {
+fn layout_flex_column_enhanced(
+    layout_box: &mut LayoutBox,
+    padding_top: i32,
+    padding_left: i32,
+    _padding_right: i32,
+    _padding_bottom: i32,
+    row_gap: i32,
+) {
     let mut y_offset = padding_top;
     let available_width = layout_box.rect.w - layout_box.box_model.total_horizontal();
 
@@ -610,9 +752,11 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
             super::css::AlignItems::Stretch => {
                 // stretch：拉伸到容器宽度
                 child.rect.w = available_width;
-            },
-            super::css::AlignItems::FlexStart | super::css::AlignItems::FlexEnd |
-            super::css::AlignItems::Center | super::css::AlignItems::Baseline => {
+            }
+            super::css::AlignItems::FlexStart
+            | super::css::AlignItems::FlexEnd
+            | super::css::AlignItems::Center
+            | super::css::AlignItems::Baseline => {
                 // 其他对齐方式：使用内容宽度或固定宽度
                 if child.rect.w == 0 {
                     if let Some(ref text) = child.text {
@@ -620,21 +764,21 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
                         child.rect.w = estimate_text_width(&Some(text.clone()), font_size);
                     }
                 }
-            },
+            }
         }
 
         // 处理flex-basis
         let basis_height = match &child.style.flex_basis {
             super::css::FlexBasis::Auto => {
                 if child.rect.h > 0 { child.rect.h } else { 20 } // 默认高度
-            },
+            }
             super::css::FlexBasis::Content => {
                 let font_size = get_font_size(&child.style);
                 font_size + 4 // 内容高度
-            },
+            }
             super::css::FlexBasis::Length(length) => {
                 get_length_px_height(length, layout_box.rect.h, get_font_size(&child.style))
-            },
+            }
         };
 
         child.rect.h = basis_height;
@@ -652,7 +796,8 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
     }
 
     // 第二轮：分配剩余空间给flex-grow项目
-    let available_flex_space = (layout_box.rect.h - layout_box.box_model.total_vertical() - total_fixed_height).max(0);
+    let available_flex_space =
+        (layout_box.rect.h - layout_box.box_model.total_vertical() - total_fixed_height).max(0);
 
     if total_flex_grow > 0.0 && available_flex_space > 0 {
         for &index in &flexible_items {
@@ -675,37 +820,48 @@ fn layout_flex_column_enhanced(layout_box: &mut LayoutBox, padding_top: i32, pad
         match layout_box.style.align_items {
             super::css::AlignItems::FlexStart => {
                 child.rect.x = layout_box.rect.x + padding_left;
-            },
+            }
             super::css::AlignItems::FlexEnd => {
                 child.rect.x = layout_box.rect.x + layout_box.rect.w - padding_left - child.rect.w;
-            },
+            }
             super::css::AlignItems::Center => {
                 child.rect.x = layout_box.rect.x + (layout_box.rect.w - child.rect.w) / 2;
-            },
+            }
             super::css::AlignItems::Stretch => {
                 child.rect.x = layout_box.rect.x + padding_left;
-            },
+            }
             super::css::AlignItems::Baseline => {
                 // 简化：按flex-start处理
                 child.rect.x = layout_box.rect.x + padding_left;
-            },
+            }
         }
 
         child.rect.y = layout_box.rect.y + y_offset;
 
         let dx = child.rect.x - old_x;
         let dy = child.rect.y - old_y;
-        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+        if dx != 0 || dy != 0 {
+            offset_descendants(child, dx, dy);
+        }
 
         y_offset += child.rect.h;
 
-        println!("[layout] Flex column item {}: x={} y={} w={} h={} (flex-grow={})",
-            index, child.rect.x, child.rect.y, child.rect.w, child.rect.h, child.style.flex_grow);
+        println!(
+            "[layout] Flex column item {}: x={} y={} w={} h={} (flex-grow={})",
+            index, child.rect.x, child.rect.y, child.rect.w, child.rect.h, child.style.flex_grow
+        );
     }
 }
 
 /// 增强的Flexbox行布局
-fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, padding_left: i32, _padding_right: i32, _padding_bottom: i32, column_gap: i32) {
+fn layout_flex_row_enhanced(
+    layout_box: &mut LayoutBox,
+    padding_top: i32,
+    padding_left: i32,
+    _padding_right: i32,
+    _padding_bottom: i32,
+    column_gap: i32,
+) {
     let mut x_offset = padding_left;
     let available_height = layout_box.rect.h - layout_box.box_model.total_vertical();
 
@@ -719,12 +875,12 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
         match layout_box.style.align_items {
             super::css::AlignItems::Stretch => {
                 child.rect.h = available_height;
-            },
+            }
             _ => {
                 if child.rect.h == 0 {
                     child.rect.h = get_line_height(&child.style);
                 }
-            },
+            }
         }
 
         // 处理flex-basis宽度
@@ -733,7 +889,9 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
                 // Prefer explicit width if provided; otherwise derive from content
                 match child.style.width {
                     super::css::Length::Px(w) if w > 0.0 => w as i32,
-                    super::css::Length::Percent(_) => get_length_px(&child.style.width, layout_box.rect.w),
+                    super::css::Length::Percent(_) => {
+                        get_length_px(&child.style.width, layout_box.rect.w)
+                    }
                     _ => {
                         // Ignore prefilled container-wide widths from initial sizing
                         if child.rect.w > 0 && child.rect.w < layout_box.rect.w {
@@ -746,16 +904,16 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
                         }
                     }
                 }
-            },
+            }
             super::css::FlexBasis::Content => {
                 if let Some(ref text) = child.text {
                     let font_size = get_font_size(&child.style);
                     estimate_text_width(&Some(text.clone()), font_size)
-                } else { 100 }
-            },
-            super::css::FlexBasis::Length(length) => {
-                get_length_px(length, layout_box.rect.w)
-            },
+                } else {
+                    100
+                }
+            }
+            super::css::FlexBasis::Length(length) => get_length_px(length, layout_box.rect.w),
         };
 
         child.rect.w = basis_width;
@@ -772,7 +930,8 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
     }
 
     // 第二轮：分配剩余空间
-    let available_flex_space = (layout_box.rect.w - layout_box.box_model.total_horizontal() - total_base_width).max(0);
+    let available_flex_space =
+        (layout_box.rect.w - layout_box.box_model.total_horizontal() - total_base_width).max(0);
 
     if total_flex_grow > 0.0 && available_flex_space > 0 {
         for &index in &flexible_items {
@@ -797,38 +956,45 @@ fn layout_flex_row_enhanced(layout_box: &mut LayoutBox, padding_top: i32, paddin
         match layout_box.style.align_items {
             super::css::AlignItems::FlexStart => {
                 child.rect.y = layout_box.rect.y + padding_top;
-            },
+            }
             super::css::AlignItems::FlexEnd => {
                 child.rect.y = layout_box.rect.y + layout_box.rect.h - padding_top - child.rect.h;
-            },
+            }
             super::css::AlignItems::Center => {
                 child.rect.y = layout_box.rect.y + (layout_box.rect.h - child.rect.h) / 2;
-            },
+            }
             super::css::AlignItems::Stretch => {
                 child.rect.y = layout_box.rect.y + padding_top;
-            },
+            }
             super::css::AlignItems::Baseline => {
                 // 简化：按flex-start处理
                 child.rect.y = layout_box.rect.y + padding_top;
-            },
+            }
         }
 
         let dx = child.rect.x - old_x;
         let dy = child.rect.y - old_y;
-        if dx != 0 || dy != 0 { offset_descendants(child, dx, dy); }
+        if dx != 0 || dy != 0 {
+            offset_descendants(child, dx, dy);
+        }
 
         x_offset += child.rect.w;
 
-        println!("[layout] Flex row item {}: x={} y={} w={} h={} (flex-grow={})",
-            index, child.rect.x, child.rect.y, child.rect.w, child.rect.h, child.style.flex_grow);
+        println!(
+            "[layout] Flex row item {}: x={} y={} w={} h={} (flex-grow={})",
+            index, child.rect.x, child.rect.y, child.rect.w, child.rect.h, child.style.flex_grow
+        );
     }
 }
 
 /// 反转垂直位置（用于column-reverse）
 fn reverse_children_positions_vertical(layout_box: &mut LayoutBox) {
-    if layout_box.children.is_empty() { return; }
+    if layout_box.children.is_empty() {
+        return;
+    }
 
-    let container_bottom = layout_box.rect.y + layout_box.rect.h - layout_box.box_model.padding.bottom;
+    let container_bottom =
+        layout_box.rect.y + layout_box.rect.h - layout_box.box_model.padding.bottom;
     let container_top = layout_box.rect.y + layout_box.box_model.padding.top;
 
     for child in &mut layout_box.children {
@@ -839,9 +1005,12 @@ fn reverse_children_positions_vertical(layout_box: &mut LayoutBox) {
 
 /// 反转水平位置（用于row-reverse）
 fn reverse_children_positions_horizontal(layout_box: &mut LayoutBox) {
-    if layout_box.children.is_empty() { return; }
+    if layout_box.children.is_empty() {
+        return;
+    }
 
-    let container_right = layout_box.rect.x + layout_box.rect.w - layout_box.box_model.padding.right;
+    let container_right =
+        layout_box.rect.x + layout_box.rect.w - layout_box.box_model.padding.right;
     let container_left = layout_box.rect.x + layout_box.box_model.padding.left;
 
     for child in &mut layout_box.children {
@@ -867,7 +1036,10 @@ fn estimate_text_width(text: &Option<String>, font_size: i32) -> i32 {
                 return 0;
             }
             if t.len() > 1000 {
-                println!("[layout] Warning: text too long ({}), truncating for measurement", t.len());
+                println!(
+                    "[layout] Warning: text too long ({}), truncating for measurement",
+                    t.len()
+                );
                 return (t.len().min(1000) as i32) * 8; // 回退到基础估算
             }
 
@@ -880,16 +1052,23 @@ fn estimate_text_width(text: &Option<String>, font_size: i32) -> i32 {
 
             // 合理性检查：确保测量结果不会过大
             let reasonable_width = if measured_width > 10000 {
-                println!("[layout] Warning: measured_width too large ({}), using fallback", measured_width);
+                println!(
+                    "[layout] Warning: measured_width too large ({}), using fallback",
+                    measured_width
+                );
                 (t.len() as i32) * (safe_font_size as i32 / 2)
             } else {
                 measured_width
             };
 
-            println!("[layout] Measured text '{}' width: {} (font_size={})",
-                t.chars().take(50).collect::<String>(), reasonable_width, safe_font_size);
+            println!(
+                "[layout] Measured text '{}' width: {} (font_size={})",
+                t.chars().take(50).collect::<String>(),
+                reasonable_width,
+                safe_font_size
+            );
             reasonable_width
-        },
+        }
         None => 0,
     }
 }

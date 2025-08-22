@@ -4,7 +4,10 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{watchdog_configure, watchdog_start, watchdog_stop, watchdog_feed, watchdog_get_info, watchdog_set_preset, WatchdogConfig, WatchdogInfo, exit};
+use user_lib::{
+    WatchdogConfig, WatchdogInfo, exit, watchdog_configure, watchdog_feed, watchdog_get_info,
+    watchdog_set_preset, watchdog_start, watchdog_stop,
+};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -15,7 +18,12 @@ fn main() -> i32 {
     test_assert!(pr == 0 || pr == -1, "watchdog_set_preset 返回异常: {}", pr);
 
     // 显式配置
-    let cfg = WatchdogConfig { timeout_us: 2_000_000, enabled: true, reboot_on_timeout: false, warning_time_us: 500_000 };
+    let cfg = WatchdogConfig {
+        timeout_us: 2_000_000,
+        enabled: true,
+        reboot_on_timeout: false,
+        warning_time_us: 500_000,
+    };
     let rc = watchdog_configure(&cfg);
     test_assert!(rc == 0 || rc == -1, "watchdog_configure 返回异常: {}", rc);
 
@@ -23,7 +31,13 @@ fn main() -> i32 {
     let st = watchdog_start();
     test_assert!(st == 0 || st == -1, "watchdog_start 返回异常: {}", st);
     let _ = watchdog_feed();
-    let mut info = WatchdogInfo { state: unsafe { core::mem::zeroed() }, config: cfg, time_since_feed_us: 0, feed_count: 0, timeout_count: 0 };
+    let mut info = WatchdogInfo {
+        state: unsafe { core::mem::zeroed() },
+        config: cfg,
+        time_since_feed_us: 0,
+        feed_count: 0,
+        timeout_count: 0,
+    };
     let gi = watchdog_get_info(&mut info);
     test_assert!(gi == 0 || gi == -1, "watchdog_get_info 返回异常: {}", gi);
     let sp = watchdog_stop();
@@ -33,5 +47,3 @@ fn main() -> i32 {
     exit(0);
     0
 }
-
-

@@ -4,7 +4,7 @@ use super::core::{Signal, SignalError};
 use crate::{
     memory::{
         address::VirtualAddress,
-        page_table::{translated_byte_buffer, PageTable},
+        page_table::{PageTable, translated_byte_buffer},
     },
     task::TaskControlBlock,
     trap::TrapContext,

@@ -145,7 +145,11 @@ impl MapArea {
         }
     }
 
-    fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) -> Result<(), MemoryError> {
+    fn map_one(
+        &mut self,
+        page_table: &mut PageTable,
+        vpn: VirtualPageNumber,
+    ) -> Result<(), MemoryError> {
         let ppn: PhysicalPageNumber;
         match self.map_type {
             MapType::Framed => {
@@ -186,7 +190,11 @@ impl MapArea {
         }
     }
 
-    pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) -> Result<(), MemoryError> {
+    pub fn append_to(
+        &mut self,
+        page_table: &mut PageTable,
+        new_end: VirtualPageNumber,
+    ) -> Result<(), MemoryError> {
         for vpn in self.vpn_range.end.as_usize()..new_end.as_usize() {
             self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
         }
@@ -233,7 +241,6 @@ impl MemorySet {
         let end_vpn = map_area.vpn_range.end.as_usize();
         let pages = end_vpn.saturating_sub(start_vpn);
         if let Err(e) = map_area.map(&mut self.page_table) {
-
             // 回滚：解除已经映射的页面
             map_area.unmap(&mut self.page_table);
             return Err(e);
@@ -304,20 +311,28 @@ impl MemorySet {
 
     /// 在用户地址空间中查找空闲区域（按 VPN，从高到低）
     pub fn find_free_area_user(&self, length: usize) -> VirtualAddress {
-        if length == 0 { return VirtualAddress::from(0); }
+        if length == 0 {
+            return VirtualAddress::from(0);
+        }
 
         let page_count = (length + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
         // 用户空间仅使用低半区：bit38=0 的 canonical 范围
         // 直接使用低半区的最高 VPN 作为上界，避免误用高半区常量的低位（例如 TRAP_CONTEXT_BASE 的低 39 位）
-        let upper_vpn_usize = ((1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE) - 1;
-        if page_count == 0 || page_count > upper_vpn_usize { return VirtualAddress::from(0); }
+        let upper_vpn_usize =
+            ((1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE) - 1;
+        if page_count == 0 || page_count > upper_vpn_usize {
+            return VirtualAddress::from(0);
+        }
 
         // 从最高可用 VPN 开始向下探测
         let mut start_vpn_usize = upper_vpn_usize.saturating_sub(page_count);
         while start_vpn_usize + page_count <= upper_vpn_usize {
             let mut is_free = true;
             for vpn_usize in start_vpn_usize..start_vpn_usize + page_count {
-                if self.translate(VirtualPageNumber::from_vpn(vpn_usize)).is_some() {
+                if self
+                    .translate(VirtualPageNumber::from_vpn(vpn_usize))
+                    .is_some()
+                {
                     is_free = false;
                     break;
                 }
@@ -325,7 +340,9 @@ impl MemorySet {
             if is_free {
                 return VirtualPageNumber::from_vpn(start_vpn_usize).into();
             }
-            if start_vpn_usize == 0 { break; }
+            if start_vpn_usize == 0 {
+                break;
+            }
             start_vpn_usize -= 1;
         }
         VirtualAddress::from(0)
@@ -348,7 +365,11 @@ impl MemorySet {
     }
 
     /// 映射DMA内存到虚拟地址空间
-    pub fn map_dma(&mut self, phys_addr: PhysicalAddress, size: usize) -> Result<VirtualAddress, MemoryError> {
+    pub fn map_dma(
+        &mut self,
+        phys_addr: PhysicalAddress,
+        size: usize,
+    ) -> Result<VirtualAddress, MemoryError> {
         // 选择位于低半区、远离内核物理恒等映射 (physmap) 的基址，避免与其重叠
         // 动态下界：max(4GiB, 物理内存末尾向上页对齐)
         let phys_end = crate::board::board_info().mem.end;
@@ -369,8 +390,7 @@ impl MemorySet {
                 let va = VirtualAddress::from(base_candidate + i * config::PAGE_SIZE);
                 if self.page_table.translate(va.floor()).is_some() {
                     // 该候选区间中存在已映射页，跳到下一候选窗口
-                    base_candidate = base_candidate
-                        .saturating_add(page_count * config::PAGE_SIZE);
+                    base_candidate = base_candidate.saturating_add(page_count * config::PAGE_SIZE);
                     continue 'search;
                 }
             }
@@ -384,11 +404,8 @@ impl MemorySet {
             let va = VirtualAddress::from(dma_base.as_usize() + i * config::PAGE_SIZE);
             let pa = PhysicalAddress::from(phys_addr.as_usize() + i * config::PAGE_SIZE);
 
-            self.page_table.map(
-                va.into(),
-                pa.into(),
-                PTEFlags::R | PTEFlags::W,
-            )?;
+            self.page_table
+                .map(va.into(), pa.into(), PTEFlags::R | PTEFlags::W)?;
         }
 
         // 本核刷新 TLB，其他核通过 SSIP 在软中断入口刷新
@@ -426,7 +443,11 @@ impl MemorySet {
         }
     }
 
-    pub fn append_to(&mut self, start: VirtualAddress, new_end: VirtualAddress) -> Result<bool, MemoryError> {
+    pub fn append_to(
+        &mut self,
+        start: VirtualAddress,
+        new_end: VirtualAddress,
+    ) -> Result<bool, MemoryError> {
         if let Some(area) = self
             .areas
             .iter_mut()

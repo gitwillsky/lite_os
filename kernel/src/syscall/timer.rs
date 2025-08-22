@@ -1,6 +1,6 @@
-use crate::timer;
 use crate::memory::page_table::translated_byte_buffer;
 use crate::task::current_user_token;
+use crate::timer;
 
 pub fn sys_get_time_msec() -> isize {
     timer::get_time_msec() as isize
@@ -35,7 +35,8 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
 
     // 安全地从用户空间读取TimeSpec结构
     let token = current_user_token();
-    let req_buffers = translated_byte_buffer(token, req as *const u8, core::mem::size_of::<TimeSpec>());
+    let req_buffers =
+        translated_byte_buffer(token, req as *const u8, core::mem::size_of::<TimeSpec>());
 
     if req_buffers.is_empty() {
         return -14; // EFAULT: bad address
@@ -83,7 +84,8 @@ pub fn sys_gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> isize {
 
     // 安全地写入用户空间
     let token = current_user_token();
-    let mut tv_buffers = translated_byte_buffer(token, tv as *const u8, core::mem::size_of::<TimeVal>());
+    let mut tv_buffers =
+        translated_byte_buffer(token, tv as *const u8, core::mem::size_of::<TimeVal>());
 
     if tv_buffers.is_empty() {
         return -14; // EFAULT: bad address
@@ -94,7 +96,7 @@ pub fn sys_gettimeofday(tv: *mut TimeVal, tz: *mut u8) -> isize {
         core::ptr::copy_nonoverlapping(
             &timeval as *const TimeVal as *const u8,
             tv_buffers[0].as_mut_ptr(),
-            core::mem::size_of::<TimeVal>()
+            core::mem::size_of::<TimeVal>(),
         );
     }
 

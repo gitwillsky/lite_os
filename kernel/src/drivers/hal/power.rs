@@ -1,16 +1,16 @@
-use core::fmt;
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt;
 use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerState {
-    D0, // Fully On
-    D1, // Low Power, device context retained
-    D2, // Lower Power, device context may be lost
-    D3Hot, // Lowest power, device context lost, power still supplied
+    D0,     // Fully On
+    D1,     // Low Power, device context retained
+    D2,     // Lower Power, device context may be lost
+    D3Hot,  // Lowest power, device context lost, power still supplied
     D3Cold, // Off, no power supplied
 }
 
@@ -37,33 +37,33 @@ impl fmt::Display for PowerError {
 
 pub trait PowerManagement: Send + Sync {
     fn current_state(&self) -> PowerState;
-    
+
     fn transition_to(&mut self, state: PowerState) -> Result<(), PowerError>;
-    
+
     fn can_wakeup(&self) -> bool {
         false
     }
-    
+
     fn enable_wakeup(&mut self) -> Result<(), PowerError> {
         Err(PowerError::NotSupported)
     }
-    
+
     fn disable_wakeup(&mut self) -> Result<(), PowerError> {
         Err(PowerError::NotSupported)
     }
-    
+
     fn suspend(&mut self) -> Result<(), PowerError> {
         self.transition_to(PowerState::D3Hot)
     }
-    
+
     fn resume(&mut self) -> Result<(), PowerError> {
         self.transition_to(PowerState::D0)
     }
-    
+
     fn power_consumption(&self) -> u32 {
         0
     }
-    
+
     fn supported_states(&self) -> Vec<PowerState> {
         vec![PowerState::D0, PowerState::D3Hot]
     }
@@ -91,7 +91,7 @@ impl DevicePowerManager {
             power_consumption: [100, 50, 25, 5, 0], // Example values in mW
         }
     }
-    
+
     pub fn with_supported_states(supported_states: Vec<PowerState>) -> Self {
         Self {
             current_state: Mutex::new(PowerState::D3Cold),
@@ -100,7 +100,7 @@ impl DevicePowerManager {
             power_consumption: [100, 50, 25, 5, 0],
         }
     }
-    
+
     fn state_to_index(state: PowerState) -> usize {
         match state {
             PowerState::D0 => 0,
@@ -110,20 +110,29 @@ impl DevicePowerManager {
             PowerState::D3Cold => 4,
         }
     }
-    
+
     fn is_valid_transition(&self, from: PowerState, to: PowerState) -> bool {
         use PowerState::*;
-        
-        matches!((from, to), 
-            (D3Cold, D0) | (D0, D1) | (D1, D0) | (D1, D2) | 
-            (D2, D1) | (D2, D3Hot) | (D3Hot, D2) | (D3Hot, D3Cold) |
-            (D0, D3Hot) | (D0, D3Cold) | (D3Cold, D3Hot)
+
+        matches!(
+            (from, to),
+            (D3Cold, D0)
+                | (D0, D1)
+                | (D1, D0)
+                | (D1, D2)
+                | (D2, D1)
+                | (D2, D3Hot)
+                | (D3Hot, D2)
+                | (D3Hot, D3Cold)
+                | (D0, D3Hot)
+                | (D0, D3Cold)
+                | (D3Cold, D3Hot)
         )
     }
-    
+
     fn perform_transition(&self, to_state: PowerState) -> Result<(), PowerError> {
         use PowerState::*;
-        
+
         match to_state {
             D0 => {
                 // Power on device, restore context if needed
@@ -139,7 +148,7 @@ impl DevicePowerManager {
                 // Turn off power completely
             }
         }
-        
+
         Ok(())
     }
 }
@@ -148,48 +157,48 @@ impl PowerManagement for DevicePowerManager {
     fn current_state(&self) -> PowerState {
         *self.current_state.lock()
     }
-    
+
     fn transition_to(&mut self, state: PowerState) -> Result<(), PowerError> {
         let current = *self.current_state.lock();
-        
+
         if current == state {
             return Ok(());
         }
-        
+
         if !self.supported_states.contains(&state) {
             return Err(PowerError::NotSupported);
         }
-        
+
         if !self.is_valid_transition(current, state) {
             return Err(PowerError::InvalidState);
         }
-        
+
         self.perform_transition(state)?;
-        
+
         *self.current_state.lock() = state;
         Ok(())
     }
-    
+
     fn can_wakeup(&self) -> bool {
         true
     }
-    
+
     fn enable_wakeup(&mut self) -> Result<(), PowerError> {
         *self.wakeup_enabled.lock() = true;
         Ok(())
     }
-    
+
     fn disable_wakeup(&mut self) -> Result<(), PowerError> {
         *self.wakeup_enabled.lock() = false;
         Ok(())
     }
-    
+
     fn power_consumption(&self) -> u32 {
         let state = *self.current_state.lock();
         let index = Self::state_to_index(state);
         self.power_consumption[index]
     }
-    
+
     fn supported_states(&self) -> Vec<PowerState> {
         self.supported_states.clone()
     }
@@ -225,26 +234,26 @@ impl PowerDomain for SimplePowerDomain {
         }
         Ok(())
     }
-    
+
     fn remove_device(&mut self, device_id: u32) -> Result<(), PowerError> {
         let mut devices = self.devices.lock();
         devices.retain(|&id| id != device_id);
         Ok(())
     }
-    
+
     fn power_on(&mut self) -> Result<(), PowerError> {
         // Hardware-specific power domain control would go here
         *self.powered.lock() = true;
         Ok(())
     }
-    
+
     fn power_off(&mut self) -> Result<(), PowerError> {
         // Check if all devices in domain can be powered off
         // Hardware-specific power domain control would go here
         *self.powered.lock() = false;
         Ok(())
     }
-    
+
     fn is_powered(&self) -> bool {
         *self.powered.lock()
     }

@@ -7,7 +7,10 @@ extern crate alloc;
 
 use alloc::vec;
 
-use user_lib::{close, exit, flock, flock_consts, fork, kill, mkdir, mkfifo, open, open_flags, pipe, read, remove, signals, sleep_ms, test_section, test_subsection, wait_pid, write, TestStats};
+use user_lib::{
+    TestStats, close, exit, flock, flock_consts, fork, kill, mkdir, mkfifo, open, open_flags, pipe,
+    read, remove, signals, sleep_ms, test_section, test_subsection, wait_pid, write,
+};
 
 fn test_pipe_basic(stats: &mut TestStats) {
     test_subsection!("基础管道通信测试");
@@ -57,7 +60,7 @@ fn test_pipe_parent_child(stats: &mut TestStats) {
         let messages = [
             b"Message 1 from child",
             b"Message 2 from child",
-            b"Message 3 from child"
+            b"Message 3 from child",
         ];
 
         for msg in &messages {
@@ -137,7 +140,10 @@ fn test_pipe_bidirectional(stats: &mut TestStats) {
         let msg = b"Hello from parent";
         let write_ret = write(pipe1[1] as usize, msg);
         test_assert!(write_ret as usize == msg.len(), "父进程发送失败");
-        test_info!("父进程发送: {}", core::str::from_utf8(msg).unwrap_or("<invalid>"));
+        test_info!(
+            "父进程发送: {}",
+            core::str::from_utf8(msg).unwrap_or("<invalid>")
+        );
 
         // 接收子进程回复
         let mut buf = [0u8; 64];
@@ -220,7 +226,10 @@ fn test_file_locking(stats: &mut TestStats) {
     mkdir("/tmp");
 
     let lock_file = "/tmp/locktest.txt";
-    let fd = open(lock_file, open_flags::O_CREAT | open_flags::O_RDWR | open_flags::O_TRUNC);
+    let fd = open(
+        lock_file,
+        open_flags::O_CREAT | open_flags::O_RDWR | open_flags::O_TRUNC,
+    );
 
     if fd < 0 {
         test_warn!("无法创建锁定测试文件，跳过文件锁定测试");

@@ -2,18 +2,24 @@ use alloc::{string::ToString, sync::Arc, vec::Vec};
 
 use crate::{
     memory::{
-        frame_allocator, page_table::{translated_byte_buffer, translated_ref_mut, translated_str}
-    }, syscall::errno, task::{
-        self, block_current_and_run_next, current_task, current_user_token, exit_current_and_run_next, find_task_by_pid, get_all_pids, get_all_tasks, get_process_statistics, get_scheduling_policy, get_task_count, loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next, ProcessStats, SchedulingPolicy, TaskStatus
-    }
+        frame_allocator,
+        page_table::{translated_byte_buffer, translated_ref_mut, translated_str},
+    },
+    syscall::errno,
+    task::{
+        self, ProcessStats, SchedulingPolicy, TaskStatus, block_current_and_run_next, current_task,
+        current_user_token, exit_current_and_run_next, find_task_by_pid, get_all_pids,
+        get_all_tasks, get_process_statistics, get_scheduling_policy, get_task_count,
+        loader::get_app_data_by_name, set_scheduling_policy, suspend_current_and_run_next,
+    },
 };
 
 /// CPU核心信息
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpuCoreInfo {
-    pub total_cores: u32,     // 总核心数
-    pub active_cores: u32,    // 活跃核心数
+    pub total_cores: u32,  // 总核心数
+    pub active_cores: u32, // 活跃核心数
 }
 
 /// 进程状态的用户空间表示
@@ -26,17 +32,17 @@ pub struct ProcessInfo {
     pub gid: u32,
     pub euid: u32,
     pub egid: u32,
-    pub status: u32,     // 0=Ready, 1=Running, 2=Zombie, 3=Sleeping
+    pub status: u32, // 0=Ready, 1=Running, 2=Zombie, 3=Sleeping
     pub priority: i32,
     pub nice: i32,
     pub vruntime: u64,
     pub heap_base: usize,
     pub heap_top: usize,
     pub last_runtime: u64,
-    pub total_cpu_time: u64,  // 总CPU时间（微秒）
-    pub cpu_percent: u32,     // CPU使用率百分比（0-10000，支持两位小数）
-    pub core_id: u32,         // 进程运行的核心ID
-    pub name: [u8; 32],       // 进程名（固定长度，以0结尾）
+    pub total_cpu_time: u64, // 总CPU时间（微秒）
+    pub cpu_percent: u32,    // CPU使用率百分比（0-10000，支持两位小数）
+    pub core_id: u32,        // 进程运行的核心ID
+    pub name: [u8; 32],      // 进程名（固定长度，以0结尾）
 }
 
 /// 系统统计信息
@@ -50,11 +56,11 @@ pub struct SystemStats {
     pub total_memory: usize,
     pub used_memory: usize,
     pub free_memory: usize,
-    pub system_uptime: u64,      // 系统运行时间（微秒）
-    pub cpu_user_time: u64,      // 用户态CPU时间（微秒）
-    pub cpu_system_time: u64,    // 系统态CPU时间（微秒）
-    pub cpu_idle_time: u64,      // 空闲CPU时间（微秒）
-    pub cpu_usage_percent: u32,  // 总CPU使用率百分比（0-10000）
+    pub system_uptime: u64,     // 系统运行时间（微秒）
+    pub cpu_user_time: u64,     // 用户态CPU时间（微秒）
+    pub cpu_system_time: u64,   // 系统态CPU时间（微秒）
+    pub cpu_idle_time: u64,     // 空闲CPU时间（微秒）
+    pub cpu_usage_percent: u32, // 总CPU使用率百分比（0-10000）
 }
 
 pub fn sys_exit(exit_code: i32) -> ! {
@@ -123,10 +129,12 @@ pub fn sys_thread_exit(code: i32) -> ! {
 
 /// 线程等待
 pub fn sys_thread_join(tid: usize, exit_code_ptr: *mut i32) -> isize {
-    use crate::task::{current_user_token, find_task_by_pid, set_task_status, TaskStatus};
+    use crate::task::{TaskStatus, current_user_token, find_task_by_pid, set_task_status};
     let waiter = current_task().unwrap();
     // 自己不能 join 自己
-    if waiter.pid() == tid { return -errno::EINVAL; }
+    if waiter.pid() == tid {
+        return -errno::EINVAL;
+    }
 
     loop {
         if let Some(target) = find_task_by_pid(tid) {
@@ -134,7 +142,9 @@ pub fn sys_thread_join(tid: usize, exit_code_ptr: *mut i32) -> isize {
                 // 拿退出码
                 if !exit_code_ptr.is_null() {
                     let token = current_user_token();
-                    unsafe { *translated_ref_mut(token, exit_code_ptr) = target.exit_code(); }
+                    unsafe {
+                        *translated_ref_mut(token, exit_code_ptr) = target.exit_code();
+                    }
                 }
                 // 移除目标
                 crate::task::remove_task(tid);
@@ -471,7 +481,12 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
 
     if let Some(elf_data) = get_app_data_by_name(&path_str) {
         let task = current_task().unwrap();
-        match task.exec_with_args(&path_str, &elf_data, Some(&args.as_slice()), Some(&envs.as_slice())) {
+        match task.exec_with_args(
+            &path_str,
+            &elf_data,
+            Some(&args.as_slice()),
+            Some(&envs.as_slice()),
+        ) {
             Ok(()) => 0,
             Err(_) => -1,
         }
@@ -627,7 +642,8 @@ pub fn sys_get_process_list(pids: *mut u32, max_count: usize) -> isize {
     // 将PIDs写入用户空间缓冲区
     for i in 0..actual_count {
         let pid_ptr = unsafe { pids.add(i) };
-        let mut pid_buffers = translated_byte_buffer(token, pid_ptr as *const u8, core::mem::size_of::<u32>());
+        let mut pid_buffers =
+            translated_byte_buffer(token, pid_ptr as *const u8, core::mem::size_of::<u32>());
 
         if !pid_buffers.is_empty() && pid_buffers[0].len() >= core::mem::size_of::<u32>() {
             let pid_bytes = (all_pids[i] as u32).to_le_bytes();
@@ -659,8 +675,12 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
 
     // 计算CPU使用率
     let current_time = crate::timer::get_time_us();
-    let total_cpu_time = task.total_cpu_time.load(core::sync::atomic::Ordering::Relaxed);
-    let creation_time = task.creation_time.load(core::sync::atomic::Ordering::Relaxed);
+    let total_cpu_time = task
+        .total_cpu_time
+        .load(core::sync::atomic::Ordering::Relaxed);
+    let creation_time = task
+        .creation_time
+        .load(core::sync::atomic::Ordering::Relaxed);
     let process_lifetime = if current_time > creation_time {
         current_time - creation_time
     } else {
@@ -670,16 +690,16 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
     // CPU使用率 = (总CPU时间 / 进程生存时间) * 10000，支持两位小数
     // 限制最大为100% (10000)，避免计算错误导致的异常值
     let cpu_percent = if process_lifetime == 0 {
-        0  // 生存时间为0，使用率为0
+        0 // 生存时间为0，使用率为0
     } else if total_cpu_time == 0 {
-        0  // CPU时间为0，使用率为0
+        0 // CPU时间为0，使用率为0
     } else if total_cpu_time >= process_lifetime {
-        10000  // CPU时间大于等于生存时间，使用率为100%
+        10000 // CPU时间大于等于生存时间，使用率为100%
     } else {
         // 使用安全的128位运算计算百分比
         let percent_128 = (total_cpu_time as u128 * 10000) / process_lifetime as u128;
         if percent_128 > 10000 {
-            10000  // 限制最大为100%
+            10000 // 限制最大为100%
         } else {
             percent_128 as u32
         }
@@ -711,9 +731,14 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
         priority: sched.priority,
         nice: sched.nice,
         vruntime: sched.vruntime,
-        heap_base: task.mm.heap_base.load(core::sync::atomic::Ordering::Relaxed),
+        heap_base: task
+            .mm
+            .heap_base
+            .load(core::sync::atomic::Ordering::Relaxed),
         heap_top: task.mm.heap_top.load(core::sync::atomic::Ordering::Relaxed),
-        last_runtime: task.last_runtime.load(core::sync::atomic::Ordering::Relaxed),
+        last_runtime: task
+            .last_runtime
+            .load(core::sync::atomic::Ordering::Relaxed),
         total_cpu_time,
         cpu_percent,
         core_id,
@@ -721,13 +746,17 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
     };
 
     // 将信息写入用户空间
-    let mut info_buffers = translated_byte_buffer(token, info as *const u8, core::mem::size_of::<ProcessInfo>());
+    let mut info_buffers = translated_byte_buffer(
+        token,
+        info as *const u8,
+        core::mem::size_of::<ProcessInfo>(),
+    );
 
     if !info_buffers.is_empty() && info_buffers[0].len() >= core::mem::size_of::<ProcessInfo>() {
         let info_bytes = unsafe {
             core::slice::from_raw_parts(
                 &process_info as *const ProcessInfo as *const u8,
-                core::mem::size_of::<ProcessInfo>()
+                core::mem::size_of::<ProcessInfo>(),
             )
         };
         info_buffers[0][..core::mem::size_of::<ProcessInfo>()].copy_from_slice(info_bytes);
@@ -753,8 +782,12 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
 
     // 累计CPU时间
     for task in &all_tasks {
-        total_cpu_user_time += task.user_cpu_time.load(core::sync::atomic::Ordering::Relaxed);
-        total_cpu_kernel_time += task.kernel_cpu_time.load(core::sync::atomic::Ordering::Relaxed);
+        total_cpu_user_time += task
+            .user_cpu_time
+            .load(core::sync::atomic::Ordering::Relaxed);
+        total_cpu_kernel_time += task
+            .kernel_cpu_time
+            .load(core::sync::atomic::Ordering::Relaxed);
     }
 
     // 计算系统运行时间和CPU使用率
@@ -768,16 +801,17 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
     // 在多核系统中，总可用CPU时间 = 系统时间 × 核心数
     // CPU使用率 = min(活跃时间 / (系统时间 × 核心数), 1.0) * 100%
     let cpu_usage_percent = if system_uptime == 0 || active_cores == 0 {
-        0  // 系统时间或核心数为0，使用率为0
+        0 // 系统时间或核心数为0，使用率为0
     } else if total_active_cpu_time == 0 {
-        0  // 活跃CPU时间为0，使用率为0
+        0 // 活跃CPU时间为0，使用率为0
     } else {
         let total_available_cpu_time = system_uptime * active_cores as u64;
         if total_active_cpu_time >= total_available_cpu_time {
-            10000  // 活跃时间大于等于可用时间，使用率为100%
+            10000 // 活跃时间大于等于可用时间，使用率为100%
         } else {
             // 使用安全的128位运算
-            let percent_128 = (total_active_cpu_time as u128 * 10000) / total_available_cpu_time as u128;
+            let percent_128 =
+                (total_active_cpu_time as u128 * 10000) / total_available_cpu_time as u128;
             core::cmp::min(percent_128 as u64, 10000) as u32
         }
     };
@@ -786,7 +820,7 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
     let cpu_idle_time = if total_available_cpu_time > total_active_cpu_time {
         total_available_cpu_time - total_active_cpu_time
     } else {
-        0  // 如果活跃时间超过总可用时间，说明计算有误，设为0
+        0 // 如果活跃时间超过总可用时间，说明计算有误，设为0
     };
 
     // 获取真实的内存统计信息（只调用一次）
@@ -808,13 +842,17 @@ pub fn sys_get_system_stats(stats: *mut SystemStats) -> isize {
     };
 
     // 将统计信息写入用户空间
-    let mut stats_buffers = translated_byte_buffer(token, stats as *const u8, core::mem::size_of::<SystemStats>());
+    let mut stats_buffers = translated_byte_buffer(
+        token,
+        stats as *const u8,
+        core::mem::size_of::<SystemStats>(),
+    );
 
     if !stats_buffers.is_empty() && stats_buffers[0].len() >= core::mem::size_of::<SystemStats>() {
         let stats_bytes = unsafe {
             core::slice::from_raw_parts(
                 &system_stats as *const SystemStats as *const u8,
-                core::mem::size_of::<SystemStats>()
+                core::mem::size_of::<SystemStats>(),
             )
         };
         stats_buffers[0][..core::mem::size_of::<SystemStats>()].copy_from_slice(stats_bytes);
@@ -837,13 +875,17 @@ pub fn sys_get_cpu_core_info(core_info: *mut CpuCoreInfo) -> isize {
     };
 
     // 将核心信息写入用户空间
-    let mut info_buffers = translated_byte_buffer(token, core_info as *const u8, core::mem::size_of::<CpuCoreInfo>());
+    let mut info_buffers = translated_byte_buffer(
+        token,
+        core_info as *const u8,
+        core::mem::size_of::<CpuCoreInfo>(),
+    );
 
     if !info_buffers.is_empty() && info_buffers[0].len() >= core::mem::size_of::<CpuCoreInfo>() {
         let info_bytes = unsafe {
             core::slice::from_raw_parts(
                 &cpu_core_info as *const CpuCoreInfo as *const u8,
-                core::mem::size_of::<CpuCoreInfo>()
+                core::mem::size_of::<CpuCoreInfo>(),
             )
         };
         info_buffers[0][..core::mem::size_of::<CpuCoreInfo>()].copy_from_slice(info_bytes);

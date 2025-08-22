@@ -1,5 +1,8 @@
 use alloc::{
-    boxed::Box, string::{String, ToString}, vec::Vec, format
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec::Vec,
 };
 
 //======================================================================
@@ -206,7 +209,7 @@ impl Tokenizer {
                     } else {
                         return self.consume_character_token();
                     }
-                },
+                }
 
                 TokenizerState::TagOpen => {
                     if current_char == '!' {
@@ -223,7 +226,7 @@ impl Tokenizer {
                         self.state = TokenizerState::Data;
                         return Some(Token::Character { data: '<' });
                     }
-                },
+                }
 
                 TokenizerState::EndTagOpen => {
                     if current_char.is_ascii_alphabetic() {
@@ -234,12 +237,12 @@ impl Tokenizer {
                         self.state = TokenizerState::Data;
                         return Some(Token::Character { data: '<' });
                     }
-                },
+                }
 
                 TokenizerState::TagName => {
                     // 这个状态在consume_start_tag/consume_end_tag中处理
                     break;
-                },
+                }
 
                 TokenizerState::BeforeAttributeName => {
                     if current_char.is_whitespace() {
@@ -255,7 +258,7 @@ impl Tokenizer {
                         self.state = TokenizerState::AttributeName;
                         return self.consume_attribute();
                     }
-                },
+                }
 
                 TokenizerState::SelfClosingStartTag => {
                     if current_char == '>' {
@@ -266,7 +269,7 @@ impl Tokenizer {
                         // 错误，但继续处理属性
                         self.state = TokenizerState::BeforeAttributeName;
                     }
-                },
+                }
 
                 _ => {
                     // 其他状态的简化处理
@@ -292,7 +295,9 @@ impl Tokenizer {
         if start < self.pos {
             let text: String = self.input[start..self.pos].iter().collect();
             if !text.trim().is_empty() {
-                return Some(Token::Character { data: text.chars().next().unwrap() });
+                return Some(Token::Character {
+                    data: text.chars().next().unwrap(),
+                });
             }
         }
 
@@ -349,7 +354,7 @@ impl Tokenizer {
                             attributes.push(attr);
                         }
                     }
-                },
+                }
                 TokenizerState::SelfClosingStartTag => {
                     if self.pos < self.input.len() && self.input[self.pos] == '>' {
                         self.state = TokenizerState::Data;
@@ -362,7 +367,7 @@ impl Tokenizer {
                     } else {
                         self.state = TokenizerState::BeforeAttributeName;
                     }
-                },
+                }
                 _ => break,
             }
         }
@@ -577,7 +582,7 @@ impl HtmlTokenizer for Tokenizer {
         *self = Tokenizer::new(input);
         let mut tokens = Vec::new();
 
-        while let Some(token) = self.next_token() {
+        while let Some(token) = Tokenizer::next_token(self) {
             match token {
                 Token::EndOfFile => break,
                 _ => tokens.push(token),
@@ -588,7 +593,7 @@ impl HtmlTokenizer for Tokenizer {
     }
 
     fn next_token(&mut self) -> Option<Token> {
-        self.next_token()
+        Tokenizer::next_token(self)
     }
 
     fn reset(&mut self) {
@@ -681,11 +686,11 @@ impl TreeBuilder {
                 // DOCTYPE处理，设置quirks模式等
                 self.insertion_mode = InsertionMode::BeforeHtml;
                 Ok(())
-            },
+            }
             Token::Character { data } if data.is_whitespace() => {
                 // 忽略空白字符
                 Ok(())
-            },
+            }
             _ => {
                 // 其他token，切换到BeforeHtml模式并重新处理
                 self.insertion_mode = InsertionMode::BeforeHtml;
@@ -696,7 +701,9 @@ impl TreeBuilder {
 
     fn handle_before_html_mode(&mut self, token: Token) -> Result<(), ParseError> {
         match token {
-            Token::StartTag { name, attributes, .. } if name == "html" => {
+            Token::StartTag {
+                name, attributes, ..
+            } if name == "html" => {
                 let mut html_elem = DomNode::elem("html");
                 html_elem.set_attributes(attributes);
 
@@ -707,11 +714,11 @@ impl TreeBuilder {
                 self.stack.push(html_elem);
                 self.insertion_mode = InsertionMode::BeforeHead;
                 Ok(())
-            },
+            }
             Token::Character { data } if data.is_whitespace() => {
                 // 忽略空白
                 Ok(())
-            },
+            }
             _ => {
                 // 隐式创建html元素
                 let html_elem = DomNode::elem("html");
@@ -727,7 +734,9 @@ impl TreeBuilder {
 
     fn handle_before_head_mode(&mut self, token: Token) -> Result<(), ParseError> {
         match token {
-            Token::StartTag { name, attributes, .. } if name == "head" => {
+            Token::StartTag {
+                name, attributes, ..
+            } if name == "head" => {
                 let mut head_elem = DomNode::elem("head");
                 head_elem.set_attributes(attributes);
 
@@ -735,10 +744,8 @@ impl TreeBuilder {
                 self.insert_element(head_elem);
                 self.insertion_mode = InsertionMode::InHead;
                 Ok(())
-            },
-            Token::Character { data } if data.is_whitespace() => {
-                Ok(())
-            },
+            }
+            Token::Character { data } if data.is_whitespace() => Ok(()),
             _ => {
                 // 隐式创建head元素
                 let head_elem = DomNode::elem("head");
@@ -752,7 +759,11 @@ impl TreeBuilder {
 
     fn handle_in_head_mode(&mut self, token: Token) -> Result<(), ParseError> {
         match token {
-            Token::StartTag { name, attributes, self_closing } => {
+            Token::StartTag {
+                name,
+                attributes,
+                self_closing,
+            } => {
                 match name.as_str() {
                     "meta" | "link" | "base" | "title" | "style" | "script" => {
                         let mut elem = DomNode::elem(&name);
@@ -763,22 +774,24 @@ impl TreeBuilder {
                             self.stack.pop(); // 立即关闭自闭合元素
                         }
                         Ok(())
-                    },
+                    }
                     _ => {
                         // 其他元素，离开head模式
                         self.insertion_mode = InsertionMode::AfterHead;
-                        self.process_token(Token::StartTag { name, attributes, self_closing })
+                        self.process_token(Token::StartTag {
+                            name,
+                            attributes,
+                            self_closing,
+                        })
                     }
                 }
-            },
+            }
             Token::EndTag { name, .. } if name == "head" => {
                 self.stack.pop(); // 弹出head元素
                 self.insertion_mode = InsertionMode::AfterHead;
                 Ok(())
-            },
-            Token::Character { data } if data.is_whitespace() => {
-                Ok(())
-            },
+            }
+            Token::Character { data } if data.is_whitespace() => Ok(()),
             _ => {
                 // 其他token，隐式关闭head
                 self.stack.pop();
@@ -790,16 +803,16 @@ impl TreeBuilder {
 
     fn handle_after_head_mode(&mut self, token: Token) -> Result<(), ParseError> {
         match token {
-            Token::StartTag { name, attributes, .. } if name == "body" => {
+            Token::StartTag {
+                name, attributes, ..
+            } if name == "body" => {
                 let mut body_elem = DomNode::elem("body");
                 body_elem.set_attributes(attributes);
                 self.insert_element(body_elem);
                 self.insertion_mode = InsertionMode::InBody;
                 Ok(())
-            },
-            Token::Character { data } if data.is_whitespace() => {
-                Ok(())
-            },
+            }
+            Token::Character { data } if data.is_whitespace() => Ok(()),
             _ => {
                 // 隐式创建body元素
                 let body_elem = DomNode::elem("body");
@@ -812,14 +825,31 @@ impl TreeBuilder {
 
     fn handle_in_body_mode(&mut self, token: Token) -> Result<(), ParseError> {
         match token {
-            Token::StartTag { name, attributes, self_closing } => {
+            Token::StartTag {
+                name,
+                attributes,
+                self_closing,
+            } => {
                 let mut elem = DomNode::elem(&name);
                 elem.set_attributes(attributes);
 
                 // 检查是否是void元素
-                let is_void = matches!(name.as_str(),
-                    "area" | "base" | "br" | "col" | "embed" | "hr" | "img" |
-                    "input" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+                let is_void = matches!(
+                    name.as_str(),
+                    "area"
+                        | "base"
+                        | "br"
+                        | "col"
+                        | "embed"
+                        | "hr"
+                        | "img"
+                        | "input"
+                        | "link"
+                        | "meta"
+                        | "param"
+                        | "source"
+                        | "track"
+                        | "wbr"
                 );
 
                 self.insert_element(elem);
@@ -829,7 +859,7 @@ impl TreeBuilder {
                 }
 
                 Ok(())
-            },
+            }
 
             Token::EndTag { name, .. } => {
                 // 查找匹配的开始标签并关闭
@@ -847,20 +877,20 @@ impl TreeBuilder {
                 }
 
                 Ok(())
-            },
+            }
 
             Token::Character { data } => {
                 self.insert_text(&data.to_string());
                 Ok(())
-            },
+            }
 
             Token::Comment { data } => {
                 // 注释节点处理（可选）
                 println!("[TreeBuilder] Comment: {}", data);
                 Ok(())
-            },
+            }
 
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 
@@ -893,7 +923,7 @@ impl HtmlTreeBuilder for TreeBuilder {
     }
 
     fn process_token(&mut self, token: Token) -> Result<(), ParseError> {
-        self.process_token(token)
+        TreeBuilder::process_token(self, token)
     }
 
     fn finish(&mut self) -> DomNode {
@@ -977,8 +1007,14 @@ fn is_void_element(tag_name: &str) -> bool {
 
 // 增强版HTML解析器，支持更多HTML5特性
 pub fn parse_document(input: &str) -> DomNode {
-    println!("[webcore::html] Starting HTML parse, input length: {}", input.len());
-    println!("[webcore::html] Input preview: {:?}", &input[..input.len().min(100)]);
+    println!(
+        "[webcore::html] Starting HTML parse, input length: {}",
+        input.len()
+    );
+    println!(
+        "[webcore::html] Input preview: {:?}",
+        &input[..input.len().min(100)]
+    );
 
     let mut pos = 0;
     let chars: Vec<char> = input.chars().collect();
@@ -1183,7 +1219,10 @@ pub fn parse_document(input: &str) -> DomNode {
                     let mut end_pos = temp_pos;
                     let end_tag = read_tag_name(chars, &mut end_pos);
 
-                    println!("[webcore::html] Found end tag: '{}' for current '{}'", end_tag, tag_name);
+                    println!(
+                        "[webcore::html] Found end tag: '{}' for current '{}'",
+                        end_tag, tag_name
+                    );
 
                     if end_tag == tag_name {
                         // 找到匹配的结束标签，更新位置并结束
@@ -1195,7 +1234,10 @@ pub fn parse_document(input: &str) -> DomNode {
                         if *pos < chars.len() {
                             *pos += 1; // 跳过 '>'
                         }
-                        println!("[webcore::html] Closed tag '{}' at position {}", tag_name, *pos);
+                        println!(
+                            "[webcore::html] Closed tag '{}' at position {}",
+                            tag_name, *pos
+                        );
                         break;
                     }
                 }
@@ -1240,7 +1282,11 @@ pub fn parse_document(input: &str) -> DomNode {
         }
 
         if let Some(element) = parse_element(&chars, &mut pos) {
-            println!("[webcore::html] Parsed top-level element: '{}' with {} children", element.tag, element.children.len());
+            println!(
+                "[webcore::html] Parsed top-level element: '{}' with {} children",
+                element.tag,
+                element.children.len()
+            );
 
             // 如果找到html根元素，使用它作为文档根
             if element.tag == "html" && !found_html_root {
@@ -1288,8 +1334,14 @@ fn print_dom_tree(node: &DomNode, depth: usize) {
         }
     } else {
         // 元素节点
-        println!("{}[{}] id={:?} class={:?} children={}",
-                 indent, node.tag, node.id, node.class_list, node.children.len());
+        println!(
+            "{}[{}] id={:?} class={:?} children={}",
+            indent,
+            node.tag,
+            node.id,
+            node.class_list,
+            node.children.len()
+        );
         for child in &node.children {
             print_dom_tree(child, depth + 1);
         }

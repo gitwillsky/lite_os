@@ -148,8 +148,10 @@ impl Logger {
     pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.level && self.is_module_enabled(module) {
             let hart_id = crate::arch::hart::hart_id();
-            println!("[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
-                     hart_id, level, module, args);
+            println!(
+                "[\x1b[35mCPU-{}\x1b[0m] [{}] [\x1b[34m{}\x1b[0m] {}",
+                hart_id, level, module, args
+            );
         }
     }
 }

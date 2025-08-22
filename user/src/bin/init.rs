@@ -60,4 +60,3 @@ fn spawn_text_test() {
         println!("init: failed to fork text_test process");
     }
 }
-

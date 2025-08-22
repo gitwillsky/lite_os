@@ -11,9 +11,7 @@ mod shell_modules;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use shell_modules::*;
-use user_lib::{
-    check_keyboard_input, getcwd, read, yield_,
-};
+use user_lib::{check_keyboard_input, getcwd, read, yield_};
 
 // 控制字符常量
 const LF: u8 = b'\n';
@@ -112,7 +110,6 @@ fn main() -> i32 {
     let mut editor = LineEditor::new();
     let mut history = CommandHistory::new(100); // 保存最多100条历史命令
     let mut job_manager = JobManager::new();
-
 
     let prompt = generate_prompt();
     print!("{}", prompt);

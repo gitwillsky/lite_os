@@ -1,17 +1,15 @@
 mod core;
-mod state;
 mod delivery;
 mod multicore;
+mod state;
 
 use crate::{task::TaskControlBlock, trap::TrapContext};
 
+pub use core::{Signal, SignalAction, SignalError, SignalSet};
+pub use state::{SignalDisposition, SignalState};
 
-pub use core::{Signal, SignalError, SignalSet, SignalAction};
-pub use state::{SignalState, SignalDisposition};
-
-pub use core::{SIG_DFL, SIG_IGN, SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK};
+pub use core::{SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK};
 pub const SIG_RETURN_ADDR: usize = 0;
-
 
 /// 初始化信号系统
 pub fn init() {
@@ -27,7 +25,7 @@ pub fn send_signal(pid: usize, signal: Signal) -> Result<(), SignalError> {
 /// 处理当前任务的待处理信号
 pub fn handle_signals(
     task: &TaskControlBlock,
-    trap_cx: Option<&mut TrapContext>
+    trap_cx: Option<&mut TrapContext>,
 ) -> (bool, Option<i32>) {
     core::handle_signals(task, trap_cx)
 }
@@ -36,7 +34,7 @@ pub fn handle_signals(
 pub fn set_signal_handler(
     task: &TaskControlBlock,
     signal: Signal,
-    handler: usize
+    handler: usize,
 ) -> Result<usize, SignalError> {
     core::set_signal_handler(task, signal, handler)
 }
@@ -46,7 +44,7 @@ pub fn set_signal_mask(
     task: &TaskControlBlock,
     how: i32,
     set: Option<&SignalSet>,
-    old_set: Option<&mut SignalSet>
+    old_set: Option<&mut SignalSet>,
 ) -> Result<(), SignalError> {
     core::set_signal_mask(task, how, set, old_set)
 }

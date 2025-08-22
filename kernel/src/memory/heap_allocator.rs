@@ -1,4 +1,7 @@
-use core::{alloc::{self, GlobalAlloc, Layout}, ptr::{addr_of_mut, NonNull}};
+use core::{
+    alloc::{self, GlobalAlloc, Layout},
+    ptr::{NonNull, addr_of_mut},
+};
 
 use buddy_system_allocator::LockedHeap;
 
@@ -51,7 +54,9 @@ unsafe impl GlobalAlloc for HybridAllocator {
         // Determine which allocator owns this pointer by address range
         if Self::is_buddy_ptr(ptr) {
             // Pointer is in buddy allocator's memory range
-            unsafe { BUDDY_ALLOCATOR.dealloc(ptr, layout); }
+            unsafe {
+                BUDDY_ALLOCATOR.dealloc(ptr, layout);
+            }
         } else {
             // Try SLAB allocator for other addresses
             if let Some(non_null_ptr) = NonNull::new(ptr) {

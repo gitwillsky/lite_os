@@ -39,29 +39,41 @@ fn main() -> i32 {
         let result = mkdir(path);
 
         match result {
-            0 => {}, // Success - no output needed
+            0 => {} // Success - no output needed
             -17 => {
                 println!("mkdir: cannot create directory '{}': File exists", path);
                 exit_code = 1;
-            },
+            }
             -13 => {
-                println!("mkdir: cannot create directory '{}': Permission denied", path);
+                println!(
+                    "mkdir: cannot create directory '{}': Permission denied",
+                    path
+                );
                 exit_code = 1;
-            },
+            }
             -2 => {
-                println!("mkdir: cannot create directory '{}': No such file or directory", path);
+                println!(
+                    "mkdir: cannot create directory '{}': No such file or directory",
+                    path
+                );
                 exit_code = 1;
-            },
+            }
             -20 => {
                 println!("mkdir: cannot create directory '{}': Not a directory", path);
                 exit_code = 1;
-            },
+            }
             -28 => {
-                println!("mkdir: cannot create directory '{}': No space left on device", path);
+                println!(
+                    "mkdir: cannot create directory '{}': No space left on device",
+                    path
+                );
                 exit_code = 1;
-            },
+            }
             _ => {
-                println!("mkdir: cannot create directory '{}': Unknown error ({})", path, result);
+                println!(
+                    "mkdir: cannot create directory '{}': Unknown error ({})",
+                    path, result
+                );
                 exit_code = 1;
             }
         }

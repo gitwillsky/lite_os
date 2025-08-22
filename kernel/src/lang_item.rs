@@ -3,7 +3,9 @@ use riscv::register;
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
-    unsafe { register::sstatus::clear_sie(); }
+    unsafe {
+        register::sstatus::clear_sie();
+    }
 
     // 输出基本的 panic 信息
     if let Some(location) = info.location() {
@@ -25,6 +27,8 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
     // 简单停机
     loop {
-        unsafe { riscv::asm::wfi(); }
+        unsafe {
+            riscv::asm::wfi();
+        }
     }
 }

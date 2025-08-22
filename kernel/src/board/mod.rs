@@ -3,7 +3,7 @@ use spin::Once;
 mod dtb;
 
 // 重新导出 RTCDevice 和 BoardInfo 供其他模块使用
-pub use dtb::{RTCDevice, BoardInfo};
+pub use dtb::{BoardInfo, RTCDevice};
 
 static BOARD_INFO: Once<BoardInfo> = Once::new();
 

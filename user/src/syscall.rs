@@ -1,13 +1,13 @@
-use core::arch::asm;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::arch::asm;
 
 /// CPU核心信息结构体
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct CpuCoreInfo {
-    pub total_cores: u32,     // 总核心数
-    pub active_cores: u32,    // 活跃核心数
+    pub total_cores: u32,  // 总核心数
+    pub active_cores: u32, // 活跃核心数
 }
 
 /// 进程信息结构体（与内核中的定义保持一致）
@@ -20,17 +20,17 @@ pub struct ProcessInfo {
     pub gid: u32,
     pub euid: u32,
     pub egid: u32,
-    pub status: u32,     // 0=Ready, 1=Running, 2=Zombie, 3=Sleeping
+    pub status: u32, // 0=Ready, 1=Running, 2=Zombie, 3=Sleeping
     pub priority: i32,
     pub nice: i32,
     pub vruntime: u64,
     pub heap_base: usize,
     pub heap_top: usize,
     pub last_runtime: u64,
-    pub total_cpu_time: u64,  // 总CPU时间（微秒）
-    pub cpu_percent: u32,     // CPU使用率百分比（0-10000，支持两位小数）
-    pub core_id: u32,         // 进程运行的核心ID
-    pub name: [u8; 32],       // 进程名（固定长度，以0结尾）
+    pub total_cpu_time: u64, // 总CPU时间（微秒）
+    pub cpu_percent: u32,    // CPU使用率百分比（0-10000，支持两位小数）
+    pub core_id: u32,        // 进程运行的核心ID
+    pub name: [u8; 32],      // 进程名（固定长度，以0结尾）
 }
 
 /// 系统统计信息结构体（与内核中的定义保持一致）
@@ -44,11 +44,11 @@ pub struct SystemStats {
     pub total_memory: usize,
     pub used_memory: usize,
     pub free_memory: usize,
-    pub system_uptime: u64,      // 系统运行时间（微秒）
-    pub cpu_user_time: u64,      // 用户态CPU时间（微秒）
-    pub cpu_system_time: u64,    // 系统态CPU时间（微秒）
-    pub cpu_idle_time: u64,      // 空闲CPU时间（微秒）
-    pub cpu_usage_percent: u32,  // 总CPU使用率百分比（0-10000）
+    pub system_uptime: u64,     // 系统运行时间（微秒）
+    pub cpu_user_time: u64,     // 用户态CPU时间（微秒）
+    pub cpu_system_time: u64,   // 系统态CPU时间（微秒）
+    pub cpu_idle_time: u64,     // 空闲CPU时间（微秒）
+    pub cpu_usage_percent: u32, // 总CPU使用率百分比（0-10000）
 }
 
 // 系统调用ID定义
@@ -250,7 +250,7 @@ pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
             null_terminated_path.as_ptr() as usize,
             argv_ptrs.as_ptr() as usize,
             envp_ptrs.as_ptr() as usize,
-        ]
+        ],
     )
 }
 
@@ -265,7 +265,10 @@ pub fn thread_exit(code: i32) -> ! {
 }
 
 pub fn thread_join(tid: usize, exit_code: &mut i32) -> isize {
-    syscall(SYSCALL_THREAD_JOIN, [tid, exit_code as *mut i32 as usize, 0])
+    syscall(
+        SYSCALL_THREAD_JOIN,
+        [tid, exit_code as *mut i32 as usize, 0],
+    )
 }
 
 /// 功能：当前进程主动让出 CPU 的执行权
@@ -331,7 +334,10 @@ pub fn wait_pid_nb(pid: usize, exit_code: *mut i32) -> isize {
 pub fn open(path: &str, flags: u32) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_OPEN, [null_terminated_path.as_ptr() as usize, flags as usize, 0])
+    syscall(
+        SYSCALL_OPEN,
+        [null_terminated_path.as_ptr() as usize, flags as usize, 0],
+    )
 }
 
 /// 关闭文件
@@ -343,21 +349,34 @@ pub fn close(fd: usize) -> isize {
 pub fn listdir(path: &str, buf: &mut [u8]) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_LISTDIR, [null_terminated_path.as_ptr() as usize, buf.as_mut_ptr() as usize, buf.len()])
+    syscall(
+        SYSCALL_LISTDIR,
+        [
+            null_terminated_path.as_ptr() as usize,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+        ],
+    )
 }
 
 /// 创建目录
 pub fn mkdir(path: &str) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_MKDIR, [null_terminated_path.as_ptr() as usize, 0, 0])
+    syscall(
+        SYSCALL_MKDIR,
+        [null_terminated_path.as_ptr() as usize, 0, 0],
+    )
 }
 
 /// 创建命名管道（FIFO）
 pub fn mkfifo(path: &str, mode: u32) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_MKFIFO, [null_terminated_path.as_ptr() as usize, mode as usize, 0])
+    syscall(
+        SYSCALL_MKFIFO,
+        [null_terminated_path.as_ptr() as usize, mode as usize, 0],
+    )
 }
 
 // 权限相关系统调用封装
@@ -397,41 +416,71 @@ pub fn setegid(egid: u32) -> isize {
 pub fn chmod(path: &str, mode: u32) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_CHMOD, [null_terminated_path.as_ptr() as usize, mode as usize, 0])
+    syscall(
+        SYSCALL_CHMOD,
+        [null_terminated_path.as_ptr() as usize, mode as usize, 0],
+    )
 }
 
 pub fn chown(path: &str, uid: u32, gid: u32) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_CHOWN, [null_terminated_path.as_ptr() as usize, uid as usize, gid as usize])
+    syscall(
+        SYSCALL_CHOWN,
+        [
+            null_terminated_path.as_ptr() as usize,
+            uid as usize,
+            gid as usize,
+        ],
+    )
 }
 
 /// 删除文件或目录
 pub fn remove(path: &str) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_REMOVE, [null_terminated_path.as_ptr() as usize, 0, 0])
+    syscall(
+        SYSCALL_REMOVE,
+        [null_terminated_path.as_ptr() as usize, 0, 0],
+    )
 }
 
 /// 获取文件信息
 pub fn stat(path: &str, buf: &mut [u8]) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_STAT, [null_terminated_path.as_ptr() as usize, buf.as_mut_ptr() as usize, 0])
+    syscall(
+        SYSCALL_STAT,
+        [
+            null_terminated_path.as_ptr() as usize,
+            buf.as_mut_ptr() as usize,
+            0,
+        ],
+    )
 }
 
 /// 读取文件内容
 pub fn read_file(path: &str, buf: &mut [u8]) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_READ_FILE, [null_terminated_path.as_ptr() as usize, buf.as_mut_ptr() as usize, buf.len()])
+    syscall(
+        SYSCALL_READ_FILE,
+        [
+            null_terminated_path.as_ptr() as usize,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+        ],
+    )
 }
 
 /// 改变当前工作目录
 pub fn chdir(path: &str) -> isize {
     let mut null_terminated_path = String::from(path);
     null_terminated_path.push('\0');
-    syscall(SYSCALL_CHDIR, [null_terminated_path.as_ptr() as usize, 0, 0])
+    syscall(
+        SYSCALL_CHDIR,
+        [null_terminated_path.as_ptr() as usize, 0, 0],
+    )
 }
 
 /// 获取当前工作目录
@@ -442,7 +491,14 @@ pub fn getcwd(buf: &mut [u8]) -> isize {
 /// 获取进程启动时的命令行参数
 /// 返回: 参数个数，如果出错则返回负数
 pub fn get_args(argc_buf: &mut usize, argv_buf: &mut [u8]) -> isize {
-    syscall(SYSCALL_GET_ARGS, [argc_buf as *mut usize as usize, argv_buf.as_mut_ptr() as usize, argv_buf.len()])
+    syscall(
+        SYSCALL_GET_ARGS,
+        [
+            argc_buf as *mut usize as usize,
+            argv_buf.as_mut_ptr() as usize,
+            argv_buf.len(),
+        ],
+    )
 }
 
 /// 复制文件描述符
@@ -524,12 +580,18 @@ pub struct SigAction {
 
 /// 设置信号动作
 pub fn sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) -> isize {
-    syscall(SYSCALL_SIGACTION, [sig as usize, act as usize, oldact as usize])
+    syscall(
+        SYSCALL_SIGACTION,
+        [sig as usize, act as usize, oldact as usize],
+    )
 }
 
 /// 设置信号掩码
 pub fn sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
-    syscall(SYSCALL_SIGPROCMASK, [how as usize, set as usize, oldset as usize])
+    syscall(
+        SYSCALL_SIGPROCMASK,
+        [how as usize, set as usize, oldset as usize],
+    )
 }
 
 /// 从信号处理函数返回
@@ -677,23 +739,23 @@ pub const SIG_UNBLOCK: i32 = 1;
 pub const SIG_SETMASK: i32 = 2;
 
 /// 特殊信号处理器值
-pub const SIG_DFL: usize = 0;  // 默认动作
-pub const SIG_IGN: usize = 1;  // 忽略信号
+pub const SIG_DFL: usize = 0; // 默认动作
+pub const SIG_IGN: usize = 1; // 忽略信号
 
 /// 文件锁定操作常量
 pub mod flock_consts {
-    pub const LOCK_SH: i32 = 1;   // 共享锁
-    pub const LOCK_EX: i32 = 2;   // 排他锁
-    pub const LOCK_NB: i32 = 4;   // 非阻塞
-    pub const LOCK_UN: i32 = 8;   // 解锁
+    pub const LOCK_SH: i32 = 1; // 共享锁
+    pub const LOCK_EX: i32 = 2; // 排他锁
+    pub const LOCK_NB: i32 = 4; // 非阻塞
+    pub const LOCK_UN: i32 = 8; // 解锁
 }
 
 /// fcntl 命令常量
 pub mod fcntl_consts {
-    pub const F_GETFL: i32 = 3;   // 获取文件状态标志
-    pub const F_SETFL: i32 = 4;   // 设置文件状态标志
-    pub const F_GETFD: i32 = 1;   // 获取文件描述符标志
-    pub const F_SETFD: i32 = 2;   // 设置文件描述符标志
+    pub const F_GETFL: i32 = 3; // 获取文件状态标志
+    pub const F_SETFL: i32 = 4; // 设置文件状态标志
+    pub const F_GETFD: i32 = 1; // 获取文件描述符标志
+    pub const F_SETFD: i32 = 2; // 设置文件描述符标志
 }
 
 /// 文件描述符标志
@@ -703,22 +765,22 @@ pub mod fd_flags {
 
 /// 文件打开和状态标志常量
 pub mod open_flags {
-    pub const O_RDONLY: u32 = 0o0;    // 只读
-    pub const O_WRONLY: u32 = 0o1;    // 只写
-    pub const O_RDWR: u32 = 0o2;      // 读写
-    pub const O_CREAT: u32 = 0o100;   // 创建文件
-    pub const O_TRUNC: u32 = 0o1000;  // 截断文件
-    pub const O_NONBLOCK: u32 = 0o4000;  // 非阻塞
-    pub const O_APPEND: u32 = 0o2000;    // 追加模式
+    pub const O_RDONLY: u32 = 0o0; // 只读
+    pub const O_WRONLY: u32 = 0o1; // 只写
+    pub const O_RDWR: u32 = 0o2; // 读写
+    pub const O_CREAT: u32 = 0o100; // 创建文件
+    pub const O_TRUNC: u32 = 0o1000; // 截断文件
+    pub const O_NONBLOCK: u32 = 0o4000; // 非阻塞
+    pub const O_APPEND: u32 = 0o2000; // 追加模式
 }
 
 /// 错误码常量
 pub mod errno {
-    pub const EAGAIN: i32 = 11;       // 资源暂时不可用
-    pub const EWOULDBLOCK: i32 = 11;  // 操作会阻塞（与EAGAIN相同）
-    pub const EBADF: i32 = 9;         // 无效的文件描述符
-    pub const EINVAL: i32 = 22;       // 无效的参数
-    pub const EPERM: i32 = 1;         // 操作不允许
+    pub const EAGAIN: i32 = 11; // 资源暂时不可用
+    pub const EWOULDBLOCK: i32 = 11; // 操作会阻塞（与EAGAIN相同）
+    pub const EBADF: i32 = 9; // 无效的文件描述符
+    pub const EINVAL: i32 = 22; // 无效的参数
+    pub const EPERM: i32 = 1; // 操作不允许
 }
 
 /// 获取进程列表
@@ -727,7 +789,10 @@ pub mod errno {
 /// - max_count: 缓冲区最大容量
 /// 返回值：实际进程数量
 pub fn get_process_list(pids: &mut [u32]) -> isize {
-    syscall(SYSCALL_GET_PROCESS_LIST, [pids.as_mut_ptr() as usize, pids.len(), 0])
+    syscall(
+        SYSCALL_GET_PROCESS_LIST,
+        [pids.as_mut_ptr() as usize, pids.len(), 0],
+    )
 }
 
 /// 获取所有进程ID的数量
@@ -741,7 +806,10 @@ pub fn get_process_count() -> isize {
 /// - info: 用于存储进程信息的结构体
 /// 返回值：成功返回0，失败返回-1
 pub fn get_process_info(pid: u32, info: &mut ProcessInfo) -> isize {
-    syscall(SYSCALL_GET_PROCESS_INFO, [pid as usize, info as *mut ProcessInfo as usize, 0])
+    syscall(
+        SYSCALL_GET_PROCESS_INFO,
+        [pid as usize, info as *mut ProcessInfo as usize, 0],
+    )
 }
 
 /// 获取系统统计信息
@@ -749,7 +817,10 @@ pub fn get_process_info(pid: u32, info: &mut ProcessInfo) -> isize {
 /// - stats: 用于存储系统统计信息的结构体
 /// 返回值：成功返回0，失败返回-1
 pub fn get_system_stats(stats: &mut SystemStats) -> isize {
-    syscall(SYSCALL_GET_SYSTEM_STATS, [stats as *mut SystemStats as usize, 0, 0])
+    syscall(
+        SYSCALL_GET_SYSTEM_STATS,
+        [stats as *mut SystemStats as usize, 0, 0],
+    )
 }
 
 pub fn get_cpu_core_info() -> Option<CpuCoreInfo> {
@@ -758,12 +829,11 @@ pub fn get_cpu_core_info() -> Option<CpuCoreInfo> {
         active_cores: 0,
     };
 
-    let result = syscall(SYSCALL_GET_CPU_CORE_INFO, [&mut core_info as *mut CpuCoreInfo as usize, 0, 0]);
-    if result == 0 {
-        Some(core_info)
-    } else {
-        None
-    }
+    let result = syscall(
+        SYSCALL_GET_CPU_CORE_INFO,
+        [&mut core_info as *mut CpuCoreInfo as usize, 0, 0],
+    );
+    if result == 0 { Some(core_info) } else { None }
 }
 
 // 时间相关结构体和函数
@@ -806,12 +876,18 @@ pub fn time() -> isize {
 
 /// POSIX gettimeofday - 获取当前时间和时区
 pub fn gettimeofday(tv: &mut TimeVal, tz: *mut u8) -> isize {
-    syscall(SYSCALL_GETTIMEOFDAY, [tv as *mut TimeVal as usize, tz as usize, 0])
+    syscall(
+        SYSCALL_GETTIMEOFDAY,
+        [tv as *mut TimeVal as usize, tz as usize, 0],
+    )
 }
 
 /// 获取当前时间的便利函数
 pub fn get_current_time() -> TimeVal {
-    let mut tv = TimeVal { tv_sec: 0, tv_usec: 0 };
+    let mut tv = TimeVal {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
     gettimeofday(&mut tv, core::ptr::null_mut());
     tv
 }
@@ -822,7 +898,10 @@ pub fn get_current_time() -> TimeVal {
 /// - rem: 如果被信号中断，剩余时间（可以为null）
 /// 返回值：成功返回0，失败返回-1
 pub fn nanosleep(req: &TimeSpec, rem: *mut TimeSpec) -> isize {
-    syscall(SYSCALL_NANOSLEEP, [req as *const TimeSpec as usize, rem as usize, 0])
+    syscall(
+        SYSCALL_NANOSLEEP,
+        [req as *const TimeSpec as usize, rem as usize, 0],
+    )
 }
 
 /// 毫秒级睡眠（便利函数）
@@ -902,7 +981,10 @@ pub struct WatchdogInfo {
 
 /// 配置 watchdog
 pub fn watchdog_configure(config: &WatchdogConfig) -> isize {
-    syscall(SYSCALL_WATCHDOG_CONFIGURE, [config as *const WatchdogConfig as usize, 0, 0])
+    syscall(
+        SYSCALL_WATCHDOG_CONFIGURE,
+        [config as *const WatchdogConfig as usize, 0, 0],
+    )
 }
 
 /// 启动 watchdog
@@ -922,7 +1004,10 @@ pub fn watchdog_feed() -> isize {
 
 /// 获取 watchdog 信息
 pub fn watchdog_get_info(info: &mut WatchdogInfo) -> isize {
-    syscall(SYSCALL_WATCHDOG_GET_INFO, [info as *mut WatchdogInfo as usize, 0, 0])
+    syscall(
+        SYSCALL_WATCHDOG_GET_INFO,
+        [info as *mut WatchdogInfo as usize, 0, 0],
+    )
 }
 
 /// 设置 watchdog 预设配置
@@ -940,7 +1025,7 @@ pub mod watchdog_presets {
         WatchdogConfig {
             timeout_us: 60_000_000, // 60 秒
             enabled: true,
-            reboot_on_timeout: false, // 开发时不重启
+            reboot_on_timeout: false,    // 开发时不重启
             warning_time_us: 10_000_000, // 10 秒预警
         }
     }

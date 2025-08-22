@@ -6,8 +6,8 @@ use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 
-use crate::arch::hart::{hart_id, MAX_CORES};
 use super::core::{Signal, SignalError};
+use crate::arch::hart::{MAX_CORES, hart_id};
 
 //=============================================================================
 // 核间信号消息
@@ -132,7 +132,9 @@ impl MultiCoreSignalManager {
     /// 清除任务在核心上的运行状态
     pub fn clear_task_on_core(&self, core_id: usize, pid: usize) {
         if core_id < MAX_CORES {
-            let current_pid = self.core_states[core_id].current_task_pid.load(Ordering::Relaxed);
+            let current_pid = self.core_states[core_id]
+                .current_task_pid
+                .load(Ordering::Relaxed);
             if current_pid == pid {
                 self.core_states[core_id].update_current_task(0);
             }
@@ -148,9 +150,9 @@ impl MultiCoreSignalManager {
     /// 向进程发送信号（跨核心支持）
     pub fn send_signal_to_process(&self, pid: usize, signal: Signal) -> Result<(), SignalError> {
         if let Some(target_core) = self.find_process_core(pid) {
-            let message = SignalMessage::SignalDelivery { 
-                target_pid: pid, 
-                signal 
+            let message = SignalMessage::SignalDelivery {
+                target_pid: pid,
+                signal,
             };
             self.send_message_to_core(target_core, message)
         } else {
@@ -160,13 +162,17 @@ impl MultiCoreSignalManager {
     }
 
     /// 向指定核心发送消息
-    fn send_message_to_core(&self, target_core: usize, message: SignalMessage) -> Result<(), SignalError> {
+    fn send_message_to_core(
+        &self,
+        target_core: usize,
+        message: SignalMessage,
+    ) -> Result<(), SignalError> {
         if target_core >= MAX_CORES {
             return Err(SignalError::ProcessNotFound);
         }
 
         let current_core = hart_id();
-        
+
         // 如果是同一个核心，直接处理
         if current_core == target_core {
             return Ok(());
@@ -187,7 +193,7 @@ impl MultiCoreSignalManager {
     /// 广播信号检查请求到所有活跃核心
     fn broadcast_signal_check(&self, pid: usize) -> Result<(), SignalError> {
         let mut success_count = 0;
-        
+
         for core_id in 0..MAX_CORES {
             if self.core_states[core_id].active.load(Ordering::Acquire) {
                 let message = SignalMessage::CheckSignals { target_pid: pid };
@@ -196,7 +202,7 @@ impl MultiCoreSignalManager {
                 }
             }
         }
-        
+
         if success_count > 0 {
             Ok(())
         } else {
@@ -207,7 +213,7 @@ impl MultiCoreSignalManager {
     /// 发送IPI到指定核心
     fn send_ipi(&self, target_core: usize) -> Result<(), SignalError> {
         let hart_mask = 1usize << target_core;
-        
+
         match crate::arch::sbi::sbi_send_ipi(hart_mask, 0) {
             Ok(()) => Ok(()),
             Err(_) => Err(SignalError::InternalError),

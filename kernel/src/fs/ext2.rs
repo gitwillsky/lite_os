@@ -12,7 +12,6 @@ use core::{
 };
 use spin::Mutex;
 
-
 use super::{FileStat, FileSystem, FileSystemError, Inode, InodeType};
 use crate::drivers::block::{BLOCK_SIZE, BlockDevice, BlockError};
 
@@ -24,13 +23,38 @@ fn align_up(value: usize, align_to: usize) -> usize {
 /// Transaction operations for rollback support
 #[derive(Debug, Clone)]
 enum TransactionOp {
-    AllocateBlock { block_id: u32, group: usize },
-    FreeBlock { block_id: u32, group: usize },
-    AllocateInode { inode_id: u32, group: usize },
-    FreeInode { inode_id: u32, group: usize },
-    UpdateInode { inode_id: u32, old_data: Ext2InodeDisk, new_data: Ext2InodeDisk },
-    UpdateGroupDescriptor { group: usize, old_gd: Ext2GroupDesc, new_gd: Ext2GroupDesc },
-    WriteBitmapBit { bitmap_block: u32, bit_index: u32, old_value: bool, new_value: bool },
+    AllocateBlock {
+        block_id: u32,
+        group: usize,
+    },
+    FreeBlock {
+        block_id: u32,
+        group: usize,
+    },
+    AllocateInode {
+        inode_id: u32,
+        group: usize,
+    },
+    FreeInode {
+        inode_id: u32,
+        group: usize,
+    },
+    UpdateInode {
+        inode_id: u32,
+        old_data: Ext2InodeDisk,
+        new_data: Ext2InodeDisk,
+    },
+    UpdateGroupDescriptor {
+        group: usize,
+        old_gd: Ext2GroupDesc,
+        new_gd: Ext2GroupDesc,
+    },
+    WriteBitmapBit {
+        bitmap_block: u32,
+        bit_index: u32,
+        old_value: bool,
+        new_value: bool,
+    },
 }
 
 /// Transaction for atomic filesystem operations
@@ -148,7 +172,8 @@ impl<T: Clone> MetadataCache<T> {
     }
 
     fn evict_lru(&mut self) {
-        if let Some((lru_key, _)) = self.entries
+        if let Some((lru_key, _)) = self
+            .entries
             .iter()
             .min_by_key(|(_, entry)| (entry.last_access, entry.access_count))
             .map(|(k, v)| (*k, v))
@@ -173,7 +198,11 @@ impl<T: Clone> MetadataCache<T> {
 
     fn cache_stats(&self) -> (u64, u64, f64) {
         let total = self.hits + self.misses;
-        let hit_rate = if total > 0 { self.hits as f64 / total as f64 } else { 0.0 };
+        let hit_rate = if total > 0 {
+            self.hits as f64 / total as f64
+        } else {
+            0.0
+        };
         (self.hits, self.misses, hit_rate)
     }
 }
@@ -182,23 +211,23 @@ impl<T: Clone> MetadataCache<T> {
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug)]
 struct Ext2XattrHeader {
-    h_magic: u32,        // Magic number for identification
-    h_refcount: u32,     // Reference count
-    h_blocks: u32,       // Number of disk blocks used
-    h_hash: u32,         // Hash value of all attributes
-    reserved: [u32; 4],  // Zero
+    h_magic: u32,       // Magic number for identification
+    h_refcount: u32,    // Reference count
+    h_blocks: u32,      // Number of disk blocks used
+    h_hash: u32,        // Hash value of all attributes
+    reserved: [u32; 4], // Zero
 }
 
 /// Extended attribute entry
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug)]
 struct Ext2XattrEntry {
-    e_name_len: u8,      // Length of name
-    e_name_index: u8,    // Attribute name index
-    e_value_offs: u16,   // Offset of attribute value
-    e_value_block: u32,  // Disk block of attribute value
-    e_value_size: u32,   // Size of attribute value
-    e_hash: u32,         // Hash value of name and value
+    e_name_len: u8,     // Length of name
+    e_name_index: u8,   // Attribute name index
+    e_value_offs: u16,  // Offset of attribute value
+    e_value_block: u32, // Disk block of attribute value
+    e_value_size: u32,  // Size of attribute value
+    e_hash: u32,        // Hash value of name and value
 }
 
 /// Extended attribute namespaces
@@ -371,7 +400,6 @@ struct Ext2DirEntry2Header {
     file_type: u8,
 }
 
-
 fn ceil_div(a: usize, b: usize) -> usize {
     (a + b - 1) / b
 }
@@ -408,7 +436,10 @@ impl Ext2FileSystem {
         // Check magic number (copy to avoid unaligned access)
         let magic = sb.s_magic;
         if magic != EXT2_SUPER_MAGIC {
-            error!("[EXT2] Invalid magic number: 0x{:x}, expected 0x{:x}", magic, EXT2_SUPER_MAGIC);
+            error!(
+                "[EXT2] Invalid magic number: 0x{:x}, expected 0x{:x}",
+                magic, EXT2_SUPER_MAGIC
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
@@ -442,7 +473,11 @@ impl Ext2FileSystem {
         }
 
         // Validate inode size
-        let inode_size = if rev_level == 0 { 128 } else { sb.s_inode_size as usize };
+        let inode_size = if rev_level == 0 {
+            128
+        } else {
+            sb.s_inode_size as usize
+        };
         if inode_size < 128 || inode_size > block_size || (inode_size & (inode_size - 1)) != 0 {
             error!("[EXT2] Invalid inode size: {}", inode_size);
             return Err(FileSystemError::InvalidFileSystem);
@@ -465,8 +500,10 @@ impl Ext2FileSystem {
         let first_data_block = sb.s_first_data_block;
         let expected_first_data_block = if block_size == 1024 { 1 } else { 0 };
         if first_data_block != expected_first_data_block {
-            warn!("[EXT2] Unexpected first data block: {}, expected {}",
-                  first_data_block, expected_first_data_block);
+            warn!(
+                "[EXT2] Unexpected first data block: {}, expected {}",
+                first_data_block, expected_first_data_block
+            );
         }
 
         // Check for unsupported features
@@ -485,7 +522,10 @@ impl Ext2FileSystem {
             // Warn about read-only features we don't support (copy to avoid unaligned access)
             let feature_ro_compat = sb.s_feature_ro_compat;
             if feature_ro_compat != 0 {
-                warn!("[EXT2] Read-only compatible features present: 0x{:x}", feature_ro_compat);
+                warn!(
+                    "[EXT2] Read-only compatible features present: 0x{:x}",
+                    feature_ro_compat
+                );
             }
         }
 
@@ -497,7 +537,7 @@ impl Ext2FileSystem {
         gd: &Ext2GroupDesc,
         group_index: usize,
         sb: &Ext2SuperBlock,
-        block_size: usize
+        block_size: usize,
     ) -> Result<(), FileSystemError> {
         let blocks_per_group = sb.s_blocks_per_group as usize;
         let inodes_per_group = sb.s_inodes_per_group as usize;
@@ -512,48 +552,65 @@ impl Ext2FileSystem {
 
         // Validate block bitmap location
         if block_bitmap == 0 {
-            error!("[EXT2] Group {}: invalid block bitmap location (0)", group_index);
+            error!(
+                "[EXT2] Group {}: invalid block bitmap location (0)",
+                group_index
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate inode bitmap location
         if inode_bitmap == 0 {
-            error!("[EXT2] Group {}: invalid inode bitmap location (0)", group_index);
+            error!(
+                "[EXT2] Group {}: invalid inode bitmap location (0)",
+                group_index
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate inode table location
         if inode_table == 0 {
-            error!("[EXT2] Group {}: invalid inode table location (0)", group_index);
+            error!(
+                "[EXT2] Group {}: invalid inode table location (0)",
+                group_index
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate free block count
         if free_blocks_count as usize > blocks_per_group {
-            error!("[EXT2] Group {}: free blocks count {} exceeds blocks per group {}",
-                   group_index, free_blocks_count, blocks_per_group);
+            error!(
+                "[EXT2] Group {}: free blocks count {} exceeds blocks per group {}",
+                group_index, free_blocks_count, blocks_per_group
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate free inode count
         if free_inodes_count as usize > inodes_per_group {
-            error!("[EXT2] Group {}: free inodes count {} exceeds inodes per group {}",
-                   group_index, free_inodes_count, inodes_per_group);
+            error!(
+                "[EXT2] Group {}: free inodes count {} exceeds inodes per group {}",
+                group_index, free_inodes_count, inodes_per_group
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Validate used directories count
         if used_dirs_count as usize > inodes_per_group {
-            error!("[EXT2] Group {}: used dirs count {} exceeds inodes per group {}",
-                   group_index, used_dirs_count, inodes_per_group);
+            error!(
+                "[EXT2] Group {}: used dirs count {} exceeds inodes per group {}",
+                group_index, used_dirs_count, inodes_per_group
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
         // Logical consistency check: used dirs can't exceed (total inodes - free inodes)
         let used_inodes = inodes_per_group - free_inodes_count as usize;
         if used_dirs_count as usize > used_inodes {
-            error!("[EXT2] Group {}: used dirs count {} exceeds used inodes {}",
-                   group_index, used_dirs_count, used_inodes);
+            error!(
+                "[EXT2] Group {}: used dirs count {} exceeds used inodes {}",
+                group_index, used_dirs_count, used_inodes
+            );
             return Err(FileSystemError::InvalidFileSystem);
         }
 
@@ -583,18 +640,24 @@ impl Ext2FileSystem {
             let group_end = group_start + self.blocks_per_group as u32;
 
             if block_bitmap < group_start || block_bitmap >= group_end {
-                warn!("[EXT2] Group {}: block bitmap {} outside group range [{}, {})",
-                      i, block_bitmap, group_start, group_end);
+                warn!(
+                    "[EXT2] Group {}: block bitmap {} outside group range [{}, {})",
+                    i, block_bitmap, group_start, group_end
+                );
             }
 
             if inode_bitmap < group_start || inode_bitmap >= group_end {
-                warn!("[EXT2] Group {}: inode bitmap {} outside group range [{}, {})",
-                      i, inode_bitmap, group_start, group_end);
+                warn!(
+                    "[EXT2] Group {}: inode bitmap {} outside group range [{}, {})",
+                    i, inode_bitmap, group_start, group_end
+                );
             }
 
             if inode_table < group_start || inode_table >= group_end {
-                warn!("[EXT2] Group {}: inode table {} outside group range [{}, {})",
-                      i, inode_table, group_start, group_end);
+                warn!(
+                    "[EXT2] Group {}: inode table {} outside group range [{}, {})",
+                    i, inode_table, group_start, group_end
+                );
             }
         }
 
@@ -605,13 +668,17 @@ impl Ext2FileSystem {
         let sb_free_inodes = self.superblock.s_free_inodes_count;
 
         if total_free_blocks != sb_free_blocks {
-            warn!("[EXT2] Free blocks count mismatch: superblock={}, group_descriptors={}",
-                  sb_free_blocks, total_free_blocks);
+            warn!(
+                "[EXT2] Free blocks count mismatch: superblock={}, group_descriptors={}",
+                sb_free_blocks, total_free_blocks
+            );
         }
 
         if total_free_inodes != sb_free_inodes {
-            warn!("[EXT2] Free inodes count mismatch: superblock={}, group_descriptors={}",
-                  sb_free_inodes, total_free_inodes);
+            warn!(
+                "[EXT2] Free inodes count mismatch: superblock={}, group_descriptors={}",
+                sb_free_inodes, total_free_inodes
+            );
         }
 
         // Check root inode exists and is valid
@@ -644,7 +711,7 @@ impl Ext2FileSystem {
             Ok(result) => {
                 transaction.commit();
                 Ok(result)
-            },
+            }
             Err(e) => {
                 // Rollback the transaction on error
                 if let Err(rollback_err) = self.rollback_transaction(&transaction) {
@@ -678,48 +745,69 @@ impl Ext2FileSystem {
                 // Rollback: free the allocated block
                 warn!("[EXT2] Rolling back block allocation: {}", block_id);
                 self.free_block(*block_id)
-            },
+            }
             TransactionOp::FreeBlock { block_id, group } => {
                 // Rollback: re-allocate the freed block
                 warn!("[EXT2] Rolling back block free: {}", block_id);
                 self.force_allocate_specific_block(*block_id, *group)
-            },
+            }
             TransactionOp::AllocateInode { inode_id, group: _ } => {
                 // Rollback: free the allocated inode
                 warn!("[EXT2] Rolling back inode allocation: {}", inode_id);
                 self.free_inode(*inode_id)
-            },
+            }
             TransactionOp::FreeInode { inode_id, group } => {
                 // Rollback: re-allocate the freed inode
                 warn!("[EXT2] Rolling back inode free: {}", inode_id);
                 self.force_allocate_specific_inode(*inode_id, *group)
-            },
-            TransactionOp::UpdateInode { inode_id, old_data, new_data: _ } => {
+            }
+            TransactionOp::UpdateInode {
+                inode_id,
+                old_data,
+                new_data: _,
+            } => {
                 // Rollback: restore old inode data
                 warn!("[EXT2] Rolling back inode update: {}", inode_id);
                 self.write_inode_disk(*inode_id, old_data)
-            },
-            TransactionOp::UpdateGroupDescriptor { group, old_gd, new_gd: _ } => {
+            }
+            TransactionOp::UpdateGroupDescriptor {
+                group,
+                old_gd,
+                new_gd: _,
+            } => {
                 // Rollback: restore old group descriptor
                 warn!("[EXT2] Rolling back group descriptor update: {}", group);
                 self.write_group_descriptor(*group, old_gd)
-            },
-            TransactionOp::WriteBitmapBit { bitmap_block, bit_index, old_value, new_value: _ } => {
+            }
+            TransactionOp::WriteBitmapBit {
+                bitmap_block,
+                bit_index,
+                old_value,
+                new_value: _,
+            } => {
                 // Rollback: restore bitmap bit to old value
-                warn!("[EXT2] Rolling back bitmap bit: block={}, bit={}, value={}",
-                      bitmap_block, bit_index, old_value);
+                warn!(
+                    "[EXT2] Rolling back bitmap bit: block={}, bit={}, value={}",
+                    bitmap_block, bit_index, old_value
+                );
                 self.set_bitmap_bit(*bitmap_block, *bit_index, *old_value)
-            },
+            }
         }
     }
 
     /// Force allocate a specific block (for rollback)
-    fn force_allocate_specific_block(&self, block_id: u32, group: usize) -> Result<(), FileSystemError> {
+    fn force_allocate_specific_block(
+        &self,
+        block_id: u32,
+        group: usize,
+    ) -> Result<(), FileSystemError> {
         let group_start = self.first_data_block + (group as u32 * self.blocks_per_group as u32);
         let rel_block = (block_id - group_start) as u32;
 
         let groups = self.groups.lock();
-        let gd = groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let gd = groups
+            .get(group)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
         let bitmap_block = gd.bg_block_bitmap;
         drop(groups);
 
@@ -727,11 +815,17 @@ impl Ext2FileSystem {
     }
 
     /// Force allocate a specific inode (for rollback)
-    fn force_allocate_specific_inode(&self, inode_id: u32, group: usize) -> Result<(), FileSystemError> {
+    fn force_allocate_specific_inode(
+        &self,
+        inode_id: u32,
+        group: usize,
+    ) -> Result<(), FileSystemError> {
         let rel_inode = (inode_id - 1) % self.inodes_per_group as u32;
 
         let groups = self.groups.lock();
-        let gd = groups.get(group).ok_or(FileSystemError::InvalidFileSystem)?;
+        let gd = groups
+            .get(group)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
         let bitmap_block = gd.bg_inode_bitmap;
         drop(groups);
 
@@ -739,7 +833,12 @@ impl Ext2FileSystem {
     }
 
     /// Set a specific bit in a bitmap
-    fn set_bitmap_bit(&self, bitmap_block: u32, bit_index: u32, value: bool) -> Result<(), FileSystemError> {
+    fn set_bitmap_bit(
+        &self,
+        bitmap_block: u32,
+        bit_index: u32,
+        value: bool,
+    ) -> Result<(), FileSystemError> {
         let mut buf = vec![0u8; self.block_size];
         self.read_fs_block(bitmap_block, &mut buf)?;
 
@@ -782,7 +881,11 @@ impl Ext2FileSystem {
     }
 
     /// Write inode with caching
-    fn write_inode_disk_cached(&self, inode_num: u32, inode: &Ext2InodeDisk) -> Result<(), FileSystemError> {
+    fn write_inode_disk_cached(
+        &self,
+        inode_num: u32,
+        inode: &Ext2InodeDisk,
+    ) -> Result<(), FileSystemError> {
         // Write to disk
         let result = self.write_inode_disk(inode_num, inode);
 
@@ -839,7 +942,8 @@ impl Ext2FileSystem {
         // Flush dirty inodes
         {
             let mut cache = self.inode_cache.lock();
-            let dirty_inodes: Vec<(u32, Ext2InodeDisk)> = cache.get_dirty_entries()
+            let dirty_inodes: Vec<(u32, Ext2InodeDisk)> = cache
+                .get_dirty_entries()
                 .into_iter()
                 .map(|(k, v)| (k, v.clone()))
                 .collect();
@@ -856,7 +960,8 @@ impl Ext2FileSystem {
         // Flush dirty bitmaps
         {
             let mut cache = self.bitmap_cache.lock();
-            let dirty_bitmaps: Vec<(u32, Vec<u8>)> = cache.get_dirty_entries()
+            let dirty_bitmaps: Vec<(u32, Vec<u8>)> = cache
+                .get_dirty_entries()
                 .into_iter()
                 .map(|(k, v)| (k, v.clone()))
                 .collect();
@@ -883,8 +988,12 @@ impl Ext2FileSystem {
 
         format!(
             "Inode cache: hits={}, misses={}, hit_rate={:.2}%; Bitmap cache: hits={}, misses={}, hit_rate={:.2}%",
-            inode_hits, inode_misses, inode_hit_rate * 100.0,
-            bitmap_hits, bitmap_misses, bitmap_hit_rate * 100.0
+            inode_hits,
+            inode_misses,
+            inode_hit_rate * 100.0,
+            bitmap_hits,
+            bitmap_misses,
+            bitmap_hit_rate * 100.0
         )
     }
 
@@ -899,12 +1008,16 @@ impl Ext2FileSystem {
         // We need to read enough device blocks to cover offset 1024-2048
         let superblock_offset = 1024;
         let superblock_size = 1024;
-        let blocks_needed = (superblock_offset + superblock_size + dev_block_size - 1) / dev_block_size;
+        let blocks_needed =
+            (superblock_offset + superblock_size + dev_block_size - 1) / dev_block_size;
         let mut sb_data = vec![0u8; blocks_needed * dev_block_size];
 
         for i in 0..blocks_needed {
             device
-                .read_block(i, &mut sb_data[i * dev_block_size..(i + 1) * dev_block_size])
+                .read_block(
+                    i,
+                    &mut sb_data[i * dev_block_size..(i + 1) * dev_block_size],
+                )
                 .map_err(|_| FileSystemError::IoError)?;
         }
 
@@ -990,7 +1103,7 @@ impl Ext2FileSystem {
             self_ref: spin::Mutex::new(Weak::new()),
             // Initialize caches with reasonable sizes
             inode_cache: Mutex::new(MetadataCache::new(256)), // Cache up to 256 inodes
-            bitmap_cache: Mutex::new(MetadataCache::new(64)),  // Cache up to 64 bitmap blocks
+            bitmap_cache: Mutex::new(MetadataCache::new(64)), // Cache up to 64 bitmap blocks
         });
         // set self_ref
         *fs.self_ref.lock() = Arc::downgrade(&fs);
@@ -1026,7 +1139,10 @@ impl Ext2FileSystem {
             for i in 0..dev_blocks_per_fs_block {
                 let offset = i * dev_block_size;
                 self.device
-                    .read_block(start_dev_block + i, &mut buf[offset..offset + dev_block_size])
+                    .read_block(
+                        start_dev_block + i,
+                        &mut buf[offset..offset + dev_block_size],
+                    )
                     .map_err(|_| FileSystemError::IoError)?;
             }
             Ok(())
@@ -1034,7 +1150,8 @@ impl Ext2FileSystem {
             // Multiple filesystem blocks per device block
             let fs_blocks_per_dev_block = dev_block_size / fs_block_size;
             let dev_block = (fs_block_id as usize) / fs_blocks_per_dev_block;
-            let offset_in_dev_block = ((fs_block_id as usize) % fs_blocks_per_dev_block) * fs_block_size;
+            let offset_in_dev_block =
+                ((fs_block_id as usize) % fs_blocks_per_dev_block) * fs_block_size;
 
             let mut dev_buf = vec![0u8; dev_block_size];
             self.device
@@ -1076,7 +1193,8 @@ impl Ext2FileSystem {
             // Multiple filesystem blocks per device block - need read-modify-write
             let fs_blocks_per_dev_block = dev_block_size / fs_block_size;
             let dev_block = (fs_block_id as usize) / fs_blocks_per_dev_block;
-            let offset_in_dev_block = ((fs_block_id as usize) % fs_blocks_per_dev_block) * fs_block_size;
+            let offset_in_dev_block =
+                ((fs_block_id as usize) % fs_blocks_per_dev_block) * fs_block_size;
 
             let mut dev_buf = vec![0u8; dev_block_size];
             self.device
@@ -1164,9 +1282,7 @@ impl Ext2FileSystem {
         let mut byte_index = 0;
         while byte_index + 8 <= max_bytes {
             // Check 8 bytes at once
-            let word = unsafe {
-                ptr::read_unaligned(buf[byte_index..].as_ptr() as *const u64)
-            };
+            let word = unsafe { ptr::read_unaligned(buf[byte_index..].as_ptr() as *const u64) };
 
             if word != u64::MAX {
                 // Found a free bit in this word, now find which byte
@@ -1477,9 +1593,8 @@ impl Ext2Inode {
         if size < 60 {
             // Copy i_block array to avoid unaligned access
             let i_block = ino.i_block;
-            let target_bytes = unsafe {
-                core::slice::from_raw_parts(i_block.as_ptr() as *const u8, size)
-            };
+            let target_bytes =
+                unsafe { core::slice::from_raw_parts(i_block.as_ptr() as *const u8, size) };
             return String::from_utf8(target_bytes.to_vec())
                 .map_err(|_| FileSystemError::InvalidFileSystem);
         }
@@ -1492,8 +1607,7 @@ impl Ext2Inode {
             return Err(FileSystemError::InvalidFileSystem);
         }
 
-        String::from_utf8(target)
-            .map_err(|_| FileSystemError::InvalidFileSystem)
+        String::from_utf8(target).map_err(|_| FileSystemError::InvalidFileSystem)
     }
 
     fn current_timestamp() -> u32 {
@@ -1707,7 +1821,11 @@ impl Ext2Inode {
     }
 
     /// Helper function to read a pointer from an indirect block
-    fn read_indirect_block_pointer(&self, indirect_block: u32, index: u32) -> Result<u32, FileSystemError> {
+    fn read_indirect_block_pointer(
+        &self,
+        indirect_block: u32,
+        index: u32,
+    ) -> Result<u32, FileSystemError> {
         let mut buf = vec![0u8; self.fs.block_size];
         self.fs.read_fs_block(indirect_block, &mut buf)?;
 
@@ -1855,9 +1973,7 @@ impl Ext2Inode {
         self.fs.read_fs_block(xattr_block, &mut buf)?;
 
         // Parse xattr header
-        let header = unsafe {
-            ptr::read_unaligned(buf.as_ptr() as *const Ext2XattrHeader)
-        };
+        let header = unsafe { ptr::read_unaligned(buf.as_ptr() as *const Ext2XattrHeader) };
 
         if header.h_magic != EXT2_XATTR_MAGIC {
             return Err(FileSystemError::InvalidFileSystem);
@@ -1872,7 +1988,9 @@ impl Ext2Inode {
                 ptr::read_unaligned((buf.as_ptr() as usize + offset) as *const Ext2XattrEntry)
             };
 
-            if entry.e_name_index == namespace as u8 && entry.e_name_len as usize == name_bytes.len() {
+            if entry.e_name_index == namespace as u8
+                && entry.e_name_len as usize == name_bytes.len()
+            {
                 let name_start = offset + mem::size_of::<Ext2XattrEntry>();
                 let name_end = name_start + entry.e_name_len as usize;
 
@@ -1888,7 +2006,8 @@ impl Ext2Inode {
             }
 
             // Move to next entry
-            let entry_size = mem::size_of::<Ext2XattrEntry>() + align_up(entry.e_name_len as usize, 4);
+            let entry_size =
+                mem::size_of::<Ext2XattrEntry>() + align_up(entry.e_name_len as usize, 4);
             offset += entry_size;
         }
 
@@ -1900,7 +2019,7 @@ impl Ext2Inode {
         &self,
         namespace: XattrNamespace,
         name: &str,
-        value: &[u8]
+        value: &[u8],
     ) -> Result<(), FileSystemError> {
         // This is a simplified implementation
         // In a full implementation, we would need to:
@@ -1915,7 +2034,10 @@ impl Ext2Inode {
 
         // For now, just return not implemented
         // This would require more complex block management
-        warn!("[EXT2] Extended attribute setting not fully implemented: {}:{}", namespace as u8, name);
+        warn!(
+            "[EXT2] Extended attribute setting not fully implemented: {}:{}",
+            namespace as u8, name
+        );
         Err(FileSystemError::IoError) // Use IoError as fallback
     }
 
@@ -1933,9 +2055,7 @@ impl Ext2Inode {
         self.fs.read_fs_block(xattr_block, &mut buf)?;
 
         // Parse xattr header
-        let header = unsafe {
-            ptr::read_unaligned(buf.as_ptr() as *const Ext2XattrHeader)
-        };
+        let header = unsafe { ptr::read_unaligned(buf.as_ptr() as *const Ext2XattrHeader) };
 
         if header.h_magic != EXT2_XATTR_MAGIC {
             return Err(FileSystemError::InvalidFileSystem);
@@ -1967,7 +2087,8 @@ impl Ext2Inode {
             }
 
             // Move to next entry
-            let entry_size = mem::size_of::<Ext2XattrEntry>() + align_up(entry.e_name_len as usize, 4);
+            let entry_size =
+                mem::size_of::<Ext2XattrEntry>() + align_up(entry.e_name_len as usize, 4);
             offset += entry_size;
         }
 
@@ -1989,7 +2110,7 @@ impl Ext2Inode {
                 .map_block(blk_index)
                 .map_err(|_| FileSystemError::IoError)?;
             let mut buf = vec![0u8; self.fs.block_size];
-            self.fs.read_fs_block(blk, &mut buf)?;;
+            self.fs.read_fs_block(blk, &mut buf)?;
 
             let mut pos = blk_off;
             while pos < self.fs.block_size {
@@ -2017,7 +2138,10 @@ impl Ext2Inode {
                 // Validate minimum record length (header + at least 1 byte for name padding to 4-byte boundary)
                 let min_rec_len = align_up(mem::size_of::<Ext2DirEntry2Header>() + 1, 4);
                 if rec_len < min_rec_len {
-                    warn!("[EXT2] Directory entry record length too small: {}", rec_len);
+                    warn!(
+                        "[EXT2] Directory entry record length too small: {}",
+                        rec_len
+                    );
                     break;
                 }
 
@@ -2039,7 +2163,10 @@ impl Ext2Inode {
 
                 // Validate name length is reasonable (ext2 max is 255)
                 if name_len > 255 {
-                    warn!("[EXT2] Directory entry name length exceeds ext2 maximum: {}", name_len);
+                    warn!(
+                        "[EXT2] Directory entry name length exceeds ext2 maximum: {}",
+                        name_len
+                    );
                     break;
                 }
 
@@ -2107,7 +2234,7 @@ impl Ext2Inode {
                 }
             };
             let mut buf = vec![0u8; self.fs.block_size];
-            self.fs.read_fs_block(blk, &mut buf)?;;
+            self.fs.read_fs_block(blk, &mut buf)?;
 
             // scan entries to find tail room
             let mut pos = 0usize;
@@ -2183,7 +2310,11 @@ impl Ext2Inode {
                     // If this free record is large enough, place the new entry here and optionally split
                     let min_free_rec = align_up(mem::size_of::<Ext2DirEntry2Header>() + 1, 4);
                     if rec_len >= needed {
-                        let use_len = if rec_len >= needed + min_free_rec { ideal.max(needed) } else { rec_len };
+                        let use_len = if rec_len >= needed + min_free_rec {
+                            ideal.max(needed)
+                        } else {
+                            rec_len
+                        };
 
                         // write used entry at current position
                         let used_hdr = Ext2DirEntry2Header {
@@ -2201,7 +2332,9 @@ impl Ext2Inode {
 
                         let name_dst = pos + mem::size_of::<Ext2DirEntry2Header>();
                         if name_dst + name_bytes.len() > self.fs.block_size {
-                            warn!("[EXT2] add_dir_entry: name would exceed block boundary when using free slot");
+                            warn!(
+                                "[EXT2] add_dir_entry: name would exceed block boundary when using free slot"
+                            );
                             break;
                         }
                         buf[name_dst..name_dst + name_bytes.len()].copy_from_slice(name_bytes);
@@ -2216,7 +2349,9 @@ impl Ext2Inode {
                                 name_len: 0,
                                 file_type: 0,
                             };
-                            if free_pos + mem::size_of::<Ext2DirEntry2Header>() <= self.fs.block_size {
+                            if free_pos + mem::size_of::<Ext2DirEntry2Header>()
+                                <= self.fs.block_size
+                            {
                                 unsafe {
                                     ptr::write_unaligned(
                                         buf[free_pos..].as_mut_ptr() as *mut Ext2DirEntry2Header,
@@ -2676,12 +2811,14 @@ impl Inode for Ext2Inode {
                 for i in 0..num_ptrs {
                     let ptr_offset = i * 4;
                     if ptr_offset + 4 <= ibuf.len() {
-                        let block_ptr = unsafe {
-                            ptr::read_unaligned((ibuf.as_ptr() as *const u32).add(i))
-                        };
+                        let block_ptr =
+                            unsafe { ptr::read_unaligned((ibuf.as_ptr() as *const u32).add(i)) };
                         if block_ptr != 0 {
                             if let Err(e) = self.fs.free_block(block_ptr) {
-                                cleanup_errors.push(format!("Failed to free indirect data block {}: {:?}", block_ptr, e));
+                                cleanup_errors.push(format!(
+                                    "Failed to free indirect data block {}: {:?}",
+                                    block_ptr, e
+                                ));
                             }
                         }
                     }
@@ -2692,13 +2829,19 @@ impl Inode for Ext2Inode {
 
             // Free the indirect block itself
             if let Err(e) = self.fs.free_block(indirect_block) {
-                cleanup_errors.push(format!("Failed to free indirect block {}: {:?}", indirect_block, e));
+                cleanup_errors.push(format!(
+                    "Failed to free indirect block {}: {:?}",
+                    indirect_block, e
+                ));
             }
         }
 
         // Log cleanup errors but don't fail the operation
         if !cleanup_errors.is_empty() {
-            warn!("[EXT2] Block cleanup errors during file removal: {:?}", cleanup_errors);
+            warn!(
+                "[EXT2] Block cleanup errors during file removal: {:?}",
+                cleanup_errors
+            );
         }
 
         // Clear inode on disk
@@ -2725,8 +2868,16 @@ impl Inode for Ext2Inode {
             return Ok(());
         }
 
-        let old_blocks = if old_size == 0 { 0 } else { ceil_div(old_size as usize, self.fs.block_size) };
-        let new_blocks = if new_size == 0 { 0 } else { ceil_div(new_size as usize, self.fs.block_size) };
+        let old_blocks = if old_size == 0 {
+            0
+        } else {
+            ceil_div(old_size as usize, self.fs.block_size)
+        };
+        let new_blocks = if new_size == 0 {
+            0
+        } else {
+            ceil_div(new_size as usize, self.fs.block_size)
+        };
 
         // Free blocks beyond new_blocks
         for i in new_blocks..old_blocks {
@@ -2753,9 +2904,8 @@ impl Inode for Ext2Inode {
                     // Get the block pointer
                     let ptr_offset = idx * 4;
                     if ptr_offset + 4 <= ibuf.len() {
-                        let block_ptr = unsafe {
-                            ptr::read_unaligned((ibuf.as_ptr() as *const u32).add(idx))
-                        };
+                        let block_ptr =
+                            unsafe { ptr::read_unaligned((ibuf.as_ptr() as *const u32).add(idx)) };
 
                         // Free the data block
                         if block_ptr != 0 {
@@ -2765,7 +2915,7 @@ impl Inode for Ext2Inode {
                             unsafe {
                                 ptr::write_unaligned(
                                     (ibuf.as_mut_ptr() as *mut u32).add(idx),
-                                    0u32
+                                    0u32,
                                 );
                             }
                             self.fs.write_fs_block(ind, &ibuf)?;

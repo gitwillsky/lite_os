@@ -1,7 +1,7 @@
-use core::fmt;
-use alloc::{sync::Arc, string::String, vec::Vec, vec, boxed::Box};
-use spin::Mutex;
 use crate::drivers::{DeviceError, DeviceState};
+use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use core::fmt;
+use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PixelFormat {
@@ -30,7 +30,7 @@ impl PixelFormat {
 pub struct FramebufferInfo {
     pub width: u32,
     pub height: u32,
-    pub pitch: u32,           // 每行字节数
+    pub pitch: u32, // 每行字节数
     pub format: PixelFormat,
     pub buffer_size: usize,
 }
@@ -69,11 +69,28 @@ pub trait Framebuffer: Send + Sync {
 
     fn write_pixel(&mut self, x: u32, y: u32, color: u32) -> Result<(), DeviceError>;
     fn read_pixel(&self, x: u32, y: u32) -> Result<u32, DeviceError>;
-    fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) -> Result<(), DeviceError>;
-    fn copy_rect(&mut self, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, width: u32, height: u32) -> Result<(), DeviceError>;
+    fn fill_rect(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> Result<(), DeviceError>;
+    fn copy_rect(
+        &mut self,
+        src_x: u32,
+        src_y: u32,
+        dst_x: u32,
+        dst_y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DeviceError>;
     fn clear(&mut self, color: u32) -> Result<(), DeviceError>;
     fn flush(&mut self) -> Result<(), DeviceError>;
-    fn flush_rects(&mut self, _rects: &[Rect]) -> Result<(), DeviceError> { self.flush() }
+    fn flush_rects(&mut self, _rects: &[Rect]) -> Result<(), DeviceError> {
+        self.flush()
+    }
     fn is_dirty(&self) -> bool;
     fn mark_dirty(&mut self);
     fn mark_clean(&mut self);
@@ -93,7 +110,9 @@ impl GenericFramebuffer {
     pub fn new(
         info: FramebufferInfo,
         buffer: usize,
-        flush_callback: Option<Box<dyn Fn(Option<&[Rect]>) -> Result<(), DeviceError> + Send + Sync>>
+        flush_callback: Option<
+            Box<dyn Fn(Option<&[Rect]>) -> Result<(), DeviceError> + Send + Sync>,
+        >,
     ) -> Self {
         GenericFramebuffer {
             info,
@@ -128,32 +147,40 @@ impl GenericFramebuffer {
         match format {
             PixelFormat::RGBA8888 => {
                 if bytes.len() >= 4 {
-                    ((bytes[3] as u32) << 24) | ((bytes[0] as u32) << 16) |
-                    ((bytes[1] as u32) << 8) | (bytes[2] as u32)
+                    ((bytes[3] as u32) << 24)
+                        | ((bytes[0] as u32) << 16)
+                        | ((bytes[1] as u32) << 8)
+                        | (bytes[2] as u32)
                 } else {
                     0
                 }
             }
             PixelFormat::BGRA8888 => {
                 if bytes.len() >= 4 {
-                    ((bytes[3] as u32) << 24) | ((bytes[2] as u32) << 16) |
-                    ((bytes[1] as u32) << 8) | (bytes[0] as u32)
+                    ((bytes[3] as u32) << 24)
+                        | ((bytes[2] as u32) << 16)
+                        | ((bytes[1] as u32) << 8)
+                        | (bytes[0] as u32)
                 } else {
                     0
                 }
             }
             PixelFormat::RGB888 => {
                 if bytes.len() >= 3 {
-                    0xFF000000 | ((bytes[0] as u32) << 16) |
-                    ((bytes[1] as u32) << 8) | (bytes[2] as u32)
+                    0xFF000000
+                        | ((bytes[0] as u32) << 16)
+                        | ((bytes[1] as u32) << 8)
+                        | (bytes[2] as u32)
                 } else {
                     0
                 }
             }
             PixelFormat::BGR888 => {
                 if bytes.len() >= 3 {
-                    0xFF000000 | ((bytes[2] as u32) << 16) |
-                    ((bytes[1] as u32) << 8) | (bytes[0] as u32)
+                    0xFF000000
+                        | ((bytes[2] as u32) << 16)
+                        | ((bytes[1] as u32) << 8)
+                        | (bytes[0] as u32)
                 } else {
                     0
                 }
@@ -191,7 +218,9 @@ impl Framebuffer for GenericFramebuffer {
             return Err(DeviceError::OperationFailed);
         }
 
-        let offset = self.info.pixel_offset(x, y)
+        let offset = self
+            .info
+            .pixel_offset(x, y)
             .ok_or(DeviceError::OperationFailed)?;
 
         let color_bytes = self.convert_color_to_format(color, self.info.format);
@@ -212,7 +241,9 @@ impl Framebuffer for GenericFramebuffer {
             return Err(DeviceError::OperationFailed);
         }
 
-        let offset = self.info.pixel_offset(x, y)
+        let offset = self
+            .info
+            .pixel_offset(x, y)
             .ok_or(DeviceError::OperationFailed)?;
 
         let bytes_per_pixel = self.info.format.bytes_per_pixel() as usize;
@@ -228,7 +259,14 @@ impl Framebuffer for GenericFramebuffer {
         Ok(self.convert_format_to_color(&color_bytes, self.info.format))
     }
 
-    fn fill_rect(&mut self, x: u32, y: u32, width: u32, height: u32, color: u32) -> Result<(), DeviceError> {
+    fn fill_rect(
+        &mut self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        color: u32,
+    ) -> Result<(), DeviceError> {
         let color_bytes = self.convert_color_to_format(color, self.info.format);
         let bytes_per_pixel = color_bytes.len();
 
@@ -244,7 +282,9 @@ impl Framebuffer for GenericFramebuffer {
                     break;
                 }
 
-                let offset = self.info.pixel_offset(current_x, current_y)
+                let offset = self
+                    .info
+                    .pixel_offset(current_x, current_y)
                     .ok_or(DeviceError::OperationFailed)?;
 
                 unsafe {
@@ -260,11 +300,18 @@ impl Framebuffer for GenericFramebuffer {
         Ok(())
     }
 
-    fn copy_rect(&mut self, src_x: u32, src_y: u32, dst_x: u32, dst_y: u32, width: u32, height: u32) -> Result<(), DeviceError> {
+    fn copy_rect(
+        &mut self,
+        src_x: u32,
+        src_y: u32,
+        dst_x: u32,
+        dst_y: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DeviceError> {
         let bytes_per_pixel = self.info.format.bytes_per_pixel() as usize;
 
-        if !self.info.is_valid_coords(src_x, src_y) ||
-           !self.info.is_valid_coords(dst_x, dst_y) {
+        if !self.info.is_valid_coords(src_x, src_y) || !self.info.is_valid_coords(dst_x, dst_y) {
             return Err(DeviceError::OperationFailed);
         }
 
@@ -278,9 +325,13 @@ impl Framebuffer for GenericFramebuffer {
                     break;
                 }
 
-                let src_offset = self.info.pixel_offset(src_x + dx, src_y + dy)
+                let src_offset = self
+                    .info
+                    .pixel_offset(src_x + dx, src_y + dy)
                     .ok_or(DeviceError::OperationFailed)?;
-                let dst_offset = self.info.pixel_offset(dst_x + dx, dst_y + dy)
+                let dst_offset = self
+                    .info
+                    .pixel_offset(dst_x + dx, dst_y + dy)
                     .ok_or(DeviceError::OperationFailed)?;
 
                 unsafe {

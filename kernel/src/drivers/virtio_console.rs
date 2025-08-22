@@ -1,10 +1,10 @@
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 use spin::{Mutex, Once};
 
 use super::{
-    hal::{VirtIODevice, Device, DeviceType, DeviceState, DeviceError, InterruptHandler},
+    hal::{Device, DeviceError, DeviceState, DeviceType, InterruptHandler, VirtIODevice},
     virtio_queue::*,
 };
 
@@ -77,7 +77,9 @@ impl VirtIOConsoleDevice {
         virtio_device.set_driver_features(driver_features).ok()?;
 
         let status = virtio_device.get_status().ok()?;
-        virtio_device.set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK).ok()?;
+        virtio_device
+            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK)
+            .ok()?;
 
         if virtio_device.get_status().ok()? & super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
@@ -149,7 +151,9 @@ impl VirtIOConsoleDevice {
         virtio_device.set_queue_ready(1).ok()?;
 
         let status = virtio_device.get_status().ok()?;
-        virtio_device.set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
+        virtio_device
+            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_DRIVER_OK)
+            .ok()?;
 
         let mut device = Self {
             device: virtio_device,
@@ -202,7 +206,9 @@ impl VirtIOConsoleDevice {
 
         transmit_queue.add_to_avail(head_desc);
 
-        self.device.notify_queue(TRANSMITQ_PORT0 as u32).map_err(|_| "Notify failed")?;
+        self.device
+            .notify_queue(TRANSMITQ_PORT0 as u32)
+            .map_err(|_| "Notify failed")?;
 
         const MAX_WAIT_CYCLES: usize = 1000;
         let mut cycles = 0;
@@ -238,7 +244,10 @@ impl VirtIOConsoleDevice {
 
         if let Some((used_desc, len)) = receive_queue.used() {
             let read_len = core::cmp::min(len as usize, buffer.len());
-            debug!("[VirtIO Console] Received {} bytes, descriptor {}", len, used_desc);
+            debug!(
+                "[VirtIO Console] Received {} bytes, descriptor {}",
+                len, used_desc
+            );
 
             if receive_queue.num_free == receive_queue.size {
                 self.setup_receive_buffers(&mut receive_queue);
@@ -263,7 +272,10 @@ impl VirtIOConsoleDevice {
             receive_queue.add_to_avail(head_desc);
             let _ = self.device.notify_queue(RECEIVEQ_PORT0 as u32);
             core::mem::forget(rx_buffer);
-            debug!("[VirtIO Console] Set up receive buffer of {} bytes", RX_BUFFER_SIZE);
+            debug!(
+                "[VirtIO Console] Set up receive buffer of {} bytes",
+                RX_BUFFER_SIZE
+            );
         } else {
             error!("[VirtIO Console] Failed to set up receive buffer");
         }
@@ -272,7 +284,10 @@ impl VirtIOConsoleDevice {
     fn setup_receive_buffers(&self, receive_queue: &mut spin::MutexGuard<VirtQueue>) {
         for i in 0..4 {
             if receive_queue.num_free < 1 {
-                debug!("[VirtIO Console] No more free descriptors for receive buffer {}", i);
+                debug!(
+                    "[VirtIO Console] No more free descriptors for receive buffer {}",
+                    i
+                );
                 break;
             }
             self.setup_receive_buffer(receive_queue);
@@ -289,7 +304,10 @@ impl VirtIOConsoleDevice {
     }
 
     fn emergency_write(&self, data: &[u8]) -> Result<(), &'static str> {
-        debug!("[VirtIO Console] Using emergency write for {} bytes", data.len());
+        debug!(
+            "[VirtIO Console] Using emergency write for {} bytes",
+            data.len()
+        );
 
         for &byte in data {
             if let Err(_) = self.device.write_config_u32(12, byte as u32) {
@@ -385,11 +403,17 @@ impl Device for VirtIOConsoleDevice {
         self.device.resources()
     }
 
-    fn request_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+    fn request_resources(
+        &mut self,
+        resource_manager: &mut dyn super::hal::resource::ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.device.request_resources(resource_manager)
     }
 
-    fn release_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+    fn release_resources(
+        &mut self,
+        resource_manager: &mut dyn super::hal::resource::ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.device.release_resources(resource_manager)
     }
 
@@ -397,7 +421,11 @@ impl Device for VirtIOConsoleDevice {
         true
     }
 
-    fn set_interrupt_handler(&mut self, vector: super::hal::InterruptVector, handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+    fn set_interrupt_handler(
+        &mut self,
+        vector: super::hal::InterruptVector,
+        handler: Arc<dyn InterruptHandler>,
+    ) -> Result<(), DeviceError> {
         self.device.set_interrupt_handler(vector, handler)
     }
 
@@ -426,7 +454,10 @@ pub fn virtio_console_write(data: &[u8]) -> Result<(), &'static str> {
         return Ok(());
     }
 
-    debug!("[VirtIO Console API] Write request for {} bytes", data.len());
+    debug!(
+        "[VirtIO Console API] Write request for {} bytes",
+        data.len()
+    );
 
     let console_guard = VIRTIO_CONSOLE.wait();
     if let Some(console_arc) = console_guard.as_ref() {

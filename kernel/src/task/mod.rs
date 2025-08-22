@@ -6,15 +6,15 @@ use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::INIT_
 
 mod context;
 pub mod loader;
-pub mod processor;
 mod pid;
+pub mod processor;
 mod scheduler;
 mod task;
 pub mod task_manager;
 
+pub use processor::*;
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
 pub use task_manager::*;
-pub use processor::*;
 
 global_asm!(include_str!("switch.S"));
 

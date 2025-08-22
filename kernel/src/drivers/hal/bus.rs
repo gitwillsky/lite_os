@@ -1,5 +1,5 @@
-use core::fmt;
 use alloc::boxed::Box;
+use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BusType {
@@ -46,42 +46,46 @@ impl fmt::Display for BusError {
 
 pub trait Bus: Send + Sync {
     fn bus_type(&self) -> BusType;
-    
+
     fn read_u8(&self, offset: usize) -> Result<u8, BusError>;
     fn read_u16(&self, offset: usize) -> Result<u16, BusError>;
     fn read_u32(&self, offset: usize) -> Result<u32, BusError>;
     fn read_u64(&self, offset: usize) -> Result<u64, BusError>;
-    
+
     fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError>;
     fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError>;
     fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError>;
     fn write_u64(&self, offset: usize, value: u64) -> Result<(), BusError>;
-    
+
     fn read_buffer(&self, offset: usize, buffer: &mut [u8]) -> Result<usize, BusError> {
         for (i, byte) in buffer.iter_mut().enumerate() {
             *byte = self.read_u8(offset + i)?;
         }
         Ok(buffer.len())
     }
-    
+
     fn write_buffer(&self, offset: usize, buffer: &[u8]) -> Result<usize, BusError> {
         for (i, &byte) in buffer.iter().enumerate() {
             self.write_u8(offset + i, byte)?;
         }
         Ok(buffer.len())
     }
-    
+
     fn base_address(&self) -> usize;
     fn size(&self) -> usize;
-    
+
     fn is_accessible(&self) -> bool;
-    fn supports_dma(&self) -> bool { false }
-    fn alignment_requirement(&self) -> usize { 1 }
-    
+    fn supports_dma(&self) -> bool {
+        false
+    }
+    fn alignment_requirement(&self) -> usize {
+        1
+    }
+
     fn set_power_state(&self, _enabled: bool) -> Result<(), BusError> {
         Err(BusError::NotSupported)
     }
-    
+
     fn enumerate_devices(&self) -> Result<alloc::vec::Vec<(u32, u32)>, BusError> {
         Err(BusError::NotSupported)
     }
@@ -97,13 +101,10 @@ impl MmioBus {
         if base_addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
-        Ok(Self {
-            base_addr,
-            size,
-        })
+
+        Ok(Self { base_addr, size })
     }
-    
+
     fn validate_access(&self, offset: usize, size: usize) -> Result<(), BusError> {
         if offset + size > self.size {
             return Err(BusError::InvalidAddress);
@@ -116,35 +117,43 @@ impl Bus for MmioBus {
     fn bus_type(&self) -> BusType {
         BusType::MMIO
     }
-    
+
     fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         self.validate_access(offset, 1)?;
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u8))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u8,
+            ))
         }
     }
-    
+
     fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
         self.validate_access(offset, 2)?;
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u16))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u16,
+            ))
         }
     }
-    
+
     fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         self.validate_access(offset, 4)?;
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u32))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u32,
+            ))
         }
     }
-    
+
     fn read_u64(&self, offset: usize) -> Result<u64, BusError> {
         self.validate_access(offset, 8)?;
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u64))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u64,
+            ))
         }
     }
-    
+
     fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         self.validate_access(offset, 1)?;
         unsafe {
@@ -152,7 +161,7 @@ impl Bus for MmioBus {
         }
         Ok(())
     }
-    
+
     fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
         self.validate_access(offset, 2)?;
         unsafe {
@@ -160,7 +169,7 @@ impl Bus for MmioBus {
         }
         Ok(())
     }
-    
+
     fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         self.validate_access(offset, 4)?;
         unsafe {
@@ -168,7 +177,7 @@ impl Bus for MmioBus {
         }
         Ok(())
     }
-    
+
     fn write_u64(&self, offset: usize, value: u64) -> Result<(), BusError> {
         self.validate_access(offset, 8)?;
         unsafe {
@@ -176,19 +185,19 @@ impl Bus for MmioBus {
         }
         Ok(())
     }
-    
+
     fn base_address(&self) -> usize {
         self.base_addr
     }
-    
+
     fn size(&self) -> usize {
         self.size
     }
-    
+
     fn is_accessible(&self) -> bool {
         self.base_addr != 0
     }
-    
+
     fn supports_dma(&self) -> bool {
         true
     }
@@ -217,7 +226,12 @@ pub struct PciBus {
 }
 
 impl PciBus {
-    pub fn new(bus_number: u8, device_number: u8, function_number: u8, config_base: usize) -> Result<Self, BusError> {
+    pub fn new(
+        bus_number: u8,
+        device_number: u8,
+        function_number: u8,
+        config_base: usize,
+    ) -> Result<Self, BusError> {
         Ok(Self {
             bus_number,
             device_number,
@@ -226,36 +240,32 @@ impl PciBus {
             devices: alloc::vec::Vec::new(),
         })
     }
-    
+
     fn config_address(&self, offset: usize) -> usize {
         if offset >= 256 {
             return 0;
         }
-        
-        self.config_base + 
-            ((self.bus_number as usize) << 20) +
-            ((self.device_number as usize) << 15) +
-            ((self.function_number as usize) << 12) +
-            offset
+
+        self.config_base
+            + ((self.bus_number as usize) << 20)
+            + ((self.device_number as usize) << 15)
+            + ((self.function_number as usize) << 12)
+            + offset
     }
-    
+
     pub fn read_config_space(&self) -> Result<PciConfigSpace, BusError> {
         let vendor_id = self.read_u16(0)?;
         if vendor_id == 0xFFFF {
             return Err(BusError::DeviceNotFound);
         }
-        
+
         Ok(PciConfigSpace {
             vendor_id,
             device_id: self.read_u16(2)?,
             command: self.read_u16(4)?,
             status: self.read_u16(6)?,
             revision_id: self.read_u8(8)?,
-            class_code: [
-                self.read_u8(9)?,
-                self.read_u8(10)?,
-                self.read_u8(11)?,
-            ],
+            class_code: [self.read_u8(9)?, self.read_u8(10)?, self.read_u8(11)?],
             header_type: self.read_u8(14)?,
             bars: [
                 self.read_u32(16)?,
@@ -269,10 +279,10 @@ impl PciBus {
             interrupt_pin: self.read_u8(61)?,
         })
     }
-    
+
     pub fn scan_devices(&mut self) -> Result<(), BusError> {
         self.devices.clear();
-        
+
         for bus in 0..=255u8 {
             for device in 0..32u8 {
                 for function in 0..8u8 {
@@ -286,7 +296,7 @@ impl PciBus {
                 }
             }
         }
-        
+
         Ok(())
     }
 }
@@ -295,153 +305,145 @@ impl Bus for PciBus {
     fn bus_type(&self) -> BusType {
         BusType::PCI
     }
-    
+
     fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
-        unsafe {
-            Ok(core::ptr::read_volatile(addr as *const u8))
-        }
+
+        unsafe { Ok(core::ptr::read_volatile(addr as *const u8)) }
     }
-    
+
     fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
         if offset % 2 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
-        unsafe {
-            Ok(core::ptr::read_volatile(addr as *const u16))
-        }
+
+        unsafe { Ok(core::ptr::read_volatile(addr as *const u16)) }
     }
-    
+
     fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         if offset % 4 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
-        unsafe {
-            Ok(core::ptr::read_volatile(addr as *const u32))
-        }
+
+        unsafe { Ok(core::ptr::read_volatile(addr as *const u32)) }
     }
-    
+
     fn read_u64(&self, offset: usize) -> Result<u64, BusError> {
         if offset % 8 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
-        unsafe {
-            Ok(core::ptr::read_volatile(addr as *const u64))
-        }
+
+        unsafe { Ok(core::ptr::read_volatile(addr as *const u64)) }
     }
-    
+
     fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
+
         unsafe {
             core::ptr::write_volatile(addr as *mut u8, value);
         }
         Ok(())
     }
-    
+
     fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
         if offset % 2 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
+
         unsafe {
             core::ptr::write_volatile(addr as *mut u16, value);
         }
         Ok(())
     }
-    
+
     fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         if offset % 4 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
+
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, value);
         }
         Ok(())
     }
-    
+
     fn write_u64(&self, offset: usize, value: u64) -> Result<(), BusError> {
         if offset % 8 != 0 {
             return Err(BusError::AlignmentError);
         }
-        
+
         let addr = self.config_address(offset);
         if addr == 0 {
             return Err(BusError::InvalidAddress);
         }
-        
+
         unsafe {
             core::ptr::write_volatile(addr as *mut u64, value);
         }
         Ok(())
     }
-    
+
     fn base_address(&self) -> usize {
         self.config_base
     }
-    
+
     fn size(&self) -> usize {
         256 // PCI configuration space size
     }
-    
+
     fn is_accessible(&self) -> bool {
         self.config_base != 0
     }
-    
+
     fn supports_dma(&self) -> bool {
         true
     }
-    
+
     fn alignment_requirement(&self) -> usize {
         4
     }
-    
+
     fn enumerate_devices(&self) -> Result<alloc::vec::Vec<(u32, u32)>, BusError> {
         let mut devices = alloc::vec::Vec::new();
-        
+
         for &(bus, device, function) in &self.devices {
             let temp_bus = PciBus::new(bus, device, function, self.config_base)?;
             let vendor_id = temp_bus.read_u16(0)? as u32;
             let device_id = temp_bus.read_u16(2)? as u32;
             devices.push((vendor_id, device_id));
         }
-        
+
         Ok(devices)
     }
 }
@@ -471,16 +473,17 @@ impl PlatformBus {
             devices: alloc::vec::Vec::new(),
         }
     }
-    
+
     pub fn add_device(&mut self, device: PlatformDevice) {
         self.devices.push(device);
     }
-    
+
     pub fn find_device(&self, compatible: &str) -> Option<&PlatformDevice> {
-        self.devices.iter()
+        self.devices
+            .iter()
             .find(|dev| dev.compatible.iter().any(|c| c == compatible))
     }
-    
+
     pub fn get_devices(&self) -> &[PlatformDevice] {
         &self.devices
     }
@@ -490,120 +493,136 @@ impl Bus for PlatformBus {
     fn bus_type(&self) -> BusType {
         BusType::Platform
     }
-    
+
     fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
         if offset >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u8))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u8,
+            ))
         }
     }
-    
+
     fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
         if offset + 1 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u16))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u16,
+            ))
         }
     }
-    
+
     fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         if offset + 3 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u32))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u32,
+            ))
         }
     }
-    
+
     fn read_u64(&self, offset: usize) -> Result<u64, BusError> {
         if offset + 7 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
-            Ok(core::ptr::read_volatile((self.base_addr + offset) as *const u64))
+            Ok(core::ptr::read_volatile(
+                (self.base_addr + offset) as *const u64,
+            ))
         }
     }
-    
+
     fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
         if offset >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
             core::ptr::write_volatile((self.base_addr + offset) as *mut u8, value);
         }
         Ok(())
     }
-    
+
     fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
         if offset + 1 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
             core::ptr::write_volatile((self.base_addr + offset) as *mut u16, value);
         }
         Ok(())
     }
-    
+
     fn write_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         if offset + 3 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
             core::ptr::write_volatile((self.base_addr + offset) as *mut u32, value);
         }
         Ok(())
     }
-    
+
     fn write_u64(&self, offset: usize, value: u64) -> Result<(), BusError> {
         if offset + 7 >= self.size {
             return Err(BusError::OutOfBounds);
         }
-        
+
         unsafe {
             core::ptr::write_volatile((self.base_addr + offset) as *mut u64, value);
         }
         Ok(())
     }
-    
+
     fn base_address(&self) -> usize {
         self.base_addr
     }
-    
+
     fn size(&self) -> usize {
         self.size
     }
-    
+
     fn is_accessible(&self) -> bool {
         self.base_addr != 0
     }
-    
+
     fn supports_dma(&self) -> bool {
         true
     }
-    
+
     fn enumerate_devices(&self) -> Result<alloc::vec::Vec<(u32, u32)>, BusError> {
         // Platform devices don't have traditional vendor/device IDs
         // Return a hash of device names instead
         let mut devices = alloc::vec::Vec::new();
-        
+
         for device in &self.devices {
-            let name_hash = device.name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-            let compat_hash = device.compatible.get(0)
-                .map(|s| s.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32)))
+            let name_hash = device
+                .name
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let compat_hash = device
+                .compatible
+                .get(0)
+                .map(|s| {
+                    s.bytes()
+                        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
+                })
                 .unwrap_or(0);
             devices.push((name_hash, compat_hash));
         }
-        
+
         Ok(devices)
     }
 }

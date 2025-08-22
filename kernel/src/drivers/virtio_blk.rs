@@ -1,10 +1,10 @@
-use alloc::sync::Arc;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use spin::Mutex;
 
 use super::{
-    hal::{VirtIODevice, Device, DeviceType, DeviceState, DeviceError, MmioBus},
-    block::{BlockDevice, BlockError, BLOCK_SIZE},
+    block::{BLOCK_SIZE, BlockDevice, BlockError},
+    hal::{Device, DeviceError, DeviceState, DeviceType, MmioBus, VirtIODevice},
     virtio_queue::*,
 };
 
@@ -89,7 +89,9 @@ impl VirtIOBlockDevice {
         virtio_device.set_driver_features(0).ok()?;
 
         let status = virtio_device.get_status().ok()?;
-        virtio_device.set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK).ok()?;
+        virtio_device
+            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK)
+            .ok()?;
 
         if virtio_device.get_status().ok()? & super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
@@ -112,9 +114,14 @@ impl VirtIOBlockDevice {
         let capacity = virtio_device.read_config_u64(0).ok()?;
 
         let status = virtio_device.get_status().ok()?;
-        virtio_device.set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
+        virtio_device
+            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_DRIVER_OK)
+            .ok()?;
 
-        info!("VirtIO block device capacity: {} MB", capacity * 512 / 1024 / 1024);
+        info!(
+            "VirtIO block device capacity: {} MB",
+            capacity * 512 / 1024 / 1024
+        );
 
         Some(Arc::new(Self {
             device: virtio_device,
@@ -123,14 +130,22 @@ impl VirtIOBlockDevice {
         }))
     }
 
-    fn perform_io(&self, is_write: bool, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn perform_io(
+        &self,
+        is_write: bool,
+        block_id: usize,
+        buf: &mut [u8],
+    ) -> Result<(), BlockError> {
         if buf.len() != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);
         }
 
         if block_id >= (self.capacity * 512 / BLOCK_SIZE as u64) as usize {
-            debug!("[VIRTIO_BLK] Block {} exceeds capacity {}",
-                   block_id, (self.capacity * 512 / BLOCK_SIZE as u64));
+            debug!(
+                "[VIRTIO_BLK] Block {} exceeds capacity {}",
+                block_id,
+                (self.capacity * 512 / BLOCK_SIZE as u64)
+            );
             return Err(BlockError::InvalidBlock);
         }
 
@@ -140,13 +155,20 @@ impl VirtIOBlockDevice {
         let sector_id = block_id * sectors_per_block;
 
         let req = VirtIOBlkReq {
-            type_: if is_write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN },
+            type_: if is_write {
+                VIRTIO_BLK_T_OUT
+            } else {
+                VIRTIO_BLK_T_IN
+            },
             reserved: 0,
             sector: sector_id as u64,
         };
 
         let req_bytes = unsafe {
-            core::slice::from_raw_parts(&req as *const _ as *const u8, core::mem::size_of::<VirtIOBlkReq>())
+            core::slice::from_raw_parts(
+                &req as *const _ as *const u8,
+                core::mem::size_of::<VirtIOBlkReq>(),
+            )
         };
 
         let mut status = [0u8; 1];
@@ -162,13 +184,18 @@ impl VirtIOBlockDevice {
         };
 
         let desc_idx = desc_idx.ok_or_else(|| {
-            debug!("[VIRTIO_BLK] Failed to add buffer to queue for block {}", block_id);
+            debug!(
+                "[VIRTIO_BLK] Failed to add buffer to queue for block {}",
+                block_id
+            );
             BlockError::DeviceError
         })?;
 
         queue.add_to_avail(desc_idx);
 
-        self.device.notify_queue(0).map_err(|_| BlockError::DeviceError)?;
+        self.device
+            .notify_queue(0)
+            .map_err(|_| BlockError::DeviceError)?;
 
         const MAX_ATTEMPTS: usize = 100000; // allow more drain cycles on slow devices
         let mut attempts = MAX_ATTEMPTS;
@@ -216,17 +243,26 @@ impl VirtIOBlockDevice {
         match status[0] {
             VIRTIO_BLK_S_OK => Ok(()),
             VIRTIO_BLK_S_IOERR => {
-                debug!("[VIRTIO_BLK] Device reported I/O error for block {}", block_id);
+                debug!(
+                    "[VIRTIO_BLK] Device reported I/O error for block {}",
+                    block_id
+                );
                 Err(BlockError::IoError)
-            },
+            }
             VIRTIO_BLK_S_UNSUPP => {
-                debug!("[VIRTIO_BLK] Device reported unsupported operation for block {}", block_id);
+                debug!(
+                    "[VIRTIO_BLK] Device reported unsupported operation for block {}",
+                    block_id
+                );
                 Err(BlockError::DeviceError)
-            },
+            }
             _ => {
-                debug!("[VIRTIO_BLK] Device reported unknown status {} for block {}", status[0], block_id);
+                debug!(
+                    "[VIRTIO_BLK] Device reported unknown status {} for block {}",
+                    status[0], block_id
+                );
                 Err(BlockError::DeviceError)
-            },
+            }
         }
     }
 }
@@ -318,11 +354,17 @@ impl Device for VirtIOBlockDevice {
         self.device.resources()
     }
 
-    fn request_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+    fn request_resources(
+        &mut self,
+        resource_manager: &mut dyn super::hal::resource::ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.device.request_resources(resource_manager)
     }
 
-    fn release_resources(&mut self, resource_manager: &mut dyn super::hal::resource::ResourceManager) -> Result<(), DeviceError> {
+    fn release_resources(
+        &mut self,
+        resource_manager: &mut dyn super::hal::resource::ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.device.release_resources(resource_manager)
     }
 
@@ -330,7 +372,11 @@ impl Device for VirtIOBlockDevice {
         self.device.supports_interrupt()
     }
 
-    fn set_interrupt_handler(&mut self, vector: super::hal::InterruptVector, handler: Arc<dyn super::hal::InterruptHandler>) -> Result<(), DeviceError> {
+    fn set_interrupt_handler(
+        &mut self,
+        vector: super::hal::InterruptVector,
+        handler: Arc<dyn super::hal::InterruptHandler>,
+    ) -> Result<(), DeviceError> {
         self.device.set_interrupt_handler(vector, handler)
     }
 
@@ -350,11 +396,18 @@ struct VirtIOBlockIrqHandler {
 }
 
 impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
-    fn handle_interrupt(&self, _vector: super::hal::interrupt::InterruptVector) -> Result<(), super::hal::interrupt::InterruptError> {
+    fn handle_interrupt(
+        &self,
+        _vector: super::hal::interrupt::InterruptVector,
+    ) -> Result<(), super::hal::interrupt::InterruptError> {
         // 仅做最小化的中断确认，避免与同步 I/O 路径上的队列锁竞争
         if let Ok(status) = self.device.device.interrupt_status() {
             // 确认 VRING 与 CONFIG 两类中断（如存在）
-            let _ = self.device.device.interrupt_ack(status & (super::hal::virtio::VIRTIO_MMIO_INT_VRING | super::hal::virtio::VIRTIO_MMIO_INT_CONFIG));
+            let _ = self.device.device.interrupt_ack(
+                status
+                    & (super::hal::virtio::VIRTIO_MMIO_INT_VRING
+                        | super::hal::virtio::VIRTIO_MMIO_INT_CONFIG),
+            );
         }
         Ok(())
     }
@@ -370,6 +423,8 @@ impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
 
 impl VirtIOBlockDevice {
     pub fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn super::hal::InterruptHandler> {
-        Arc::new(VirtIOBlockIrqHandler { device: self.clone() })
+        Arc::new(VirtIOBlockIrqHandler {
+            device: self.clone(),
+        })
     }
 }

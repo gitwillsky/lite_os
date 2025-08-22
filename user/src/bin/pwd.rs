@@ -12,7 +12,7 @@ use user_lib::{exit, getcwd};
 fn main() -> i32 {
     let mut buf = [0u8; 256];
     let result = getcwd(&mut buf);
-    
+
     if result > 0 {
         // Find the null terminator or use the returned length
         let len = result as usize - 1; // Subtract 1 for null terminator

@@ -1,62 +1,79 @@
 // LiteOS 驱动子系统 - 完全基于新HAL架构
 
-use alloc::vec;
 use alloc::string::String;
+use alloc::vec;
 
-pub mod hal;                    // 硬件抽象层 - 核心架构
-pub mod block;                  // 块设备抽象层
-pub mod device_manager;         // 设备管理器 - 统一设备管理
-pub mod virtio_blk;            // VirtIO块设备驱动
-pub mod virtio_console;        // VirtIO控制台驱动
-pub mod virtio_gpu;            // VirtIO GPU设备驱动
-pub mod virtio_input;          // VirtIO 输入设备驱动
-pub mod virtio_queue;          // VirtIO队列实现
-pub mod framebuffer;           // Framebuffer抽象层
-pub mod goldfish_rtc;          // Goldfish RTC驱动
+pub mod block; // 块设备抽象层
+pub mod device_manager; // 设备管理器 - 统一设备管理
+pub mod framebuffer; // Framebuffer抽象层
+pub mod goldfish_rtc;
+pub mod hal; // 硬件抽象层 - 核心架构
+pub mod virtio_blk; // VirtIO块设备驱动
+pub mod virtio_console; // VirtIO控制台驱动
+pub mod virtio_gpu; // VirtIO GPU设备驱动
+pub mod virtio_input; // VirtIO 输入设备驱动
+pub mod virtio_queue; // VirtIO队列实现 // Goldfish RTC驱动
 
 // === HAL核心导出 ===
 pub use hal::{
-    // 设备抽象
-    Device, DeviceType, DeviceState, DeviceError, GenericDevice,
-    device::DeviceDriver,
     // 总线抽象
-    Bus, BusError,
-    // 中断处理
-    InterruptHandler, InterruptController, InterruptVector,
-    // 内存管理
-    DmaBuffer, MemoryAttributes,
-    // 电源管理
-    PowerManagement, PowerState,
-    // 资源管理
-    Resource, ResourceManager,
+    Bus,
+    BusError,
+    // 设备抽象
+    Device,
+    DeviceError,
     // 设备管理器
     DeviceManager,
+    DeviceState,
+    DeviceType,
+    // 内存管理
+    DmaBuffer,
+    GenericDevice,
+    InterruptController,
+    // 中断处理
+    InterruptHandler,
+    InterruptVector,
+    MemoryAttributes,
+    // 电源管理
+    PowerManagement,
+    PowerState,
+    // 资源管理
+    Resource,
+    ResourceManager,
+    device::DeviceDriver,
 };
 
 // === 块设备子系统导出 ===
 pub use block::{
-    BlockDevice, BlockError, BlockDeviceStats,
-    GenericBlockDriver,
-    // 全局管理函数
-    register_block_device, get_primary_block_device, get_all_block_devices,
-    block_manager,
     BLOCK_SIZE,
+    BlockDevice,
+    BlockDeviceStats,
+    BlockError,
+    GenericBlockDriver,
+    block_manager,
+    get_all_block_devices,
+    get_primary_block_device,
+    // 全局管理函数
+    register_block_device,
 };
 
 // === 设备管理器导出 ===
 pub use device_manager::{
-    // 系统初始化
-    init,
-    // 中断处理
-    handle_external_interrupt,
-    // 电源管理
-    suspend_all_devices, resume_all_devices,
-    // 设备查找
-    find_devices_by_type, find_devices_by_driver, get_device,
-    // 统计和调试
-    get_device_statistics,
     // 全局设备管理器
     device_manager,
+    find_devices_by_driver,
+    // 设备查找
+    find_devices_by_type,
+    get_device,
+    // 统计和调试
+    get_device_statistics,
+    // 中断处理
+    handle_external_interrupt,
+    // 系统初始化
+    init,
+    resume_all_devices,
+    // 电源管理
+    suspend_all_devices,
 };
 
 // === VirtIO驱动导出 ===
@@ -65,19 +82,19 @@ pub use virtio_console::{
     VirtIOConsoleDevice,
     // 全局控制台接口
     init_virtio_console,
-    virtio_console_write,
-    virtio_console_read,
-    virtio_console_has_input,
     is_virtio_console_available,
+    virtio_console_has_input,
+    virtio_console_read,
+    virtio_console_write,
 };
-pub use virtio_gpu::{VirtioGpuDevice, DisplayMode};
-pub use virtio_input::{VirtioInputDevice, register_input_node_auto, open_input_device};
+pub use virtio_gpu::{DisplayMode, VirtioGpuDevice};
+pub use virtio_input::{VirtioInputDevice, open_input_device, register_input_node_auto};
 pub use virtio_queue::{VirtQueue, VirtQueueError};
 
 // === Framebuffer导出 ===
 pub use framebuffer::{
-    Framebuffer, GenericFramebuffer, FramebufferInfo, PixelFormat,
-    set_global_framebuffer, get_global_framebuffer, with_global_framebuffer,
+    Framebuffer, FramebufferInfo, GenericFramebuffer, PixelFormat, get_global_framebuffer,
+    set_global_framebuffer, with_global_framebuffer,
 };
 
 // === RTC驱动导出 ===
@@ -117,7 +134,10 @@ pub fn system_health_check() -> bool {
         warn!("[Drivers] No block devices available");
         healthy = false;
     } else {
-        info!("[Drivers] {} block device(s) available", block_devices.len());
+        info!(
+            "[Drivers] {} block device(s) available",
+            block_devices.len()
+        );
     }
 
     // 检查设备管理器状态
@@ -129,8 +149,10 @@ pub fn system_health_check() -> bool {
     let failed_devices = stats.get(&DeviceState::Failed).unwrap_or(&0);
     let error_devices = stats.get(&DeviceState::Error).unwrap_or(&0);
 
-    info!("[Drivers] Total devices: {}, Failed: {}, Error: {}",
-          total_devices, failed_devices, error_devices);
+    info!(
+        "[Drivers] Total devices: {}, Failed: {}, Error: {}",
+        total_devices, failed_devices, error_devices
+    );
 
     if *failed_devices > 0 || *error_devices > 0 {
         warn!("[Drivers] Some devices are in failed/error state");
@@ -170,7 +192,7 @@ pub fn get_subsystem_info() -> DriverSubsystemInfo {
             "Multi-core interrupt handling",
             "Resource conflict detection",
             "Device statistics",
-            "Async I/O support"
+            "Async I/O support",
         ],
     }
 }

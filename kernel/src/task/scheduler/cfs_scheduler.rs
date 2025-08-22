@@ -37,7 +37,10 @@ impl Scheduler for CFScheduler {
     }
 
     fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
-        self.tasks.iter().map(|cfs_task| cfs_task.0.clone()).collect()
+        self.tasks
+            .iter()
+            .map(|cfs_task| cfs_task.0.clone())
+            .collect()
     }
 }
 

@@ -69,27 +69,27 @@ const SBI_HSM_HART_SUSPEND: usize = 3;
 
 /// SBI Hart start function
 pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> Result<(), isize> {
-    let (error, _) = sbi_call(SBI_EXT_HSM, SBI_HSM_HART_START, [hartid, start_addr, opaque, 0, 0, 0]);
-    if error == 0 {
-        Ok(())
-    } else {
-        Err(error)
-    }
+    let (error, _) = sbi_call(
+        SBI_EXT_HSM,
+        SBI_HSM_HART_START,
+        [hartid, start_addr, opaque, 0, 0, 0],
+    );
+    if error == 0 { Ok(()) } else { Err(error) }
 }
 
 /// SBI Hart stop function
 pub fn hart_stop() -> Result<(), isize> {
     let (error, _) = sbi_call(SBI_EXT_HSM, SBI_HSM_HART_STOP, [0, 0, 0, 0, 0, 0]);
-    if error == 0 {
-        Ok(())
-    } else {
-        Err(error)
-    }
+    if error == 0 { Ok(()) } else { Err(error) }
 }
 
 /// SBI Hart get status function
 pub fn hart_get_status(hartid: usize) -> Result<usize, isize> {
-    let (error, status) = sbi_call(SBI_EXT_HSM, SBI_HSM_HART_GET_STATUS, [hartid, 0, 0, 0, 0, 0]);
+    let (error, status) = sbi_call(
+        SBI_EXT_HSM,
+        SBI_HSM_HART_GET_STATUS,
+        [hartid, 0, 0, 0, 0, 0],
+    );
     if error == 0 {
         Ok(status as usize)
     } else {
@@ -104,10 +104,10 @@ const SBI_IPI_SEND: usize = 0;
 /// hart_mask: 位掩码，指示要发送IPI的hart
 /// hart_mask_base: hart_mask对应的基础hart ID
 pub fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) -> Result<(), isize> {
-    let (error, _) = sbi_call(SBI_EXT_IPI, SBI_IPI_SEND, [hart_mask, hart_mask_base, 0, 0, 0, 0]);
-    if error == 0 {
-        Ok(())
-    } else {
-        Err(error)
-    }
+    let (error, _) = sbi_call(
+        SBI_EXT_IPI,
+        SBI_IPI_SEND,
+        [hart_mask, hart_mask_base, 0, 0, 0, 0],
+    );
+    if error == 0 { Ok(()) } else { Err(error) }
 }

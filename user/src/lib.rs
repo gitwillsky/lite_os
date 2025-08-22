@@ -5,17 +5,16 @@
 pub mod syscall;
 #[macro_use]
 pub mod console;
-pub mod heap;
 pub mod gfx;
-pub mod protocol;
+pub mod heap;
 pub mod litegui;
+pub mod protocol;
 pub mod testutil;
 pub mod webcore;
 
 mod lang_item;
 
 extern crate alloc;
-
 
 pub use syscall::*;
 pub use testutil::TestStats;

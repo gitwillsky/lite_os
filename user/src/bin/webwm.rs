@@ -5,11 +5,11 @@
 extern crate user_lib;
 extern crate alloc;
 
-use user_lib::gfx;
-use user_lib::syscall::{open_flags, poll, PollFd};
-use user_lib::read;
-use user_lib::webcore::{RenderEngine, StandardRenderEngine};
 use alloc::boxed::Box;
+use user_lib::gfx;
+use user_lib::read;
+use user_lib::syscall::{PollFd, open_flags, poll};
+use user_lib::webcore::{RenderEngine, StandardRenderEngine};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -35,7 +35,9 @@ fn main() -> i32 {
     println!("[webwm] Loading desktop HTML from filesystem...");
     if !engine.load_html_from_file("/usr/share/desktop/desktop.html") {
         println!("[webwm] Failed to load desktop HTML, using fallback");
-        engine.load_html(r#"<html><body><h1>WebWM</h1><p>Failed to load desktop.html</p></body></html>"#);
+        engine.load_html(
+            r#"<html><body><h1>WebWM</h1><p>Failed to load desktop.html</p></body></html>"#,
+        );
     }
 
     // 处理字体加载
@@ -83,10 +85,22 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
 
     for cmd in &result.commands {
         match cmd {
-            DrawCommand::FillRect { x, y, width, height, color } => {
+            DrawCommand::FillRect {
+                x,
+                y,
+                width,
+                height,
+                color,
+            } => {
                 gfx::gui_fill_rect_xywh(*x, *y, *width, *height, *color);
             }
-            DrawCommand::DrawText { x, y, text, color, size } => {
+            DrawCommand::DrawText {
+                x,
+                y,
+                text,
+                color,
+                size,
+            } => {
                 if !gfx::draw_text(*x, *y, text, *size, *color) {
                     let scale = if *size >= 16 { *size / 8 } else { 1 };
                     let asc = gfx::font_ascent(*size);
@@ -94,11 +108,24 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
                     gfx::draw_string_scaled(*x, top_y, text, *color, scale);
                 }
             }
-            DrawCommand::DrawImage { x, y, width, height, .. } => {
+            DrawCommand::DrawImage {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => {
                 // 暂时绘制占位符
                 gfx::gui_fill_rect_xywh(*x, *y, *width, *height, 0xFF808080);
             }
-            DrawCommand::DrawLine { x1, y1, x2, y2, color, width } => {
+            DrawCommand::DrawLine {
+                x1,
+                y1,
+                x2,
+                y2,
+                color,
+                width,
+            } => {
                 // TODO: 实现线条绘制
                 let _ = (x1, y1, x2, y2, color, width);
             }
@@ -110,8 +137,16 @@ fn run_event_loop(engine: &mut StandardRenderEngine) {
     let input0 = user_lib::open("/dev/input/event0", open_flags::O_RDONLY) as i32;
     let input1 = user_lib::open("/dev/input/event1", open_flags::O_RDONLY) as i32;
     let mut pfds: [PollFd; 2] = [
-        PollFd { fd: input0, events: user_lib::poll_flags::POLLIN, revents: 0 },
-        PollFd { fd: input1, events: user_lib::poll_flags::POLLIN, revents: 0 },
+        PollFd {
+            fd: input0,
+            events: user_lib::poll_flags::POLLIN,
+            revents: 0,
+        },
+        PollFd {
+            fd: input1,
+            events: user_lib::poll_flags::POLLIN,
+            revents: 0,
+        },
     ];
     let mut tmp = [0u8; 128];
 

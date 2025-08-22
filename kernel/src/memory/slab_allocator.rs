@@ -3,8 +3,8 @@ use core::mem::size_of;
 use core::ptr::NonNull;
 use spin::Mutex;
 
-use crate::memory::frame_allocator::{alloc as frame_alloc, FrameTracker};
 use crate::memory::config::PAGE_SIZE;
+use crate::memory::frame_allocator::{FrameTracker, alloc as frame_alloc};
 
 /// SLAB allocator error types
 #[derive(Debug, Clone, Copy)]
@@ -392,7 +392,6 @@ impl SlabCache {
         Err(SlabError::InvalidPointer)
     }
 
-
     /// Remove a slab from a linked list
     fn remove_slab_from_list(target: NonNull<Slab>, head: &mut Option<NonNull<Slab>>) {
         unsafe {
@@ -488,7 +487,10 @@ impl SlabAllocator {
 
     /// Initialize the SLAB allocator
     pub fn init(&self) {
-        debug!("[SLAB] Initializing SLAB allocator with {} caches", COMMON_SIZES.len());
+        debug!(
+            "[SLAB] Initializing SLAB allocator with {} caches",
+            COMMON_SIZES.len()
+        );
         for (i, &size) in COMMON_SIZES.iter().enumerate() {
             *self.caches[i].lock() = SlabCache::new(size);
         }
@@ -513,11 +515,19 @@ impl SlabAllocator {
         if let Some(cache_idx) = self.find_cache_index(layout) {
             let result = self.caches[cache_idx].lock().alloc();
             if result.is_err() {
-                debug!("[SLAB] Failed to allocate {} bytes from cache {}", layout.size(), cache_idx);
+                debug!(
+                    "[SLAB] Failed to allocate {} bytes from cache {}",
+                    layout.size(),
+                    cache_idx
+                );
             }
             result
         } else {
-            debug!("[SLAB] No suitable cache for layout: size={}, align={}", layout.size(), layout.align());
+            debug!(
+                "[SLAB] No suitable cache for layout: size={}, align={}",
+                layout.size(),
+                layout.align()
+            );
             Err(SlabError::InvalidLayout)
         }
     }
@@ -527,11 +537,19 @@ impl SlabAllocator {
         if let Some(cache_idx) = self.find_cache_index(layout) {
             let result = self.caches[cache_idx].lock().dealloc(ptr);
             if result.is_err() {
-                debug!("[SLAB] Failed to deallocate ptr {:p} from cache {}", ptr.as_ptr(), cache_idx);
+                debug!(
+                    "[SLAB] Failed to deallocate ptr {:p} from cache {}",
+                    ptr.as_ptr(),
+                    cache_idx
+                );
             }
             result
         } else {
-            debug!("[SLAB] No suitable cache for dealloc: size={}, align={}", layout.size(), layout.align());
+            debug!(
+                "[SLAB] No suitable cache for dealloc: size={}, align={}",
+                layout.size(),
+                layout.align()
+            );
             Err(SlabError::InvalidPointer)
         }
     }

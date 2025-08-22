@@ -171,8 +171,15 @@ impl PageTable {
         result
     }
 
-    pub fn map(&mut self, vpn: VirtualPageNumber, ppn: PhysicalPageNumber, flags: PTEFlags) -> Result<(), PageTableError> {
-        let pte = self.find_pte_create(vpn).ok_or(PageTableError::OutOfMemory)?;
+    pub fn map(
+        &mut self,
+        vpn: VirtualPageNumber,
+        ppn: PhysicalPageNumber,
+        flags: PTEFlags,
+    ) -> Result<(), PageTableError> {
+        let pte = self
+            .find_pte_create(vpn)
+            .ok_or(PageTableError::OutOfMemory)?;
         if pte.is_valid() {
             return Err(PageTableError::AlreadyMapped);
         }
@@ -195,13 +202,8 @@ impl PageTable {
     }
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
-        self.find_pte(vpn).and_then(|pte| {
-            if pte.is_valid() {
-                Some(*pte)
-            } else {
-                None
-            }
-        })
+        self.find_pte(vpn)
+            .and_then(|pte| if pte.is_valid() { Some(*pte) } else { None })
     }
 
     pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
@@ -227,7 +229,8 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     while start < end {
         let start_va = VirtualAddress::from(start);
         let vpn = start_va.floor();
-        let ppn = page_table.translate(vpn)
+        let ppn = page_table
+            .translate(vpn)
             .expect("Page table entry not found in translated_byte_buffer")
             .ppn();
         let next_vpn = vpn.next();
@@ -249,7 +252,8 @@ pub fn translated_str(token: usize, ptr: *const u8) -> String {
     let mut va = ptr as usize;
     loop {
         let v_addr: VirtualAddress = va.into();
-        let ch: u8 = *(page_table.translate_va(v_addr)
+        let ch: u8 = *(page_table
+            .translate_va(v_addr)
             .expect("Page table entry not found in translated_str")
             .get_mut());
         if ch == 0 {

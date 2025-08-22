@@ -1,23 +1,23 @@
+mod dynamic_linking;
+mod errno;
 mod fs;
 pub mod graphics;
+mod memory;
 mod process;
 mod signal;
 mod timer;
 mod watchdog;
-mod dynamic_linking;
-mod memory;
-mod errno;
 
+use crate::memory::page_table::{translated_byte_buffer, translated_ref_mut};
+use crate::task::current_user_token;
+use dynamic_linking::*;
 use fs::*;
 use graphics::*;
+use memory::*;
 use process::*;
 use signal::*;
 use timer::*;
 use watchdog::*;
-use dynamic_linking::*;
-use memory::*;
-use crate::task::current_user_token;
-use crate::memory::page_table::{translated_ref_mut, translated_byte_buffer};
 
 pub use signal::sys_sigreturn;
 
@@ -111,8 +111,8 @@ const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
 const SYSCALL_GET_TIME_MS: usize = 800;
 const SYSCALL_GET_TIME_US: usize = 801;
 const SYSCALL_GET_TIME_NS: usize = 802;
-const SYSCALL_TIME: usize = 803;          // Unix 时间戳（秒）
-const SYSCALL_GETTIMEOFDAY: usize = 804;  // POSIX gettimeofday
+const SYSCALL_TIME: usize = 803; // Unix 时间戳（秒）
+const SYSCALL_GETTIMEOFDAY: usize = 804; // POSIX gettimeofday
 const SYSCALL_NANOSLEEP: usize = 101;
 
 // Watchdog 相关系统调用
@@ -133,7 +133,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GETTID => sys_gettid(),
         SYSCALL_FORK => sys_fork(),
         SYSCALL_EXEC => sys_exec(args[0] as *const u8),
-        SYSCALL_EXECVE => sys_execve(args[0] as *const u8, args[1] as *const *const u8, args[2] as *const *const u8),
+        SYSCALL_EXECVE => sys_execve(
+            args[0] as *const u8,
+            args[1] as *const *const u8,
+            args[2] as *const *const u8,
+        ),
         SYSCALL_WAIT => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
         SYSCALL_SHUTDOWN => sys_shutdown(),
         SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1], args[2]),
@@ -170,14 +174,22 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         // 调度相关系统调用
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
         SYSCALL_GETPRIORITY => sys_getpriority(args[0] as i32, args[1] as i32),
-        SYSCALL_SCHED_SETSCHEDULER => sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2] as *const u8),
+        SYSCALL_SCHED_SETSCHEDULER => {
+            sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2] as *const u8)
+        }
         SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
 
         // 信号相关系统调用
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
         SYSCALL_SIGNAL => sys_signal(args[1] as u32, args[2]),
-        SYSCALL_SIGACTION => sys_sigaction(args[0] as u32, args[1] as *const SigAction, args[2] as *mut SigAction),
-        SYSCALL_SIGPROCMASK => sys_sigprocmask(args[0] as i32, args[1] as *const u64, args[2] as *mut u64),
+        SYSCALL_SIGACTION => sys_sigaction(
+            args[0] as u32,
+            args[1] as *const SigAction,
+            args[2] as *mut SigAction,
+        ),
+        SYSCALL_SIGPROCMASK => {
+            sys_sigprocmask(args[0] as i32, args[1] as *const u64, args[2] as *mut u64)
+        }
         SYSCALL_SIGRETURN => sys_sigreturn(),
         SYSCALL_PAUSE => sys_pause(),
         SYSCALL_ALARM => sys_alarm(args[0] as u32),
@@ -208,7 +220,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
 
         // 进程监控系统调用
         SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),
-        SYSCALL_GET_PROCESS_INFO => sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo),
+        SYSCALL_GET_PROCESS_INFO => {
+            sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo)
+        }
         SYSCALL_GET_SYSTEM_STATS => sys_get_system_stats(args[0] as *mut SystemStats),
         SYSCALL_GET_CPU_CORE_INFO => sys_get_cpu_core_info(args[0] as *mut CpuCoreInfo),
 
@@ -221,11 +235,15 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
 
         // Watchdog 相关系统调用
-        SYSCALL_WATCHDOG_CONFIGURE => sys_watchdog_configure(args[0] as *const crate::watchdog::WatchdogConfig),
+        SYSCALL_WATCHDOG_CONFIGURE => {
+            sys_watchdog_configure(args[0] as *const crate::watchdog::WatchdogConfig)
+        }
         SYSCALL_WATCHDOG_START => sys_watchdog_start(),
         SYSCALL_WATCHDOG_STOP => sys_watchdog_stop(),
         SYSCALL_WATCHDOG_FEED => sys_watchdog_feed(),
-        SYSCALL_WATCHDOG_GET_INFO => sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo),
+        SYSCALL_WATCHDOG_GET_INFO => {
+            sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo)
+        }
         SYSCALL_WATCHDOG_SET_PRESET => sys_watchdog_set_preset(args[0] as u32),
 
         // GUI 图形系统调用（带矩形刷新）
@@ -235,7 +253,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GUI_PRESENT => sys_gui_present(args[0] as *const u8, args[1]),
         SYSCALL_GUI_FLUSH => sys_gui_flush(),
         SYSCALL_GUI_GET_SCREEN_INFO => sys_gui_get_screen_info(args[0] as *mut GuiScreenInfo),
-        SYSCALL_GUI_FLUSH_RECTS => sys_gui_flush_rects(args[0] as *const crate::drivers::framebuffer::Rect, args[1]),
+        SYSCALL_GUI_FLUSH_RECTS => {
+            sys_gui_flush_rects(args[0] as *const crate::drivers::framebuffer::Rect, args[1])
+        }
         SYSCALL_GUI_MAP_FRAMEBUFFER => sys_gui_map_framebuffer(args[0] as *mut usize),
 
         _ => {

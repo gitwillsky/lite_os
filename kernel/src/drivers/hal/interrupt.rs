@@ -1,11 +1,11 @@
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use alloc::boxed::Box;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
 use riscv::register;
+use spin::Mutex;
 
 pub type InterruptVector = u32;
 
@@ -119,8 +119,16 @@ pub trait InterruptController: Send + Sync {
     fn enable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
     fn disable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
 
-    fn set_priority(&mut self, vector: InterruptVector, priority: InterruptPriority) -> Result<(), InterruptError>;
-    fn set_affinity(&mut self, vector: InterruptVector, cpu_mask: usize) -> Result<(), InterruptError>;
+    fn set_priority(
+        &mut self,
+        vector: InterruptVector,
+        priority: InterruptPriority,
+    ) -> Result<(), InterruptError>;
+    fn set_affinity(
+        &mut self,
+        vector: InterruptVector,
+        cpu_mask: usize,
+    ) -> Result<(), InterruptError>;
 
     fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
 
@@ -128,9 +136,13 @@ pub trait InterruptController: Send + Sync {
     fn acknowledge_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
 
     fn get_statistics(&self, vector: InterruptVector) -> Option<InterruptStatistics>;
-    fn supports_msi(&self) -> bool { false }
-    fn supports_cpu_affinity(&self) -> bool { false }
-    fn trigger_softirq(&self, _irq: crate::trap::softirq::SoftIrq) { }
+    fn supports_msi(&self) -> bool {
+        false
+    }
+    fn supports_cpu_affinity(&self) -> bool {
+        false
+    }
+    fn trigger_softirq(&self, _irq: crate::trap::softirq::SoftIrq) {}
 }
 
 pub struct SimpleInterruptHandler<F>
@@ -146,10 +158,7 @@ where
     F: Fn(InterruptVector) -> Result<(), InterruptError> + Send + Sync,
 {
     pub fn new(vector: InterruptVector, handler_fn: F) -> Self {
-        Self {
-            handler_fn,
-            vector,
-        }
+        Self { handler_fn, vector }
     }
 }
 
@@ -165,7 +174,6 @@ where
         vector == self.vector
     }
 }
-
 
 pub struct BasicInterruptController {
     handlers: Mutex<BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>>,
@@ -242,11 +250,19 @@ impl InterruptController for BasicInterruptController {
         Ok(())
     }
 
-    fn set_priority(&mut self, _vector: InterruptVector, _priority: InterruptPriority) -> Result<(), InterruptError> {
+    fn set_priority(
+        &mut self,
+        _vector: InterruptVector,
+        _priority: InterruptPriority,
+    ) -> Result<(), InterruptError> {
         Err(InterruptError::InvalidPriority)
     }
 
-    fn set_affinity(&mut self, _vector: InterruptVector, _cpu_mask: usize) -> Result<(), InterruptError> {
+    fn set_affinity(
+        &mut self,
+        _vector: InterruptVector,
+        _cpu_mask: usize,
+    ) -> Result<(), InterruptError> {
         Err(InterruptError::CpuAffinityError)
     }
 
@@ -266,7 +282,11 @@ pub struct PlicInterruptController {
 }
 
 impl PlicInterruptController {
-    pub fn new(base_addr: usize, max_interrupts: u32, num_contexts: u32) -> Result<Self, InterruptError> {
+    pub fn new(
+        base_addr: usize,
+        max_interrupts: u32,
+        num_contexts: u32,
+    ) -> Result<Self, InterruptError> {
         if base_addr == 0 {
             return Err(InterruptError::InvalidVector);
         }
@@ -330,9 +350,7 @@ impl PlicInterruptController {
         }
 
         let addr = self.priority_offset(vector);
-        unsafe {
-            core::ptr::read_volatile(addr as *const u32)
-        }
+        unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
 
     fn enable_interrupt_for_context(&self, vector: u32, context: u32, enable: bool) {
@@ -372,9 +390,7 @@ impl PlicInterruptController {
         }
 
         let addr = self.claim_offset(context);
-        unsafe {
-            core::ptr::read_volatile(addr as *const u32)
-        }
+        unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
 
     fn complete_interrupt(&self, context: u32, vector: u32) {
@@ -420,7 +436,9 @@ impl PlicInterruptController {
 
     fn update_statistics(&self, vector: u32, start_time: u64, end_time: u64, success: bool) {
         let mut stats = self.statistics.lock();
-        let stat = stats.entry(vector).or_insert_with(InterruptStatistics::default);
+        let stat = stats
+            .entry(vector)
+            .or_insert_with(InterruptStatistics::default);
 
         stat.total_count += 1;
         stat.last_timestamp = end_time;
@@ -438,7 +456,8 @@ impl PlicInterruptController {
                 stat.max_latency = latency;
             }
 
-            stat.avg_latency = ((stat.avg_latency * (stat.total_count - 1)) + latency) / stat.total_count;
+            stat.avg_latency =
+                ((stat.avg_latency * (stat.total_count - 1)) + latency) / stat.total_count;
         }
     }
 }
@@ -455,12 +474,18 @@ impl InterruptController for PlicInterruptController {
 
         // 关键：在修改 handlers 表期间禁止本地中断，避免中断上下文中也尝试获取同一把锁导致死锁
         let sie_prev = register::sstatus::read().sie();
-        unsafe { register::sstatus::clear_sie(); }
+        unsafe {
+            register::sstatus::clear_sie();
+        }
         {
             let mut handlers = self.handlers.lock();
             handlers.insert(vector, handler);
         }
-        if sie_prev { unsafe { register::sstatus::set_sie(); } }
+        if sie_prev {
+            unsafe {
+                register::sstatus::set_sie();
+            }
+        }
         Ok(())
     }
 
@@ -470,12 +495,18 @@ impl InterruptController for PlicInterruptController {
         }
         // 同理：在修改 handlers 表期间禁止本地中断
         let sie_prev = register::sstatus::read().sie();
-        unsafe { register::sstatus::clear_sie(); }
+        unsafe {
+            register::sstatus::clear_sie();
+        }
         {
             let mut handlers = self.handlers.lock();
             handlers.remove(&vector);
         }
-        if sie_prev { unsafe { register::sstatus::set_sie(); } }
+        if sie_prev {
+            unsafe {
+                register::sstatus::set_sie();
+            }
+        }
 
         for context in 0..self.num_contexts {
             self.enable_interrupt_for_context(vector, context, false);
@@ -513,7 +544,11 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn set_priority(&mut self, vector: InterruptVector, priority: InterruptPriority) -> Result<(), InterruptError> {
+    fn set_priority(
+        &mut self,
+        vector: InterruptVector,
+        priority: InterruptPriority,
+    ) -> Result<(), InterruptError> {
         if vector == 0 || vector > self.max_interrupts {
             return Err(InterruptError::InvalidVector);
         }
@@ -534,7 +569,11 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn set_affinity(&mut self, vector: InterruptVector, cpu_mask: usize) -> Result<(), InterruptError> {
+    fn set_affinity(
+        &mut self,
+        vector: InterruptVector,
+        cpu_mask: usize,
+    ) -> Result<(), InterruptError> {
         if vector == 0 || vector > self.max_interrupts {
             return Err(InterruptError::InvalidVector);
         }

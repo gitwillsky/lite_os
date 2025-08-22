@@ -1,9 +1,17 @@
 use core::sync::atomic;
 
-use alloc::{sync::{Arc, Weak}, vec::Vec, collections::{VecDeque, BTreeMap}, string::{String, ToString}};
 use crate::{
-    fs::{FileSystemError, inode::{Inode, InodeType}},
-    task::{TaskControlBlock, current_task, block_current_and_run_next },
+    fs::{
+        FileSystemError,
+        inode::{Inode, InodeType},
+    },
+    task::{TaskControlBlock, block_current_and_run_next, current_task},
+};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec::Vec,
 };
 use spin::Mutex;
 
@@ -108,10 +116,14 @@ impl Pipe {
                     dead.push(*pid);
                 }
             }
-            for pid in dead { inner.poll_waiters.remove(&pid); }
+            for pid in dead {
+                inner.poll_waiters.remove(&pid);
+            }
         }
         for w in to_wakeup {
-            if let Some(task) = w.upgrade() { task.wakeup(); }
+            if let Some(task) = w.upgrade() {
+                task.wakeup();
+            }
         }
     }
 
@@ -678,9 +690,15 @@ impl Inode for NamedPipe {
         Ok(())
     }
 
-    fn mode(&self) -> u32 { self.mode.load(atomic::Ordering::Acquire) }
-    fn uid(&self) -> u32 { self.owner_uid.load(atomic::Ordering::Acquire) }
-    fn gid(&self) -> u32 { self.owner_gid.load(atomic::Ordering::Acquire) }
+    fn mode(&self) -> u32 {
+        self.mode.load(atomic::Ordering::Acquire)
+    }
+    fn uid(&self) -> u32 {
+        self.owner_uid.load(atomic::Ordering::Acquire)
+    }
+    fn gid(&self) -> u32 {
+        self.owner_gid.load(atomic::Ordering::Acquire)
+    }
 
     fn poll_mask(&self) -> u32 {
         const POLLIN: u32 = 0x0001;
@@ -704,7 +722,9 @@ impl Inode for NamedPipe {
 
     fn register_poll_waiter(&self, interests: u32, task: Arc<crate::task::TaskControlBlock>) {
         let mut inner = self.pipe.inner.lock();
-        inner.poll_waiters.insert(task.pid(), (Arc::downgrade(&task), interests));
+        inner
+            .poll_waiters
+            .insert(task.pid(), (Arc::downgrade(&task), interests));
     }
 
     fn clear_poll_waiter(&self, task_pid: usize) {
@@ -771,9 +791,15 @@ impl Inode for FifoReadHandle {
     fn sync(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
-    fn mode(&self) -> u32 { self.fifo.mode.load(atomic::Ordering::Acquire) }
-    fn uid(&self) -> u32 { self.fifo.owner_uid.load(atomic::Ordering::Acquire) }
-    fn gid(&self) -> u32 { self.fifo.owner_gid.load(atomic::Ordering::Acquire) }
+    fn mode(&self) -> u32 {
+        self.fifo.mode.load(atomic::Ordering::Acquire)
+    }
+    fn uid(&self) -> u32 {
+        self.fifo.owner_uid.load(atomic::Ordering::Acquire)
+    }
+    fn gid(&self) -> u32 {
+        self.fifo.owner_gid.load(atomic::Ordering::Acquire)
+    }
 }
 
 impl Drop for FifoReadHandle {
@@ -840,9 +866,15 @@ impl Inode for FifoWriteHandle {
     fn sync(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
-    fn mode(&self) -> u32 { self.fifo.mode.load(atomic::Ordering::Acquire) }
-    fn uid(&self) -> u32 { self.fifo.owner_uid.load(atomic::Ordering::Acquire) }
-    fn gid(&self) -> u32 { self.fifo.owner_gid.load(atomic::Ordering::Acquire) }
+    fn mode(&self) -> u32 {
+        self.fifo.mode.load(atomic::Ordering::Acquire)
+    }
+    fn uid(&self) -> u32 {
+        self.fifo.owner_uid.load(atomic::Ordering::Acquire)
+    }
+    fn gid(&self) -> u32 {
+        self.fifo.owner_gid.load(atomic::Ordering::Acquire)
+    }
 }
 
 impl Drop for FifoWriteHandle {
@@ -870,7 +902,8 @@ pub fn create_fifo(path: &str) -> Result<Arc<NamedPipe>, FileSystemError> {
 /// Open an existing named pipe
 pub fn open_fifo(path: &str) -> Result<Arc<NamedPipe>, FileSystemError> {
     let registry = FIFO_REGISTRY.lock();
-    registry.get(path)
+    registry
+        .get(path)
         .map(|fifo| fifo.clone())
         .ok_or(FileSystemError::NotFound)
 }
@@ -878,7 +911,8 @@ pub fn open_fifo(path: &str) -> Result<Arc<NamedPipe>, FileSystemError> {
 /// Remove a named pipe from the registry
 pub fn remove_fifo(path: &str) -> Result<(), FileSystemError> {
     let mut registry = FIFO_REGISTRY.lock();
-    registry.remove(path)
+    registry
+        .remove(path)
         .map(|_| ())
         .ok_or(FileSystemError::NotFound)
 }

@@ -21,7 +21,14 @@ pub fn encode_frame(kind: u32, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-pub fn build_payload_buffer_commit(handle: u32, w: u32, h: u32, stride: u32, dx: i32, dy: i32) -> Vec<u8> {
+pub fn build_payload_buffer_commit(
+    handle: u32,
+    w: u32,
+    h: u32,
+    stride: u32,
+    dx: i32,
+    dy: i32,
+) -> Vec<u8> {
     let mut p = Vec::with_capacity(24);
     encode_u32_le(&mut p, handle);
     encode_u32_le(&mut p, w);
@@ -31,5 +38,3 @@ pub fn build_payload_buffer_commit(handle: u32, w: u32, h: u32, stride: u32, dx:
     encode_i32_le(&mut p, dy);
     p
 }
-
-

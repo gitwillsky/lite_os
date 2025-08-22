@@ -1,14 +1,14 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
-use spin::{RwLock, Mutex};
+use spin::{Mutex, RwLock};
 
 use crate::{
-    arch::hart::{hart_id, is_valid_hart_id, MAX_CORES},
+    arch::hart::{MAX_CORES, hart_id, is_valid_hart_id},
     task::{
+        TaskControlBlock, TaskStatus,
         context::TaskContext,
         scheduler::{Scheduler, cfs_scheduler::CFScheduler},
-        TaskControlBlock, TaskStatus,
     },
     timer::get_time_us,
 };
@@ -112,7 +112,6 @@ impl Processor {
     }
 }
 
-
 // Per-CPU 变量，每个核心完全独立
 static mut PER_CPU_PROCESSORS: [Option<Processor>; MAX_CORES] = [const { None }; MAX_CORES];
 static ACTIVE_CORES: AtomicUsize = AtomicUsize::new(0);
@@ -137,8 +136,3 @@ pub fn active_core_count() -> usize {
 pub fn mark_core_active() {
     ACTIVE_CORES.fetch_add(1, Ordering::Relaxed);
 }
-
-
-
-
-

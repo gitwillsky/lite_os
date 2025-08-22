@@ -1,21 +1,21 @@
+use crate::task::TaskControlBlock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use crate::task::TaskControlBlock;
 use spin::Mutex;
 
 /// File lock types corresponding to POSIX flock constants
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockType {
-    Shared = 1,     // LOCK_SH
-    Exclusive = 2,  // LOCK_EX
+    Shared = 1,    // LOCK_SH
+    Exclusive = 2, // LOCK_EX
 }
 
 /// File lock operation flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockOp {
-    Unlock = 8,     // LOCK_UN
-    NonBlock = 4,   // LOCK_NB
+    Unlock = 8,   // LOCK_UN
+    NonBlock = 4, // LOCK_NB
 }
 
 /// File lock structure
@@ -95,11 +95,7 @@ impl FileLockManager {
     }
 
     /// Remove a lock from the given inode
-    pub fn unlock(
-        &self,
-        inode: &Arc<dyn super::Inode>,
-        owner_pid: usize,
-    ) -> Result<(), LockError> {
+    pub fn unlock(&self, inode: &Arc<dyn super::Inode>, owner_pid: usize) -> Result<(), LockError> {
         let inode_id = Self::inode_id(inode);
         let mut locks = self.locks.lock();
 

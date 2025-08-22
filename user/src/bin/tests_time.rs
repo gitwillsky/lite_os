@@ -4,7 +4,9 @@
 #[macro_use]
 extern crate user_lib;
 
-use user_lib::{get_time_ms, get_time_us, get_time_ns, time, gettimeofday, TimeVal, nanosleep, TimeSpec, exit};
+use user_lib::{
+    TimeSpec, TimeVal, exit, get_time_ms, get_time_ns, get_time_us, gettimeofday, nanosleep, time,
+};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -15,12 +17,18 @@ fn main() -> i32 {
     let ns1 = get_time_ns();
     test_assert!(ms1 >= 0 && us1 >= 0 && ns1 >= 0, "获取时间失败");
 
-    let mut tv = TimeVal { tv_sec: 0, tv_usec: 0 };
+    let mut tv = TimeVal {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
     let r = gettimeofday(&mut tv, core::ptr::null_mut());
     test_assert!(r == 0, "gettimeofday 失败: {}", r);
 
     // 睡眠 50ms
-    let req = TimeSpec { tv_sec: 0, tv_nsec: 50_000_000 };
+    let req = TimeSpec {
+        tv_sec: 0,
+        tv_nsec: 50_000_000,
+    };
     let nr = nanosleep(&req, core::ptr::null_mut());
     test_assert!(nr == 0, "nanosleep 失败: {}", nr);
 
@@ -34,5 +42,3 @@ fn main() -> i32 {
     exit(0);
     0
 }
-
-

@@ -1,4 +1,10 @@
-use alloc::{boxed::Box, collections::{BTreeMap, VecDeque}, string::{String, ToString}, sync::{Arc, Weak}, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque},
+    string::{String, ToString},
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use spin::Mutex;
 
 use crate::drivers::hal::{
@@ -6,10 +12,16 @@ use crate::drivers::hal::{
     device::{Device, DeviceError, DeviceState, DeviceType},
     interrupt::{InterruptHandler, InterruptVector},
     resource::{Resource, ResourceManager},
-    virtio::{VirtIODevice, VIRTIO_CONFIG_S_ACKNOWLEDGE, VIRTIO_CONFIG_S_DRIVER, VIRTIO_CONFIG_S_DRIVER_OK},
+    virtio::{
+        VIRTIO_CONFIG_S_ACKNOWLEDGE, VIRTIO_CONFIG_S_DRIVER, VIRTIO_CONFIG_S_DRIVER_OK,
+        VirtIODevice,
+    },
 };
 use crate::drivers::virtio_queue::VirtQueue;
-use crate::fs::{FileSystemError, inode::{Inode, InodeType}};
+use crate::fs::{
+    FileSystemError,
+    inode::{Inode, InodeType},
+};
 use crate::memory::PAGE_SIZE;
 
 // VirtIO device ID for input
@@ -48,16 +60,28 @@ impl InputDeviceNode {
         let mut to_wakeup: Vec<Weak<crate::task::TaskControlBlock>> = Vec::new();
         {
             let mut inner = self.inner.lock();
-            for b in bytes { inner.buffer.push_back(*b); }
+            for b in bytes {
+                inner.buffer.push_back(*b);
+            }
             // 唤醒关心可读事件的等待者
             let mut dead: Vec<usize> = Vec::new();
             for (pid, (w, interests)) in inner.poll_waiters.iter() {
-                if (interests & POLLIN) != 0 { to_wakeup.push(w.clone()); }
-                if w.upgrade().is_none() { dead.push(*pid); }
+                if (interests & POLLIN) != 0 {
+                    to_wakeup.push(w.clone());
+                }
+                if w.upgrade().is_none() {
+                    dead.push(*pid);
+                }
             }
-            for pid in dead { inner.poll_waiters.remove(&pid); }
+            for pid in dead {
+                inner.poll_waiters.remove(&pid);
+            }
         }
-        for w in to_wakeup { if let Some(t) = w.upgrade() { t.wakeup(); } }
+        for w in to_wakeup {
+            if let Some(t) = w.upgrade() {
+                t.wakeup();
+            }
+        }
     }
 }
 
@@ -66,10 +90,16 @@ const POLLIN: u32 = 0x0001;
 const POLLOUT: u32 = 0x0004;
 
 impl Inode for InputDeviceNode {
-    fn inode_type(&self) -> InodeType { InodeType::Device }
-    fn size(&self) -> u64 { 0 }
+    fn inode_type(&self) -> InodeType {
+        InodeType::Device
+    }
+    fn size(&self) -> u64 {
+        0
+    }
     fn read_at(&self, _off: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         // 非阻塞读取：若无数据立即返回0，交由上层通过 poll 等待
         let mut read_len = 0usize;
         {
@@ -78,7 +108,9 @@ impl Inode for InputDeviceNode {
                 if let Some(b) = inner.buffer.pop_front() {
                     buf[read_len] = b;
                     read_len += 1;
-                } else { break; }
+                } else {
+                    break;
+                }
             }
         }
         Ok(read_len)
@@ -86,20 +118,36 @@ impl Inode for InputDeviceNode {
     fn write_at(&self, _off: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
         Err(FileSystemError::PermissionDenied)
     }
-    fn list_dir(&self) -> Result<Vec<String>, FileSystemError> { Err(FileSystemError::NotDirectory) }
-    fn find_child(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> { Err(FileSystemError::NotDirectory) }
-    fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> { Err(FileSystemError::NotDirectory) }
-    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> { Err(FileSystemError::NotDirectory) }
-    fn remove(&self, _name: &str) -> Result<(), FileSystemError> { Err(FileSystemError::NotDirectory) }
-    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> { Ok(()) }
-    fn sync(&self) -> Result<(), FileSystemError> { Ok(()) }
+    fn list_dir(&self) -> Result<Vec<String>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+    fn find_child(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+    fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+    fn create_directory(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+    fn remove(&self, _name: &str) -> Result<(), FileSystemError> {
+        Err(FileSystemError::NotDirectory)
+    }
+    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+    fn sync(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
     fn poll_mask(&self) -> u32 {
         let inner = self.inner.lock();
         if inner.buffer.is_empty() { 0 } else { POLLIN }
     }
     fn register_poll_waiter(&self, interests: u32, task: Arc<crate::task::TaskControlBlock>) {
         let mut inner = self.inner.lock();
-        inner.poll_waiters.insert(task.pid(), (Arc::downgrade(&task), interests));
+        inner
+            .poll_waiters
+            .insert(task.pid(), (Arc::downgrade(&task), interests));
     }
     fn clear_poll_waiter(&self, task_pid: usize) {
         let mut inner = self.inner.lock();
@@ -122,7 +170,9 @@ pub fn register_input_node_auto(node: Arc<InputDeviceNode>) -> String {
 
 pub fn open_input_device(path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
     let reg = INPUT_REGISTRY.lock();
-    reg.get(path).map(|n| n.clone() as Arc<dyn Inode>).ok_or(FileSystemError::NotFound)
+    reg.get(path)
+        .map(|n| n.clone() as Arc<dyn Inode>)
+        .ok_or(FileSystemError::NotFound)
 }
 
 pub fn list_input_nodes() -> alloc::vec::Vec<alloc::string::String> {
@@ -157,7 +207,8 @@ impl VirtioInputDevice {
         virt.set_driver_features(0).ok()?;
         debug!("[VirtIO-Input] Driver features set to 0");
         let status = virt.get_status().ok()?;
-        virt.set_status(status | crate::drivers::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK).ok()?;
+        virt.set_status(status | crate::drivers::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK)
+            .ok()?;
         debug!("[VirtIO-Input] FEATURES_OK set");
         // 可选校验
         let _ = virt.get_status().ok();
@@ -169,7 +220,9 @@ impl VirtioInputDevice {
         virt.select_queue(0).ok()?;
         debug!("[VirtIO-Input] Queue 0 selected");
         let max = virt.queue_max_size().ok()?;
-        if max == 0 { return None; }
+        if max == 0 {
+            return None;
+        }
         let qsize = core::cmp::min(max, 128);
         debug!("[VirtIO-Input] Queue max size={} use size={}", max, qsize);
         let queue = alloc::sync::Arc::new(spin::Mutex::new(VirtQueue::new(qsize as u16, 0)?));
@@ -194,7 +247,9 @@ impl VirtioInputDevice {
         dev.setup_receive_buffers();
         // 驱动就绪
         let status = dev.device.get_status().ok()?;
-        dev.device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
+        dev.device
+            .set_status(status | VIRTIO_CONFIG_S_DRIVER_OK)
+            .ok()?;
         info!("[VirtIO-Input] Driver OK set");
         Some(dev)
     }
@@ -259,7 +314,10 @@ impl VirtioInputDevice {
         let mut produced_any = false;
         loop {
             let next_used = { self.event_queue.lock().used() };
-            let (id, len) = match next_used { Some(x) => x, None => break };
+            let (id, len) = match next_used {
+                Some(x) => x,
+                None => break,
+            };
             if len >= 8 {
                 let idx_opt = { self.desc_to_buf_index.lock().get(&id).cloned() };
                 if let Some(idx) = idx_opt {
@@ -280,7 +338,9 @@ impl VirtioInputDevice {
                         let mut map = self.desc_to_buf_index.lock();
                         map.insert(new_head, idx);
                     }
-                    { self.event_queue.lock().add_to_avail(new_head); }
+                    {
+                        self.event_queue.lock().add_to_avail(new_head);
+                    }
                 }
             }
         }
@@ -291,39 +351,84 @@ impl VirtioInputDevice {
 }
 
 impl Device for VirtioInputDevice {
-    fn device_type(&self) -> DeviceType { DeviceType::Input }
-    fn device_id(&self) -> u32 { VIRTIO_ID_INPUT }
-    fn vendor_id(&self) -> u32 { 0x1af4 }
-    fn device_name(&self) -> String { "VirtIO-Input".to_string() }
-    fn driver_name(&self) -> String { "virtio-input".to_string() }
-    fn state(&self) -> DeviceState { DeviceState::Ready }
-    fn probe(&mut self) -> Result<bool, DeviceError> { Ok(true) }
-    fn initialize(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn reset(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn shutdown(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn remove(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn suspend(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn resume(&mut self) -> Result<(), DeviceError> { Ok(()) }
-    fn bus(&self) -> alloc::sync::Arc<dyn Bus> { self.device.bus() }
-    fn resources(&self) -> alloc::vec::Vec<Resource> { alloc::vec::Vec::new() }
-    fn request_resources(&mut self, _rm: &mut dyn ResourceManager) -> Result<(), DeviceError> { Ok(()) }
-    fn release_resources(&mut self, _rm: &mut dyn ResourceManager) -> Result<(), DeviceError> { Ok(()) }
-    fn as_any(&self) -> &dyn core::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any { self }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Input
+    }
+    fn device_id(&self) -> u32 {
+        VIRTIO_ID_INPUT
+    }
+    fn vendor_id(&self) -> u32 {
+        0x1af4
+    }
+    fn device_name(&self) -> String {
+        "VirtIO-Input".to_string()
+    }
+    fn driver_name(&self) -> String {
+        "virtio-input".to_string()
+    }
+    fn state(&self) -> DeviceState {
+        DeviceState::Ready
+    }
+    fn probe(&mut self) -> Result<bool, DeviceError> {
+        Ok(true)
+    }
+    fn initialize(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn reset(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn shutdown(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn remove(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn suspend(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn resume(&mut self) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn bus(&self) -> alloc::sync::Arc<dyn Bus> {
+        self.device.bus()
+    }
+    fn resources(&self) -> alloc::vec::Vec<Resource> {
+        alloc::vec::Vec::new()
+    }
+    fn request_resources(&mut self, _rm: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn release_resources(&mut self, _rm: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+        Ok(())
+    }
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
 }
 
 pub struct VirtioInputIrqHandler(pub alloc::sync::Arc<VirtioInputDevice>);
 impl InterruptHandler for VirtioInputIrqHandler {
-    fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), crate::drivers::hal::interrupt::InterruptError> {
+    fn handle_interrupt(
+        &self,
+        _vector: InterruptVector,
+    ) -> Result<(), crate::drivers::hal::interrupt::InterruptError> {
         // 先读取并清除设备侧中断状态
         if let Ok(isr) = self.0.device.interrupt_status() {
-            if isr != 0 { let _ = self.0.device.interrupt_ack(isr); }
+            if isr != 0 {
+                let _ = self.0.device.interrupt_ack(isr);
+            }
         }
         self.0.drain_used_and_push_events();
         Ok(())
     }
-    fn can_handle(&self, _vector: InterruptVector) -> bool { true }
-    fn name(&self) -> &str { "virtio-input-irq" }
+    fn can_handle(&self, _vector: InterruptVector) -> bool {
+        true
+    }
+    fn name(&self) -> &str {
+        "virtio-input-irq"
+    }
 }
-
-

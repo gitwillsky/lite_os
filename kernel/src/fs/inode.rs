@@ -7,7 +7,7 @@ pub enum InodeType {
     Directory = 1,
     SymLink = 2,
     Device = 3,
-    Fifo = 4,  // Named pipe (FIFO)
+    Fifo = 4, // Named pipe (FIFO)
 }
 
 pub trait Inode: Send + Sync {
@@ -60,7 +60,12 @@ pub trait Inode: Send + Sync {
     }
 
     /// 注册 poll 等待者（默认空实现）
-    fn register_poll_waiter(&self, _interests: u32, _task: alloc::sync::Arc<crate::task::TaskControlBlock>) {}
+    fn register_poll_waiter(
+        &self,
+        _interests: u32,
+        _task: alloc::sync::Arc<crate::task::TaskControlBlock>,
+    ) {
+    }
 
     /// 取消注册 poll 等待者（默认空实现）
     fn clear_poll_waiter(&self, _task_pid: usize) {}

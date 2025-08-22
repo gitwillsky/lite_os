@@ -7,17 +7,23 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// 对外只暴露简洁的进程管理API。
 use alloc::{collections::BTreeMap, string::ToString, sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
-use spin::{RwLock, Mutex};
+use spin::{Mutex, RwLock};
 
 // Per-CPU 调度标志，指示是否需要重新调度
 static NEED_RESCHED: [AtomicBool; MAX_CORES] = [
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
-    AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false), AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
+    AtomicBool::new(false),
 ];
 
 use crate::{
-    arch::hart::{hart_id, MAX_CORES},
-    task::{self, context::TaskContext, current_processor, TaskControlBlock, TaskStatus},
+    arch::hart::{MAX_CORES, hart_id},
+    task::{self, TaskControlBlock, TaskStatus, context::TaskContext, current_processor},
     timer::{get_time_ns, get_time_us},
 };
 // 引入 GUI 所有权释放函数，用于进程退出时自动释放显示控制权
@@ -223,7 +229,7 @@ impl TaskManager {
                     // 任务已经从调度器中移除，无需额外操作
                 }
                 (TaskStatus::Running, TaskStatus::Ready) => {
-                current_processor().add_task(task);
+                    current_processor().add_task(task);
                 }
                 (TaskStatus::Running, TaskStatus::Sleeping) => {
                     // 从某个核心的current移动到睡眠队列，由 timer 模块处理
@@ -233,14 +239,14 @@ impl TaskManager {
                 }
                 (TaskStatus::Sleeping, TaskStatus::Ready) => {
                     // 从睡眠队列移动到调度器队列
-                current_processor().add_task(task);
+                    current_processor().add_task(task);
                 }
                 (TaskStatus::Sleeping, TaskStatus::Stopped) => {
                     // 从睡眠状态移动到停止状态，不参与调度
                 }
                 (TaskStatus::Stopped, TaskStatus::Ready) => {
                     // 从停止状态恢复到调度器队列
-                current_processor().add_task(task);
+                    current_processor().add_task(task);
                 }
                 (_, TaskStatus::Zombie) => {
                     // 进程退出，不需要调度
@@ -363,7 +369,12 @@ impl TaskManager {
 // 全局统一任务管理器实例
 lazy_static! {
     pub static ref TASK_MANAGER: TaskManager = TaskManager::new();
-    static ref THREAD_JOIN_MANAGER: Mutex<alloc::collections::BTreeMap<usize, alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>>>> = Mutex::new(alloc::collections::BTreeMap::new());
+    static ref THREAD_JOIN_MANAGER: Mutex<
+        alloc::collections::BTreeMap<
+            usize,
+            alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>>,
+        >,
+    > = Mutex::new(alloc::collections::BTreeMap::new());
 }
 
 /// 添加任务到系统
@@ -509,7 +520,9 @@ pub fn perform_thread_exit_cleanup(task: &Arc<TaskControlBlock>, exit_code: i32)
     let slot = task.thread_slot.load(Ordering::Relaxed);
     {
         let mut slots = task.thread_slots.lock();
-        if slot < slots.len() { slots[slot] = false; }
+        if slot < slots.len() {
+            slots[slot] = false;
+        }
     }
 
     // 通知等待该线程的 join 者
@@ -528,7 +541,6 @@ pub fn register_thread_join_waiter(target_tid: usize, waiter: Arc<TaskControlBlo
     let mut join_map = THREAD_JOIN_MANAGER.lock();
     join_map.entry(target_tid).or_default().push(waiter);
 }
-
 
 /// 将进程的子进程重新父化给init进程
 fn reparent_children_to_init(task: &Arc<TaskControlBlock>) {
@@ -635,8 +647,8 @@ pub fn prepare_task_for_suspend(
     let end_time = get_time_us();
     let runtime = end_time.saturating_sub(task.last_runtime.load(Ordering::Relaxed));
 
-     // 更新调度器的虚拟运行时间
-     task.sched.lock().update_vruntime(runtime);
+    // 更新调度器的虚拟运行时间
+    task.sched.lock().update_vruntime(runtime);
 
     &mut *task.mm.task_cx.lock() as *mut _
 }
@@ -1001,7 +1013,6 @@ fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     if switched_task_cx_ptr.is_null() {
         panic!("Invalid task context pointer in schedule");
     }
-
 
     // 直接访问 Per-CPU idle context
     let processor = current_processor();

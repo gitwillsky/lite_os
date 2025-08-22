@@ -14,7 +14,7 @@ pub enum FrameAllocError {
 
 pub struct FrameTracker {
     pub ppn: PhysicalPageNumber,
-    pub pages: usize,  // Number of pages (1 for single page, >1 for contiguous allocation)
+    pub pages: usize, // Number of pages (1 for single page, >1 for contiguous allocation)
 }
 
 impl FrameTracker {
@@ -51,7 +51,11 @@ impl Drop for FrameTracker {
 
 impl Debug for FrameTracker {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_fmt(format_args!("FrameTracker PPN:{:#x} pages:{}", self.ppn.as_usize(), self.pages))
+        f.write_fmt(format_args!(
+            "FrameTracker PPN:{:#x} pages:{}",
+            self.ppn.as_usize(),
+            self.pages
+        ))
     }
 }
 
@@ -112,7 +116,8 @@ impl StackFrameAllocator {
             if start_ppn.as_usize() == 0 {
                 panic!("Frame allocator current_start_ppn is 0, this should never happen");
             }
-            self.current_start_ppn = PhysicalPageNumber::from(self.current_start_ppn.as_usize() + pages);
+            self.current_start_ppn =
+                PhysicalPageNumber::from(self.current_start_ppn.as_usize() + pages);
             Some(start_ppn)
         } else {
             None
@@ -144,7 +149,9 @@ impl StackFrameAllocator {
     /// 获取内存统计信息
     pub fn get_memory_stats(&self) -> (usize, usize, usize) {
         let total_pages = self.end_ppn.as_usize() - self.start_ppn.as_usize();
-        let allocated_pages = self.current_start_ppn.as_usize() - self.start_ppn.as_usize() - self.recycled_ppns.len();
+        let allocated_pages = self.current_start_ppn.as_usize()
+            - self.start_ppn.as_usize()
+            - self.recycled_ppns.len();
         let free_pages = total_pages - allocated_pages;
 
         // 返回页数
@@ -165,7 +172,11 @@ impl StackFrameAllocator {
 }
 
 pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
-    debug!("frame_allocator::init: start_addr={:#x}, end_addr={:#x}", start_addr.as_usize(), end_addr.as_usize());
+    debug!(
+        "frame_allocator::init: start_addr={:#x}, end_addr={:#x}",
+        start_addr.as_usize(),
+        end_addr.as_usize()
+    );
 
     let start_ppn = start_addr.ceil();
     let end_ppn = end_addr.floor();
@@ -179,7 +190,10 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
 
     // 验证PPN的合理性
     if start_ppn.as_usize() == 0 {
-        panic!("Invalid start PPN: zero page number from address {:#x}", start_addr.as_usize());
+        panic!(
+            "Invalid start PPN: zero page number from address {:#x}",
+            start_addr.as_usize()
+        );
     }
 
     FRAME_ALLOCATOR.call_once(|| Mutex::new(StackFrameAllocator::new(start_addr, end_addr)));

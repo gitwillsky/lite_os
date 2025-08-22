@@ -1,23 +1,22 @@
-use alloc::sync::Arc;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 
-use crate::drivers::hal::{
-    Device, DeviceType, DeviceState, DeviceError, 
-    Bus, InterruptVector, InterruptHandler,
-    bus::{MmioBus, BusError},
-    resource::{Resource, ResourceManager},
-    GenericDevice,
-    device::DeviceDriver,
-};
 use crate::board::RTCDevice;
+use crate::drivers::hal::{
+    Bus, Device, DeviceError, DeviceState, DeviceType, GenericDevice, InterruptHandler,
+    InterruptVector,
+    bus::{BusError, MmioBus},
+    device::DeviceDriver,
+    resource::{Resource, ResourceManager},
+};
 
 // Goldfish RTC 寄存器偏移
-const RTC_TIME_LOW: usize = 0x00;   // 纳秒时间低32位
-const RTC_TIME_HIGH: usize = 0x04;  // 纳秒时间高32位
-const RTC_ALARM_LOW: usize = 0x08;  // 闹钟时间低32位
+const RTC_TIME_LOW: usize = 0x00; // 纳秒时间低32位
+const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
+const RTC_ALARM_LOW: usize = 0x08; // 闹钟时间低32位
 const RTC_ALARM_HIGH: usize = 0x0c; // 闹钟时间高32位
 
 /// Goldfish RTC 设备驱动 - 现在实现HAL Device trait
@@ -29,26 +28,27 @@ pub struct GoldfishRTCDevice {
 impl GoldfishRTCDevice {
     /// 创建新的 Goldfish RTC 设备
     pub fn new(rtc_info: RTCDevice) -> Result<Self, DeviceError> {
-        let bus = Arc::new(MmioBus::new(rtc_info.base_addr, rtc_info.size)
-            .map_err(DeviceError::from)?);
+        let bus =
+            Arc::new(MmioBus::new(rtc_info.base_addr, rtc_info.size).map_err(DeviceError::from)?);
 
         // 创建资源列表
         let memory_resource = Resource::Memory(crate::drivers::hal::resource::MemoryRange {
             start: rtc_info.base_addr,
             size: rtc_info.size,
-            cached: false,      // Uncached for MMIO
-            writable: true,     // RTC is writable
-            executable: false,  // Not executable
+            cached: false,     // Uncached for MMIO
+            writable: true,    // RTC is writable
+            executable: false, // Not executable
         });
 
         let inner = GenericDevice::new(
             DeviceType::Console, // RTC可以归类为Console类型设备
-            0x1234, // Goldfish RTC vendor ID
-            0x5678, // Goldfish RTC device ID 
+            0x1234,              // Goldfish RTC vendor ID
+            0x5678,              // Goldfish RTC device ID
             "Goldfish RTC".to_string(),
             "Goldfish RTC Driver".to_string(),
             bus,
-        ).with_resources(vec![memory_resource]);
+        )
+        .with_resources(vec![memory_resource]);
 
         Ok(Self {
             inner,
@@ -59,17 +59,17 @@ impl GoldfishRTCDevice {
     /// 读取当前的 Unix 时间戳（纳秒）
     pub fn read_time_ns(&self) -> Result<u64, DeviceError> {
         let bus = self.inner.bus();
-        
+
         // 读取低32位和高32位
         let low = bus.read_u32(RTC_TIME_LOW).map_err(DeviceError::from)?;
         let high = bus.read_u32(RTC_TIME_HIGH).map_err(DeviceError::from)?;
 
         // 组合成64位纳秒时间戳
         let time_ns = ((high as u64) << 32) | (low as u64);
-        
+
         // 缓存时间
         *self.last_time.lock() = time_ns;
-        
+
         Ok(time_ns)
     }
 
@@ -94,12 +94,14 @@ impl GoldfishRTCDevice {
     /// 设置闹钟时间（纳秒）
     pub fn set_alarm_ns(&self, alarm_time: u64) -> Result<(), DeviceError> {
         let bus = self.inner.bus();
-        
+
         let low = (alarm_time & 0xFFFFFFFF) as u32;
         let high = (alarm_time >> 32) as u32;
 
-        bus.write_u32(RTC_ALARM_LOW, low).map_err(DeviceError::from)?;
-        bus.write_u32(RTC_ALARM_HIGH, high).map_err(DeviceError::from)?;
+        bus.write_u32(RTC_ALARM_LOW, low)
+            .map_err(DeviceError::from)?;
+        bus.write_u32(RTC_ALARM_HIGH, high)
+            .map_err(DeviceError::from)?;
 
         debug!("[GoldfishRTC] Alarm set to {} ns", alarm_time);
         Ok(())
@@ -129,23 +131,29 @@ impl GoldfishRTCDevice {
     pub fn self_test(&self) -> Result<bool, DeviceError> {
         // 读取时间两次，确保时间在递增
         let time1 = self.read_time_ns()?;
-        
+
         // 短暂延迟
         for _ in 0..1000 {
             core::hint::spin_loop();
         }
-        
+
         let time2 = self.read_time_ns()?;
-        
+
         // 时间应该递增（允许一些误差）
         let result = time2 >= time1;
-        
+
         if result {
-            info!("[GoldfishRTC] Self-test passed - time progression: {} -> {} ns", time1, time2);
+            info!(
+                "[GoldfishRTC] Self-test passed - time progression: {} -> {} ns",
+                time1, time2
+            );
         } else {
-            warn!("[GoldfishRTC] Self-test failed - time regression: {} -> {} ns", time1, time2);
+            warn!(
+                "[GoldfishRTC] Self-test failed - time regression: {} -> {} ns",
+                time1, time2
+            );
         }
-        
+
         Ok(result)
     }
 }
@@ -177,16 +185,19 @@ impl Device for GoldfishRTCDevice {
 
     fn probe(&mut self) -> Result<bool, DeviceError> {
         debug!("[GoldfishRTC] Probing device");
-        
+
         // 检查设备是否可访问
         if !self.is_accessible() {
             return Ok(false);
         }
-        
+
         // 尝试读取时间验证设备功能
         match self.read_time_ns() {
             Ok(time) => {
-                debug!("[GoldfishRTC] Device probe successful, current time: {} ns", time);
+                debug!(
+                    "[GoldfishRTC] Device probe successful, current time: {} ns",
+                    time
+                );
                 Ok(true)
             }
             Err(_) => {
@@ -197,11 +208,14 @@ impl Device for GoldfishRTCDevice {
     }
 
     fn initialize(&mut self) -> Result<(), DeviceError> {
-        info!("[GoldfishRTC] Initializing device at {:#x}", self.base_address());
-        
+        info!(
+            "[GoldfishRTC] Initializing device at {:#x}",
+            self.base_address()
+        );
+
         // 执行基础初始化
         self.inner.initialize()?;
-        
+
         // 执行设备自检
         if self.self_test()? {
             info!("[GoldfishRTC] Device initialized and self-test passed");
@@ -245,11 +259,17 @@ impl Device for GoldfishRTCDevice {
         self.inner.resources()
     }
 
-    fn request_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn request_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.inner.request_resources(resource_manager)
     }
 
-    fn release_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn release_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         self.inner.release_resources(resource_manager)
     }
 
@@ -261,7 +281,11 @@ impl Device for GoldfishRTCDevice {
         Vec::new()
     }
 
-    fn set_interrupt_handler(&mut self, vector: InterruptVector, handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+    fn set_interrupt_handler(
+        &mut self,
+        vector: InterruptVector,
+        handler: Arc<dyn InterruptHandler>,
+    ) -> Result<(), DeviceError> {
         self.inner.set_interrupt_handler(vector, handler)
     }
 
@@ -357,19 +381,25 @@ impl DeviceDriver for GoldfishRTCDriver {
 
     fn probe(&self, device: &mut dyn Device) -> Result<bool, DeviceError> {
         // 检查设备类型和厂商ID
-        Ok(device.device_type() == DeviceType::Console && 
-           device.vendor_id() == 0x1234 && 
-           device.device_id() == 0x5678)
+        Ok(device.device_type() == DeviceType::Console
+            && device.vendor_id() == 0x1234
+            && device.device_id() == 0x5678)
     }
 
     fn bind(&self, device: &mut dyn Device) -> Result<(), DeviceError> {
-        info!("[GoldfishRTCDriver] Binding to RTC device: {}", device.device_name());
+        info!(
+            "[GoldfishRTCDriver] Binding to RTC device: {}",
+            device.device_name()
+        );
         device.initialize()?;
         Ok(())
     }
 
     fn unbind(&self, device: &mut dyn Device) -> Result<(), DeviceError> {
-        info!("[GoldfishRTCDriver] Unbinding from RTC device: {}", device.device_name());
+        info!(
+            "[GoldfishRTCDriver] Unbinding from RTC device: {}",
+            device.device_name()
+        );
         device.shutdown()?;
         Ok(())
     }

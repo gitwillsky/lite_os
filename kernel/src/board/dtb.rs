@@ -5,7 +5,6 @@ use core::{
 
 use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
 
-
 pub struct StringInLine<const N: usize>(usize, [u8; N]);
 
 /// VirtIO MMIO 设备信息
@@ -76,14 +75,29 @@ impl Display for BoardInfo {
         writeln!(f, "CLINT: {:#x?}", self.clint)?;
         writeln!(f, "VirtIO Devices: {} found", self.virtio_count)?;
         if let Some(rtc) = self.rtc_device {
-            writeln!(f, "RTC Device: base={:#x}, size={:#x}, irq={}", rtc.base_addr, rtc.size, rtc.irq)?;
+            writeln!(
+                f,
+                "RTC Device: base={:#x}, size={:#x}, irq={}",
+                rtc.base_addr, rtc.size, rtc.irq
+            )?;
         }
         if let Some(plic) = self.plic_device {
-            writeln!(f, "PLIC Device: base={:#x}, size={:#x}", plic.base_addr, plic.size)?;
+            writeln!(
+                f,
+                "PLIC Device: base={:#x}, size={:#x}",
+                plic.base_addr, plic.size
+            )?;
         }
         for i in 0..self.virtio_count {
             if let Some(dev) = &self.virtio_devices[i] {
-                writeln!(f, "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}", i, dev.base_addr, dev.base_addr + dev.size, dev.irq)?;
+                writeln!(
+                    f,
+                    "  VirtIO[{}]: {:#x}-{:#x}, IRQ: {}",
+                    i,
+                    dev.base_addr,
+                    dev.base_addr + dev.size,
+                    dev.irq
+                )?;
             }
         }
         Ok(())
@@ -121,11 +135,11 @@ impl BoardInfo {
         // 用于临时存储当前 VirtIO 设备的信息
         let mut current_virtio_reg: Option<Range<usize>> = None;
         let mut current_virtio_irq: Option<u32> = None;
-        
+
         // 用于临时存储当前 RTC 设备的信息
         let mut current_rtc_reg: Option<Range<usize>> = None;
         let mut current_rtc_irq: Option<u32> = None;
-        
+
         // 用于临时存储当前 PLIC 设备的信息
         let mut current_plic_reg: Option<Range<usize>> = None;
 
@@ -215,7 +229,9 @@ impl BoardInfo {
                     if let Some(reg_range) = reg.next() {
                         current_virtio_reg = Some(reg_range);
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) = (current_virtio_reg.as_ref(), current_virtio_irq) {
+                        if let (Some(range), Some(irq)) =
+                            (current_virtio_reg.as_ref(), current_virtio_irq)
+                        {
                             if ans.virtio_count < 20 {
                                 ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
                                     base_addr: range.start,
@@ -234,7 +250,9 @@ impl BoardInfo {
                     if let Some(reg_range) = reg.next() {
                         current_rtc_reg = Some(reg_range);
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) = (current_rtc_reg.as_ref(), current_rtc_irq) {
+                        if let (Some(range), Some(irq)) =
+                            (current_rtc_reg.as_ref(), current_rtc_irq)
+                        {
                             ans.rtc_device = Some(RTCDevice {
                                 base_addr: range.start,
                                 size: range.end - range.start,
@@ -272,7 +290,9 @@ impl BoardInfo {
                     if let Some(first_4_bytes) = value.get(0..4) {
                         current_virtio_irq = Some(bytes_to_u32(first_4_bytes));
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) = (current_virtio_reg.as_ref(), current_virtio_irq) {
+                        if let (Some(range), Some(irq)) =
+                            (current_virtio_reg.as_ref(), current_virtio_irq)
+                        {
                             if ans.virtio_count < 20 {
                                 ans.virtio_devices[ans.virtio_count] = Some(VirtIODevice {
                                     base_addr: range.start,
@@ -290,7 +310,9 @@ impl BoardInfo {
                     if let Some(first_4_bytes) = value.get(0..4) {
                         current_rtc_irq = Some(bytes_to_u32(first_4_bytes));
                         // 检查是否同时有 reg 和 irq，如果有则创建设备
-                        if let (Some(range), Some(irq)) = (current_rtc_reg.as_ref(), current_rtc_irq) {
+                        if let (Some(range), Some(irq)) =
+                            (current_rtc_reg.as_ref(), current_rtc_irq)
+                        {
                             ans.rtc_device = Some(RTCDevice {
                                 base_addr: range.start,
                                 size: range.end - range.start,

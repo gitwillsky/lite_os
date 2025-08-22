@@ -170,7 +170,7 @@ impl LineEditor {
         print!("\x1b[2K");
         // 显示提示符和内容
         print!("{}{}", prompt, self.content);
-        
+
         // 计算光标的正确位置并移动
         let cursor_width = prompt.len() + self.cursor_display_width();
         print!("\r\x1b[{}C", cursor_width);
@@ -180,7 +180,7 @@ impl LineEditor {
     pub fn insert_char_optimized(&mut self, c: char, prompt: &str) {
         let at_end = self.cursor_pos == self.char_count();
         self.insert_char(c);
-        
+
         // 如果在行尾插入，只需要输出字符
         if at_end {
             print!("{}", c);

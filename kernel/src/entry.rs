@@ -40,7 +40,10 @@ extern "C" fn clear_bss() {
     static BSS_CLEARED: AtomicBool = AtomicBool::new(false);
 
     // 只有第一个调用的核心才执行BSS清理
-    if BSS_CLEARED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+    if BSS_CLEARED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
         unsafe extern "C" {
             static mut sbss: u8;
             static mut ebss: u8;

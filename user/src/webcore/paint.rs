@@ -1,14 +1,42 @@
+use super::image::{DecodedImage, ImageCache};
 use super::layout::LayoutBox;
-use super::image::{ImageCache, DecodedImage};
-use alloc::{vec::Vec, string::{String, ToString}};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 /// 绘制命令
 #[derive(Clone, Debug)]
 pub enum DrawCommand {
-    FillRect { x: i32, y: i32, width: u32, height: u32, color: u32 },
-    DrawText { x: i32, y: i32, text: String, color: u32, size: u32 },
-    DrawImage { x: i32, y: i32, width: u32, height: u32, image_data: Vec<u8> },
-    DrawLine { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, width: u32 },
+    FillRect {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        color: u32,
+    },
+    DrawText {
+        x: i32,
+        y: i32,
+        text: String,
+        color: u32,
+        size: u32,
+    },
+    DrawImage {
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        image_data: Vec<u8>,
+    },
+    DrawLine {
+        x1: i32,
+        y1: i32,
+        x2: i32,
+        y2: i32,
+        color: u32,
+        width: u32,
+    },
 }
 
 fn get_border_width(length: &super::css::Length) -> i32 {
@@ -44,12 +72,10 @@ fn collect_block_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
     if lb.style.background_color.a > 0 {
         let color_u32 = lb.style.background_color.to_u32();
 
-        let bg_x = lb.rect.x + lb.box_model.margin.left + lb.box_model.border.left;
-        let bg_y = lb.rect.y + lb.box_model.margin.top + lb.box_model.border.top;
-        let bg_w = lb.rect.w - lb.box_model.margin.left - lb.box_model.margin.right
-                  - lb.box_model.border.left - lb.box_model.border.right;
-        let bg_h = lb.rect.h - lb.box_model.margin.top - lb.box_model.margin.bottom
-                  - lb.box_model.border.top - lb.box_model.border.bottom;
+        let bg_x = lb.rect.x + lb.box_model.margin.left;
+        let bg_y = lb.rect.y + lb.box_model.margin.top;
+        let bg_w = lb.rect.w - lb.box_model.margin.left - lb.box_model.margin.right;
+        let bg_h = lb.rect.h - lb.box_model.margin.top - lb.box_model.margin.bottom;
 
         if bg_w > 0 && bg_h > 0 {
             commands.push(DrawCommand::FillRect {
@@ -146,11 +172,12 @@ fn is_image_element(lb: &LayoutBox) -> bool {
     // 这里需要访问DOM节点信息来判断是否是img标签
     // 由于当前LayoutBox没有保存DOM标签信息，我们先简化实现
     // 如果宽度和高度都明确设置且没有文本内容，可能是图片
-    lb.text.is_none() &&
-    lb.children.is_empty() &&
-    lb.rect.w > 0 && lb.rect.h > 0 &&
-    (lb.style.width != super::css::Length::Px(0.0) ||
-     lb.style.height != super::css::Length::Px(0.0))
+    lb.text.is_none()
+        && lb.children.is_empty()
+        && lb.rect.w > 0
+        && lb.rect.h > 0
+        && (lb.style.width != super::css::Length::Px(0.0)
+            || lb.style.height != super::css::Length::Px(0.0))
 }
 
 /// 收集图片绘制命令

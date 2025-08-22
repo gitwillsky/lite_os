@@ -79,14 +79,18 @@ pub struct TestStats {
 
 impl TestStats {
     pub fn new() -> Self {
-        Self { total: 0, passed: 0, failed: 0 }
+        Self {
+            total: 0,
+            passed: 0,
+            failed: 0,
+        }
     }
-    
+
     pub fn pass(&mut self) {
         self.total += 1;
         self.passed += 1;
     }
-    
+
     pub fn fail(&mut self) {
         self.total += 1;
         self.failed += 1;
@@ -102,7 +106,7 @@ macro_rules! run_test {
             Ok(_) => {
                 test_pass!("{}", $test_name);
                 $stats.pass();
-            },
+            }
             Err(_) => {
                 test_fail!("{}", $test_name);
                 $stats.fail();

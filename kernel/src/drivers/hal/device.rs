@@ -1,14 +1,14 @@
-use core::fmt;
-use alloc::sync::Arc;
-use alloc::string::String;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use spin::Mutex;
 use super::bus::{Bus, BusError};
-use super::interrupt::{InterruptHandler, InterruptController, InterruptVector};
-use super::power::{PowerManagement, PowerState, PowerError};
-use super::resource::{Resource, ResourceManager, ResourceError};
+use super::interrupt::{InterruptController, InterruptHandler, InterruptVector};
+use super::power::{PowerError, PowerManagement, PowerState};
+use super::resource::{Resource, ResourceError, ResourceManager};
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt;
+use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceType {
@@ -127,8 +127,14 @@ pub trait Device: Send + Sync {
     fn bus(&self) -> Arc<dyn Bus>;
 
     fn resources(&self) -> Vec<Resource>;
-    fn request_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError>;
-    fn release_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError>;
+    fn request_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError>;
+    fn release_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError>;
 
     fn supports_interrupt(&self) -> bool {
         false
@@ -138,7 +144,11 @@ pub trait Device: Send + Sync {
         Vec::new()
     }
 
-    fn set_interrupt_handler(&mut self, _vector: InterruptVector, _handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+    fn set_interrupt_handler(
+        &mut self,
+        _vector: InterruptVector,
+        _handler: Arc<dyn InterruptHandler>,
+    ) -> Result<(), DeviceError> {
         Err(DeviceError::NotSupported)
     }
 
@@ -329,14 +339,20 @@ impl Device for GenericDevice {
         self.resources.clone()
     }
 
-    fn request_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn request_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         for resource in &self.resources {
             resource_manager.request_resource(resource.clone(), &self.device_name())?;
         }
         Ok(())
     }
 
-    fn release_resources(&mut self, resource_manager: &mut dyn ResourceManager) -> Result<(), DeviceError> {
+    fn release_resources(
+        &mut self,
+        resource_manager: &mut dyn ResourceManager,
+    ) -> Result<(), DeviceError> {
         for resource in &self.resources {
             resource_manager.release_resource(resource, &self.device_name())?;
         }
@@ -344,11 +360,15 @@ impl Device for GenericDevice {
     }
 
     fn supports_interrupt(&self) -> bool {
-        !self.resources.iter().all(|r| !matches!(r, Resource::Interrupt(_)))
+        !self
+            .resources
+            .iter()
+            .all(|r| !matches!(r, Resource::Interrupt(_)))
     }
 
     fn interrupt_vectors(&self) -> Vec<InterruptVector> {
-        self.resources.iter()
+        self.resources
+            .iter()
             .filter_map(|r| match r {
                 Resource::Interrupt(irq) => Some(irq.irq_num),
                 _ => None,
@@ -356,7 +376,11 @@ impl Device for GenericDevice {
             .collect()
     }
 
-    fn set_interrupt_handler(&mut self, vector: InterruptVector, handler: Arc<dyn InterruptHandler>) -> Result<(), DeviceError> {
+    fn set_interrupt_handler(
+        &mut self,
+        vector: InterruptVector,
+        handler: Arc<dyn InterruptHandler>,
+    ) -> Result<(), DeviceError> {
         let mut handlers = self.interrupt_handlers.lock();
         handlers.insert(vector, handler);
         Ok(())
@@ -401,7 +425,9 @@ pub trait DeviceDriver: Send + Sync {
     fn probe(&self, device: &mut dyn Device) -> Result<bool, DeviceError>;
     fn bind(&self, device: &mut dyn Device) -> Result<(), DeviceError>;
     fn unbind(&self, device: &mut dyn Device) -> Result<(), DeviceError>;
-    fn supports_hotplug(&self) -> bool { false }
+    fn supports_hotplug(&self) -> bool {
+        false
+    }
 }
 
 pub struct DeviceManager {
@@ -425,7 +451,10 @@ impl DeviceManager {
         }
     }
 
-    pub fn with_interrupt_controller(mut self, controller: Arc<Mutex<dyn InterruptController>>) -> Self {
+    pub fn with_interrupt_controller(
+        mut self,
+        controller: Arc<Mutex<dyn InterruptController>>,
+    ) -> Self {
         self.interrupt_controller = Some(controller);
         self
     }
@@ -464,9 +493,10 @@ impl DeviceManager {
         let drivers = self.drivers.lock();
         for driver in drivers.iter() {
             let compatible = driver.compatible_devices();
-            if compatible.iter().any(|&(vid, did)|
-                vid == device.vendor_id() && did == device.device_id()
-            ) {
+            if compatible
+                .iter()
+                .any(|&(vid, did)| vid == device.vendor_id() && did == device.device_id())
+            {
                 if driver.probe(device.as_mut())? {
                     // Request resources for the device
                     {
@@ -505,7 +535,9 @@ impl DeviceManager {
     pub fn remove_device(&self, device_id: u32) -> Result<(), DeviceError> {
         let device = {
             let mut devices = self.devices.lock();
-            devices.remove(&device_id).ok_or(DeviceError::DeviceNotFound)?
+            devices
+                .remove(&device_id)
+                .ok_or(DeviceError::DeviceNotFound)?
         };
 
         let mut device = device.lock();
@@ -514,9 +546,10 @@ impl DeviceManager {
         let drivers = self.drivers.lock();
         for driver in drivers.iter() {
             let compatible = driver.compatible_devices();
-            if compatible.iter().any(|&(vid, did)|
-                vid == device.vendor_id() && did == device.device_id()
-            ) {
+            if compatible
+                .iter()
+                .any(|&(vid, did)| vid == device.vendor_id() && did == device.device_id())
+            {
                 driver.unbind(&mut **device)?;
                 break;
             }
@@ -543,7 +576,8 @@ impl DeviceManager {
 
     pub fn find_devices_by_type(&self, device_type: DeviceType) -> Vec<u32> {
         let devices = self.devices.lock();
-        devices.iter()
+        devices
+            .iter()
             .filter_map(|(&id, device)| {
                 let dev = device.lock();
                 if dev.device_type() == device_type {
@@ -557,7 +591,8 @@ impl DeviceManager {
 
     pub fn find_devices_by_driver(&self, driver_name: &str) -> Vec<u32> {
         let devices = self.devices.lock();
-        devices.iter()
+        devices
+            .iter()
             .filter_map(|(&id, device)| {
                 let dev = device.lock();
                 if dev.driver_name() == driver_name {
@@ -593,7 +628,8 @@ impl DeviceManager {
 
     pub fn enumerate_devices(&self) -> Vec<(u32, DeviceType, String, DeviceState)> {
         let devices = self.devices.lock();
-        devices.iter()
+        devices
+            .iter()
             .map(|(&id, device)| {
                 let dev = device.lock();
                 (id, dev.device_type(), dev.device_name(), dev.state())
