@@ -41,7 +41,7 @@ pub fn collect_draw_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
 
 fn collect_block_commands(lb: &LayoutBox, commands: &mut Vec<DrawCommand>) {
     // 收集背景色绘制命令
-    if lb.style.background_color.a > 0 && lb.children.is_empty() {
+    if lb.style.background_color.a > 0 {
         let color_u32 = lb.style.background_color.to_u32();
 
         let bg_x = lb.rect.x + lb.box_model.margin.left + lb.box_model.border.left;
