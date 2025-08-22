@@ -746,10 +746,18 @@ mod editor {
                 for row in start_row..self.buffer.line_count() {
                     let line = &self.buffer.lines[row];
                     let search_start = if row == start_row { start_col } else { 0 };
-
-                    if let Some(pos) = line[search_start..].find(term) {
+                    // Helper to convert char index to byte index
+                    let byte_start = line
+                        .char_indices()
+                        .nth(search_start)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    if let Some(pos) = line[byte_start..].find(term) {
+                        let byte_pos = byte_start + pos;
+                        // Convert byte index back to char index
+                        let char_pos = line[..byte_pos].chars().count();
                         self.cursor.row = row;
-                        self.cursor.col = search_start + pos;
+                        self.cursor.col = char_pos;
                         found = true;
                         break;
                     }
@@ -761,12 +769,20 @@ mod editor {
                     let search_end = if row == start_row {
                         start_col
                     } else {
-                        line.len()
+                        self.buffer.line_len(row)
                     };
-
-                    if let Some(pos) = line[..search_end].rfind(term) {
+                    // Convert char index to byte index
+                    let byte_end = line
+                        .char_indices()
+                        .nth(search_end)
+                        .map(|(i, _)| i)
+                        .unwrap_or(line.len());
+                    if let Some(pos) = line[..byte_end].rfind(term) {
+                        let byte_pos = pos;
+                        // Convert byte index to char index
+                        let char_pos = line[..byte_pos].chars().count();
                         self.cursor.row = row;
-                        self.cursor.col = pos;
+                        self.cursor.col = char_pos;
                         found = true;
                         break;
                     }
@@ -778,6 +794,9 @@ mod editor {
 
         // Display functions with optimized rendering
         pub fn render(&mut self) {
+            // Auto-scroll to keep cursor visible
+            self.auto_scroll();
+
             // Check if we need to re-render
             let current_hash = self.calculate_render_hash();
             if current_hash == self.last_render_hash {
@@ -786,9 +805,6 @@ mod editor {
                 return;
             }
             self.last_render_hash = current_hash;
-
-            // Auto-scroll to keep cursor visible
-            self.auto_scroll();
 
             self.hide_cursor();
 
@@ -828,17 +844,16 @@ mod editor {
                         }
                     }
 
-                    // Apply syntax highlighting and truncate if necessary
-                    let highlighted_line = self.highlight_line(line);
-                    let display_line = if highlighted_line.len() > content_width {
-                        format!(
-                            "{}...",
-                            &highlighted_line[..content_width.saturating_sub(3)]
-                        )
+                    // Truncate source line first to avoid splitting ANSI sequences
+                    let source_display = if line.chars().count() > content_width {
+                        let mut chars = line.chars().take(content_width.saturating_sub(3));
+                        let safe_prefix: String = chars.collect();
+                        format!("{}...", safe_prefix)
                     } else {
-                        highlighted_line
+                        line.clone()
                     };
-                    print!("{}", display_line);
+                    let highlighted_line = self.highlight_line(&source_display);
+                    print!("{}", highlighted_line);
 
                     if self.mode == Mode::Visual {
                         print!("\x1b[0m"); // Reset formatting
@@ -875,12 +890,12 @@ mod editor {
                 mode_str, filename, modified, cursor_info, line_info
             );
 
-            // Truncate status if too long
+            // Truncate status at char boundary
             let display_status = if status_text.len() > self.terminal_size.cols {
-                format!(
-                    "{}...",
-                    &status_text[..self.terminal_size.cols.saturating_sub(3)]
-                )
+                let take_len = self.terminal_size.cols.saturating_sub(3);
+                let mut chars = status_text.chars().take(take_len);
+                let safe_prefix: String = chars.collect();
+                format!("{}...", safe_prefix)
             } else {
                 status_text
             };
@@ -898,12 +913,12 @@ mod editor {
             if self.mode == Mode::Command {
                 print!(":{}", self.command_buffer);
             } else {
-                // Truncate status message if too long
+                // Truncate status message at char boundary
                 let msg = if self.status_message.len() > self.terminal_size.cols {
-                    format!(
-                        "{}...",
-                        &self.status_message[..self.terminal_size.cols.saturating_sub(3)]
-                    )
+                    let take_len = self.terminal_size.cols.saturating_sub(3);
+                    let mut chars = self.status_message.chars().take(take_len);
+                    let safe_prefix: String = chars.collect();
+                    format!("{}...", safe_prefix)
                 } else {
                     self.status_message.clone()
                 };

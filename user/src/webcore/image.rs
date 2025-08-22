@@ -77,7 +77,12 @@ impl PngDecoder {
         if pos + 4 > data.len() {
             return Err(ImageError::InvalidData);
         }
-        Ok(u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]))
+        Ok(u32::from_be_bytes([
+            data[pos],
+            data[pos + 1],
+            data[pos + 2],
+            data[pos + 3],
+        ]))
     }
 
     fn decode_png(&self, data: &[u8]) -> Result<DecodedImage, ImageError> {
@@ -126,7 +131,10 @@ impl PngDecoder {
                 if bit_depth != 8 {
                     return Err(ImageError::UnsupportedFormat);
                 }
-                match color_type { 0 | 2 | 3 | 6 => {} , _ => return Err(ImageError::UnsupportedFormat) }
+                match color_type {
+                    0 | 2 | 3 | 6 => {}
+                    _ => return Err(ImageError::UnsupportedFormat),
+                }
             } else if ctype == b"PLTE" {
                 plte.clear();
                 plte.extend_from_slice(chunk_data);
@@ -142,12 +150,21 @@ impl PngDecoder {
         if width == 0 || height == 0 {
             return Err(ImageError::InvalidData);
         }
-        let decompressed = decompress_to_vec_zlib(&idat).map_err(|_| ImageError::DecodingError("inflate".to_string()))?;
-        let bpp = match color_type { 0 => 1, 2 => 3, 3 => 1, 6 => 4, _ => return Err(ImageError::UnsupportedFormat) };
+        let decompressed = decompress_to_vec_zlib(&idat)
+            .map_err(|_| ImageError::DecodingError("inflate".to_string()))?;
+        let bpp = match color_type {
+            0 => 1,
+            2 => 3,
+            3 => 1,
+            6 => 4,
+            _ => return Err(ImageError::UnsupportedFormat),
+        };
         let stride = width as usize * bpp as usize;
         let expected = height as usize * (1 + stride);
         if decompressed.len() != expected {
-            if decompressed.len() < expected { return Err(ImageError::InvalidData); }
+            if decompressed.len() < expected {
+                return Err(ImageError::InvalidData);
+            }
         }
         let mut recon = vec![0u8; height as usize * stride];
         for row in 0..height as usize {
@@ -157,12 +174,20 @@ impl PngDecoder {
             let out_off = row * stride;
             let (prev_rows, cur_and_after) = recon.split_at_mut(out_off);
             let dst = &mut cur_and_after[..stride];
-            let up_slice = if row > 0 { &prev_rows[out_off - stride..out_off] } else { &[][..] };
+            let up_slice = if row > 0 {
+                &prev_rows[out_off - stride..out_off]
+            } else {
+                &[][..]
+            };
             match filter {
                 0 => dst.copy_from_slice(src),
                 1 => {
                     for i in 0..stride {
-                        let left = if i >= bpp as usize { dst[i - bpp as usize] } else { 0 };
+                        let left = if i >= bpp as usize {
+                            dst[i - bpp as usize]
+                        } else {
+                            0
+                        };
                         dst[i] = src[i].wrapping_add(left);
                     }
                 }
@@ -174,7 +199,11 @@ impl PngDecoder {
                 }
                 3 => {
                     for i in 0..stride {
-                        let left = if i >= bpp as usize { dst[i - bpp as usize] } else { 0 };
+                        let left = if i >= bpp as usize {
+                            dst[i - bpp as usize]
+                        } else {
+                            0
+                        };
                         let up = if row > 0 { up_slice[i] } else { 0 };
                         let avg = ((left as u16 + up as u16) / 2) as u8;
                         dst[i] = src[i].wrapping_add(avg);
@@ -182,13 +211,27 @@ impl PngDecoder {
                 }
                 4 => {
                     for i in 0..stride {
-                        let a = if i >= bpp as usize { dst[i - bpp as usize] } else { 0 };
+                        let a = if i >= bpp as usize {
+                            dst[i - bpp as usize]
+                        } else {
+                            0
+                        };
                         let b = if row > 0 { up_slice[i] } else { 0 };
-                        let c = if row > 0 && i >= bpp as usize { up_slice[i - bpp as usize] } else { 0 };
+                        let c = if row > 0 && i >= bpp as usize {
+                            up_slice[i - bpp as usize]
+                        } else {
+                            0
+                        };
                         let pa = (b as i32 - c as i32).abs();
                         let pb = (a as i32 - c as i32).abs();
                         let pc = (a as i32 + b as i32 - 2 * c as i32).abs();
-                        let pr = if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c };
+                        let pr = if pa <= pb && pa <= pc {
+                            a
+                        } else if pb <= pc {
+                            b
+                        } else {
+                            c
+                        };
                         dst[i] = src[i].wrapping_add(pr);
                     }
                 }
@@ -206,7 +249,8 @@ impl PngDecoder {
                         out[di + 1] = recon[si + 1];
                         out[di + 2] = recon[si + 2];
                         out[di + 3] = recon[si + 3];
-                        si += 4; di += 4;
+                        si += 4;
+                        di += 4;
                     }
                 }
             }
@@ -219,7 +263,8 @@ impl PngDecoder {
                         out[di + 1] = recon[si + 1];
                         out[di + 2] = recon[si + 2];
                         out[di + 3] = 255;
-                        si += 3; di += 4;
+                        si += 3;
+                        di += 4;
                     }
                 }
             }
@@ -229,18 +274,26 @@ impl PngDecoder {
                     let mut di = y * width as usize * 4;
                     for _ in 0..width as usize {
                         let g = recon[si];
-                        out[di] = g; out[di + 1] = g; out[di + 2] = g; out[di + 3] = 255;
-                        si += 1; di += 4;
+                        out[di] = g;
+                        out[di + 1] = g;
+                        out[di + 2] = g;
+                        out[di + 3] = 255;
+                        si += 1;
+                        di += 4;
                     }
                 }
             }
             3 => {
-                if plte.is_empty() { return Err(ImageError::InvalidData); }
+                if plte.is_empty() {
+                    return Err(ImageError::InvalidData);
+                }
                 let entries = plte.len() / 3;
                 let mut alpha = vec![255u8; entries];
                 if !trns.is_empty() {
                     for (i, a) in trns.iter().enumerate() {
-                        if i < entries { alpha[i] = *a; }
+                        if i < entries {
+                            alpha[i] = *a;
+                        }
                     }
                 }
                 for y in 0..height as usize {
@@ -248,19 +301,27 @@ impl PngDecoder {
                     let mut di = y * width as usize * 4;
                     for _ in 0..width as usize {
                         let idx = recon[si] as usize;
-                        if idx >= entries { return Err(ImageError::InvalidData); }
+                        if idx >= entries {
+                            return Err(ImageError::InvalidData);
+                        }
                         let pi = idx * 3;
                         out[di] = plte[pi];
                         out[di + 1] = plte[pi + 1];
                         out[di + 2] = plte[pi + 2];
                         out[di + 3] = alpha[idx];
-                        si += 1; di += 4;
+                        si += 1;
+                        di += 4;
                     }
                 }
             }
             _ => return Err(ImageError::UnsupportedFormat),
         }
-        Ok(DecodedImage { width, height, data: out, format: ImageFormat::RGBA })
+        Ok(DecodedImage {
+            width,
+            height,
+            data: out,
+            format: ImageFormat::RGBA,
+        })
     }
 }
 

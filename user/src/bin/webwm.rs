@@ -9,8 +9,22 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use user_lib::gfx;
 use user_lib::read;
-use user_lib::syscall::{PollFd, open_flags, poll};
+use user_lib::syscall::{PollFd, open_flags, poll, stat};
 use user_lib::webcore::{RenderEngine, StandardRenderEngine};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FileStat {
+    size: u64,
+    file_type: u32,
+    mode: u32,
+    nlink: u32,
+    uid: u32,
+    gid: u32,
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
+}
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
@@ -34,7 +48,8 @@ fn main() -> i32 {
     // 从文件系统加载桌面HTML
     // 渲染引擎会自动处理HTML中的CSS链接和字体引用
     println!("[webwm] Loading desktop HTML from filesystem...");
-    if !engine.load_html_from_file("/usr/share/desktop/desktop.html") {
+    let desktop_path = "/usr/share/desktop/desktop.html";
+    if !engine.load_html_from_file(desktop_path) {
         println!("[webwm] Failed to load desktop HTML, using fallback");
         engine.load_html(
             r#"<html><body><h1>WebWM</h1><p>Failed to load desktop.html</p></body></html>"#,
@@ -160,6 +175,16 @@ fn execute_draw_commands(result: &user_lib::webcore::RenderResult) {
     }
 }
 
+fn get_file_mtime(path: &str) -> u64 {
+    let mut stat_buf = [0u8; 128];
+    if stat(path, &mut stat_buf) == 0 {
+        let file_stat = unsafe { *(stat_buf.as_ptr() as *const FileStat) };
+        file_stat.mtime
+    } else {
+        0
+    }
+}
+
 fn scale_rgba_nearest(src: &Vec<u8>, sw: u32, sh: u32, tw: u32, th: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((tw as usize) * (th as usize) * 4);
     out.resize((tw as usize) * (th as usize) * 4, 0);
@@ -200,6 +225,9 @@ fn run_event_loop(engine: &mut StandardRenderEngine) {
     ];
     let mut tmp = [0u8; 128];
 
+    let desktop_path = "/usr/share/desktop/desktop.html";
+    let mut last_mtime = get_file_mtime(desktop_path);
+
     loop {
         let _ = poll(&mut pfds, 1000);
         for i in 0..2 {
@@ -207,6 +235,19 @@ fn run_event_loop(engine: &mut StandardRenderEngine) {
                 let _ = read(pfds[i].fd as usize, &mut tmp);
                 // TODO: 解析输入事件并传递给引擎
             }
+        }
+
+        // 检查文件变化并重新加载
+        let current_mtime = get_file_mtime(desktop_path);
+        if current_mtime != last_mtime {
+            println!("[webwm] Detected change in desktop.html, reloading...");
+            if engine.load_html_from_file(desktop_path) {
+                let render_result = engine.render();
+                execute_draw_commands(&render_result);
+                gfx::gui_flush();
+                println!("[webwm] Desktop re-rendered after file change");
+            }
+            last_mtime = current_mtime;
         }
 
         // 更新引擎状态（动画等）
