@@ -1,10 +1,11 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
 
 use crate::{
     arch::hart::{MAX_CORES, hart_id, is_valid_hart_id},
+    arch::sbi,
     task::{
         TaskControlBlock, TaskStatus,
         context::TaskContext,
@@ -23,18 +24,13 @@ pub extern "C" fn idle_return() -> ! {
 }
 
 pub struct Processor {
-    /// 当前核心ID
     pub hart_id: usize,
-    /// 当前正在执行的任务
     pub current: Option<Arc<TaskControlBlock>>,
-    /// idle任务上下文
     pub idle_context: TaskContext,
-    /// 本地调度器
     pub scheduler: Box<dyn Scheduler>,
-    /// 本地任务计数
     pub task_count: AtomicUsize,
-    /// 核心是否活跃
     pub active: AtomicBool,
+    pub inbound: Mutex<VecDeque<Arc<TaskControlBlock>>>,
 }
 
 impl Processor {
@@ -52,21 +48,19 @@ impl Processor {
             scheduler: Box::new(CFScheduler::new()),
             task_count: AtomicUsize::new(0),
             active: AtomicBool::new(false),
+            inbound: Mutex::new(VecDeque::new()),
         }
     }
 
-    /// 获取idle上下文指针
     pub fn idle_context_ptr(&mut self) -> *mut TaskContext {
         &mut self.idle_context
     }
 
-    /// 添加任务到本地调度器
     pub fn add_task(&mut self, task: Arc<TaskControlBlock>) {
         self.scheduler.add_task(task);
         self.task_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 从本地调度器获取任务
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         if let Some(task) = self.scheduler.fetch_task() {
             self.task_count.fetch_sub(1, Ordering::Relaxed);
@@ -76,32 +70,23 @@ impl Processor {
         }
     }
 
-    /// 获取本地任务数量
     pub fn task_count(&self) -> usize {
         self.task_count.load(Ordering::Relaxed)
     }
 
-    /// 尝试窃取一个任务
     pub fn steal_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        // 只有当任务数量大于1时才允许窃取
-        // 使用原子操作检查任务数量，避免竞态
         let count = self.task_count.load(Ordering::Acquire);
         if count > 1 {
-            // 尝试获取任务，如果成功则减少计数
             if let Some(task) = self.scheduler.fetch_task() {
                 self.task_count.fetch_sub(1, Ordering::Release);
-
-                // 验证任务状态，确保不窃取正在运行或睡眠的任务
                 let status = task.task_status.lock();
                 if *status != TaskStatus::Ready {
-                    // 任务状态不合适，放回并恢复计数
                     drop(status);
                     self.scheduler.add_task(task.clone());
                     self.task_count.fetch_add(1, Ordering::Release);
                     return None;
                 }
                 drop(status);
-
                 Some(task)
             } else {
                 None
@@ -110,11 +95,22 @@ impl Processor {
             None
         }
     }
+
+    pub fn drain_inbound_to_local(&mut self) {
+        let mut q = self.inbound.lock();
+        let mut tmp = VecDeque::new();
+        core::mem::swap(&mut *q, &mut tmp);
+        drop(q);
+        for t in tmp {
+            self.add_task(t);
+        }
+    }
 }
 
 // Per-CPU 变量，每个核心完全独立
 static mut PER_CPU_PROCESSORS: [Option<Processor>; MAX_CORES] = [const { None }; MAX_CORES];
 static ACTIVE_CORES: AtomicUsize = AtomicUsize::new(0);
+static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 /// 无锁访问当前 CPU 的处理器
 pub fn current_processor() -> &'static mut Processor {
@@ -125,6 +121,59 @@ pub fn current_processor() -> &'static mut Processor {
         }
         PER_CPU_PROCESSORS[hart].as_mut().unwrap()
     }
+}
+
+pub fn add_task_to_cpu(cpu_id: usize, task: Arc<TaskControlBlock>) {
+    let me = hart_id();
+    unsafe {
+        if cpu_id < MAX_CORES {
+            if PER_CPU_PROCESSORS[cpu_id].is_none() {
+                PER_CPU_PROCESSORS[cpu_id] = Some(Processor::new(cpu_id));
+            }
+            if let Some(p) = &mut PER_CPU_PROCESSORS[cpu_id] {
+                if cpu_id == me {
+                    p.add_task(task);
+                } else {
+                    {
+                        let mut q = p.inbound.lock();
+                        q.push_back(task);
+                    }
+                    core::sync::atomic::fence(Ordering::Release);
+                    let _ = sbi::sbi_send_ipi(1usize << cpu_id, 0);
+                }
+            }
+        }
+    }
+}
+
+pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
+    let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_CORES;
+    let mut best_cpu = hart_id();
+    let mut best_load = usize::MAX;
+    unsafe {
+        for k in 0..MAX_CORES {
+            let i = (start + k) % MAX_CORES;
+            if let Some(p) = &PER_CPU_PROCESSORS[i] {
+                if p.active.load(Ordering::Relaxed) {
+                    let inbound_len = {
+                        let q = p.inbound.lock();
+                        q.len()
+                    };
+                    let load = p.task_count().saturating_add(inbound_len);
+                    if load < best_load {
+                        best_load = load;
+                        best_cpu = i;
+                    }
+                }
+            }
+        }
+    }
+    add_task_to_cpu(best_cpu, task);
+    best_cpu
+}
+
+pub fn try_global_steal() -> Option<Arc<TaskControlBlock>> {
+    None
 }
 
 /// 获取活跃核心数量

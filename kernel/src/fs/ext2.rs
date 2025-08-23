@@ -2987,9 +2987,15 @@ impl Inode for Ext2Inode {
         Ok(())
     }
 
-    fn atime(&self) -> u64 { self.disk.lock().i_atime as u64 }
-    fn mtime(&self) -> u64 { self.disk.lock().i_mtime as u64 }
-    fn ctime(&self) -> u64 { self.disk.lock().i_ctime as u64 }
+    fn atime(&self) -> u64 {
+        self.disk.lock().i_atime as u64
+    }
+    fn mtime(&self) -> u64 {
+        self.disk.lock().i_mtime as u64
+    }
+    fn ctime(&self) -> u64 {
+        self.disk.lock().i_ctime as u64
+    }
 
     fn poll_mask(&self) -> u32 {
         match self.inode_type() {
