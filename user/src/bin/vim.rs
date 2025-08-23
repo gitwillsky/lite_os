@@ -433,6 +433,14 @@ mod editor {
             print!("\x1b[?25h");
         }
 
+        pub fn set_cursor_block(&self) {
+            print!("\x1b[2 q");
+        }
+
+        pub fn set_cursor_bar(&self) {
+            print!("\x1b[6 q");
+        }
+
         pub fn enable_alternate_screen(&self) {
             print!("\x1b[?1049h");
         }
@@ -460,13 +468,16 @@ mod editor {
 
             let mut hasher = SimpleHasher(0);
 
-            // Hash relevant state for rendering
-            self.cursor.row.hash(&mut hasher);
-            self.cursor.col.hash(&mut hasher);
             self.scroll_offset.hash(&mut hasher);
             self.mode.hash(&mut hasher);
             self.status_message.hash(&mut hasher);
             self.command_buffer.hash(&mut hasher);
+            if self.mode == Mode::Visual {
+                if let Some(vs) = self.visual_start {
+                    vs.row.hash(&mut hasher);
+                    self.cursor.row.hash(&mut hasher);
+                }
+            }
 
             // Hash visible buffer content
             let text_rows = self.terminal_size.rows - 2;
@@ -855,7 +866,6 @@ mod editor {
 
             // Render status line
             self.move_cursor(text_rows, 0);
-            self.clear_line();
 
             let mode_str = match self.mode {
                 Mode::Normal => "NORMAL",
@@ -898,7 +908,6 @@ mod editor {
 
             // Render command line
             self.move_cursor(text_rows + 1, 0);
-            self.clear_line();
 
             if self.mode == Mode::Command {
                 print!(":{}", self.command_buffer);
@@ -946,23 +955,27 @@ mod editor {
         pub fn enter_insert_mode(&mut self) {
             self.mode = Mode::Insert;
             self.status_message = "-- INSERT --".to_string();
+            self.set_cursor_bar();
         }
 
         pub fn enter_visual_mode(&mut self) {
             self.mode = Mode::Visual;
             self.visual_start = Some(self.cursor);
             self.status_message = "-- VISUAL --".to_string();
+            self.set_cursor_block();
         }
 
         pub fn enter_command_mode(&mut self) {
             self.mode = Mode::Command;
             self.command_buffer.clear();
+            self.set_cursor_block();
         }
 
         pub fn enter_normal_mode(&mut self) {
             self.mode = Mode::Normal;
             self.visual_start = None;
             self.status_message = "Ready".to_string();
+            self.set_cursor_block();
         }
 
         // Undo/Redo operations
@@ -1209,6 +1222,7 @@ mod editor {
             self.enable_alternate_screen();
             self.clear_screen();
             self.hide_cursor();
+            self.set_cursor_block();
         }
 
         // Cleanup editor and return to normal terminal
