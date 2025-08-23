@@ -67,6 +67,10 @@ pub trait Inode: Send + Sync {
     ) {
     }
 
+    fn atime(&self) -> u64 { 0 }
+    fn mtime(&self) -> u64 { 0 }
+    fn ctime(&self) -> u64 { 0 }
+
     /// 取消注册 poll 等待者（默认空实现）
     fn clear_poll_waiter(&self, _task_pid: usize) {}
 }

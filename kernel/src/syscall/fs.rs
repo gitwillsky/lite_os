@@ -611,12 +611,12 @@ pub fn sys_stat(path: *const u8, stat_buf: *mut u8) -> isize {
                 size,
                 file_type,
                 mode,
-                nlink: 1, // Simple implementation
+                nlink: 1,
                 uid,
                 gid,
-                atime: 0, // Not implemented yet
-                mtime: 0, // Not implemented yet
-                ctime: 0, // Not implemented yet
+                atime: inode.atime(),
+                mtime: inode.mtime(),
+                ctime: inode.ctime(),
             };
 
             // Get mutable reference to user buffer and copy the stat

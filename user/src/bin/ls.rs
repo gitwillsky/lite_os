@@ -85,8 +85,32 @@ fn group_name(gid: u32) -> String {
     }
 }
 
-fn format_time(_ts: u64) -> String {
-    String::from("Jan  1 00:00")
+fn format_time(ts: u64) -> String {
+    if ts == 0 {
+        return String::from("Jan  1 00:00");
+    }
+    let secs = ts as i64;
+    let day_secs = 24 * 60 * 60;
+    let mut days = secs / day_secs;
+    let mut rem = secs % day_secs;
+    if rem < 0 { rem += day_secs; days -= 1; }
+    let hour = (rem / 3600) as i32;
+    let min = ((rem % 3600) / 60) as i32;
+
+    let is_leap = |y: i32| -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) };
+    let mut year = 1970i32;
+    loop {
+        let y_days = if is_leap(year) { 366 } else { 365 };
+        if days >= y_days { days -= y_days; year += 1; } else { break; }
+    }
+    let mdays_norm = [31,28,31,30,31,30,31,31,30,31,30,31];
+    let mdays_leap = [31,29,31,30,31,30,31,31,30,31,30,31];
+    let months = if is_leap(year) { &mdays_leap } else { &mdays_norm };
+    let mut month = 0usize;
+    while month < 12 && days >= months[month] { days -= months[month] as i64; month += 1; }
+    let day = (days + 1) as i32;
+    let mon_names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    format!("{} {:>2} {:02}:{:02}", mon_names[month.min(11)], day, hour, min)
 }
 
 fn list_long_format(path: &str) -> i32 {
