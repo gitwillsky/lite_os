@@ -712,7 +712,19 @@ pub fn sys_get_process_info(pid: u32, info: *mut ProcessInfo) -> isize {
     name_bytes[..name_len].copy_from_slice(&name_str.as_bytes()[..name_len]);
     // name_bytes[name_len] = 0; // 已经初始化为0了
 
-    let core_id = crate::arch::hart::hart_id() as u32;
+    let core_id = {
+        use crate::task::TaskStatus as TS;
+        match *status {
+            TS::Running => {
+                if let Some(c) = crate::signal::find_process_core(task.pid()) {
+                    c as u32
+                } else {
+                    task.last_cpu.load(core::sync::atomic::Ordering::Relaxed) as u32
+                }
+            }
+            _ => task.last_cpu.load(core::sync::atomic::Ordering::Relaxed) as u32,
+        }
+    };
 
     let process_info = ProcessInfo {
         pid: task.pid() as u32,

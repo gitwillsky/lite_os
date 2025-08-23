@@ -991,6 +991,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
 
     let start_time = get_time_us();
     task.last_runtime.store(start_time, Ordering::Relaxed);
+    task.last_cpu.store(hart_id(), Ordering::Relaxed);
 
     processor.current = Some(task.clone());
     crate::signal::update_task_on_core(hart_id(), task.pid());

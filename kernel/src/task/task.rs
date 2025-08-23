@@ -357,6 +357,7 @@ pub struct TaskControlBlock {
     pub user_cpu_time: AtomicU64,
     /// 系统态CPU时间（微秒）
     pub kernel_cpu_time: AtomicU64,
+    pub last_cpu: AtomicUsize,
     /// 进程创建时间戳（微秒）
     pub creation_time: AtomicU64,
     /// 进入内核态的时间戳（用于区分用户态/内核态时间）
@@ -444,6 +445,7 @@ impl TaskControlBlock {
             total_cpu_time: AtomicU64::new(0),
             user_cpu_time: AtomicU64::new(0),
             kernel_cpu_time: AtomicU64::new(0),
+            last_cpu: AtomicUsize::new(0),
             creation_time: AtomicU64::new(crate::timer::get_time_us()),
             kernel_enter_time: AtomicU64::new(0),
             in_kernel_mode: spin::Mutex::new(false),
@@ -547,6 +549,7 @@ impl TaskControlBlock {
             total_cpu_time: AtomicU64::new(0),
             user_cpu_time: AtomicU64::new(0),
             kernel_cpu_time: AtomicU64::new(0),
+            last_cpu: AtomicUsize::new(0),
             creation_time: AtomicU64::new(crate::timer::get_time_us()),
             kernel_enter_time: AtomicU64::new(0),
             in_kernel_mode: spin::Mutex::new(false),
@@ -631,6 +634,7 @@ impl TaskControlBlock {
             total_cpu_time: AtomicU64::new(0),
             user_cpu_time: AtomicU64::new(0),
             kernel_cpu_time: AtomicU64::new(0),
+            last_cpu: AtomicUsize::new(0),
             creation_time: AtomicU64::new(crate::timer::get_time_us()),
             kernel_enter_time: AtomicU64::new(0),
             in_kernel_mode: spin::Mutex::new(false),
