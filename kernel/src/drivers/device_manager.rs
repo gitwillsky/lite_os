@@ -167,6 +167,28 @@ fn maybe_register_irq(
                 label, e
             );
             Err(())
+        } else if ctrl.supports_cpu_affinity() {
+            if let Err(e) = ctrl.set_affinity(irq, 1 << 0) {
+                warn!(
+                    "[DeviceManager] Failed to set {} IRQ affinity: {:?}",
+                    label, e
+                );
+            } else {
+                info!("[DeviceManager] Set {} IRQ affinity to CPU0", label);
+            }
+            if let Err(e) = ctrl.enable_interrupt(irq) {
+                error!(
+                    "[DeviceManager] Failed to enable {} IRQ {}: {:?}",
+                    label, irq, e
+                );
+                Err(())
+            } else {
+                info!(
+                    "[DeviceManager] Registered {} IRQ handler on vector {}",
+                    label, irq
+                );
+                Ok(())
+            }
         } else if let Err(e) = ctrl.enable_interrupt(irq) {
             error!(
                 "[DeviceManager] Failed to enable {} IRQ {}: {:?}",

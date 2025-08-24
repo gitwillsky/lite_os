@@ -99,6 +99,9 @@ pub fn dispatch_current_cpu() {
     if (mask & (1u32 << SoftIrq::Timer.as_index())) != 0 {
         handle_timer_softirq();
     }
+    if (mask & (1u32 << SoftIrq::Tasklet.as_index())) != 0 {
+        crate::drivers::virtio_input::drain_all_input_devices();
+    }
 }
 
 #[inline(always)]

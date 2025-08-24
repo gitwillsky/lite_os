@@ -18,11 +18,13 @@ use crate::drivers::hal::{
     },
 };
 use crate::drivers::virtio_queue::VirtQueue;
+use crate::drivers::{find_devices_by_type, get_device};
 use crate::fs::{
     FileSystemError,
     inode::{Inode, InodeType},
 };
 use crate::memory::PAGE_SIZE;
+use crate::trap::softirq::{self, SoftIrq};
 
 // VirtIO device ID for input
 pub const VIRTIO_ID_INPUT: u32 = 18;
@@ -60,21 +62,23 @@ impl InputDeviceNode {
         let mut to_wakeup: Vec<Weak<crate::task::TaskControlBlock>> = Vec::new();
         {
             let mut inner = self.inner.lock();
+            let was_empty = inner.buffer.is_empty();
             for b in bytes {
                 inner.buffer.push_back(*b);
             }
-            // 唤醒关心可读事件的等待者
-            let mut dead: Vec<usize> = Vec::new();
-            for (pid, (w, interests)) in inner.poll_waiters.iter() {
-                if (interests & POLLIN) != 0 {
-                    to_wakeup.push(w.clone());
+            if was_empty && !inner.buffer.is_empty() {
+                let mut dead: Vec<usize> = Vec::new();
+                for (pid, (w, interests)) in inner.poll_waiters.iter() {
+                    if (interests & POLLIN) != 0 {
+                        to_wakeup.push(w.clone());
+                    }
+                    if w.upgrade().is_none() {
+                        dead.push(*pid);
+                    }
                 }
-                if w.upgrade().is_none() {
-                    dead.push(*pid);
+                for pid in dead {
+                    inner.poll_waiters.remove(&pid);
                 }
-            }
-            for pid in dead {
-                inner.poll_waiters.remove(&pid);
             }
         }
         for w in to_wakeup {
@@ -311,7 +315,8 @@ impl VirtioInputDevice {
     }
 
     pub fn drain_used_and_push_events(&self) {
-        let mut produced_any = false;
+        let mut batch: alloc::vec::Vec<u8> = alloc::vec::Vec::with_capacity(256);
+        let mut reposted_any = false;
         loop {
             let next_used = { self.event_queue.lock().used() };
             let (id, len) = match next_used {
@@ -323,12 +328,9 @@ impl VirtioInputDevice {
                 if let Some(idx) = idx_opt {
                     let buf = self.buffers.lock();
                     let bytes: &[u8] = &buf[idx][..8];
-                    // 推送到用户缓冲
-                    self.node.push_event_bytes(bytes);
-                    produced_any = true;
+                    batch.extend_from_slice(bytes);
                 }
             }
-            // 重新投递该缓冲
             if let Some(idx) = { self.desc_to_buf_index.lock().remove(&id) } {
                 let mut bufs = self.buffers.lock();
                 let mut outs: [&mut [u8]; 1] = [&mut bufs[idx][..]];
@@ -341,11 +343,15 @@ impl VirtioInputDevice {
                     {
                         self.event_queue.lock().add_to_avail(new_head);
                     }
+                    reposted_any = true;
                 }
             }
         }
-        if produced_any {
-            // 已在 push 时唤醒 poller
+        if !batch.is_empty() {
+            self.node.push_event_bytes(&batch);
+        }
+        if reposted_any {
+            let _ = self.device.notify_queue(0);
         }
     }
 }
@@ -410,6 +416,19 @@ impl Device for VirtioInputDevice {
     }
 }
 
+pub fn drain_all_input_devices() {
+    let ids = find_devices_by_type(DeviceType::Input);
+    for id in ids {
+        if let Some(dev_arc) = get_device(id) {
+            let mut dev = dev_arc.lock();
+            let dev_mut: &mut dyn Device = dev.as_mut();
+            if let Some(input) = dev_mut.as_any_mut().downcast_mut::<VirtioInputDevice>() {
+                input.drain_used_and_push_events();
+            }
+        }
+    }
+}
+
 pub struct VirtioInputIrqHandler(pub alloc::sync::Arc<VirtioInputDevice>);
 impl InterruptHandler for VirtioInputIrqHandler {
     fn handle_interrupt(
@@ -422,7 +441,7 @@ impl InterruptHandler for VirtioInputIrqHandler {
                 let _ = self.0.device.interrupt_ack(isr);
             }
         }
-        self.0.drain_used_and_push_events();
+        softirq::raise(SoftIrq::Tasklet);
         Ok(())
     }
     fn can_handle(&self, _vector: InterruptVector) -> bool {

@@ -557,8 +557,12 @@ pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> 
 }
 
 pub fn sys_shutdown() -> ! {
-    crate::arch::sbi::shutdown();
-    unreachable!();
+    if let Err(e) = crate::arch::sbi::shutdown() {
+        warn!("SBI shutdown error: {}", e);
+    }
+    loop {
+        unsafe { core::arch::asm!("wfi") }
+    }
 }
 
 // 权限相关系统调用实现

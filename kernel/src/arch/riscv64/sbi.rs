@@ -31,18 +31,20 @@ pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> (isize, isize) {
             in("x15") args[5],
         )
     }
-    (result_value, error_code)
+    (error_code, result_value)
 }
 
 pub fn console_putchar(c: usize) {
     sbi_call(0x01, 0, [c, 0, 0, 0, 0, 0]);
 }
 
-pub fn shutdown() {
-    // SRST (System Reset Extension) EID = 0x53525354 ("SRST")
-    // FID = 0 (sbi_system_reset)
-    // reset_type = 0 (shutdown), reset_reason = 0 (no reason)
-    sbi_call(0x53525354, 0, [0, 0, 0, 0, 0, 0]);
+pub fn shutdown() -> Result<(), isize> {
+    let (err, _) = sbi_call(0x53525354, 0, [0, 0, 0, 0, 0, 0]);
+    if err == 0 {
+        return Ok(());
+    }
+    let (err2, _) = sbi_call(0x0, 8, [0, 0, 0, 0, 0, 0]);
+    if err2 == 0 { Ok(()) } else { Err(err2) }
 }
 
 pub fn set_timer(timer_value: usize) {
@@ -51,7 +53,7 @@ pub fn set_timer(timer_value: usize) {
 }
 
 pub fn console_getchar() -> isize {
-    let (_, ch) = sbi_call(0x02, 0, [0; 6]);
+    let (ch, _) = sbi_call(0x02, 0, [0; 6]);
     ch
 }
 

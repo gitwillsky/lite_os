@@ -11,11 +11,9 @@ use user_lib::{exec, exit, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    // spawn_text_test();
     spawn_webwm();
     spawn_shell();
 
-    // Main process reaping loop
     loop {
         let mut exit_code: i32 = 0;
         let exited_pid = wait(&mut exit_code);
@@ -33,7 +31,6 @@ fn spawn_shell() {
         let exit_code = exec("/bin/shell") as i32;
         exit(exit_code);
     } else if pid > 0 {
-        // shell started
     } else {
         println!("init: failed to fork shell process");
     }
