@@ -23,9 +23,9 @@ use crate::{
     },
     signal::SignalState,
     task::{
-        add_task,
         context::TaskContext,
         pid::{PidHandle, alloc_pid},
+        task_manager::set_task_status,
     },
     trap::{TrapContext, trap_handler},
 };
@@ -828,8 +828,7 @@ impl TaskControlBlock {
     pub fn wakeup(self: &Arc<Self>) {
         let current_status = *self.task_status.lock();
         if current_status == TaskStatus::Sleeping || current_status == TaskStatus::Stopped {
-            *self.task_status.lock() = TaskStatus::Ready;
-            add_task(self.clone());
+            set_task_status(self, TaskStatus::Ready);
         }
     }
 }

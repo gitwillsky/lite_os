@@ -150,6 +150,9 @@ pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
     let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_CORES;
     let mut best_cpu = hart_id();
     let mut best_load = usize::MAX;
+    let last = task.last_cpu.load(Ordering::Relaxed);
+    let mut last_active = false;
+    let mut last_load = usize::MAX;
     unsafe {
         for k in 0..MAX_CORES {
             let i = (start + k) % MAX_CORES;
@@ -164,12 +167,21 @@ pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
                         best_load = load;
                         best_cpu = i;
                     }
+                    if i == last {
+                        last_active = true;
+                        last_load = load;
+                    }
                 }
             }
         }
     }
-    add_task_to_cpu(best_cpu, task);
-    best_cpu
+    let chosen = if last_active && last_load <= best_load.saturating_add(1) {
+        last
+    } else {
+        best_cpu
+    };
+    add_task_to_cpu(chosen, task);
+    chosen
 }
 
 pub fn try_global_steal() -> Option<Arc<TaskControlBlock>> {

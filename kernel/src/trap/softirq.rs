@@ -113,10 +113,19 @@ fn handle_timer_softirq() {
     // 重要：只在有当前任务且不在内核关键路径时才触发调度
     // 避免在idle循环或其他特殊上下文中调度
     if let Some(task) = task::current_task() {
-        // 检查任务是否有效且不是zombie
         if !task.is_zombie() && *task.task_status.lock() == TaskStatus::Running {
-            // 进行任务切换，让其他任务有机会运行
-            task::suspend_current_and_run_next();
+            let now = timer::get_time_ns();
+            let slice_us = task.sched.lock().time_slice;
+            let slice_ns = slice_us.saturating_mul(1000);
+            let last = task
+                .last_runtime
+                .load(core::sync::atomic::Ordering::Relaxed) as u64
+                * 1000;
+            let ran_ns = now.saturating_sub(last);
+            let ready_exists = crate::task::current_processor().task_count() > 0;
+            if ready_exists && ran_ns >= slice_ns / 2 {
+                task::suspend_current_and_run_next();
+            }
         }
     }
 }
