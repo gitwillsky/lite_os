@@ -294,13 +294,6 @@ fn main() -> i32 {
                         print!("\x1b[2J\x1b[H");
                     } else if line == "jobs" {
                         job_manager.list_jobs();
-                    } else if line == "exit" || line.starts_with("exit ") {
-                        let code = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse::<i32>().ok())
-                            .unwrap_or(0);
-                        return code;
                     } else if line.starts_with("fg") {
                         handle_fg_command(line, &mut job_manager);
                         editor.clear();
