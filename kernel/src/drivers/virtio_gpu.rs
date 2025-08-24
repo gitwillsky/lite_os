@@ -227,21 +227,9 @@ pub struct VirtioGpuDevice {
 
 impl VirtioGpuDevice {
     fn irq_ack_and_drain(&mut self) {
-        // 先尝试清除设备侧中断状态，避免中断线保持为高导致 PLIC 重复触发
         let isr = self.read32(MMIO_INTERRUPT_STATUS);
         if isr != 0 {
             self.write32(MMIO_INTERRUPT_ACK, isr);
-        }
-
-        if let Some(ref mut q) = self.ctrl_queue {
-            while let Some((id, _len)) = q.used() {
-                // 精准唤醒等待的任务
-                if let Some(weak) = self.pending_waiters.remove(&id) {
-                    if let Some(task) = weak.upgrade() {
-                        task.wakeup();
-                    }
-                }
-            }
         }
     }
     pub fn new(base_addr: usize, interrupt_vector: InterruptVector) -> Result<Self, DeviceError> {
