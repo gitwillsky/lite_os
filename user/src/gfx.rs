@@ -170,12 +170,28 @@ fn blend_over(
     src_b: u8,
     src_a_coverage: f32,
 ) {
-    // 简易线性空间混合：dst = src * a + dst * (1-a)
+    fn s2l(c: u8) -> f32 {
+        let x = (c as f32) / 255.0;
+        if x <= 0.04045 {
+            x / 12.92
+        } else {
+            libm::powf(((x + 0.055) / 1.055), 2.4)
+        }
+    }
+    fn l2s(x: f32) -> u8 {
+        let x = x.max(0.0).min(1.0);
+        let s = if x <= 0.0031308 {
+            12.92 * x
+        } else {
+            1.055 * libm::powf(x, 1.0 / 2.4) - 0.055
+        };
+        (s * 255.0 + 0.5) as u8
+    }
     let (dr, dg, db, _da) = read_pixel_rgba(ptr as *const u8, info);
-    let t = src_a_coverage.max(0.0).min(1.0);
-    let r = lerp_u8(dr, src_r, t);
-    let g = lerp_u8(dg, src_g, t);
-    let b = lerp_u8(db, src_b, t);
+    let a = src_a_coverage.max(0.0).min(1.0);
+    let r = l2s(s2l(dr) * (1.0 - a) + s2l(src_r) * a);
+    let g = l2s(s2l(dg) * (1.0 - a) + s2l(src_g) * a);
+    let b = l2s(s2l(db) * (1.0 - a) + s2l(src_b) * a);
     write_pixel_rgba(ptr, info, r, g, b, 0xFF);
 }
 // 几何与轮廓收集
@@ -332,12 +348,35 @@ fn point_in_fill(edges: &Vec<LineSeg>, sx: f32, sy: f32) -> bool {
 }
 
 fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
-    // 2x2 超采样（四子像素点测试），更清晰的边缘
     let mut guard = GFX.lock();
     let Some(ref mut g) = *guard else { return };
     let (sw, sh) = (g.info.width as i32, g.info.height as i32);
 
-    // 包围盒
+    let mut edges_local = edges.clone();
+    fn snap_edges_for_hinting(edges: &mut Vec<LineSeg>) {
+        let t = 0.12f32;
+        for e in edges.iter_mut() {
+            if libm::fabsf(e.x0 - e.x1) < 0.02 {
+                let rx0 = libm::roundf(e.x0);
+                let rx1 = libm::roundf(e.x1);
+                if libm::fabsf(e.x0 - rx0) < t && libm::fabsf(e.x1 - rx1) < t {
+                    e.x0 = rx0;
+                    e.x1 = rx1;
+                }
+            }
+            if libm::fabsf(e.y0 - e.y1) < 0.02 {
+                let ry0 = libm::roundf(e.y0);
+                let ry1 = libm::roundf(e.y1);
+                if libm::fabsf(e.y0 - ry0) < t && libm::fabsf(e.y1 - ry1) < t {
+                    e.y0 = ry0;
+                    e.y1 = ry1;
+                }
+            }
+        }
+    }
+    snap_edges_for_hinting(&mut edges_local);
+    let edges = &edges_local;
+
     let mut min_y = i32::MAX;
     let mut max_y = i32::MIN;
     let mut min_x = i32::MAX;
@@ -369,39 +408,33 @@ fn rasterize_edges(edges: &Vec<LineSeg>, color: u32) {
     let pitch = g.info.pitch as usize;
     let bpp = g.info.bytes_per_pixel as usize;
 
+    let offs = [0.125f32, 0.375, 0.625, 0.875];
     for y in min_y..=max_y {
         let row_ptr = (g.fb_ptr + (y as usize) * pitch) as *mut u8;
-        let sy0 = y as f32 + 0.25;
-        let sy1 = y as f32 + 0.75;
         for x in min_x..=max_x {
-            let sx0 = x as f32 + 0.25;
-            let sx1 = x as f32 + 0.75;
             let mut cover = 0.0f32;
-            if point_in_fill(edges, sx0, sy0) {
-                cover += 0.25;
-            }
-            if point_in_fill(edges, sx1, sy0) {
-                cover += 0.25;
-            }
-            if point_in_fill(edges, sx0, sy1) {
-                cover += 0.25;
-            }
-            if point_in_fill(edges, sx1, sy1) {
-                cover += 0.25;
+            for oy in offs {
+                for ox in offs {
+                    if point_in_fill(edges, x as f32 + ox, y as f32 + oy) {
+                        cover += 1.0;
+                    }
+                }
             }
             if cover <= 0.0 {
                 continue;
             }
-            let cover_adj = libm::powf(cover, 0.8) * a_norm; // 略加权使边更实
+            let cover_adj = (cover / 16.0) * a_norm;
+            if cover_adj <= 0.02 {
+                continue;
+            }
             let p = unsafe { row_ptr.add((x as usize) * bpp) };
-            if cover_adj >= 0.999 {
+            if cover_adj >= 0.98 {
                 write_pixel_rgba(p, &g.info, r, gch, b, 0xFF);
             } else {
                 blend_over(p, &g.info, r, gch, b, cover_adj);
             }
         }
     }
-    // 标记脏并合并脏矩形
     g.dirty = true;
     let rect = (min_x, min_y, max_x + 1, max_y + 1);
     g.dirty_rect = Some(match g.dirty_rect {
@@ -461,7 +494,8 @@ pub fn draw_text_ttf(
         // 计算水平方向 advance
         let adv_units = face.glyph_hor_advance(gid).unwrap_or(0) as f32;
         let adv = adv_units * scale;
-        pen_x += adv as i32;
+        let adv_px = libm::roundf(adv) as i32;
+        pen_x += adv_px;
     }
     true
 }

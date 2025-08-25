@@ -57,7 +57,7 @@ run-gui: build-kernel build-user create-fs
 	-drive file=fs.img,if=none,format=raw,id=x0 \
 	-device virtio-blk-device,drive=x0 \
 	-device virtio-rng-device \
-	-device virtio-gpu-device \
+	-device virtio-gpu-device,xres=1920,yres=1080,edid=on \
 	-device virtio-keyboard-device \
 	-device virtio-mouse-device \
 	-device virtio-net-device,netdev=net0 \
