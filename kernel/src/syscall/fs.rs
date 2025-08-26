@@ -633,14 +633,13 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
     let path_str = match translated_c_string(token, path) {
         Ok(path) => path,
-        Err(e) => {
+        Err(_) => {
             return -36;
         }
     };
 
     match vfs().open(&path_str) {
         Ok(inode) => {
-            // Read the entire file into a temporary buffer first
             let file_size = inode.size() as usize;
             let read_size = file_size.min(len);
 
@@ -648,12 +647,10 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
                 return 0;
             }
 
-            // Create a temporary buffer to read the file contents
             let mut temp_buf = alloc::vec![0u8; read_size];
 
             match inode.read_at(0, &mut temp_buf) {
                 Ok(bytes_read) => {
-                    // Now copy to user space using translated_byte_buffer
                     let buffers = translated_byte_buffer(token, buf, bytes_read);
                     let mut offset = 0;
 
@@ -672,6 +669,100 @@ pub fn sys_read_file(path: *const u8, buf: *mut u8, len: usize) -> isize {
             }
         }
         Err(_) => -1,
+    }
+}
+
+pub fn sys_openat(dirfd: isize, path: *const u8, flags: u32, mode: u32) -> isize {
+    const AT_FDCWD: isize = -100;
+    if dirfd == AT_FDCWD {
+        let combined = flags | (mode & 0o777);
+        return sys_open(path, combined);
+    }
+    let token = current_user_token();
+    let try_legacy = if dirfd > 0 {
+        let bufs = translated_byte_buffer(token, dirfd as *const u8, 1);
+        !bufs.is_empty()
+    } else {
+        false
+    };
+    if try_legacy {
+        return sys_open(dirfd as *const u8, flags);
+    }
+    -95
+}
+
+#[repr(C)]
+struct LinuxTimespec64 {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+#[repr(C)]
+struct LinuxStat64 {
+    st_dev: u64,
+    st_ino: u64,
+    st_mode: u32,
+    st_nlink: u32,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: u64,
+    __pad1: u64,
+    st_size: i64,
+    st_blksize: i64,
+    st_blocks: i64,
+    st_atim: LinuxTimespec64,
+    st_mtim: LinuxTimespec64,
+    st_ctim: LinuxTimespec64,
+    __unused: [i64; 3],
+}
+
+pub fn sys_fstat_fd(fd: usize, buf: *mut u8) -> isize {
+    if let Some(task) = current_task() {
+        if let Some(file_desc) = task.file.lock().fd(fd) {
+            let inode = &file_desc.inode;
+            let mode = inode.mode();
+            let size = inode.size() as i64;
+            let nlink = 1u32;
+            let uid = inode.uid();
+            let gid = inode.gid();
+            let atime_us = inode.atime() as i64;
+            let mtime_us = inode.mtime() as i64;
+            let ctime_us = inode.ctime() as i64;
+            let st = LinuxStat64 {
+                st_dev: 0,
+                st_ino: 0,
+                st_mode: mode,
+                st_nlink: nlink,
+                st_uid: uid,
+                st_gid: gid,
+                st_rdev: 0,
+                __pad1: 0,
+                st_size: size,
+                st_blksize: 4096,
+                st_blocks: ((size + 511) / 512) as i64,
+                st_atim: LinuxTimespec64 { tv_sec: atime_us / 1_000_000, tv_nsec: (atime_us % 1_000_000) * 1000 },
+                st_mtim: LinuxTimespec64 { tv_sec: mtime_us / 1_000_000, tv_nsec: (mtime_us % 1_000_000) * 1000 },
+                st_ctim: LinuxTimespec64 { tv_sec: ctime_us / 1_000_000, tv_nsec: (ctime_us % 1_000_000) * 1000 },
+                __unused: [0; 3],
+            };
+            let token = current_user_token();
+            let mut buffers = translated_byte_buffer(token, buf as *const u8, core::mem::size_of::<LinuxStat64>());
+            if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<LinuxStat64>() {
+                return -14;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    &st as *const LinuxStat64 as *const u8,
+                    buffers[0].as_mut_ptr(),
+                    core::mem::size_of::<LinuxStat64>(),
+                );
+            }
+            0
+        } else {
+            -9
+        }
+    } else {
+        -1
     }
 }
 

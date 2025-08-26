@@ -42,7 +42,7 @@ const SYSCALL_CLOSE: usize = 57;
 const SYSCALL_LISTDIR: usize = 500;
 const SYSCALL_MKDIR: usize = 501;
 const SYSCALL_REMOVE: usize = 502;
-const SYSCALL_STAT: usize = 80;
+const SYSCALL_STAT_PATH: usize = 1500;
 const SYSCALL_READ_FILE: usize = 503;
 const SYSCALL_CHDIR: usize = 504;
 const SYSCALL_GETCWD: usize = 505;
@@ -123,11 +123,12 @@ const SYSCALL_WATCHDOG_FEED: usize = 903;
 const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
 const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
 
-pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
+pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
+        94 => sys_exit(args[0] as i32),
         SYSCALL_YIELD => sys_yield(),
         SYSCALL_GETPID => sys_getpid(),
         SYSCALL_GETTID => sys_gettid(),
@@ -145,12 +146,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_THREAD_JOIN => sys_thread_join(args[0], args[1] as *mut i32),
 
         // 文件系统系统调用
-        SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
+        SYSCALL_OPEN => sys_openat(args[0] as isize, args[1] as *const u8, args[2] as u32, args[3] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_LISTDIR => sys_listdir(args[0] as *const u8, args[1] as *mut u8, args[2]),
         SYSCALL_MKDIR => sys_mkdir(args[0] as *const u8),
         SYSCALL_REMOVE => sys_remove(args[0] as *const u8),
-        SYSCALL_STAT => sys_stat(args[0] as *const u8, args[1] as *mut u8),
+        SYSCALL_STAT_PATH => sys_stat(args[0] as *const u8, args[1] as *mut u8),
         SYSCALL_READ_FILE => sys_read_file(args[0] as *const u8, args[1] as *mut u8, args[2]),
         SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
         SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
@@ -213,7 +214,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_BRK => sys_brk(args[0]),
         SYSCALL_SBRK => sys_sbrk(args[0] as isize),
         SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, 0, -1, 0),
+        222 => sys_mmap(args[0], args[1], args[2] as i32, args[3] as i32, args[4] as i32, args[5]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
+        215 => sys_munmap(args[0], args[1]),
+        226 => sys_mprotect(args[0], args[1], args[2] as i32),
+        278 => sys_getrandom(args[0] as *mut u8, args[1], args[2] as u32),
         SYSCALL_SHM_CREATE => sys_shm_create(args[0]),
         SYSCALL_SHM_MAP => sys_shm_map(args[0], args[1] as i32),
         SYSCALL_SHM_CLOSE => sys_shm_close(args[0]),
@@ -231,8 +236,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_GET_TIME_US => sys_get_time_us(),
         SYSCALL_GET_TIME_NS => sys_get_time_ns(),
         SYSCALL_TIME => sys_time(),
+        106 => sys_time(),
         SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0] as *mut TimeVal, args[1] as *mut u8),
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
+        169 => sys_gettimeofday(args[0] as *mut TimeVal, args[1] as *mut u8),
+        113 => sys_clock_gettime(args[0] as i32, args[1] as *mut u8),
 
         // Watchdog 相关系统调用
         SYSCALL_WATCHDOG_CONFIGURE => {

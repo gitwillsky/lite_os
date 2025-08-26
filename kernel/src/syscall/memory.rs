@@ -209,7 +209,7 @@ pub fn sys_mmap(
 
     // 添加到内存集合
     if let Err(_) = task.mm.memory_set.lock().push(map_area, None) {
-        return 0; // mmap returns 0 on failure
+        return -ENOMEM;
     }
 
     // 刷新页表
@@ -258,9 +258,27 @@ pub const MAP_SHARED: i32 = 1;
 pub const MAP_PRIVATE: i32 = 2;
 pub const MAP_ANONYMOUS: i32 = 0x20;
 
-// 原本的 find_free_area 已迁移至 MemorySet::find_free_area_user
+pub fn sys_mprotect(_addr: usize, _len: usize, _prot: i32) -> isize { 0 }
 
-// ================= 简化共享内存实现 =================
+pub fn sys_getrandom(buf: *mut u8, buflen: usize, _flags: u32) -> isize {
+    if buflen == 0 { return 0; }
+    if buf.is_null() { return -EFAULT; }
+    let mut seed = crate::timer::get_time_ns() as u64;
+    if let Some(t) = crate::task::current_task() { seed ^= (t.pid() as u64) << 17; }
+    seed ^= (riscv::register::time::read() as u64) << 7;
+    let mut x = seed ^ 0x9E3779B97F4A7C15u64;
+    let token = crate::task::current_user_token();
+    let mut bufs = crate::memory::page_table::translated_byte_buffer(token, buf as *const u8, buflen);
+    if bufs.is_empty() || bufs[0].len() < buflen { return -EFAULT; }
+    for i in 0..buflen {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        let byte = (x.wrapping_mul(0x2545F4914F6CDD1D) & 0xFF) as u8;
+        bufs[0][i] = byte;
+    }
+    buflen as isize
+}
 
 struct ShmSegment {
     frames: Vec<crate::memory::frame_allocator::FrameTracker>,

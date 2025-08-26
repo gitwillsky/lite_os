@@ -114,7 +114,7 @@ pub fn trap_handler() {
                     if let Some(current) = task::current_task() {
                         let cx = current.mm.trap_context();
                         let syscall_id = cx.x[17];
-                        let args = [cx.x[10], cx.x[11], cx.x[12]];
+                        let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
 
                         cx.x[10] = {
                             cx.sepc += 4;

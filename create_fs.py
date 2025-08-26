@@ -114,30 +114,28 @@ def collect_binaries():
     else:
         print("⚠ 未找到用户程序ELF文件")
 
-    # # 查找并复制WASM测试程序
-    # wasm_files = []
-    # wasm_dir = "wasm_programs/wasm_output"
-    # if os.path.exists(wasm_dir):
-    #     for wasm_file in glob.glob(os.path.join(wasm_dir, "*.wasm")):
-    #         if os.path.isfile(wasm_file):
-    #             wasm_files.append(wasm_file)
+    std_user_elfs = []
+    for elf_file in glob.glob("target/riscv64gc-unknown-linux-musl/release/*"):
+        basename = os.path.basename(elf_file)
+        if (os.path.isfile(elf_file) and
+            not elf_file.endswith('.d') and
+            not elf_file.endswith('.bin') and
+            not elf_file.endswith('.json') and
+            not elf_file.endswith('.rlib') and
+            not basename.startswith('._') and  # 过滤 macOS AppleDouble 文件
+            '.' not in basename):
+            std_user_elfs.append(elf_file)
 
-    # if wasm_files:
-    #     print(f"找到WASM程序: {[os.path.basename(f) for f in wasm_files]}")
-    #     for wasm_file in wasm_files:
-    #         dest_name = os.path.basename(wasm_file)
-    #         root_entries.append((wasm_file, f"/{dest_name}"))
-    # else:
-    #     print("⚠ 未找到WASM程序文件")
-    #     print("  请先运行: cd wasm_programs && ./build.sh")
-
-    # # 查找并复制其他WASM文件（简单的手工生成的）
-    # simple_wasm_files = glob.glob("wasm_programs/*.wasm")
-    # if simple_wasm_files:
-    #     print(f"找到简单WASM程序: {[os.path.basename(f) for f in simple_wasm_files]}")
-    #     for wasm_file in simple_wasm_files:
-    #         dest_name = os.path.basename(wasm_file)
-    #         root_entries.append((wasm_file, f"/{dest_name}"))
+    if std_user_elfs:
+        print(f"找到标准用户程序ELF文件: {[os.path.basename(f) for f in std_user_elfs]}")
+        for elf_file in std_user_elfs:
+            basename = os.path.basename(elf_file)
+            if basename.startswith('tests_'):
+                test_entries.append((elf_file, f"/std_/{basename[6:]}"))
+            else:
+                root_entries.append((elf_file, f"/{basename}"))
+    else:
+        print("⚠ 未找到标准用户程序ELF文件")
 
     # 额外：收集字体文件，放入 /fonts/
     font_sources = []

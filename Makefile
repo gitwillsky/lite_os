@@ -2,7 +2,7 @@ ELFS := $(patsubst user/src/bin/%.rs, target/riscv64gc-unknown-none-elf/release/
 OBJCOPY := rust-objcopy --binary-architecture=riscv64
 
 build-user:
-	cd user && cargo build --release && cd -
+	cd user && cargo build --release && cd - && cd std_user && cargo build --release && cd -
 	@$(foreach elf, $(ELFS), $(OBJCOPY) $(elf) --strip-all -O binary $(patsubst target/riscv64gc-unknown-none-elf/release/%, target/riscv64gc-unknown-none-elf/release/%.bin, $(elf));)
 
 build-kernel:
