@@ -109,6 +109,9 @@ pub struct DynamicLinker {
 
     /// Dynamic section information
     pub dynamic_info: Option<DynamicInfo>,
+
+    /// Base address for PIE executables
+    pub base_address: VirtualAddress,
 }
 
 /// Information extracted from the dynamic section
@@ -138,6 +141,20 @@ impl DynamicLinker {
             got_entries: Vec::new(),
             pending_relocations: Vec::new(),
             dynamic_info: None,
+            base_address: VirtualAddress::from(0),
+        }
+    }
+
+    /// Create a new dynamic linker with base address
+    pub fn new_with_base(base_address: VirtualAddress) -> Self {
+        Self {
+            libraries: BTreeMap::new(),
+            global_symbols: BTreeMap::new(),
+            plt_entries: Vec::new(),
+            got_entries: Vec::new(),
+            pending_relocations: Vec::new(),
+            dynamic_info: None,
+            base_address,
         }
     }
 
@@ -168,7 +185,7 @@ impl DynamicLinker {
         &mut self,
         elf: &ElfFile,
         section: xmas_elf::sections::SectionHeader,
-        _base_address: VirtualAddress,
+        base_address: VirtualAddress,
     ) -> Result<(), Box<dyn Error>> {
         let mut dynamic_info = DynamicInfo {
             needed_libraries: Vec::new(),
@@ -197,32 +214,44 @@ impl DynamicLinker {
                         }
                     }
                     Ok(dynamic::Tag::Init) => {
-                        dynamic_info.init_function =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                        let addr = entry.get_val().unwrap_or(0) as usize;
+                        // For PIE executables, add base address to all addresses
+                        if addr != 0 {
+                            debug!("DT_INIT raw value: 0x{:x}, with base: 0x{:x}", 
+                                  addr, base_address.as_usize() + addr);
+                            dynamic_info.init_function =
+                                Some(VirtualAddress::from(base_address.as_usize() + addr));
+                        }
                     }
                     Ok(dynamic::Tag::Fini) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.fini_function =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::StrTab) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.string_table =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::SymTab) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.symbol_table =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::Hash) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.hash_table =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::Rela) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.rela_table =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::JmpRel) => {
+                        let addr = entry.get_val().unwrap_or(0) as usize;
                         dynamic_info.plt_relocations =
-                            Some(VirtualAddress::from(entry.get_val().unwrap_or(0) as usize));
+                            Some(VirtualAddress::from(base_address.as_usize() + addr));
                     }
                     Ok(dynamic::Tag::PltRelSize) => {
                         dynamic_info.plt_relocations_size = entry.get_val().unwrap_or(0) as usize;
@@ -243,7 +272,7 @@ impl DynamicLinker {
         &mut self,
         elf: &ElfFile,
         section: xmas_elf::sections::SectionHeader,
-        _base_address: VirtualAddress,
+        base_address: VirtualAddress,
     ) -> Result<(), Box<dyn Error>> {
         if let Ok(SectionData::SymbolTable64(symbols)) = section.get_data(elf) {
             for symbol in symbols {
@@ -254,9 +283,17 @@ impl DynamicLinker {
                 };
 
                 if !name.is_empty() {
+                    // For PIE executables, symbol values need base address added
+                    // But only for defined symbols (not UND)
+                    let symbol_value = if symbol.shndx() != 0 {
+                        base_address.as_usize() + symbol.value() as usize
+                    } else {
+                        symbol.value() as usize
+                    };
+                    
                     let dynamic_symbol = DynamicSymbol {
                         name: name.clone(),
-                        value: symbol.value(),
+                        value: symbol_value as u64,
                         size: symbol.size(),
                         binding: match symbol.get_binding() {
                             Ok(binding) => match binding {
@@ -413,6 +450,9 @@ impl DynamicLinker {
 
     /// Apply relocations
     pub fn apply_relocations(&mut self, page_table: &PageTable) -> Result<(), Box<dyn Error>> {
+        debug!("Applying {} relocations with base address 0x{:x}",
+               self.pending_relocations.len(), self.base_address.as_usize());
+
         for relocation in &self.pending_relocations {
             match relocation.reloc_type {
                 RelocationType::R_RISCV_64 => {
@@ -444,14 +484,16 @@ impl DynamicLinker {
         relocation: &RelocationEntry,
         page_table: &PageTable,
     ) -> Result<(), Box<dyn Error>> {
-        let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
+        // For PIE executables, relocation offset needs base address added
+        let target_va = self.base_address.as_usize() + relocation.offset as usize;
+        let target_vpn = VirtualAddress::from(target_va).floor();
 
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
 
             // Calculate offset within the page
-            let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
+            let page_offset = target_va & (super::config::PAGE_SIZE - 1);
 
             // For direct relocations, the value is the symbol value plus addend
             let symbol_value = if relocation.symbol_index == 0 {
@@ -499,13 +541,15 @@ impl DynamicLinker {
         page_table: &PageTable,
     ) -> Result<(), Box<dyn Error>> {
         // For jump slot relocations, we need to update the GOT entry with the target address
-        let got_entry_vpn = VirtualAddress::from(relocation.offset as usize).floor();
+        // For PIE executables, relocation offset needs base address added
+        let got_entry_va = self.base_address.as_usize() + relocation.offset as usize;
+        let got_entry_vpn = VirtualAddress::from(got_entry_va).floor();
 
         if let Some(pte) = page_table.translate(got_entry_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
 
-            let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
+            let page_offset = got_entry_va & (super::config::PAGE_SIZE - 1);
 
             // Resolve the symbol to get its address
             let symbol_address = if relocation.symbol_index > 0 {
@@ -551,17 +595,18 @@ impl DynamicLinker {
         relocation: &RelocationEntry,
         page_table: &PageTable,
     ) -> Result<(), Box<dyn Error>> {
-        let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
+        // For PIE executables, relocation offset needs base address added
+        let target_va = self.base_address.as_usize() + relocation.offset as usize;
+        let target_vpn = VirtualAddress::from(target_va).floor();
 
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
 
-            let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
+            let page_offset = target_va & (super::config::PAGE_SIZE - 1);
 
             // For relative relocations, the value is base address + addend
-            // Since we're loaded at virtual address 0, base is 0
-            let base_address = 0u64; // In a real implementation, this would be the load base
+            let base_address = self.base_address.as_usize() as u64;
             let final_value = base_address + relocation.addend as u64;
             let value_bytes = final_value.to_le_bytes();
 
@@ -582,12 +627,10 @@ impl DynamicLinker {
                         .copy_from_slice(&value_bytes[first_part_len..]);
                 }
             }
+        } else {
+            warn!("Failed to translate relocation target VA: 0x{:x}", target_va);
         }
 
-        debug!(
-            "Applied relative relocation at offset: 0x{:x}, value: 0x{:x}",
-            relocation.offset, relocation.addend
-        );
         Ok(())
     }
 
@@ -599,13 +642,15 @@ impl DynamicLinker {
     ) -> Result<(), Box<dyn Error>> {
         // Global data relocations are similar to jump slot relocations
         // but for data symbols instead of function symbols
-        let target_vpn = VirtualAddress::from(relocation.offset as usize).floor();
+        // For PIE executables, relocation offset needs base address added
+        let target_va = self.base_address.as_usize() + relocation.offset as usize;
+        let target_vpn = VirtualAddress::from(target_va).floor();
 
         if let Some(pte) = page_table.translate(target_vpn) {
             let ppn = pte.ppn();
             let page_bytes = ppn.get_bytes_array_mut();
 
-            let page_offset = (relocation.offset as usize) & (super::config::PAGE_SIZE - 1);
+            let page_offset = target_va & (super::config::PAGE_SIZE - 1);
 
             // Resolve the symbol to get its address
             let symbol_address = if relocation.symbol_index > 0 {
@@ -779,6 +824,8 @@ impl DynamicLinker {
                 info!("Running DT_INIT function at 0x{:x}", usize::from(init_addr));
                 // In a real implementation, this would call the function
                 // For now, we just log that we would call it
+            } else {
+                debug!("No DT_INIT function found");
             }
 
             // Run DT_INIT_ARRAY functions if present
