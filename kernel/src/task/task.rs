@@ -10,6 +10,7 @@ use alloc::{
     string::{String, ToString},
     sync::{Arc, Weak},
     vec::Vec,
+    vec,
 };
 use spin::Mutex;
 
@@ -406,7 +407,30 @@ impl TaskControlBlock {
         elf_data: &[u8],
         pid: PidHandle,
     ) -> Result<Self, Box<dyn Error>> {
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
+        // Use dynamic linking for executables that need it
+        // Pass program name as argv[0]
+        let args = vec![name.to_string()];
+        let envs = vec![];
+        let (mut memory_set, user_sp, entry_point) = 
+            MemorySet::from_elf_with_args_and_dynamic_linking(elf_data, &args, &envs)?;
+        
+        // Allocate TLS for the main thread
+        let tp_value = match memory_set.allocate_tls() {
+            Ok(tp) => {
+                debug!("Allocated TLS for process {} at tp=0x{:x}", name, tp);
+                tp
+            }
+            Err(e) => {
+                // If TLS allocation fails, log warning but continue with tp=0
+                // Some programs may not need TLS
+                warn!("Failed to allocate TLS for process {}: {:?}, continuing with tp=0", name, e);
+                0
+            }
+        };
+        
+        // Get global pointer value from memory set before moving it
+        let gp_value = memory_set.get_global_pointer();
+        
         let task_status = TaskStatus::Ready;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
@@ -464,13 +488,31 @@ impl TaskControlBlock {
         };
 
         // prepare TrapContext in user space
-        tcb.mm.set_trap_context(TrapContext::app_init_context(
+        debug!("Setting up new process {} with entry=0x{:x}, sp=0x{:x}, tp=0x{:x}, gp={:?}",
+               name, entry_point, user_sp, tp_value, gp_value);
+        tcb.mm.set_trap_context(TrapContext::app_init_context_with_tp_gp(
             entry_point,
             user_sp,
+            tp_value,
+            gp_value,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
             trap_handler as usize,
         ));
+        {
+            let argc = 1usize;
+            let envc = 0usize;
+            let sp = user_sp;
+            let usize_sz = core::mem::size_of::<usize>();
+            let argv_ptr = sp + usize_sz;
+            let envp_ptr = argv_ptr + (argc + 1) * usize_sz;
+            let auxv_ptr = envp_ptr + (envc + 1) * usize_sz;
+            let cx = tcb.mm.trap_context();
+            cx.x[10] = argc;
+            cx.x[11] = argv_ptr;
+            cx.x[12] = envp_ptr;
+            cx.x[13] = auxv_ptr;
+        }
         Ok(tcb)
     }
 
@@ -486,19 +528,61 @@ impl TaskControlBlock {
         args: Option<&[String]>,
         envs: Option<&[String]>,
     ) -> Result<(), Box<dyn Error>> {
-        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data)?;
+        let args_vec = args.unwrap_or(&[]).to_vec();
+        let envs_vec = envs.unwrap_or(&[]).to_vec();
+        let (mut memory_set, user_stack_top, entrypoint) = 
+            MemorySet::from_elf_with_args_and_dynamic_linking(elf_data, &args_vec, &envs_vec)?;
+
+        // Allocate TLS for the new program
+        let tp_value = match memory_set.allocate_tls() {
+            Ok(tp) => {
+                debug!("Allocated TLS for exec {} at tp=0x{:x}", name, tp);
+                tp
+            }
+            Err(e) => {
+                warn!("Failed to allocate TLS for exec {}: {:?}, continuing with tp=0", name, e);
+                0
+            }
+        };
 
         let kernel_stack_top = self.mm.kernel_stack.get_top();
 
+        // Get global pointer value from memory set before moving it
+        let gp_value = memory_set.get_global_pointer();
+
+        debug!("exec_with_args: entry=0x{:x}, stack_top=0x{:x}, args={:?}, envs={:?}",
+               entrypoint, user_stack_top, args, envs);
+        
         *self.mm.memory_set.lock() = memory_set;
         self.mm.set_trap_context_va(TRAP_CONTEXT);
-        self.mm.set_trap_context(TrapContext::app_init_context(
+        self.mm.set_trap_context(TrapContext::app_init_context_with_tp_gp(
             entrypoint,
             user_stack_top,
+            tp_value,
+            gp_value,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
             trap_handler as usize,
         ));
+        {
+            let argc = args_vec.len();
+            let envc = envs_vec.len();
+            let usize_sz = core::mem::size_of::<usize>();
+            let sp = user_stack_top;
+            let argv_ptr = sp + usize_sz;
+            let envp_ptr = argv_ptr + (argc + 1) * usize_sz;
+            let auxv_ptr = envp_ptr + (envc + 1) * usize_sz;
+            let cx = self.mm.trap_context();
+            cx.x[10] = argc;
+            cx.x[11] = argv_ptr;
+            cx.x[12] = envp_ptr;
+            cx.x[13] = auxv_ptr;
+            
+            debug!("Entering user mode: sepc=0x{:x}, sp=0x{:x}, tp=0x{:x}, gp=0x{:x}", 
+                   cx.sepc, cx.x[2], cx.x[4], cx.x[3]);
+            debug!("User registers: a0={}, a1=0x{:x}, a2=0x{:x}, a3=0x{:x}",
+                   cx.x[10], cx.x[11], cx.x[12], cx.x[13]);
+        }
         *self.name.lock() = name.to_string();
 
         // 重置信号状态（exec时应该重置信号处理器）
@@ -512,7 +596,20 @@ impl TaskControlBlock {
     }
 
     pub fn fork(self: &Arc<Self>) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
-        let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock())?;
+        let mut memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock())?;
+        
+        // Allocate new TLS for the forked process
+        let tp_value = match memory_set.allocate_tls() {
+            Ok(tp) => {
+                debug!("Allocated TLS for forked process at tp=0x{:x}", tp);
+                tp
+            }
+            Err(e) => {
+                warn!("Failed to allocate TLS for forked process: {:?}, continuing with tp=0", e);
+                0
+            }
+        };
+        
         let trap_cx_va = TRAP_CONTEXT;
 
         // alloc a pid and a kernel stack in kernel space
@@ -579,7 +676,10 @@ impl TaskControlBlock {
         });
 
         self.children.lock().push(tcb.clone());
-        tcb.mm.trap_context().kernel_sp = kernel_stack_top;
+        let cx = tcb.mm.trap_context();
+        cx.kernel_sp = kernel_stack_top;
+        // Set tp register for the forked process
+        cx.set_tp(tp_value);
         Ok(tcb)
     }
 
@@ -614,6 +714,21 @@ impl TaskControlBlock {
                 }
             }
             found.ok_or("No free thread slot")?
+        };
+
+        // Allocate TLS for the new thread
+        let tp_value = {
+            let mut memory_set = self.mm.memory_set.lock();
+            match memory_set.allocate_tls() {
+                Ok(tp) => {
+                    debug!("Allocated TLS for thread at tp=0x{:x}", tp);
+                    tp
+                }
+                Err(e) => {
+                    warn!("Failed to allocate TLS for thread: {:?}, continuing with tp=0", e);
+                    0
+                }
+            }
         };
 
         let pid = alloc_pid();
@@ -673,10 +788,13 @@ impl TaskControlBlock {
             thread_slots: self.thread_slots.clone(),
         });
 
-        // 初始化线程TrapContext
-        tcb.mm.set_trap_context(TrapContext::app_init_context(
+        // 初始化线程TrapContext - 线程继承主进程的global_pointer
+        let gp_value = self.mm.memory_set.lock().get_global_pointer();
+        tcb.mm.set_trap_context(TrapContext::app_init_context_with_tp_gp(
             entry,
             user_sp,
+            tp_value,
+            gp_value,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
             trap_handler as usize,

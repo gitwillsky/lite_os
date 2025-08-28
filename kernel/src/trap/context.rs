@@ -16,6 +16,14 @@ impl TrapContext {
         self.x[2] = sp;
     }
 
+    pub fn set_tp(&mut self, tp: usize) {
+        self.x[4] = tp;
+    }
+
+    pub fn set_gp(&mut self, gp: usize) {
+        self.x[3] = gp; // gp is x3 register
+    }
+
     pub fn app_init_context(
         entry: usize,
         sp: usize,
@@ -38,6 +46,36 @@ impl TrapContext {
         };
 
         cx.set_sp(sp);
+        cx
+    }
+
+    pub fn app_init_context_with_tp(
+        entry: usize,
+        sp: usize,
+        tp: usize,
+        kernel_satp: usize,
+        kernel_sp: usize,
+        trap_handler: usize,
+    ) -> Self {
+        let mut cx = Self::app_init_context(entry, sp, kernel_satp, kernel_sp, trap_handler);
+        cx.set_tp(tp);
+        cx
+    }
+
+    pub fn app_init_context_with_tp_gp(
+        entry: usize,
+        sp: usize,
+        tp: usize,
+        gp: Option<usize>,
+        kernel_satp: usize,
+        kernel_sp: usize,
+        trap_handler: usize,
+    ) -> Self {
+        let mut cx = Self::app_init_context(entry, sp, kernel_satp, kernel_sp, trap_handler);
+        cx.set_tp(tp);
+        if let Some(gp_val) = gp {
+            cx.set_gp(gp_val);
+        }
         cx
     }
 }

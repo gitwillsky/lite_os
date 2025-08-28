@@ -11,9 +11,8 @@ use user_lib::{exec, exit, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    spawn_webwm();
+    // spawn_webwm();
     spawn_shell();
-    spawn_hello();
 
     loop {
         let mut exit_code: i32 = 0;
@@ -48,24 +47,3 @@ fn spawn_webwm() {
     }
 }
 
-fn spawn_text_test() {
-    let pid = fork();
-    if pid == 0 {
-        let exit_code = exec("/text_test") as i32;
-        exit(exit_code);
-    } else if pid > 0 {
-    } else {
-        println!("init: failed to fork text_test process");
-    }
-}
-
-fn spawn_hello() {
-    let pid = fork();
-    if pid == 0 {
-        let exit_code = exec("/bin/hello") as i32;
-        exit(exit_code);
-    } else if pid > 0 {
-    } else {
-        println!("init: failed to fork hello process");
-    }
-}

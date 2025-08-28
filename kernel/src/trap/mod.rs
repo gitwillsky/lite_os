@@ -154,6 +154,18 @@ pub fn trap_handler() {
                         }
                     } else {
                         error!("Instruction Page Fault, VA:{:#x}", stval);
+                        if let Some(task) = task::current_task() {
+                            let cx = task.mm.trap_context();
+                            error!("Fault context: sepc=0x{:x}, sp=0x{:x}, ra=0x{:x}", cx.sepc, cx.x[2], cx.x[1]);
+                            error!("Registers: a0=0x{:x}, t0=0x{:x}, t1=0x{:x}, t2=0x{:x}", cx.x[10], cx.x[5], cx.x[6], cx.x[7]);
+                            
+                            // Check if fault address is in stack range
+                            if stval >= 0xfffffffffffb0000 && stval < 0x1000000000000000 {
+                                error!("Fault address 0x{:x} is in user stack range", stval);
+                                // Try to find what instruction was supposed to be at sepc
+                                error!("Attempting to execute instruction at stack address - likely corrupted control flow");
+                            }
+                        }
                         exit_current_and_run_next(-5);
                     }
                 }
