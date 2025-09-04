@@ -21,7 +21,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1) Bootloader (bootloader/) — RustSBI-based M-mode loader that sets up machine state and enters the S-mode kernel. It is its own Cargo project (excluded from the workspace).
 2) Kernel (kernel/) — S-mode OS kernel (no_std) targeting riscv64gc-unknown-none-elf. Default member of the workspace.
 3) User (user/) — no_std userland crate producing multiple binaries (user/src/bin/*) that run on the kernel.
-4) STD User (std_user/) - rust std userland crate producing multiple binaries.
 
 ### Kernel big picture
 
