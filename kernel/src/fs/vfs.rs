@@ -303,6 +303,10 @@ impl VirtualFileSystem {
         parent.remove(&filename)
     }
 
+    pub fn get_inode_at(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.open(path)
+    }
+    
     fn split_path(&self, path: &str) -> Result<(String, String), FileSystemError> {
         if !path.starts_with('/') {
             return Err(FileSystemError::InvalidPath);

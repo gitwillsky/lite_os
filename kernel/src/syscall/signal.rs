@@ -1,4 +1,4 @@
-use crate::memory::page_table::translated_byte_buffer;
+use crate::memory::page_table::{translated_byte_buffer, translated_ref_mut};
 use crate::signal::{
     SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK, Signal, SignalAction, SignalDisposition,
     SignalError, SignalSet, has_pending_signals, send_signal, set_signal_handler, set_signal_mask,
@@ -238,4 +238,53 @@ pub fn sys_alarm(seconds: u32) -> isize {
     // 简化实现：直接返回0
     // 在实际实现中，这应该设置一个定时器，在指定时间后发送SIGALRM信号
     0
+}
+
+// RT signal syscalls (realtime signal interface)
+pub fn sys_rt_sigaction(sig: u32, act: *const SigAction, oldact: *mut SigAction) -> isize {
+    sys_sigaction(sig, act, oldact)
+}
+
+pub fn sys_rt_sigprocmask(how: i32, set: *const u64, oldset: *mut u64) -> isize {
+    sys_sigprocmask(how, set, oldset)
+}
+
+pub fn sys_rt_sigreturn() -> isize {
+    sys_sigreturn()
+}
+
+pub fn sys_rt_sigsuspend(mask: *const u64) -> isize {
+    // sigsuspend implementation
+    if let Some(task) = current_task() {
+        let token = task.mm.user_token();
+        
+        // Save current signal mask
+        let mut signal_state = task.signal_state.lock();
+        let old_mask = signal_state.get_blocked();
+        
+        // Set new mask if provided
+        if !mask.is_null() {
+            let new_mask_val = unsafe { *translated_ref_mut(token, mask as *mut u64) };
+            signal_state.set_blocked(SignalSet::from_raw(new_mask_val));
+        }
+        drop(signal_state);
+        
+        // Check for pending signals
+        if has_pending_signals(&task) {
+            // Restore old mask
+            task.signal_state.lock().set_blocked(old_mask);
+            return -4; // EINTR
+        }
+        
+        // Block until signal arrives
+        crate::task::set_task_status(&task, crate::task::TaskStatus::Sleeping);
+        crate::task::suspend_current_and_run_next();
+        
+        // Restore old mask
+        task.signal_state.lock().set_blocked(old_mask);
+        
+        -4 // EINTR - interrupted by signal
+    } else {
+        -1
+    }
 }

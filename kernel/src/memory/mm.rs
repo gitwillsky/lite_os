@@ -214,6 +214,11 @@ impl MapArea {
             global: another.global,
         }
     }
+    
+    /// Get the VPN range of this map area
+    pub fn vpn_range(&self) -> &Range<VirtualPageNumber> {
+        &self.vpn_range
+    }
 }
 
 #[derive(Debug)]
@@ -896,5 +901,10 @@ impl MemorySet {
         } else {
             None
         }
+    }
+    
+    /// Get the areas for iterating over memory mappings
+    pub fn areas(&self) -> &[MapArea] {
+        &self.areas
     }
 }

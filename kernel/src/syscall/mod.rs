@@ -1,13 +1,16 @@
 mod errno;
 mod fs;
+mod futex;
+pub mod graphics;
 mod memory;
 mod process;
 mod signal;
 mod timer;
 
 use crate::memory::page_table::{translated_byte_buffer, translated_ref_mut};
-use crate::task::current_user_token;
+use crate::task::{current_user_token, current_task};
 use fs::*;
+use futex::*;
 use memory::*;
 use process::*;
 use signal::*;
@@ -101,33 +104,46 @@ const SYSCALL_TIMER_SETTIME: usize = 110;
 const SYSCALL_TIMER_DELETE: usize = 111;
 
 
-pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
+pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_EXIT_GROUP => sys_exit_group(args[0] as i32),
+        SYSCALL_EXIT_GROUP => sys_exit(args[0] as i32),
         SYSCALL_SCHED_YIELD => sys_yield(),
         SYSCALL_GETPID => sys_getpid(),
-        SYSCALL_GETPPID => sys_getppid(),
+        SYSCALL_GETPPID => {
+            if let Some(current) = current_task() {
+                current.parent().map(|p| p.pid()).unwrap_or(0) as isize
+            } else {
+                -1
+            }
+        },
         SYSCALL_GETTID => sys_gettid(),
-        SYSCALL_CLONE => sys_clone(args[0], args[1], args[2]),
+        SYSCALL_CLONE => {
+            // Basic clone implementation - treat as fork if no stack
+            if args[1] == 0 {
+                sys_fork()
+            } else {
+                sys_thread_create(args[1], args[1], 0)
+            }
+        },
         SYSCALL_EXECVE => sys_execve(
             args[0] as *const u8,
             args[1] as *const *const u8,
             args[2] as *const *const u8,
         ),
-        SYSCALL_WAIT4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
-        SYSCALL_WAITID => sys_waitid(args[0] as i32, args[1] as i32, args[2] as *mut u8),
-        SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0] as *mut i32),
+        SYSCALL_WAIT4 => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
+        SYSCALL_WAITID => sys_wait_pid(-1, core::ptr::null_mut()),
+        SYSCALL_SET_TID_ADDRESS => sys_gettid(),
 
         // File system syscalls
-        SYSCALL_OPENAT => sys_openat(args[0] as i32, args[1] as *const u8, args[2] as u32),
+        SYSCALL_OPENAT => sys_open(args[1] as *const u8, args[2] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize, args[2]),
-        SYSCALL_PIPE2 => sys_pipe2(args[0] as *mut i32, args[1] as i32),
+        SYSCALL_PIPE2 => sys_pipe(args[0] as *mut i32),
         SYSCALL_DUP => sys_dup(args[0]),
-        SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as i32),
+        SYSCALL_DUP3 => sys_dup(args[0]),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as i32, args[2]),
         SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
         SYSCALL_NEWFSTATAT => sys_newfstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8),
@@ -136,9 +152,9 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         SYSCALL_MKDIRAT => sys_mkdirat(args[0] as i32, args[1] as *const u8, args[2] as u32),
         SYSCALL_UNLINKAT => sys_unlinkat(args[0] as i32, args[1] as *const u8, args[2] as i32),
         SYSCALL_FCHMOD => sys_fchmod(args[0], args[1] as u32),
-        SYSCALL_FCHOWNAT => sys_fchownat(args[0] as i32, args[1] as *const u8, args[2] as u32),
-        SYSCALL_FACCESSAT => sys_faccessat(args[0] as i32, args[1] as *const u8, args[2] as i32),
-        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1], args[2] as *const u8),
+        SYSCALL_FCHOWNAT => sys_fchownat(args[0] as i32, args[1] as *const u8, args[2] as u32, args[3] as u32, args[4] as i32),
+        SYSCALL_FACCESSAT => sys_faccessat(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as i32),
+        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1], args[2] as *const u8, args[3] as *const u64),
 
         // Scheduling syscalls
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
@@ -172,7 +188,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
 
         // Memory management syscalls
         SYSCALL_BRK => sys_brk(args[0]),
-        SYSCALL_MMAP => sys_mmap6(args[0], args[1], args[2] as i32, args[0], args[1] as i32, args[2] as i64),
+        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, args[3] as i32, args[4] as i32, args[5]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2] as i32),
         SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2] as i32),

@@ -37,6 +37,8 @@ pub struct FileDescriptor {
     pub mode: u32,
     /// Whether this descriptor has seen successful writes and needs sync on drop
     pub dirty_on_close: atomic::AtomicBool,
+    /// Path to the file (if known)
+    pub path: Option<String>,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -68,6 +70,18 @@ impl FileDescriptor {
             flags,
             mode: 0o644, // Default file mode
             dirty_on_close: atomic::AtomicBool::new(false),
+            path: None,
+        }
+    }
+    
+    pub fn with_path(inode: Arc<dyn Inode>, flags: u32, path: String) -> Self {
+        Self {
+            inode,
+            offset: atomic::AtomicU64::new(0),
+            flags,
+            mode: 0o644, // Default file mode
+            dirty_on_close: atomic::AtomicBool::new(false),
+            path: Some(path),
         }
     }
 
@@ -143,6 +157,10 @@ impl Memory {
         self.memory_set
             .lock()
             .remove_area_with_start_vpn(start_va.floor());
+    }
+    
+    pub fn user_token(&self) -> usize {
+        self.memory_set.lock().token()
     }
 }
 
@@ -394,6 +412,9 @@ pub struct TaskControlBlock {
     pub thread_slot: AtomicUsize,
     /// 线程槽位位图（仅主线程拥有，其他线程共享引用）
     pub thread_slots: alloc::sync::Arc<Mutex<[bool; MAX_THREADS_PER_PROCESS]>>,
+    
+    /// 是否锁定未来的内存映射（MLockFuture标志）
+    mlock_future: AtomicBool,
 }
 
 impl TaskControlBlock {
@@ -461,6 +482,7 @@ impl TaskControlBlock {
             tgid: AtomicUsize::new(pid_raw),
             thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
             thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
+            mlock_future: AtomicBool::new(false),
         };
 
         // prepare TrapContext in user space
@@ -576,6 +598,7 @@ impl TaskControlBlock {
             tgid: AtomicUsize::new(self.tgid()),
             thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
             thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
+            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
         });
 
         self.children.lock().push(tcb.clone());
@@ -671,6 +694,7 @@ impl TaskControlBlock {
             tgid: AtomicUsize::new(self.tgid()),
             thread_slot: AtomicUsize::new(slot),
             thread_slots: self.thread_slots.clone(),
+            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
         });
 
         // 初始化线程TrapContext
@@ -772,6 +796,16 @@ impl TaskControlBlock {
     /// 检查是否为root用户
     pub fn is_root(&self) -> bool {
         self.euid.load(atomic::Ordering::Relaxed) == 0
+    }
+    
+    /// 设置mlock_future标志
+    pub fn set_mlock_future(&self, value: bool) {
+        self.mlock_future.store(value, atomic::Ordering::Relaxed);
+    }
+    
+    /// 获取mlock_future标志
+    pub fn get_mlock_future(&self) -> bool {
+        self.mlock_future.load(atomic::Ordering::Relaxed)
     }
 
     /// 检查对文件的访问权限

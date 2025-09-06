@@ -205,6 +205,21 @@ impl PageTable {
         self.find_pte(vpn)
             .and_then(|pte| if pte.is_valid() { Some(*pte) } else { None })
     }
+    
+    /// 更新指定虚拟页的权限标志
+    pub fn update_flags(&mut self, vpn: VirtualPageNumber, new_flags: PTEFlags) -> Result<(), PageTableError> {
+        if let Some(pte) = self.find_pte(vpn) {
+            if pte.is_valid() {
+                let ppn = pte.ppn();
+                *pte = PageTableEntry::new(ppn, new_flags);
+                Ok(())
+            } else {
+                Err(PageTableError::NotMapped)
+            }
+        } else {
+            Err(PageTableError::NotMapped)
+        }
+    }
 
     pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
         self.find_pte(va.clone().floor()).and_then(|pte| {
