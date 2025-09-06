@@ -897,20 +897,6 @@ pub fn suspend_current_and_run_next() {
         task.sched.lock().update_vruntime(runtime);
     }
 
-    // 获取任务上下文指针
-    // 重要：TaskContext存储在TaskControlBlock内部，由Arc保护
-    let task_cx_ptr = {
-        let task_cx = task.mm.task_cx.lock();
-        let ptr = &*task_cx as *const TaskContext as *mut TaskContext;
-
-        // 验证指针有效性
-        if ptr.is_null() {
-            panic!("Task context pointer is null for task {}", task.pid());
-        }
-
-        ptr
-    };
-
     crate::signal::clear_task_on_core(hart_id(), task.pid());
     {
         let mut status = task.task_status.lock();
@@ -923,8 +909,36 @@ pub fn suspend_current_and_run_next() {
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    // 切换到其他任务
-    schedule(task_cx_ptr);
+    // 安全的上下文切换：在锁保护下进行切换
+    {
+        let mut task_cx = task.mm.task_cx.lock();
+        let task_cx_ptr = &mut *task_cx as *mut TaskContext;
+
+        // 验证指针有效性
+        if task_cx_ptr.is_null() {
+            panic!("Task context pointer is null for task {}", task.pid());
+        }
+
+        // 在锁保护下执行切换，确保上下文内存安全
+        schedule_with_lock(task_cx_ptr, task);
+    }
+}
+
+/// 安全的调度函数，在锁保护下执行上下文切换
+/// 这个函数接受task引用以确保TaskContext内存在切换期间保持有效
+fn schedule_with_lock(switched_task_cx_ptr: *mut TaskContext, _task: Arc<TaskControlBlock>) {
+    // 确保切换的上下文指针有效
+    if switched_task_cx_ptr.is_null() {
+        panic!("Invalid task context pointer in schedule_with_lock");
+    }
+
+    // 直接访问 Per-CPU idle context
+    let processor = current_processor();
+    let idle_task_cx_ptr = processor.idle_context_ptr();
+
+    unsafe {
+        crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    }
 }
 
 /// 阻塞当前任务并切换到下一个任务
