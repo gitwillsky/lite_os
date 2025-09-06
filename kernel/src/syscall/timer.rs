@@ -169,11 +169,11 @@ impl TimerManager {
             next_timer_id: 1,
         }
     }
-    
+
     fn create_timer(&mut self, clockid: i32, sigevent: SigEvent, owner_pid: usize) -> i32 {
         let timer_id = self.next_timer_id;
         self.next_timer_id += 1;
-        
+
         let timer = Arc::new(Mutex::new(Timer {
             id: timer_id,
             clockid,
@@ -183,36 +183,36 @@ impl TimerManager {
             next_expiry: 0,
             armed: false,
         }));
-        
+
         self.timers.insert(timer_id, timer);
         timer_id
     }
-    
+
     fn get_timer(&self, timer_id: i32) -> Option<Arc<Mutex<Timer>>> {
         self.timers.get(&timer_id).cloned()
     }
-    
+
     fn delete_timer(&mut self, timer_id: i32) -> bool {
         self.timers.remove(&timer_id).is_some()
     }
-    
+
     fn check_and_fire_timers(&mut self) {
         let current_time = timer::get_time_ns();
         let current_realtime = timer::get_unix_timestamp_us() * 1000;
-        
+
         for (_, timer_arc) in self.timers.iter() {
             let mut timer = timer_arc.lock();
-            
+
             if !timer.armed || timer.next_expiry == 0 {
                 continue;
             }
-            
+
             let current = match timer.clockid {
                 CLOCK_REALTIME => current_realtime,
                 CLOCK_MONOTONIC | CLOCK_BOOTTIME => current_time,
                 _ => continue,
             };
-            
+
             if current >= timer.next_expiry {
                 // Timer expired - send signal
                 if timer.sigevent.sigev_notify == 1 { // SIGEV_SIGNAL
@@ -221,7 +221,7 @@ impl TimerManager {
                         warn!("Failed to send timer signal: {:?}", e);
                     }
                 }
-                
+
                 // Handle periodic timer
                 if timer.interval > 0 {
                     timer.next_expiry += timer.interval;
@@ -248,7 +248,7 @@ pub fn sys_clock_gettime(clockid: i32, tp: *mut TimeSpec) -> isize {
     if tp.is_null() {
         return -22; // EINVAL
     }
-    
+
     let timespec = match clockid {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE => {
             let unix_timestamp_ns = timer::get_unix_timestamp() * 1_000_000_000;
@@ -292,14 +292,14 @@ pub fn sys_clock_gettime(clockid: i32, tp: *mut TimeSpec) -> isize {
         }
         _ => return -22, // EINVAL
     };
-    
+
     let token = current_user_token();
     let mut tp_buffers = translated_byte_buffer(token, tp as *const u8, core::mem::size_of::<TimeSpec>());
-    
+
     if tp_buffers.is_empty() {
         return -14; // EFAULT
     }
-    
+
     unsafe {
         core::ptr::copy_nonoverlapping(
             &timespec as *const TimeSpec as *const u8,
@@ -307,7 +307,7 @@ pub fn sys_clock_gettime(clockid: i32, tp: *mut TimeSpec) -> isize {
             core::mem::size_of::<TimeSpec>(),
         );
     }
-    
+
     0
 }
 
@@ -316,11 +316,11 @@ pub fn sys_clock_settime(clockid: i32, tp: *const TimeSpec) -> isize {
     if tp.is_null() {
         return -22; // EINVAL
     }
-    
+
     if clockid != CLOCK_REALTIME {
         return -22; // EINVAL
     }
-    
+
     if let Some(task) = crate::task::current_task() {
         if !task.is_root() {
             return -1; // EPERM
@@ -328,23 +328,23 @@ pub fn sys_clock_settime(clockid: i32, tp: *const TimeSpec) -> isize {
     } else {
         return -1;
     }
-    
+
     let token = current_user_token();
     let tp_buffers = translated_byte_buffer(token, tp as *const u8, core::mem::size_of::<TimeSpec>());
-    
+
     if tp_buffers.is_empty() {
         return -14; // EFAULT
     }
-    
+
     let timespec = unsafe { *(tp_buffers[0].as_ptr() as *const TimeSpec) };
-    
+
     if timespec.tv_nsec >= 1_000_000_000 {
         return -22; // EINVAL
     }
-    
+
     let new_timestamp_ns = timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec;
     timer::set_unix_timestamp_ns(new_timestamp_ns);
-    
+
     0
 }
 
@@ -368,18 +368,18 @@ pub fn sys_clock_getres(clockid: i32, res: *mut TimeSpec) -> isize {
                         }
                     }
                 };
-                
+
                 let token = current_user_token();
                 let mut res_buffers = translated_byte_buffer(
                     token,
                     res as *const u8,
                     core::mem::size_of::<TimeSpec>()
                 );
-                
+
                 if res_buffers.is_empty() {
                     return -14; // EFAULT
                 }
-                
+
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         &resolution as *const TimeSpec as *const u8,
@@ -394,59 +394,13 @@ pub fn sys_clock_getres(clockid: i32, res: *mut TimeSpec) -> isize {
     }
 }
 
-/// clock_nanosleep - 高精度睡眠
-pub fn sys_clock_nanosleep(clockid: i32, flags: i32, req: *const TimeSpec) -> isize {
-    if req.is_null() {
-        return -22; // EINVAL
-    }
-    
-    match clockid {
-        CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME => {},
-        _ => return -22, // EINVAL
-    }
-    
-    let token = current_user_token();
-    let req_buffers = translated_byte_buffer(token, req as *const u8, core::mem::size_of::<TimeSpec>());
-    
-    if req_buffers.is_empty() {
-        return -14; // EFAULT
-    }
-    
-    let timespec = unsafe { *(req_buffers[0].as_ptr() as *const TimeSpec) };
-    
-    if timespec.tv_nsec >= 1_000_000_000 {
-        return -22; // EINVAL
-    }
-    
-    let sleep_ns = if flags & TIMER_ABSTIME != 0 {
-        let current_ns = match clockid {
-            CLOCK_REALTIME => timer::get_unix_timestamp_us() * 1000,
-            _ => timer::get_time_ns(),
-        };
-        
-        let target_ns = timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec;
-        if target_ns <= current_ns {
-            return 0;
-        }
-        target_ns - current_ns
-    } else {
-        timespec.tv_sec * 1_000_000_000 + timespec.tv_nsec
-    };
-    
-    if sleep_ns == 0 {
-        return 0;
-    }
-    
-    crate::task::nanosleep(sleep_ns)
-}
-
 /// timer_create - 创建定时器
 pub fn sys_timer_create(clockid: i32, sevp: *mut u8, timerid: *mut i32) -> isize {
     match clockid {
         CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_BOOTTIME => {},
         _ => return -22, // EINVAL
     }
-    
+
     let sigevent = if sevp.is_null() {
         // Default: SIGALRM signal
         SigEvent {
@@ -459,22 +413,22 @@ pub fn sys_timer_create(clockid: i32, sevp: *mut u8, timerid: *mut i32) -> isize
     } else {
         let token = current_user_token();
         let sevp_buffers = translated_byte_buffer(token, sevp, core::mem::size_of::<SigEvent>());
-        
+
         if sevp_buffers.is_empty() {
             return -14; // EFAULT
         }
-        
+
         unsafe { *(sevp_buffers[0].as_ptr() as *const SigEvent) }
     };
-    
+
     let owner_pid = if let Some(task) = crate::task::current_task() {
         task.pid()
     } else {
         return -1;
     };
-    
+
     let timer_id = TIMER_MANAGER.lock().create_timer(clockid, sigevent, owner_pid);
-    
+
     if !timerid.is_null() {
         let token = current_user_token();
         let mut tid_buffers = translated_byte_buffer(
@@ -482,11 +436,11 @@ pub fn sys_timer_create(clockid: i32, sevp: *mut u8, timerid: *mut i32) -> isize
             timerid as *const u8,
             core::mem::size_of::<i32>()
         );
-        
+
         if tid_buffers.is_empty() {
             return -14; // EFAULT
         }
-        
+
         unsafe {
             core::ptr::copy_nonoverlapping(
                 &timer_id as *const i32 as *const u8,
@@ -495,7 +449,7 @@ pub fn sys_timer_create(clockid: i32, sevp: *mut u8, timerid: *mut i32) -> isize
             );
         }
     }
-    
+
     0
 }
 
@@ -504,51 +458,51 @@ pub fn sys_timer_settime(timerid: i32, flags: i32, new_value: *const u8) -> isiz
     if new_value.is_null() {
         return -22; // EINVAL
     }
-    
+
     let token = current_user_token();
     let new_buffers = translated_byte_buffer(token, new_value, core::mem::size_of::<ITimerSpec>());
-    
+
     if new_buffers.is_empty() {
         return -14; // EFAULT
     }
-    
+
     let new_spec = unsafe { *(new_buffers[0].as_ptr() as *const ITimerSpec) };
-    
+
     // Validate timespec values
-    if new_spec.it_value.tv_nsec >= 1_000_000_000 || 
+    if new_spec.it_value.tv_nsec >= 1_000_000_000 ||
        new_spec.it_interval.tv_nsec >= 1_000_000_000 {
         return -22; // EINVAL
     }
-    
+
     let timer_manager = TIMER_MANAGER.lock();
     if let Some(timer_arc) = timer_manager.get_timer(timerid) {
         let mut timer = timer_arc.lock();
-        
+
         // Disarm timer if it_value is zero
         if new_spec.it_value.tv_sec == 0 && new_spec.it_value.tv_nsec == 0 {
             timer.armed = false;
             timer.next_expiry = 0;
             return 0;
         }
-        
+
         // Calculate expiry time
         let value_ns = new_spec.it_value.tv_sec * 1_000_000_000 + new_spec.it_value.tv_nsec;
         let interval_ns = new_spec.it_interval.tv_sec * 1_000_000_000 + new_spec.it_interval.tv_nsec;
-        
+
         let base_time = match timer.clockid {
             CLOCK_REALTIME => timer::get_unix_timestamp_us() * 1000,
             _ => timer::get_time_ns(),
         };
-        
+
         timer.next_expiry = if flags & TIMER_ABSTIME != 0 {
             value_ns
         } else {
             base_time + value_ns
         };
-        
+
         timer.interval = interval_ns;
         timer.armed = true;
-        
+
         0
     } else {
         -22 // EINVAL - invalid timer ID

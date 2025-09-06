@@ -8,7 +8,7 @@ mod signal;
 mod timer;
 
 use crate::memory::page_table::{translated_byte_buffer, translated_ref_mut};
-use crate::task::{current_user_token, current_task};
+use crate::task::{current_task, current_user_token};
 use fs::*;
 use futex::*;
 use memory::*;
@@ -73,7 +73,6 @@ const SYSCALL_GETEGID: usize = 177;
 const SYSCALL_SETUID: usize = 146;
 const SYSCALL_SETGID: usize = 144;
 
-
 // Memory management syscalls
 const SYSCALL_BRK: usize = 214;
 const SYSCALL_MMAP: usize = 222;
@@ -88,21 +87,18 @@ const SYSCALL_MREMAP: usize = 216;
 const SYSCALL_MADVISE: usize = 233;
 
 // Thread synchronization
-const SYSCALL_FUTEX: usize = 98;
+const SYSCALL_FUTEX: usize = 422;
 const SYSCALL_SET_ROBUST_LIST: usize = 99;
 const SYSCALL_GET_ROBUST_LIST: usize = 100;
 
-
 // Time syscalls
 const SYSCALL_NANOSLEEP: usize = 101;
-const SYSCALL_CLOCK_GETTIME: usize = 113;
-const SYSCALL_CLOCK_SETTIME: usize = 112;
-const SYSCALL_CLOCK_GETRES: usize = 114;
-const SYSCALL_CLOCK_NANOSLEEP: usize = 115;
+const SYSCALL_CLOCK_GETTIME: usize = 403;
+const SYSCALL_CLOCK_SETTIME: usize = 404;
+const SYSCALL_CLOCK_GETRES: usize = 406;
 const SYSCALL_TIMER_CREATE: usize = 107;
-const SYSCALL_TIMER_SETTIME: usize = 110;
+const SYSCALL_TIMER_SETTIME: usize = 409;
 const SYSCALL_TIMER_DELETE: usize = 111;
-
 
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
@@ -118,7 +114,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
             } else {
                 -1
             }
-        },
+        }
         SYSCALL_GETTID => sys_gettid(),
         SYSCALL_CLONE => {
             // Basic clone implementation - treat as fork if no stack
@@ -127,7 +123,7 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
             } else {
                 sys_thread_create(args[1], args[1], 0)
             }
-        },
+        }
         SYSCALL_EXECVE => sys_execve(
             args[0] as *const u8,
             args[1] as *const *const u8,
@@ -146,15 +142,33 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_DUP3 => sys_dup(args[0]),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as i32, args[2]),
         SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
-        SYSCALL_NEWFSTATAT => sys_newfstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8),
+        SYSCALL_NEWFSTATAT => {
+            sys_newfstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8)
+        }
         SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
         SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
         SYSCALL_MKDIRAT => sys_mkdirat(args[0] as i32, args[1] as *const u8, args[2] as u32),
         SYSCALL_UNLINKAT => sys_unlinkat(args[0] as i32, args[1] as *const u8, args[2] as i32),
         SYSCALL_FCHMOD => sys_fchmod(args[0], args[1] as u32),
-        SYSCALL_FCHOWNAT => sys_fchownat(args[0] as i32, args[1] as *const u8, args[2] as u32, args[3] as u32, args[4] as i32),
-        SYSCALL_FACCESSAT => sys_faccessat(args[0] as i32, args[1] as *const u8, args[2] as i32, args[3] as i32),
-        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1], args[2] as *const u8, args[3] as *const u64),
+        SYSCALL_FCHOWNAT => sys_fchownat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+            args[4] as i32,
+        ),
+        SYSCALL_FACCESSAT => sys_faccessat(
+            args[0] as i32,
+            args[1] as *const u8,
+            args[2] as i32,
+            args[3] as i32,
+        ),
+        SYSCALL_PPOLL => sys_ppoll(
+            args[0] as *mut u8,
+            args[1],
+            args[2] as *const u8,
+            args[3] as *const u64,
+        ),
 
         // Scheduling syscalls
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
@@ -185,10 +199,16 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_SETUID => sys_setuid(args[0] as u32),
         SYSCALL_SETGID => sys_setgid(args[0] as u32),
 
-
         // Memory management syscalls
         SYSCALL_BRK => sys_brk(args[0]),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, args[3] as i32, args[4] as i32, args[5]),
+        SYSCALL_MMAP => sys_mmap(
+            args[0],
+            args[1],
+            args[2] as i32,
+            args[3] as i32,
+            args[4] as i32,
+            args[5],
+        ),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2] as i32),
         SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2] as i32),
@@ -204,18 +224,18 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(args[0] as *mut u8, args[1]),
         SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(args[0] as i32, args[1] as *mut *mut u8),
 
-
         // Time syscalls
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut TimeSpec),
         SYSCALL_CLOCK_SETTIME => sys_clock_settime(args[0] as i32, args[1] as *const TimeSpec),
         SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as i32, args[1] as *mut TimeSpec),
-        SYSCALL_CLOCK_NANOSLEEP => sys_clock_nanosleep(args[0] as i32, args[1] as i32, args[2] as *const TimeSpec),
-        SYSCALL_TIMER_CREATE => sys_timer_create(args[0] as i32, args[1] as *mut u8, args[2] as *mut i32),
-        SYSCALL_TIMER_SETTIME => sys_timer_settime(args[0] as i32, args[1] as i32, args[2] as *const u8),
+        SYSCALL_TIMER_CREATE => {
+            sys_timer_create(args[0] as i32, args[1] as *mut u8, args[2] as *mut i32)
+        }
+        SYSCALL_TIMER_SETTIME => {
+            sys_timer_settime(args[0] as i32, args[1] as i32, args[2] as *const u8)
+        }
         SYSCALL_TIMER_DELETE => sys_timer_delete(args[0] as i32),
-
-
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
