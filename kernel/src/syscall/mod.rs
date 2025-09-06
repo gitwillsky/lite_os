@@ -1,177 +1,146 @@
-mod dynamic_linking;
 mod errno;
 mod fs;
-pub mod graphics;
 mod memory;
 mod process;
 mod signal;
 mod timer;
-mod watchdog;
 
 use crate::memory::page_table::{translated_byte_buffer, translated_ref_mut};
 use crate::task::current_user_token;
-use dynamic_linking::*;
 use fs::*;
-use graphics::*;
 use memory::*;
 use process::*;
 use signal::*;
 use timer::*;
-use watchdog::*;
 
-pub use signal::sys_sigreturn;
+pub use signal::sys_rt_sigreturn;
 
+// Core process syscalls
 const SYSCALL_READ: usize = 63;
 const SYSCALL_WRITE: usize = 64;
 const SYSCALL_EXIT: usize = 93;
-const SYSCALL_YIELD: usize = 124;
+const SYSCALL_EXIT_GROUP: usize = 94;
+const SYSCALL_SCHED_YIELD: usize = 124;
 const SYSCALL_GETPID: usize = 172;
+const SYSCALL_GETPPID: usize = 173;
 const SYSCALL_GETTID: usize = 178;
-const SYSCALL_FORK: usize = 220;
-const SYSCALL_EXEC: usize = 221;
-const SYSCALL_EXECVE: usize = 222;
-const SYSCALL_WAIT: usize = 260;
-const SYSCALL_THREAD_CREATE: usize = 1000;
-const SYSCALL_THREAD_EXIT: usize = 1001;
-const SYSCALL_THREAD_JOIN: usize = 1002;
-const SYSCALL_SHUTDOWN: usize = 110;
+const SYSCALL_CLONE: usize = 220;
+const SYSCALL_EXECVE: usize = 221;
+const SYSCALL_WAIT4: usize = 260;
+const SYSCALL_WAITID: usize = 95;
+const SYSCALL_SET_TID_ADDRESS: usize = 96;
 
-// 文件系统系统调用
-const SYSCALL_OPEN: usize = 56;
+// File system syscalls
+const SYSCALL_OPENAT: usize = 56;
 const SYSCALL_CLOSE: usize = 57;
-const SYSCALL_LISTDIR: usize = 500;
-const SYSCALL_MKDIR: usize = 501;
-const SYSCALL_REMOVE: usize = 502;
-const SYSCALL_STAT: usize = 80;
-const SYSCALL_READ_FILE: usize = 503;
-const SYSCALL_CHDIR: usize = 504;
-const SYSCALL_GETCWD: usize = 505;
 const SYSCALL_LSEEK: usize = 62;
-const SYSCALL_PIPE: usize = 59;
+const SYSCALL_PIPE2: usize = 59;
 const SYSCALL_DUP: usize = 23;
-const SYSCALL_DUP2: usize = 24;
-const SYSCALL_FLOCK: usize = 143;
-const SYSCALL_MKFIFO: usize = 506;
-const SYSCALL_CHMOD: usize = 507;
-const SYSCALL_CHOWN: usize = 508;
-const SYSCALL_GET_ARGS: usize = 509;
+const SYSCALL_DUP3: usize = 24;
 const SYSCALL_FCNTL: usize = 25;
-const SYSCALL_POLL: usize = 5070;
-const SYSCALL_UDS_LISTEN: usize = 5200;
-const SYSCALL_UDS_ACCEPT: usize = 5201;
-const SYSCALL_UDS_CONNECT: usize = 5202;
+const SYSCALL_FSTAT: usize = 80;
+const SYSCALL_NEWFSTATAT: usize = 79;
+const SYSCALL_GETCWD: usize = 17;
+const SYSCALL_CHDIR: usize = 49;
+const SYSCALL_MKDIRAT: usize = 34;
+const SYSCALL_UNLINKAT: usize = 35;
+const SYSCALL_FCHMOD: usize = 52;
+const SYSCALL_FCHOWNAT: usize = 54;
+const SYSCALL_FACCESSAT: usize = 48;
+const SYSCALL_PPOLL: usize = 73;
 
-// 调度相关系统调用
-const SYSCALL_SETPRIORITY: usize = 141;
-const SYSCALL_GETPRIORITY: usize = 140;
-const SYSCALL_SCHED_SETSCHEDULER: usize = 144;
-const SYSCALL_SCHED_GETSCHEDULER: usize = 145;
+// Scheduling syscalls
+const SYSCALL_SETPRIORITY: usize = 140;
+const SYSCALL_GETPRIORITY: usize = 141;
+const SYSCALL_SCHED_SETSCHEDULER: usize = 119;
+const SYSCALL_SCHED_GETSCHEDULER: usize = 120;
 
-// 信号相关系统调用
+// Signal syscalls
 const SYSCALL_KILL: usize = 129;
-const SYSCALL_SIGNAL: usize = 48;
-const SYSCALL_SIGACTION: usize = 134;
-const SYSCALL_SIGPROCMASK: usize = 135;
-const SYSCALL_SIGRETURN: usize = 139;
-const SYSCALL_PAUSE: usize = 34;
-const SYSCALL_ALARM: usize = 37;
+const SYSCALL_RT_SIGACTION: usize = 134;
+const SYSCALL_RT_SIGPROCMASK: usize = 135;
+const SYSCALL_RT_SIGRETURN: usize = 139;
+const SYSCALL_RT_SIGSUSPEND: usize = 133;
 
-// 权限相关系统调用
-const SYSCALL_GETUID: usize = 102;
-const SYSCALL_GETGID: usize = 104;
+// User/Group ID syscalls
+const SYSCALL_GETUID: usize = 174;
+const SYSCALL_GETGID: usize = 176;
+const SYSCALL_GETEUID: usize = 175;
+const SYSCALL_GETEGID: usize = 177;
 const SYSCALL_SETUID: usize = 146;
-const SYSCALL_SETGID: usize = 147;
-const SYSCALL_GETEUID: usize = 107;
-const SYSCALL_GETEGID: usize = 108;
-const SYSCALL_SETEUID: usize = 148;
-const SYSCALL_SETEGID: usize = 149;
+const SYSCALL_SETGID: usize = 144;
 
-// 动态链接相关系统调用
-const SYSCALL_DLOPEN: usize = 600;
-const SYSCALL_DLSYM: usize = 601;
-const SYSCALL_DLCLOSE: usize = 602;
 
-// 内存管理系统调用
+// Memory management syscalls
 const SYSCALL_BRK: usize = 214;
-const SYSCALL_SBRK: usize = 215;
-const SYSCALL_MMAP: usize = 223;
-const SYSCALL_MUNMAP: usize = 216;
-// 共享内存（简化版）
-const SYSCALL_SHM_CREATE: usize = 2300;
-const SYSCALL_SHM_MAP: usize = 2301;
-const SYSCALL_SHM_CLOSE: usize = 2302;
+const SYSCALL_MMAP: usize = 222;
+const SYSCALL_MUNMAP: usize = 215;
+const SYSCALL_MPROTECT: usize = 226;
+const SYSCALL_MSYNC: usize = 227;
+const SYSCALL_MLOCK: usize = 228;
+const SYSCALL_MUNLOCK: usize = 229;
+const SYSCALL_MLOCKALL: usize = 230;
+const SYSCALL_MUNLOCKALL: usize = 231;
+const SYSCALL_MREMAP: usize = 216;
+const SYSCALL_MADVISE: usize = 233;
 
-// 进程监控系统调用
-const SYSCALL_GET_PROCESS_LIST: usize = 700;
-const SYSCALL_GET_PROCESS_INFO: usize = 701;
-const SYSCALL_GET_SYSTEM_STATS: usize = 702;
-const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
+// Thread synchronization
+const SYSCALL_FUTEX: usize = 98;
+const SYSCALL_SET_ROBUST_LIST: usize = 99;
+const SYSCALL_GET_ROBUST_LIST: usize = 100;
 
-// 时间相关系统调用
-const SYSCALL_GET_TIME_MS: usize = 800;
-const SYSCALL_GET_TIME_US: usize = 801;
-const SYSCALL_GET_TIME_NS: usize = 802;
-const SYSCALL_TIME: usize = 803; // Unix 时间戳（秒）
-const SYSCALL_GETTIMEOFDAY: usize = 804; // POSIX gettimeofday
+
+// Time syscalls
 const SYSCALL_NANOSLEEP: usize = 101;
+const SYSCALL_CLOCK_GETTIME: usize = 113;
+const SYSCALL_CLOCK_SETTIME: usize = 112;
+const SYSCALL_CLOCK_GETRES: usize = 114;
+const SYSCALL_CLOCK_NANOSLEEP: usize = 115;
+const SYSCALL_TIMER_CREATE: usize = 107;
+const SYSCALL_TIMER_SETTIME: usize = 110;
+const SYSCALL_TIMER_DELETE: usize = 111;
 
-// Watchdog 相关系统调用
-const SYSCALL_WATCHDOG_CONFIGURE: usize = 900;
-const SYSCALL_WATCHDOG_START: usize = 901;
-const SYSCALL_WATCHDOG_STOP: usize = 902;
-const SYSCALL_WATCHDOG_FEED: usize = 903;
-const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
-const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
 
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
     match syscall_id {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_YIELD => sys_yield(),
+        SYSCALL_EXIT_GROUP => sys_exit_group(args[0] as i32),
+        SYSCALL_SCHED_YIELD => sys_yield(),
         SYSCALL_GETPID => sys_getpid(),
+        SYSCALL_GETPPID => sys_getppid(),
         SYSCALL_GETTID => sys_gettid(),
-        SYSCALL_FORK => sys_fork(),
-        SYSCALL_EXEC => sys_exec(args[0] as *const u8),
+        SYSCALL_CLONE => sys_clone(args[0], args[1], args[2]),
         SYSCALL_EXECVE => sys_execve(
             args[0] as *const u8,
             args[1] as *const *const u8,
             args[2] as *const *const u8,
         ),
-        SYSCALL_WAIT => sys_wait_pid(args[0] as isize, args[1] as *mut i32),
-        SYSCALL_SHUTDOWN => sys_shutdown(),
-        SYSCALL_THREAD_CREATE => sys_thread_create(args[0], args[1], args[2]),
-        SYSCALL_THREAD_EXIT => sys_thread_exit(args[0] as i32),
-        SYSCALL_THREAD_JOIN => sys_thread_join(args[0], args[1] as *mut i32),
+        SYSCALL_WAIT4 => sys_wait4(args[0] as isize, args[1] as *mut i32, args[2] as i32),
+        SYSCALL_WAITID => sys_waitid(args[0] as i32, args[1] as i32, args[2] as *mut u8),
+        SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0] as *mut i32),
 
-        // 文件系统系统调用
-        SYSCALL_OPEN => sys_open(args[0] as *const u8, args[1] as u32),
+        // File system syscalls
+        SYSCALL_OPENAT => sys_openat(args[0] as i32, args[1] as *const u8, args[2] as u32),
         SYSCALL_CLOSE => sys_close(args[0]),
-        SYSCALL_LISTDIR => sys_listdir(args[0] as *const u8, args[1] as *mut u8, args[2]),
-        SYSCALL_MKDIR => sys_mkdir(args[0] as *const u8),
-        SYSCALL_REMOVE => sys_remove(args[0] as *const u8),
-        SYSCALL_STAT => sys_stat(args[0] as *const u8, args[1] as *mut u8),
-        SYSCALL_READ_FILE => sys_read_file(args[0] as *const u8, args[1] as *mut u8, args[2]),
-        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
-        SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as isize, args[2]),
-        SYSCALL_PIPE => sys_pipe(args[0] as *mut i32),
+        SYSCALL_PIPE2 => sys_pipe2(args[0] as *mut i32, args[1] as i32),
         SYSCALL_DUP => sys_dup(args[0]),
-        SYSCALL_DUP2 => sys_dup2(args[0], args[1]),
-        SYSCALL_FLOCK => sys_flock(args[0], args[1] as i32),
-        SYSCALL_MKFIFO => sys_mkfifo(args[0] as *const u8, args[1] as u32),
-        SYSCALL_CHMOD => sys_chmod(args[0] as *const u8, args[1] as u32),
-        SYSCALL_CHOWN => sys_chown(args[0] as *const u8, args[1] as u32, args[2] as u32),
-        SYSCALL_GET_ARGS => sys_get_args(args[0] as *mut usize, args[1] as *mut u8, args[2]),
+        SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as i32),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as i32, args[2]),
-        SYSCALL_POLL => sys_poll(args[0] as *mut u8, args[1], args[2] as isize),
+        SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
+        SYSCALL_NEWFSTATAT => sys_newfstatat(args[0] as i32, args[1] as *const u8, args[2] as *mut u8),
+        SYSCALL_GETCWD => sys_getcwd(args[0] as *mut u8, args[1]),
+        SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
+        SYSCALL_MKDIRAT => sys_mkdirat(args[0] as i32, args[1] as *const u8, args[2] as u32),
+        SYSCALL_UNLINKAT => sys_unlinkat(args[0] as i32, args[1] as *const u8, args[2] as i32),
+        SYSCALL_FCHMOD => sys_fchmod(args[0], args[1] as u32),
+        SYSCALL_FCHOWNAT => sys_fchownat(args[0] as i32, args[1] as *const u8, args[2] as u32),
+        SYSCALL_FACCESSAT => sys_faccessat(args[0] as i32, args[1] as *const u8, args[2] as i32),
+        SYSCALL_PPOLL => sys_ppoll(args[0] as *mut u8, args[1], args[2] as *const u8),
 
-        // UDS
-        SYSCALL_UDS_LISTEN => fs::sys_uds_listen(args[0] as *const u8, args[1]),
-        SYSCALL_UDS_ACCEPT => fs::sys_uds_accept(args[0] as *const u8),
-        SYSCALL_UDS_CONNECT => fs::sys_uds_connect(args[0] as *const u8),
-
-        // 调度相关系统调用
+        // Scheduling syscalls
         SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as i32, args[2] as i32),
         SYSCALL_GETPRIORITY => sys_getpriority(args[0] as i32, args[1] as i32),
         SYSCALL_SCHED_SETSCHEDULER => {
@@ -179,84 +148,58 @@ pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
         }
         SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
 
-        // 信号相关系统调用
+        // Signal syscalls
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
-        SYSCALL_SIGNAL => sys_signal(args[1] as u32, args[2]),
-        SYSCALL_SIGACTION => sys_sigaction(
+        SYSCALL_RT_SIGACTION => sys_rt_sigaction(
             args[0] as u32,
             args[1] as *const SigAction,
             args[2] as *mut SigAction,
         ),
-        SYSCALL_SIGPROCMASK => {
-            sys_sigprocmask(args[0] as i32, args[1] as *const u64, args[2] as *mut u64)
+        SYSCALL_RT_SIGPROCMASK => {
+            sys_rt_sigprocmask(args[0] as i32, args[1] as *const u64, args[2] as *mut u64)
         }
-        SYSCALL_SIGRETURN => sys_sigreturn(),
-        SYSCALL_PAUSE => sys_pause(),
-        SYSCALL_ALARM => sys_alarm(args[0] as u32),
+        SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
+        SYSCALL_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0] as *const u64),
 
-        // 权限相关系统调用
+        // User/Group ID syscalls
         SYSCALL_GETUID => sys_getuid(),
         SYSCALL_GETGID => sys_getgid(),
-        SYSCALL_SETUID => sys_setuid(args[0] as u32),
-        SYSCALL_SETGID => sys_setgid(args[0] as u32),
         SYSCALL_GETEUID => sys_geteuid(),
         SYSCALL_GETEGID => sys_getegid(),
-        SYSCALL_SETEUID => sys_seteuid(args[0] as u32),
-        SYSCALL_SETEGID => sys_setegid(args[0] as u32),
+        SYSCALL_SETUID => sys_setuid(args[0] as u32),
+        SYSCALL_SETGID => sys_setgid(args[0] as u32),
 
-        // 动态链接相关系统调用
-        SYSCALL_DLOPEN => sys_dlopen(args[0] as *const u8, args[1] as i32),
-        SYSCALL_DLSYM => sys_dlsym(args[0], args[1] as *const u8),
-        SYSCALL_DLCLOSE => sys_dlclose(args[0]),
 
-        // 内存管理系统调用
+        // Memory management syscalls
         SYSCALL_BRK => sys_brk(args[0]),
-        SYSCALL_SBRK => sys_sbrk(args[0] as isize),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2] as i32, 0, -1, 0),
+        SYSCALL_MMAP => sys_mmap6(args[0], args[1], args[2] as i32, args[0], args[1] as i32, args[2] as i64),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_SHM_CREATE => sys_shm_create(args[0]),
-        SYSCALL_SHM_MAP => sys_shm_map(args[0], args[1] as i32),
-        SYSCALL_SHM_CLOSE => sys_shm_close(args[0]),
+        SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2] as i32),
+        SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2] as i32),
+        SYSCALL_MLOCK => sys_mlock(args[0], args[1]),
+        SYSCALL_MUNLOCK => sys_munlock(args[0], args[1]),
+        SYSCALL_MLOCKALL => sys_mlockall(args[0] as i32),
+        SYSCALL_MUNLOCKALL => sys_munlockall(),
+        SYSCALL_MREMAP => sys_mremap(args[0], args[1], args[2]),
+        SYSCALL_MADVISE => sys_madvise(args[0], args[1], args[2] as i32),
 
-        // 进程监控系统调用
-        SYSCALL_GET_PROCESS_LIST => sys_get_process_list(args[0] as *mut u32, args[1]),
-        SYSCALL_GET_PROCESS_INFO => {
-            sys_get_process_info(args[0] as u32, args[1] as *mut ProcessInfo)
-        }
-        SYSCALL_GET_SYSTEM_STATS => sys_get_system_stats(args[0] as *mut SystemStats),
-        SYSCALL_GET_CPU_CORE_INFO => sys_get_cpu_core_info(args[0] as *mut CpuCoreInfo),
+        // Thread synchronization
+        SYSCALL_FUTEX => sys_futex(args[0] as *mut i32, args[1] as i32, args[2] as i32),
+        SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(args[0] as *mut u8, args[1]),
+        SYSCALL_GET_ROBUST_LIST => sys_get_robust_list(args[0] as i32, args[1] as *mut *mut u8),
 
-        // 时间相关系统调用
-        SYSCALL_GET_TIME_MS => sys_get_time_msec(),
-        SYSCALL_GET_TIME_US => sys_get_time_us(),
-        SYSCALL_GET_TIME_NS => sys_get_time_ns(),
-        SYSCALL_TIME => sys_time(),
-        SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0] as *mut TimeVal, args[1] as *mut u8),
+
+        // Time syscalls
         SYSCALL_NANOSLEEP => sys_nanosleep(args[0] as *const TimeSpec, args[1] as *mut TimeSpec),
+        SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut TimeSpec),
+        SYSCALL_CLOCK_SETTIME => sys_clock_settime(args[0] as i32, args[1] as *const TimeSpec),
+        SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as i32, args[1] as *mut TimeSpec),
+        SYSCALL_CLOCK_NANOSLEEP => sys_clock_nanosleep(args[0] as i32, args[1] as i32, args[2] as *const TimeSpec),
+        SYSCALL_TIMER_CREATE => sys_timer_create(args[0] as i32, args[1] as *mut u8, args[2] as *mut i32),
+        SYSCALL_TIMER_SETTIME => sys_timer_settime(args[0] as i32, args[1] as i32, args[2] as *const u8),
+        SYSCALL_TIMER_DELETE => sys_timer_delete(args[0] as i32),
 
-        // Watchdog 相关系统调用
-        SYSCALL_WATCHDOG_CONFIGURE => {
-            sys_watchdog_configure(args[0] as *const crate::watchdog::WatchdogConfig)
-        }
-        SYSCALL_WATCHDOG_START => sys_watchdog_start(),
-        SYSCALL_WATCHDOG_STOP => sys_watchdog_stop(),
-        SYSCALL_WATCHDOG_FEED => sys_watchdog_feed(),
-        SYSCALL_WATCHDOG_GET_INFO => {
-            sys_watchdog_get_info(args[0] as *mut crate::watchdog::WatchdogInfo)
-        }
-        SYSCALL_WATCHDOG_SET_PRESET => sys_watchdog_set_preset(args[0] as u32),
 
-        // GUI 图形系统调用（带矩形刷新）
-        SYSCALL_GUI_CREATE_CONTEXT => sys_gui_create_context(),
-        SYSCALL_GUI_DESTROY_CONTEXT => sys_gui_destroy_context(args[0]),
-        SYSCALL_GUI_CLEAR_SCREEN => sys_gui_clear_screen(args[0] as u32),
-        SYSCALL_GUI_PRESENT => sys_gui_present(args[0] as *const u8, args[1]),
-        SYSCALL_GUI_FLUSH => sys_gui_flush(),
-        SYSCALL_GUI_GET_SCREEN_INFO => sys_gui_get_screen_info(args[0] as *mut GuiScreenInfo),
-        SYSCALL_GUI_FLUSH_RECTS => {
-            sys_gui_flush_rects(args[0] as *const crate::drivers::framebuffer::Rect, args[1])
-        }
-        SYSCALL_GUI_MAP_FRAMEBUFFER => sys_gui_map_framebuffer(args[0] as *mut usize),
 
         _ => {
             println!("syscall: invalid syscall_id: {}", syscall_id);
