@@ -13,7 +13,6 @@ pub enum BlockError {
     InvalidBlock,
     IoError,
     DeviceError,
-    OutOfMemory,
     NotSupported,
 }
 

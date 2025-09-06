@@ -30,16 +30,6 @@ pub struct PLICDevice {
     pub size: usize,
 }
 
-impl RTCDevice {
-    pub const fn new() -> Self {
-        Self {
-            base_addr: 0,
-            size: 0,
-            irq: 0,
-        }
-    }
-}
-
 pub struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,

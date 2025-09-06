@@ -5,10 +5,14 @@ use alloc::vec::Vec;
 use riscv::register;
 
 use crate::board::board_info;
-use crate::drivers::block::{get_all_block_devices, get_primary_block_device, register_block_device, GenericBlockDriver};
+use crate::drivers::block::{
+    GenericBlockDriver, get_all_block_devices, get_primary_block_device, register_block_device,
+};
 use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
-use crate::drivers::hal::device::{Device, DeviceError, DeviceManager, DeviceType};
-use crate::drivers::hal::interrupt::{InterruptHandler, InterruptPriority, PlicInterruptController};
+use crate::drivers::hal::device::{Device, DeviceManager, DeviceType};
+use crate::drivers::hal::interrupt::{
+    InterruptHandler, InterruptPriority, PlicInterruptController,
+};
 use crate::drivers::hal::resource::SystemResourceManager;
 use crate::drivers::virtio_blk::VirtIOBlockDevice;
 use crate::drivers::virtio_gpu::VirtioGpuDevice;
@@ -65,7 +69,7 @@ fn init_devfs() {
 /// 注册所有驱动程序
 fn register_drivers() {
     let manager = device_manager();
-    let mut mgr = manager.lock();
+    let mgr = manager.lock();
 
     // 注册通用块设备驱动
     let block_driver = Arc::new(GenericBlockDriver::new());
@@ -256,7 +260,7 @@ fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_a
                 if let Ok(()) = gpu_device.initialize() {
                     let device = Box::new(gpu_device);
                     let manager = device_manager();
-                    let mut mgr = manager.lock();
+                    let mgr = manager.lock();
                     match mgr.add_device(device) {
                         Ok(device_id) => {
                             info!(
@@ -331,7 +335,7 @@ fn init_rtc_devices(board_info: &crate::board::BoardInfo) {
             Ok(rtc_device) => {
                 let device = Box::new(rtc_device);
                 let manager = device_manager();
-                let mut mgr = manager.lock();
+                let mgr = manager.lock();
 
                 match mgr.add_device(device) {
                     Ok(device_id) => {
@@ -454,24 +458,6 @@ pub fn handle_external_interrupt() {
     }
 }
 
-/// 挂起所有设备（电源管理）
-pub fn suspend_all_devices() -> Result<(), DeviceError> {
-    let manager = device_manager();
-    let mgr = manager.lock();
-
-    info!("[DeviceManager] Suspending all devices");
-    mgr.suspend_all_devices()
-}
-
-/// 恢复所有设备（电源管理）
-pub fn resume_all_devices() -> Result<(), DeviceError> {
-    let manager = device_manager();
-    let mgr = manager.lock();
-
-    info!("[DeviceManager] Resuming all devices");
-    mgr.resume_all_devices()
-}
-
 /// 获取设备统计信息
 pub fn get_device_statistics() {
     let manager = device_manager();
@@ -499,13 +485,6 @@ pub fn find_devices_by_type(device_type: DeviceType) -> Vec<u32> {
     let manager = device_manager();
     let mgr = manager.lock();
     mgr.find_devices_by_type(device_type)
-}
-
-/// 按驱动名称查找设备
-pub fn find_devices_by_driver(driver_name: &str) -> Vec<u32> {
-    let manager = device_manager();
-    let mgr = manager.lock();
-    mgr.find_devices_by_driver(driver_name)
 }
 
 /// 获取设备引用

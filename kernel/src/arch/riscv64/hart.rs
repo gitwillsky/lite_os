@@ -27,9 +27,3 @@ pub fn set_hart_id(id: usize) {
         core::arch::asm!("mv tp, {}", in(reg) id);
     }
 }
-
-/// 检查核心ID是否有效
-#[inline]
-pub fn is_valid_hart_id(hart_id: usize) -> bool {
-    hart_id < MAX_CORES
-}

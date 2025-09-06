@@ -57,47 +57,8 @@ pub fn console_getchar() -> isize {
     ch
 }
 
-/// SBI Hart State Management Extension (HSM)
-const SBI_EXT_HSM: usize = 0x48534D; // "HSM"
-
 /// SBI Inter-Processor Interrupt Extension (IPI)
 const SBI_EXT_IPI: usize = 0x735049; // "sPI"
-
-/// HSM function IDs
-const SBI_HSM_HART_START: usize = 0;
-const SBI_HSM_HART_STOP: usize = 1;
-const SBI_HSM_HART_GET_STATUS: usize = 2;
-const SBI_HSM_HART_SUSPEND: usize = 3;
-
-/// SBI Hart start function
-pub fn hart_start(hartid: usize, start_addr: usize, opaque: usize) -> Result<(), isize> {
-    let (error, _) = sbi_call(
-        SBI_EXT_HSM,
-        SBI_HSM_HART_START,
-        [hartid, start_addr, opaque, 0, 0, 0],
-    );
-    if error == 0 { Ok(()) } else { Err(error) }
-}
-
-/// SBI Hart stop function
-pub fn hart_stop() -> Result<(), isize> {
-    let (error, _) = sbi_call(SBI_EXT_HSM, SBI_HSM_HART_STOP, [0, 0, 0, 0, 0, 0]);
-    if error == 0 { Ok(()) } else { Err(error) }
-}
-
-/// SBI Hart get status function
-pub fn hart_get_status(hartid: usize) -> Result<usize, isize> {
-    let (error, status) = sbi_call(
-        SBI_EXT_HSM,
-        SBI_HSM_HART_GET_STATUS,
-        [hartid, 0, 0, 0, 0, 0],
-    );
-    if error == 0 {
-        Ok(status as usize)
-    } else {
-        Err(error)
-    }
-}
 
 /// IPI function IDs
 const SBI_IPI_SEND: usize = 0;
