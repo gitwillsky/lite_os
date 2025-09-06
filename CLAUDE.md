@@ -1,65 +1,129 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件为 Claude Code (claude.ai/code) 在此代码仓库中工作时提供指导。
 
-## Quick commands
+Linux musl 应用程序兼容的操作系统，使用 Rust 编写
 
-- Build everything: make build
-- Clean: make clean
-- Build individual parts:
-  - Kernel: make build-kernel
-  - User programs: make build-user
-  - Bootloader: make build-bootloader
-- Resolve a kernel backtrace address: make addr2line ADDR=0xXXXXXXXXXXXX
+## 项目架构
 
-注意：我不允许你执行 make run* 之类的命令
+LiteOS 是一个用 Rust 编写的 RISC-V 64 位操作系统内核，设计上兼容 musl libc。代码库采用三组件架构：
 
-## High-level architecture
+### 核心组件
 
-### Three components
+1. **引导加载器** (`bootloader/`): M-Mode SBI 实现，基于 RustSBI
+   - 提供固件服务和 Hart 状态管理 (HSM)
+   - 初始化硬件 (UART、CLINT、设备树解析)
+   - 转换到 S-Mode 内核执行
+   - 入口点：`bootloader/src/main.rs`
 
-1) Bootloader (bootloader/) — RustSBI-based M-mode loader that sets up machine state and enters the S-mode kernel. It is its own Cargo project (excluded from the workspace).
-2) Kernel (kernel/) — S-mode OS kernel (no_std) targeting riscv64gc-unknown-none-elf. Default member of the workspace.
-3) User (user/) — no_std userland crate producing multiple binaries (user/src/bin/*) that run on the kernel.
+2. **内核** (`kernel/`): S-Mode 操作系统内核
+   - 内存管理，支持多级页表 (`memory/`)
+   - 任务管理，基于 fork/exec 进程模型 (`task/`)
+   - VFS 虚拟文件系统，支持 FAT32 (`fs/`)
+   - 全面的系统调用接口 (`syscall/`)，兼容 Linux 系统调用
+   - VirtIO 驱动程序，支持块设备、控制台、GPU、网络设备 (`drivers/`)
+   - 信号处理和 IPC 机制 (`signal/`, `ipc/`)
+   - 入口点：`kernel/src/main.rs::kmain()`
 
-### Kernel big picture
+3. **用户程序** (`user/`): 用户空间应用程序和 shell
+   - `user/src/lib.rs` 中的最小运行时库
+   - 用户程序以 ELF 二进制文件形式嵌入内核镜像
 
-- Entry and init: kernel/src/main.rs contains kmain; low-level entry in kernel/src/entry.rs. Platform specifics under kernel/src/arch/.
-- Syscalls: kernel/src/syscall/mod.rs dispatches 200+ calls grouped by domain (fs, process, signal, timer, memory, graphics, watchdog, IPC).
-- Tasks and scheduling: kernel/src/task/ implements processes/threads with per-CPU execution; schedulers live in kernel/src/task/scheduler/ (CFS, FIFO, Priority). Task management and load balancing are in kernel/src/task/task_manager.rs and processor.rs.
-- Memory management: SV39 page tables and address translation in kernel/src/memory/page_table.rs; address types in address.rs; virtual memory areas in mm.rs; frame allocation via buddy allocator (frame_allocator.rs); kernel object allocation via SLAB (slab_allocator.rs); per-CPU stacks and guard pages.
-- Filesystems and VFS: kernel/src/fs/ provides a VFS layer (vfs.rs) with FAT32 (fat32.rs), EXT2 (ext2.rs), and DevFS (devfs.rs). Common inode and flock support under fs/.
-- Drivers and devices: VirtIO stack under kernel/src/drivers/ (blk, gpu, input, console, queue, hal). Framebuffer and GPU support back GUI syscalls. Device/interrupt/memory abstraction in drivers/hal/.
-- Traps, timers, signals: kernel/src/trap/ for interrupts/exceptions/softirq; timers in timer.rs and goldfish_rtc.rs; POSIX-like signal handling in kernel/src/signal/.
-- IPC: pipes and Unix-domain sockets in kernel/src/ipc/.
+### 关键子系统
 
-### Graphics/GUI
+- **内存管理**: SLAB 分配器、帧分配器、页表虚拟内存
+- **任务调度**: 多核 SMP 支持，工作窃取调度器
+- **文件系统**: VFS 层，FAT32 实现，VirtIO 块设备驱动
+- **系统调用**: Linux 兼容的系统调用接口，实现了 50+ 个调用
+- **硬件抽象**: 设备树解析、VirtIO 设备支持、中断处理
 
-- Kernel exposes GUI/Framebuffer syscalls (kernel/src/syscall/graphics.rs) and rect-based flush APIs.
-- Userland has a minimal 2D stack in user/src/gfx.rs and a tiny GUI toolkit (user/src/litegui.rs).
-- Window managers: user/src/bin/litewm.rs and user/src/bin/webwm.rs; init.rs often starts a GUI session by spawning the WM.
+## 开发命令
 
-### Userland runtime and apps
+### 构建和运行
 
-- The user crate (user/) is no_std with a thin libc-like syscall veneer in user/src/syscall.rs and program entry in user/src/lib.rs.
-- CLI utilities (ls, cat, mkdir, rm, pwd, echo, kill, top, exit) and shell (user/src/bin/shell.rs) live under user/src/bin/.
-- Web rendering engine (WebCore) under user/src/webcore/ implements HTML/CSS parsing, style, layout, and painting; see user/src/webcore/README.md for details. Demo apps: css_test.rs, text_test.rs, webwm.rs.
+```bash
+# 构建所有组件 (引导加载器、内核、用户程序)
+make build
+```
 
-## Build/toolchain notes
+### 单独组件构建
 
-- Workspace root Cargo.toml includes kernel and user; bootloader is a separate crate (exclude) with its own .cargo/config.toml and linker script.
-- All crates target riscv64gc-unknown-none-elf via per-crate .cargo/config.toml; linker scripts live under kernel/linker.ld and user/linker.ld.
-- QEMU is configured for an 8-core virt machine; GUI mode adds Cocoa display and maps devices (VirtIO block/GPU/input/net/RNG). Network forwards host 5555 to guest 5555.
+```bash
+# 仅构建内核 (调试模式)
+make build-kernel
 
- ls ~/.cargo/bin
-cargo          cargo-readobj  rust-cov       rust-profdata
-cargo-clippy   cargo-size     rust-gdb       rust-readobj
-cargo-cov      cargo-strip    rust-gdbgui    rust-size
-cargo-fmt      cargo-watch    rust-ld        rust-strip
-cargo-miri     clippy-driver  rust-lld       rustc
-cargo-nm       hi             rust-lldb      rustdoc
-cargo-objcopy  rls            rust-nm        rustfmt
-cargo-objdump  rust-analyzer  rust-objcopy   rustup
-cargo-profdata rust-ar        rust-objdump
+# 构建用户程序并转换为二进制文件
+make build-user
 
-每一次操作文件之前，都进行深度思考，不要吝啬使用自己的智能，人类发明你，不是为了让你偷懒。ultrathink 而是为了创造伟大的产品，推进人类文明向更高水平发展。 ultrathink ultrathink ultrathink ultrathink
+# 构建引导加载器 (发布模式)
+make build-bootloader
+```
+
+## 文件系统管理
+
+系统使用自定义 Python 脚本创建 FAT32 文件系统镜像：
+
+```bash
+# 创建包含用户程序的文件系统
+python3 create_fs.py create
+
+# 脚本自动执行以下操作：
+# - 将用户 ELF 二进制文件转换为可加载格式
+# - 创建具有正确目录结构的 FAT32 镜像
+# - 嵌入字体文件和其他资源
+```
+
+## 工具链要求
+
+- **Rust Nightly**: 特定版本 `nightly-2025-06-15` (在 `rust-toolchain.toml` 中定义)
+- **目标架构**: `riscv64gc-unknown-none-elf`
+- **必需组件**: `rust-src`, `llvm-tools`, `rustfmt`, `clippy`
+- **QEMU**: `qemu-system-riscv64` 用于 RISC-V 模拟
+- **RISC-V 工具**: GNU 工具链用于调试 (`riscv64-elf-gdb`, `riscv64-unknown-elf-addr2line`)
+
+## 代码组织模式
+
+### 内核模块结构
+
+- 每个子系统都有自己的模块目录 (`memory/`, `task/`, `fs/` 等)
+- 模块通过 `mod.rs` 文件导出公共接口
+- 硬件特定代码隔离在 `arch/` 和 `board/` 目录中
+- 驱动代码遵循 VirtIO 规范模式
+
+### 错误处理
+
+- 广泛使用 `Result<T, E>` 处理可恢复错误
+- 为内核和引导加载器实现了 panic 处理程序
+- 每个子系统定义自定义错误类型 (如 `fs::FsError`)
+
+### 内存安全
+
+- 全程使用 `#![no_std]` 适应嵌入式环境
+- 谨慎使用 `unsafe` 块并提供清晰文档
+- 资源管理采用 RAII 模式 (锁、内存分配)
+- 静态分析友好的代码结构
+
+### 多核考虑
+
+- 所有共享状态由适当的同步原语保护
+- 工作窃取调度器在核心间分发任务
+- 必要时使用每个 hart (核心) 的数据结构
+- IPI (处理器间中断) 支持协调
+
+## 测试和验证
+
+系统可以通过以下方式验证：
+
+1. 成功的启动序列，显示 RustSBI 和内核初始化
+2. 用户 shell (`/bin/init`) 成功启动
+3. 基本命令工作正常 (`hello_world`, `shutdown`)
+4. 文件系统操作 (创建、读取、写入文件)
+5. 进程管理 (fork, exec, wait)
+
+## 关键实现细节
+
+- **上下文切换**: `kernel/src/task/switch.S` 中的汇编实现
+- **陷阱处理**: `kernel/src/trap/` 中的统一陷阱处理器
+- **系统调用接口**: `kernel/src/syscall/mod.rs` 中 Linux 兼容的编号
+- **设备树解析**: `bootloader/src/device_tree.rs` 中的动态硬件发现
+- **虚拟内存**: 内核使用恒等映射，用户空间使用独立地址空间
