@@ -73,7 +73,7 @@ impl HybridAllocator {
     /// Check if a pointer belongs to the buddy allocator's memory range
     fn is_buddy_ptr(ptr: *mut u8) -> bool {
         let addr = ptr as usize;
-        let heap_start = unsafe { addr_of_mut!(KERNEL_HEAP_MEMORY) as usize };
+        let heap_start = { addr_of_mut!(KERNEL_HEAP_MEMORY) as usize };
         let heap_end = heap_start + config::MAX_HEAP_SIZE;
 
         addr >= heap_start && addr < heap_end

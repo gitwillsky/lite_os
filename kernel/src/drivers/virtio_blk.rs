@@ -1,10 +1,15 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spin::Mutex;
 
+use crate::drivers::hal::{
+    bus::Bus,
+    device::{Device, DeviceError, DeviceState, DeviceType},
+    interrupt::{self, InterruptHandler, InterruptVector},
+    virtio::VirtIODevice,
+};
+
 use super::{
     block::{BLOCK_SIZE, BlockDevice, BlockError},
-    hal::{Device, DeviceError, DeviceState, DeviceType, MmioBus, VirtIODevice},
     virtio_queue::*,
 };
 
@@ -346,7 +351,7 @@ impl Device for VirtIOBlockDevice {
         Err(DeviceError::NotSupported)
     }
 
-    fn bus(&self) -> Arc<dyn super::hal::Bus> {
+    fn bus(&self) -> Arc<dyn Bus> {
         self.device.bus()
     }
 
@@ -374,8 +379,8 @@ impl Device for VirtIOBlockDevice {
 
     fn set_interrupt_handler(
         &mut self,
-        vector: super::hal::InterruptVector,
-        handler: Arc<dyn super::hal::InterruptHandler>,
+        vector: InterruptVector,
+        handler: Arc<dyn InterruptHandler>,
     ) -> Result<(), DeviceError> {
         self.device.set_interrupt_handler(vector, handler)
     }
@@ -395,11 +400,11 @@ struct VirtIOBlockIrqHandler {
     device: Arc<VirtIOBlockDevice>,
 }
 
-impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
+impl interrupt::InterruptHandler for VirtIOBlockIrqHandler {
     fn handle_interrupt(
         &self,
-        _vector: super::hal::interrupt::InterruptVector,
-    ) -> Result<(), super::hal::interrupt::InterruptError> {
+        _vector: interrupt::InterruptVector,
+    ) -> Result<(), interrupt::InterruptError> {
         // 仅做最小化的中断确认，避免与同步 I/O 路径上的队列锁竞争
         if let Ok(status) = self.device.device.interrupt_status() {
             // 确认 VRING 与 CONFIG 两类中断（如存在）
@@ -412,7 +417,7 @@ impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
         Ok(())
     }
 
-    fn can_handle(&self, _vector: super::hal::interrupt::InterruptVector) -> bool {
+    fn can_handle(&self, _vector: interrupt::InterruptVector) -> bool {
         true
     }
 
@@ -422,7 +427,7 @@ impl super::hal::interrupt::InterruptHandler for VirtIOBlockIrqHandler {
 }
 
 impl VirtIOBlockDevice {
-    pub fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn super::hal::InterruptHandler> {
+    pub fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn interrupt::InterruptHandler> {
         Arc::new(VirtIOBlockIrqHandler {
             device: self.clone(),
         })

@@ -5,10 +5,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::board::RTCDevice;
+use crate::drivers::hal::bus::Bus;
+use crate::drivers::hal::device::{Device, DeviceError, DeviceState, DeviceType, GenericDevice};
+use crate::drivers::hal::interrupt::{InterruptHandler, InterruptVector};
 use crate::drivers::hal::{
-    Bus, Device, DeviceError, DeviceState, DeviceType, GenericDevice, InterruptHandler,
-    InterruptVector,
-    bus::{BusError, MmioBus},
+    bus::MmioBus,
     device::DeviceDriver,
     resource::{Resource, ResourceManager},
 };

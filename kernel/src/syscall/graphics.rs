@@ -1,5 +1,5 @@
-use crate::drivers::PixelFormat;
-use crate::drivers::{framebuffer::Rect, get_global_framebuffer, with_global_framebuffer};
+use crate::drivers::framebuffer::{get_global_framebuffer, with_global_framebuffer, PixelFormat};
+use crate::drivers::{framebuffer::Rect, };
 use crate::memory::page_table::translated_byte_buffer;
 use crate::memory::{KERNEL_SPACE, address::VirtualAddress};
 use crate::task::{current_task, current_user_token};
@@ -291,7 +291,7 @@ pub fn sys_gui_present_rects(
     let ok = with_global_framebuffer(|fb| {
         let info = *fb.info();
         // 仅实现 RGBA8888 快路径；其它格式退化为逐像素写
-        let is_fast = info.format == crate::drivers::PixelFormat::RGBA8888;
+        let is_fast = info.format == PixelFormat::RGBA8888;
         for r in rects.iter() {
             let w = r.width as usize;
             let h = r.height as usize;

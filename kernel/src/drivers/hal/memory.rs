@@ -1,12 +1,12 @@
-use crate::memory::frame_allocator::FrameTracker;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
+
+use crate::memory::frame_allocator::FrameTracker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
@@ -227,7 +227,7 @@ impl CoherentDmaBuffer {
 
     fn map_physical_to_virtual(
         phys_addr: usize,
-        size: usize,
+        _size: usize,
         _attributes: MemoryAttributes,
     ) -> Result<usize, MemoryError> {
         // This is a simplified implementation. In a real OS, this would:
@@ -267,7 +267,7 @@ impl NonCoherentDmaBuffer {
 
     fn map_physical_to_virtual(
         phys_addr: usize,
-        size: usize,
+        _size: usize,
         _attributes: MemoryAttributes,
     ) -> Result<usize, MemoryError> {
         const VIRTUAL_OFFSET: usize = 0x40000000;
@@ -820,7 +820,7 @@ impl IoRemap {
         &self,
         phys_addr: usize,
         size: usize,
-        attributes: MemoryAttributes,
+        _attributes: MemoryAttributes,
     ) -> Result<usize, MemoryError> {
         use crate::memory::PAGE_SIZE;
 

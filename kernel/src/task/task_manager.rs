@@ -27,7 +27,7 @@ use crate::{
         self, TaskControlBlock, TaskStatus,
         context::TaskContext,
         current_processor,
-        processor::{add_task_to_best_cpu, add_task_to_cpu, try_global_steal},
+        processor::{add_task_to_best_cpu, try_global_steal},
     },
     timer::{get_time_ns, get_time_us},
 };
@@ -753,7 +753,10 @@ pub fn mark_need_resched() {
     if cpu < MAX_CORES {
         NEED_RESCHED[cpu].store(true, Ordering::Release);
     } else {
-        error!("Invalid CPU ID {} >= MAX_CORES {} in mark_need_resched", cpu, MAX_CORES);
+        error!(
+            "Invalid CPU ID {} >= MAX_CORES {} in mark_need_resched",
+            cpu, MAX_CORES
+        );
     }
 }
 
@@ -763,7 +766,10 @@ pub fn check_and_clear_resched() -> bool {
     if cpu < MAX_CORES {
         NEED_RESCHED[cpu].swap(false, Ordering::AcqRel)
     } else {
-        error!("Invalid CPU ID {} >= MAX_CORES {} in check_and_clear_resched", cpu, MAX_CORES);
+        error!(
+            "Invalid CPU ID {} >= MAX_CORES {} in check_and_clear_resched",
+            cpu, MAX_CORES
+        );
         false
     }
 }
@@ -927,12 +933,12 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     let task_cx_ptr = {
         let mut task_cx = task.mm.task_cx.lock();
         let ptr = &mut *task_cx as *mut TaskContext;
-        
+
         // 验证指针有效性
         if ptr.is_null() {
             panic!("Task context pointer is null for task {}", task.pid());
         }
-        
+
         ptr
     }; // 锁在此处自动释放
 
@@ -1025,7 +1031,6 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     }
 }
 
-
 /// 退出当前线程并切换到下一个任务（不销毁进程共享资源）
 pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
     let task = take_current_task().expect("No current task to exit (thread)");
@@ -1035,7 +1040,7 @@ pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
         let mut status = task.task_status.lock();
         *status = TaskStatus::Zombie;
     }
-    
+
     // 安全的上下文切换：使用Arc引用保证内存安全
     schedule_with_task_context(task);
     unreachable!()

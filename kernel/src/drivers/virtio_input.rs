@@ -7,23 +7,21 @@ use alloc::{
 };
 use spin::Mutex;
 
-use crate::drivers::hal::{
-    bus::Bus,
-    device::{Device, DeviceError, DeviceState, DeviceType},
-    interrupt::{InterruptHandler, InterruptVector},
-    resource::{Resource, ResourceManager},
-    virtio::{
-        VIRTIO_CONFIG_S_ACKNOWLEDGE, VIRTIO_CONFIG_S_DRIVER, VIRTIO_CONFIG_S_DRIVER_OK,
-        VirtIODevice,
+use crate::drivers::virtio_queue::VirtQueue;
+use crate::drivers::{
+    device_manager::{find_devices_by_type, get_device},
+    hal::{
+        bus::Bus,
+        device::{Device, DeviceError, DeviceState, DeviceType},
+        interrupt::{InterruptHandler, InterruptVector},
+        resource::{Resource, ResourceManager},
+        virtio::{VIRTIO_CONFIG_S_DRIVER_OK, VirtIODevice},
     },
 };
-use crate::drivers::virtio_queue::VirtQueue;
-use crate::drivers::{find_devices_by_type, get_device};
 use crate::fs::{
     FileSystemError,
     inode::{Inode, InodeType},
 };
-use crate::memory::PAGE_SIZE;
 use crate::trap::softirq::{self, SoftIrq};
 
 // VirtIO device ID for input

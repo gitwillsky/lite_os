@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
-#![allow(unused)]
 
 use crate::memory::KERNEL_SPACE;
 use riscv::register;

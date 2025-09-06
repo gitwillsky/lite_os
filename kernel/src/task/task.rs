@@ -1,5 +1,4 @@
 use core::{
-    cell::RefMut,
     error::Error,
     sync::atomic::{self, AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize},
 };
@@ -14,20 +13,17 @@ use alloc::{
 use spin::Mutex;
 
 use crate::{
-    fs::inode::Inode,
+    fs::{flock::file_lock_manager, inode::Inode},
     memory::{
-        KERNEL_SPACE, MAX_THREADS_PER_PROCESS, PAGE_SIZE, TRAP_CONTEXT, TRAP_CONTEXT_BASE,
-        address::VirtualAddress,
-        kernel_stack::KernelStack,
-        mm::{self, MemorySet},
+        address::VirtualAddress, kernel_stack::KernelStack, mm::{self, MemorySet}, KERNEL_SPACE, MAX_THREADS_PER_PROCESS, PAGE_SIZE, TRAP_CONTEXT, TRAP_CONTEXT_BASE
     },
     signal::SignalState,
     task::{
         context::TaskContext,
-        pid::{PidHandle, alloc_pid},
+        pid::{alloc_pid, PidHandle},
         task_manager::set_task_status,
     },
-    trap::{TrapContext, trap_handler},
+    trap::{trap_handler, TrapContext},
 };
 
 pub struct FileDescriptor {
@@ -73,7 +69,7 @@ impl FileDescriptor {
             path: None,
         }
     }
-    
+
     pub fn with_path(inode: Arc<dyn Inode>, flags: u32, path: String) -> Self {
         Self {
             inode,
@@ -158,7 +154,7 @@ impl Memory {
             .lock()
             .remove_area_with_start_vpn(start_va.floor());
     }
-    
+
     pub fn user_token(&self) -> usize {
         self.memory_set.lock().token()
     }
@@ -188,7 +184,6 @@ impl File {
         }
 
         // Log milestone FDs to track progress
-        let start_fd = self.next_fd;
         // 寻找下一个可用的文件描述符
         let mut fd = self.next_fd;
         let mut search_count = 0;
@@ -239,7 +234,7 @@ impl File {
     /// 关闭所有文件描述符并清理文件锁（进程退出时调用）
     pub fn close_all_fds_and_cleanup_locks(&mut self, pid: usize) {
         // 清理文件锁
-        crate::fs::file_lock_manager().remove_process_locks(pid);
+        file_lock_manager().remove_process_locks(pid);
         self.fd_table.clear();
     }
 
@@ -254,6 +249,7 @@ impl File {
     }
 
     /// 复制文件描述符到指定的文件描述符号（用于 dup2 系统调用）
+    #[allow(unused)]
     pub fn dup2_fd(&mut self, oldfd: usize, newfd: usize) -> Option<usize> {
         // 如果 oldfd 和 newfd 相同，则直接返回 newfd（如果 oldfd 有效）
         if oldfd == newfd {
@@ -284,6 +280,63 @@ impl File {
         }
 
         Some(newfd)
+    }
+
+    /// 复制文件描述符到指定的文件描述符号（用于 dup3 系统调用）
+    /// 与 dup2 不同，dup3 要求 oldfd != newfd，并且支持 O_CLOEXEC 标志
+    pub fn dup3_fd(&mut self, oldfd: usize, newfd: usize, flags: i32) -> Result<usize, i32> {
+        // dup3 要求 oldfd 和 newfd 不能相同，否则返回 EINVAL
+        if oldfd == newfd {
+            return Err(-22); // EINVAL
+        }
+
+        // 检查 oldfd 是否有效
+        let shared_desc = match self.fd_table.get(&oldfd).cloned() {
+            Some(desc) => desc,
+            None => return Err(-9), // EBADF - Bad file descriptor
+        };
+
+        // 验证 flags 参数：目前只支持 O_CLOEXEC
+        const O_CLOEXEC: i32 = 0o2000000;
+        if flags & !O_CLOEXEC != 0 {
+            return Err(-22); // EINVAL - Invalid flags
+        }
+
+        // 如果 newfd 已存在，先关闭它
+        if self.fd_table.contains_key(&newfd) {
+            self.fd_table.remove(&newfd);
+        }
+
+        // 创建新的文件描述符，共享相同的 inode 和 offset
+        // 注意：在完整的实现中，O_CLOEXEC 标志应该存储在 fd_table 中而不是 FileDescriptor 中
+        // 因为 close-on-exec 是文件描述符的属性，而不是打开文件描述的属性
+        // 目前我们将其存储在 flags 中作为临时解决方案
+        let new_desc = if flags & O_CLOEXEC != 0 {
+            // 为支持 O_CLOEXEC，我们需要创建一个新的 FileDescriptor
+            // 但共享相同的 inode 和 offset
+            use core::sync::atomic;
+            Arc::new(FileDescriptor {
+                inode: shared_desc.inode.clone(),
+                offset: atomic::AtomicU64::new(shared_desc.offset.load(atomic::Ordering::Relaxed)),
+                flags: shared_desc.flags | O_CLOEXEC as u32,
+                mode: shared_desc.mode,
+                dirty_on_close: atomic::AtomicBool::new(shared_desc.dirty_on_close.load(atomic::Ordering::Relaxed)),
+                path: shared_desc.path.clone(),
+            })
+        } else {
+            // 不设置 O_CLOEXEC，直接共享 FileDescriptor
+            shared_desc
+        };
+
+        // 插入新的文件描述符
+        self.fd_table.insert(newfd, new_desc);
+
+        // 更新 next_fd 以避免与新分配的 fd 冲突
+        if newfd >= self.next_fd {
+            self.next_fd = newfd + 1;
+        }
+
+        Ok(newfd)
     }
 }
 
@@ -412,7 +465,7 @@ pub struct TaskControlBlock {
     pub thread_slot: AtomicUsize,
     /// 线程槽位位图（仅主线程拥有，其他线程共享引用）
     pub thread_slots: alloc::sync::Arc<Mutex<[bool; MAX_THREADS_PER_PROCESS]>>,
-    
+
     /// 是否锁定未来的内存映射（MLockFuture标志）
     mlock_future: AtomicBool,
 }
@@ -428,13 +481,12 @@ impl TaskControlBlock {
         pid: PidHandle,
     ) -> Result<Self, Box<dyn Error>> {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
-        let task_status = TaskStatus::Ready;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let pid_raw = pid.raw();
 
-        let mut tcb = Self {
+        let tcb = Self {
             name: Mutex::new(name.to_string()),
             pid,
             task_status: Mutex::new(TaskStatus::Ready),
@@ -711,6 +763,209 @@ impl TaskControlBlock {
         Ok(tcb)
     }
 
+    /// 实现 clone 系统调用：更精细地控制父子进程间的共享
+    ///
+    /// flags: 控制哪些资源在父子进程间共享
+    /// child_stack: 子进程的用户栈指针 (如果为None则共享栈)
+    /// entry_point: 子进程的入口点 (如果为None则从当前位置继续)
+    pub fn clone_with_flags(
+        self: &Arc<Self>,
+        flags: i32,
+        child_stack: Option<usize>,
+        entry_point: Option<usize>,
+    ) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
+        // Clone flags 常量定义
+        const CLONE_VM: i32 = 0x00000100;
+        const CLONE_FS: i32 = 0x00000200;
+        const CLONE_FILES: i32 = 0x00000400;
+        const CLONE_SIGHAND: i32 = 0x00000800;
+        const CLONE_THREAD: i32 = 0x00010000;
+        const CLONE_VFORK: i32 = 0x00004000;
+        const CLONE_PARENT: i32 = 0x00008000;
+
+        let is_thread = (flags & CLONE_THREAD) != 0;
+        let share_vm = (flags & CLONE_VM) != 0;
+        let share_files = (flags & CLONE_FILES) != 0;
+        let share_fs = (flags & CLONE_FS) != 0;
+        let share_sighand = (flags & CLONE_SIGHAND) != 0;
+        let same_parent = (flags & CLONE_PARENT) != 0;
+
+        // 如果是线程创建 (CLONE_VM | CLONE_FILES | CLONE_FS | CLONE_SIGHAND)
+        if is_thread || (share_vm && share_files && share_fs && share_sighand) {
+            // 创建线程：共享地址空间、文件描述符表、文件系统信息和信号处理
+            return self.clone_thread(child_stack, entry_point);
+        }
+
+        // 创建内存空间 - 基于现有的 fork 实现
+        let memory_set = if share_vm {
+            // 共享虚拟内存地址空间 - 但这需要特殊处理
+            // 暂时不支持，因为需要修改 Memory 结构来支持共享
+            return Err(crate::memory::mm::MemoryError::OutOfMemory);
+        } else {
+            // 复制虚拟内存地址空间 (类似 fork)
+            MemorySet::form_existed_user(&self.mm.memory_set.lock())?
+        };
+
+        let trap_cx_va = TRAP_CONTEXT;
+        let pid = alloc_pid();
+        let kernel_stack = KernelStack::new();
+        let kernel_stack_top = kernel_stack.get_top();
+
+        // 处理文件描述符表
+        let file = if share_files {
+            // 共享文件描述符表
+            self.file.clone()
+        } else {
+            // 复制文件描述符表 (类似 fork)
+            let parent_file = self.file.lock();
+            Arc::new(Mutex::new(File {
+                fd_table: parent_file.fd_table.clone(),
+                next_fd: parent_file.next_fd,
+            }))
+        };
+
+        // 处理调度信息
+        let sched = {
+            let parent_sched = self.sched.lock();
+            Mutex::new(Sched {
+                nice: parent_sched.nice,
+                vruntime: 0, // 新进程从0开始
+                priority: parent_sched.priority,
+                time_slice: parent_sched.time_slice,
+            })
+        };
+
+        // 处理父子关系
+        let parent_ref = if same_parent {
+            // 使用与调用进程相同的父进程
+            self.parent.lock().clone()
+        } else {
+            // 调用进程成为父进程
+            Some(Arc::downgrade(self))
+        };
+
+        let pid_value = pid.0; // Extract the value before moving
+        let new_task = Arc::new(Self {
+            name: Mutex::new(self.name.lock().clone()),
+            pid,
+            task_status: Mutex::new(TaskStatus::Ready),
+            base_size: self.base_size,
+            parent: Mutex::new(parent_ref),
+            children: Mutex::new(Vec::new()),
+            exit_code: AtomicI32::new(0),
+            cwd: if share_fs {
+                // 共享工作目录需要特殊处理，暂时复制
+                Mutex::new(self.cwd.lock().clone())
+            } else {
+                Mutex::new(self.cwd.lock().clone())
+            },
+            // 创建新的内存管理结构
+            mm: Memory {
+                memory_set: Arc::new(Mutex::new(memory_set)),
+                kernel_stack,
+                trap_cx_va: Mutex::new(trap_cx_va),
+                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
+                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
+                task_cx: Mutex::new(TaskContext::zero_init()),
+            },
+            file,
+            wake_time_ns: AtomicU64::new(0),
+            prev_status_before_stop: Mutex::new(None),
+            args: Mutex::new(self.args.lock().clone()),
+            envs: Mutex::new(self.envs.lock().clone()),
+            sched,
+            last_runtime: AtomicU64::new(0),
+            total_cpu_time: AtomicU64::new(0),
+            user_cpu_time: AtomicU64::new(0),
+            kernel_cpu_time: AtomicU64::new(0),
+            last_cpu: AtomicUsize::new(0),
+            creation_time: AtomicU64::new(crate::timer::get_time_us()),
+            kernel_enter_time: AtomicU64::new(0),
+            in_kernel_mode: spin::Mutex::new(false),
+            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
+            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
+            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
+            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
+            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
+            signal_state: if share_sighand {
+                // 共享信号处理需要特殊处理，暂时复制
+                Mutex::new(SignalState::new())
+            } else {
+                Mutex::new(SignalState::new())
+            },
+            tgid: if is_thread {
+                // 线程使用相同的线程组ID
+                AtomicUsize::new(self.tgid())
+            } else {
+                // 新进程使用自己的PID作为线程组ID
+                AtomicUsize::new(pid_value)
+            },
+            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1), // 主线程槽位
+            thread_slots: if is_thread {
+                // 线程共享槽位管理需要特殊处理，暂时创建新的
+                Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS]))
+            } else {
+                // 新进程有自己的槽位管理
+                Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS]))
+            },
+            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
+        });
+
+        // 设置陷阱上下文
+        let trap_cx = new_task.mm.trap_context();
+        let current_trap_cx = self.mm.trap_context();
+        *trap_cx = current_trap_cx.clone();
+
+        // 如果指定了新的栈指针，则设置它
+        if let Some(stack) = child_stack {
+            trap_cx.x[2] = stack; // sp register
+        }
+
+        // 如果指定了入口点，则设置它
+        if let Some(entry) = entry_point {
+            trap_cx.sepc = entry;
+        }
+
+        // 子进程的返回值为0
+        trap_cx.x[10] = 0; // a0 register
+
+        // 设置新的内核栈
+        trap_cx.kernel_sp = kernel_stack_top;
+
+        // 将新任务添加到父进程的子进程列表 (除非使用CLONE_PARENT)
+        if !same_parent {
+            self.children.lock().push(new_task.clone());
+        } else if let Some(parent_weak) = self.parent.lock().as_ref() {
+            if let Some(parent) = parent_weak.upgrade() {
+                parent.children.lock().push(new_task.clone());
+            }
+        }
+
+        Ok(new_task)
+    }
+
+    /// 创建线程的辅助方法
+    fn clone_thread(
+        self: &Arc<Self>,
+        child_stack: Option<usize>,
+        entry_point: Option<usize>,
+    ) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
+        // 基于现有的 spawn_thread 实现，但支持自定义栈和入口点
+        let entry = entry_point.unwrap_or_else(|| {
+            // 如果没有指定入口点，使用当前的程序计数器
+            self.mm.trap_context().sepc
+        });
+
+        let user_sp = child_stack.unwrap_or_else(|| {
+            // 如果没有指定栈，使用当前的栈指针
+            self.mm.trap_context().x[2]
+        });
+
+        // 使用现有的 spawn_thread，但传递0作为参数
+        self.spawn_thread(entry, user_sp, 0)
+            .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)
+    }
+
     pub fn name(&self) -> String {
         self.name.lock().clone()
     }
@@ -797,12 +1052,12 @@ impl TaskControlBlock {
     pub fn is_root(&self) -> bool {
         self.euid.load(atomic::Ordering::Relaxed) == 0
     }
-    
+
     /// 设置mlock_future标志
     pub fn set_mlock_future(&self, value: bool) {
         self.mlock_future.store(value, atomic::Ordering::Relaxed);
     }
-    
+
     /// 获取mlock_future标志
     pub fn get_mlock_future(&self) -> bool {
         self.mlock_future.load(atomic::Ordering::Relaxed)

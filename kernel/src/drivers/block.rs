@@ -1,14 +1,10 @@
-use alloc::format;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::any::Any;
 
 use super::hal::{
-    Bus, Device, DeviceError, DeviceState, DeviceType, InterruptHandler, InterruptVector,
+    device::Device, device::DeviceError, device::DeviceType,
     device::DeviceDriver,
-    resource::{Resource, ResourceManager},
 };
 
 /// 块设备错误类型

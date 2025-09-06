@@ -6,14 +6,11 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::{
-    cmp, mem, ptr,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::{cmp, mem, ptr};
 use spin::Mutex;
 
 use super::{FileStat, FileSystem, FileSystemError, Inode, InodeType};
-use crate::drivers::block::{BLOCK_SIZE, BlockDevice, BlockError};
+use crate::drivers::block::{BLOCK_SIZE, BlockDevice};
 
 // Utility function to align value up to the next multiple of align_to
 fn align_up(value: usize, align_to: usize) -> usize {

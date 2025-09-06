@@ -1,12 +1,14 @@
-use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
-use super::{
-    hal::{Device, DeviceError, DeviceState, DeviceType, InterruptHandler, VirtIODevice},
-    virtio_queue::*,
+use crate::drivers::hal::{
+    bus::Bus,
+    device::{Device, DeviceError, DeviceState, DeviceType},
+    interrupt::{InterruptHandler, InterruptVector},
+    virtio::VirtIODevice,
 };
+
+use super::virtio_queue::*;
 
 pub const VIRTIO_CONSOLE_F_SIZE: u32 = 0;
 pub const VIRTIO_CONSOLE_F_MULTIPORT: u32 = 1;
@@ -395,7 +397,7 @@ impl Device for VirtIOConsoleDevice {
         Err(DeviceError::NotSupported)
     }
 
-    fn bus(&self) -> Arc<dyn super::hal::Bus> {
+    fn bus(&self) -> Arc<dyn Bus> {
         self.device.bus()
     }
 
@@ -423,7 +425,7 @@ impl Device for VirtIOConsoleDevice {
 
     fn set_interrupt_handler(
         &mut self,
-        vector: super::hal::InterruptVector,
+        vector: InterruptVector,
         handler: Arc<dyn InterruptHandler>,
     ) -> Result<(), DeviceError> {
         self.device.set_interrupt_handler(vector, handler)

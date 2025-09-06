@@ -1,12 +1,7 @@
 use crate::id::IdAllocator;
-use alloc::vec::Vec;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-use crate::memory::{
-    KERNEL_SPACE, KERNEL_STACK_SIZE, PAGE_SIZE, TRAMPOLINE, address::VirtualAddress,
-    mm::MapPermission,
-};
 
 pub const INIT_PID: usize = 1;
 
@@ -28,7 +23,7 @@ impl PidHandle {
 }
 
 pub fn alloc_pid() -> PidHandle {
-    PidHandle((PID_ALLOCATOR.lock().alloc()))
+    PidHandle(PID_ALLOCATOR.lock().alloc())
 }
 
 pub fn dealloc_pid(pid: PidHandle) {

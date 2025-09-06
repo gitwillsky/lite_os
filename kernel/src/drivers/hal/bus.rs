@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

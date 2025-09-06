@@ -1,7 +1,6 @@
-use super::bus::{Bus, BusError, MmioBus};
+use super::bus::{Bus, MmioBus};
 use super::device::{Device, DeviceError, DeviceState, DeviceType, GenericDevice};
-use super::interrupt::{InterruptError, InterruptHandler, InterruptVector};
-use alloc::boxed::Box;
+use super::interrupt::{InterruptHandler, InterruptVector};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;

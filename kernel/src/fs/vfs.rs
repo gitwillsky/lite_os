@@ -7,7 +7,7 @@ use alloc::{
 };
 use spin::Mutex;
 
-use crate::task;
+use crate::{drivers::virtio_input::open_input_device, task};
 
 use super::{FileSystem, FileSystemError, Inode};
 use crate::ipc::{create_fifo, open_fifo};
@@ -137,7 +137,7 @@ impl VirtualFileSystem {
 
         // Input device nodes
         if abs_path.starts_with("/dev/input/") {
-            if let Ok(node) = crate::drivers::open_input_device(&abs_path) {
+            if let Ok(node) = open_input_device(&abs_path) {
                 return Ok(node);
             }
         }
@@ -306,7 +306,7 @@ impl VirtualFileSystem {
     pub fn get_inode_at(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         self.open(path)
     }
-    
+
     fn split_path(&self, path: &str) -> Result<(String, String), FileSystemError> {
         if !path.starts_with('/') {
             return Err(FileSystemError::InvalidPath);

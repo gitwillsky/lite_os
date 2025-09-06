@@ -1,17 +1,15 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use lazy_static::lazy_static;
-use spin::{Mutex, RwLock};
+use spin::Mutex;
 
 use crate::{
-    arch::hart::{MAX_CORES, hart_id, is_valid_hart_id},
+    arch::hart::{MAX_CORES, hart_id},
     arch::sbi,
     task::{
         TaskControlBlock, TaskStatus,
         context::TaskContext,
         scheduler::{Scheduler, cfs_scheduler::CFScheduler},
     },
-    timer::get_time_us,
 };
 
 /// idle返回函数 - 当从任务切换回idle时执行
@@ -84,30 +82,30 @@ impl Processor {
                     let status_guard = task.task_status.lock();
                     *status_guard == TaskStatus::Ready
                 };
-                
+
                 if !is_ready {
                     // 任务状态不对，放回调度器
                     self.scheduler.add_task(task.clone());
                     return None;
                 }
-                
+
                 // 验证任务不是僵尸状态（额外的安全检查）
                 if task.is_zombie() {
                     warn!("Attempted to steal zombie task {}", task.pid());
                     // 僵尸任务不应该回到调度器
                     return None;
                 }
-                
+
                 // 状态检查通过，现在才减少计数器
                 self.task_count.fetch_sub(1, Ordering::Release);
-                
+
                 debug!(
                     "CPU {} stole task {} (remaining tasks: {})",
                     self.hart_id,
                     task.pid(),
                     self.task_count()
                 );
-                
+
                 Some(task)
             } else {
                 None
@@ -136,12 +134,12 @@ static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 /// 无锁访问当前 CPU 的处理器
 pub fn current_processor() -> &'static mut Processor {
     let hart = hart_id();
-    
+
     // hart_id()已经在arch/hart.rs中做了边界检查，但为了安全再次验证
     if hart >= MAX_CORES {
         panic!("Invalid hart ID {} >= MAX_CORES {}", hart, MAX_CORES);
     }
-    
+
     unsafe {
         if PER_CPU_PROCESSORS[hart].is_none() {
             PER_CPU_PROCESSORS[hart] = Some(Processor::new(hart));
@@ -152,7 +150,7 @@ pub fn current_processor() -> &'static mut Processor {
 
 pub fn add_task_to_cpu(cpu_id: usize, task: Arc<TaskControlBlock>) {
     let me = hart_id();
-    
+
     // 强化边界检查并提供调试信息
     if cpu_id >= MAX_CORES {
         error!("Invalid CPU ID {} >= MAX_CORES {} in add_task_to_cpu", cpu_id, MAX_CORES);
@@ -162,7 +160,7 @@ pub fn add_task_to_cpu(cpu_id: usize, task: Arc<TaskControlBlock>) {
         add_task_to_cpu(fallback_cpu, task);
         return;
     }
-    
+
     unsafe {
         if PER_CPU_PROCESSORS[cpu_id].is_none() {
             PER_CPU_PROCESSORS[cpu_id] = Some(Processor::new(cpu_id));
@@ -222,32 +220,32 @@ pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
 
 pub fn try_global_steal() -> Option<Arc<TaskControlBlock>> {
     let current_cpu = hart_id();
-    
+
     // 检查边界
     if current_cpu >= MAX_CORES {
         error!("Invalid CPU ID {} in try_global_steal", current_cpu);
         return None;
     }
-    
+
     // 实现工作窃取：从其他CPU偷取任务
     // 使用轮询方式检查其他CPU，避免总是从同一个CPU窃取
     let start_cpu = (current_cpu + 1) % MAX_CORES;
-    
+
     unsafe {
         for i in 0..MAX_CORES {
             let target_cpu = (start_cpu + i) % MAX_CORES;
-            
+
             // 跳过自己的CPU
             if target_cpu == current_cpu {
                 continue;
             }
-            
+
             // 检查目标CPU是否有处理器实例
             if let Some(target_processor) = &mut PER_CPU_PROCESSORS[target_cpu] {
                 // 检查目标CPU是否活跃且有足够的任务
                 if target_processor.active.load(Ordering::Acquire) {
                     let target_task_count = target_processor.task_count();
-                    
+
                     // 只有当目标CPU有多个任务时才窃取（保持负载均衡）
                     if target_task_count > 1 {
                         if let Some(stolen_task) = target_processor.steal_task() {
@@ -264,7 +262,7 @@ pub fn try_global_steal() -> Option<Arc<TaskControlBlock>> {
             }
         }
     }
-    
+
     None
 }
 

@@ -1,24 +1,14 @@
 use crate::drivers::{
-    Device,
-    DeviceError,
-    DeviceState,
-    DeviceType,
-    FramebufferInfo,
-    GenericDevice,
-    // 用于全局 Framebuffer 注册与信息
-    GenericFramebuffer,
-    PixelFormat,
-    // 设备查找（用于 flush 回调）
-    find_devices_by_type,
-    get_device,
+    Device, DeviceError, DeviceState,
+    device_manager::{find_devices_by_type, get_device},
+    framebuffer::{FramebufferInfo, GenericFramebuffer, PixelFormat, set_global_framebuffer},
     hal::{
         bus::Bus,
-        device::DeviceDriver,
+        device::{DeviceType, GenericDevice},
         interrupt::{InterruptHandler, InterruptVector},
         resource::{Resource, ResourceManager},
     },
-    set_global_framebuffer,
-    virtio_queue::{VirtQueue, VirtQueueError},
+    virtio_queue::VirtQueue,
 };
 use crate::memory::{
     KERNEL_SPACE,

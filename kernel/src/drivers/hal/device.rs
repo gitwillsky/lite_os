@@ -1,6 +1,6 @@
 use super::bus::{Bus, BusError};
 use super::interrupt::{InterruptController, InterruptHandler, InterruptVector};
-use super::power::{PowerError, PowerManagement, PowerState};
+use super::power::{PowerError, PowerManagement};
 use super::resource::{Resource, ResourceError, ResourceManager};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -308,7 +308,7 @@ impl Device for GenericDevice {
         }
 
         // Use power manager if available
-        if let Some(pm) = &self.power_manager {
+        if let Some(_pm) = &self.power_manager {
             // Power manager is behind Arc, so we can't call mutable methods directly
             // In a real implementation, we'd use interior mutability or different design
         }
@@ -323,7 +323,7 @@ impl Device for GenericDevice {
         }
 
         // Use power manager if available
-        if let Some(pm) = &self.power_manager {
+        if let Some(_pm) = &self.power_manager {
             // Power manager resume logic would go here
         }
 
@@ -512,8 +512,8 @@ impl DeviceManager {
 
                     // Setup interrupt handling if supported
                     if device.supports_interrupt() {
-                        if let Some(ref interrupt_controller) = self.interrupt_controller {
-                            for vector in device.interrupt_vectors() {
+                        if let Some(ref _interrupt_controller) = self.interrupt_controller {
+                            for _vector in device.interrupt_vectors() {
                                 // Create a device-specific interrupt handler
                                 // In a real implementation, this would be more sophisticated
                             }

@@ -123,7 +123,6 @@ impl MapArea {
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         let start = self.vpn_range.start.as_usize();
         let end = self.vpn_range.end.as_usize();
-        let total = end.saturating_sub(start);
 
         // 第一阶段：仅解除页表映射（不触发 FrameTracker Drop）
         for vpn_usize in start..end {
@@ -214,7 +213,7 @@ impl MapArea {
             global: another.global,
         }
     }
-    
+
     /// Get the VPN range of this map area
     pub fn vpn_range(&self) -> &Range<VirtualPageNumber> {
         &self.vpn_range
@@ -242,9 +241,6 @@ impl MemorySet {
 
     pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), MemoryError> {
         // 先尝试映射；若中途失败，需要回滚已映射的页面，避免留下半映射导致后续查找空闲区域极慢
-        let start_vpn = map_area.vpn_range.start.as_usize();
-        let end_vpn = map_area.vpn_range.end.as_usize();
-        let pages = end_vpn.saturating_sub(start_vpn);
         if let Err(e) = map_area.map(&mut self.page_table) {
             // 回滚：解除已经映射的页面
             map_area.unmap(&mut self.page_table);
@@ -902,7 +898,7 @@ impl MemorySet {
             None
         }
     }
-    
+
     /// Get the areas for iterating over memory mappings
     pub fn areas(&self) -> &[MapArea] {
         &self.areas

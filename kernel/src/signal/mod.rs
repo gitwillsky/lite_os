@@ -11,9 +11,7 @@ pub use state::{SignalDisposition, SignalState};
 pub use core::{SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK};
 pub const SIG_RETURN_ADDR: usize = 0;
 
-pub use multicore::{
-    clear_task_on_core, find_process_core, send_signal_to_process, update_task_on_core,
-};
+pub use multicore::{clear_task_on_core, find_process_core, update_task_on_core};
 
 pub fn init() {
     core::init();

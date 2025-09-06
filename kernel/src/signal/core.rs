@@ -7,7 +7,7 @@ use crate::{
     trap::TrapContext,
 };
 
-use super::{delivery, multicore, state::SignalState};
+use super::{delivery, multicore};
 
 /// 信号类型
 #[repr(u8)]
@@ -170,7 +170,7 @@ impl SignalCore {
         task: &TaskControlBlock,
         trap_cx: Option<&mut TrapContext>,
     ) -> (bool, Option<i32>) {
-        let mut signal_state = task.signal_state.lock();
+        let signal_state = task.signal_state.lock();
 
         // 获取下一个可处理的信号
         let signal = match signal_state.next_deliverable_signal() {
@@ -263,7 +263,7 @@ impl SignalCore {
         set: Option<&SignalSet>,
         oldset: Option<&mut SignalSet>,
     ) -> Result<(), SignalError> {
-        let mut signal_state = task.signal_state.lock();
+        let signal_state = task.signal_state.lock();
 
         if let Some(oldset) = oldset {
             *oldset = signal_state.get_blocked();
@@ -323,7 +323,7 @@ impl SignalCore {
     fn continue_task(&self, task: &TaskControlBlock) {
         // 清理信号状态，防止状态不一致
         {
-            let mut signal_state = task.signal_state.lock();
+            let signal_state = task.signal_state.lock();
             signal_state.clear_trap_context_flag();
         }
 

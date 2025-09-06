@@ -1,5 +1,4 @@
 use crate::timer::get_time_us;
-use alloc::vec::Vec;
 use spin::{Mutex, Once};
 
 /// Watchdog 配置结构体

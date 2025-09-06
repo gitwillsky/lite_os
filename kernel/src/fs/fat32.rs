@@ -1,15 +1,16 @@
 use alloc::{
     collections::{BTreeMap, BTreeSet},
-    string::{String, ToString},
-    sync::{Arc, Weak},
+    string::String,
+    sync::Arc,
     vec,
     vec::Vec,
 };
 use core::{mem, slice};
 use spin::{Mutex, RwLock};
 
+use crate::drivers::block::BlockDevice;
+
 use super::{FileStat, FileSystem, FileSystemError, Inode, InodeType};
-use crate::drivers::{BlockDevice, block::BlockError};
 
 const SECTOR_SIZE: usize = 512;
 const FAT32_SIGNATURE: u16 = 0xAA55;
@@ -537,7 +538,7 @@ impl ClusterManager {
         let mut current = start_cluster;
         let mut searched_full_circle = false;
 
-        for attempts in 1..=search_attempts {
+        for _attempts in 1..=search_attempts {
             // 确保簇号在有效范围内
             if current < 2 {
                 current = 2;
@@ -586,7 +587,6 @@ impl ClusterManager {
                 };
 
                 // 保守地更新空闲簇计数
-                let old_count = alloc_data.free_cluster_count;
                 alloc_data.next_free_cluster = new_next_free;
                 alloc_data.free_cluster_count = alloc_data.free_cluster_count.saturating_sub(1);
 

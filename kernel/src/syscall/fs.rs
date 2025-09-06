@@ -1,18 +1,20 @@
 use core::sync::atomic;
 
-use alloc::{format, string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 use crate::{
     arch::sbi,
-    fs::{
-        FileStat, FileSystemError, InodeType, LockError, LockOp, LockType, file_lock_manager,
-        vfs::vfs,
-    },
+    fs::{flock::{file_lock_manager, LockError, LockOp, LockType}, vfs::vfs, FileStat, FileSystemError, InodeType},
     ipc::{create_fifo, create_pipe, remove_fifo, uds_accept, uds_connect, uds_listen},
     memory::page_table::{translated_byte_buffer, translated_ref_mut},
     signal::SignalSet,
     syscall::timer::TimeSpec,
-    task::{FileDescriptor, current_task, current_user_token, suspend_current_and_run_next},
+    task::{current_task, current_user_token, suspend_current_and_run_next, FileDescriptor},
 };
 
 const STD_OUT: usize = 1;
@@ -359,7 +361,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> isize {
         Ok(path) => path,
         Err(_) => return -36, // ENAMETOOLONG
     };
-    
+
     // 构建最终路径
     let final_path = if path_str.starts_with('/') {
         // 绝对路径，忽略 dirfd
@@ -386,7 +388,7 @@ pub fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> isize {
                 } else {
                     return -9; // EBADF
                 };
-                
+
                 // 拼接路径
                 if dir_path.ends_with('/') {
                     format!("{}{}", dir_path, path_str)
@@ -400,16 +402,16 @@ pub fn sys_mkdirat(dirfd: i32, path: *const u8, mode: u32) -> isize {
             return -1;
         }
     };
-    
+
     // 创建目录
     match vfs().create_directory(&final_path) {
         Ok(_) => 0,
         Err(e) => match e {
-            FileSystemError::AlreadyExists => -17,     // EEXIST
-            FileSystemError::PermissionDenied => -13,  // EACCES
-            FileSystemError::NotFound => -2,           // ENOENT
-            FileSystemError::NotDirectory => -20,      // ENOTDIR
-            FileSystemError::NoSpace => -28,           // ENOSPC
+            FileSystemError::AlreadyExists => -17,    // EEXIST
+            FileSystemError::PermissionDenied => -13, // EACCES
+            FileSystemError::NotFound => -2,          // ENOENT
+            FileSystemError::NotDirectory => -20,     // ENOTDIR
+            FileSystemError::NoSpace => -28,          // ENOSPC
             _ => -1,
         },
     }
@@ -459,7 +461,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const u8, flags: i32) -> isize {
         Ok(path) => path,
         Err(_) => return -36, // ENAMETOOLONG
     };
-    
+
     // 构建最终路径
     let final_path = if path_str.starts_with('/') {
         // 绝对路径，忽略 dirfd
@@ -485,7 +487,7 @@ pub fn sys_unlinkat(dirfd: i32, path: *const u8, flags: i32) -> isize {
                 } else {
                     return -9; // EBADF
                 };
-                
+
                 if dir_path.ends_with('/') {
                     format!("{}{}", dir_path, path_str)
                 } else {
@@ -498,14 +500,14 @@ pub fn sys_unlinkat(dirfd: i32, path: *const u8, flags: i32) -> isize {
             return -1;
         }
     };
-    
+
     // AT_REMOVEDIR flag (0x200) - remove directory instead of file
     // 执行删除操作
     let res = match vfs().remove(&final_path) {
         Ok(_) => 0,
         Err(_) => -1,
     };
-    
+
     // 无论 FS 移除结果如何，最佳努力地清理 FIFO 注册表
     let _ = remove_fifo(&final_path);
     res
@@ -629,30 +631,31 @@ pub fn sys_ppoll(fds_ptr: *mut u8, nfds: usize, timeout: *const u8, sigmask: *co
     } else {
         None
     };
-    
+
     // 计算超时时间（毫秒）
     let timeout_ms = if timeout.is_null() {
         -1 // 无限等待
     } else {
         let token = current_user_token();
-        let timeout_buffers = translated_byte_buffer(token, timeout, core::mem::size_of::<TimeSpec>());
+        let timeout_buffers =
+            translated_byte_buffer(token, timeout, core::mem::size_of::<TimeSpec>());
         if timeout_buffers.is_empty() {
             return -14; // EFAULT
         }
         let timespec = unsafe { *(timeout_buffers[0].as_ptr() as *const TimeSpec) };
         ((timespec.tv_sec * 1000) + (timespec.tv_nsec / 1_000_000)) as isize
     };
-    
+
     // 调用普通的poll
     let result = sys_poll(fds_ptr, nfds, timeout_ms);
-    
+
     // 恢复信号掩码
     if let Some(old) = old_mask {
         if let Some(task) = current_task() {
             task.signal_state.lock().set_blocked(old);
         }
     }
-    
+
     result
 }
 
@@ -759,14 +762,14 @@ pub fn sys_fstat(fd: usize, stat_buf: *mut u8) -> isize {
     if let Some(task) = current_task() {
         if let Some(file_desc) = task.file.lock().fd(fd) {
             let inode = &file_desc.inode;
-            
+
             // Create FileStat from inode information
             let size = inode.size();
             let file_type = inode.inode_type();
             let mode = inode.mode();
             let uid = inode.uid();
             let gid = inode.gid();
-            
+
             let file_stat = FileStat {
                 size,
                 file_type,
@@ -778,7 +781,7 @@ pub fn sys_fstat(fd: usize, stat_buf: *mut u8) -> isize {
                 mtime: inode.mtime(),
                 ctime: inode.ctime(),
             };
-            
+
             // Get mutable reference to user buffer and copy the stat
             let token = current_user_token();
             let user_stat = translated_ref_mut(token, stat_buf as *mut FileStat);
@@ -1012,6 +1015,22 @@ pub fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
     }
 }
 
+/// dup3 - 复制文件描述符到指定的文件描述符号，支持 O_CLOEXEC 标志
+///
+/// dup3() 与 dup2() 相同，但有以下不同：
+/// - 调用者可以通过在 flags 中指定 O_CLOEXEC 来强制为新文件描述符设置 close-on-exec 标志
+/// - 如果 oldfd 等于 newfd，则 dup3() 失败并返回错误 EINVAL
+pub fn sys_dup3(oldfd: usize, newfd: usize, flags: i32) -> isize {
+    if let Some(task) = current_task() {
+        match task.file.lock().dup3_fd(oldfd, newfd, flags) {
+            Ok(fd) => fd as isize,
+            Err(errno) => errno as isize,
+        }
+    } else {
+        -1
+    }
+}
+
 /// flock - 对文件进行建议性锁定
 pub fn sys_flock(fd: usize, operation: i32) -> isize {
     if let Some(task) = current_task() {
@@ -1204,13 +1223,13 @@ pub fn sys_fchmod(fd: usize, mode: u32) -> isize {
     if let Some(task) = current_task() {
         if let Some(file_desc) = task.file.lock().fd(fd) {
             let inode = &file_desc.inode;
-            
+
             // 检查权限：只有文件所有者或root用户可以修改权限
             let file_uid = inode.uid();
             if !task.is_root() && task.euid() != file_uid {
                 return -1; // EPERM
             }
-            
+
             // 设置文件权限（只保留权限位，忽略文件类型位）
             let permission_bits = mode & 0o7777;
             match inode.set_mode(permission_bits) {
@@ -1265,7 +1284,7 @@ pub fn sys_fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32)
         Ok(path) => path,
         Err(_) => return -36, // ENAMETOOLONG
     };
-    
+
     // 构建最终路径
     let final_path = if path_str.starts_with('/') {
         // 绝对路径，忽略 dirfd
@@ -1291,7 +1310,7 @@ pub fn sys_fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32)
                 } else {
                     return -9; // EBADF
                 };
-                
+
                 if dir_path.ends_with('/') {
                     format!("{}{}", dir_path, path_str)
                 } else {
@@ -1304,7 +1323,7 @@ pub fn sys_fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32)
             return -1;
         }
     };
-    
+
     match vfs().open(&final_path) {
         Ok(inode) => {
             if let Some(task) = current_task() {
@@ -1313,20 +1332,20 @@ pub fn sys_fchownat(dirfd: i32, path: *const u8, uid: u32, gid: u32, flags: i32)
                 if !task.is_root() && task.euid() != file_uid {
                     return -1; // EPERM
                 }
-                
+
                 // 设置文件所有者
                 let uid_result = if uid != u32::MAX {
                     inode.set_uid(uid)
                 } else {
                     Ok(())
                 };
-                
+
                 let gid_result = if gid != u32::MAX {
                     inode.set_gid(gid)
                 } else {
                     Ok(())
                 };
-                
+
                 match (uid_result, gid_result) {
                     (Ok(()), Ok(())) => 0,
                     _ => -1,
@@ -1386,13 +1405,13 @@ pub fn sys_chown(path: *const u8, uid: u32, gid: u32) -> isize {
 /// newfstatat - 获取文件状态信息
 pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
     let token = current_user_token();
-    
+
     // 获取路径字符串
     let path_str = match translated_c_string(token, path) {
         Ok(path) => path,
         Err(_) => return -36, // EFAULT
     };
-    
+
     // 构建最终路径
     let final_path = if path_str.starts_with('/') {
         // 绝对路径，忽略 dirfd
@@ -1415,13 +1434,13 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
             if let Some(dir_file) = task.file.lock().fd(dirfd as usize) {
                 // 获取 dirfd 对应的路径
                 let dir_inode = &dir_file.inode;
-                
+
                 // 检查是否是目录
                 use crate::fs::inode::InodeType;
                 if dir_inode.inode_type() != InodeType::Directory {
                     return -20; // ENOTDIR
                 }
-                
+
                 // 获取目录路径
                 let dir_path = if let Some(path) = &dir_file.path {
                     path.clone()
@@ -1429,7 +1448,7 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
                     // 如果文件描述符没有路径信息，返回错误
                     return -9; // EBADF
                 };
-                
+
                 // 拼接路径
                 if dir_path.ends_with('/') {
                     format!("{}{}", dir_path, path_str)
@@ -1443,10 +1462,10 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
             return -1;
         }
     };
-    
+
     // 标准化路径（处理 . 和 .. 等）
     let normalized_path = normalize_path(&final_path);
-    
+
     // 获取文件信息
     match vfs().get_inode_at(&normalized_path) {
         Ok(inode) => {
@@ -1462,19 +1481,16 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
                 mtime: inode.mtime(),
                 ctime: inode.ctime(),
             };
-            
+
             // 写入用户空间
             let stat_size = core::mem::size_of_val(&stat);
             let buffers = translated_byte_buffer(token, statbuf, stat_size);
-            
+
             if !buffers.is_empty() {
                 let stat_bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        &stat as *const _ as *const u8,
-                        stat_size,
-                    )
+                    core::slice::from_raw_parts(&stat as *const _ as *const u8, stat_size)
                 };
-                
+
                 let mut offset = 0;
                 for buffer in buffers {
                     let copy_len = core::cmp::min(buffer.len(), stat_size - offset);
@@ -1484,7 +1500,7 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
                         break;
                     }
                 }
-                
+
                 if offset >= stat_size {
                     0
                 } else {
@@ -1494,17 +1510,17 @@ pub fn sys_newfstatat(dirfd: i32, path: *const u8, statbuf: *mut u8) -> isize {
                 -14 // EFAULT
             }
         }
-        Err(FileSystemError::NotFound) => -2, // ENOENT
+        Err(FileSystemError::NotFound) => -2,          // ENOENT
         Err(FileSystemError::PermissionDenied) => -13, // EACCES
-        Err(FileSystemError::NotDirectory) => -20, // ENOTDIR
-        Err(_) => -5, // EIO
+        Err(FileSystemError::NotDirectory) => -20,     // ENOTDIR
+        Err(_) => -5,                                  // EIO
     }
 }
 
-/// 标准化路径，处理 . 和 .. 
+/// 标准化路径，处理 . 和 ..
 fn normalize_path(path: &str) -> String {
     let mut components = Vec::new();
-    
+
     for component in path.split('/') {
         match component {
             "" | "." => continue,
@@ -1514,7 +1530,7 @@ fn normalize_path(path: &str) -> String {
             _ => components.push(component),
         }
     }
-    
+
     if components.is_empty() {
         "/".to_string()
     } else {
@@ -1529,7 +1545,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> isiz
         Ok(path) => path,
         Err(_) => return -36, // ENAMETOOLONG
     };
-    
+
     // 构建最终路径
     let final_path = if path_str.starts_with('/') {
         // 绝对路径，忽略 dirfd
@@ -1555,7 +1571,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> isiz
                 } else {
                     return -9; // EBADF
                 };
-                
+
                 if dir_path.ends_with('/') {
                     format!("{}{}", dir_path, path_str)
                 } else {
@@ -1568,7 +1584,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> isiz
             return -1;
         }
     };
-    
+
     // 尝试打开文件以检查权限
     match vfs().open(&final_path) {
         Ok(inode) => {
@@ -1576,17 +1592,17 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> isiz
                 let file_mode = inode.mode();
                 let file_uid = inode.uid();
                 let file_gid = inode.gid();
-                
+
                 // 检查请求的权限
                 const F_OK: i32 = 0; // 检查文件是否存在
                 const R_OK: i32 = 4; // 检查读权限
                 const W_OK: i32 = 2; // 检查写权限
                 const X_OK: i32 = 1; // 检查执行权限
-                
+
                 if mode == F_OK {
                     return 0; // 文件存在
                 }
-                
+
                 let mut required_perm = 0u32;
                 if (mode & R_OK) != 0 {
                     required_perm |= 0o4;
@@ -1597,7 +1613,7 @@ pub fn sys_faccessat(dirfd: i32, path: *const u8, mode: i32, flags: i32) -> isiz
                 if (mode & X_OK) != 0 {
                     required_perm |= 0o1;
                 }
-                
+
                 if task.check_file_permission(file_mode, file_uid, file_gid, required_perm) {
                     0
                 } else {

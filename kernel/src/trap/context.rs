@@ -1,6 +1,7 @@
 use riscv::register::sstatus::{self, SPP, Sstatus};
 
 #[repr(C)]
+#[derive(Clone)]
 pub struct TrapContext {
     pub x: [usize; 32],   // 保存通用寄存器 x0-x31
     pub sstatus: Sstatus, // 保存状态寄存器 sstatus

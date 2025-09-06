@@ -17,14 +17,13 @@ use riscv::{
 };
 
 use crate::{
-    memory::{KERNEL_SPACE, TRAMPOLINE, TRAP_CONTEXT, address::VirtualAddress},
-    signal::{self, SIG_RETURN_ADDR, handle_signals, sig_return},
+    drivers::device_manager::{self},
+    memory::TRAMPOLINE,
+    signal::{SIG_RETURN_ADDR, handle_signals, sig_return},
     syscall,
-    task::{
-        self, current_user_token, exit_current_and_run_next, mark_kernel_entry, mark_kernel_exit,
-        suspend_current_and_run_next,
-    },
-    timer, watchdog,
+    task::{self, exit_current_and_run_next, mark_kernel_entry, mark_kernel_exit},
+    timer,
+    watchdog::{self},
 };
 
 #[inline(always)]
@@ -66,7 +65,7 @@ pub fn trap_handler() {
                     softirq::raise(softirq::SoftIrq::Timer);
                 }
                 Interrupt::SupervisorExternal => {
-                    crate::drivers::handle_external_interrupt();
+                    device_manager::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
                     // 清除SSIP位（位1），并本地执行 sfence.vma（响应跨核TLB刷新）
@@ -140,7 +139,7 @@ pub fn trap_handler() {
                         // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
                         debug!("Signal handler return detected (VA=0), calling sigreturn");
                         let task = task::current_task().expect("No current task");
-                        let mut cx = task.mm.trap_context();
+                        let cx = task.mm.trap_context();
 
                         match sig_return(&task, cx) {
                             Ok(()) => {
@@ -316,7 +315,7 @@ extern "C" fn rust_trap_from_kernel() {
                     Interrupt::SupervisorExternal => {
                         // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
                         // 以便唤醒内核态等待 I/O 的任务，避免死等导致看门狗触发。
-                        crate::drivers::handle_external_interrupt();
+                        device_manager::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
                         // 清SSIP

@@ -1,9 +1,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use alloc::sync::Arc;
 
 use crate::{
     arch::hart::{MAX_CORES, hart_id},
-    task::{self, TaskStatus},
+    task::{self},
     timer, watchdog,
 };
 
@@ -64,7 +63,7 @@ fn set_ssip() {
 pub fn raise(irq: SoftIrq) {
     let bit = 1u32 << irq.as_index();
     let cpu = hart_id(); // hart_id()现在已经有边界检查
-    
+
     // 额外的防御性边界检查
     if cpu >= MAX_CORES {
         error!("Invalid CPU ID {} >= MAX_CORES {} in softirq::raise", cpu, MAX_CORES);
@@ -84,14 +83,14 @@ fn take_pending_for(cpu: usize) -> u32 {
         error!("Invalid CPU ID {} >= MAX_CORES {} in take_pending_for", cpu, MAX_CORES);
         return 0;
     }
-    
+
     PENDING[cpu].swap(0, Ordering::AcqRel)
 }
 
 #[inline(always)]
 pub fn dispatch_current_cpu() {
     let cpu = hart_id(); // hart_id()现在已经有边界检查
-    
+
     // 额外的防御性边界检查
     if cpu >= MAX_CORES {
         error!("Invalid CPU ID {} >= MAX_CORES {} in dispatch_current_cpu", cpu, MAX_CORES);

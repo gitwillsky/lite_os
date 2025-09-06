@@ -68,18 +68,21 @@ pub fn sys_exit(exit_code: i32) -> ! {
     unreachable!()
 }
 
-pub fn sys_yield() -> isize {
+pub fn sys_sched_yield() -> isize {
     suspend_current_and_run_next();
     0
 }
 
-pub fn sys_getpid() -> isize {
+pub fn sys_get_pid() -> isize {
     current_task().unwrap().pid() as isize
 }
 
-/// 获取线程ID（与PID等同，后续可扩展）
-pub fn sys_gettid() -> isize {
-    current_task().unwrap().pid() as isize
+pub fn sys_get_ppid() -> isize {
+    if let Some(current) = current_task() {
+        current.parent().unwrap().pid() as isize
+    } else {
+        -1
+    }
 }
 
 pub fn sys_fork() -> isize {
@@ -98,6 +101,69 @@ pub fn sys_fork() -> isize {
     // 添加到统一任务管理器（会自动处理调度器添加）
     task::add_task(new_task);
 
+    new_pid as isize
+}
+
+/// clone - 创建子进程或线程，精确控制共享的资源
+/// 
+/// 参数：
+/// - flags: 控制父子间资源共享的标志位
+/// - child_stack: 子进程/线程的用户栈指针（0表示使用默认）
+/// - parent_tid: 父进程中存储子进程TID的位置（暂未实现）
+/// - child_tid: 子进程中存储自己TID的位置（暂未实现） 
+/// - tls: 线程本地存储指针（暂未实现）
+/// 
+/// 返回值：
+/// - 成功：子进程/线程的PID/TID
+/// - 失败：负的错误码
+pub fn sys_clone(
+    flags: i32,
+    child_stack: usize,
+    parent_tid: *mut i32,
+    child_tid: *mut i32,
+    tls: usize,
+) -> isize {
+    let current_task = current_task().unwrap();
+    
+    // 处理栈指针：0表示使用默认栈
+    let stack = if child_stack == 0 { None } else { Some(child_stack) };
+    
+    // 暂时不支持 parent_tid, child_tid, tls 参数
+    // 在完整实现中，这些参数用于高级线程创建场景
+    if !parent_tid.is_null() || !child_tid.is_null() || tls != 0 {
+        warn!("clone: parent_tid, child_tid, and tls parameters not yet implemented");
+    }
+    
+    // 创建新的任务
+    let new_task = match current_task.clone_with_flags(flags, stack, None) {
+        Ok(task) => task,
+        Err(_) => return -errno::ENOMEM,
+    };
+    
+    let new_pid = new_task.pid();
+    
+    // 检查是否需要特殊处理 (如 CLONE_VFORK)
+    const CLONE_VFORK: i32 = 0x00004000;
+    let is_vfork = (flags & CLONE_VFORK) != 0;
+    
+    if is_vfork {
+        // VFORK语义：父进程应该阻塞直到子进程调用exec或exit
+        // 简化实现：暂时不实现阻塞，直接继续执行
+        warn!("clone: CLONE_VFORK not fully implemented - parent will not block");
+    }
+    
+    // 设置子进程/线程的返回值为0
+    // 检查是否共享虚拟内存 (通过比较Arc指针地址)
+    let shares_vm = Arc::ptr_eq(&new_task.mm.memory_set, &current_task.mm.memory_set);
+    if !shares_vm {
+        // 只有在不共享内存的情况下才需要单独设置返回值
+        let trap_cx = new_task.mm.trap_context();
+        trap_cx.x[10] = 0; // a0 寄存器 (返回值)
+    }
+    
+    // 添加到任务管理器
+    task::add_task(new_task);
+    
     new_pid as isize
 }
 

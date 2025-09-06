@@ -5,6 +5,8 @@ use alloc::{
     vec::Vec,
 };
 
+use crate::drivers::virtio_input::open_input_device;
+
 use super::{FileStat, FileSystem, FileSystemError, Inode, InodeType};
 
 /// devfs: 虚拟设备文件系统
@@ -121,7 +123,7 @@ impl Inode for DevDirInput {
     }
     fn find_child(&self, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         let full = alloc::format!("/dev/input/{}", name);
-        crate::drivers::open_input_device(&full)
+        open_input_device(&full)
     }
     fn create_file(&self, _name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
         Err(FileSystemError::PermissionDenied)

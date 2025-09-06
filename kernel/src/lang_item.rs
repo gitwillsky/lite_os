@@ -27,8 +27,6 @@ fn panic_handler(info: &PanicInfo) -> ! {
 
     // 简单停机
     loop {
-        unsafe {
-            riscv::asm::wfi();
-        }
+        riscv::asm::wfi();
     }
 }

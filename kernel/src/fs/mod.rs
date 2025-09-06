@@ -1,7 +1,5 @@
 use alloc::sync::Arc;
 
-use crate::drivers::BlockDevice;
-
 pub mod devfs;
 pub mod ext2;
 pub mod fat32;
@@ -12,7 +10,6 @@ pub mod vfs;
 pub use devfs::DevFileSystem;
 pub use ext2::Ext2FileSystem;
 pub use fat32::FAT32FileSystem;
-pub use flock::{FileLock, FileLockManager, LockError, LockOp, LockType, file_lock_manager};
 pub use inode::{Inode, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,6 @@
 use crate::memory::page_table::PageTableEntry;
 
 use super::config::{self};
-use alloc::format;
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

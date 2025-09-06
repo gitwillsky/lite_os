@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, drivers::GoldfishRTCDevice, task::add_sleeping_task};
+use crate::{arch::sbi, board, config, drivers::goldfish_rtc::GoldfishRTCDevice};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -187,9 +187,10 @@ pub fn init_rtc() {
 pub fn set_unix_timestamp_ns(timestamp_ns: u64) {
     // 计算新的启动时间偏移
     let current_uptime_ns = get_time_ns();
-    let new_boot_time = (timestamp_ns / NSEC_PER_SEC).saturating_sub(current_uptime_ns / NSEC_PER_SEC);
+    let new_boot_time =
+        (timestamp_ns / NSEC_PER_SEC).saturating_sub(current_uptime_ns / NSEC_PER_SEC);
     BOOT_TIME_UNIX_SECONDS.store(new_boot_time, Ordering::Relaxed);
-    
+
     // 注意：Goldfish RTC 是只读的，不支持设置时间
     // 只更新我们的软件时钟偏移量
 }

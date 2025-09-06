@@ -2,19 +2,19 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use riscv::register;
+
 use crate::board::board_info;
-use crate::drivers::GenericBlockDriver;
-use crate::drivers::VirtioGpuDevice;
+use crate::drivers::block::{get_all_block_devices, get_primary_block_device, register_block_device, GenericBlockDriver};
 use crate::drivers::goldfish_rtc::GoldfishRTCDevice;
-use crate::drivers::hal::{
-    Device, DeviceError, DeviceManager, DeviceType,
-    interrupt::{InterruptHandler, InterruptPriority, PlicInterruptController},
-    resource::SystemResourceManager,
-};
-use crate::drivers::{BlockDevice, VirtIOBlockDevice, register_block_device};
+use crate::drivers::hal::device::{Device, DeviceError, DeviceManager, DeviceType};
+use crate::drivers::hal::interrupt::{InterruptHandler, InterruptPriority, PlicInterruptController};
+use crate::drivers::hal::resource::SystemResourceManager;
+use crate::drivers::virtio_blk::VirtIOBlockDevice;
+use crate::drivers::virtio_gpu::VirtioGpuDevice;
+use crate::drivers::virtio_input::register_input_node_auto;
 use crate::fs::vfs::vfs;
 use crate::fs::{Ext2FileSystem, FAT32FileSystem};
-use riscv::register;
 
 /// 全局HAL设备管理器
 static DEVICE_MANAGER: spin::Once<spin::Mutex<DeviceManager>> = spin::Once::new();
@@ -301,7 +301,7 @@ fn init_virtio_input_device(board_info: &crate::board::BoardInfo, irq: u32, base
     );
     if let Some(input_dev) = crate::drivers::virtio_input::VirtioInputDevice::new(base_addr) {
         let node = input_dev.node.clone();
-        let path = crate::drivers::register_input_node_auto(node);
+        let path = register_input_node_auto(node);
         info!("[DeviceManager] Registered input node at {}", path);
 
         let handler = alloc::sync::Arc::new(crate::drivers::virtio_input::VirtioInputIrqHandler(
@@ -379,8 +379,6 @@ fn enumerate_devices() {
 
 /// 初始化文件系统
 fn init_filesystems() {
-    use crate::drivers::{get_all_block_devices, get_primary_block_device};
-
     let block_devices = get_all_block_devices();
     if block_devices.is_empty() {
         warn!("[DeviceManager] No block devices found for filesystem initialization");

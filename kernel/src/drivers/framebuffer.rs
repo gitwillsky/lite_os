@@ -1,5 +1,5 @@
-use crate::drivers::{DeviceError, DeviceState};
-use alloc::{boxed::Box, string::String, sync::Arc, vec, vec::Vec};
+use crate::drivers::DeviceError;
+use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use core::fmt;
 use spin::Mutex;
 

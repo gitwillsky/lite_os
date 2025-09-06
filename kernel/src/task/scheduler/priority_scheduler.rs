@@ -1,5 +1,4 @@
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
-use spin::Mutex;
 
 use crate::task::{TaskControlBlock, scheduler::Scheduler};
 
