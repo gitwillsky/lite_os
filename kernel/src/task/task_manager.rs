@@ -912,30 +912,34 @@ pub fn suspend_current_and_run_next() {
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    // 安全的上下文切换：在锁保护下进行切换
-    schedule_with_task_lock(&task);
+    // 安全的上下文切换：使用Arc引用保证内存安全
+    schedule_with_task_context(task);
 }
 
-/// 安全的调度函数，直接使用任务上下文锁执行切换
-/// 这个函数确保在切换期间任务上下文内存保持有效
-fn schedule_with_task_lock(task: &Arc<TaskControlBlock>) {
+/// 安全的调度函数，确保在切换期间任务上下文内存保持有效
+/// 通过保持Arc引用而非锁来保证内存安全
+fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     // 直接访问 Per-CPU idle context
     let processor = current_processor();
     let idle_task_cx_ptr = processor.idle_context_ptr();
 
-    // 在锁保护下执行切换
-    let mut task_cx = task.mm.task_cx.lock();
-    let task_cx_ptr = &mut *task_cx as *mut TaskContext;
+    // 获取任务上下文指针但立即释放锁
+    let task_cx_ptr = {
+        let mut task_cx = task.mm.task_cx.lock();
+        let ptr = &mut *task_cx as *mut TaskContext;
+        
+        // 验证指针有效性
+        if ptr.is_null() {
+            panic!("Task context pointer is null for task {}", task.pid());
+        }
+        
+        ptr
+    }; // 锁在此处自动释放
 
-    // 验证指针有效性
-    if task_cx_ptr.is_null() {
-        panic!("Task context pointer is null for task {}", task.pid());
-    }
-
+    // 执行上下文切换，task的Arc引用确保TaskContext内存保持有效
     unsafe {
         crate::task::__switch(task_cx_ptr, idle_task_cx_ptr);
     }
-    // task_cx锁在此处自动释放
 }
 
 /// 阻塞当前任务并切换到下一个任务
@@ -956,8 +960,8 @@ pub fn block_current_and_run_next() {
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    // 安全的上下文切换：在锁保护下进行切换
-    schedule_with_task_lock(&task);
+    // 安全的上下文切换：使用Arc引用保证内存安全
+    schedule_with_task_context(task);
 }
 
 /// 退出当前任务并运行下一个任务
@@ -972,8 +976,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         *status = TaskStatus::Zombie;
     }
 
-    // 安全的上下文切换：在锁保护下进行切换
-    schedule_with_task_lock(&task);
+    // 安全的上下文切换：使用Arc引用保证内存安全
+    schedule_with_task_context(task);
 }
 
 /// 切换到指定任务
@@ -1032,7 +1036,7 @@ pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
         *status = TaskStatus::Zombie;
     }
     
-    // 安全的上下文切换：在锁保护下进行切换
-    schedule_with_task_lock(&task);
+    // 安全的上下文切换：使用Arc引用保证内存安全
+    schedule_with_task_context(task);
     unreachable!()
 }
