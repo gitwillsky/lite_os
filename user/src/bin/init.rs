@@ -11,7 +11,7 @@ use user_lib::{exec, exit, fork, wait, yield_};
 
 #[unsafe(no_mangle)]
 fn main() -> i32 {
-    spawn_webwm();
+    // spawn_webwm();
     spawn_shell();
 
     loop {

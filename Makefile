@@ -29,7 +29,7 @@ run-with-timeout: build-kernel
 	-device virtio-net-device,netdev=net0 \
 	-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
-run: build-kernel
+run: build-kernel build-user create-fs
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \

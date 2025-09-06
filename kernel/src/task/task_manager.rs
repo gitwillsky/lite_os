@@ -752,6 +752,8 @@ pub fn mark_need_resched() {
     let cpu = hart_id();
     if cpu < MAX_CORES {
         NEED_RESCHED[cpu].store(true, Ordering::Release);
+    } else {
+        error!("Invalid CPU ID {} >= MAX_CORES {} in mark_need_resched", cpu, MAX_CORES);
     }
 }
 
@@ -761,6 +763,7 @@ pub fn check_and_clear_resched() -> bool {
     if cpu < MAX_CORES {
         NEED_RESCHED[cpu].swap(false, Ordering::AcqRel)
     } else {
+        error!("Invalid CPU ID {} >= MAX_CORES {} in check_and_clear_resched", cpu, MAX_CORES);
         false
     }
 }
@@ -910,35 +913,29 @@ pub fn suspend_current_and_run_next() {
     core::sync::atomic::fence(Ordering::SeqCst);
 
     // 安全的上下文切换：在锁保护下进行切换
-    {
-        let mut task_cx = task.mm.task_cx.lock();
-        let task_cx_ptr = &mut *task_cx as *mut TaskContext;
-
-        // 验证指针有效性
-        if task_cx_ptr.is_null() {
-            panic!("Task context pointer is null for task {}", task.pid());
-        }
-
-        // 在锁保护下执行切换，确保上下文内存安全
-        schedule_with_lock(task_cx_ptr, task);
-    }
+    schedule_with_task_lock(&task);
 }
 
-/// 安全的调度函数，在锁保护下执行上下文切换
-/// 这个函数接受task引用以确保TaskContext内存在切换期间保持有效
-fn schedule_with_lock(switched_task_cx_ptr: *mut TaskContext, _task: Arc<TaskControlBlock>) {
-    // 确保切换的上下文指针有效
-    if switched_task_cx_ptr.is_null() {
-        panic!("Invalid task context pointer in schedule_with_lock");
-    }
-
+/// 安全的调度函数，直接使用任务上下文锁执行切换
+/// 这个函数确保在切换期间任务上下文内存保持有效
+fn schedule_with_task_lock(task: &Arc<TaskControlBlock>) {
     // 直接访问 Per-CPU idle context
     let processor = current_processor();
     let idle_task_cx_ptr = processor.idle_context_ptr();
 
-    unsafe {
-        crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
+    // 在锁保护下执行切换
+    let mut task_cx = task.mm.task_cx.lock();
+    let task_cx_ptr = &mut *task_cx as *mut TaskContext;
+
+    // 验证指针有效性
+    if task_cx_ptr.is_null() {
+        panic!("Task context pointer is null for task {}", task.pid());
     }
+
+    unsafe {
+        crate::task::__switch(task_cx_ptr, idle_task_cx_ptr);
+    }
+    // task_cx锁在此处自动释放
 }
 
 /// 阻塞当前任务并切换到下一个任务
@@ -956,17 +953,11 @@ pub fn block_current_and_run_next() {
         *status = TaskStatus::Sleeping;
     }
 
-    // 获取任务上下文指针
-    let task_cx_ptr = {
-        let task_cx = task.mm.task_cx.lock();
-        &*task_cx as *const TaskContext as *mut TaskContext
-    };
-
     // 内存屏障
     core::sync::atomic::fence(Ordering::SeqCst);
 
-    // 切换到其他任务（task的Arc引用确保内存有效）
-    schedule(task_cx_ptr);
+    // 安全的上下文切换：在锁保护下进行切换
+    schedule_with_task_lock(&task);
 }
 
 /// 退出当前任务并运行下一个任务
@@ -981,8 +972,8 @@ pub fn exit_current_and_run_next(exit_code: i32) {
         *status = TaskStatus::Zombie;
     }
 
-    // 调度到下一个任务
-    schedule(&mut *task.mm.task_cx.lock() as *mut _);
+    // 安全的上下文切换：在锁保护下进行切换
+    schedule_with_task_lock(&task);
 }
 
 /// 切换到指定任务
@@ -1030,21 +1021,6 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     }
 }
 
-/// 调度函数 - 切换到idle控制流
-fn schedule(switched_task_cx_ptr: *mut TaskContext) {
-    // 确保切换的上下文指针有效
-    if switched_task_cx_ptr.is_null() {
-        panic!("Invalid task context pointer in schedule");
-    }
-
-    // 直接访问 Per-CPU idle context
-    let processor = current_processor();
-    let idle_task_cx_ptr = processor.idle_context_ptr();
-
-    unsafe {
-        crate::task::__switch(switched_task_cx_ptr, idle_task_cx_ptr);
-    }
-}
 
 /// 退出当前线程并切换到下一个任务（不销毁进程共享资源）
 pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
@@ -1055,6 +1031,8 @@ pub fn exit_current_thread_and_run_next(exit_code: i32) -> ! {
         let mut status = task.task_status.lock();
         *status = TaskStatus::Zombie;
     }
-    schedule(&mut *task.mm.task_cx.lock() as *mut _);
+    
+    // 安全的上下文切换：在锁保护下进行切换
+    schedule_with_task_lock(&task);
     unreachable!()
 }
