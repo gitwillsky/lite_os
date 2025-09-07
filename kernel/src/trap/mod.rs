@@ -1,10 +1,7 @@
 pub mod context;
 pub mod softirq;
 
-use core::{
-    arch::{asm, global_asm},
-    panic,
-};
+use core::{arch::asm, panic};
 
 pub use context::TrapContext;
 use riscv::{
@@ -37,8 +34,6 @@ fn clear_ssip() {
         asm!("csrw sip, {}", in(reg) clear_ssip);
     }
 }
-
-global_asm!(include_str!("trap.S"));
 
 pub fn init() {
     set_kernel_trap_entry();

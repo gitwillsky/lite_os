@@ -1,5 +1,3 @@
-use core::arch::global_asm;
-
 use alloc::sync::Arc;
 
 use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::INIT_PID};
@@ -15,8 +13,6 @@ pub mod task_manager;
 pub use processor::*;
 pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
 pub use task_manager::*;
-
-global_asm!(include_str!("switch.S"));
 
 unsafe extern "C" {
     /// Switch to the context of 'next_task_cx_ptr', saving the current context

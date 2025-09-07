@@ -64,8 +64,10 @@ SECTIONS {
     ekernel = .;
 
     /DISCARD/ : {
-        /* 只丢弃异常处理信息 */
-        *(.eh_frame)
-        *(.eh_frame_hdr)
+        *(.comment*)
+        *(.eh_frame*)
+        *(.gcc_except_table*)
+        *(.note*)
+        *(.rel.eh_frame*)
     }
 }
