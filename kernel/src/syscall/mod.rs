@@ -13,7 +13,7 @@ use crate::syscall::{fs::*, process::*};
 
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
-        17 => sys_getcwd(args[0] as *mut u8, args[1]),
+        17 => sys_get_cwd(args[0] as *mut u8, args[1]),
 
         23 => sys_dup(args[0]),
         24 => sys_dup3(args[0], args[1], args[2] as i32),
@@ -24,10 +24,19 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
 
         93 => sys_exit(args[0] as i32),
 
+        95 => sys_wait_id(
+            args[0] as i32,                   // idtype
+            args[1] as i32,                   // id
+            args[2] as *mut process::SigInfo, // infop
+            args[3] as i32,                   // options
+        ),
+
         124 => sys_sched_yield(),
 
         172 => sys_get_pid(),
         173 => sys_get_ppid(),
+
+        210 => sys_shutdown(),
 
         220 => sys_clone(
             args[0] as i32,      // flags
@@ -35,6 +44,11 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
             args[2] as *mut i32, // parent_tid
             args[3] as *mut i32, // child_tid
             args[4],             // tls
+        ),
+        221 => sys_execve(
+            args[0] as *const u8,        // path
+            args[1] as *const *const u8, // argv
+            args[2] as *const *const u8, // envp
         ),
 
         _ => {

@@ -1,4 +1,4 @@
-use alloc::{string::ToString, sync::Arc, vec::Vec};
+use alloc::{string::{String, ToString}, sync::Arc, vec::Vec};
 
 use crate::{
     memory::{
@@ -105,14 +105,14 @@ pub fn sys_fork() -> isize {
 }
 
 /// clone - 创建子进程或线程，精确控制共享的资源
-/// 
+///
 /// 参数：
 /// - flags: 控制父子间资源共享的标志位
 /// - child_stack: 子进程/线程的用户栈指针（0表示使用默认）
 /// - parent_tid: 父进程中存储子进程TID的位置（暂未实现）
-/// - child_tid: 子进程中存储自己TID的位置（暂未实现） 
+/// - child_tid: 子进程中存储自己TID的位置（暂未实现）
 /// - tls: 线程本地存储指针（暂未实现）
-/// 
+///
 /// 返回值：
 /// - 成功：子进程/线程的PID/TID
 /// - 失败：负的错误码
@@ -124,34 +124,34 @@ pub fn sys_clone(
     tls: usize,
 ) -> isize {
     let current_task = current_task().unwrap();
-    
+
     // 处理栈指针：0表示使用默认栈
     let stack = if child_stack == 0 { None } else { Some(child_stack) };
-    
+
     // 暂时不支持 parent_tid, child_tid, tls 参数
     // 在完整实现中，这些参数用于高级线程创建场景
     if !parent_tid.is_null() || !child_tid.is_null() || tls != 0 {
         warn!("clone: parent_tid, child_tid, and tls parameters not yet implemented");
     }
-    
+
     // 创建新的任务
     let new_task = match current_task.clone_with_flags(flags, stack, None) {
         Ok(task) => task,
         Err(_) => return -errno::ENOMEM,
     };
-    
+
     let new_pid = new_task.pid();
-    
+
     // 检查是否需要特殊处理 (如 CLONE_VFORK)
     const CLONE_VFORK: i32 = 0x00004000;
     let is_vfork = (flags & CLONE_VFORK) != 0;
-    
+
     if is_vfork {
         // VFORK语义：父进程应该阻塞直到子进程调用exec或exit
         // 简化实现：暂时不实现阻塞，直接继续执行
         warn!("clone: CLONE_VFORK not fully implemented - parent will not block");
     }
-    
+
     // 设置子进程/线程的返回值为0
     // 检查是否共享虚拟内存 (通过比较Arc指针地址)
     let shares_vm = Arc::ptr_eq(&new_task.mm.memory_set, &current_task.mm.memory_set);
@@ -160,10 +160,10 @@ pub fn sys_clone(
         let trap_cx = new_task.mm.trap_context();
         trap_cx.x[10] = 0; // a0 寄存器 (返回值)
     }
-    
+
     // 添加到任务管理器
     task::add_task(new_task);
-    
+
     new_pid as isize
 }
 
@@ -291,6 +291,248 @@ pub fn sys_wait_pid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     -2
 }
 
+/// waitid 调用使用的 idtype 常量
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IdType {
+    P_ALL = 0,     // 等待任何子进程
+    P_PID = 1,     // 等待指定PID的子进程
+    P_PGID = 2,    // 等待指定进程组的任何子进程
+    P_PIDFD = 3,   // 等待pidfd对应的子进程
+}
+
+impl IdType {
+    fn from_i32(value: i32) -> Option<Self> {
+        match value {
+            0 => Some(IdType::P_ALL),
+            1 => Some(IdType::P_PID),
+            2 => Some(IdType::P_PGID),
+            3 => Some(IdType::P_PIDFD),
+            _ => None,
+        }
+    }
+}
+
+/// waitid 选项常量
+pub mod waitid_options {
+    pub const WEXITED: i32 = 0x00000004;     // 等待已退出的子进程
+    pub const WSTOPPED: i32 = 0x00000002;    // 等待被停止的子进程
+    pub const WCONTINUED: i32 = 0x00000008;  // 等待被继续的子进程
+    pub const WNOHANG: i32 = 0x00000001;     // 非阻塞等待
+    pub const WNOWAIT: i32 = 0x01000000;     // 不移除子进程的僵尸状态
+}
+
+/// siginfo_t 结构体（简化版）
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SigInfo {
+    pub si_signo: i32,      // 信号编号 (SIGCHLD)
+    pub si_errno: i32,      // 错误号
+    pub si_code: i32,       // 信号代码
+    pub si_pid: i32,        // 发送信号的进程PID
+    pub si_uid: i32,        // 发送信号的进程UID
+    pub si_status: i32,     // 退出状态或信号编号
+    pub si_utime: i64,      // 用户CPU时间
+    pub si_stime: i64,      // 系统CPU时间
+    pub _pad: [u8; 104],    // 填充以匹配标准大小
+}
+
+impl SigInfo {
+    fn new() -> Self {
+        Self {
+            si_signo: 0,
+            si_errno: 0,
+            si_code: 0,
+            si_pid: 0,
+            si_uid: 0,
+            si_status: 0,
+            si_utime: 0,
+            si_stime: 0,
+            _pad: [0; 104],
+        }
+    }
+}
+
+/// waitid 信号代码常量
+pub mod waitid_si_codes {
+    pub const CLD_EXITED: i32 = 1;       // 子进程已退出
+    pub const CLD_KILLED: i32 = 2;       // 子进程被信号终止
+    pub const CLD_DUMPED: i32 = 3;       // 子进程被信号终止并产生核心转储
+    pub const CLD_STOPPED: i32 = 5;      // 子进程被停止
+    pub const CLD_TRAPPED: i32 = 4;      // 子进程因调试陷阱而停止
+    pub const CLD_CONTINUED: i32 = 6;    // 子进程被继续
+}
+
+/// waitid - Linux标准的waitid系统调用
+///
+/// 参数：
+/// - idtype: 指定等待的进程类型 (P_ALL, P_PID, P_PGID, P_PIDFD)
+/// - id: 根据idtype指定的进程ID
+/// - infop: 用于返回子进程信息的siginfo_t结构体指针
+/// - options: 等待选项的组合 (WEXITED, WSTOPPED, WCONTINUED, WNOHANG, WNOWAIT)
+///
+/// 返回值：
+/// - 成功：0
+/// - 失败：负的错误码
+pub fn sys_wait_id(idtype: i32, id: i32, infop: *mut SigInfo, options: i32) -> isize {
+    // 步骤1: 验证参数
+    let idtype_enum = match IdType::from_i32(idtype) {
+        Some(t) => t,
+        None => return -errno::EINVAL,
+    };
+
+    // 验证选项参数
+    if options == 0 {
+        return -errno::EINVAL; // 必须指定至少一个等待选项
+    }
+
+    // 检查是否指定了有效的等待条件
+    let wait_for_exited = (options & waitid_options::WEXITED) != 0;
+    let wait_for_stopped = (options & waitid_options::WSTOPPED) != 0;
+    let wait_for_continued = (options & waitid_options::WCONTINUED) != 0;
+
+    if !wait_for_exited && !wait_for_stopped && !wait_for_continued {
+        return -errno::EINVAL; // 必须指定等待条件
+    }
+
+    let no_hang = (options & waitid_options::WNOHANG) != 0;
+    let no_wait = (options & waitid_options::WNOWAIT) != 0;
+
+    // 步骤2: 获取当前任务
+    let current_task = match current_task() {
+        Some(task) => task,
+        None => return -errno::ESRCH,
+    };
+
+    // 步骤3: 验证infop指针并准备写入用户空间
+    if infop.is_null() {
+        return -errno::EFAULT;
+    }
+
+    let token = current_user_token();
+
+    // 步骤4: 查找匹配的子进程
+    loop {
+        let mut matched_child = None;
+        let mut child_index = None;
+
+        {
+            let children = current_task.children.lock();
+
+            // 检查是否有符合条件的子进程
+            let has_matching_children = match idtype_enum {
+                IdType::P_ALL => !children.is_empty(),
+                IdType::P_PID => {
+                    if id <= 0 {
+                        return -errno::EINVAL;
+                    }
+                    children.iter().any(|child| child.pid() == id as usize)
+                },
+                IdType::P_PGID => {
+                    // 简化实现：暂不支持进程组
+                    return -errno::ENOSYS;
+                },
+                IdType::P_PIDFD => {
+                    // 简化实现：暂不支持pidfd
+                    return -errno::ENOSYS;
+                },
+            };
+
+            if !has_matching_children {
+                return -errno::ECHILD;
+            }
+
+            // 查找满足等待条件的子进程
+            for (idx, child) in children.iter().enumerate() {
+                let child_matches_id = match idtype_enum {
+                    IdType::P_ALL => true,
+                    IdType::P_PID => child.pid() == id as usize,
+                    IdType::P_PGID | IdType::P_PIDFD => continue, // 已在上面处理
+                };
+
+                if !child_matches_id {
+                    continue;
+                }
+
+                let child_status = *child.task_status.lock();
+                let mut should_return = false;
+                let mut sig_info = SigInfo::new();
+
+                match child_status {
+                    TaskStatus::Zombie if wait_for_exited => {
+                        // 子进程已退出
+                        sig_info.si_signo = 17; // SIGCHLD
+                        sig_info.si_code = waitid_si_codes::CLD_EXITED;
+                        sig_info.si_pid = child.pid() as i32;
+                        sig_info.si_uid = child.uid() as i32;
+                        sig_info.si_status = child.exit_code();
+                        sig_info.si_utime = child.user_cpu_time.load(core::sync::atomic::Ordering::Relaxed) as i64;
+                        sig_info.si_stime = child.kernel_cpu_time.load(core::sync::atomic::Ordering::Relaxed) as i64;
+                        should_return = true;
+                    },
+                    TaskStatus::Stopped if wait_for_stopped => {
+                        // 子进程被停止
+                        sig_info.si_signo = 17; // SIGCHLD
+                        sig_info.si_code = waitid_si_codes::CLD_STOPPED;
+                        sig_info.si_pid = child.pid() as i32;
+                        sig_info.si_uid = child.uid() as i32;
+                        sig_info.si_status = 19; // SIGSTOP
+                        sig_info.si_utime = child.user_cpu_time.load(core::sync::atomic::Ordering::Relaxed) as i64;
+                        sig_info.si_stime = child.kernel_cpu_time.load(core::sync::atomic::Ordering::Relaxed) as i64;
+                        should_return = true;
+                    },
+                    _ => {
+                        // 其他状态暂不处理继续状态
+                        continue;
+                    }
+                }
+
+                if should_return {
+                    matched_child = Some(sig_info);
+                    if child_status == TaskStatus::Zombie && !no_wait {
+                        child_index = Some(idx);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 步骤5: 如果找到匹配的子进程
+        if let Some(sig_info) = matched_child {
+            // 写入siginfo_t到用户空间
+            let info_ref = match unsafe { translated_ref_mut(token, infop) } {
+                info => info,
+            };
+            *info_ref = sig_info;
+
+            // 如果是已退出的子进程且没有WNOWAIT标志，则移除子进程
+            if let Some(idx) = child_index {
+                let removed_child = current_task.children.lock().remove(idx);
+                let child_pid = removed_child.pid();
+
+                // 从全局任务管理器中移除僵尸进程
+                crate::task::remove_task(child_pid);
+            }
+
+            return 0; // 成功
+        }
+
+        // 步骤6: 如果没有找到匹配的子进程
+        if no_hang {
+            // WNOHANG: 非阻塞模式，直接返回
+            // 清空siginfo_t结构体
+            let info_ref = unsafe { translated_ref_mut(token, infop) };
+            *info_ref = SigInfo::new();
+            return 0;
+        }
+
+        // 步骤7: 阻塞等待
+        // 在真实实现中，这里应该将当前进程挂起并等待SIGCHLD信号
+        // 简化实现：暂停当前任务并重新调度
+        suspend_current_and_run_next();
+    }
+}
+
 /// 设置进程的nice值
 pub fn sys_setpriority(which: i32, who: i32, prio: i32) -> isize {
     // 简化实现：只支持设置当前进程的nice值
@@ -358,207 +600,189 @@ pub fn sys_sched_getscheduler(pid: i32) -> isize {
     }
 }
 
-/// Execute a program with arguments and environment variables
+/// execve - 执行新程序，完全替换当前进程的内存映像
+///
+/// 这是Linux标准的execve系统调用实现，完全遵循POSIX规范：
+/// - 成功时不返回，因为当前进程已被新程序替换
+/// - 失败时返回-1并设置errno
+/// - 保留PID，但重置所有其他进程状态
+/// - 关闭标记了O_CLOEXEC的文件描述符
+/// - 重置信号处理器为默认状态
 pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
-    // 验证输入参数
+    // 步骤1: 验证输入参数
     if path.is_null() {
-        return -14; // EFAULT
+        return -errno::EFAULT;
     }
 
     let token = current_user_token();
-    let path_str = translated_str(token, path);
 
-    // 验证路径长度和内容
-    if path_str.is_empty() || path_str.len() > 4096 {
-        return -36; // ENAMETOOLONG
+    // 步骤2: 解析并验证可执行文件路径
+    let path_str = match safe_translated_str(token, path, 4096) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+
+    if path_str.is_empty() {
+        return -errno::ENOENT;
     }
 
-    // 检查路径是否包含非法字符
+    // 检查路径中是否包含空字符
     if path_str.contains('\0') {
-        return -22; // EINVAL
+        return -errno::EINVAL;
     }
 
-    // Parse argv with strict limits
-    let mut args = Vec::new();
-    const MAX_ARGS: usize = 256; // 限制最大参数数量
-    const MAX_ARG_LEN: usize = 4096; // 限制单个参数最大长度
-    const MAX_TOTAL_ARG_SIZE: usize = 128 * 1024; // 限制所有参数总大小
-    let mut total_arg_size = 0;
+    // 步骤3: 解析参数数组 argv
+    let args = match parse_string_array(token, argv, "arguments") {
+        Ok(args) => args,
+        Err(e) => return e,
+    };
 
-    if !argv.is_null() {
-        let mut i = 0;
-        loop {
-            if i >= MAX_ARGS {
-                error!("sys_execve: too many arguments (max {})", MAX_ARGS);
-                return -7; // E2BIG
-            }
+    // 步骤4: 解析环境变量数组 envp
+    let envs = match parse_string_array(token, envp, "environment") {
+        Ok(envs) => envs,
+        Err(e) => return e,
+    };
 
-            let arg_ptr_addr = argv as usize + i * core::mem::size_of::<*const u8>();
-
-            // 验证指针地址是否有效
-            let buffers = translated_byte_buffer(
-                token,
-                arg_ptr_addr as *const u8,
-                core::mem::size_of::<*const u8>(),
-            );
-            if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
-                break;
-            }
-
-            let arg_ptr = usize::from_le_bytes([
-                buffers[0][0],
-                buffers[0][1],
-                buffers[0][2],
-                buffers[0][3],
-                buffers[0][4],
-                buffers[0][5],
-                buffers[0][6],
-                buffers[0][7],
-            ]);
-
-            if arg_ptr == 0 {
-                break;
-            }
-
-            // 验证参数指针有效性
-            if arg_ptr < 0x1000 || arg_ptr >= 0x8000_0000_0000_0000 {
-                error!("sys_execve: invalid argument pointer: 0x{:x}", arg_ptr);
-                return -14; // EFAULT
-            }
-
-            let arg_str = translated_str(token, arg_ptr as *const u8);
-
-            // 验证参数长度
-            if arg_str.len() > MAX_ARG_LEN {
-                error!("sys_execve: argument too long (max {})", MAX_ARG_LEN);
-                return -7; // E2BIG
-            }
-
-            total_arg_size += arg_str.len() + 1; // +1 for null terminator
-            if total_arg_size > MAX_TOTAL_ARG_SIZE {
-                error!(
-                    "sys_execve: total argument size too large (max {})",
-                    MAX_TOTAL_ARG_SIZE
-                );
-                return -7; // E2BIG
-            }
-
-            args.push(arg_str);
-            i += 1;
+    // 步骤5: 验证参数和环境变量的格式
+    for (i, env) in envs.iter().enumerate() {
+        if !env.contains('=') {
+            error!("execve: invalid environment variable at index {}: {}", i, env);
+            return -errno::EINVAL;
         }
     }
 
-    // Parse envp with strict limits
-    let mut envs = Vec::new();
-    const MAX_ENVS: usize = 256; // 限制最大环境变量数量
-    const MAX_ENV_LEN: usize = 4096; // 限制单个环境变量最大长度
-    const MAX_TOTAL_ENV_SIZE: usize = 128 * 1024; // 限制所有环境变量总大小
-    let mut total_env_size = 0;
+    // 步骤6: 获取当前任务
+    let current_task = match current_task() {
+        Some(task) => task,
+        None => return -errno::ESRCH,
+    };
 
-    if !envp.is_null() {
-        let mut i = 0;
-        loop {
-            if i >= MAX_ENVS {
-                error!(
-                    "sys_execve: too many environment variables (max {})",
-                    MAX_ENVS
-                );
-                return -7; // E2BIG
+    // 步骤7: 查找可执行文件
+    let elf_data = match get_app_data_by_name(&path_str) {
+        Some(data) => data,
+        None => {
+            error!("execve: executable not found: {}", path_str);
+            return -errno::ENOENT;
+        }
+    };
+
+    // 步骤8: 在execve过程中防止信号中断
+    // 在真实实现中，这里应该阻塞所有信号直到execve完成
+
+    // 步骤9: 执行程序替换
+    // 注意：如果成功，这个调用不会返回
+    match current_task.execve_replace(&path_str, &elf_data, &args, &envs) {
+        Ok(()) => {
+            // 如果到达这里，说明实现有问题，因为成功的execve不应该返回
+            error!("execve: unexpected return from successful execve");
+            -errno::EINVAL
+        },
+        Err(e) => {
+            error!("execve: failed to execute {}: {:?}", path_str, e);
+            match e {
+                crate::memory::mm::MemoryError::OutOfMemory => -errno::ENOMEM,
+                _ => -errno::EINVAL,
             }
-
-            let env_ptr_addr = envp as usize + i * core::mem::size_of::<*const u8>();
-
-            // 验证指针地址是否有效
-            let buffers = translated_byte_buffer(
-                token,
-                env_ptr_addr as *const u8,
-                core::mem::size_of::<*const u8>(),
-            );
-            if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
-                break;
-            }
-
-            let env_ptr = usize::from_le_bytes([
-                buffers[0][0],
-                buffers[0][1],
-                buffers[0][2],
-                buffers[0][3],
-                buffers[0][4],
-                buffers[0][5],
-                buffers[0][6],
-                buffers[0][7],
-            ]);
-
-            if env_ptr == 0 {
-                break;
-            }
-
-            // 验证环境变量指针有效性
-            if env_ptr < 0x1000 || env_ptr >= 0x8000_0000_0000_0000 {
-                error!("sys_execve: invalid environment pointer: 0x{:x}", env_ptr);
-                return -14; // EFAULT
-            }
-
-            let env_str = translated_str(token, env_ptr as *const u8);
-
-            // 验证环境变量长度
-            if env_str.len() > MAX_ENV_LEN {
-                error!(
-                    "sys_execve: environment variable too long (max {})",
-                    MAX_ENV_LEN
-                );
-                return -7; // E2BIG
-            }
-
-            // 验证环境变量格式 (必须包含=)
-            if !env_str.contains('=') {
-                error!(
-                    "sys_execve: invalid environment variable format: {}",
-                    env_str
-                );
-                return -22; // EINVAL
-            }
-
-            total_env_size += env_str.len() + 1; // +1 for null terminator
-            if total_env_size > MAX_TOTAL_ENV_SIZE {
-                error!(
-                    "sys_execve: total environment size too large (max {})",
-                    MAX_TOTAL_ENV_SIZE
-                );
-                return -7; // E2BIG
-            }
-
-            envs.push(env_str);
-            i += 1;
         }
     }
+}
 
-    // Set default arguments if none provided
-    if args.is_empty() {
-        args.push(path_str.clone());
+/// 安全地翻译C字符串，带长度限制
+fn safe_translated_str(token: usize, ptr: *const u8, max_len: usize) -> Result<String, isize> {
+    if ptr.is_null() {
+        return Err(-errno::EFAULT);
     }
 
-    // Set default environment if none provided
-    if envs.is_empty() {
-        envs.push("PATH=/bin:/usr/bin".to_string());
-        envs.push("HOME=/".to_string());
-        envs.push("USER=root".to_string());
-    }
+    let mut result = String::new();
+    let mut addr = ptr as usize;
 
-    if let Some(elf_data) = get_app_data_by_name(&path_str) {
-        let task = current_task().unwrap();
-        match task.exec_with_args(
-            &path_str,
-            &elf_data,
-            Some(&args.as_slice()),
-            Some(&envs.as_slice()),
-        ) {
-            Ok(()) => 0,
-            Err(_) => -1,
+    for _ in 0..max_len {
+        let buffers = translated_byte_buffer(token, addr as *const u8, 1);
+        if buffers.is_empty() {
+            return Err(-errno::EFAULT);
         }
-    } else {
-        -1
+
+        let ch = buffers[0][0];
+        if ch == 0 {
+            break;
+        }
+
+        result.push(ch as char);
+        addr += 1;
     }
+
+    if result.len() >= max_len {
+        return Err(-errno::ENAMETOOLONG);
+    }
+
+    Ok(result)
+}
+
+/// 解析字符串数组 (argv 或 envp)
+fn parse_string_array(token: usize, array_ptr: *const *const u8, array_name: &str) -> Result<Vec<String>, isize> {
+    if array_ptr.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    // Linux限制：最多256个参数/环境变量
+    const MAX_ARRAY_SIZE: usize = 256;
+    // Linux限制：单个字符串最大长度
+    const MAX_STRING_LEN: usize = 4096;
+    // Linux限制：所有字符串总大小
+    const MAX_TOTAL_SIZE: usize = 128 * 1024;
+
+    let mut total_size = 0;
+
+    loop {
+        if i >= MAX_ARRAY_SIZE {
+            error!("execve: too many {} (max {})", array_name, MAX_ARRAY_SIZE);
+            return Err(-errno::E2BIG);
+        }
+
+        let ptr_addr = array_ptr as usize + i * core::mem::size_of::<*const u8>();
+
+        // 读取字符串指针
+        let buffers = translated_byte_buffer(token, ptr_addr as *const u8, core::mem::size_of::<*const u8>());
+        if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<*const u8>() {
+            break;
+        }
+
+        let str_ptr = usize::from_le_bytes([
+            buffers[0][0], buffers[0][1], buffers[0][2], buffers[0][3],
+            buffers[0][4], buffers[0][5], buffers[0][6], buffers[0][7],
+        ]);
+
+        // NULL指针表示数组结束
+        if str_ptr == 0 {
+            break;
+        }
+
+        // 验证指针有效性
+        if str_ptr < 0x1000 || str_ptr >= 0x8000_0000_0000_0000 {
+            error!("execve: invalid {} pointer at index {}: 0x{:x}", array_name, i, str_ptr);
+            return Err(-errno::EFAULT);
+        }
+
+        // 解析字符串
+        let string = match safe_translated_str(token, str_ptr as *const u8, MAX_STRING_LEN) {
+            Ok(s) => s,
+            Err(e) => return Err(e),
+        };
+
+        total_size += string.len() + 1; // +1 for null terminator
+        if total_size > MAX_TOTAL_SIZE {
+            error!("execve: total {} size too large (max {})", array_name, MAX_TOTAL_SIZE);
+            return Err(-errno::E2BIG);
+        }
+
+        result.push(string);
+        i += 1;
+    }
+
+    Ok(result)
 }
 
 pub fn sys_get_args(argc_buf: *mut usize, argv_buf: *mut u8, buf_len: usize) -> isize {

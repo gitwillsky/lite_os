@@ -953,7 +953,7 @@ pub fn sys_chdir(path: *const u8) -> isize {
 }
 
 /// 获取当前工作目录
-pub fn sys_getcwd(buf: *mut u8, len: usize) -> isize {
+pub fn sys_get_cwd(buf: *mut u8, len: usize) -> isize {
     let token = current_user_token();
 
     if let Some(task) = current_task() {

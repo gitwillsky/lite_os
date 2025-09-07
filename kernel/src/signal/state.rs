@@ -227,6 +227,25 @@ impl SignalState {
         // 保持信号掩码（exec不重置掩码）
     }
 
+    /// 重置所有信号处理器为默认状态（execve时调用）
+    pub fn reset_to_default(&mut self) {
+        // 重置所有信号处理器为默认值
+        for i in 1..=31 {
+            if let Some(signal) = Signal::from_u8(i) {
+                self.handlers[(i - 1) as usize] = SignalDisposition {
+                    action: signal.default_action(),
+                    mask: SignalSet::new(),
+                    flags: 0,
+                };
+            }
+        }
+
+        // 清空所有状态
+        self.atomic_state.pending.store(0, Ordering::Relaxed);
+        self.atomic_state.blocked.store(0, Ordering::Relaxed);
+        self.atomic_state.needs_trap_context.store(0, Ordering::Relaxed);
+    }
+
     /// 为fork创建信号状态副本
     pub fn clone_for_fork(&self) -> Self {
         // 创建新的原子状态，复制当前值

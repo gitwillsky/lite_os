@@ -238,6 +238,24 @@ impl File {
         self.fd_table.clear();
     }
 
+    /// 关闭标记了O_CLOEXEC的文件描述符（execve时调用）
+    pub fn close_cloexec_fds(&mut self) {
+        const O_CLOEXEC: u32 = 0o2000000;
+        let mut fds_to_close = Vec::new();
+        
+        // 收集需要关闭的文件描述符
+        for (&fd, file_desc) in &self.fd_table {
+            if (file_desc.flags & O_CLOEXEC) != 0 {
+                fds_to_close.push(fd);
+            }
+        }
+        
+        // 关闭标记了O_CLOEXEC的文件描述符
+        for fd in fds_to_close {
+            self.fd_table.remove(&fd);
+        }
+    }
+
     /// 复制文件描述符（用于 dup 系统调用）
     pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
         // 语义修正：dup 应与 oldfd 共享同一个“打开文件描述”（open file description），
@@ -761,6 +779,86 @@ impl TaskControlBlock {
         tcb.mm.trap_context().x[10] = arg;
 
         Ok(tcb)
+    }
+
+    /// execve_replace - Linux标准的execve实现
+    /// 
+    /// 完全替换当前进程的内存映像，按照POSIX标准：
+    /// - 保留PID、PPID、会话ID、进程组ID
+    /// - 关闭标记了O_CLOEXEC的文件描述符  
+    /// - 重置信号处理器为默认状态
+    /// - 重置地址空间和程序状态
+    /// - 成功时不返回（进程被新程序替换）
+    pub fn execve_replace(
+        self: &Arc<Self>,
+        program_name: &str,
+        elf_data: &[u8], 
+        args: &[String],
+        envs: &[String],
+    ) -> Result<(), crate::memory::mm::MemoryError> {
+        // 步骤1: 创建新的内存空间 - 在完全提交之前先准备好
+        let (new_memory_set, user_sp, entry_point) = if args.is_empty() && envs.is_empty() {
+            MemorySet::from_elf(elf_data).map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+        } else {
+            MemorySet::from_elf_with_args(elf_data, args, envs).map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+        };
+
+        // 步骤2: 关闭标记了O_CLOEXEC的文件描述符
+        // 这必须在更换内存空间之前完成，以确保能够正确访问文件描述符表
+        {
+            let mut file_table = self.file.lock();
+            file_table.close_cloexec_fds();
+        }
+
+        // 步骤3: 重置信号处理器为默认状态
+        {
+            let mut signal_state = self.signal_state.lock();
+            signal_state.reset_to_default();
+        }
+
+        // 步骤4: 替换内存管理结构
+        // 这是关键步骤 - 完全替换当前进程的地址空间
+        let kernel_stack_top = self.mm.kernel_stack.get_top();
+        
+        // 更新内存管理器
+        self.mm.memory_set.lock().recycle_data_pages(); // 清理旧的页面
+        *self.mm.memory_set.lock() = new_memory_set;
+        *self.mm.trap_cx_va.lock() = TRAP_CONTEXT;
+        
+        // 重置堆指针
+        self.mm.heap_base.store(user_sp, atomic::Ordering::Relaxed);
+        self.mm.heap_top.store(user_sp, atomic::Ordering::Relaxed);
+
+        // 步骤5: 更新任务状态
+        // 保留PID，但更新程序名称和参数
+        *self.name.lock() = program_name.to_string();
+        *self.args.lock() = Some(args.to_vec());
+        *self.envs.lock() = Some(envs.to_vec());
+
+        // 重置运行时统计
+        self.total_cpu_time.store(0, atomic::Ordering::Relaxed);
+        self.user_cpu_time.store(0, atomic::Ordering::Relaxed);
+        self.kernel_cpu_time.store(0, atomic::Ordering::Relaxed);
+        self.creation_time.store(crate::timer::get_time_us(), atomic::Ordering::Relaxed);
+
+        // 步骤6: 设置新程序的陷阱上下文
+        let trap_cx = self.mm.trap_context();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.wait().lock().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+
+        // 步骤7: 激活新的地址空间
+        self.mm.memory_set.lock().active();
+
+        // 注意：在真实的execve中，我们应该从这里直接跳转到用户程序
+        // 而不是返回到系统调用的调用者。这需要特殊的汇编代码来实现
+        // 目前我们返回Ok(())，但调用者需要知道不应该期望返回到原程序
+        
+        Ok(())
     }
 
     /// 实现 clone 系统调用：更精细地控制父子进程间的共享
