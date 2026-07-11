@@ -1,0 +1,39 @@
+docs/phase-8-vfs-files.md
+  s_d637a88cd4b00d::t_36d9bf771c5a22 1-126
+kernel/src/drivers/device_manager.rs
+  s_d637a88cd4b00d::t_08048be5f5b301 16,294-303
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_3998ebb5b0885f 9,172,450-451,454-455,467-479,508-512,526,554-559,564-565,571,603-612,616,620,631,647,684-688,690,692-696,698-704,707-712,714,803-805,927-929,936,944,947-948,956-961,964-966,1012,1052,1057-1058
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_b97476731fd320 1,13,16-17,19-33,35-48
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_87c337776ab5bd 18,21,23-32
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_0a320d58c9bc18 1,4,6,12-16,23-39,41,45-58,60-61,66-67,69-72,74-90,93,95-96,98,107
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_2ec6b201c4b068 5-6,18,28-37,39-44,46-50,53,68
+kernel/src/task/loader.rs
+  s_d637a88cd4b00d::t_57a16acb4be914 3,10-13,22,26-32
+kernel/src/task/task.rs
+  s_d637a88cd4b00d::t_55fadeee8d1f9a 1,345,353,356
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_f9f11e31e895fe 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4243f2b5ffd5594b1c6e03383186ce5fdf2e5d7",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
