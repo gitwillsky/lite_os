@@ -56,10 +56,12 @@ SECTIONS {
     . = ALIGN(4K);
     ebss = .;
 
-    /* 为每个核心分配独立的启动栈 */
-    . = ALIGN(16);
+    /* 单一 boot hart early stack；secondary hart 由 kernel 通过 SBI HSM 启动后使用动态栈。 */
+    . = ALIGN(4K);
     boot_stack_bottom = .;
-    . += KERNEL_STACK_SIZE * 8; /* 8个核心，每个128KB */
+    . += 4K;                 /* 守护页，启用页表后保持未映射 */
+    boot_stack_mapped_bottom = .;
+    . += KERNEL_STACK_SIZE;
     boot_stack_top = .;
 
     ekernel = .;

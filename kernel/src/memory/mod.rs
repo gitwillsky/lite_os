@@ -208,37 +208,26 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         )
         .expect("Failed to map kernel .bss section");
 
-    // kernel boot stacks with per-hart guard pages at the bottom of each stack
-    // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题
+    // boot hart 独占的 early stack，底部保留一页 guard。
+    // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题。
     let boot_stack_bottom_addr = boot_stack_bottom as usize;
     let boot_stack_top_addr = boot_stack_top as usize;
+    let mapped_bottom = boot_stack_bottom_addr + PAGE_SIZE;
     debug!(
-        "[init_kernel_space] boot stack region: {:#x} - {:#x}",
-        boot_stack_bottom_addr, boot_stack_top_addr
+        "[init_kernel_space] boot stack: {:#x} - {:#x} (guard @ {:#x})",
+        mapped_bottom, boot_stack_top_addr, boot_stack_bottom_addr
     );
-    {
-        use crate::arch::hart::MAX_SUPPORTED_HARTS;
-        for hart in 0..MAX_SUPPORTED_HARTS {
-            let stack_top = boot_stack_top_addr - hart * KERNEL_STACK_SIZE;
-            let stack_bottom = stack_top - KERNEL_STACK_SIZE;
-            let mapped_bottom = stack_bottom + PAGE_SIZE; // 保留 1 页守护页
-            debug!(
-                "[init_kernel_space] boot stack[{}]: {:#x} - {:#x} (guard @ {:#x})",
-                hart, mapped_bottom, stack_top, stack_bottom
-            );
-            memory_set
-                .push(
-                    MapArea::new(
-                        mapped_bottom.into(),
-                        stack_top.into(),
-                        mm::MapType::Identical,
-                        MapPermission::R | MapPermission::W,
-                    ),
-                    None,
-                )
-                .expect("Failed to map per-hart kernel boot stack");
-        }
-    }
+    memory_set
+        .push(
+            MapArea::new(
+                mapped_bottom.into(),
+                boot_stack_top_addr.into(),
+                mm::MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        )
+        .expect("Failed to map kernel boot stack");
 
     // 后续可演进为受控的 physmap/kmap 方案，再逐步去除依赖。
     {

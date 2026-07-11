@@ -16,16 +16,10 @@ static BSS_STATE: AtomicUsize = AtomicUsize::new(BSS_PENDING);
 unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
-            # 1. 固定栈数组只能由合法 hart ID 索引；越界 hart 在接触任何栈前 fail-stop。
-            li t0, {max_cores}
-            bgeu a0, t0, 2f
-
-            # 2. 每个 hart 使用 linker 预留的独立 128 KiB 启动栈。
-            slli t0, a0, 17
+            # 1. bootloader 只把 cold-boot hart 送入本入口；secondary 使用 _secondary_start。
             la sp, boot_stack_top
-            sub sp, sp, t0
 
-            # 3. 初始化内核 psABI 固定寄存器；用户 gp/tp 将由 trampoline 单独保存。
+            # 2. 初始化内核 psABI 固定寄存器；用户 gp/tp 将由 trampoline 单独保存。
             .option push
             .option norelax
             la gp, __global_pointer$
@@ -33,7 +27,7 @@ unsafe extern "C" fn _start() -> ! {
             mv tp, a0
             csrw sscratch, zero
 
-            # 4. 使用被调用者保存寄存器跨越 clear_bss 调用保存 SBI 参数。
+            # 3. 使用被调用者保存寄存器跨越 clear_bss 调用保存 SBI 参数。
             mv s0, a0
             mv s1, a1
 
@@ -47,14 +41,7 @@ unsafe extern "C" fn _start() -> ! {
         1:
             wfi
             j 1b
-        2:
-            csrci sstatus, 2
-            csrw sie, zero
-        3:
-            wfi
-            j 3b
         ",
-        max_cores = const crate::arch::hart::MAX_SUPPORTED_HARTS,
         clear_bss = sym clear_bss,
     )
 }
