@@ -5,9 +5,9 @@ use crate::{
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        ProgramLoadError, TaskControlBlock, WaitChildError, current_task,
-        exit_current_and_run_next, fork_current_process, load_program_from_fs, parent_pid,
-        reap_child, suspend_current_and_run_next, wait_child,
+        ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
+        current_task, exit_current_and_run_next, fork_current_process, load_program_from_fs,
+        parent_pid, reap_child, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
 
@@ -73,14 +73,80 @@ pub(crate) fn sys_clone(
     child_tid: usize,
 ) -> isize {
     const SIGCHLD: usize = 17;
-    if flags != SIGCHLD || stack != 0 || parent_tid != 0 || tls != 0 || child_tid != 0 {
+    if flags == SIGCHLD {
+        if stack != 0 || parent_tid != 0 || tls != 0 || child_tid != 0 {
+            return -errno::EINVAL;
+        }
+        let current = current_task().expect("clone requires current task");
+        if thread_count(current.tgid()) != 1 {
+            return -errno::EAGAIN;
+        }
+        return match fork_current_process() {
+            Ok(pid) => pid as isize,
+            Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
+            Err(_) => -errno::EAGAIN,
+        };
+    }
+    const CLONE_VM: usize = 0x100;
+    const CLONE_FS: usize = 0x200;
+    const CLONE_FILES: usize = 0x400;
+    const CLONE_SIGHAND: usize = 0x800;
+    const CLONE_THREAD: usize = 0x1_0000;
+    const CLONE_SYSVSEM: usize = 0x4_0000;
+    const CLONE_SETTLS: usize = 0x8_0000;
+    const CLONE_PARENT_SETTID: usize = 0x10_0000;
+    const CLONE_CHILD_CLEARTID: usize = 0x20_0000;
+    const CLONE_CHILD_SETTID: usize = 0x100_0000;
+    const REQUIRED: usize = CLONE_VM
+        | CLONE_FS
+        | CLONE_FILES
+        | CLONE_SIGHAND
+        | CLONE_THREAD
+        | CLONE_SYSVSEM
+        | CLONE_SETTLS;
+    const OPTIONAL: usize = CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
+    if flags & REQUIRED != REQUIRED
+        || flags & !(REQUIRED | OPTIONAL) != 0
+        || stack == 0
+        || flags & CLONE_PARENT_SETTID != 0 && parent_tid == 0
+        || flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID) != 0 && child_tid == 0
+    {
         return -errno::EINVAL;
     }
-    match fork_current_process() {
-        Ok(pid) => pid as isize,
-        Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
-        Err(_) => -errno::EAGAIN,
+    match clone_current_thread(
+        stack,
+        tls,
+        (flags & CLONE_PARENT_SETTID != 0).then_some(parent_tid),
+        (flags & CLONE_CHILD_SETTID != 0).then_some(child_tid),
+        (flags & CLONE_CHILD_CLEARTID != 0).then_some(child_tid),
+    ) {
+        Ok(tid) => tid as isize,
+        Err(ThreadCloneError::Fault) => -errno::EFAULT,
+        Err(ThreadCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
+        Err(ThreadCloneError::Memory(_)) => -errno::EINVAL,
     }
+}
+
+/// @description 设置 calling Thread 的 clear-child-tid 地址。
+///
+/// @param address 零表示清除，否则 thread exit 时写零并 futex wake。
+/// @return calling TID。
+pub(crate) fn sys_set_tid_address(address: usize) -> isize {
+    current_task()
+        .expect("set_tid_address requires current task")
+        .set_clear_child_tid(address) as isize
+}
+
+/// @description 注册 calling Thread 的 Linux robust-list head。
+///
+/// @param head 用户 robust_list_head 地址。
+/// @param length RV64 必须为 24 bytes。
+/// @return 成功返回零，形状错误返回 `EINVAL`。
+pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
+    current_task()
+        .expect("set_robust_list requires current task")
+        .set_robust_list(head, length)
+        .map_or(-errno::EINVAL, |()| 0)
 }
 
 /// @description 等待并消费直接 child 的最小 exit record。
@@ -94,6 +160,10 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
     const WNOHANG: usize = 1;
     if options & !WNOHANG != 0 || !rusage.is_null() {
         return -errno::EINVAL;
+    }
+    let current = current_task().expect("wait4 requires current task");
+    if thread_count(current.tgid()) != 1 {
+        return -errno::EAGAIN;
     }
     let record = match wait_child(pid, options & WNOHANG != 0) {
         Ok(Some(record)) => record,
@@ -124,6 +194,10 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
+    if thread_count(task.tgid()) != 1 {
+        // exec 必须先终止 sibling；在该事务实现前明确拒绝，避免共享地址空间替换后出现 stale context。
+        return -errno::EAGAIN;
+    }
     let path = match copy_user_c_string(&task, path, MAX_PATH_BYTES, errno::ENAMETOOLONG) {
         Ok(path) if !path.is_empty() => path,
         Ok(_) => return -errno::ENOENT,

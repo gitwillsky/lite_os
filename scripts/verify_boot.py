@@ -49,6 +49,7 @@ def boot(qemu: str, smp: int) -> None:
         "LiteOS init",
         "vma ok",
         "process ok",
+        "thread futex ok",
         "ext2 rw ok",
     )
     command = [

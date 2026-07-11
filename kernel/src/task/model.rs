@@ -2,6 +2,7 @@ use core::sync::atomic::AtomicUsize;
 
 use alloc::{
     string::{String, ToString},
+    sync::Arc,
     vec::Vec,
 };
 use spin::Mutex;
@@ -32,6 +33,7 @@ pub(crate) enum RunState {
 pub(crate) enum WaitMembership {
     Deadline((u64, u64)),
     Child,
+    Futex((usize, usize, u64)),
 }
 
 #[derive(Debug)]
@@ -40,6 +42,21 @@ struct AddressSpace {
 }
 
 impl AddressSpace {
+    fn write_clone_tid_values(
+        &self,
+        addresses: [Option<usize>; 2],
+        tid: i32,
+    ) -> Result<(), UserAccessError> {
+        let mut memory = self.memory_set.lock();
+        for address in addresses.into_iter().flatten() {
+            memory.validate_user_write(address, core::mem::size_of::<i32>())?;
+        }
+        for address in addresses.into_iter().flatten() {
+            memory.copy_to_user(address, &tid.to_ne_bytes())?;
+        }
+        Ok(())
+    }
+
     fn map_anonymous(
         &self,
         address: usize,
@@ -119,6 +136,8 @@ struct ThreadContext {
     task_cx: Mutex<TaskContext>,
     kernel_trap_handler: usize,
     kernel_trap_return: usize,
+    clear_child_tid: Mutex<Option<usize>>,
+    robust_list: Mutex<Option<usize>>,
 }
 
 #[derive(Debug)]
@@ -193,7 +212,7 @@ struct Process {
 
 /// @description 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
 pub(crate) struct TaskControlBlock {
-    process: Process,
+    process: Arc<Process>,
     thread: ThreadContext,
     pub(crate) scheduling: SchedulingEntity,
 }
@@ -218,14 +237,14 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
-        let process = Process {
+        let process = Arc::new(Process {
             tgid: pid,
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
             },
             cwd: Mutex::new("/".to_string()),
             files: Mutex::new(FileDescriptorTable::with_console(console)),
-        };
+        });
         let tcb = Self {
             process,
             thread: ThreadContext {
@@ -238,6 +257,8 @@ impl TaskControlBlock {
                 )),
                 kernel_trap_handler,
                 kernel_trap_return,
+                clear_child_tid: Mutex::new(None),
+                robust_list: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -301,14 +322,14 @@ impl TaskControlBlock {
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
         let child = Self {
-            process: Process {
+            process: Arc::new(Process {
                 tgid: pid,
                 address_space: AddressSpace {
                     memory_set: Mutex::new(memory_set),
                 },
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
-            },
+            }),
             thread: ThreadContext {
                 tid,
                 kernel_stack,
@@ -319,6 +340,8 @@ impl TaskControlBlock {
                 )),
                 kernel_trap_handler: self.thread.kernel_trap_handler,
                 kernel_trap_return: self.thread.kernel_trap_return,
+                clear_child_tid: Mutex::new(None),
+                robust_list: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -341,6 +364,160 @@ impl TaskControlBlock {
         drop(policy);
         child.set_trap_context(child_trap);
         Ok(child)
+    }
+
+    /// @description 在当前 Process 内创建共享资源的独立 Thread 执行实体。
+    ///
+    /// @param tid TaskManager 分配的全局唯一 TID。
+    /// @param user_stack child 首次返回用户态使用的栈顶。
+    /// @param tls 写入 child `tp(x4)` 的 TLS pointer。
+    /// @param clear_child_tid thread exit 时清零并 futex-wake 的用户地址。
+    /// @return 成功返回 New Thread；任何映射失败都不发布 scheduler membership。
+    pub(super) fn clone_thread(
+        &self,
+        tid: usize,
+        user_stack: usize,
+        tls: usize,
+        clear_child_tid: Option<usize>,
+    ) -> Result<Self, MemoryError> {
+        if user_stack == 0 || user_stack & 0xf != 0 {
+            return Err(MemoryError::InvalidRange);
+        }
+        let kernel_stack = KernelStack::try_new()?;
+        let kernel_stack_top = kernel_stack.get_top();
+        let trap_cx_va = self
+            .process
+            .address_space
+            .memory_set
+            .lock()
+            .allocate_thread_trap_context(tid)?;
+        let policy = self.scheduling.policy.lock();
+        let mut child_trap = self.load_trap_context();
+        child_trap.x[2] = user_stack;
+        child_trap.x[4] = tls;
+        child_trap.x[10] = 0;
+        child_trap.kernel_sp = kernel_stack_top;
+        child_trap.kernel_hart_id = 0;
+        child_trap.kernel_gp = 0;
+        let child = Self {
+            process: self.process.clone(),
+            thread: ThreadContext {
+                tid,
+                kernel_stack,
+                trap_cx_va: Mutex::new(trap_cx_va),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                    kernel_stack_top,
+                    self.thread.kernel_trap_return,
+                )),
+                kernel_trap_handler: self.thread.kernel_trap_handler,
+                kernel_trap_return: self.thread.kernel_trap_return,
+                clear_child_tid: Mutex::new(clear_child_tid),
+                robust_list: Mutex::new(None),
+            },
+            scheduling: SchedulingEntity {
+                state: IrqMutex::new(SchedulingState {
+                    run_state: RunState::New,
+                    next_generation: 0,
+                    wait: None,
+                }),
+                policy: Mutex::new(Sched {
+                    last_runtime: 0,
+                    nice: policy.nice,
+                    vruntime: policy.vruntime,
+                }),
+                last_cpu: AtomicUsize::new(
+                    self.scheduling
+                        .last_cpu
+                        .load(core::sync::atomic::Ordering::Relaxed),
+                ),
+            },
+        };
+        drop(policy);
+        child.set_trap_context(child_trap);
+        Ok(child)
+    }
+
+    pub(crate) fn set_clear_child_tid(&self, address: usize) -> usize {
+        *self.thread.clear_child_tid.lock() = (address != 0).then_some(address);
+        self.tid()
+    }
+
+    pub(super) fn take_clear_child_tid(&self) -> Option<usize> {
+        self.thread.clear_child_tid.lock().take()
+    }
+
+    pub(crate) fn set_robust_list(&self, head: usize, length: usize) -> Result<(), ()> {
+        if head == 0 || length != 3 * core::mem::size_of::<usize>() {
+            return Err(());
+        }
+        *self.thread.robust_list.lock() = Some(head);
+        Ok(())
+    }
+
+    pub(super) fn cleanup_robust_list(&self) {
+        const FUTEX_WAITERS: u32 = 0x8000_0000;
+        const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
+        const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
+        let Some(head) = self.thread.robust_list.lock().take() else {
+            return;
+        };
+        let mut header = [0u8; 3 * core::mem::size_of::<usize>()];
+        if self.copy_from_user(head, &mut header).is_err() {
+            return;
+        }
+        let word = core::mem::size_of::<usize>();
+        let mut entry = usize::from_ne_bytes(header[0..word].try_into().unwrap());
+        let offset = isize::from_ne_bytes(header[word..2 * word].try_into().unwrap());
+        let pending = usize::from_ne_bytes(header[2 * word..3 * word].try_into().unwrap());
+        let mark = |entry: usize| {
+            let Some(address) = entry.checked_add_signed(offset) else {
+                return;
+            };
+            let mut bytes = [0u8; 4];
+            if self.copy_from_user(address, &mut bytes).is_err() {
+                return;
+            }
+            let old = u32::from_ne_bytes(bytes);
+            if old & FUTEX_TID_MASK != self.tid() as u32 {
+                return;
+            }
+            let new = old & FUTEX_WAITERS | FUTEX_OWNER_DIED;
+            let exchanged = self
+                .process
+                .address_space
+                .memory_set
+                .lock()
+                .compare_exchange_user_u32(address, old, new)
+                .is_ok_and(|result| result.is_ok());
+            if exchanged {
+                crate::task::futex_wake(self.tgid(), address, 1);
+            }
+        };
+        for _ in 0..2048 {
+            if entry == 0 || entry == head {
+                break;
+            }
+            let mut next = [0u8; core::mem::size_of::<usize>()];
+            if self.copy_from_user(entry, &mut next).is_err() {
+                break;
+            }
+            mark(entry);
+            entry = usize::from_ne_bytes(next);
+        }
+        if pending != 0 {
+            mark(pending);
+        }
+    }
+
+    pub(super) fn remove_thread_trap_context(&self) {
+        if self.trap_context_va() == TRAP_CONTEXT {
+            return;
+        }
+        self.process
+            .address_space
+            .memory_set
+            .lock()
+            .remove_thread_trap_context(self.trap_context_va());
     }
 
     /// 获取当前线程TrapContext虚拟地址
@@ -407,6 +584,16 @@ impl TaskControlBlock {
         self.process
             .address_space
             .copy_to_user(user_address, source)
+    }
+
+    pub(super) fn write_clone_tid_values(
+        &self,
+        addresses: [Option<usize>; 2],
+        tid: i32,
+    ) -> Result<(), UserAccessError> {
+        self.process
+            .address_space
+            .write_clone_tid_values(addresses, tid)
     }
 
     pub(crate) fn copy_user_c_string(

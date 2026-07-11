@@ -40,7 +40,8 @@
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership | SchedulingState |
 | process address space、cwd、fd table | Process |
-| PID allocation、parent edge、live task 或最小 exit record、child waiter | TaskManager process graph |
+| PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
+| `(TGID,uaddr)` futex waiter membership | TaskManager futex queue；SchedulingState 保存唯一 token |
 | OFD offset/status flags | OpenFileDescription |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |

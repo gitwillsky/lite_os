@@ -1,10 +1,41 @@
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 use syscall_abi::{
-    SYSCALL_CLONE, SYSCALL_CLOSE, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC,
-    SYSCALL_FTRUNCATE, SYSCALL_GETDENTS64, SYSCALL_GETPPID, SYSCALL_LSEEK, SYSCALL_MKDIRAT,
-    SYSCALL_MMAP, SYSCALL_MPROTECT, SYSCALL_MUNMAP, SYSCALL_OPENAT, SYSCALL_READ,
-    SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_UNLINKAT, SYSCALL_WAIT4, SYSCALL_WRITE,
+    SYSCALL_CLONE, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC,
+    SYSCALL_FTRUNCATE, SYSCALL_FUTEX, SYSCALL_GETDENTS64, SYSCALL_GETPPID, SYSCALL_GETTID,
+    SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_MMAP, SYSCALL_MPROTECT, SYSCALL_MUNMAP, SYSCALL_OPENAT,
+    SYSCALL_READ, SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_SET_ROBUST_LIST,
+    SYSCALL_SET_TID_ADDRESS, SYSCALL_UNLINKAT, SYSCALL_WAIT4, SYSCALL_WRITE,
 };
+
+global_asm!(
+    r#"
+    .section .text
+    .global __clone_thread
+    .type __clone_thread, @function
+__clone_thread:
+    li a7, 220
+    ecall
+    bnez a0, 1f
+    ld t0, 0(sp)
+    ld a0, 8(sp)
+    addi sp, sp, 16
+    jr t0
+1:
+    ret
+    .size __clone_thread, . - __clone_thread
+"#
+);
+
+// SAFETY: symbol is defined by the global assembly above and follows the declared C ABI.
+unsafe extern "C" {
+    fn __clone_thread(
+        flags: usize,
+        child_stack: usize,
+        parent_tid: usize,
+        tls: usize,
+        child_tid: usize,
+    ) -> isize;
+}
 
 pub const AT_FDCWD: isize = -100;
 pub const O_RDWR: usize = 2;
@@ -51,6 +82,13 @@ pub fn syscall(id: usize, args: [usize; 6]) -> isize {
 /// @return 此函数不返回；若 kernel 错误返回，则停留在本地死循环。
 pub fn exit_group(status: i32) -> ! {
     let _ = syscall(SYSCALL_EXIT_GROUP, [status as usize, 0, 0, 0, 0, 0]);
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+pub fn exit_thread(status: i32) -> ! {
+    let _ = syscall(SYSCALL_EXIT, [status as usize, 0, 0, 0, 0, 0]);
     loop {
         core::hint::spin_loop();
     }
@@ -184,6 +222,10 @@ pub fn getppid() -> isize {
     syscall(SYSCALL_GETPPID, [0, 0, 0, 0, 0, 0])
 }
 
+pub fn gettid() -> isize {
+    syscall(SYSCALL_GETTID, [0, 0, 0, 0, 0, 0])
+}
+
 /// @description 等待指定 child 并取得 Linux wait status。
 ///
 /// @param pid 正 child PID 或 `-1`。
@@ -193,4 +235,75 @@ pub fn getppid() -> isize {
 pub fn wait4(pid: isize, status: Option<&mut i32>, options: usize) -> isize {
     let status = status.map_or(0, |value| value as *mut i32 as usize);
     syscall(SYSCALL_WAIT4, [pid as usize, status, options, 0, 0, 0])
+}
+
+/// @description 在独立用户栈上创建共享 Process 资源的 Thread。
+///
+/// @param stack_top 16-byte aligned 可写栈顶。
+/// @param tls child `tp` 值。
+/// @param parent_tid parent TID 输出地址。
+/// @param child_tid child TID 输出及 clear-child-tid 地址。
+/// @param entry child 首入口，必须不返回。
+/// @param argument 传给 entry 的 machine word。
+/// @return parent 获得 child TID，失败为负 errno。
+///
+/// # Safety
+///
+/// `stack_top-16..stack_top` 必须是 child 独占的已映射 RW 空间；entry/argument
+/// 引用的对象必须存活到 child 退出，entry 不得返回。
+// SAFETY: caller must uphold the child stack and entry lifetime contract documented above.
+pub unsafe fn clone_thread(
+    stack_top: usize,
+    tls: usize,
+    parent_tid: *mut i32,
+    child_tid: *mut i32,
+    entry: extern "C" fn(usize) -> !,
+    argument: usize,
+) -> isize {
+    const FLAGS: usize = 0x13d_0f00;
+    let child_stack = stack_top - 16;
+    // SAFETY: caller guarantees the top 16 bytes belong exclusively to the new child stack.
+    unsafe {
+        (child_stack as *mut usize).write(entry as usize);
+        ((child_stack + 8) as *mut usize).write(argument);
+        __clone_thread(
+            FLAGS,
+            child_stack,
+            parent_tid as usize,
+            tls,
+            child_tid as usize,
+        )
+    }
+}
+
+pub fn futex_wait(address: *const u32, expected: u32) -> isize {
+    syscall(
+        SYSCALL_FUTEX,
+        [address as usize, 128, expected as usize, 0, 0, 0],
+    )
+}
+
+pub fn futex_wake(address: *const u32, count: u32) -> isize {
+    syscall(
+        SYSCALL_FUTEX,
+        [address as usize, 129, count as usize, 0, 0, 0],
+    )
+}
+
+pub fn set_tid_address(address: *mut i32) -> isize {
+    syscall(SYSCALL_SET_TID_ADDRESS, [address as usize, 0, 0, 0, 0, 0])
+}
+
+pub fn set_robust_list(head: *mut usize) -> isize {
+    syscall(
+        SYSCALL_SET_ROBUST_LIST,
+        [head as usize, 3 * core::mem::size_of::<usize>(), 0, 0, 0, 0],
+    )
+}
+
+pub fn thread_pointer() -> usize {
+    let value;
+    // SAFETY: reading tp has no memory effect and returns the calling Thread's TLS pointer.
+    unsafe { asm!("mv {}, tp", out(reg) value, options(nomem, nostack)) };
+    value
 }

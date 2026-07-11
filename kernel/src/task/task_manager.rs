@@ -18,7 +18,7 @@ use crate::{
 };
 
 enum ProcessState {
-    Live(Arc<TaskControlBlock>),
+    Live(BTreeMap<usize, Arc<TaskControlBlock>>),
     Exited(i32),
 }
 
@@ -51,11 +51,13 @@ impl TaskManager {
     fn add_init(&self, task: Arc<TaskControlBlock>) {
         let tgid = task.tgid();
         assert_eq!(tgid, INIT_PID);
+        let mut threads = BTreeMap::new();
+        threads.insert(task.tid(), task.clone());
         let previous = self.graph.lock().nodes.insert(
             tgid,
             ProcessNode {
                 parent: None,
-                state: ProcessState::Live(task.clone()),
+                state: ProcessState::Live(threads),
                 waiter: None,
             },
         );
@@ -83,15 +85,29 @@ impl TaskManager {
             ),
             "fork parent disappeared before child publication"
         );
+        let mut threads = BTreeMap::new();
+        threads.insert(child.tid(), child);
         let previous = graph.nodes.insert(
             pid,
             ProcessNode {
                 parent: Some(parent),
-                state: ProcessState::Live(child),
+                state: ProcessState::Live(threads),
                 waiter: None,
             },
         );
         assert!(previous.is_none(), "allocated PID already exists");
+    }
+
+    fn publish_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) {
+        let mut graph = self.graph.lock();
+        let node = graph
+            .nodes
+            .get_mut(&tgid)
+            .expect("thread group missing from process graph");
+        let ProcessState::Live(threads) = &mut node.state else {
+            panic!("cannot publish thread into exited process");
+        };
+        assert!(threads.insert(thread.tid(), thread).is_none());
     }
 
     fn parent_pid(&self, pid: usize) -> usize {
@@ -107,6 +123,46 @@ impl TaskManager {
 struct DeadlineWaitQueue {
     next_sequence: u64,
     entries: BTreeMap<(u64, u64), Arc<TaskControlBlock>>,
+}
+
+struct FutexWaitQueue {
+    next_sequence: u64,
+    entries: BTreeMap<(usize, usize, u64), Arc<TaskControlBlock>>,
+}
+
+impl FutexWaitQueue {
+    fn new() -> Self {
+        Self {
+            next_sequence: 0,
+            entries: BTreeMap::new(),
+        }
+    }
+
+    fn insert(
+        &mut self,
+        tgid: usize,
+        address: usize,
+        task: Arc<TaskControlBlock>,
+    ) -> (usize, usize, u64) {
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        assert_ne!(self.next_sequence, 0, "futex wait sequence wrapped");
+        let key = (tgid, address, self.next_sequence);
+        assert!(self.entries.insert(key, task).is_none());
+        key
+    }
+
+    fn take(
+        &mut self,
+        tgid: usize,
+        address: usize,
+    ) -> Option<((usize, usize, u64), Arc<TaskControlBlock>)> {
+        let key = *self
+            .entries
+            .range((tgid, address, 0)..=(tgid, address, u64::MAX))
+            .next()?
+            .0;
+        self.entries.remove(&key).map(|task| (key, task))
+    }
 }
 
 impl DeadlineWaitQueue {
@@ -140,6 +196,9 @@ lazy_static! {
     // OWNER: task manager owns the deadline index for sleeping tasks.
     static ref DEADLINE_WAIT_QUEUE: IrqMutex<DeadlineWaitQueue> =
         IrqMutex::new(DeadlineWaitQueue::new());
+    // OWNER: task manager owns address-space-keyed futex waiter membership.
+    static ref FUTEX_WAIT_QUEUE: IrqMutex<FutexWaitQueue> =
+        IrqMutex::new(FutexWaitQueue::new());
 }
 
 /// @description 发布 kernel 创建的唯一 init task。
@@ -158,6 +217,14 @@ pub(crate) fn parent_pid(pid: usize) -> usize {
     TASK_MANAGER.parent_pid(pid)
 }
 
+pub(crate) fn thread_count(tgid: usize) -> usize {
+    let graph = TASK_MANAGER.graph.lock();
+    match graph.nodes.get(&tgid).map(|node| &node.state) {
+        Some(ProcessState::Live(threads)) => threads.len(),
+        _ => 0,
+    }
+}
+
 /// @description eager fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
 ///
 /// @return parent 成功获得 child PID；地址空间复制 OOM 时 graph 不发布 child。
@@ -169,6 +236,46 @@ pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError
     TASK_MANAGER.publish_child(parent.tgid(), child.clone());
     enqueue_new_task(child);
     Ok(child_pid)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ThreadCloneError {
+    Memory(crate::memory::MemoryError),
+    Fault,
+}
+
+/// @description 在当前 thread group 内创建共享 Process 资源的新 Thread。
+///
+/// @param stack 16-byte aligned child 用户栈顶。
+/// @param tls child `tp`。
+/// @param parent_tid 可选 parent TID copyout。
+/// @param child_set_tid 可选 child TID copyout。
+/// @param clear_child_tid 可选 thread exit 清零地址。
+/// @return 成功返回 child TID；任何验证/分配失败都不发布 graph/runqueue membership。
+pub(crate) fn clone_current_thread(
+    stack: usize,
+    tls: usize,
+    parent_tid: Option<usize>,
+    child_set_tid: Option<usize>,
+    clear_child_tid: Option<usize>,
+) -> Result<usize, ThreadCloneError> {
+    let parent = current_task().expect("thread clone requires current task");
+    let tid = TASK_MANAGER.allocate_pid().0;
+    let child = Arc::new(
+        parent
+            .clone_thread(tid, stack, tls, clear_child_tid)
+            .map_err(ThreadCloneError::Memory)?,
+    );
+    if parent
+        .write_clone_tid_values([parent_tid, child_set_tid], tid as i32)
+        .is_err()
+    {
+        child.remove_thread_trap_context();
+        return Err(ThreadCloneError::Fault);
+    }
+    TASK_MANAGER.publish_thread(parent.tgid(), child.clone());
+    enqueue_new_task(child);
+    Ok(tid)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -286,6 +393,81 @@ pub(crate) fn reap_child(pid: usize) {
     assert!(matches!(node.state, ProcessState::Exited(_)));
     assert!(node.waiter.is_none());
     graph.nodes.remove(&pid);
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FutexWaitError {
+    Again,
+    Fault,
+    Invalid,
+}
+
+/// @description 按 `(tgid,uaddr)` 等待用户 u32 改变，队列锁覆盖比较与 membership 发布。
+///
+/// @param address 4-byte aligned 用户地址。
+/// @param expected 入队前必须匹配的当前值。
+/// @return 被 wake 后返回成功；值不等、fault 或对齐错误返回明确分类。
+pub(crate) fn futex_wait(address: usize, expected: u32) -> Result<(), FutexWaitError> {
+    if address == 0 || address & 3 != 0 {
+        return Err(FutexWaitError::Invalid);
+    }
+    let task = current_task().expect("futex wait requires current task");
+    let cpu = hart_id();
+    let mut queue = FUTEX_WAIT_QUEUE.lock();
+    let mut bytes = [0u8; 4];
+    task.copy_from_user(address, &mut bytes)
+        .map_err(|_| FutexWaitError::Fault)?;
+    if u32::from_ne_bytes(bytes) != expected {
+        return Err(FutexWaitError::Again);
+    }
+
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
+    with_current_processor(|processor| {
+        let current = processor
+            .current
+            .take()
+            .expect("futex wait requires current task");
+        assert!(Arc::ptr_eq(&current, &task));
+        let mut scheduling = task.scheduling.state.lock();
+        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert!(scheduling.wait.is_none());
+        let key = queue.insert(task.tgid(), address, current);
+        scheduling.wait = Some(WaitMembership::Futex(key));
+        scheduling.run_state = RunState::Blocking { cpu };
+    });
+    drop(queue);
+    schedule_with_task_context(task);
+    Ok(())
+}
+
+/// @description 唤醒同一地址空间 key 上最多 `count` 个 futex waiter。
+///
+/// @param tgid 地址空间 identity。
+/// @param address 4-byte aligned 用户地址。
+/// @param count 最大唤醒数。
+/// @return 实际消费的 waiter 数。
+pub(crate) fn futex_wake(tgid: usize, address: usize, count: usize) -> usize {
+    if address == 0 || address & 3 != 0 || count == 0 {
+        return 0;
+    }
+    let mut waiters = alloc::vec::Vec::new();
+    let mut queue = FUTEX_WAIT_QUEUE.lock();
+    for _ in 0..count {
+        let Some(waiter) = queue.take(tgid, address) else {
+            break;
+        };
+        waiters.push(waiter);
+    }
+    drop(queue);
+    let count = waiters.len();
+    for (key, task) in waiters {
+        crate::task::processor::wake_futex_task(task, key);
+    }
+    count
 }
 
 /// @description 从显式 deadline wait queue 消费所有到期 task。
@@ -491,54 +673,73 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         );
         scheduling.run_state = RunState::Exited;
     };
-    let (removed, parent_waiter, init_waiter) = {
+    task.cleanup_robust_list();
+    if let Some(address) = task.take_clear_child_tid()
+        && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
+    {
+        futex_wake(task.tgid(), address, 1);
+    }
+    let (removed, last_thread, parent_waiter, init_waiter) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let exiting_pid = task.tgid();
-        let node = graph
-            .nodes
-            .get_mut(&exiting_pid)
-            .expect("exiting task missing from process graph");
-        assert!(
-            node.waiter.is_none(),
-            "running process cannot own child waiter"
-        );
-        let parent = node.parent;
-        let previous = core::mem::replace(&mut node.state, ProcessState::Exited(exit_code));
-        let ProcessState::Live(removed) = previous else {
-            panic!("process exited twice");
+        let (removed, last_thread, parent) = {
+            let node = graph
+                .nodes
+                .get_mut(&exiting_pid)
+                .expect("exiting task missing from process graph");
+            let ProcessState::Live(threads) = &mut node.state else {
+                panic!("process exited twice");
+            };
+            let removed = threads
+                .remove(&task.tid())
+                .expect("exiting thread missing from process graph");
+            let last_thread = threads.is_empty();
+            let parent = node.parent;
+            if last_thread {
+                assert!(node.waiter.is_none());
+                node.state = ProcessState::Exited(exit_code);
+            }
+            (removed, last_thread, parent)
         };
         assert!(Arc::ptr_eq(&removed, &task));
 
-        // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
-        if exiting_pid != INIT_PID {
-            for child in graph.nodes.values_mut() {
-                if child.parent == Some(exiting_pid) {
-                    child.parent = Some(INIT_PID);
+        if !last_thread {
+            (removed, false, None, None)
+        } else {
+            // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
+            if exiting_pid != INIT_PID {
+                for child in graph.nodes.values_mut() {
+                    if child.parent == Some(exiting_pid) {
+                        child.parent = Some(INIT_PID);
+                    }
                 }
             }
-        }
-        // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
-        let parent_waiter = parent.and_then(|pid| {
-            graph
-                .nodes
-                .get_mut(&pid)
-                .and_then(|parent| parent.waiter.take())
-        });
-        let adopted_exited = exiting_pid != INIT_PID
-            && graph.nodes.values().any(|child| {
-                child.parent == Some(INIT_PID) && matches!(child.state, ProcessState::Exited(_))
-            });
-        let init_waiter = adopted_exited
-            .then(|| {
+            // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
+            let parent_waiter = parent.and_then(|pid| {
                 graph
                     .nodes
-                    .get_mut(&INIT_PID)
-                    .and_then(|init| init.waiter.take())
-            })
-            .flatten();
-        (removed, parent_waiter, init_waiter)
+                    .get_mut(&pid)
+                    .and_then(|parent| parent.waiter.take())
+            });
+            let adopted_exited = exiting_pid != INIT_PID
+                && graph.nodes.values().any(|child| {
+                    child.parent == Some(INIT_PID) && matches!(child.state, ProcessState::Exited(_))
+                });
+            let init_waiter = adopted_exited
+                .then(|| {
+                    graph
+                        .nodes
+                        .get_mut(&INIT_PID)
+                        .and_then(|init| init.waiter.take())
+                })
+                .flatten();
+            (removed, true, parent_waiter, init_waiter)
+        }
     };
     drop(removed);
+    if !last_thread {
+        task.remove_thread_trap_context();
+    }
     for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
         crate::task::processor::wake_child_task(waiter);
     }

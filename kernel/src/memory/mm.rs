@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
 
 use alloc::{collections::BTreeMap, vec::Vec};
@@ -645,6 +646,40 @@ impl MemorySet {
         Ok(())
     }
 
+    /// @description 验证完整用户范围当前可写，不修改用户数据。
+    ///
+    /// @param address 用户范围首地址。
+    /// @param length 字节长度。
+    /// @return 全部页面具有 U|W 返回成功，否则返回 fault/overflow。
+    pub(crate) fn validate_user_write(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), UserAccessError> {
+        self.validate_user_range(address, length, PTEFlags::W)
+            .map(|_| ())
+    }
+
+    pub(crate) fn compare_exchange_user_u32(
+        &mut self,
+        address: usize,
+        current: u32,
+        new: u32,
+    ) -> Result<Result<u32, u32>, UserAccessError> {
+        if address & 3 != 0 {
+            return Err(UserAccessError::Fault);
+        }
+        Self::checked_user_end(address, 4)?;
+        let (ppn, offset) = self.user_page(address, PTEFlags::R | PTEFlags::W)?;
+        if offset + 4 > config::PAGE_SIZE {
+            return Err(UserAccessError::Fault);
+        }
+        // SAFETY: user_page validates a live U|R|W page, alignment is checked, and the
+        // AddressSpace lock keeps the mapping/frame alive for the atomic operation.
+        let atomic = unsafe { &*ppn.as_page_ptr().add(offset).cast::<AtomicU32>() };
+        Ok(atomic.compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire))
+    }
+
     /// @description 从用户空间复制有长度上限的 NUL 结尾字节串。
     ///
     /// @param user_address 字符串首地址。
@@ -992,6 +1027,40 @@ impl MemorySet {
             // 将目标区域移出容器后再执行 unmap，规避潜在别名问题
             area.unmap(&mut self.page_table);
         }
+    }
+
+    /// @description 为共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
+    ///
+    /// @param tid 全局唯一且大于 init TID 的线程标识。
+    /// @return 成功返回该线程唯一 trap-context VA；冲突或溢出返回错误。
+    pub(crate) fn allocate_thread_trap_context(
+        &mut self,
+        tid: usize,
+    ) -> Result<usize, MemoryError> {
+        let offset = tid
+            .checked_mul(config::PAGE_SIZE)
+            .ok_or(MemoryError::InvalidRange)?;
+        let address = config::TRAP_CONTEXT
+            .checked_sub(offset)
+            .ok_or(MemoryError::InvalidRange)?;
+        self.insert_framed_area(
+            address.into(),
+            (address + config::PAGE_SIZE).into(),
+            MapPermission::R | MapPermission::W,
+        )?;
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after thread trap-context mapping");
+        Ok(address)
+    }
+
+    /// @description 解除已退出 Thread 的唯一 supervisor trap-context 页。
+    ///
+    /// @param address `allocate_thread_trap_context` 返回的页对齐地址。
+    /// @return 无返回值；缺失映射表示退出清理重复并 fail-stop。
+    pub(crate) fn remove_thread_trap_context(&mut self, address: usize) {
+        let vpn = VirtualAddress::from(address).floor();
+        assert!(self.areas.contains_key(&vpn));
+        self.remove_area_with_start_vpn(vpn);
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after thread trap-context unmapping");
     }
 
     /// 获取给定TrapContext虚拟地址的物理页号
