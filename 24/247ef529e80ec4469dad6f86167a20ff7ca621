@@ -1,0 +1,27 @@
+docs/phase-16-signal.md
+  s_d637a88cd4b00d::t_3bdafb7333d807 3-4
+docs/phase-19-musl-pthread-sync.md
+  s_d637a88cd4b00d::t_bbbe180760f366 3-4
+kernel/src/syscall/futex.rs
+  s_d637a88cd4b00d::t_f0e6833a7cb7f9 59
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_784cedeff86fce 216,222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24247ef529e80ec4469dad6f86167a20ff7ca621",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
