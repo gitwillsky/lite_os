@@ -1,0 +1,39 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_a53b5188a7e5e1 47,68
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_54d524d4fda3af 648-652,729
+docs/phase-20-signal-interruption.md
+  s_d637a88cd4b00d::t_ae6088ea9dcaf2 42-43
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_65785805453f02 29,50,52,56,67,90,93
+kernel/src/syscall/futex.rs
+  s_d637a88cd4b00d::t_b4e3737f06662b 7-10,62
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_5b932de92d79eb 12-29,107-111
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_5257ebdc0dfcef 14-15,179
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_b8e03871571c55 17,89,100-109
+user/busybox.config
+  s_d637a88cd4b00d::t_9ec22e7ddb8e58 1-49
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_9c15fe2dade6ff 4,15,20,48-58,69-72,168-210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ef98271b8d62ea6fac538d425045055f44ecf3c1",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
