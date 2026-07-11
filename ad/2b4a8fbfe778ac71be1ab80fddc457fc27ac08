@@ -1,0 +1,41 @@
+docs/phase-10-devices.md
+  s_d637a88cd4b00d::t_dab34f227f33b9 1-106
+kernel/src/drivers/block.rs
+  s_d637a88cd4b00d::t_a438efdb9033f8 2,4,10-28,31,35,37-38,41,43-48,51,53
+kernel/src/drivers/goldfish_rtc.rs
+  s_d637a88cd4b00d::t_525353604b0d4d 3-10,12,14,18-37,39,43-55
+kernel/src/drivers/hal/bus.rs
+  s_d637a88cd4b00d::t_744ce364930ae7 1,7,14,16,22-28,31,34-37,40-43
+kernel/src/drivers/hal/interrupt.rs
+  s_d637a88cd4b00d::t_cb0fa9bd717b38 51,53,59,61,63-75,82,84,92-93,115-118,125,132,140,154,162,168,198-204,230-233,240-244,246-261
+kernel/src/drivers/hal/virtio.rs
+  s_d637a88cd4b00d::t_ee03fcdd47789c 1-18,27,29,31-32,36-64,67-68,70-71,74-75,78-79,82-83,86-87,90-91,94-95,98-99,102-103,106-107,110-111,114-115,118-119,122-125
+kernel/src/drivers/mod.rs
+  s_d637a88cd4b00d::t_65c0b89978f394 1,3-6,10-12,16
+kernel/src/drivers/platform.rs
+  s_d637a88cd4b00d::t_650b317769c64f 4-5,14-15,17-19,21-28,30-31,36,41,55,58,64,68,73-76,78,85,94-95,108,112,117,121,123,126,130,136,140,151,157,162,168,176-177,179-188,196,200
+kernel/src/drivers/virtio_blk.rs
+  s_d637a88cd4b00d::t_8090a4c3441d49 4,11,19-22,35,56-57,85,105,110-111,121-123,135-137,141-142,152-160,202
+kernel/src/drivers/virtio_queue.rs
+  s_d637a88cd4b00d::t_d0060164895db1 63,72,102-103,151,157-158,270-271,287-289,294,312,318,320,324,326,334,338-340,354,360,369,377-378
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_65134af7d18806 17,58,247-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad2b4a8fbfe778ac71be1ab80fddc457fc27ac08",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
