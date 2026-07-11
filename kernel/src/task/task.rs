@@ -1,19 +1,12 @@
-use core::{
-    error::Error,
-    sync::atomic::{self, AtomicUsize},
-};
+use core::{error::Error, sync::atomic::AtomicUsize};
 
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
     string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
 };
 use spin::Mutex;
 
 use crate::{
-    fs::inode::Inode,
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::VirtualAddress,
@@ -24,47 +17,6 @@ use crate::{
     task::{context::TaskContext, pid::ProcessId},
     trap::{TrapContext, trap_handler},
 };
-
-pub struct FileDescriptor {
-    pub inode: Arc<dyn Inode>,
-    pub offset: atomic::AtomicU64,
-    pub flags: u32,
-    pub mode: u32,
-}
-
-impl core::fmt::Debug for FileDescriptor {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("FileDescriptor")
-            .field("offset", &self.offset)
-            .field("flags", &self.flags)
-            .field("mode", &self.mode)
-            .finish()
-    }
-}
-
-impl FileDescriptor {
-    pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, crate::fs::FileSystemError> {
-        // 对于FIFO等特殊文件，先释放offset借用以避免阻塞时的借用冲突
-        let current_offset = self.offset.load(atomic::Ordering::Relaxed);
-        let result = self.inode.read_at(current_offset, buf);
-        if let Ok(bytes_read) = result {
-            self.offset
-                .fetch_add(bytes_read as u64, atomic::Ordering::Relaxed);
-        }
-        result
-    }
-
-    pub fn write_at(&self, buf: &[u8]) -> Result<usize, crate::fs::FileSystemError> {
-        // 对于FIFO等特殊文件，先释放offset借用以避免阻塞时的借用冲突
-        let current_offset = self.offset.load(atomic::Ordering::Relaxed);
-        let result = self.inode.write_at(current_offset, buf);
-        if let Ok(bytes_written) = result {
-            self.offset
-                .fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
-        }
-        result
-    }
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RunState {
@@ -121,15 +73,6 @@ impl AddressSpace {
             .lock()
             .copy_user_string(user_address, max_len)
     }
-
-    /// @description 检查完整用户地址范围是否可由 kernel copyout。
-    ///
-    /// @param user_address 用户目标地址。
-    /// @param len 待写长度。
-    /// @return 完整 `U|W` 范围存在时返回 `true`。
-    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
-        self.memory_set.lock().is_user_writable(user_address, len)
-    }
 }
 
 #[derive(Debug)]
@@ -138,101 +81,6 @@ struct ThreadContext {
     kernel_stack: KernelStack,
     trap_cx_va: Mutex<usize>,
     task_cx: Mutex<TaskContext>,
-}
-
-#[derive(Debug)]
-pub struct File {
-    /// 文件描述符表
-    fd_table: BTreeMap<usize, Arc<FileDescriptor>>,
-    /// 下一个可分配的文件描述符
-    next_fd: usize,
-}
-
-impl File {
-    /// 分配新的文件描述符
-    pub fn alloc_fd(&mut self, file_desc: Arc<FileDescriptor>) -> Option<usize> {
-        // 检查文件描述符数量限制
-        const MAX_FD_COUNT: usize = 1024; // 每个进程最多打开1024个文件
-
-        if self.fd_table.len() >= MAX_FD_COUNT {
-            error!(
-                "[FD_ALLOC] CRITICAL: FD table full! {} open files (max {})",
-                self.fd_table.len(),
-                MAX_FD_COUNT
-            );
-            return None; // 达到上限，返回None表示分配失败
-        }
-
-        // Log milestone FDs to track progress
-        // 寻找下一个可用的文件描述符
-        let mut fd = self.next_fd;
-        let mut search_count = 0;
-        while self.fd_table.contains_key(&fd) {
-            fd += 1;
-            search_count += 1;
-            // 修复：检查搜索次数而不是FD数值，防止FD编号大于MAX_FD_COUNT时错误退出
-            // MAX_FD_COUNT是文件表大小限制，不是FD编号限制
-            if search_count >= MAX_FD_COUNT {
-                error!(
-                    "[FD_ALLOC] CRITICAL: FD search exhausted after {} attempts! Table has {} entries",
-                    search_count,
-                    self.fd_table.len()
-                );
-                return None; // 防止无限循环
-            }
-        }
-
-        // Log if search took a long time
-        if search_count > 100 {
-            warn!(
-                "[FD_ALLOC] Slow FD search: {} attempts to find FD {} (table fragmented?)",
-                search_count, fd
-            );
-        }
-
-        self.fd_table.insert(fd, file_desc);
-        self.next_fd = fd + 1;
-
-        Some(fd)
-    }
-
-    /// 根据文件描述符获取FileDescriptor
-    pub fn fd(&self, fd: usize) -> Option<Arc<FileDescriptor>> {
-        self.fd_table.get(&fd).cloned()
-    }
-
-    /// 关闭文件描述符
-    pub fn close_fd(&mut self, fd: usize) -> bool {
-        self.fd_table.remove(&fd).is_some()
-    }
-
-    /// 关闭标记了O_CLOEXEC的文件描述符（execve时调用）
-    pub fn close_cloexec_fds(&mut self) {
-        const O_CLOEXEC: u32 = 0o2000000;
-        let mut fds_to_close = Vec::new();
-
-        // 收集需要关闭的文件描述符
-        for (&fd, file_desc) in &self.fd_table {
-            if (file_desc.flags & O_CLOEXEC) != 0 {
-                fds_to_close.push(fd);
-            }
-        }
-
-        // 关闭标记了O_CLOEXEC的文件描述符
-        for fd in fds_to_close {
-            self.fd_table.remove(&fd);
-        }
-    }
-
-    /// 复制文件描述符（用于 dup 系统调用）
-    pub fn dup_fd(&mut self, fd: usize) -> Option<usize> {
-        // 语义修正：dup 应与 oldfd 共享同一个“打开文件描述”（open file description），
-        // 包括共享偏移、标志等。这里直接克隆 Arc 引用，而不是新建一个 FileDescriptor。
-        self.fd_table
-            .get(&fd)
-            .cloned()
-            .and_then(|shared_desc| self.alloc_fd(shared_desc))
-    }
 }
 
 #[derive(Debug)]
@@ -307,7 +155,6 @@ struct Process {
     name: Mutex<String>,
     tgid: ProcessId,
     address_space: AddressSpace,
-    file: Mutex<File>,
     cwd: Mutex<String>,
     credentials: Mutex<Credentials>,
 }
@@ -336,10 +183,6 @@ impl TaskControlBlock {
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
             },
-            file: Mutex::new(File {
-                fd_table: BTreeMap::new(),
-                next_fd: 3,
-            }),
             cwd: Mutex::new("/".to_string()),
             credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
         };
@@ -445,12 +288,6 @@ impl TaskControlBlock {
             .copy_user_string(user_address, max_len)
     }
 
-    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
-        self.process
-            .address_space
-            .is_user_writable(user_address, len)
-    }
-
     pub fn user_token(&self) -> usize {
         self.process.address_space.memory_set.lock().token()
     }
@@ -468,13 +305,6 @@ impl TaskControlBlock {
     /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
     pub fn task_context(&self) -> &Mutex<TaskContext> {
         &self.thread.task_cx
-    }
-
-    /// @description 取得 Process 独占的 FileDescriptorTable 锁。
-    ///
-    /// @return 当前 Process 的 fd table mutex。
-    pub fn file_table(&self) -> &Mutex<File> {
-        &self.process.file
     }
 
     /// @description 复制当前 Process 的工作目录。
@@ -512,14 +342,7 @@ impl TaskControlBlock {
             MemorySet::from_elf_with_args(elf_data, args, envs).map_err(classify_load_error)?
         };
 
-        // 步骤2: 关闭标记了O_CLOEXEC的文件描述符
-        // 这必须在更换内存空间之前完成，以确保能够正确访问文件描述符表
-        {
-            let mut file_table = self.process.file.lock();
-            file_table.close_cloexec_fds();
-        }
-
-        // 步骤3: 替换内存管理结构
+        // 步骤2: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
         let kernel_stack_top = self.thread.kernel_stack.get_top();
 
@@ -527,10 +350,10 @@ impl TaskControlBlock {
         *self.process.address_space.memory_set.lock() = new_memory_set;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
 
-        // 步骤4: 更新任务状态；参数与环境只存在于新初始栈中。
+        // 步骤3: 更新任务状态；参数与环境只存在于新初始栈中。
         *self.process.name.lock() = program_name.to_string();
 
-        // 步骤5: 设置新程序的陷阱上下文
+        // 步骤4: 设置新程序的陷阱上下文
         self.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,

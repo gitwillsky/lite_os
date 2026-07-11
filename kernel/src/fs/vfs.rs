@@ -1,233 +1,101 @@
-use alloc::{
-    collections::BTreeMap,
-    format,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use crate::task;
+use super::{FileSystem, FileSystemError, Inode, InodeType};
 
-use super::{FileSystem, FileSystemError, Inode};
-
+/// @description 管理唯一根文件系统，并为内核 ELF 加载器解析绝对路径。
 pub struct VirtualFileSystem {
-    filesystems: Mutex<BTreeMap<String, Arc<dyn FileSystem>>>,
     root_fs: Mutex<Option<Arc<dyn FileSystem>>>,
 }
 
 impl VirtualFileSystem {
+    /// 创建尚未挂载根文件系统的 VFS。
+    ///
+    /// # Returns
+    ///
+    /// 空的 VFS 实例。
     pub fn new() -> Self {
         Self {
-            filesystems: Mutex::new(BTreeMap::new()),
             root_fs: Mutex::new(None),
         }
     }
 
-    /// 将相对路径转换为绝对路径
-    pub fn resolve_relative_path(&self, path: &str) -> String {
-        if path.starts_with('/') {
-            // 已经是绝对路径
-            self.canonicalize_path(path)
-        } else {
-            // 相对路径：结合当前工作目录
-            let cwd = task::current_cwd();
-            let combined = if cwd.ends_with('/') {
-                format!("{}{}", cwd, path)
-            } else {
-                format!("{}/{}", cwd, path)
-            };
-            self.canonicalize_path(&combined)
+    /// 挂载唯一的根文件系统。
+    ///
+    /// # Parameters
+    ///
+    /// - `fs`: 根文件系统实例。
+    ///
+    /// # Returns
+    ///
+    /// 首次挂载成功时返回 `()`。
+    ///
+    /// # Errors
+    ///
+    /// 根文件系统已挂载时返回 `AlreadyExists`，防止静默替换启动卷。
+    pub fn mount_root(&self, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
+        let mut root_fs = self.root_fs.lock();
+        if root_fs.is_some() {
+            return Err(FileSystemError::AlreadyExists);
         }
-    }
-
-    /// 规范化路径，解析 . 和 .. 组件
-    fn canonicalize_path(&self, path: &str) -> String {
-        let mut components = Vec::new();
-
-        for component in path.split('/') {
-            match component {
-                "" | "." => {
-                    // 跳过空组件和当前目录引用
-                    continue;
-                }
-                ".." => {
-                    // 父目录引用：弹出最后一个组件（如果有的话）
-                    components.pop();
-                }
-                _ => {
-                    // 普通目录组件
-                    components.push(component);
-                }
-            }
-        }
-
-        // 重新构建路径
-        let canonical = if components.is_empty() {
-            "/".to_string()
-        } else {
-            format!("/{}", components.join("/"))
-        };
-
-        canonical
-    }
-
-    pub fn mount(&self, path: &str, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
-        let mut filesystems = self.filesystems.lock();
-
-        if path == "/" {
-            *self.root_fs.lock() = Some(fs.clone());
-        }
-
-        filesystems.insert(path.to_string(), fs);
+        *root_fs = Some(fs);
         Ok(())
     }
 
-    pub fn unmount(&self, path: &str) -> Result<(), FileSystemError> {
-        let mut filesystems = self.filesystems.lock();
-
-        if path == "/" {
-            *self.root_fs.lock() = None;
-        }
-
-        filesystems.remove(path);
-        Ok(())
-    }
-
+    /// 从根文件系统打开一个内核可见 inode。
+    ///
+    /// # Parameters
+    ///
+    /// - `path`: 必须以 `/` 开头的绝对路径。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回解析后 inode 的共享引用。
+    ///
+    /// # Errors
+    ///
+    /// 路径非绝对路径、根文件系统未挂载、分量不存在、遇到符号链接，
+    /// 或者带尾随 `/` 的结果不是目录时返回错误。
     pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.open_with_flags(path, 0)
-    }
-
-    pub fn open_with_flags(
-        &self,
-        path: &str,
-        _flags: u32,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let abs_path = self.resolve_relative_path(path);
-
-        if abs_path == "/" {
-            let root_fs = self.root_fs.lock();
-            let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
-            return Ok(fs.root_inode());
-        }
-
-        self.resolve_path(&abs_path)
-    }
-
-    fn resolve_path(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        // 先检查挂载点前缀匹配（最长匹配）
-        let filesystems = self.filesystems.lock();
-        let mut best_match_len: isize = -1;
-        let mut best_fs: Option<Arc<dyn FileSystem>> = None;
-        for (mpath, fs) in filesystems.iter() {
-            if mpath == "/" {
-                continue; // 根挂载由 root_fs 负责
-            }
-            if path == mpath {
-                // 精确匹配挂载点
-                best_match_len = mpath.len() as isize;
-                best_fs = Some(fs.clone());
-                break;
-            } else if path.starts_with(mpath) && path.as_bytes().get(mpath.len()) == Some(&b'/') {
-                // 前缀匹配，且边界为 '/'
-                let len = mpath.len() as isize;
-                if len > best_match_len {
-                    best_match_len = len;
-                    best_fs = Some(fs.clone());
-                }
-            }
-        }
-        drop(filesystems);
-
-        if let Some(fs) = best_fs {
-            let mut current = fs.root_inode();
-            if best_match_len as usize == path.len() {
-                return Ok(current);
-            }
-            let mut remain = &path[best_match_len as usize + 1..]; // skip the '/'
-            if remain.starts_with('/') {
-                remain = &remain[1..];
-            }
-            if remain.is_empty() {
-                return Ok(current);
-            }
-            for component in remain.split('/') {
-                if component.is_empty() {
-                    continue;
-                }
-                current = current.find_child(component)?;
-            }
-            return Ok(current);
-        }
-
-        // 否则走根文件系统
-        let root_fs = self.root_fs.lock();
-        let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
-
-        let mut current = fs.root_inode();
-
-        let path = if path.starts_with('/') {
-            &path[1..]
-        } else {
-            path
-        };
-        if path.is_empty() {
-            return Ok(current);
-        }
-        for component in path.split('/') {
-            if component.is_empty() {
-                continue;
-            }
-            current = current.find_child(component)?;
-        }
-        Ok(current)
-    }
-
-    pub fn create_file(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let abs_path = self.resolve_relative_path(path);
-        let (parent_path, filename) = self.split_path(&abs_path)?;
-        let parent = self.resolve_path(&parent_path)?;
-        parent.create_file(&filename)
-    }
-
-    pub fn create_directory(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let abs_path = self.resolve_relative_path(path);
-        let (parent_path, dirname) = self.split_path(&abs_path)?;
-        let parent = self.resolve_path(&parent_path)?;
-        parent.create_directory(&dirname)
-    }
-
-    pub fn remove(&self, path: &str) -> Result<(), FileSystemError> {
-        let abs_path = self.resolve_relative_path(path);
-        let (parent_path, filename) = self.split_path(&abs_path)?;
-        let parent = self.resolve_path(&parent_path)?;
-        parent.remove(&filename)
-    }
-
-    pub fn get_inode_at(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.open(path)
-    }
-
-    fn split_path(&self, path: &str) -> Result<(String, String), FileSystemError> {
         if !path.starts_with('/') {
             return Err(FileSystemError::InvalidPath);
         }
 
-        let path = &path[1..];
-        if path.is_empty() {
-            return Err(FileSystemError::InvalidPath);
-        }
+        let root_fs = self.root_fs.lock();
+        let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
+        let root_inode = fs.root_inode()?;
+        drop(root_fs);
 
-        if let Some(pos) = path.rfind('/') {
-            let parent_path = format!("/{}", &path[..pos]);
-            let filename = path[pos + 1..].to_string();
-            if filename.is_empty() {
-                return Err(FileSystemError::InvalidPath);
+        // 1. 从根 inode 逐层查找，使 `/missing/..` 不会被词法化简错误变成 `/`。
+        // 2. inode 栈保留已验证的父链，`..` 只能回退到根，不会逃出当前文件系统。
+        // 3. 最后校验尾随斜杠，避免把普通文件当目录打开。
+        let mut inode_stack = Vec::from([root_inode]);
+        for component in path.split('/') {
+            match component {
+                "" | "." => {}
+                ".." => {
+                    if inode_stack.len() > 1 {
+                        inode_stack.pop();
+                    }
+                }
+                name => {
+                    let inode = inode_stack
+                        .last()
+                        .ok_or(FileSystemError::InvalidPath)?
+                        .find_child(name)?;
+                    if inode.inode_type() == InodeType::SymLink {
+                        return Err(FileSystemError::InvalidOperation);
+                    }
+                    inode_stack.push(inode);
+                }
             }
-            Ok((parent_path, filename))
-        } else {
-            Ok(("/".to_string(), path.to_string()))
         }
+        let inode = inode_stack.pop().ok_or(FileSystemError::InvalidPath)?;
+
+        if path.len() > 1 && path.ends_with('/') && inode.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        Ok(inode)
     }
 }
 
@@ -236,7 +104,7 @@ use spin::Once;
 pub static VFS_MANAGER: Once<VirtualFileSystem> = Once::new();
 
 pub fn init() {
-    VFS_MANAGER.call_once(|| VirtualFileSystem::new());
+    VFS_MANAGER.call_once(VirtualFileSystem::new);
 }
 
 pub fn vfs() -> &'static VirtualFileSystem {

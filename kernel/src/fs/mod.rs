@@ -1,12 +1,10 @@
 use alloc::sync::Arc;
 
 pub mod ext2;
-pub mod fat32;
 pub mod inode;
 pub mod vfs;
 
 pub use ext2::Ext2FileSystem;
-pub use fat32::FAT32FileSystem;
 pub use inode::{Inode, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,58 +12,22 @@ pub enum FileSystemError {
     NotFound,
     AlreadyExists,
     NotDirectory,
-    IsDirectory,
     InvalidPath,
-    NoSpace,
-    PermissionDenied,
     IoError,
     InvalidFileSystem,
-    InvalidOperation, // 添加无效操作错误类型
+    InvalidOperation,
 }
 
+/// @description 为 VFS 提供根 inode 的文件系统实例。
 pub trait FileSystem: Send + Sync {
-    fn root_inode(&self) -> Arc<dyn Inode>;
-    fn create_file(
-        &self,
-        parent: &Arc<dyn Inode>,
-        name: &str,
-    ) -> Result<Arc<dyn Inode>, FileSystemError>;
-    fn create_directory(
-        &self,
-        parent: &Arc<dyn Inode>,
-        name: &str,
-    ) -> Result<Arc<dyn Inode>, FileSystemError>;
-    fn remove(&self, parent: &Arc<dyn Inode>, name: &str) -> Result<(), FileSystemError>;
-    fn stat(&self, inode: &Arc<dyn Inode>) -> Result<FileStat, FileSystemError>;
-    fn sync(&self) -> Result<(), FileSystemError>;
-}
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct FileStat {
-    pub size: u64,
-    pub file_type: InodeType,
-    pub mode: u32,
-    pub nlink: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub atime: u64,
-    pub mtime: u64,
-    pub ctime: u64,
-}
-
-impl Default for FileStat {
-    fn default() -> Self {
-        Self {
-            size: 0,
-            file_type: InodeType::File,
-            mode: 0o644,
-            nlink: 1,
-            uid: 0,
-            gid: 0,
-            atime: 0,
-            mtime: 0,
-            ctime: 0,
-        }
-    }
+    /// 加载该文件系统的根 inode。
+    ///
+    /// # Returns
+    ///
+    /// 指向根目录 inode 的共享引用。
+    ///
+    /// # Errors
+    ///
+    /// 根 inode 无法从磁盘读取或数据无效时返回错误。
+    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
 }

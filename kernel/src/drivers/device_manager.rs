@@ -13,8 +13,8 @@ use crate::drivers::hal::interrupt::{
 };
 use crate::drivers::hal::resource::SystemResourceManager;
 use crate::drivers::virtio_blk::VirtIOBlockDevice;
+use crate::fs::Ext2FileSystem;
 use crate::fs::vfs::vfs;
-use crate::fs::{Ext2FileSystem, FAT32FileSystem};
 use crate::sync::IrqMutex;
 
 /// 全局HAL设备管理器
@@ -291,31 +291,17 @@ fn init_filesystems() {
     if let Some(primary_device) = get_primary_block_device() {
         info!("[DeviceManager] Attempting filesystem initialization on primary block device");
 
-        // 尝试Ext2文件系统
-        if let Ok(ext2_fs) = Ext2FileSystem::new(primary_device.clone()) {
-            match vfs().mount("/", ext2_fs) {
-                Ok(()) => {
-                    info!("[DeviceManager] Ext2 filesystem mounted successfully at /");
-                    return;
-                }
-                Err(e) => {
-                    warn!("[DeviceManager] Ext2 filesystem mount failed: {:?}", e);
-                }
+        match Ext2FileSystem::new(primary_device) {
+            Ok(ext2_fs) => match vfs().mount_root(ext2_fs) {
+                Ok(()) => info!("[DeviceManager] Ext2 filesystem mounted successfully at /"),
+                Err(e) => error!("[DeviceManager] Ext2 root mount failed: {:?}", e),
+            },
+            Err(e) => {
+                error!(
+                    "[DeviceManager] Ext2 filesystem initialization failed: {:?}",
+                    e
+                );
             }
-        }
-
-        // 回退到FAT32文件系统
-        if let Ok(fat32_fs) = FAT32FileSystem::new(primary_device) {
-            match vfs().mount("/", fat32_fs) {
-                Ok(()) => {
-                    info!("[DeviceManager] FAT32 filesystem mounted successfully at /");
-                }
-                Err(e) => {
-                    error!("[DeviceManager] FAT32 filesystem mount failed: {:?}", e);
-                }
-            }
-        } else {
-            error!("[DeviceManager] Unable to create any supported filesystem");
         }
     }
 }

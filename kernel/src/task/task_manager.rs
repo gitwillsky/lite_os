@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use alloc::{collections::BTreeMap, string::ToString, sync::Arc};
+use alloc::{collections::BTreeMap, sync::Arc};
 use lazy_static::lazy_static;
 
 use crate::{
@@ -145,13 +145,6 @@ pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
 /// 获取当前任务的引用
 pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     with_current_processor(|processor| processor.current.clone())
-}
-
-/// 获取当前工作目录
-pub fn current_cwd() -> alloc::string::String {
-    current_task()
-        .map(|task| task.cwd())
-        .unwrap_or_else(|| "/".to_string())
 }
 
 pub fn run_tasks() -> ! {

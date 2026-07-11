@@ -1,12 +1,16 @@
 use alloc::vec::Vec;
 
-use crate::fs::vfs::vfs;
+use crate::fs::{InodeType, vfs::vfs};
 
 /// 从文件系统加载程序二进制文件
 pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
     debug!("[LOADER] Attempting to load program from: {}", path);
     match vfs().open(path) {
         Ok(inode) => {
+            if inode.inode_type() != InodeType::File {
+                debug!("[LOADER] Program path is not a regular file");
+                return None;
+            }
             let size = inode.size() as usize;
             debug!("[LOADER] File size: {}", size);
             if size == 0 {
@@ -15,9 +19,16 @@ pub fn load_program_from_fs(path: &str) -> Option<Vec<u8>> {
             }
             let mut buffer = alloc::vec![0u8; size];
             match inode.read_at(0, &mut buffer) {
-                Ok(bytes_read) => {
+                Ok(bytes_read) if bytes_read == size => {
                     debug!("[LOADER] Successfully read {} bytes", bytes_read);
                     Some(buffer)
+                }
+                Ok(bytes_read) => {
+                    debug!(
+                        "[LOADER] Short read: expected {} bytes, received {}",
+                        size, bytes_read
+                    );
+                    None
                 }
                 Err(e) => {
                     debug!("[LOADER] Failed to read file: {:?}", e);

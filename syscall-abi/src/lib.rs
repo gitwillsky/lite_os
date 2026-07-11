@@ -3,11 +3,6 @@
 //! LiteOS 用户态与内核共享的系统调用编号。
 
 pub const SYSCALL_GETCWD: usize = 17;
-pub const SYSCALL_DUP: usize = 23;
-pub const SYSCALL_FCNTL: usize = 25;
-pub const SYSCALL_CLOSE: usize = 57;
-pub const SYSCALL_LSEEK: usize = 62;
-pub const SYSCALL_READ: usize = 63;
 pub const SYSCALL_WRITE: usize = 64;
 pub const SYSCALL_EXIT: usize = 93;
 pub const SYSCALL_NANOSLEEP: usize = 101;

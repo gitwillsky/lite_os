@@ -506,16 +506,6 @@ impl MemorySet {
         Err(UserAccessError::Unterminated)
     }
 
-    /// @description 在不修改用户内存的情况下检查完整 `U|W` 范围。
-    ///
-    /// @param user_address 用户目标地址。
-    /// @param len 待写长度。
-    /// @return 完整范围可写返回 `true`；overflow、缺页或权限错误返回 `false`。
-    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
-        self.validate_user_range(user_address, len, PTEFlags::W)
-            .is_ok()
-    }
-
     fn initialize_user_heap(&mut self, base: usize, limit: usize) -> Result<(), MemoryError> {
         if base >= limit || !VirtualAddress::from(base).is_aligned() {
             return Err(MemoryError::InvalidRange);

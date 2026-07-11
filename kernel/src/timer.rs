@@ -75,11 +75,6 @@ fn read_goldfish_rtc_ns() -> Option<u64> {
     }
 }
 
-// 获取真实的 Unix 时间戳（秒）
-pub fn get_unix_timestamp() -> u64 {
-    get_realtime_ns() / NSEC_PER_SEC
-}
-
 /// @description 返回 Unix epoch realtime 纳秒值。
 ///
 /// @return RTC 启动 offset 加 monotonic；初始化前直接读取 RTC，失败则使用固定 epoch offset。

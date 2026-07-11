@@ -1,4 +1,4 @@
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,61 +6,44 @@ pub enum InodeType {
     File = 0,
     Directory = 1,
     SymLink = 2,
-    Device = 3,
     Fifo = 4, // Named pipe (FIFO)
 }
 
 pub trait Inode: Send + Sync {
+    /// 返回 inode 在磁盘上记录的类型。
     fn inode_type(&self) -> InodeType;
+
+    /// 返回文件的字节长度。
     fn size(&self) -> u64;
+
+    /// 从指定偏移读取 inode 数据。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 起始字节偏移。
+    /// - `buf`: 接收数据的内核缓冲区。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回实际读取字节数；到达 EOF 返回 `0`。
+    ///
+    /// # Errors
+    ///
+    /// 块设备读取或 inode 映射失败时返回对应的 `FileSystemError`。
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, super::FileSystemError>;
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, super::FileSystemError>;
-    fn list_dir(&self) -> Result<Vec<String>, super::FileSystemError>;
+
+    /// 在目录 inode 中查找直接子项。
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: 不含路径分隔符的单个目录项名。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回子 inode 的共享引用。
+    ///
+    /// # Errors
+    ///
+    /// 当前 inode 不是目录、子项不存在或磁盘数据无效时返回错误。
     fn find_child(&self, name: &str) -> Result<Arc<dyn Inode>, super::FileSystemError>;
-    fn create_file(&self, name: &str) -> Result<Arc<dyn Inode>, super::FileSystemError>;
-    fn create_directory(&self, name: &str) -> Result<Arc<dyn Inode>, super::FileSystemError>;
-    fn remove(&self, name: &str) -> Result<(), super::FileSystemError>;
-    fn truncate(&self, size: u64) -> Result<(), super::FileSystemError>;
-    fn sync(&self) -> Result<(), super::FileSystemError>;
-
-    /// 获取文件权限模式（默认实现为0o644）
-    fn mode(&self) -> u32 {
-        0o644
-    }
-
-    /// 设置文件权限模式（默认实现不做任何操作）
-    fn set_mode(&self, _mode: u32) -> Result<(), super::FileSystemError> {
-        Ok(())
-    }
-
-    /// 获取文件拥有者UID（默认实现为0，即root）
-    fn uid(&self) -> u32 {
-        0
-    }
-
-    /// 设置文件拥有者UID（默认实现不做任何操作）
-    fn set_uid(&self, _uid: u32) -> Result<(), super::FileSystemError> {
-        Ok(())
-    }
-
-    /// 获取文件拥有者GID（默认实现为0，即root组）
-    fn gid(&self) -> u32 {
-        0
-    }
-
-    /// 设置文件拥有者GID（默认实现不做任何操作）
-    fn set_gid(&self, _gid: u32) -> Result<(), super::FileSystemError> {
-        Ok(())
-    }
-
-    fn atime(&self) -> u64 {
-        0
-    }
-    fn mtime(&self) -> u64 {
-        0
-    }
-    fn ctime(&self) -> u64 {
-        0
-    }
-
 }

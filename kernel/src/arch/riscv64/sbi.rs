@@ -1,5 +1,3 @@
-use spin::Mutex;
-
 const EID_TIME: usize = 0x5449_4d45;
 const EID_IPI: usize = 0x0073_5049;
 const EID_RFENCE: usize = 0x5246_4e43;
@@ -11,12 +9,8 @@ const FID_SET_TIMER: usize = 0;
 const FID_SEND_IPI: usize = 0;
 const FID_REMOTE_SFENCE_VMA: usize = 1;
 const FID_SYSTEM_RESET: usize = 0;
-const FID_CONSOLE_READ: usize = 1;
 const FID_CONSOLE_WRITE_BYTE: usize = 2;
 const FID_PROBE_EXTENSION: usize = 3;
-const SBI_ERR_FAILED: isize = -1;
-
-static CONSOLE_INPUT_BYTE: Mutex<u8> = Mutex::new(0);
 
 /// @description 执行 SBI v0.2+ EID/FID 调用。
 ///
@@ -86,24 +80,6 @@ pub fn console_putchar(byte: u8) -> Result<(), isize> {
         [byte as usize, 0, 0, 0, 0, 0],
     );
     value_or_error(error, value).map(|_| ())
-}
-
-/// @description 通过 SBI DBCN 非阻塞读取一个字节。
-///
-/// @return `Ok(Some(byte))` 表示读到字节，`Ok(None)` 表示当前无输入；失败返回 SBI error。
-pub fn console_getchar() -> Result<Option<u8>, isize> {
-    let mut byte = CONSOLE_INPUT_BYTE.lock();
-    let physical_address = (&mut *byte as *mut u8) as usize;
-    let (error, count) = sbi_call(
-        EID_DEBUG_CONSOLE,
-        FID_CONSOLE_READ,
-        [1, physical_address, 0, 0, 0, 0],
-    );
-    match value_or_error(error, count)? {
-        0 => Ok(None),
-        1 => Ok(Some(*byte)),
-        _ => Err(SBI_ERR_FAILED),
-    }
 }
 
 /// @description 通过 SBI TIME 设置当前 hart 的绝对 timer deadline。
