@@ -28,8 +28,10 @@ build: build-user build-kernel build-bootloader create-fs
 
 verify:
 	cargo fmt --all -- --check
-	cargo check --workspace
-	cargo clippy --workspace --bins --lib -- -D warnings
+	cargo check -p architecture-check
+	cargo check -p syscall-abi -p kernel -p user --target riscv64gc-unknown-none-elf
+	cargo clippy -p architecture-check -- -D warnings
+	cargo clippy -p syscall-abi -p kernel -p user --target riscv64gc-unknown-none-elf --bins --lib -- -D warnings
 	cd bootloader && cargo clippy --release -- -D warnings && cd -
 	$(MAKE) build-user
 	$(MAKE) build-kernel
