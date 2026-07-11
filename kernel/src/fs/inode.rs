@@ -16,6 +16,11 @@ pub trait Inode: Send + Sync {
     /// 返回文件的字节长度。
     fn size(&self) -> u64;
 
+    /// @description 按磁盘 mode 判断 root identity 是否可执行该 inode。
+    ///
+    /// @return 普通文件任一 execute bit 置位时返回 `true`。
+    fn is_executable(&self) -> bool;
+
     /// 从指定偏移读取 inode 数据。
     ///
     /// # Parameters
@@ -45,5 +50,5 @@ pub trait Inode: Send + Sync {
     /// # Errors
     ///
     /// 当前 inode 不是目录、子项不存在或磁盘数据无效时返回错误。
-    fn find_child(&self, name: &str) -> Result<Arc<dyn Inode>, super::FileSystemError>;
+    fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, super::FileSystemError>;
 }

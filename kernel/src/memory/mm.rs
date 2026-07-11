@@ -1,6 +1,6 @@
 use core::{arch::asm, error::Error, ops::Range};
 
-use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
@@ -30,8 +30,8 @@ pub enum UserAccessError {
     Overflow,
     /// 在调用方指定上限内没有找到 NUL。
     Unterminated,
-    /// 字节串不是当前 VFS 接口可接受的 UTF-8。
-    InvalidUtf8,
+    /// 无法为 kernel-owned copy 缓冲区分配内存。
+    OutOfMemory,
 }
 
 impl core::fmt::Display for UserAccessError {
@@ -40,7 +40,7 @@ impl core::fmt::Display for UserAccessError {
             Self::Fault => write!(f, "invalid user address or permission"),
             Self::Overflow => write!(f, "user address range overflow"),
             Self::Unterminated => write!(f, "unterminated user string"),
-            Self::InvalidUtf8 => write!(f, "invalid UTF-8 user string"),
+            Self::OutOfMemory => write!(f, "out of memory while copying user string"),
         }
     }
 }
@@ -64,6 +64,37 @@ impl core::fmt::Display for MemoryError {
 }
 
 impl Error for MemoryError {}
+
+/// @description 构造新用户映像时需要暴露给 `execve` 的失败分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElfLoadError {
+    /// 物理页或页表页分配失败。
+    OutOfMemory,
+    /// ELF header、segment、地址、权限或初始栈不满足当前静态 RV64 契约。
+    InvalidElf,
+}
+
+impl From<MemoryError> for ElfLoadError {
+    fn from(error: MemoryError) -> Self {
+        match error {
+            MemoryError::OutOfMemory | MemoryError::PageTableError(PageTableError::OutOfMemory) => {
+                Self::OutOfMemory
+            }
+            MemoryError::PageTableError(_) | MemoryError::InvalidRange => Self::InvalidElf,
+        }
+    }
+}
+
+impl core::fmt::Display for ElfLoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::OutOfMemory => write!(f, "out of memory while loading ELF"),
+            Self::InvalidElf => write!(f, "invalid or unsupported static RV64 ELF"),
+        }
+    }
+}
+
+impl Error for ElfLoadError {}
 
 bitflags! {
     // PTE Flags 的子集
@@ -471,16 +502,16 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 从用户空间复制有长度上限的 NUL 结尾 UTF-8 字符串。
+    /// @description 从用户空间复制有长度上限的 NUL 结尾字节串。
     ///
     /// @param user_address 字符串首地址。
-    /// @param max_len 不含 NUL 的最大字节数。
-    /// @return 成功返回 owned `String`；fault、未终止或非法 UTF-8 分别返回明确错误。
-    pub fn copy_user_string(
+    /// @param max_len 包含终止 NUL 的最大总字节数。
+    /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
+    pub fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
-    ) -> Result<String, UserAccessError> {
+    ) -> Result<Vec<u8>, UserAccessError> {
         if user_address == 0 {
             return Err(UserAccessError::Fault);
         }
@@ -495,9 +526,15 @@ impl MemorySet {
             let page =
                 unsafe { core::slice::from_raw_parts(ppn.as_page_ptr().add(page_offset), count) };
             if let Some(nul) = page.iter().position(|byte| *byte == 0) {
+                bytes
+                    .try_reserve_exact(nul)
+                    .map_err(|_| UserAccessError::OutOfMemory)?;
                 bytes.extend_from_slice(&page[..nul]);
-                return String::from_utf8(bytes).map_err(|_| UserAccessError::InvalidUtf8);
+                return Ok(bytes);
             }
+            bytes
+                .try_reserve_exact(count)
+                .map_err(|_| UserAccessError::OutOfMemory)?;
             bytes.extend_from_slice(page);
             current = current
                 .checked_add(count)
@@ -579,169 +616,235 @@ impl MemorySet {
             .ppn()
     }
 
-    pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, &[], &[])
-    }
-
-    fn from_elf_internal(
+    /// @description 从静态 RV64 ELF 构造完整用户地址空间和 Linux 初始栈。
+    ///
+    /// @param elf_data 完整 ELF file bytes。
+    /// @param args 不含 NUL 的 argv 字节串。
+    /// @param envs 不含 NUL 的 envp 字节串。
+    /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
+    /// @errors 只区分资源耗尽与非法/不支持的 ELF，且失败时不修改现有地址空间。
+    pub fn from_elf(
         elf_data: &[u8],
-        args: &[String],
-        envs: &[String],
-    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        let mut memory_set = MemorySet::try_new()?;
-        memory_set.map_trampoline()?;
+        args: &[Vec<u8>],
+        envs: &[Vec<u8>],
+    ) -> Result<(Self, usize, usize), ElfLoadError> {
+        const ELF64_PHDR_SIZE: usize = 56;
 
-        let elf = xmas_elf::ElfFile::new(elf_data)?;
+        let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
+        memory_set.map_trampoline().map_err(ElfLoadError::from)?;
+
+        let elf = xmas_elf::ElfFile::new(elf_data).map_err(|_| ElfLoadError::InvalidElf)?;
         let elf_header = elf.header;
         if elf_header.pt1.class() != xmas_elf::header::Class::SixtyFour
             || elf_header.pt1.data() != xmas_elf::header::Data::LittleEndian
+            || elf_header.pt1.version() != xmas_elf::header::Version::Current
             || elf_header.pt2.machine().as_machine() != xmas_elf::header::Machine::RISC_V
+            || elf_header.pt2.version() != 1
+            || usize::from(elf_header.pt2.header_size()) != 64
             || elf_header.pt2.type_().as_type() != xmas_elf::header::Type::Executable
         {
-            return Err("unsupported ELF class, endian, machine, or type".into());
+            return Err(ElfLoadError::InvalidElf);
+        }
+        let elf_flags = match elf_header.pt2 {
+            xmas_elf::header::HeaderPt2::Header64(header) => header.flags,
+            xmas_elf::header::HeaderPt2::Header32(_) => return Err(ElfLoadError::InvalidElf),
+        };
+        // 只接受 RVC 与 soft/single/double-float ABI；RV32E、quad-float、TSO 或未知 flag 都缺少对应执行环境。
+        if elf_flags & !0x7 != 0 || elf_flags & 0x6 == 0x6 {
+            return Err(ElfLoadError::InvalidElf);
         }
 
-        let ph_count = elf_header.pt2.ph_count();
+        let ph_offset =
+            usize::try_from(elf_header.pt2.ph_offset()).map_err(|_| ElfLoadError::InvalidElf)?;
+        let ph_entry_size = usize::from(elf_header.pt2.ph_entry_size());
+        let ph_count = usize::from(elf_header.pt2.ph_count());
+        if ph_count == 0 || ph_offset < 64 || ph_entry_size != ELF64_PHDR_SIZE {
+            return Err(ElfLoadError::InvalidElf);
+        }
+        let ph_size = ph_entry_size
+            .checked_mul(ph_count)
+            .ok_or(ElfLoadError::InvalidElf)?;
+        let ph_end = ph_offset
+            .checked_add(ph_size)
+            .filter(|end| *end <= elf_data.len())
+            .ok_or(ElfLoadError::InvalidElf)?;
+
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
         let mut load_segments = 0usize;
+        let mut phdr_address = None;
 
-        // 1. 每个 LOAD segment 先完成 checked bounds 与权限验证，再修改地址空间。
-        for i in 0..ph_count {
-            let ph = elf.program_header(i)?;
-            match ph.get_type()? {
+        // 1. 每个 LOAD 先完成 checked bounds、alignment 与 W^X 验证，再将它作为唯一映射 owner 提交。
+        for index in 0..elf_header.pt2.ph_count() {
+            let ph = elf
+                .program_header(index)
+                .map_err(|_| ElfLoadError::InvalidElf)?;
+            match ph.get_type().map_err(|_| ElfLoadError::InvalidElf)? {
                 xmas_elf::program::Type::Load => {
                     if ph.file_size() > ph.mem_size() {
-                        return Err("ELF LOAD file size exceeds memory size".into());
+                        return Err(ElfLoadError::InvalidElf);
                     }
-                    let start = usize::try_from(ph.virtual_addr())?;
-                    let mem_size = usize::try_from(ph.mem_size())?;
+                    let start =
+                        usize::try_from(ph.virtual_addr()).map_err(|_| ElfLoadError::InvalidElf)?;
+                    let mem_size =
+                        usize::try_from(ph.mem_size()).map_err(|_| ElfLoadError::InvalidElf)?;
                     let end = start
                         .checked_add(mem_size)
-                        .ok_or("ELF LOAD virtual range overflow")?;
-                    let file_start = usize::try_from(ph.offset())?;
-                    let file_size = usize::try_from(ph.file_size())?;
+                        .ok_or(ElfLoadError::InvalidElf)?;
+                    let file_start =
+                        usize::try_from(ph.offset()).map_err(|_| ElfLoadError::InvalidElf)?;
+                    let file_size =
+                        usize::try_from(ph.file_size()).map_err(|_| ElfLoadError::InvalidElf)?;
                     let file_end = file_start
                         .checked_add(file_size)
-                        .ok_or("ELF LOAD file range overflow")?;
+                        .ok_or(ElfLoadError::InvalidElf)?;
                     if mem_size == 0 {
                         if file_size != 0 {
-                            return Err("zero-sized ELF LOAD contains file bytes".into());
+                            return Err(ElfLoadError::InvalidElf);
                         }
                         continue;
                     }
-                    let alignment = usize::try_from(ph.align())?;
+                    let alignment =
+                        usize::try_from(ph.align()).map_err(|_| ElfLoadError::InvalidElf)?;
                     if alignment > 1
                         && (!alignment.is_power_of_two()
                             || start % alignment != file_start % alignment)
                     {
-                        return Err("invalid ELF LOAD alignment".into());
+                        return Err(ElfLoadError::InvalidElf);
                     }
                     let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
                     if start == 0 || start >= end || end > user_end || file_end > elf_data.len() {
-                        return Err("invalid ELF LOAD range".into());
+                        return Err(ElfLoadError::InvalidElf);
                     }
-                    load_segments += 1;
 
                     let mut map_perm = MapPermission::U;
                     let ph_flags = ph.flags();
                     if ph_flags.is_execute() {
-                        map_perm |= MapPermission::X
+                        map_perm |= MapPermission::X;
                     }
                     if ph_flags.is_read() {
-                        map_perm |= MapPermission::R
+                        map_perm |= MapPermission::R;
                     }
                     if ph_flags.is_write() {
-                        map_perm |= MapPermission::W
+                        map_perm |= MapPermission::W;
                     }
                     if map_perm.contains(MapPermission::W | MapPermission::X) {
-                        return Err("writable executable ELF segment is forbidden".into());
+                        return Err(ElfLoadError::InvalidElf);
                     }
+
                     let map_area =
                         MapArea::new(start.into(), end.into(), MapType::Framed, map_perm);
-
                     max_mapped_vpn = max_mapped_vpn
                         .as_usize()
                         .max(map_area.vpn_range.end.as_usize())
                         .into();
-                    memory_set.push(map_area, Some(&elf_data[file_start..file_end]))?;
+                    memory_set
+                        .push(map_area, Some(&elf_data[file_start..file_end]))
+                        .map_err(ElfLoadError::from)?;
+                    load_segments += 1;
+
+                    if file_start <= ph_offset && ph_end <= file_end {
+                        phdr_address = start.checked_add(ph_offset - file_start);
+                    }
                 }
-                xmas_elf::program::Type::Dynamic | xmas_elf::program::Type::Interp => {
-                    return Err("dynamic ELF is not supported".into());
+                xmas_elf::program::Type::Dynamic
+                | xmas_elf::program::Type::Interp
+                | xmas_elf::program::Type::Tls => return Err(ElfLoadError::InvalidElf),
+                // PT_GNU_STACK(0x6474e551) 要求 X 时必须拒绝；忽略该 flag 会让程序在 NX 栈上以不同契约启动。
+                xmas_elf::program::Type::OsSpecific(0x6474_e551) if ph.flags().is_execute() => {
+                    return Err(ElfLoadError::InvalidElf);
                 }
                 _ => {}
             }
         }
         if load_segments == 0 {
-            return Err("ELF has no LOAD segment".into());
+            return Err(ElfLoadError::InvalidElf);
         }
+        let phdr_address = phdr_address.ok_or(ElfLoadError::InvalidElf)?;
 
         let max_end_va: VirtualAddress = max_mapped_vpn.into();
         let heap_base = usize::from(max_end_va);
         let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
         let user_stack_top = user_end
             .checked_sub(config::PAGE_SIZE)
-            .ok_or("user stack top underflow")?;
+            .ok_or(ElfLoadError::InvalidElf)?;
         let user_stack_bottom = user_stack_top
             .checked_sub(config::USER_STACK_SIZE)
-            .ok_or("user stack range underflow")?;
+            .ok_or(ElfLoadError::InvalidElf)?;
         let heap_limit = user_stack_bottom
             .checked_sub(config::PAGE_SIZE)
-            .ok_or("user stack guard underflow")?;
+            .ok_or(ElfLoadError::InvalidElf)?;
         if heap_base >= heap_limit {
-            return Err("ELF image overlaps user stack or guard".into());
+            return Err(ElfLoadError::InvalidElf);
         }
 
-        // 2. heap 从最高 LOAD 末端开始；栈位于 Sv39 低半区顶部，栈上下各保留一页 guard。
-        memory_set.push(
-            MapArea::new(
-                user_stack_bottom.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        )?;
-        memory_set.initialize_user_heap(heap_base, heap_limit)?;
+        // 2. heap 从最高 LOAD 末端开始；栈位于 Sv39 低半区顶部，上下各保留一页 guard。
+        memory_set
+            .push(
+                MapArea::new(
+                    user_stack_bottom.into(),
+                    user_stack_top.into(),
+                    MapType::Framed,
+                    MapPermission::R | MapPermission::W | MapPermission::U,
+                ),
+                None,
+            )
+            .map_err(ElfLoadError::from)?;
+        memory_set
+            .initialize_user_heap(heap_base, heap_limit)
+            .map_err(ElfLoadError::from)?;
+        memory_set
+            .push(
+                MapArea::new(
+                    config::TRAP_CONTEXT.into(),
+                    config::TRAMPOLINE.into(),
+                    MapType::Framed,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .map_err(ElfLoadError::from)?;
 
-        memory_set.push(
-            MapArea::new(
-                config::TRAP_CONTEXT.into(),
-                config::TRAMPOLINE.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W,
-            ),
-            None,
-        )?;
-
-        let entry_point = usize::try_from(elf.header.pt2.entry_point())?;
+        let entry_point =
+            usize::try_from(elf.header.pt2.entry_point()).map_err(|_| ElfLoadError::InvalidElf)?;
         let entry_pte = memory_set
             .translate(VirtualAddress::from(entry_point).floor())
-            .ok_or("ELF entry is not mapped")?;
+            .ok_or(ElfLoadError::InvalidElf)?;
         if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
-            return Err("ELF entry is not user executable".into());
+            return Err(ElfLoadError::InvalidElf);
+        }
+        let phdr_pte = memory_set
+            .translate(VirtualAddress::from(phdr_address).floor())
+            .ok_or(ElfLoadError::InvalidElf)?;
+        if !phdr_pte.flags().contains(PTEFlags::U | PTEFlags::R) {
+            return Err(ElfLoadError::InvalidElf);
         }
 
-        // 3. 参数栈是唯一 argv/envp 路径；即使为空也写入 argc 与两个终止指针。
-        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
+        // 3. 初始栈是 argv/envp/auxv 的唯一用户契约，不通过寄存器传递私有参数。
+        let aux = ElfAuxInfo {
+            phdr: phdr_address,
+            phent: ph_entry_size,
+            phnum: ph_count,
+            entry: entry_point,
+        };
+        let actual_stack_top = memory_set.build_initial_stack(user_stack_top, args, envs, aux)?;
         Ok((memory_set, actual_stack_top, entry_point))
     }
 
-    /// Create a new memory set from ELF data with argument support
-    pub fn from_elf_with_args(
-        elf_data: &[u8],
-        args: &[String],
-        envs: &[String],
-    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, args, envs)
-    }
-
-    /// Build argc/argv/envp layout on user stack
-    fn build_arg_stack(
+    fn build_initial_stack(
         &mut self,
         stack_top: usize,
-        args: &[String],
-        envs: &[String],
-    ) -> Result<usize, Box<dyn Error>> {
+        args: &[Vec<u8>],
+        envs: &[Vec<u8>],
+        aux: ElfAuxInfo,
+    ) -> Result<usize, ElfLoadError> {
+        const AT_NULL: usize = 0;
+        const AT_PHDR: usize = 3;
+        const AT_PHENT: usize = 4;
+        const AT_PHNUM: usize = 5;
+        const AT_PAGESZ: usize = 6;
+        const AT_ENTRY: usize = 9;
+        const AUX_WORDS: usize = 12;
+
         let total_string_size = args
             .iter()
             .chain(envs)
@@ -751,88 +854,122 @@ impl MemorySet {
                     .checked_add(1)
                     .and_then(|size| total.checked_add(size))
             })
-            .ok_or("argument string bytes overflow")?;
-        let argc = args.len();
+            .ok_or(ElfLoadError::InvalidElf)?;
         let pointer_count = 1usize
-            .checked_add(argc)
+            .checked_add(args.len())
             .and_then(|count| count.checked_add(1))
             .and_then(|count| count.checked_add(envs.len()))
             .and_then(|count| count.checked_add(1))
-            .ok_or("argument pointer count overflow")?;
+            .and_then(|count| count.checked_add(AUX_WORDS))
+            .ok_or(ElfLoadError::InvalidElf)?;
         let pointer_space = pointer_count
             .checked_mul(core::mem::size_of::<usize>())
-            .ok_or("argument pointer bytes overflow")?;
-        let total_size = pointer_space
+            .ok_or(ElfLoadError::InvalidElf)?;
+        let unaligned_size = pointer_space
             .checked_add(total_string_size)
-            .and_then(|size| size.checked_add(15))
-            .ok_or("argument stack size overflow")?;
+            .ok_or(ElfLoadError::InvalidElf)?;
+        let stack_size = unaligned_size
+            .checked_add(15)
+            .ok_or(ElfLoadError::InvalidElf)?;
+        if stack_size > config::USER_STACK_SIZE {
+            return Err(ElfLoadError::InvalidElf);
+        }
         let stack_ptr = stack_top
-            .checked_sub(total_size)
-            .ok_or("argument stack underflow")?
+            .checked_sub(stack_size)
+            .ok_or(ElfLoadError::InvalidElf)?
             & !15usize;
-
-        let string_area_start = stack_ptr
+        let mut string_ptr = stack_ptr
             .checked_add(pointer_space)
-            .ok_or("argument string address overflow")?;
-        let mut string_ptr = string_area_start;
+            .ok_or(ElfLoadError::InvalidElf)?;
         let mut argv_ptrs = Vec::new();
+        argv_ptrs
+            .try_reserve_exact(args.len())
+            .map_err(|_| ElfLoadError::OutOfMemory)?;
         let mut envp_ptrs = Vec::new();
+        envp_ptrs
+            .try_reserve_exact(envs.len())
+            .map_err(|_| ElfLoadError::OutOfMemory)?;
 
         for arg in args {
             argv_ptrs.push(string_ptr);
-            self.write_string_to_user_stack(string_ptr, arg)?;
+            self.write_c_string_to_user_stack(string_ptr, arg)?;
             string_ptr = string_ptr
                 .checked_add(arg.len())
                 .and_then(|address| address.checked_add(1))
-                .ok_or("argument string address overflow")?;
+                .ok_or(ElfLoadError::InvalidElf)?;
         }
-
         for env in envs {
             envp_ptrs.push(string_ptr);
-            self.write_string_to_user_stack(string_ptr, env)?;
+            self.write_c_string_to_user_stack(string_ptr, env)?;
             string_ptr = string_ptr
                 .checked_add(env.len())
                 .and_then(|address| address.checked_add(1))
-                .ok_or("environment string address overflow")?;
+                .ok_or(ElfLoadError::InvalidElf)?;
         }
 
-        let mut ptr_writer = stack_ptr;
-        self.write_usize_to_user_stack(ptr_writer, argc)?;
-        ptr_writer += core::mem::size_of::<usize>();
-
-        // Write argv pointers
-        for &arg_ptr in &argv_ptrs {
-            self.write_usize_to_user_stack(ptr_writer, arg_ptr)?;
-            ptr_writer += core::mem::size_of::<usize>();
+        let mut writer = stack_ptr;
+        self.write_usize_to_user_stack(writer, args.len())?;
+        writer += core::mem::size_of::<usize>();
+        for pointer in argv_ptrs {
+            self.write_usize_to_user_stack(writer, pointer)?;
+            writer += core::mem::size_of::<usize>();
         }
-        self.write_usize_to_user_stack(ptr_writer, 0)?;
-        ptr_writer += core::mem::size_of::<usize>();
-
-        // Write envp pointers
-        for &env_ptr in &envp_ptrs {
-            self.write_usize_to_user_stack(ptr_writer, env_ptr)?;
-            ptr_writer += core::mem::size_of::<usize>();
+        self.write_usize_to_user_stack(writer, 0)?;
+        writer += core::mem::size_of::<usize>();
+        for pointer in envp_ptrs {
+            self.write_usize_to_user_stack(writer, pointer)?;
+            writer += core::mem::size_of::<usize>();
         }
-        self.write_usize_to_user_stack(ptr_writer, 0)?;
+        self.write_usize_to_user_stack(writer, 0)?;
+        writer += core::mem::size_of::<usize>();
 
+        for (kind, value) in [
+            (AT_PHDR, aux.phdr),
+            (AT_PHENT, aux.phent),
+            (AT_PHNUM, aux.phnum),
+            (AT_PAGESZ, config::PAGE_SIZE),
+            (AT_ENTRY, aux.entry),
+            (AT_NULL, 0),
+        ] {
+            self.write_usize_to_user_stack(writer, kind)?;
+            writer += core::mem::size_of::<usize>();
+            self.write_usize_to_user_stack(writer, value)?;
+            writer += core::mem::size_of::<usize>();
+        }
+
+        debug_assert_eq!(writer, stack_ptr + pointer_space);
+        debug_assert_eq!(stack_ptr & 15, 0);
         Ok(stack_ptr)
     }
 
-    fn write_string_to_user_stack(&mut self, addr: usize, s: &str) -> Result<(), Box<dyn Error>> {
-        self.copy_to_user(addr, s.as_bytes())?;
-        let nul_address = addr
-            .checked_add(s.len())
-            .ok_or("argument NUL address overflow")?;
-        self.copy_to_user(nul_address, &[0])?;
-        Ok(())
+    fn write_c_string_to_user_stack(
+        &mut self,
+        address: usize,
+        value: &[u8],
+    ) -> Result<(), ElfLoadError> {
+        self.copy_to_user(address, value)
+            .map_err(|_| ElfLoadError::InvalidElf)?;
+        let nul_address = address
+            .checked_add(value.len())
+            .ok_or(ElfLoadError::InvalidElf)?;
+        self.copy_to_user(nul_address, &[0])
+            .map_err(|_| ElfLoadError::InvalidElf)
     }
 
     fn write_usize_to_user_stack(
         &mut self,
-        addr: usize,
+        address: usize,
         value: usize,
-    ) -> Result<(), Box<dyn Error>> {
-        self.copy_to_user(addr, &value.to_le_bytes())?;
-        Ok(())
+    ) -> Result<(), ElfLoadError> {
+        self.copy_to_user(address, &value.to_le_bytes())
+            .map_err(|_| ElfLoadError::InvalidElf)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ElfAuxInfo {
+    phdr: usize,
+    phent: usize,
+    phnum: usize,
+    entry: usize,
 }

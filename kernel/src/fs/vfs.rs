@@ -46,7 +46,7 @@ impl VirtualFileSystem {
     ///
     /// # Parameters
     ///
-    /// - `path`: 必须以 `/` 开头的绝对路径。
+    /// - `path`: 必须以 `/` 开头的 NUL 之前原始路径字节。
     ///
     /// # Returns
     ///
@@ -56,8 +56,8 @@ impl VirtualFileSystem {
     ///
     /// 路径非绝对路径、根文件系统未挂载、分量不存在、遇到符号链接，
     /// 或者带尾随 `/` 的结果不是目录时返回错误。
-    pub fn open(&self, path: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if !path.starts_with('/') {
+    pub fn open(&self, path: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+        if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
 
@@ -70,10 +70,10 @@ impl VirtualFileSystem {
         // 2. inode 栈保留已验证的父链，`..` 只能回退到根，不会逃出当前文件系统。
         // 3. 最后校验尾随斜杠，避免把普通文件当目录打开。
         let mut inode_stack = Vec::from([root_inode]);
-        for component in path.split('/') {
+        for component in path.split(|byte| *byte == b'/') {
             match component {
-                "" | "." => {}
-                ".." => {
+                b"" | b"." => {}
+                b".." => {
                     if inode_stack.len() > 1 {
                         inode_stack.pop();
                     }
@@ -92,7 +92,10 @@ impl VirtualFileSystem {
         }
         let inode = inode_stack.pop().ok_or(FileSystemError::InvalidPath)?;
 
-        if path.len() > 1 && path.ends_with('/') && inode.inode_type() != InodeType::Directory {
+        if path.len() > 1
+            && path.last() == Some(&b'/')
+            && inode.inode_type() != InodeType::Directory
+        {
             return Err(FileSystemError::NotDirectory);
         }
         Ok(inode)

@@ -1,8 +1,8 @@
-use core::{error::Error, sync::atomic::AtomicUsize};
+use core::sync::atomic::AtomicUsize;
 
 use alloc::{
-    boxed::Box,
     string::{String, ToString},
+    vec::Vec,
 };
 use spin::Mutex;
 
@@ -11,7 +11,7 @@ use crate::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::VirtualAddress,
         kernel_stack::KernelStack,
-        mm::{self, MemorySet, UserAccessError},
+        mm::{self, ElfLoadError, MemorySet, UserAccessError},
     },
     sync::IrqMutex,
     task::{context::TaskContext, pid::ProcessId},
@@ -59,19 +59,19 @@ impl AddressSpace {
         self.memory_set.lock().copy_to_user(user_address, source)
     }
 
-    /// @description 从用户空间复制有上限的 NUL 结尾 UTF-8 字符串。
+    /// @description 从用户空间复制有上限的 NUL 结尾字节串。
     ///
     /// @param user_address 用户字符串首地址。
-    /// @param max_len 不含 NUL 的最大字节数。
-    /// @return 成功返回 owned 字符串；fault、未终止或非法 UTF-8 返回明确错误。
-    pub fn copy_user_string(
+    /// @param max_len 包含终止 NUL 的最大总字节数。
+    /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
+    pub fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
-    ) -> Result<String, UserAccessError> {
+    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.memory_set
             .lock()
-            .copy_user_string(user_address, max_len)
+            .copy_user_c_string(user_address, max_len)
     }
 }
 
@@ -147,7 +147,6 @@ impl Sched {
 
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
-    name: Mutex<String>,
     tgid: ProcessId,
     address_space: AddressSpace,
     cwd: Mutex<String>,
@@ -162,17 +161,22 @@ pub struct TaskControlBlock {
 
 impl TaskControlBlock {
     pub(super) fn new_with_pid(
-        name: &str,
+        name: &[u8],
         elf_data: &[u8],
         pid: ProcessId,
-    ) -> Result<Self, Box<dyn Error>> {
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
+    ) -> Result<Self, ElfLoadError> {
+        let mut argv0 = Vec::new();
+        argv0
+            .try_reserve_exact(name.len())
+            .map_err(|_| ElfLoadError::OutOfMemory)?;
+        argv0.extend_from_slice(name);
+        let initial_args = [argv0];
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data, &initial_args, &[])?;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
         let process = Process {
-            name: Mutex::new(name.to_string()),
             tgid: pid,
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
@@ -271,14 +275,14 @@ impl TaskControlBlock {
             .copy_to_user(user_address, source)
     }
 
-    pub fn copy_user_string(
+    pub fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
-    ) -> Result<String, UserAccessError> {
+    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.process
             .address_space
-            .copy_user_string(user_address, max_len)
+            .copy_user_c_string(user_address, max_len)
     }
 
     pub fn user_token(&self) -> usize {
@@ -309,31 +313,19 @@ impl TaskControlBlock {
 
     /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
     ///
-    /// @param program_name 新进程映像名称。
     /// @param elf_data 已完整读入 kernel 的 ELF bytes。
     /// @param args 写入新用户栈的参数。
     /// @param envs 写入新用户栈的环境。
     /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
-    /// @errors 不支持的 ELF、范围错误与内存不足映射为 `MemoryError`。
+    /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
     pub fn execve_replace(
         &self,
-        program_name: &str,
         elf_data: &[u8],
-        args: &[String],
-        envs: &[String],
-    ) -> Result<(), crate::memory::mm::MemoryError> {
-        // 步骤1: 创建新的内存空间 - 在完全提交之前先准备好
-        let classify_load_error = |error: Box<dyn Error>| {
-            error
-                .downcast_ref::<crate::memory::mm::MemoryError>()
-                .copied()
-                .unwrap_or(crate::memory::mm::MemoryError::InvalidRange)
-        };
-        let (new_memory_set, user_sp, entry_point) = if args.is_empty() && envs.is_empty() {
-            MemorySet::from_elf(elf_data).map_err(classify_load_error)?
-        } else {
-            MemorySet::from_elf_with_args(elf_data, args, envs).map_err(classify_load_error)?
-        };
+        args: &[Vec<u8>],
+        envs: &[Vec<u8>],
+    ) -> Result<(), ElfLoadError> {
+        // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
+        let (new_memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data, args, envs)?;
 
         // 步骤2: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
@@ -343,10 +335,7 @@ impl TaskControlBlock {
         *self.process.address_space.memory_set.lock() = new_memory_set;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
 
-        // 步骤3: 更新任务状态；参数与环境只存在于新初始栈中。
-        *self.process.name.lock() = program_name.to_string();
-
-        // 步骤4: 设置新程序的陷阱上下文
+        // 步骤3: 设置新程序的陷阱上下文。参数与环境只存在于新初始栈中。
         self.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
@@ -357,10 +346,6 @@ impl TaskControlBlock {
 
         // 地址空间由统一的 trap 返回路径激活；在这里切换会让后续内核代码运行在用户页表上。
         Ok(())
-    }
-
-    pub fn name(&self) -> String {
-        self.process.name.lock().clone()
     }
 
     /// @description 返回当前 Process/thread group ID。
@@ -386,12 +371,10 @@ impl core::fmt::Debug for TaskControlBlock {
             TaskControlBlock {{
                 tgid: {},
                 tid: {},
-                name: {},
                 task_status: {:?}
             }}"#,
             self.tgid(),
             self.tid(),
-            self.name(),
             self.scheduling.state.lock().run_state
         )
     }

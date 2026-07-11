@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::ProcessId};
+use crate::task::{context::TaskContext, loader::load_program_from_fs, pid::ProcessId};
 
 mod context;
 pub mod loader;
@@ -24,10 +24,10 @@ unsafe extern "C" {
     );
 }
 
-const INIT_PROC_NAME: &str = "/bin/init";
+const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
 pub fn init() {
-    let elf_data = get_app_data_by_name(INIT_PROC_NAME).expect("Failed to get init proc data");
+    let elf_data = load_program_from_fs(INIT_PROC_NAME).expect("failed to read /bin/init");
     let init_proc = TaskControlBlock::new_with_pid(INIT_PROC_NAME, &elf_data, ProcessId::init());
     match init_proc {
         Ok(init_proc) => {

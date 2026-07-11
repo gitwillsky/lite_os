@@ -10,12 +10,18 @@ pub const EINTR: isize = 4;
 pub const EIO: isize = 5;
 /// 参数列表过长。
 pub const E2BIG: isize = 7;
+/// 可执行文件格式无效。
+pub const ENOEXEC: isize = 8;
 /// 无效文件描述符。
 pub const EBADF: isize = 9;
 /// 无法分配内存。
 pub const ENOMEM: isize = 12;
+/// 权限不足。
+pub const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub const EFAULT: isize = 14;
+/// 路径分量不是目录。
+pub const ENOTDIR: isize = 20;
 /// 无效参数。
 pub const EINVAL: isize = 22;
 /// 结果超出支持范围。
@@ -24,3 +30,5 @@ pub const ERANGE: isize = 34;
 pub const ENAMETOOLONG: isize = 36;
 /// 系统调用未实现。
 pub const ENOSYS: isize = 38;
+/// 符号链接解析超出支持范围。
+pub const ELOOP: isize = 40;

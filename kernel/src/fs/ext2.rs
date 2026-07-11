@@ -992,6 +992,11 @@ impl Inode for Ext2Inode {
         ino.i_size_lo as u64
     }
 
+    fn is_executable(&self) -> bool {
+        let ino = self.disk.lock();
+        ino.i_mode & 0o111 != 0
+    }
+
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         let mut done = 0usize;
         let ino = self.disk.lock();
@@ -1029,13 +1034,13 @@ impl Inode for Ext2Inode {
         Ok(done)
     }
 
-    fn find_child(&self, name: &str) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
         if !matches!(self.inode_type(), InodeType::Directory) {
             return Err(FileSystemError::NotDirectory);
         }
         let mut found: Option<u32> = None;
         self.dir_iterate_blocks(|hdr, name_bytes| {
-            if hdr.inode != 0 && name_bytes == name.as_bytes() {
+            if hdr.inode != 0 && name_bytes == name {
                 found = Some(hdr.inode);
                 return false;
             }

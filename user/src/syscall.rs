@@ -1,11 +1,11 @@
 use core::arch::asm;
-use syscall_abi::{SYSCALL_BRK, SYSCALL_EXIT, SYSCALL_SCHED_YIELD, SYSCALL_WRITE};
+use syscall_abi::{SYSCALL_EXIT_GROUP, SYSCALL_SCHED_YIELD, SYSCALL_WRITE};
 
 /// @description 按 Linux/riscv64 ABI 发起系统调用，参数依次装入 `a0..a5`，编号装入 `a7`。
 ///
 /// @param id Linux/riscv64 系统调用编号。
 /// @param args 六个系统调用参数；未使用的位置必须由调用方显式传入零。
-/// @return 内核通过 `a0` 返回的原始值；负值表示 `-errno`。
+/// @return kernel 通过 `a0` 返回的原始值；负值表示 `-errno`。
 #[inline(always)]
 pub fn syscall(id: usize, args: [usize; 6]) -> isize {
     let ret: isize;
@@ -25,12 +25,12 @@ pub fn syscall(id: usize, args: [usize; 6]) -> isize {
     ret
 }
 
-/// @description 终止当前用户任务。
+/// @description 终止当前 thread group。
 ///
-/// @param status 传递给内核的退出状态。
-/// @return 此函数不返回；若内核错误返回，则停留在本地死循环，避免继续执行已终止路径。
-pub fn exit(status: i32) -> ! {
-    let _ = syscall(SYSCALL_EXIT, [status as usize, 0, 0, 0, 0, 0]);
+/// @param status 传递给 kernel 的退出状态。
+/// @return 此函数不返回；若 kernel 错误返回，则停留在本地死循环。
+pub fn exit_group(status: i32) -> ! {
+    let _ = syscall(SYSCALL_EXIT_GROUP, [status as usize, 0, 0, 0, 0, 0]);
     loop {
         core::hint::spin_loop();
     }
@@ -46,14 +46,6 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
         SYSCALL_WRITE,
         [fd, buf.as_ptr() as usize, buf.len(), 0, 0, 0],
     )
-}
-
-/// @description 查询或设置当前进程的数据段结尾。
-///
-/// @param new_brk 新的数据段结尾；传零表示查询当前值。
-/// @return 内核返回的数据段结尾，或当前实现返回的负 errno。
-pub fn brk(new_brk: usize) -> isize {
-    syscall(SYSCALL_BRK, [new_brk, 0, 0, 0, 0, 0])
 }
 
 /// @description 主动让出处理器，使用 Linux/riscv64 `sched_yield` 编号。
