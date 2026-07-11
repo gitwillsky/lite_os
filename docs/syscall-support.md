@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 55 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 57 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 55 个入口
+## 2. 当前暴露的 57 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -46,6 +46,7 @@
 | 63-66 | `read/write/readv/writev` | fd、buffer 或 RV64 iovec | byte count；partial/EOF；标准 fd/stream errno | POSIX I/O；musl/BusyBox | **Partial**。regular file 共享 offset；Terminal 使用 termios；Pipe 支持 blocking/nonblocking、scatter readv、gather writev、EOF 与 EPIPE/SIGPIPE。iovec 最大 1024、总长不超过 SSIZE_MAX。无 socket；Terminal 仍缺完整 VMIN/VTIME/background enforcement。 | `kernel/src/syscall/fs.rs` |
 | 73 | `ppoll` | pollfd array、relative timespec、可选 8-byte sigmask | ready count/0；`EINTR/EFAULT/EINVAL/ENOMEM` | POSIX poll/ppoll；musl/BusyBox line editing | **Complete**（当前 OFD kinds）。一次 registration 可索引多个 Pipe/Console source；regular inode按请求立即 ready，invalid fd 返回 POLLNVAL，Pipe 提供 POLLIN/POLLOUT/HUP/ERR，timeout 使用 monotonic deadline，临时 mask 在 ready/timeout 或 signal frame 正确恢复。 | `kernel/src/syscall/poll.rs`, `kernel/src/task/task_manager.rs` |
 | 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 当前只接受 flags 0。 | `kernel/src/syscall/fs.rs` |
+| 81 | `sync` | 无参数 | 按 Linux ABI 固定返回 0，单个 writeback error 不从该入口报告 | POSIX sync；BusyBox sync applet | **Complete**（当前单 root filesystem）。经 VFS 唯一 root seam 等待已提交写并在 VirtIO 声明 FLUSH feature 时发送 device flush；后续冷启动读回验证持久化结果。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/vfs.rs` |
 | 82 | `fsync` | fd | 0；`EBADF/EIO` | POSIX fsync | **Complete**。等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request。 | `kernel/src/syscall/fs.rs` |
 | 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
 | 93 | `exit` | `int status` | 不返回 | POSIX `_exit`；musl `_Exit` fallback | **Complete**。当前调用 thread 是 Process 的唯一 thread；释放 TCB 后只保留可由 parent 消费的最小 exit record。 | `kernel/src/syscall/process.rs` |
@@ -61,6 +62,7 @@
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | RV64 24-byte action、8-byte sigset | 0；`EFAULT/EINVAL` | POSIX signal API；musl wrappers | **Partial**。Process disposition、per-Thread mask、SIGKILL/SIGSTOP 不可屏蔽；handler 的 `SA_RESTART` 可重放 blocking `wait4` 与无 timeout 的 futex WAIT。无 altstack、queued realtime value 与其他 syscall 的完整 restart coverage。 | `kernel/src/syscall/signal.rs` |
 | 137 | `rt_sigtimedwait` | 8-byte sigset、可选 128-byte siginfo、可选 relative timespec | signal number；`EAGAIN/EINTR/EFAULT/EINVAL` | POSIX sigwaitinfo/sigtimedwait；BusyBox init | **Partial**。从 Thread 唯一 pending owner 消费 coalesced standard signal，支持无限等待、零/有限 monotonic timeout、`SI_TKILL` 与 `SIGCHLD/CLD_EXITED` siginfo；registration 共用 indexed wait/deadline registry。无 realtime queued value、process-directed selection 和完整多线程 SIGCHLD target selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
 | 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
+| 142 | `reboot` | magic1、magic2、command、argument | CAD command 返回 0；reset 成功不返回；`EINVAL/EIO` | BusyBox init shutdown policy | **Partial**。校验 Linux magic，`CAD_OFF/CAD_ON` 更新唯一 system policy，`RESTART/HALT/POWER_OFF` 映射 SBI SRST cold reboot/shutdown。platform 无 restart-reason channel，因此拒绝 `RESTART2`；无 kexec/suspend。 | `kernel/src/syscall/reboot.rs`, `kernel/src/system.rs` |
 | 154-157 | `setpgid/getpgid/getsid/setsid` | PID/PGID 或无参数 | 0/ID；`ESRCH/EPERM` | POSIX session/job control；BusyBox init/ash | **Partial**。process graph 唯一拥有 SID/PGID；fork 继承，setsid 创建新 session/group，setpgid 校验 direct-child、session leader 与同 session group。尚无 exec-generation 的 setpgid `EACCES`、credentials/namespace 与 stopped/continued lifecycle。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
 | 173 | `getppid` | 无参数 | parent TGID；init 为 0 | POSIX `getppid`；musl direct wrapper | **Complete**。读取 TaskManager 唯一 parent edge；orphan 重新指向 PID 1。 | `kernel/src/syscall/process.rs` |
@@ -92,7 +94,7 @@
 
 ## 4. musl 结论
 
-当前 55 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF 与 multi-source ppoll。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 57 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF 与 multi-source ppoll。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C、CAD policy 与跨冷启动 ext2 持久化。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；

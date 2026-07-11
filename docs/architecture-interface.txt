@@ -474,6 +474,7 @@ kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open (& self , path : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : Option < Arc < dyn Inode > > , old_path : & [u8] , new_start : Option < Arc < dyn Inode > > , new_path : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , directory : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
@@ -714,6 +715,7 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_pipe2 (descriptors : usize , flag
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * const u8 , nfd : isize , nn : * const u8 , flags : u32 ,) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
@@ -743,6 +745,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_set_tid_address (address : u
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setpgid (pid : usize , pgid : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
+kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigprocmask (how : usize , set : usize , old_set : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigreturn () -> isize
@@ -756,6 +759,11 @@ kernel/src/syscall/timer.rs :: pub (crate) fn sys_nanosleep (req : * const TimeS
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
 kernel/src/syscall/tty.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
+kernel/src/system.rs :: enum ResetKind :: ColdReboot
+kernel/src/system.rs :: enum ResetKind :: Shutdown
+kernel/src/system.rs :: pub (crate) enum ResetKind
+kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , isize >
+kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_return (kernel_sp : usize , trap_return : usize) -> Self
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn zero_init () -> Self

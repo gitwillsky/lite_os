@@ -4,12 +4,13 @@ mod futex;
 mod memory;
 mod poll;
 mod process;
+mod reboot;
 mod signal;
 mod timer;
 mod tty;
 
 use crate::syscall::{
-    fs::*, futex::*, memory::*, poll::*, process::*, signal::*, timer::*, tty::*,
+    fs::*, futex::*, memory::*, poll::*, process::*, reboot::*, signal::*, timer::*, tty::*,
 };
 use syscall_abi::*;
 
@@ -62,6 +63,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[3] as u32,
         ),
         SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
+        SYSCALL_SYNC => sys_sync(),
         SYSCALL_FSYNC => sys_fsync(args[0]),
         SYSCALL_RENAMEAT2 => sys_renameat2(
             args[0] as isize,
@@ -86,6 +88,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
+        SYSCALL_REBOOT => sys_reboot(args[0], args[1], args[2], args[3]),
         SYSCALL_SETPGID => sys_setpgid(args[0], args[1]),
         SYSCALL_GETPGID => sys_getpgid(args[0]),
         SYSCALL_GETSID => sys_getsid(args[0]),

@@ -22,12 +22,13 @@
 | `fs` | `drivers`, `ipc`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
 | `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
-| `syscall` | `fs`, `ipc`, `memory`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `syscall` | `fs`, `ipc`, `memory`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `system` | `arch` | 只拥有 whole-system reset/shutdown/CAD policy |
 | `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
 | `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
-| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `task`, `timer`, `trap` | 唯一 composition root |
+| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 

@@ -308,6 +308,7 @@ def main() -> int:
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
                 "LITEOS_BG_42",
+                "LITEOS_PERSIST_WRITTEN_42",
                 "LITEOS_TTY_CTRL_C_42",
             ),
             interactions=(
@@ -317,10 +318,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg\n",
+                    b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n",
                 ),
                 (
-                    "LITEOS_BG_42",
+                    "LITEOS_PERSIST_WRITTEN_42",
                     b"echo LITEOS_TTY_LOOP_$((6*7)); while :; do :; done\n",
                 ),
                 (
@@ -330,7 +331,22 @@ def main() -> int:
             ),
             forbidden_markers=tuple(
                 f"unsupported syscall_id: {number}"
-                for number in (29, 59, 65, 73, 133, 137, 154, 155, 156, 157, 174, 175, 176, 177)
+                for number in (29, 59, 65, 73, 81, 133, 137, 142, 154, 155, 156, 157, 174, 175, 176, 177)
+            ),
+        )
+        boot(
+            image,
+            8,
+            (
+                "dynamic hart topology initialized: count=8, mask=0xff",
+                "all DTB harts online: count=8, mask=0xff",
+                "init started: BusyBox v1.37.0",
+                "LITEOS_PERSIST_42",
+            ),
+            interactions=(("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),),
+            forbidden_markers=tuple(
+                f"unsupported syscall_id: {number}"
+                for number in (29, 59, 65, 73, 81, 133, 137, 142, 154, 155, 156, 157, 174, 175, 176, 177)
             ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:

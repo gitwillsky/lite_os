@@ -25,6 +25,7 @@ mod ipc;
 mod memory;
 mod sync;
 mod syscall;
+mod system;
 mod task;
 mod timer;
 mod trap;

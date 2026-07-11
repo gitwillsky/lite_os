@@ -754,6 +754,14 @@ pub(crate) fn sys_fsync(fd: usize) -> isize {
         .map_or(0, |i| i.sync().map_or_else(ferr, |_| 0))
 }
 
+/// @description 将唯一 mounted filesystem 的已提交写入同步到 stable storage。
+///
+/// @return 按 Linux sync ABI 固定返回零；单个 writeback error 不通过该入口报告。
+pub(crate) fn sys_sync() -> isize {
+    let _ = vfs().sync();
+    0
+}
+
 #[repr(C)]
 struct LinuxStat {
     st_dev: u64,

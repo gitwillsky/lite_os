@@ -30,6 +30,7 @@ const KERNEL_MODULES: &[&str] = &[
     "memory",
     "sync",
     "syscall",
+    "system",
     "task",
     "timer",
     "trap",
