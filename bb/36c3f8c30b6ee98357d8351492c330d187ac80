@@ -1,0 +1,29 @@
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_19b83a8e147e58 3-4,36-37
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_60ce321c90ddbb 8,10,35,82-85
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_02ff0111bd6cba 8-11,63-102
+kernel/src/syscall/tty.rs
+  s_d637a88cd4b00d::t_8cd58daed61cdd 1-92
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_6c1d5b69a0d757 9,37-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bb36c3f8c30b6ee98357d8351492c330d187ac80",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
