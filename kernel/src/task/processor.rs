@@ -5,7 +5,7 @@ use crate::{
         sbi,
     },
     task::{
-        RunState, TaskControlBlock,
+        RunState, TaskControlBlock, WaitMembership,
         context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
@@ -355,7 +355,7 @@ fn ready_entry(task: Arc<TaskControlBlock>, generation: u64) -> RunQueueEntry {
 
 /// @description 将新建 Task 从 New 转换为唯一 Ready membership 并投递。
 ///
-/// @param task TGID index 已拥有的初始 Task。
+/// @param task process graph 已拥有的初始 Task。
 /// @return 选中的 CPU。
 pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
     let cpu = select_cpu(&task);
@@ -378,13 +378,25 @@ pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
 /// @param wait_key 必须与 SchedulingState 中记录的 key 相同。
 /// @return 本次调用真正消费 membership 时返回 true；重复/stale wake 返回 false。
 pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_key: (u64, u64)) -> bool {
+    wake_waiting_task(task, WaitMembership::Deadline(wait_key))
+}
+
+/// @description 消费 child-exit wait membership，并完成无丢失唤醒转换。
+///
+/// @param task Process graph 移出的唯一 waiter owner。
+/// @return membership 有效时返回 true；stale wake 返回 false。
+pub(super) fn wake_child_task(task: Arc<TaskControlBlock>) -> bool {
+    wake_waiting_task(task, WaitMembership::Child)
+}
+
+fn wake_waiting_task(task: Arc<TaskControlBlock>, expected: WaitMembership) -> bool {
     let target_cpu = select_cpu(&task);
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
-        if scheduling.deadline_wait != Some(wait_key) {
+        if scheduling.wait != Some(expected) {
             return false;
         }
-        scheduling.deadline_wait = None;
+        scheduling.wait = None;
         match scheduling.run_state {
             RunState::Blocking { cpu } => {
                 scheduling.run_state = RunState::WakePending { cpu };
@@ -395,7 +407,7 @@ pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_key: (u64, u6
                 Some((target_cpu, generation))
             }
             RunState::Exited => None,
-            state => panic!("deadline wait attached to invalid state {state:?}"),
+            state => panic!("wait membership attached to invalid state {state:?}"),
         }
     };
     if let Some((cpu, generation)) = ready {

@@ -360,6 +360,7 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (&
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_console (console : Arc < dyn Console >) -> Self
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn console (console : Arc < dyn Console > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (inode : Arc < dyn Inode > , flags : u32) -> Arc < Self >
@@ -493,6 +494,7 @@ kernel/src/memory/frame_allocator.rs :: pub (crate) FrameTracker :: ppn : Physic
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc () -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc_contiguous (pages : usize) -> Option < FrameTracker >
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn init (start_addr : PhysicalAddress , end_addr : PhysicalAddress)
+kernel/src/memory/frame_allocator.rs :: pub (crate) impl FrameTracker :: fn bytes (& self) -> & [u8]
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl FrameTracker :: fn bytes_mut (& mut self) -> & mut [u8]
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl StackFrameAllocator :: fn alloc (& mut self) -> Option < PhysicalPageNumber >
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl StackFrameAllocator :: fn alloc_contiguous (& mut self , pages : usize) -> Option < PhysicalPageNumber >
@@ -504,6 +506,7 @@ kernel/src/memory/heap_allocator.rs :: pub (crate) fn init ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct KernelAllocator
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn get_top (& self) -> usize
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn new () -> Self
+kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn try_new () -> Result < Self , MemoryError >
 kernel/src/memory/kernel_stack.rs :: pub (crate) struct KernelStack
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " ELF header、segment、地址、权限或初始栈不满足当前静态 RV64 契约。"] InvalidElf
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " 物理页或页表页分配失败。"] OutOfMemory
@@ -546,6 +549,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (&
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& self) -> Result < Self , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_anonymous (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
@@ -587,7 +591,9 @@ kernel/src/sync/mod.rs :: pub (crate) struct IrqMutexGuard < 'a , T : ? Sized >
 kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqGuard
 kernel/src/syscall/errno.rs :: pub (crate) const E2BIG : isize = 7
 kernel/src/syscall/errno.rs :: pub (crate) const EACCES : isize = 13
+kernel/src/syscall/errno.rs :: pub (crate) const EAGAIN : isize = 11
 kernel/src/syscall/errno.rs :: pub (crate) const EBADF : isize = 9
+kernel/src/syscall/errno.rs :: pub (crate) const ECHILD : isize = 10
 kernel/src/syscall/errno.rs :: pub (crate) const EEXIST : isize = 17
 kernel/src/syscall/errno.rs :: pub (crate) const EFAULT : isize = 14
 kernel/src/syscall/errno.rs :: pub (crate) const EINTR : isize = 4
@@ -629,12 +635,14 @@ kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , lengt
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mprotect (address : usize , length : usize , prot : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_munmap (address : usize , length : usize) -> isize
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> isize
+kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !
 kernel/src/syscall/process.rs :: pub (crate) fn sys_get_pid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_get_ppid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_get_tid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_sched_yield () -> isize
+kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_nsec : i64
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_sec : i64
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_gettime (clock_id : i32 , result : * mut TimeSpec) -> isize
@@ -653,7 +661,7 @@ kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8])
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs }
-kernel/src/task/mod.rs :: pub (crate) use model :: { RunState , TaskControlBlock }
+kernel/src/task/mod.rs :: pub (crate) use model :: { RunState , TaskControlBlock , WaitMembership }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
@@ -664,17 +672,20 @@ kernel/src/task/model.rs :: enum RunState :: New
 kernel/src/task/model.rs :: enum RunState :: Ready { cpu : usize , generation : u64 }
 kernel/src/task/model.rs :: enum RunState :: Running { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
+kernel/src/task/model.rs :: enum WaitMembership :: Child
+kernel/src/task/model.rs :: enum WaitMembership :: Deadline ((u64 , u64))
 kernel/src/task/model.rs :: pub (crate) Sched :: last_runtime : u64
 kernel/src/task/model.rs :: pub (crate) Sched :: nice : i32
 kernel/src/task/model.rs :: pub (crate) Sched :: vruntime : u64
 kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: last_cpu : AtomicUsize
 kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: policy : Mutex < Sched >
 kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: state : IrqMutex < SchedulingState >
-kernel/src/task/model.rs :: pub (crate) SchedulingState :: deadline_wait : Option < (u64 , u64) >
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: next_generation : u64
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: run_state : RunState
+kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
 kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) enum RunState
+kernel/src/task/model.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
@@ -708,10 +719,12 @@ kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) struct SchedulingState
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (name : & [u8] , elf_data : & [u8] , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
 kernel/src/task/pid.rs :: pub (super) ProcessId :: <tuple> : usize
+kernel/src/task/pid.rs :: pub (super) impl ProcessId :: const fn allocated (value : usize) -> Self
 kernel/src/task/pid.rs :: pub (super) struct ProcessId
 kernel/src/task/processor.rs :: pub (crate) Processor :: current : Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) extern "C" fn idle_return () -> !
@@ -729,6 +742,7 @@ kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < Tas
 kernel/src/task/processor.rs :: pub (super) fn finish_blocking_transition (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
+kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock >) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_key : (u64 , u64)) -> bool
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
@@ -740,17 +754,24 @@ kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct CfsRunQueue
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct RunQueueEntry
 kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
-kernel/src/task/task_manager.rs :: pub (crate) fn add_task (task : Arc < TaskControlBlock >)
+kernel/src/task/task_manager.rs :: enum WaitChildError :: InvalidSelector
+kernel/src/task/task_manager.rs :: enum WaitChildError :: NoChild
+kernel/src/task/task_manager.rs :: pub (crate) ChildExit :: pid : usize
+kernel/src/task/task_manager.rs :: pub (crate) ChildExit :: status : i32
+kernel/src/task/task_manager.rs :: pub (crate) enum WaitChildError
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn exit_current_and_run_next (_exit_code : i32) -> !
+kernel/src/task/task_manager.rs :: pub (crate) fn exit_current_and_run_next (exit_code : i32) -> !
+kernel/src/task/task_manager.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
 kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) -> isize
+kernel/src/task/task_manager.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
+kernel/src/task/task_manager.rs :: pub (crate) fn reap_child (pid : usize)
 kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
 kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next ()
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
+kernel/src/task/task_manager.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool ,) -> Result < Option < ChildExit > , WaitChildError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
-kernel/src/task/task_manager.rs :: pub (crate) impl TaskManager :: fn add_task (& self , task : Arc < TaskControlBlock >)
-kernel/src/task/task_manager.rs :: pub (crate) impl TaskManager :: fn new () -> Self
-kernel/src/task/task_manager.rs :: pub (crate) struct TaskManager
+kernel/src/task/task_manager.rs :: pub (crate) struct ChildExit
+kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: fcsr : usize
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_gp : usize

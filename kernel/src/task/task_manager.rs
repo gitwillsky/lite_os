@@ -7,48 +7,100 @@ use crate::{
     arch::hart::hart_id,
     sync::{IrqMutex, LocalIrqGuard},
     task::{
-        Processor, RunState, TaskControlBlock, context::TaskContext, processor::enqueue_new_task,
-        scheduler::cfs_scheduler::RunQueueEntry, with_current_processor,
+        Processor, RunState, TaskControlBlock, WaitMembership,
+        context::TaskContext,
+        pid::{INIT_PID, ProcessId},
+        processor::enqueue_new_task,
+        scheduler::cfs_scheduler::RunQueueEntry,
+        with_current_processor,
     },
     timer::{get_time_ns, get_time_us},
 };
 
-/// 系统中存活 Process 的 TGID 索引。
-///
-/// 该表只证明 task 存在；`SchedulingState` 才是 current/runqueue/wait membership 权威。
-pub(crate) struct TaskManager {
-    /// 全局进程表：TGID -> 当前唯一 Thread
-    // 当前只有插入/删除；IRQ-safe mutex 同时防止同 hart 中断重入和跨 hart 并发。
-    tasks: IrqMutex<BTreeMap<usize, Arc<TaskControlBlock>>>,
+enum ProcessState {
+    Live(Arc<TaskControlBlock>),
+    Exited(i32),
+}
+
+struct ProcessNode {
+    parent: Option<usize>,
+    state: ProcessState,
+    waiter: Option<Arc<TaskControlBlock>>,
+}
+
+struct ProcessGraph {
+    next_pid: usize,
+    nodes: BTreeMap<usize, ProcessNode>,
+}
+
+/// @description parent relation、live task 或最小 exit record 的唯一 process graph owner。
+struct TaskManager {
+    graph: IrqMutex<ProcessGraph>,
 }
 
 impl TaskManager {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
-            tasks: IrqMutex::new(BTreeMap::new()),
+            graph: IrqMutex::new(ProcessGraph {
+                next_pid: INIT_PID + 1,
+                nodes: BTreeMap::new(),
+            }),
         }
     }
 
-    /// 添加新进程到系统
-    /// 这是创建进程的统一入口点
-    pub(crate) fn add_task(&self, task: Arc<TaskControlBlock>) {
+    fn add_init(&self, task: Arc<TaskControlBlock>) {
         let tgid = task.tgid();
-
-        // 添加到全局进程表
-        {
-            let mut tasks = self.tasks.lock();
-            let previous = tasks.insert(tgid, task.clone());
-            assert!(
-                previous.is_none(),
-                "duplicate TGID inserted into process index"
-            );
-        }
-
+        assert_eq!(tgid, INIT_PID);
+        let previous = self.graph.lock().nodes.insert(
+            tgid,
+            ProcessNode {
+                parent: None,
+                state: ProcessState::Live(task.clone()),
+                waiter: None,
+            },
+        );
+        assert!(previous.is_none(), "init inserted twice");
         enqueue_new_task(task);
     }
 
-    fn remove_task(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.tasks.lock().remove(&tgid)
+    fn allocate_pid(&self) -> ProcessId {
+        let mut graph = self.graph.lock();
+        let pid = graph.next_pid;
+        graph.next_pid = graph
+            .next_pid
+            .checked_add(1)
+            .expect("PID namespace exhausted");
+        ProcessId::allocated(pid)
+    }
+
+    fn publish_child(&self, parent: usize, child: Arc<TaskControlBlock>) {
+        let pid = child.tgid();
+        let mut graph = self.graph.lock();
+        assert!(
+            matches!(
+                graph.nodes.get(&parent).map(|node| &node.state),
+                Some(ProcessState::Live(_))
+            ),
+            "fork parent disappeared before child publication"
+        );
+        let previous = graph.nodes.insert(
+            pid,
+            ProcessNode {
+                parent: Some(parent),
+                state: ProcessState::Live(child),
+                waiter: None,
+            },
+        );
+        assert!(previous.is_none(), "allocated PID already exists");
+    }
+
+    fn parent_pid(&self, pid: usize) -> usize {
+        self.graph
+            .lock()
+            .nodes
+            .get(&pid)
+            .and_then(|node| node.parent)
+            .unwrap_or(0)
     }
 }
 
@@ -82,26 +134,158 @@ impl DeadlineWaitQueue {
     }
 }
 
-// TGID index 只拥有 Process 存活性；SchedulingState 是运行/membership 唯一权威。
 lazy_static! {
-    // OWNER: task manager owns the process-lifetime index keyed by TGID.
-    pub(crate) static ref TASK_MANAGER: TaskManager = TaskManager::new();
+    // OWNER: task manager owns PID allocation, parent relation, live task/exit record and child waiter.
+    static ref TASK_MANAGER: TaskManager = TaskManager::new();
     // OWNER: task manager owns the deadline index for sleeping tasks.
     static ref DEADLINE_WAIT_QUEUE: IrqMutex<DeadlineWaitQueue> =
         IrqMutex::new(DeadlineWaitQueue::new());
 }
 
-/// 添加任务到系统
-pub(crate) fn add_task(task: Arc<TaskControlBlock>) {
-    TASK_MANAGER.add_task(task);
+/// @description 发布 kernel 创建的唯一 init task。
+///
+/// @param task TGID 必须为 INIT_PID 且尚未进入 process graph。
+/// @return 无返回值。
+pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
+    TASK_MANAGER.add_init(task);
 }
 
-/// @description 从唯一 TGID index 移除 terminal task owner。
+/// @description 查询 process graph 中的 parent TGID。
 ///
-/// @param tgid 当前单线程 Process 的 TGID。
-/// @return index 中原有的 Task Arc；不存在时返回 `None`。
-fn remove_task(tgid: usize) -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.remove_task(tgid)
+/// @param pid 当前 live process TGID。
+/// @return init 或无 parent 返回零，否则返回 parent TGID。
+pub(crate) fn parent_pid(pid: usize) -> usize {
+    TASK_MANAGER.parent_pid(pid)
+}
+
+/// @description eager fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
+///
+/// @return parent 成功获得 child PID；地址空间复制 OOM 时 graph 不发布 child。
+pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError> {
+    let parent = current_task().expect("fork requires current task");
+    let pid = TASK_MANAGER.allocate_pid();
+    let child = Arc::new(parent.fork_process(pid)?);
+    let child_pid = child.tgid();
+    TASK_MANAGER.publish_child(parent.tgid(), child.clone());
+    enqueue_new_task(child);
+    Ok(child_pid)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChildExit {
+    pub(crate) pid: usize,
+    pub(crate) status: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaitChildError {
+    NoChild,
+    InvalidSelector,
+}
+
+fn matching_child(child: usize, selector: isize) -> bool {
+    selector == -1 || selector > 0 && child == selector as usize
+}
+
+fn find_waitable_child(
+    graph: &ProcessGraph,
+    parent: usize,
+    selector: isize,
+) -> Result<Option<ChildExit>, WaitChildError> {
+    if selector == 0 || selector < -1 {
+        return Err(WaitChildError::InvalidSelector);
+    }
+    let mut has_child = false;
+    for (pid, node) in &graph.nodes {
+        if node.parent != Some(parent) || !matching_child(*pid, selector) {
+            continue;
+        }
+        has_child = true;
+        if let ProcessState::Exited(code) = node.state {
+            return Ok(Some(ChildExit {
+                pid: *pid,
+                status: (code & 0xff) << 8,
+            }));
+        }
+    }
+    if has_child {
+        Ok(None)
+    } else {
+        Err(WaitChildError::NoChild)
+    }
+}
+
+/// @description 等待指定或任一直接 child 产生最小 exit record。
+///
+/// @param selector `-1` 表示任一 child，正数表示指定 PID。
+/// @param nohang 无可消费 record 时是否立即返回。
+/// @return exit record、WNOHANG 的 None，或 selector/child 错误；record 尚未被消费。
+pub(crate) fn wait_child(
+    selector: isize,
+    nohang: bool,
+) -> Result<Option<ChildExit>, WaitChildError> {
+    let task = current_task().expect("wait4 requires current task");
+    let parent = task.tgid();
+    loop {
+        let mut graph = TASK_MANAGER.graph.lock();
+        match find_waitable_child(&graph, parent, selector)? {
+            Some(record) => return Ok(Some(record)),
+            None if nohang => return Ok(None),
+            None => {}
+        }
+
+        let cpu = hart_id();
+        let end_time = get_time_us();
+        let mut sched = task.scheduling.policy.lock();
+        let runtime = end_time.saturating_sub(sched.last_runtime);
+        sched.update_vruntime(runtime);
+        drop(sched);
+
+        // graph lock 覆盖“再次检查 child”到 waiter 发布；exit 必须取得同一锁，因此不会丢唤醒。
+        with_current_processor(|processor| {
+            let current = processor
+                .current
+                .take()
+                .expect("child wait requires current task");
+            assert!(Arc::ptr_eq(&current, &task));
+            let mut scheduling = task.scheduling.state.lock();
+            assert_eq!(scheduling.run_state, RunState::Running { cpu });
+            assert!(
+                scheduling.wait.is_none(),
+                "task already owns wait membership"
+            );
+            let parent_node = graph
+                .nodes
+                .get_mut(&parent)
+                .expect("waiting parent missing from process graph");
+            assert!(
+                parent_node.waiter.is_none(),
+                "parent already owns child waiter"
+            );
+            parent_node.waiter = Some(current);
+            scheduling.wait = Some(WaitMembership::Child);
+            scheduling.run_state = RunState::Blocking { cpu };
+        });
+        drop(graph);
+        schedule_with_task_context(task.clone());
+    }
+}
+
+/// @description 在 status copyout 成功后消费唯一 child exit record。
+///
+/// @param pid `wait_child` 返回且仍属于当前 parent 的 exited child。
+/// @return 成功返回空值；record 变化表示内核不变量损坏。
+pub(crate) fn reap_child(pid: usize) {
+    let parent = current_task().expect("reap requires current task").tgid();
+    let mut graph = TASK_MANAGER.graph.lock();
+    let node = graph
+        .nodes
+        .get(&pid)
+        .expect("reaped child missing from process graph");
+    assert_eq!(node.parent, Some(parent));
+    assert!(matches!(node.state, ProcessState::Exited(_)));
+    assert!(node.waiter.is_none());
+    graph.nodes.remove(&pid);
 }
 
 /// @description 从显式 deadline wait queue 消费所有到期 task。
@@ -279,12 +463,12 @@ fn block_current_until(deadline: u64) {
             "only running task can block"
         );
         assert!(
-            scheduling.deadline_wait.is_none(),
+            scheduling.wait.is_none(),
             "task already owns a wait membership"
         );
         // state lock 覆盖 queue insertion；waker 看到 wait key 时 entry 必然已经存在。
         let key = DEADLINE_WAIT_QUEUE.lock().insert(deadline, current);
-        scheduling.deadline_wait = Some(key);
+        scheduling.wait = Some(WaitMembership::Deadline(key));
         scheduling.run_state = RunState::Blocking { cpu };
     });
 
@@ -292,7 +476,7 @@ fn block_current_until(deadline: u64) {
 }
 
 /// 退出当前任务并运行下一个任务
-pub(crate) fn exit_current_and_run_next(_exit_code: i32) -> ! {
+pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
     let task = take_current_task().expect("No current task to exit");
 
     {
@@ -302,17 +486,62 @@ pub(crate) fn exit_current_and_run_next(_exit_code: i32) -> ! {
             "only current running task can exit"
         );
         assert!(
-            scheduling.deadline_wait.is_none(),
+            scheduling.wait.is_none(),
             "running task cannot retain wait membership"
         );
         scheduling.run_state = RunState::Exited;
     };
-    let removed = remove_task(task.tgid()).expect("exiting task missing from TGID index");
-    assert!(
-        Arc::ptr_eq(&removed, &task),
-        "TGID index points to another task"
-    );
+    let (removed, parent_waiter, init_waiter) = {
+        let mut graph = TASK_MANAGER.graph.lock();
+        let exiting_pid = task.tgid();
+        let node = graph
+            .nodes
+            .get_mut(&exiting_pid)
+            .expect("exiting task missing from process graph");
+        assert!(
+            node.waiter.is_none(),
+            "running process cannot own child waiter"
+        );
+        let parent = node.parent;
+        let previous = core::mem::replace(&mut node.state, ProcessState::Exited(exit_code));
+        let ProcessState::Live(removed) = previous else {
+            panic!("process exited twice");
+        };
+        assert!(Arc::ptr_eq(&removed, &task));
+
+        // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
+        if exiting_pid != INIT_PID {
+            for child in graph.nodes.values_mut() {
+                if child.parent == Some(exiting_pid) {
+                    child.parent = Some(INIT_PID);
+                }
+            }
+        }
+        // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
+        let parent_waiter = parent.and_then(|pid| {
+            graph
+                .nodes
+                .get_mut(&pid)
+                .and_then(|parent| parent.waiter.take())
+        });
+        let adopted_exited = exiting_pid != INIT_PID
+            && graph.nodes.values().any(|child| {
+                child.parent == Some(INIT_PID) && matches!(child.state, ProcessState::Exited(_))
+            });
+        let init_waiter = adopted_exited
+            .then(|| {
+                graph
+                    .nodes
+                    .get_mut(&INIT_PID)
+                    .and_then(|init| init.waiter.take())
+            })
+            .flatten();
+        (removed, parent_waiter, init_waiter)
+    };
     drop(removed);
+    for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
+        crate::task::processor::wake_child_task(waiter);
+    }
 
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
     let task_cx_ptr = {

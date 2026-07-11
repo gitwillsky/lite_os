@@ -13,7 +13,7 @@ mod task_manager;
 mod trap_context;
 
 pub(crate) use loader::{ProgramLoadError, load_program_from_fs};
-pub(crate) use model::{RunState, TaskControlBlock};
+pub(crate) use model::{RunState, TaskControlBlock, WaitMembership};
 pub(crate) use processor::*;
 pub(crate) use task_manager::*;
 pub(crate) use trap_context::TrapContext;
@@ -52,7 +52,7 @@ pub(crate) fn init(
         Ok(init_proc) => {
             let init_task = Arc::new(init_proc);
             // 添加到全局 PID 索引和唯一生效的 CFS runqueue。
-            add_task(init_task);
+            add_init_task(init_task);
             debug!("init task created and queued");
         }
         Err(e) => {

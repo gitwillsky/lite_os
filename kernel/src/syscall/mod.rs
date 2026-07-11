@@ -54,6 +54,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_GETTID => sys_get_tid(),
         SYSCALL_BRK => sys_brk(args[0]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
+        SYSCALL_CLONE => sys_clone(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_EXECVE => sys_execve(
             args[0] as *const u8,        // path
             args[1] as *const *const u8, // argv
@@ -68,6 +69,12 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
             args[5],
         ),
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2]),
+        SYSCALL_WAIT4 => sys_wait4(
+            args[0] as isize,
+            args[1] as *mut i32,
+            args[2],
+            args[3] as *mut u8,
+        ),
         _ => {
             error!("syscall: invalid syscall_id: {}", syscall_id);
             -errno::ENOSYS

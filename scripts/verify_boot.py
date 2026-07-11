@@ -48,6 +48,7 @@ def boot(qemu: str, smp: int) -> None:
         f"all DTB harts online: count={smp}, mask={expected_mask:#x}",
         "LiteOS init",
         "vma ok",
+        "process ok",
         "ext2 rw ok",
     )
     command = [

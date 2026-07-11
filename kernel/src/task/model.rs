@@ -27,6 +27,13 @@ pub(crate) enum RunState {
     Exited,
 }
 
+/// @description blocked task 的唯一等待队列 membership token。
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum WaitMembership {
+    Deadline((u64, u64)),
+    Child,
+}
+
 #[derive(Debug)]
 struct AddressSpace {
     memory_set: Mutex<MemorySet>,
@@ -111,6 +118,7 @@ struct ThreadContext {
     trap_cx_va: Mutex<usize>,
     task_cx: Mutex<TaskContext>,
     kernel_trap_handler: usize,
+    kernel_trap_return: usize,
 }
 
 #[derive(Debug)]
@@ -137,7 +145,7 @@ pub(crate) struct SchedulingEntity {
 pub(crate) struct SchedulingState {
     pub(crate) run_state: RunState,
     pub(crate) next_generation: u64,
-    pub(crate) deadline_wait: Option<(u64, u64)>,
+    pub(crate) wait: Option<WaitMembership>,
 }
 
 impl SchedulingState {
@@ -183,7 +191,7 @@ struct Process {
     files: Mutex<FileDescriptorTable>,
 }
 
-/// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
+/// @description 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
 pub(crate) struct TaskControlBlock {
     process: Process,
     thread: ThreadContext,
@@ -229,12 +237,13 @@ impl TaskControlBlock {
                     kernel_trap_return,
                 )),
                 kernel_trap_handler,
+                kernel_trap_return,
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
                     run_state: RunState::New,
                     next_generation: 0,
-                    deadline_wait: None,
+                    wait: None,
                 }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,
@@ -254,6 +263,84 @@ impl TaskControlBlock {
             kernel_trap_handler,
         ));
         Ok(tcb)
+    }
+
+    /// @description eager 复制当前单线程 Process，构造 fork child 的独立执行实体。
+    ///
+    /// @param pid TaskManager 已唯一分配、尚未发布的 child TGID/TID。
+    /// @return 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
+    pub(super) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {
+        let tid = pid.0;
+        // 1. 先复制所有可能失败的 process-owned 资源，发布前不修改 parent。
+        let memory_set = self
+            .process
+            .address_space
+            .memory_set
+            .lock()
+            .try_clone_for_fork()?;
+        let source_cwd = self.process.cwd.lock();
+        let mut cwd = String::new();
+        cwd.try_reserve_exact(source_cwd.len())
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        cwd.push_str(&source_cwd);
+        drop(source_cwd);
+        let files = self
+            .process
+            .files
+            .lock()
+            .try_clone()
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        let kernel_stack = KernelStack::try_new()?;
+        let kernel_stack_top = kernel_stack.get_top();
+        let policy = self.scheduling.policy.lock();
+
+        // 2. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
+        let mut child_trap = self.load_trap_context();
+        child_trap.x[10] = 0;
+        child_trap.kernel_sp = kernel_stack_top;
+        child_trap.kernel_hart_id = 0;
+        child_trap.kernel_gp = 0;
+        let child = Self {
+            process: Process {
+                tgid: pid,
+                address_space: AddressSpace {
+                    memory_set: Mutex::new(memory_set),
+                },
+                cwd: Mutex::new(cwd),
+                files: Mutex::new(files),
+            },
+            thread: ThreadContext {
+                tid,
+                kernel_stack,
+                trap_cx_va: Mutex::new(TRAP_CONTEXT),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                    kernel_stack_top,
+                    self.thread.kernel_trap_return,
+                )),
+                kernel_trap_handler: self.thread.kernel_trap_handler,
+                kernel_trap_return: self.thread.kernel_trap_return,
+            },
+            scheduling: SchedulingEntity {
+                state: IrqMutex::new(SchedulingState {
+                    run_state: RunState::New,
+                    next_generation: 0,
+                    wait: None,
+                }),
+                policy: Mutex::new(Sched {
+                    last_runtime: 0,
+                    nice: policy.nice,
+                    vruntime: policy.vruntime,
+                }),
+                last_cpu: AtomicUsize::new(
+                    self.scheduling
+                        .last_cpu
+                        .load(core::sync::atomic::Ordering::Relaxed),
+                ),
+            },
+        };
+        drop(policy);
+        child.set_trap_context(child_trap);
+        Ok(child)
     }
 
     /// 获取当前线程TrapContext虚拟地址

@@ -5,8 +5,9 @@ use crate::{
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        ProgramLoadError, TaskControlBlock, current_task, exit_current_and_run_next,
-        load_program_from_fs, suspend_current_and_run_next,
+        ProgramLoadError, TaskControlBlock, WaitChildError, current_task,
+        exit_current_and_run_next, fork_current_process, load_program_from_fs, parent_pid,
+        reap_child, suspend_current_and_run_next, wait_child,
     },
 };
 
@@ -41,10 +42,10 @@ pub(crate) fn sys_get_pid() -> isize {
 
 /// @description 返回当前进程的父进程标识。
 ///
-/// @return 当前唯一的 init process 由 kernel 创建，因此父 PID 为零。
+/// @return process graph 中的 parent TGID；init 返回零。
 pub(crate) fn sys_get_ppid() -> isize {
-    // 当前没有 clone/fork 入口，不存在第二个 Process；缺少这个边界会伪造尚未存在的 parent graph。
-    0
+    let task = current_task().expect("getppid requires a current task");
+    parent_pid(task.tgid()) as isize
 }
 
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
@@ -54,6 +55,63 @@ pub(crate) fn sys_get_tid() -> isize {
     current_task()
         .expect("gettid requires a current task")
         .tid() as isize
+}
+
+/// @description 实现 fork-shaped Linux/riscv64 clone；不伪造 thread/TLS/tid-pointer 语义。
+///
+/// @param flags 当前必须精确为 `SIGCHLD`。
+/// @param stack fork child 继承栈，必须为零。
+/// @param parent_tid 尚不支持，必须为零。
+/// @param tls 尚不支持，必须为零。
+/// @param child_tid 尚不支持，必须为零。
+/// @return parent 获得 child PID，child 获得零；失败返回负 errno。
+pub(crate) fn sys_clone(
+    flags: usize,
+    stack: usize,
+    parent_tid: usize,
+    tls: usize,
+    child_tid: usize,
+) -> isize {
+    const SIGCHLD: usize = 17;
+    if flags != SIGCHLD || stack != 0 || parent_tid != 0 || tls != 0 || child_tid != 0 {
+        return -errno::EINVAL;
+    }
+    match fork_current_process() {
+        Ok(pid) => pid as isize,
+        Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
+        Err(_) => -errno::EAGAIN,
+    }
+}
+
+/// @description 等待并消费直接 child 的最小 exit record。
+///
+/// @param pid `-1` 表示任一 child，正数表示指定 child。
+/// @param status 可为空；非空时写入 Linux wait status word。
+/// @param options 当前只接受零或 `WNOHANG`。
+/// @param rusage 当前必须为空，避免返回未实现的资源统计。
+/// @return child PID、WNOHANG 的零，或负 Linux errno。
+pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *mut u8) -> isize {
+    const WNOHANG: usize = 1;
+    if options & !WNOHANG != 0 || !rusage.is_null() {
+        return -errno::EINVAL;
+    }
+    let record = match wait_child(pid, options & WNOHANG != 0) {
+        Ok(Some(record)) => record,
+        Ok(None) => return 0,
+        Err(WaitChildError::NoChild) => return -errno::ECHILD,
+        Err(WaitChildError::InvalidSelector) => return -errno::EINVAL,
+    };
+    if !status.is_null() {
+        let task = current_task().expect("wait4 copyout requires current task");
+        if task
+            .copy_to_user(status as usize, &record.status.to_ne_bytes())
+            .is_err()
+        {
+            return -errno::EFAULT;
+        }
+    }
+    reap_child(record.pid);
+    record.pid as isize
 }
 
 /// @description 用新的静态 RV64 ELF 映像、参数和环境替换当前进程。
