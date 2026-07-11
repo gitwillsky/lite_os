@@ -389,6 +389,10 @@ pub(super) fn wake_child_task(task: Arc<TaskControlBlock>) -> bool {
     wake_waiting_task(task, WaitMembership::Child)
 }
 
+pub(super) fn wake_futex_task(task: Arc<TaskControlBlock>, key: (usize, usize, u64)) -> bool {
+    wake_waiting_task(task, WaitMembership::Futex(key))
+}
+
 fn wake_waiting_task(task: Arc<TaskControlBlock>, expected: WaitMembership) -> bool {
     let target_cpu = select_cpu(&task);
     let ready = {

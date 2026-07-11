@@ -1,6 +1,6 @@
 # LiteOS Linux/riscv64 syscall 支持矩阵
 
-> 更新日期：2026-07-11（Asia/Shanghai）
+> 更新日期：2026-07-12（Asia/Shanghai）
 >
 > Linux UAPI 基线：Linux `v7.1`，commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`
 >
@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 32 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 35 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -26,9 +26,9 @@
 | Not Planned | 当前收敛基线不计划接入；当前 `-ENOSYS`。 |
 | Removed | 曾有错号、私有或语义不完整实现，已整链删除；当前 `-ENOSYS`。 |
 
-`Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `exit_group` 在当前只有一个 thread 的 thread group 内语义完整，但 LiteOS 并不支持创建线程。
+`Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex timeout、signal interruption 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 32 个入口
+## 2. 当前暴露的 35 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -45,7 +45,10 @@
 | 82 | `fsync` | fd | 0；`EBADF/EIO` | POSIX fsync | **Complete**。等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request。 | `kernel/src/syscall/fs.rs` |
 | 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
 | 93 | `exit` | `int status` | 不返回 | POSIX `_exit`；musl `_Exit` fallback | **Complete**。当前调用 thread 是 Process 的唯一 thread；释放 TCB 后只保留可由 parent 消费的最小 exit record。 | `kernel/src/syscall/process.rs` |
-| 94 | `exit_group` | `int status` | 不返回 | Linux extension；musl `_Exit` 首选 | **Complete**。当前 thread group 恰好只有 calling thread，与 `exit` 共用唯一终止路径。 | `kernel/src/syscall/process.rs` |
+| 94 | `exit_group` | `int status` | 不返回 | Linux extension；musl `_Exit` 首选 | **Partial**。与 thread exit 共用清理路径；当前不主动终止仍在其他 CPU 的 sibling，调用方必须先 join/clear-tid。 | `kernel/src/syscall/process.rs` |
+| 96 | `set_tid_address` | clear-child-tid pointer | calling TID | Linux thread runtime；musl pthread | **Complete**。零清除 registration；thread exit 写零并 futex-wake 一个 waiter。 | `kernel/src/syscall/process.rs` |
+| 98 | `futex` | uaddr、op、val、timeout、uaddr2、val3 | 0/wake count；`EAGAIN/EFAULT/EINVAL/ENOSYS` | Linux thread synchronization；musl pthread | **Partial**。实现 address-space-keyed WAIT/WAKE 与 PRIVATE flag，无 lost wakeup；timeout、requeue、PI、bitset 和 signal interruption未实现。 | `kernel/src/syscall/futex.rs`, `kernel/src/task/task_manager.rs` |
+| 99 | `set_robust_list` | head、len | 0；`EINVAL` | Linux robust mutex；musl pthread | **Complete**（当前 Thread 模型）。RV64 24-byte head；exit 有界遍历，原子设置 OWNER_DIED并 wake，非法用户链停止清理。 | `kernel/src/syscall/process.rs`, `kernel/src/task/model.rs` |
 | 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。有 monotonic deadline wait；无 signal interruption/restart 闭环，`rem` 只在早醒分支生效；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 113 | `clock_gettime` | `clockid_t, struct timespec *`；RV64 `i64,i64` | `0`；`EINVAL/EFAULT` | POSIX `clock_gettime`；musl vDSO fallback | **Partial**。只支持 `CLOCK_REALTIME(0)` 和 `CLOCK_MONOTONIC(1)`；其他 Linux clock ID 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 124 | `sched_yield` | 无参数 | `0` | POSIX `sched_yield`；musl direct wrapper | **Complete**。当前 task 回到唯一 CFS-like runqueue。 | `kernel/src/syscall/process.rs` |
@@ -54,11 +57,11 @@
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
 | 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator | **Partial**。支持 anonymous private VMA 删除、洞忽略和左右拆分；触及 ELF/stack/heap 等非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
-| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID、child=0；`EINVAL/ENOMEM/EAGAIN` | Linux process/thread primitive；musl fork/pthread | **Partial**。只接受 `clone(SIGCHLD,0,0,0,0)` 的 fork-shaped process 创建；eager 深拷贝地址空间/cwd/fd table，OFD 共享。无 thread/vfork/TLS/tid-pointer flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
-| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；`E2BIG/EACCES/EFAULT/EIO/ELOOP/ENAMETOOLONG/ENOENT/ENOEXEC/ENOMEM/ENOTDIR` | POSIX `execve`；musl direct wrapper | **Partial**。已支持 relative/root path、non-UTF8 bytes、full read、execute bit、CLOEXEC close、static ET_EXEC、BSS/W^X、Linux initial stack/auxv 和 failure rollback。缺失 symlink following、script interpreter、PIE/dynamic/TLS、完整 credentials、signal reset 和 sibling-thread handling；相关子系统当前均不存在。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
+| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/pthread | **Partial**。支持 fork-shaped process clone，以及 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone；多线程 fork 返回 `EAGAIN`，无 vfork/namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
+| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；标准 errno | POSIX `execve`；musl direct wrapper | **Partial**。static ET_EXEC/initial stack/rollback 完整；多线程 Process 返回 `EAGAIN`，避免 sibling stale context。缺失 symlink/script/PIE/dynamic、credentials 与 signal reset。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
 | 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。只支持 eager `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`；fd 必须为 -1、offset 为 0。无 `PROT_NONE`、destructive `MAP_FIXED`、file/shared/lazy mapping，强制 W^X。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
 | 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。完整 anonymous private 区间可拆分、变更 PTE 并合并等价 VMA；缺页整体失败。无 `PROT_NONE`，强制 W^X，非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
-| 260 | `wait4` | pid、status、options、rusage | child PID/0；`ECHILD/EFAULT/EINVAL` | POSIX waitpid backend；musl direct wrapper | **Partial**。支持正 PID/`-1`、blocking/`WNOHANG`、normal exit status 与 copyout-before-reap；rusage 必须为空，无 process-group selector、stopped/continued/signal status。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
+| 260 | `wait4` | pid、status、options、rusage | child PID/0；标准 errno | POSIX waitpid backend；musl direct wrapper | **Partial**。单线程 Process 支持正 PID/`-1`、blocking/`WNOHANG`、copyout-before-reap；多线程调用返回 `EAGAIN`。rusage 必须为空，无 process-group/stopped/continued/signal status。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 
 文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单线程 Process 模型。
 
@@ -71,9 +74,6 @@
 | 29 | `ioctl` | Missing | 无标准 device file/ioctl UAPI，不用私有设备 syscall 替代。 |
 | 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
 | 65/66 | `readv` / `writev` | Missing | 尚未实现 iovec user-copy 与 partial-transfer 语义。 |
-| 96 | `set_tid_address` | Not Planned | 无 clone thread、clear-child-tid 和 futex wake。 |
-| 98 | `futex` | Removed | 无 address-space key、lost-wakeup 状态机、timeout/signal 与 exit cleanup 前不恢复。 |
-| 99 | `set_robust_list` | Not Planned | 无 futex owner-death/robust cleanup。 |
 | 129 | `kill` | Removed | 已删除无 action/mask/frame 闭环的 handler。 |
 | 130/131 | `tkill` / `tgkill` | Not Planned | 需完整 signal + thread group；不单独恢复过时 `tkill`。 |
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | Not Planned | 不暴露部分 signal ABI。 |
@@ -86,9 +86,9 @@
 
 ## 4. musl 结论
 
-当前 32 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
+当前 35 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
 
-1. clone thread flags、TLS/`futex/set_tid_address/set_robust_list`；
+1. futex timeout/requeue/PI、完整 clone/exit_group 语义；
 2. signal ABI；
 3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
 4. file/shared mapping、`PROT_NONE` 与 destructive `MAP_FIXED`。

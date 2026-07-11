@@ -3,12 +3,40 @@
 
 extern crate user_lib;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use user_lib::{
     AT_REMOVEDIR, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE, MAP_PRIVATE, O_CREAT, O_DIRECTORY, O_RDWR,
-    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, clone_process, close, exit_group, fstat, fsync,
-    ftruncate, getdents64, getppid, lseek, mkdirat, mmap, mprotect, munmap, openat, openat_from,
-    read, renameat2, sched_yield, unlinkat, unlinkat_from, wait4, write,
+    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, clone_process, clone_thread, close, exit_group,
+    exit_thread, fstat, fsync, ftruncate, futex_wait, futex_wake, getdents64, getppid, gettid,
+    lseek, mkdirat, mmap, mprotect, munmap, openat, openat_from, read, renameat2, sched_yield,
+    set_robust_list, thread_pointer, unlinkat, unlinkat_from, wait4, write,
 };
+
+#[repr(C)]
+struct ThreadProbe {
+    start: AtomicU32,
+    done: AtomicU32,
+    child_tid: AtomicU32,
+    parent_tid: AtomicU32,
+    robust_head: [usize; 3],
+    robust_node_next: usize,
+    robust_futex: AtomicU32,
+}
+
+extern "C" fn thread_probe_main(argument: usize) -> ! {
+    // SAFETY: parent keeps the ThreadProbe mapping live until clear-child-tid becomes zero.
+    let probe = unsafe { &*(argument as *const ThreadProbe) };
+    let wait = futex_wait(&probe.start as *const AtomicU32 as *const u32, 0);
+    let ok = (wait == 0 || wait == -11)
+        && probe.start.load(Ordering::Acquire) == 1
+        && thread_pointer() == 0x1234_5000
+        && set_robust_list(probe.robust_head.as_ptr() as *mut usize) == 0;
+    probe.robust_futex.store(gettid() as u32, Ordering::Release);
+    probe.done.store(if ok { 1 } else { 2 }, Ordering::Release);
+    let _ = futex_wake(&probe.done as *const AtomicU32 as *const u32, 1);
+    exit_thread(0)
+}
 
 fn directory_contains(buffer: &[u8], name: &[u8]) -> bool {
     let mut offset = 0;
@@ -104,6 +132,83 @@ extern "C" fn main(_argc: usize, _argv: *const *const u8, _envp: *const *const u
             b"process ok\n"
         } else {
             b"process failed\n"
+        },
+    );
+    let probe_mapping = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    let stack_mapping = mmap(
+        0,
+        4 * 4096,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+    );
+    let thread_ok = if probe_mapping >= 0 && stack_mapping >= 0 {
+        let probe_ptr = probe_mapping as *mut ThreadProbe;
+        // SAFETY: probe mapping is a fresh aligned RW page owned by this Process.
+        unsafe {
+            probe_ptr.write(ThreadProbe {
+                start: AtomicU32::new(0),
+                done: AtomicU32::new(0),
+                child_tid: AtomicU32::new(0),
+                parent_tid: AtomicU32::new(0),
+                robust_head: [0; 3],
+                robust_node_next: 0,
+                robust_futex: AtomicU32::new(0),
+            });
+            let head = &mut (*probe_ptr).robust_head as *mut [usize; 3] as usize;
+            let node = &mut (*probe_ptr).robust_node_next as *mut usize as usize;
+            (*probe_ptr).robust_head = [node, core::mem::size_of::<usize>(), 0];
+            (*probe_ptr).robust_node_next = head;
+        }
+        // SAFETY: mappings remain live through clear-child-tid; entry never returns.
+        let tid = unsafe {
+            clone_thread(
+                stack_mapping as usize + 4 * 4096,
+                0x1234_5000,
+                &mut (*probe_ptr).parent_tid as *mut AtomicU32 as *mut i32,
+                &mut (*probe_ptr).child_tid as *mut AtomicU32 as *mut i32,
+                thread_probe_main,
+                probe_ptr as usize,
+            )
+        };
+        if tid > 0 {
+            // SAFETY: probe mapping remains shared by both Threads until child_tid is cleared.
+            let probe = unsafe { &*probe_ptr };
+            probe.start.store(1, Ordering::Release);
+            let woke_child = futex_wake(&probe.start as *const AtomicU32 as *const u32, 1) >= 0;
+            let waited_done = futex_wait(&probe.done as *const AtomicU32 as *const u32, 0);
+            let done = probe.done.load(Ordering::Acquire) == 1;
+            let observed_tid = probe.parent_tid.load(Ordering::Acquire) == tid as u32;
+            let waited_exit = if probe.child_tid.load(Ordering::Acquire) == tid as u32 {
+                futex_wait(
+                    &probe.child_tid as *const AtomicU32 as *const u32,
+                    tid as u32,
+                )
+            } else {
+                -11
+            };
+            let cleared = probe.child_tid.load(Ordering::Acquire) == 0;
+            let robust = probe.robust_futex.load(Ordering::Acquire) == 0x4000_0000;
+            woke_child
+                && (waited_done == 0 || waited_done == -11)
+                && done
+                && observed_tid
+                && (waited_exit == 0 || waited_exit == -11)
+                && cleared
+                && robust
+                && munmap(stack_mapping as usize, 4 * 4096) == 0
+                && munmap(probe_mapping as usize, 4096) == 0
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let _ = write(
+        1,
+        if thread_ok {
+            b"thread futex ok\n"
+        } else {
+            b"thread futex failed\n"
         },
     );
     let payload = b"ext2 read-write persistence\n";
