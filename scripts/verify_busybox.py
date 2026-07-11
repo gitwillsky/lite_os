@@ -8,9 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
+from qemu_gate import boot
 from verify_musl import find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,6 +23,27 @@ CONFIG_FRAGMENT = ROOT / "user" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+BUSYBOX_LINKS = (
+    "ash",
+    "busybox",
+    "cat",
+    "cp",
+    "echo",
+    "false",
+    "grep",
+    "ls",
+    "mkdir",
+    "mv",
+    "printf",
+    "pwd",
+    "rm",
+    "rmdir",
+    "sh",
+    "sync",
+    "touch",
+    "true",
+    "wc",
+)
 
 
 def sha256(path: Path) -> str:
@@ -208,6 +231,64 @@ def verify_elf(binary: Path, compiler: Path) -> None:
             raise RuntimeError("BusyBox requests an executable stack")
 
 
+def find_debugfs() -> Path:
+    candidates = (
+        shutil.which("debugfs"),
+        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+        "/usr/local/opt/e2fsprogs/sbin/debugfs",
+        "/usr/sbin/debugfs",
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise RuntimeError("debugfs from e2fsprogs is required")
+
+
+def create_image(binary: Path) -> Path:
+    """构造单一 BusyBox inode、hardlink applets 与固定 inittab 的 ext2 rootfs。"""
+    image = WORK / "fs.img"
+    run(
+        [
+            sys.executable,
+            "create_fs.py",
+            "create",
+            "--file",
+            str(image),
+            "--init",
+            str(binary),
+        ],
+        ROOT,
+    )
+    commands = ["mkdir /etc", f"write {ROOT / 'user' / 'inittab'} /etc/inittab"]
+    commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
+    commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
+    script_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False) as script:
+            script.write("\n".join(commands) + "\n")
+            script_path = Path(script.name)
+        run([str(find_debugfs()), "-w", "-f", str(script_path), str(image)], ROOT)
+    finally:
+        if script_path is not None:
+            script_path.unlink(missing_ok=True)
+    listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
+    entries: dict[str, int] = {}
+    for line in listing.splitlines():
+        fields = line.split()
+        if len(fields) >= 9 and fields[0].isdigit():
+            entries[fields[-1]] = int(fields[0])
+    expected = {"init", *BUSYBOX_LINKS}
+    missing = sorted(expected - entries.keys())
+    if missing:
+        raise RuntimeError(f"BusyBox rootfs lacks applets: {', '.join(missing)}")
+    if len({entries[name] for name in expected}) != 1:
+        raise RuntimeError("BusyBox applets must be hardlinks to one inode")
+    metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
+    if f"Links: {len(expected)}" not in metadata:
+        raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    return image
+
+
 def main() -> int:
     try:
         WORK.mkdir(parents=True, exist_ok=True)
@@ -215,10 +296,27 @@ def main() -> int:
         source = obtain_source()
         binary = build_busybox(source, compiler)
         verify_elf(binary, compiler)
+        image = create_image(binary)
+        boot(
+            image,
+            1,
+            (
+                "dynamic hart topology initialized: count=1, mask=0x1",
+                "all DTB harts online: count=1, mask=0x1",
+                "init started: BusyBox v1.37.0",
+                "LITEOS_BUSYBOX_SHELL_42",
+            ),
+            interactions=(
+                (
+                    "Please press Enter to activate this console.",
+                    b"\necho LITEOS_BUSYBOX_SHELL_$((6*7))\n",
+                ),
+            ),
+        )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1
-    print(f"BusyBox {BUSYBOX_VERSION} static build verification passed")
+    print(f"BusyBox {BUSYBOX_VERSION} init+ash verification passed")
     return 0
 
 

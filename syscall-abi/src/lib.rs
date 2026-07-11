@@ -16,6 +16,7 @@ pub const SYSCALL_GETDENTS64: usize = 61;
 pub const SYSCALL_LSEEK: usize = 62;
 pub const SYSCALL_READ: usize = 63;
 pub const SYSCALL_WRITE: usize = 64;
+pub const SYSCALL_WRITEV: usize = 66;
 pub const SYSCALL_NEWFSTATAT: usize = 79;
 pub const SYSCALL_FSTAT: usize = 80;
 pub const SYSCALL_FSYNC: usize = 82;

@@ -9,7 +9,10 @@ use spin::Once;
 use crate::memory::KERNEL_STACK_SIZE;
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
-const TIMER_SOFTIRQ: u32 = 1;
+/// Timer deadline 到期后的 deferred work bit。
+pub(crate) const TIMER_SOFTIRQ: u32 = 1;
+/// UART RX hardirq 发布的 deferred console wake bit。
+pub(crate) const CONSOLE_SOFTIRQ: u32 = 1 << 1;
 
 // OWNER: hart module owns the immutable DTB-derived topology and per-hart states.
 static HART_TOPOLOGY: Once<HartTopology> = Once::new();
@@ -210,33 +213,49 @@ pub(crate) fn hart_id() -> usize {
     hart
 }
 
-/// @description 发布当前 hart 的 deferred timer work 并触发 supervisor software interrupt。
+/// @description 发布当前 hart 的 deferred work bitset 并触发 supervisor software interrupt。
 ///
+/// @param work 不为空且只包含已定义的 work bits。
 /// @return 无返回值。
 /// @errors 当前 hart 不在 DTB topology 时 fail-stop。
-pub(crate) fn raise_timer_softirq() {
+fn raise_softirq(work: u32) {
+    assert_ne!(work, 0, "cannot raise an empty softirq");
     state(hart_id())
         .expect("softirq hart disappeared from topology")
         .softirq_pending
-        .fetch_or(TIMER_SOFTIRQ, Ordering::Release);
+        .fetch_or(work, Ordering::Release);
     // SAFETY: kernel runs in S-mode and sets only the current hart's supervisor software pending bit.
     unsafe { riscv::register::sip::set_ssoft() }
 }
 
-/// @description 原子消费当前 hart 的 deferred timer work pending bit。
+/// @description 发布当前 hart 的 deferred timer work。
 ///
-/// @return 本次调用是否取得 timer work。
+/// @return 无返回值。
 /// @errors 当前 hart 不在 DTB topology 时 fail-stop。
-pub(crate) fn take_timer_softirq() -> bool {
+pub(crate) fn raise_timer_softirq() {
+    raise_softirq(TIMER_SOFTIRQ);
+}
+
+/// @description 发布当前 hart 的 deferred console wake work 并触发 SSIP。
+///
+/// @return 无返回值。
+/// @errors 当前 hart 不在 DTB topology 时 fail-stop。
+pub(crate) fn raise_console_softirq() {
+    raise_softirq(CONSOLE_SOFTIRQ);
+}
+
+/// @description 原子消费当前 hart 的全部 deferred work pending bits。
+///
+/// @return 本次调用取得的 work bitset。
+/// @errors 当前 hart 不在 DTB topology 时 fail-stop。
+pub(crate) fn take_softirqs() -> u32 {
     // SAFETY: deferred-work consumer clears only the current hart's supervisor software bit;
     // ordinary IPI carries no payload and serves only to wake this same consumer.
     unsafe { riscv::register::sip::clear_ssoft() }
     state(hart_id())
         .expect("softirq hart disappeared from topology")
         .softirq_pending
-        .fetch_and(!TIMER_SOFTIRQ, Ordering::AcqRel)
-        & TIMER_SOFTIRQ
-        != 0
+        .swap(0, Ordering::AcqRel)
 }
 
 /// @description 获取 DTB 描述的 possible hart mask。

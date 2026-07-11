@@ -127,6 +127,7 @@ impl TaskManager {
 enum IndexedWaitKind {
     Deadline,
     Futex { tgid: usize, address: usize },
+    Console,
 }
 
 struct IndexedWaitEntry {
@@ -140,6 +141,7 @@ struct IndexedWaitQueue {
     entries: BTreeMap<u64, IndexedWaitEntry>,
     futex_index: BTreeSet<(usize, usize, u64)>,
     deadline_index: BTreeSet<(u64, u64)>,
+    console_index: BTreeSet<u64>,
 }
 
 impl IndexedWaitQueue {
@@ -149,6 +151,7 @@ impl IndexedWaitQueue {
             entries: BTreeMap::new(),
             futex_index: BTreeSet::new(),
             deadline_index: BTreeSet::new(),
+            console_index: BTreeSet::new(),
         }
     }
 
@@ -203,10 +206,31 @@ impl IndexedWaitQueue {
         id
     }
 
+    fn insert_console(&mut self, task: Arc<TaskControlBlock>) -> u64 {
+        let id = self.allocate_id();
+        assert!(self.console_index.insert(id));
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Console,
+                        deadline: None,
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
     fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
         let entry = self.entries.remove(&id)?;
         if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
             assert!(self.futex_index.remove(&(tgid, address, id)));
+        }
+        if matches!(entry.kind, IndexedWaitKind::Console) {
+            assert!(self.console_index.remove(&id));
         }
         if let Some(deadline) = entry.deadline {
             assert!(self.deadline_index.remove(&(deadline, id)));
@@ -228,6 +252,11 @@ impl IndexedWaitQueue {
             return None;
         }
         self.remove(id).map(|entry| (id, entry.task, entry.kind))
+    }
+
+    fn take_console(&mut self) -> Option<(u64, Arc<TaskControlBlock>)> {
+        let id = *self.console_index.first()?;
+        self.remove(id).map(|entry| (id, entry.task))
     }
 }
 
@@ -298,9 +327,11 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
         task.with_deliverable_signal(|| {
             let membership = task.scheduling.state.lock().wait;
             match membership {
-                Some(wait @ (WaitMembership::Deadline(id) | WaitMembership::Futex(id))) => {
-                    queue.remove(id).map(|entry| (id, wait, entry))
-                }
+                Some(
+                    wait @ (WaitMembership::Deadline(id)
+                    | WaitMembership::Futex(id)
+                    | WaitMembership::Console(id)),
+                ) => queue.remove(id).map(|entry| (id, wait, entry)),
                 _ => None,
             }
         })
@@ -324,6 +355,10 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                     wait_id,
                     WaitResult::Interrupted,
                 )
+            }
+            (WaitMembership::Console(id), IndexedWaitKind::Console) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_console_task(entry.task, wait_id)
             }
             _ => panic!("indexed wait kind diverged from task membership"),
         };
@@ -665,6 +700,7 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
             IndexedWaitKind::Futex { .. } => {
                 crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
             }
+            IndexedWaitKind::Console => panic!("console wait cannot carry a deadline"),
         };
         if woke {
             count += 1;
@@ -673,15 +709,77 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
     count
 }
 
-/// @description 在 user-return 或 scheduler idle deferred context 消费 timer softirq。
+/// @description 在 user-return 或 scheduler idle context 消费全部 deferred work。
 ///
 /// @return 无返回值；无 pending work 时为空操作。
-pub(crate) fn dispatch_pending_timer_work() {
-    if !hart::take_timer_softirq() {
+pub(crate) fn dispatch_pending_deferred_work() {
+    let work = hart::take_softirqs();
+    if work == 0 {
         return;
     }
-    wake_expired_tasks(get_time_ns());
+    if work & hart::TIMER_SOFTIRQ != 0 {
+        wake_expired_tasks(get_time_ns());
+    }
+    if work & hart::CONSOLE_SOFTIRQ != 0 {
+        wake_console_waiters();
+    }
     request_reschedule();
+}
+
+/// @description 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。
+///
+/// @param input_ready 在 registry owner lock 内复查 UART ring 的短闭包。
+/// @return 输入已到达/IRQ 唤醒返回 `Woken`；signal cancellation 返回 `Interrupted`。
+pub(crate) fn wait_for_console(input_ready: impl FnOnce() -> bool) -> WaitResult {
+    let task = current_task().expect("console wait requires current task");
+    let cpu = hart_id();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    if input_ready() {
+        return WaitResult::Woken;
+    }
+    if task.has_deliverable_signal() {
+        return WaitResult::Interrupted;
+    }
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
+    with_current_processor(|processor| {
+        let current = processor
+            .current
+            .take()
+            .expect("console wait requires current task");
+        assert!(Arc::ptr_eq(&current, &task));
+        let mut scheduling = task.scheduling.state.lock();
+        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert!(scheduling.wait.is_none());
+        assert!(scheduling.wait_result.is_none());
+        let wait_id = queue.insert_console(current);
+        scheduling.wait = Some(WaitMembership::Console(wait_id));
+        scheduling.run_state = RunState::Blocking { cpu };
+    });
+    drop(queue);
+    schedule_with_task_context(task.clone());
+    task.scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("console waiter resumed without a wake result")
+}
+
+fn wake_console_waiters() -> usize {
+    let mut count = 0;
+    loop {
+        let waiter = INDEXED_WAIT_QUEUE.lock().take_console();
+        let Some((wait_id, task)) = waiter else {
+            return count;
+        };
+        if crate::task::processor::wake_console_task(task, wait_id) {
+            count += 1;
+        }
+    }
 }
 
 /// @description 在统一 wait registry 上阻塞当前 task。
@@ -719,7 +817,7 @@ pub(crate) fn run_tasks() -> ! {
     loop {
         // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
-        dispatch_pending_timer_work();
+        dispatch_pending_deferred_work();
         with_current_processor(|processor| processor.drain_inbound_to_local());
         let task = with_current_processor(Processor::select_task);
 

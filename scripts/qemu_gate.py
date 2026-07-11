@@ -46,8 +46,14 @@ def terminate(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=3)
 
 
-def boot(image: Path, smp: int, markers: tuple[str, ...], timeout_seconds: int = 30) -> None:
-    """冷启动指定镜像，直到全部 marker 出现或 fail-stop。"""
+def boot(
+    image: Path,
+    smp: int,
+    markers: tuple[str, ...],
+    timeout_seconds: int = 30,
+    interactions: tuple[tuple[str, bytes], ...] = (),
+) -> None:
+    """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。"""
     qemu = shutil.which("qemu-system-riscv64")
     if not qemu:
         raise RuntimeError("qemu-system-riscv64 is required")
@@ -72,12 +78,14 @@ def boot(image: Path, smp: int, markers: tuple[str, ...], timeout_seconds: int =
     process = subprocess.Popen(
         command,
         cwd=ROOT,
+        stdin=subprocess.PIPE if interactions else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
     assert process.stdout is not None
     output = bytearray()
+    pending_interactions = list(interactions)
     deadline = time.monotonic() + timeout_seconds
     try:
         while time.monotonic() < deadline:
@@ -88,6 +96,11 @@ def boot(image: Path, smp: int, markers: tuple[str, ...], timeout_seconds: int =
                     break
                 output.extend(chunk)
                 text = ANSI.sub("", output.decode(errors="replace"))
+                while pending_interactions and pending_interactions[0][0] in text:
+                    _, data = pending_interactions.pop(0)
+                    assert process.stdin is not None
+                    process.stdin.write(data)
+                    process.stdin.flush()
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
                         raise RuntimeError(f"QEMU -smp {smp} reached a fatal/error path")

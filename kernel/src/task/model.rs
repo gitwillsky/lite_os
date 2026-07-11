@@ -30,6 +30,7 @@ pub(crate) enum WaitMembership {
     Deadline(u64),
     Child,
     Futex(u64),
+    Console(u64),
 }
 
 /// @description blocked task 恢复时由唯一 wait registration 发布的结果。

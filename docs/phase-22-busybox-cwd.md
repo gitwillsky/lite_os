@@ -33,6 +33,8 @@ init started: BusyBox v1.37.0
 
 下一组真实缺口是 `setsid(157)`、`rt_sigtimedwait(137)` 与 init 的 vfork 路径；`reboot(142)` 和 `ioctl(29)` 目前也返回 `ENOSYS`。后续必须按 session/process-group/TTY/signal-wait 的单一领域模型实现，不能以 BusyBox patch、伪成功 stub 或 inittab 规避长期语义。
 
+> 后续状态：Phase 23 已加入 DTB UART IRQ、统一 Console wait、`writev(66)` 和真实 ash 输入/执行 gate；上述其余缺口继续保持明确未支持。
+
 ## 验证
 
 - `cargo check/clippy` 覆盖 `syscall-abi/kernel/user`；

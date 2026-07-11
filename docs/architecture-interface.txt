@@ -168,6 +168,7 @@ kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: rtc_device : Option <
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: test : Range < usize >
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: time_base_freq : u64
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: uart : Range < usize >
+kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: uart_irq : u32
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: virtio_count : usize
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: virtio_devices : [Option < VirtIODevice > ; 20]
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) PLICDevice :: base_addr : usize
@@ -186,9 +187,11 @@ kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct PLICDevice
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct RTCDevice
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct StringInLine < const N : usize >
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct VirtIODevice
+kernel/src/arch/riscv64/hart.rs :: pub (crate) const CONSOLE_SOFTIRQ : u32 = 1 << 1
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_ID_OFFSET : usize = offset_of ! (HartState , hart_id)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_SIZE : usize = size_of :: < HartState > ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_STACK_TOP_OFFSET : usize = offset_of ! (HartState , startup_stack_top)
+kernel/src/arch/riscv64/hart.rs :: pub (crate) const TIMER_SOFTIRQ : u32 = 1
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn boot_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn hart_count () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn hart_id () -> usize
@@ -197,11 +200,12 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) fn mark_online ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn max_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn online_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn possible_hart_mask () -> usize
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_console_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raw_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn state (hart_id : usize) -> Option < & 'static HartState >
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn states () -> & 'static [HartState]
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn take_timer_softirq () -> bool
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn take_softirqs () -> u32
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn topology_ready () -> bool
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn validate_boot_hart (board_info : & crate :: arch :: dtb :: BoardInfo , boot_hart : usize)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn hart_id (& self) -> usize
@@ -295,12 +299,18 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice 
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_queue_size (& self , size : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_status (& self , status : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtIODevice
+kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/drivers/mod.rs :: pub (crate) fn init ()
+kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
 kernel/src/drivers/platform.rs :: pub (super) fn handle_external_interrupt ()
 kernel/src/drivers/platform.rs :: pub (super) fn init ()
+kernel/src/drivers/uart.rs :: pub (super) fn enable_receive_interrupt ()
+kernel/src/drivers/uart.rs :: pub (super) fn init (base : usize , size : usize) -> Result < Arc < dyn InterruptHandler > , InterruptError >
+kernel/src/drivers/uart.rs :: pub (super) fn input_ready () -> bool
+kernel/src/drivers/uart.rs :: pub (super) fn read (bytes : & mut [u8]) -> usize
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_IOERR : u8 = 1
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_OK : u8 = 0
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_UNSUPP : u8 = 2
@@ -369,6 +379,8 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (&
 kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
+kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
+kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
 kernel/src/fs/inode.rs :: enum InodeType :: Fifo = 4
@@ -643,6 +655,7 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mu
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * const u8 , nfd : isize , nn : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/futex.rs :: pub (crate) fn sys_futex (address : usize , operation : usize , value : u32 , timeout : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , length : usize , prot : usize , flags : usize , fd : isize , offset : usize ,) -> isize
@@ -701,6 +714,7 @@ kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
 kernel/src/task/model.rs :: enum SignalDelivery :: None
 kernel/src/task/model.rs :: enum SignalDelivery :: Terminate (i32)
 kernel/src/task/model.rs :: enum WaitMembership :: Child
+kernel/src/task/model.rs :: enum WaitMembership :: Console (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Deadline (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Futex (u64)
 kernel/src/task/model.rs :: enum WaitResult :: Interrupted
@@ -798,6 +812,7 @@ kernel/src/task/processor.rs :: pub (super) fn finish_blocking_transition (task 
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
 kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_console_task (task : Arc < TaskControlBlock > , wait_id : u64) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
@@ -827,7 +842,7 @@ kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
 kernel/src/task/task_manager.rs :: pub (crate) enum WaitChildError
 kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn dispatch_pending_timer_work ()
+kernel/src/task/task_manager.rs :: pub (crate) fn dispatch_pending_deferred_work ()
 kernel/src/task/task_manager.rs :: pub (crate) fn exit_current_and_run_next (exit_code : i32) -> !
 kernel/src/task/task_manager.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
 kernel/src/task/task_manager.rs :: pub (crate) fn futex_wait (address : usize , expected : u32 , deadline : Option < u64 > ,) -> Result < () , FutexWaitError >
@@ -841,6 +856,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next (
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool ,) -> Result < Option < ChildExit > , WaitChildError >
+kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (input_ready : impl FnOnce () -> bool) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) struct ChildExit
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)

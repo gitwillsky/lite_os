@@ -37,6 +37,7 @@ fn init_interrupt_controller() {
 /// 系统初始化入口点
 pub(super) fn init() {
     init_interrupt_controller();
+    init_uart_console();
     // 扫描和初始化设备
     scan_and_init_devices();
     info!("[Platform] Device initialization completed");
@@ -101,9 +102,9 @@ fn maybe_register_irq(
     irq: u32,
     handler: alloc::sync::Arc<dyn InterruptHandler>,
     label: &str,
-) {
+) -> bool {
     if board_info.plic_device.is_none() || irq == 0 {
-        return;
+        return false;
     }
 
     if let Some(controller) = interrupt_controller() {
@@ -148,8 +149,21 @@ fn maybe_register_irq(
             Ok(())
         };
         drop(ctrl);
-        let _ = res;
+        return res.is_ok();
     }
+    false
+}
+
+fn init_uart_console() {
+    let board = board_info();
+    let size = board.uart.end.saturating_sub(board.uart.start);
+    let handler =
+        super::uart::init(board.uart.start, size).expect("boot requires a valid DTB UART console");
+    assert!(
+        maybe_register_irq(board, board.uart_irq, handler, "uart"),
+        "boot requires a registered UART IRQ"
+    );
+    super::uart::enable_receive_interrupt();
 }
 
 fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
@@ -167,7 +181,7 @@ fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
                 error!("[Platform] Failed to register block device: {:?}", e);
             }
         }
-        maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), "blk");
+        let _ = maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), "blk");
     } else {
         warn!(
             "[Platform] Failed to create VirtIO Block device at {:#x}",

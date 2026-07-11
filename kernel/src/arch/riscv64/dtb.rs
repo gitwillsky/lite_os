@@ -52,6 +52,7 @@ pub(crate) struct BoardInfo {
     pub(crate) time_base_freq: u64,
     pub(crate) mem: Range<usize>,
     pub(crate) uart: Range<usize>,
+    pub(crate) uart_irq: u32,
     pub(crate) test: Range<usize>,
     pub(crate) clint: Range<usize>,
     pub(crate) virtio_devices: [Option<VirtIODevice>; 20],
@@ -82,7 +83,7 @@ impl Display for BoardInfo {
         }
         writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
         writeln!(f, "Memory: {:#x?}", self.mem)?;
-        writeln!(f, "UART: {:#x?}", self.uart)?;
+        writeln!(f, "UART: {:#x?}, IRQ: {}", self.uart, self.uart_irq)?;
         writeln!(f, "Test: {:#x?}", self.test)?;
         writeln!(f, "CLINT: {:#x?}", self.clint)?;
         writeln!(f, "VirtIO Devices: {} found", self.virtio_count)?;
@@ -138,6 +139,7 @@ impl BoardInfo {
             invalid_hart_id: None,
             mem: 0..0,
             uart: 0..0,
+            uart_irq: 0,
             test: 0..0,
             clint: 0..0,
             time_base_freq: 0,
@@ -231,7 +233,7 @@ impl BoardInfo {
                 let node = ctx.name();
                 if node.starts_with(UART) || node.starts_with(SERIAL) {
                     ans.uart = reg.next().unwrap();
-                    WalkOperation::StepOut
+                    WalkOperation::StepOver
                 } else if node.starts_with(TEST) {
                     ans.test = reg.next().unwrap();
                     WalkOperation::StepOut
@@ -311,6 +313,12 @@ impl BoardInfo {
                 let node = ctx.name();
                 if name == Str::from("timebase-frequency") {
                     ans.time_base_freq = bytes_to_usize(value) as u64;
+                } else if name == Str::from("interrupts")
+                    && (node.starts_with(UART) || node.starts_with(SERIAL))
+                {
+                    if let Some(first_4_bytes) = value.get(0..4) {
+                        ans.uart_irq = bytes_to_u32(first_4_bytes);
+                    }
                 } else if name == Str::from("interrupts") && node.starts_with(VIRTIO) {
                     // VirtIO 设备的中断号
                     if let Some(first_4_bytes) = value.get(0..4) {

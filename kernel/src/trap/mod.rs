@@ -22,7 +22,7 @@ use crate::{
 #[inline(always)]
 fn handle_supervisor_soft_interrupt() {
     // 普通 IPI 只负责唤醒；TLB 同步由 SBI RFENCE 在 M-mode 完成。
-    task::dispatch_pending_timer_work();
+    task::dispatch_pending_deferred_work();
 }
 
 pub(crate) fn init() {
@@ -48,6 +48,9 @@ pub(crate) fn trap_handler() {
                 }
                 Interrupt::SupervisorExternal => {
                     drivers::handle_external_interrupt();
+                    if drivers::console_input_ready() {
+                        hart::raise_console_softirq();
+                    }
                 }
                 Interrupt::SupervisorSoft => {
                     handle_supervisor_soft_interrupt();
@@ -270,6 +273,9 @@ extern "C" fn rust_trap_from_kernel() {
                         // 内核态 VirtIO 同步 I/O 可以被 external IRQ 打断；
                         // 此处只确认设备/PLIC 状态，不在 hardirq 中调度。
                         drivers::handle_external_interrupt();
+                        if drivers::console_input_ready() {
+                            hart::raise_console_softirq();
+                        }
                     }
                     Interrupt::SupervisorSoft => {
                         handle_supervisor_soft_interrupt();

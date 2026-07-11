@@ -46,6 +46,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as i64, args[2] as u32),
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
+        SYSCALL_WRITEV => sys_writev(args[0], args[1], args[2]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(
             args[0] as isize,
             args[1] as *const u8,
@@ -102,7 +103,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[3] as *mut u8,
         ),
         _ => {
-            error!("syscall: invalid syscall_id: {}", syscall_id);
+            debug!("syscall: unsupported syscall_id: {}", syscall_id);
             -errno::ENOSYS
         }
     };

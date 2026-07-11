@@ -17,6 +17,14 @@ const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
 const O_DIRECTORY: u32 = 0x10000;
+const IOV_MAX: usize = 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxIoVec {
+    base: usize,
+    length: usize,
+}
 
 fn ferr(error: FileSystemError) -> isize {
     -(match error {
@@ -155,8 +163,31 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
-    let Some(inode) = ofd.inode_ref() else {
-        return 0;
+    if let OpenFileKind::Console(console) = &ofd.kind {
+        if length == 0 {
+            return 0;
+        }
+        let mut chunk = [0u8; 512];
+        loop {
+            let count = length.min(chunk.len());
+            let read = match console.read(&mut chunk[..count]) {
+                Ok(0) => match crate::task::wait_for_console(|| console.input_ready()) {
+                    crate::task::WaitResult::Woken => continue,
+                    crate::task::WaitResult::Interrupted => return -errno::EINTR,
+                    crate::task::WaitResult::TimedOut => {
+                        panic!("console wait cannot time out")
+                    }
+                },
+                Ok(read) => read,
+                Err(error) => return ferr(error),
+            };
+            return task
+                .copy_to_user(pointer as usize, &chunk[..read])
+                .map_or(-errno::EFAULT, |()| read as isize);
+        }
+    }
+    let OpenFileKind::Inode(inode) = &ofd.kind else {
+        unreachable!("console handled above")
     };
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
@@ -258,6 +289,76 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         }
     }
     total as isize
+}
+
+/// @description 按 Linux RV64 `struct iovec` 顺序写入同一个 open file description。
+///
+/// @param fd 目标 descriptor。
+/// @param iovector userspace `iovec` 数组地址；count 为零时可为空。
+/// @param count iovec 数量，最大 1024。
+/// @return 总写入字节数；导入失败或首个 write 失败返回负 errno，已有进度后返回 partial count。
+pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
+    if count > IOV_MAX {
+        return -errno::EINVAL;
+    }
+    if count == 0 {
+        return sys_write(fd, core::ptr::null(), 0);
+    }
+    if iovector == 0 {
+        return -errno::EFAULT;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let mut vectors = Vec::new();
+    if vectors.try_reserve_exact(count).is_err() {
+        return -errno::ENOMEM;
+    }
+    let mut total_length = 0usize;
+    for index in 0..count {
+        let offset = match index.checked_mul(mem::size_of::<LinuxIoVec>()) {
+            Some(offset) => offset,
+            None => return -errno::EFAULT,
+        };
+        let address = match iovector.checked_add(offset) {
+            Some(address) => address,
+            None => return -errno::EFAULT,
+        };
+        let mut bytes = [0u8; mem::size_of::<LinuxIoVec>()];
+        if task.copy_from_user(address, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let vector = LinuxIoVec {
+            base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
+            length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
+        };
+        total_length = match total_length.checked_add(vector.length) {
+            Some(length) if length <= isize::MAX as usize => length,
+            _ => return -errno::EINVAL,
+        };
+        vectors.push(vector);
+    }
+
+    let mut written = 0usize;
+    for vector in vectors {
+        if vector.length == 0 {
+            continue;
+        }
+        let result = sys_write(fd, vector.base as *const u8, vector.length);
+        if result < 0 {
+            return if written == 0 {
+                result
+            } else {
+                written as isize
+            };
+        }
+        let result = result as usize;
+        written += result;
+        if result < vector.length {
+            break;
+        }
+    }
+    written as isize
 }
 
 pub(crate) fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {

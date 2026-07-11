@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 40 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 41 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 40 个入口
+## 2. 当前暴露的 41 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -41,7 +41,8 @@
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path errno | POSIX openat/close | **Partial**。regular/directory OFD、create/excl/trunc/append/directory/cloexec 完整；无 permissions、symlink following 和设备节点。 | `kernel/src/syscall/fs.rs` |
 | 61 | `getdents64` | fd、`linux_dirent64` buffer、length | bytes；`EBADF/ENOTDIR/EFAULT/EINVAL` | libc readdir backend | **Complete**。目录 OFD 保存逐项位置，记录按 8 bytes 对齐并包含 `d_type`；并发目录变更后的 cookie 与 Linux 一样不承诺快照语义。 | `kernel/src/syscall/fs.rs` |
 | 62 | `lseek` | fd、signed offset、whence | new offset；`EBADF/EINVAL/ESPIPE` | POSIX lseek | **Complete**。实现 `SEEK_SET/CUR/END`，offset 位于共享 OFD。 | `kernel/src/syscall/fs.rs` |
-| 63/64 | `read` / `write` | fd、用户 buffer、count | byte count；允许 partial result | POSIX read/write | **Partial**。regular file 共享 offset，write 支持 append；console 通过同一 OFD 路径，当前 console input 返回 EOF；无 pipe/socket。 | `kernel/src/syscall/fs.rs` |
+| 63/64 | `read` / `write` | fd、用户 buffer、count | byte count；允许 partial result；console 可 `EINTR` | POSIX read/write | **Partial**。regular file 共享 offset，write 支持 append；console 通过同一 OFD，UART RX ring 为空时进入统一 interruptible wait。当前 console 是 raw bytes，无 termios/canonical/echo/foreground group；无 pipe/socket。 | `kernel/src/syscall/fs.rs`, `kernel/src/drivers/uart.rs` |
+| 66 | `writev` | fd、RV64 `struct iovec *`、iovcnt | total/partial bytes；`EBADF/EFAULT/EINVAL/ENOMEM` | POSIX writev；musl/BusyBox stdio | **Partial**。一次性导入至多 1024 个 16-byte iovec，验证总长度不超过 `SSIZE_MAX`，随后共享同一 OFD offset 并保留首错/partial-write 语义；尚未证明不同 OFD 并发 write 间的整组原子性，也无 pipe/socket。 | `kernel/src/syscall/fs.rs` |
 | 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 当前只接受 flags 0。 | `kernel/src/syscall/fs.rs` |
 | 82 | `fsync` | fd | 0；`EBADF/EIO` | POSIX fsync | **Complete**。等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request。 | `kernel/src/syscall/fs.rs` |
 | 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
@@ -77,7 +78,7 @@
 |---:|---|---|---|
 | 29 | `ioctl` | Missing | 无标准 device file/ioctl UAPI，不用私有设备 syscall 替代。 |
 | 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
-| 65/66 | `readv` / `writev` | Missing | 尚未实现 iovec user-copy 与 partial-transfer 语义。 |
+| 65 | `readv` | Missing | 尚未实现 iovec copyout 与“已有输入后不得为后续向量再次阻塞”的 partial-read 语义。 |
 | 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 SIGCHLD/job-control 语义。 |
 | 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
@@ -88,7 +89,7 @@
 
 ## 4. musl 结论
 
-当前 40 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait，以及 handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`。consumer 同时验证非 restart 的 `EINTR`/`rem`/reap，以及 `SA_RESTART` 下无 timeout futex 与 `waitpid` 的透明重放；`nanosleep` 仍返回 `EINTR`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 41 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait，以及 handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`。BusyBox gate 额外覆盖 UART console read wait、`writev`、init fork/exec 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；

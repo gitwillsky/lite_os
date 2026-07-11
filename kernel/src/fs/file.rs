@@ -18,6 +18,15 @@ pub(crate) enum OpenFileKind {
 
 /// @description console 文件后端 seam；具体 SBI adapter 只在 composition root 装配。
 pub(crate) trait Console: Send + Sync {
+    /// @description 非阻塞读取当前 IRQ ring 中已有 console bytes。
+    ///
+    /// @param bytes kernel-owned 输出缓冲区。
+    /// @return 已有输入长度；零表示调用方必须进入 console wait；设备失败返回 `IoError`。
+    fn read(&self, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
+
+    /// @description 查询 console 是否可读，只允许在 wait owner lock 内封闭 read/enqueue race。
+    fn input_ready(&self) -> bool;
+
     /// @description 同步写出完整或部分 console 字节流。
     ///
     /// @param bytes kernel 已完成 user-copy 的连续字节。

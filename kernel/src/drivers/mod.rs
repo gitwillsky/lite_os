@@ -2,6 +2,7 @@ pub(crate) mod block;
 mod goldfish_rtc;
 mod hal;
 mod platform;
+mod uart;
 mod virtio_blk;
 mod virtio_queue;
 
@@ -28,4 +29,19 @@ pub(crate) fn init() {
 /// @description 处理当前 hart 的 PLIC supervisor external interrupt。
 pub(crate) fn handle_external_interrupt() {
     platform::handle_external_interrupt();
+}
+
+/// @description 从唯一 UART RX ring 非阻塞读取 console bytes。
+///
+/// @param bytes kernel-owned 输出缓冲区。
+/// @return 当前已有的输入长度。
+pub(crate) fn read_console(bytes: &mut [u8]) -> usize {
+    uart::read(bytes)
+}
+
+/// @description 查询唯一 UART RX ring 是否可读。
+///
+/// @return ring 非空时返回 true。
+pub(crate) fn console_input_ready() -> bool {
+    uart::input_ready()
 }

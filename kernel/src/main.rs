@@ -61,7 +61,7 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     task::init(
         trap::trap_handler as usize,
         trap::trap_return as usize,
-        Arc::new(SbiConsole),
+        Arc::new(PlatformConsole),
     );
 
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
@@ -94,9 +94,17 @@ fn mount_root_filesystem() {
     info!("ext2 root filesystem mounted at /");
 }
 
-struct SbiConsole;
+struct PlatformConsole;
 
-impl fs::Console for SbiConsole {
+impl fs::Console for PlatformConsole {
+    fn read(&self, bytes: &mut [u8]) -> Result<usize, fs::FileSystemError> {
+        Ok(drivers::read_console(bytes))
+    }
+
+    fn input_ready(&self) -> bool {
+        drivers::console_input_ready()
+    }
+
     fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {
         for byte in bytes {
             arch::sbi::console_putchar(*byte).map_err(|_| fs::FileSystemError::IoError)?;

@@ -409,6 +409,19 @@ pub(super) fn wake_futex_task(
     wake_waiting_task(task, WaitMembership::Futex(wait_id), Some(result))
 }
 
+/// @description 消费 console wait membership，并完成 deferred IRQ wake 转换。
+///
+/// @param task indexed wait registry 移出的 task owner。
+/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
+/// @return membership 有效时返回 true；stale wake 返回 false。
+pub(super) fn wake_console_task(task: Arc<TaskControlBlock>, wait_id: u64) -> bool {
+    wake_waiting_task(
+        task,
+        WaitMembership::Console(wait_id),
+        Some(WaitResult::Woken),
+    )
+}
+
 fn wake_waiting_task(
     task: Arc<TaskControlBlock>,
     expected: WaitMembership,

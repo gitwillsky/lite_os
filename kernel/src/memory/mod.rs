@@ -76,6 +76,20 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
     let board_info = dtb::board_info();
+    if !board_info.uart.is_empty() {
+        debug!("[init_kernel_space] UART MMIO: {:#x?}", board_info.uart);
+        memory_set
+            .push(
+                MapArea::new(
+                    board_info.uart.start.into(),
+                    board_info.uart.end.into(),
+                    mm::MapType::Identical,
+                    MapPermission::R | MapPermission::W,
+                ),
+                None,
+            )
+            .expect("Failed to map UART MMIO memory");
+    }
     if board_info.virtio_count > 0 {
         let mut min_addr = usize::MAX;
         let mut max_addr = 0;
