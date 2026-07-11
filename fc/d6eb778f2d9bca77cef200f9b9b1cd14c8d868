@@ -1,0 +1,51 @@
+create_fs.py
+  s_d637a88cd4b00d::t_e979bdcd44a05a 99-100,133,141-146
+docs/phase-12-elf-userspace.md
+  s_d637a88cd4b00d::t_bb82b08883f001 1-180
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_aa928056254a5e 995-999,1037,1043
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_f0c69d4551cba8 19-23,53
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_46445940dafe82 49,59-60,73,75-76,95-98
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_098676fe7deaf3 3,33-34,43,68-98,505,508-510,514,529-531,533,535-537,619-626,628-631,633-636,640,642-643,646,648-670,674-681,684,686-689,692-696,699,702,706-707,712,716,722,725,728,731,733,740-747,749-754,760,762,769,772,775,777-808,811,813-819,822-829,833,836-847,857,859,863-864,867-868,870-876,878-879,881,883,885-887,889-891,895,899,903,907-941,945-956,961,963-965,968-975
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_e37f1a8b4426e1 13-14,19-20,23-24,33-34
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_9ac2b2f649a9f0 1,4-5,8-9,14-16,60,62,70,75-81,85-99,104-106,108,110-117,119-133,136,139-141,145,147-148,156-157,163-169,188-194,198,201,204-221
+kernel/src/task/loader.rs
+  s_d637a88cd4b00d::t_8457ea17cb8d8e 3,5-15,18-29,32-45
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_a8b58f5f40d4c2 3,27,30
+kernel/src/task/task.rs
+  s_d637a88cd4b00d::t_51ae777bc91102 1,5,14,62,65-67,71,74,164,167-174,278,282,285,320,324-328,338
+user/linker.ld
+  s_d637a88cd4b00d::t_9110e7aca0d516 7-14,17,21,26,29,32,36-37
+user/src/bin/init.rs
+  s_d637a88cd4b00d::t_9ae5d6dece2ed2 6,9-10
+user/src/lang_item.rs
+  s_d637a88cd4b00d::t_ab1adc1ec61778 3-4,18
+user/src/lib.rs
+  s_d637a88cd4b00d::t_e1694324c7faa4 3-4,14-35,37-43,46,48-49
+user/src/syscall.rs
+  s_d637a88cd4b00d::t_c131157ad5f82e 2,8,28,30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "fcd6eb778f2d9bca77cef200f9b9b1cd14c8d868",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
