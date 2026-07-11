@@ -65,4 +65,5 @@ pub fn dispatch_current_cpu() {
 fn handle_timer_softirq() {
     // 唤醒到期的睡眠任务。
     task::wake_expired_tasks(timer::get_time_ns());
+    task::request_reschedule();
 }

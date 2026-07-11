@@ -1,6 +1,6 @@
 use core::{
     error::Error,
-    sync::atomic::{self, AtomicU64, AtomicUsize},
+    sync::atomic::{self, AtomicUsize},
 };
 
 use alloc::{
@@ -22,7 +22,7 @@ use crate::{
     },
     signal::{SignalDispositions, ThreadSignalState},
     sync::IrqMutex,
-    task::{context::TaskContext, pid::ProcessId, task_manager::set_task_status},
+    task::{context::TaskContext, pid::ProcessId},
     trap::{TrapContext, trap_handler},
 };
 
@@ -67,13 +67,16 @@ impl FileDescriptor {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum TaskStatus {
-    Ready,
-    Running,
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum RunState {
+    New,
+    Ready { cpu: usize, generation: u64 },
+    Running { cpu: usize },
+    Blocking { cpu: usize },
+    Blocked,
+    WakePending { cpu: usize },
+    Stopped,
     Exited,
-    Sleeping, // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
-    Stopped,  // 对应Linux的TASK_STOPPED，被信号暂停（如SIGTSTP）
 }
 
 #[derive(Debug)]
@@ -255,15 +258,33 @@ pub(crate) struct Sched {
 
 /// @description 调度器唯一拥有和解释的 Thread 运行状态。
 pub(crate) struct SchedulingEntity {
-    // timer softirq 与 task context 共同转换该状态；普通 spin lock 会在同 hart 再入时死锁。
-    pub(crate) status: IrqMutex<TaskStatus>,
+    // state/generation/wait_key 必须在一个 IRQ-safe 临界区内转换；拆锁会允许重复 enqueue。
+    pub(crate) state: IrqMutex<SchedulingState>,
     pub(crate) policy: Mutex<Sched>,
     /// 只作为下次 CPU 选择的亲和性 hint，不发布 task 状态。
     pub(crate) last_cpu: AtomicUsize,
-    /// 睡眠唤醒时间（纳秒），0 表示不在 deadline sleep 中。
-    pub(crate) wake_time_ns: AtomicU64,
-    /// 被停止前的状态，仅用于 SIGCONT 恢复。
-    pub(crate) status_before_stop: Mutex<Option<TaskStatus>>,
+}
+
+/// @description run state、enqueue generation 与 wait membership 的唯一权威。
+#[derive(Debug)]
+pub(crate) struct SchedulingState {
+    pub(crate) run_state: RunState,
+    pub(crate) next_generation: u64,
+    pub(crate) deadline_wait: Option<(u64, u64)>,
+}
+
+impl SchedulingState {
+    /// @description 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
+    ///
+    /// @param cpu 新 membership 的 owner CPU。
+    /// @return 必须随 RunQueueEntry 一起保存的 generation。
+    pub(crate) fn transition_to_ready(&mut self, cpu: usize) -> u64 {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        assert_ne!(self.next_generation, 0, "runqueue generation wrapped");
+        let generation = self.next_generation;
+        self.run_state = RunState::Ready { cpu, generation };
+        generation
+    }
 }
 
 impl Sched {
@@ -345,15 +366,17 @@ impl TaskControlBlock {
                 signals: Mutex::new(ThreadSignalState::new()),
             },
             scheduling: SchedulingEntity {
-                status: IrqMutex::new(TaskStatus::Ready),
+                state: IrqMutex::new(SchedulingState {
+                    run_state: RunState::New,
+                    next_generation: 0,
+                    deadline_wait: None,
+                }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,
                     nice: 0,
                     vruntime: 0,
                 }),
                 last_cpu: AtomicUsize::new(0),
-                wake_time_ns: AtomicU64::new(0),
-                status_before_stop: Mutex::new(None),
             },
         };
 
@@ -559,13 +582,6 @@ impl TaskControlBlock {
         self.process.name.lock().clone()
     }
 
-    /// @description 判断 SchedulingEntity 是否已经进入 terminal 状态。
-    ///
-    /// @return 状态为 Exited 时返回 true。
-    pub fn is_exited(&self) -> bool {
-        *self.scheduling.status.lock() == TaskStatus::Exited
-    }
-
     /// 设置用户ID (需要root权限)
     pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
         let mut credentials = self.process.credentials.lock();
@@ -593,10 +609,7 @@ impl TaskControlBlock {
     }
 
     pub fn wakeup(self: &Arc<Self>) {
-        let current_status = *self.scheduling.status.lock();
-        if current_status == TaskStatus::Sleeping || current_status == TaskStatus::Stopped {
-            set_task_status(self, TaskStatus::Ready);
-        }
+        crate::task::task_manager::wake_task(self);
     }
 }
 
@@ -614,7 +627,7 @@ impl core::fmt::Debug for TaskControlBlock {
             self.tgid(),
             self.tid(),
             self.name(),
-            self.scheduling.status.lock()
+            self.scheduling.state.lock().run_state
         )
     }
 }

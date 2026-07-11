@@ -191,6 +191,21 @@ pub fn trap_handler() {
         }
     }
 
+    // IPI/interrupt 返回前处理 pending signal；Running → Stopped/Exited 只能由 owner hart 完成。
+    if let Some(current) = task::current_task()
+        && crate::signal::has_pending_signals(&current)
+    {
+        let mut cx = current.load_trap_context();
+        drop(current);
+        check_signals_and_maybe_exit_with_cx(&mut cx);
+        let current = task::current_task().expect("signal handling returned without current task");
+        current.set_trap_context(cx);
+    }
+
+    // kernel/user timer softirq 共用该 flag；只在即将返回用户态时切换，避免在 hardirq 中调度。
+    if task::take_reschedule() && task::current_task().is_some() {
+        task::suspend_current_and_run_next();
+    }
     trap_return();
 }
 
@@ -208,7 +223,7 @@ fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
                 // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
                 // stopped task 可能在恢复前被终止；不能把 owning Arc 留在它的 suspended stack。
                 drop(task);
-                task::suspend_current_and_run_next();
+                task::stop_current_and_run_next();
                 // Process was suspended and then resumed, continue execution
                 return true;
             }

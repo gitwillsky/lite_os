@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use core::fmt;
 
 use crate::{
-    task::{self, TaskControlBlock, TaskStatus},
+    task::{self, RunState, TaskControlBlock},
     trap::TrapContext,
 };
 
@@ -98,10 +98,10 @@ impl SignalCore {
         }
 
         // 获取任务状态并决定处理方式
-        let status = *task.scheduling.status.lock();
+        let status = task.scheduling.state.lock().run_state;
 
         match status {
-            TaskStatus::Stopped if signal == Signal::SIGCONT => {
+            RunState::Stopped if signal == Signal::SIGCONT => {
                 // 直接处理 SIGCONT，避免双重处理
                 self.continue_task(&task);
                 Ok(())
@@ -112,14 +112,14 @@ impl SignalCore {
 
                 // 根据任务状态决定是否需要中断
                 match status {
-                    TaskStatus::Running => multicore::notify_running_task(pid),
-                    TaskStatus::Sleeping => {
+                    RunState::Running { .. } => multicore::notify_running_task(pid),
+                    RunState::Blocking { .. } | RunState::Blocked => {
                         if !signal.is_stop_signal() {
                             task.wakeup();
                         }
                         Ok(())
                     }
-                    TaskStatus::Stopped => {
+                    RunState::Stopped => {
                         // 对停止的进程，某些信号需要立即处理
                         match signal {
                             Signal::SIGKILL
@@ -174,10 +174,7 @@ impl SignalCore {
         match handler.action {
             SignalAction::Ignore => (true, None),
             SignalAction::Terminate => (false, Some(signal.default_exit_code())),
-            SignalAction::Stop => {
-                self.stop_task(task);
-                (false, None)
-            }
+            SignalAction::Stop => (false, None),
             SignalAction::Continue => {
                 self.continue_task(task);
                 (true, None)
@@ -285,26 +282,32 @@ impl SignalCore {
         match signal {
             Signal::SIGKILL => {
                 task.thread_signals().lock().add_pending(signal);
-                if *task.scheduling.status.lock() == TaskStatus::Sleeping {
-                    task.wakeup();
+                let state = task.scheduling.state.lock().run_state;
+                match state {
+                    RunState::Running { .. } => multicore::notify_running_task(task.tgid())?,
+                    RunState::Blocking { .. } | RunState::Blocked => {
+                        task.wakeup();
+                    }
+                    RunState::Stopped => {
+                        task::continue_task(task);
+                    }
+                    _ => {}
                 }
                 Ok(())
             }
             Signal::SIGSTOP => {
-                self.stop_task(task);
+                task.thread_signals().lock().add_pending(signal);
+                let state = task.scheduling.state.lock().run_state;
+                match state {
+                    RunState::Running { .. } => multicore::notify_running_task(task.tgid())?,
+                    RunState::Blocking { .. } | RunState::Blocked => {
+                        task.wakeup();
+                    }
+                    _ => {}
+                }
                 Ok(())
             }
             _ => unreachable!("Invalid uncatchable signal"),
-        }
-    }
-
-    /// 停止任务
-    fn stop_task(&self, task: &TaskControlBlock) {
-        let old_status = *task.scheduling.status.lock();
-        *task.scheduling.status_before_stop.lock() = Some(old_status);
-
-        if let Some(task_arc) = task::find_task_by_tgid(task.tgid()) {
-            task::set_task_status(&task_arc, TaskStatus::Stopped);
         }
     }
 
@@ -312,11 +315,8 @@ impl SignalCore {
     fn continue_task(&self, task: &TaskControlBlock) {
         // 恢复任务状态为Ready，让调度器重新调度
         if let Some(task_arc) = task::find_task_by_tgid(task.tgid()) {
-            task::set_task_status(&task_arc, TaskStatus::Ready);
+            task::continue_task(&task_arc);
         }
-
-        // 清除停止前的状态记录
-        *task.scheduling.status_before_stop.lock() = None;
     }
 }
 

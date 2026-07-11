@@ -2,81 +2,82 @@ use core::cmp::Ordering;
 
 use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
 
-use crate::task::{TaskControlBlock, scheduler::Scheduler};
+use crate::task::TaskControlBlock;
 
-pub struct CFScheduler {
-    tasks: BinaryHeap<CFSTask>,
+/// @description 唯一生效的 cooperative vruntime runqueue。
+pub struct CfsRunQueue {
+    tasks: BinaryHeap<RunQueueEntry>,
 }
 
-impl CFScheduler {
-    pub fn new() -> Self {
+/// @description 带 enqueue generation 的唯一 runqueue membership token。
+#[derive(Debug)]
+pub struct RunQueueEntry {
+    pub task: Arc<TaskControlBlock>,
+    pub generation: u64,
+    pub vruntime: u64,
+}
+
+impl CfsRunQueue {
+    /// @description 创建空的 local runqueue。
+    ///
+    /// @return 无 task 的 CfsRunQueue。
+    pub const fn new() -> Self {
         Self {
             tasks: BinaryHeap::new(),
         }
     }
-}
 
-impl Scheduler for CFScheduler {
-    fn add_task(&mut self, task: Arc<TaskControlBlock>) {
-        self.tasks.push(CFSTask::new(task));
+    /// @description 插入已经声明为该 CPU Ready 的 task。
+    ///
+    /// @param entry runqueue 获得的 membership token 与 task owner。
+    /// @return 无返回值。
+    pub fn push(&mut self, entry: RunQueueEntry) {
+        self.tasks.push(entry);
     }
 
-    fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.tasks.pop().map(|cfs_task| cfs_task.0)
+    /// @description 取出 vruntime 最小的 task。
+    ///
+    /// @return 队列为空时为 None，否则返回被移除的 membership owner。
+    pub fn pop(&mut self) -> Option<RunQueueEntry> {
+        self.tasks.pop()
     }
 
-    fn count(&self) -> usize {
+    /// @description 返回真实 local heap entry 数。
+    ///
+    /// @return 当前容器长度。
+    pub fn len(&self) -> usize {
         self.tasks.len()
     }
+}
 
-    fn find_task_by_tid(&self, tid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.tasks
-            .iter()
-            .find(|task| task.0.tid() == tid)
-            .map(|t| t.0.clone())
-    }
-
-    fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
-        self.tasks
-            .iter()
-            .map(|cfs_task| cfs_task.0.clone())
-            .collect()
+impl Default for CfsRunQueue {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// CFS调度器中的任务包装器，用于按vruntime排序
-#[derive(Debug)]
-struct CFSTask(Arc<TaskControlBlock>);
-
-impl CFSTask {
-    fn new(task: Arc<TaskControlBlock>) -> Self {
-        Self(task)
-    }
-}
-
-impl PartialEq for CFSTask {
+impl PartialEq for RunQueueEntry {
     fn eq(&self, other: &Self) -> bool {
-        self.0.scheduling.policy.lock().vruntime == other.0.scheduling.policy.lock().vruntime
+        self.vruntime == other.vruntime
+            && self.generation == other.generation
+            && self.task.tid() == other.task.tid()
     }
 }
 
-impl Eq for CFSTask {}
+impl Eq for RunQueueEntry {}
 
-impl PartialOrd for CFSTask {
+impl PartialOrd for RunQueueEntry {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for CFSTask {
+impl Ord for RunQueueEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // 最小堆：vruntime小的任务优先级高
-        other
-            .0
-            .scheduling
-            .policy
-            .lock()
-            .vruntime
-            .cmp(&self.0.scheduling.policy.lock().vruntime)
+        // 1. vruntime 小者优先；2. TID/generation 形成稳定全序，避免 Ord 与 Eq 不一致。
+        let by_vruntime = other.vruntime.cmp(&self.vruntime);
+        by_vruntime
+            .then_with(|| other.task.tid().cmp(&self.task.tid()))
+            .then_with(|| other.generation.cmp(&self.generation))
     }
 }
