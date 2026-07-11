@@ -1,14 +1,200 @@
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use alloc::{boxed::Box, vec::Vec};
+use core::{
+    mem::{MaybeUninit, offset_of, size_of},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+};
 
-/// @description kernel 可索引的 hart 容量上限，不表示 DTB 实际启用核数。
-pub const MAX_SUPPORTED_HARTS: usize = 8;
+use spin::Once;
 
-static ONLINE_HARTS: AtomicUsize = AtomicUsize::new(0);
-static POSSIBLE_HARTS: AtomicUsize = AtomicUsize::new(0);
-static BOOT_HART: AtomicUsize = AtomicUsize::new(usize::MAX);
-static TOPOLOGY_READY: AtomicBool = AtomicBool::new(false);
+use crate::{memory::KERNEL_STACK_SIZE, task::processor::PerHartProcessor};
 
-/// @description 读取未经验证的当前 hart ID，仅供入口检查和 panic 诊断使用。
+const UNPUBLISHED_TABLE: usize = usize::MAX;
+
+static HART_TOPOLOGY: Once<HartTopology> = Once::new();
+
+// 非零哨兵把变量放入 .data。cold-boot `_start` 在 BSS 清零前读取它；若使用零初始化，
+// 未清零 BSS 可能让入口把首个 hart 误判为 secondary 并解引用无效表地址。
+pub(crate) static HART_TABLE_ADDRESS: AtomicUsize = AtomicUsize::new(UNPUBLISHED_TABLE);
+pub(crate) static HART_TABLE_LENGTH: AtomicUsize = AtomicUsize::new(UNPUBLISHED_TABLE);
+
+/// @description DTB hart 的动态启动栈。
+#[repr(C, align(4096))]
+struct StartupStack([MaybeUninit<u8>; KERNEL_STACK_SIZE]);
+
+/// @description 一个 DTB hart 的所有 kernel-local 状态。
+#[repr(C, align(64))]
+pub(crate) struct HartState {
+    hart_id: usize,
+    startup_stack_top: usize,
+    _startup_stack: Box<StartupStack>,
+    processor: PerHartProcessor,
+    softirq_pending: AtomicU32,
+    online: AtomicBool,
+    active: AtomicBool,
+}
+
+impl HartState {
+    fn new(hart_id: usize) -> Self {
+        // SAFETY: `StartupStack` 只包含 `MaybeUninit<u8>`，任意位模式均有效；启动栈会在写入后才读取。
+        let startup_stack = unsafe { Box::<StartupStack>::new_uninit().assume_init() };
+        let startup_stack_top = startup_stack.0.as_ptr() as usize + KERNEL_STACK_SIZE;
+        Self {
+            hart_id,
+            startup_stack_top,
+            _startup_stack: startup_stack,
+            processor: PerHartProcessor::new(),
+            softirq_pending: AtomicU32::new(0),
+            online: AtomicBool::new(false),
+            active: AtomicBool::new(false),
+        }
+    }
+
+    /// @description 获取该状态所属的 DTB hart ID。
+    ///
+    /// @return 原始 hart ID。
+    /// @errors 无错误。
+    pub(crate) fn hart_id(&self) -> usize {
+        self.hart_id
+    }
+
+    /// @description 获取该 hart 的 processor slot。
+    ///
+    /// @return 与该 hart 一一对应的 processor slot。
+    /// @errors 无错误。
+    pub(crate) fn processor(&self) -> &PerHartProcessor {
+        &self.processor
+    }
+
+    /// @description 获取该 hart 的 softirq pending 位图。
+    ///
+    /// @return 与该 hart 一一对应的原子 pending 位图。
+    /// @errors 无错误。
+    pub(crate) fn softirq_pending(&self) -> &AtomicU32 {
+        &self.softirq_pending
+    }
+
+    /// @description 发布该 hart 已具备接收 IPI/RFENCE 的条件。
+    ///
+    /// @return 无返回值。
+    /// @errors 无错误。
+    pub(crate) fn mark_online(&self) {
+        self.online.store(true, Ordering::Release);
+    }
+
+    /// @description 查询该 hart 是否已具备接收 IPI/RFENCE 的条件。
+    ///
+    /// @return `mark_online` 已发布时返回 `true`。
+    /// @errors 无错误。
+    pub(crate) fn is_online(&self) -> bool {
+        self.online.load(Ordering::Acquire)
+    }
+
+    /// @description 发布该 hart 已进入 scheduler/idle 循环。
+    ///
+    /// @return 无返回值。
+    /// @errors 无错误。
+    pub(crate) fn mark_active(&self) {
+        self.active.store(true, Ordering::Release);
+    }
+
+    /// @description 查询该 hart 是否可接收 scheduler mailbox。
+    ///
+    /// @return `mark_active` 已发布时返回 `true`。
+    /// @errors 无错误。
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+pub(crate) const HART_STATE_SIZE: usize = size_of::<HartState>();
+pub(crate) const HART_STATE_ID_OFFSET: usize = offset_of!(HartState, hart_id);
+pub(crate) const HART_STATE_STACK_TOP_OFFSET: usize = offset_of!(HartState, startup_stack_top);
+
+/// @description kernel 从 DTB 构造的唯一 hart 拓扑及其 per-hart owner。
+pub(crate) struct HartTopology {
+    hart_mask: usize,
+    hart_count: usize,
+    max_hart_id: usize,
+    boot_hart: usize,
+    states: Box<[HartState]>,
+}
+
+/// @description 在 allocator 可用前验证 cold-boot hart 与 DTB CPU 描述。
+///
+/// @param board_info 已解析的 DTB board 信息。
+/// @param boot_hart 首个进入 kernel 的 hart ID。
+/// @return 无返回值。
+/// @errors 空 CPU 集、超出 SBI mask、重复 hart ID 或 boot hart 缺失时 fail-stop。
+pub(crate) fn validate_boot_hart(board_info: &crate::arch::dtb::BoardInfo, boot_hart: usize) {
+    assert!(board_info.hart_count != 0, "DTB contains no enabled hart");
+    assert!(
+        board_info.invalid_hart_id.is_none(),
+        "DTB hart ID {} exceeds SBI hart-mask width {}",
+        board_info.invalid_hart_id.unwrap_or(usize::MAX),
+        usize::BITS
+    );
+    assert_eq!(
+        board_info.hart_mask.count_ones() as usize,
+        board_info.hart_count,
+        "DTB CPU count and unique hart mask disagree"
+    );
+    assert!(
+        boot_hart < usize::BITS as usize && board_info.hart_mask & (1usize << boot_hart) != 0,
+        "boot hart {} is absent from DTB hart mask {:#x}",
+        boot_hart,
+        board_info.hart_mask
+    );
+}
+
+/// @description 按 DTB hart mask 分配并发布动态 per-hart 状态。
+///
+/// @param board_info 已验证的 DTB board 信息。
+/// @param boot_hart cold-boot hart ID。
+/// @return 无返回值。
+/// @errors 重复初始化或分配失败时 fail-stop。
+pub(crate) fn init_topology(board_info: &crate::arch::dtb::BoardInfo, boot_hart: usize) {
+    assert!(
+        HART_TOPOLOGY.get().is_none(),
+        "hart topology initialized twice"
+    );
+
+    let mut states = Vec::with_capacity(board_info.hart_count);
+    let mut mask = board_info.hart_mask;
+    while mask != 0 {
+        let hart_id = mask.trailing_zeros() as usize;
+        mask &= mask - 1;
+        states.push(HartState::new(hart_id));
+    }
+    assert_eq!(states.len(), board_info.hart_count);
+
+    let topology = HART_TOPOLOGY.call_once(|| HartTopology {
+        hart_mask: board_info.hart_mask,
+        hart_count: board_info.hart_count,
+        max_hart_id: board_info.max_hart_id,
+        boot_hart,
+        states: states.into_boxed_slice(),
+    });
+
+    // 1. 表长度先写入；它只由随后 address 的 Release 发布。
+    HART_TABLE_LENGTH.store(topology.states.len(), Ordering::Relaxed);
+    // 2. secondary `_start` 的 acquire fence 消费表内容与长度，缺失时可能看到未构造的 stack top。
+    HART_TABLE_ADDRESS.store(topology.states.as_ptr() as usize, Ordering::Release);
+}
+
+/// @description 判断动态 hart table 是否已发布。
+///
+/// @return allocator 后的拓扑初始化完成时返回 `true`。
+/// @errors 无错误。
+pub(crate) fn topology_ready() -> bool {
+    HART_TABLE_ADDRESS.load(Ordering::Acquire) != UNPUBLISHED_TABLE
+}
+
+fn topology() -> &'static HartTopology {
+    assert!(topology_ready(), "hart topology used before allocator init");
+    HART_TOPOLOGY.wait()
+}
+
+/// @description 读取未经验证的当前 hart ID，仅供入口检查和 panic 诊断。
 ///
 /// @return `tp` 中由内核入口安装的原始 hart ID。
 #[inline(always)]
@@ -20,91 +206,95 @@ pub(crate) fn raw_hart_id() -> usize {
     value
 }
 
-/// @description 获取已经过内核入口验证的当前 hart ID。
+/// @description 获取已经过动态拓扑验证的当前 hart ID。
 ///
-/// @return 已存在于 DTB possible mask 的 hart ID。
-/// @errors `tp` 越界或不在 DTB mask 中表示入口或 trap 上下文已被破坏，将触发内核 panic。
+/// @return 已存在于 DTB hart table 的 hart ID。
+/// @errors `tp` 不在 DTB table 中表示入口或 trap 上下文被破坏，将触发 panic。
 #[inline(always)]
 pub fn hart_id() -> usize {
     let hart = raw_hart_id();
     assert!(
-        is_possible_hart(hart),
-        "hart invariant violated: tp={} not in possible mask {:#x}",
+        state(hart).is_some(),
+        "hart invariant violated: tp={} not in DTB mask {:#x}",
         hart,
         possible_hart_mask()
     );
     hart
 }
 
-/// @description 发布 DTB 解析出的 hart 拓扑。
-///
-/// @param board_info kernel DTB 解析结果。
-/// @param boot_hart 首个进入 kernel 的 hart ID。
-/// @return 无返回值；DTB 拓扑非法时触发 fail-stop。
-pub(crate) fn init_topology(board_info: &crate::arch::dtb::BoardInfo, boot_hart: usize) {
-    assert!(board_info.smp != 0, "DTB contains no enabled hart");
-    assert!(
-        board_info.invalid_hart_id.is_none(),
-        "DTB hart ID {} exceeds kernel capacity {}",
-        board_info.invalid_hart_id.unwrap_or(usize::MAX),
-        MAX_SUPPORTED_HARTS
-    );
-    assert_eq!(
-        board_info.hart_mask.count_ones() as usize,
-        board_info.smp,
-        "DTB CPU count and unique hart mask disagree"
-    );
-    assert!(
-        board_info.hart_mask & (1usize << boot_hart) != 0,
-        "boot hart {} is absent from DTB hart mask {:#x}",
-        boot_hart,
-        board_info.hart_mask
-    );
-    BOOT_HART.store(boot_hart, Ordering::Relaxed);
-    // Release 发布 possible mask；缺失时其他 hart 可能在拓扑未完整发布时通过 hart_id() 校验。
-    POSSIBLE_HARTS.store(board_info.hart_mask, Ordering::Release);
-    // Release 与 topology_ready/possible_hart_mask 的 Acquire 配对，作为 DTB 拓扑可用标志。
-    TOPOLOGY_READY.store(true, Ordering::Release);
-}
-
-/// @description 判断 DTB hart 拓扑是否已经发布。
-///
-/// @return `true` 表示 possible mask 和 boot hart 已可被消费。
-pub(crate) fn topology_ready() -> bool {
-    TOPOLOGY_READY.load(Ordering::Acquire)
-}
-
 /// @description 获取 DTB 描述的 possible hart mask。
 ///
-/// @return bit N 表示 hart N 存在于 DTB CPU 节点。
-/// @errors 拓扑未发布时触发 fail-stop，防止 early code 误用运行期 API。
+/// @return bit N 表示 hart N 存在于动态 hart table。
+/// @errors topology 尚未发布时 fail-stop。
 pub(crate) fn possible_hart_mask() -> usize {
-    assert!(topology_ready(), "hart topology used before DTB init");
-    POSSIBLE_HARTS.load(Ordering::Acquire)
+    topology().hart_mask
 }
 
-/// @description 判断 hart ID 是否存在于 DTB possible mask。
+/// @description 获取 DTB hart 数量。
 ///
-/// @param hart 待检查 hart ID。
-/// @return 存在且小于 kernel 容量上限时返回 `true`。
-pub(crate) fn is_possible_hart(hart: usize) -> bool {
-    hart < MAX_SUPPORTED_HARTS && (possible_hart_mask() & (1usize << hart)) != 0
+/// @return 动态 hart table 的 entry 数量。
+/// @errors topology 尚未发布时 fail-stop。
+pub(crate) fn hart_count() -> usize {
+    topology().hart_count
+}
+
+/// @description 获取 DTB 最大 hart ID。
+///
+/// @return DTB hart mask 中最高置位的 ID。
+/// @errors topology 尚未发布时 fail-stop。
+pub(crate) fn max_hart_id() -> usize {
+    topology().max_hart_id
+}
+
+/// @description 获取 cold-boot hart ID。
+///
+/// @return 首个进入 kernel 的 DTB hart ID。
+/// @errors topology 尚未发布时 fail-stop。
+pub(crate) fn boot_hart_id() -> usize {
+    topology().boot_hart
+}
+
+/// @description 获取所有 DTB hart state，顺序按 hart ID 递增。
+///
+/// @return 只包含 DTB mask 中 hart 的动态切片。
+/// @errors topology 尚未发布时 fail-stop。
+pub(crate) fn states() -> &'static [HartState] {
+    &topology().states
+}
+
+/// @description 按原始 hart ID 查找动态 state。
+///
+/// @param hart_id 待查找的 DTB hart ID。
+/// @return hart 存在时返回 state，否则返回 `None`。
+/// @errors topology 尚未发布时 fail-stop。
+pub(crate) fn state(hart_id: usize) -> Option<&'static HartState> {
+    let states = states();
+    states
+        .binary_search_by_key(&hart_id, HartState::hart_id)
+        .ok()
+        .map(|index| &states[index])
 }
 
 /// @description 发布当前 hart 已完成页表、timer 和中断初始化。
 ///
 /// @return 无返回值。
+/// @errors 当前 hart 不属于动态 topology 时 fail-stop。
 pub(crate) fn mark_online() {
-    let hart = hart_id();
-    // Release 发布本 hart 在此之前完成的 CSR 和 per-hart 状态写入；缺失时，
-    // RFENCE 发送方可能把请求发给尚不能接收 supervisor software interrupt 的 hart。
-    ONLINE_HARTS.fetch_or(1usize << hart, Ordering::Release);
+    state(hart_id())
+        .expect("current hart disappeared from topology")
+        .mark_online();
 }
 
 /// @description 获取已完成 S-mode 初始化的 hart 集合。
 ///
 /// @return bit N 表示 hart N 已可接收 IPI/RFENCE 后续工作。
+/// @errors topology 尚未发布时 fail-stop。
 pub(crate) fn online_hart_mask() -> usize {
-    // Acquire 与 mark_online 的 Release 配对，消费每个目标 hart 的初始化写入。
-    ONLINE_HARTS.load(Ordering::Acquire)
+    states().iter().fold(0, |mask, state| {
+        if state.is_online() {
+            mask | (1usize << state.hart_id())
+        } else {
+            mask
+        }
+    })
 }

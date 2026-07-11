@@ -1,7 +1,7 @@
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::{
-    arch::hart::{MAX_SUPPORTED_HARTS, hart_id},
+    arch::hart::{hart_id, state},
     task::{self},
     timer,
 };
@@ -18,18 +18,6 @@ impl SoftIrq {
     }
 }
 
-// 每核挂起的软中断位图 - 使用固定大小数组避免Vec的潜在问题
-static PENDING: [AtomicU32; MAX_SUPPORTED_HARTS] = [
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-    AtomicU32::new(0),
-];
-
 #[inline(always)]
 fn set_ssip() {
     unsafe { riscv::register::sip::set_ssoft() }
@@ -42,14 +30,19 @@ pub fn raise(irq: SoftIrq) {
 
     // Release 在置 SSIP 前发布 pending bit；consumer 的 AcqRel swap 获取该位。
     // 额外 fence 不会发布新的写，反而会掩盖真正的 request/consume 配对。
-    PENDING[cpu].fetch_or(bit, Ordering::Release);
+    state(cpu)
+        .expect("softirq hart disappeared from topology")
+        .softirq_pending()
+        .fetch_or(bit, Ordering::Release);
     set_ssip();
 }
 
 #[inline(always)]
 fn take_pending_for(cpu: usize) -> u32 {
-    assert!(cpu < MAX_SUPPORTED_HARTS, "softirq CPU index out of range");
-    PENDING[cpu].swap(0, Ordering::AcqRel)
+    state(cpu)
+        .unwrap_or_else(|| panic!("softirq CPU {} is absent from DTB topology", cpu))
+        .softirq_pending()
+        .swap(0, Ordering::AcqRel)
 }
 
 #[inline(always)]

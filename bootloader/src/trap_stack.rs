@@ -21,28 +21,12 @@ unsafe impl Sync for StackCell {}
 
 /// 每 hart 独占的 M-mode trap stack，不参与 cold-boot BSS 清零。
 #[unsafe(link_section = ".bss.uninit")]
-static ROOT_STACK: [StackCell; constants::MAX_SUPPORTED_HARTS] = [
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-    const { StackCell::new() },
-];
+static ROOT_STACK: [StackCell; constants::HART_MASK_BITS] =
+    [const { StackCell::new() }; constants::HART_MASK_BITS];
 
 /// HSM 使用原子状态和受状态保护的 payload，可安全地由 local/remote hart 共享。
-static HSM_CELLS: [hsm_cell::HsmCell<Supervisor>; constants::MAX_SUPPORTED_HARTS] = [
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-    const { hsm_cell::HsmCell::new() },
-];
+static HSM_CELLS: [hsm_cell::HsmCell<Supervisor>; constants::HART_MASK_BITS] =
+    [const { hsm_cell::HsmCell::new() }; constants::HART_MASK_BITS];
 
 /// @description 在访问任何固定数组前验证 `mhartid`，然后定位当前 hart 的 trap stack。
 ///
@@ -69,7 +53,7 @@ pub(crate) unsafe extern "C" fn locate() {
             j 3b
         ",
         per_hart_stack_size = const constants::STACK_SIZE_PER_HART,
-        max_harts = const constants::MAX_SUPPORTED_HARTS,
+        max_harts = const constants::HART_MASK_BITS,
         stack = sym ROOT_STACK,
         move_stack = sym reuse_stack_for_trap,
     )

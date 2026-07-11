@@ -10,7 +10,7 @@ pub const VPN_WIDTH: usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH;
 
 // 16kb user stack
 pub const USER_STACK_SIZE: usize = 8192 * 32; // increase to 256KB for deep recursion
-pub const KERNEL_STACK_SIZE: usize = 8192 * 16; // 对齐 linker.ld
+pub const KERNEL_STACK_SIZE: usize = 8192 * 16; // boot/task/dynamic hart stack 的统一大小
 
 pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 pub const TRAP_CONTEXT: usize = TRAMPOLINE - PAGE_SIZE;

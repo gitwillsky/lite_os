@@ -22,7 +22,13 @@ fn init_interrupt_controller() {
     let Some(plic) = board_info().plic_device.as_ref() else {
         return;
     };
-    match PlicInterruptController::new(plic.base_addr, plic.size, 1024, 8) {
+    match PlicInterruptController::new(
+        plic.base_addr,
+        plic.size,
+        1024,
+        crate::arch::hart::possible_hart_mask(),
+        crate::arch::hart::max_hart_id(),
+    ) {
         Ok(controller) => {
             INTERRUPT_CONTROLLER
                 .call_once(|| IrqMutex::new(Box::new(controller) as Box<dyn InterruptController>));
@@ -117,10 +123,14 @@ fn maybe_register_irq(
             error!("[Platform] Failed to set {} IRQ priority: {:?}", label, e);
             Err(())
         } else if ctrl.supports_cpu_affinity() {
-            if let Err(e) = ctrl.set_affinity(irq, 1 << 0) {
+            let boot_hart = crate::arch::hart::boot_hart_id();
+            if let Err(e) = ctrl.set_affinity(irq, 1usize << boot_hart) {
                 warn!("[Platform] Failed to set {} IRQ affinity: {:?}", label, e);
             } else {
-                info!("[Platform] Set {} IRQ affinity to CPU0", label);
+                info!(
+                    "[Platform] Set {} IRQ affinity to boot hart {}",
+                    label, boot_hart
+                );
             }
             if let Err(e) = ctrl.enable_interrupt(irq) {
                 error!("[Platform] Failed to enable {} IRQ {}: {:?}", label, irq, e);

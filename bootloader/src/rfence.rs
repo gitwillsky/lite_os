@@ -3,32 +3,16 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use rustsbi::{Fence as RfenceExtension, HartMask, SbiRet};
 use spin::{Mutex, MutexGuard};
 
-use crate::{clint, constants::MAX_SUPPORTED_HARTS, hart::hart_id, trap_stack::remote_hsm};
+use crate::{clint, constants::HART_MASK_BITS, hart::hart_id, trap_stack::remote_hsm};
 
 pub(crate) const REQUEST_FENCE_I: usize = 1 << 0;
 pub(crate) const REQUEST_SFENCE_VMA: usize = 1 << 1;
 
-pub(crate) static REQUESTS: [AtomicUsize; MAX_SUPPORTED_HARTS] = [
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-];
+pub(crate) static REQUESTS: [AtomicUsize; HART_MASK_BITS] =
+    [const { AtomicUsize::new(0) }; HART_MASK_BITS];
 
-pub(crate) static ACKNOWLEDGED: [AtomicUsize; MAX_SUPPORTED_HARTS] = [
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-    AtomicUsize::new(0),
-];
+pub(crate) static ACKNOWLEDGED: [AtomicUsize; HART_MASK_BITS] =
+    [const { AtomicUsize::new(0) }; HART_MASK_BITS];
 
 static RFENCE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -69,10 +53,10 @@ impl Rfence {
             possible
         } else if mask == 0 {
             0
-        } else if base >= MAX_SUPPORTED_HARTS {
+        } else if base >= HART_MASK_BITS {
             return Err(SbiRet::invalid_param());
         } else {
-            let valid_bits = MAX_SUPPORTED_HARTS - base;
+            let valid_bits = HART_MASK_BITS - base;
             if valid_bits < usize::BITS as usize && (mask >> valid_bits) != 0 {
                 return Err(SbiRet::invalid_param());
             }
@@ -83,10 +67,10 @@ impl Rfence {
             selected
         };
 
-        for target in 0..MAX_SUPPORTED_HARTS {
-            if selected & (1usize << target) == 0 || target == hart_id() {
-                continue;
-            }
+        let mut targets = selected & !(1usize << hart_id());
+        while targets != 0 {
+            let target = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
             if !remote_hsm(target).is_some_and(|hsm| hsm.allow_ipi()) {
                 return Err(SbiRet::invalid_param());
             }
@@ -115,10 +99,10 @@ impl Rfence {
         let current = hart_id();
 
         // 2. Release request 发布调用 SBI 之前的页表/指令写；目标 hart 的 aq swap 消费这些写。
-        for target in 0..MAX_SUPPORTED_HARTS {
-            if selected & (1usize << target) == 0 {
-                continue;
-            }
+        let mut targets = selected;
+        while targets != 0 {
+            let target = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
             if target == current {
                 Self::execute_local(request);
             } else {
@@ -131,10 +115,10 @@ impl Rfence {
         }
 
         // 3. Acquire ack 与目标 hart 的 rl swap 配对；SBI 只有在所有远端 fence 完成后才返回。
-        for target in 0..MAX_SUPPORTED_HARTS {
-            if target == current || selected & (1usize << target) == 0 {
-                continue;
-            }
+        let mut targets = selected & !(1usize << current);
+        while targets != 0 {
+            let target = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
             while ACKNOWLEDGED[target].load(Ordering::Acquire) == 0 {
                 core::hint::spin_loop();
             }

@@ -8,18 +8,18 @@ pub(crate) fn raw_hart_id() -> usize {
     register::mhartid::read()
 }
 
-/// @description 获取已验证可索引 firmware per-hart 状态的 hart ID。
+/// @description 获取能由 SBI 单字 hart mask 表达的当前 hart ID。
 ///
-/// @return 小于 `MAX_SUPPORTED_HARTS` 的 hart ID。
+/// @return 小于 `usize::BITS` 的 hart ID。
 /// @errors 越界表示入口不变量破坏并触发 panic，绝不映射到其他 hart。
 #[inline(always)]
 pub(crate) fn hart_id() -> usize {
     let hart = raw_hart_id();
     assert!(
-        hart < crate::constants::MAX_SUPPORTED_HARTS,
-        "mhartid {} exceeds firmware limit {}",
+        hart < crate::constants::HART_MASK_BITS,
+        "mhartid {} exceeds SBI hart-mask width {}",
         hart,
-        crate::constants::MAX_SUPPORTED_HARTS
+        crate::constants::HART_MASK_BITS
     );
     hart
 }

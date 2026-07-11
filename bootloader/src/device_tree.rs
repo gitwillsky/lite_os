@@ -9,8 +9,9 @@ pub(crate) struct StringInLine<const N: usize>(usize, [u8; N]);
 pub(crate) struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,
-    pub smp: usize,
+    pub hart_count: usize,
     pub hart_mask: usize,
+    pub max_hart_id: usize,
     pub invalid_hart_id: Option<usize>,
     pub mem: Range<usize>,
     pub uart: Range<usize>,
@@ -39,8 +40,9 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
     let mut ans = BoardInfo {
         dtb: opaque..opaque,
         model: StringInLine(0, [0; 128]),
-        smp: 0,
+        hart_count: 0,
         hart_mask: 0,
+        max_hart_id: 0,
         invalid_hart_id: None,
         mem: 0..0,
         uart: 0..0,
@@ -77,7 +79,7 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
                 }
             } else {
                 if current == Str::from(CPUS) && name.starts_with("cpu@") {
-                    ans.smp += 1;
+                    ans.hart_count += 1;
                     WalkOperation::StepInto
                 } else {
                     WalkOperation::StepOver
@@ -105,7 +107,8 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
                 WalkOperation::StepOut
             } else if node.starts_with("cpu@") {
                 let hart_id = reg.next().unwrap().start;
-                if hart_id < crate::constants::MAX_SUPPORTED_HARTS {
+                ans.max_hart_id = ans.max_hart_id.max(hart_id);
+                if hart_id < crate::constants::HART_MASK_BITS {
                     ans.hart_mask |= 1usize << hart_id;
                 } else {
                     ans.invalid_hart_id = Some(hart_id);

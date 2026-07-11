@@ -1,6 +1,6 @@
 # LiteOS 工程指南
 
-LiteOS 是 Rust `no_std` 的 RISC-V 64 操作系统基线，当前目标平台是 QEMU `virt` / 最多 8 hart。它只实现明确列出的 Linux/riscv64 ABI 子集，不声称完整 Linux、POSIX 或 musl 兼容。
+LiteOS 是 Rust `no_std` 的 RISC-V 64 操作系统基线，当前目标平台是 QEMU `virt`。实际 hart 集合来自 DTB，容量受可用内存和 SBI/PLIC/CLINT 表达能力约束。它只实现明确列出的 Linux/riscv64 ABI 子集，不声称完整 Linux、POSIX 或 musl 兼容。
 
 开始修改前读取：
 
@@ -38,6 +38,6 @@ toolchain 由 `rust-toolchain.toml` 固定为 `nightly-2025-06-15`，target 为 
 - `cargo check --workspace`；
 - 三组件构建；
 - `llvm-readelf` / `llvm-objdump` 静态检查；
-- QEMU `virt -smp 8` 非测试冷启动，确认 8 hart、ext2、init 与 `LiteOS init`。
+- QEMU `virt` 使用不同 `-smp` 值做非测试冷启动，确认 online mask 等于 DTB mask、ext2、init 与 `LiteOS init`。
 
 复杂逻辑的注释使用中文并按 `1. / 2. / 3.` 拆解；新 flag、缓存或特殊分支必须说明用意和缺失时的具体后果。修改保持最小、单路径，不保留 deprecated/feature-flag 双轨。

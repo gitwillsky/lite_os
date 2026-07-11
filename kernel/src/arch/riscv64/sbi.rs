@@ -3,6 +3,7 @@ const EID_IPI: usize = 0x0073_5049;
 const EID_RFENCE: usize = 0x5246_4e43;
 const EID_SYSTEM_RESET: usize = 0x5352_5354;
 const EID_DEBUG_CONSOLE: usize = 0x4442_434e;
+const EID_HSM: usize = 0x0048_534d;
 const EID_BASE: usize = 0x10;
 
 const FID_SET_TIMER: usize = 0;
@@ -10,6 +11,7 @@ const FID_SEND_IPI: usize = 0;
 const FID_REMOTE_SFENCE_VMA: usize = 1;
 const FID_SYSTEM_RESET: usize = 0;
 const FID_CONSOLE_WRITE_BYTE: usize = 2;
+const FID_HART_START: usize = 0;
 const FID_PROBE_EXTENSION: usize = 3;
 
 /// @description 执行 SBI v0.2+ EID/FID 调用。
@@ -59,6 +61,7 @@ pub fn verify_required_extensions() {
         (EID_RFENCE, "RFENCE"),
         (EID_SYSTEM_RESET, "SRST"),
         (EID_DEBUG_CONSOLE, "DBCN"),
+        (EID_HSM, "HSM"),
     ] {
         assert!(
             probe_extension(eid).unwrap_or(false),
@@ -67,6 +70,21 @@ pub fn verify_required_extensions() {
             eid
         );
     }
+}
+
+/// @description 通过 SBI HSM 启动一个 DTB secondary hart。
+///
+/// @param hart_id 目标 DTB hart ID。
+/// @param start_address 目标 hart 的 S-mode 入口物理地址。
+/// @param opaque 原样传给目标 hart `a1` 的 DTB 地址。
+/// @return firmware 接受启动请求时返回 `Ok(())`，否则返回 SBI error。
+pub fn hart_start(hart_id: usize, start_address: usize, opaque: usize) -> Result<(), isize> {
+    let (error, value) = sbi_call(
+        EID_HSM,
+        FID_HART_START,
+        [hart_id, start_address, opaque, 0, 0, 0],
+    );
+    value_or_error(error, value).map(|_| ())
 }
 
 /// @description 通过 SBI DBCN 写出单字节，不使用 legacy console extension。

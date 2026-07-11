@@ -1,14 +1,6 @@
-use core::{
-    arch::naked_asm,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use core::arch::naked_asm;
 
-const BSS_PENDING: usize = 0x4253_5350;
-const BSS_CLEARING: usize = 0x4253_5343;
-const BSS_READY: usize = 0x4253_5352;
-
-// 该标志使用非零初值以确保位于 .data；若放在尚未清零的 BSS，次核可能误判初始化已完成。
-static BSS_STATE: AtomicUsize = AtomicUsize::new(BSS_PENDING);
+use super::hart;
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -16,70 +8,94 @@ static BSS_STATE: AtomicUsize = AtomicUsize::new(BSS_PENDING);
 unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
-            # 1. bootloader 只把 cold-boot hart 送入本入口；secondary 使用 _secondary_start。
-            la sp, boot_stack_top
+            # 1. 未发布动态表表示唯一 cold-boot hart；它使用 linker early stack。
+            la   t0, {table_address}
+            ld   t0, 0(t0)
+            li   t1, -1
+            beq  t0, t1, 3f
 
-            # 2. 初始化内核 psABI 固定寄存器；用户 gp/tp 将由 trampoline 单独保存。
+            # 2. secondary 消费 boot hart 发布的动态表，按 DTB hart ID 查找启动栈。
+            fence r, rw
+            la   t1, {table_length}
+            ld   t1, 0(t1)
+            mv   t2, t0
+        1:
+            beqz t1, 5f
+            ld   t3, {id_offset}(t2)
+            beq  t3, a0, 2f
+            li   t4, {state_size}
+            add  t2, t2, t4
+            addi t1, t1, -1
+            j    1b
+        2:
+            ld   sp, {stack_top_offset}(t2)
+            j    4f
+        3:
+            la   sp, boot_stack_top
+
             .option push
             .option norelax
-            la gp, __global_pointer$
+            la   gp, __global_pointer$
             .option pop
-            mv tp, a0
+            mv   tp, a0
             csrw sscratch, zero
-
-            # 3. 使用被调用者保存寄存器跨越 clear_bss 调用保存 SBI 参数。
-            mv s0, a0
-            mv s1, a1
-
+            mv   s0, a0
+            mv   s1, a1
             call {clear_bss}
-            mv s2, a0
+            mv   a0, s0
+            mv   a1, s1
+            call {boot_main}
+            j    5f
 
-            mv a0, s0
-            mv a1, s1
-            mv a2, s2
-            call kmain
-        1:
+        4:
+            .option push
+            .option norelax
+            la   gp, __global_pointer$
+            .option pop
+            mv   tp, a0
+            csrw sscratch, zero
+            call {secondary_main}
+
+        5:
+            csrci sstatus, 2
+            csrw sie, zero
+        6:
             wfi
-            j 1b
+            j 6b
         ",
+        table_address = sym hart::HART_TABLE_ADDRESS,
+        table_length = sym hart::HART_TABLE_LENGTH,
+        id_offset = const hart::HART_STATE_ID_OFFSET,
+        stack_top_offset = const hart::HART_STATE_STACK_TOP_OFFSET,
+        state_size = const hart::HART_STATE_SIZE,
         clear_bss = sym clear_bss,
+        boot_main = sym crate::kmain_boot,
+        secondary_main = sym crate::kmain_secondary,
     )
 }
 
-/// @description 由唯一胜出的 hart 清零 BSS，并向其他 hart 发布完成状态。
+/// @description 获取 SBI HSM secondary 使用的统一 S-mode 入口。
 ///
-/// @param _hart_id SBI 传入的当前 hart ID；入口已完成边界验证。
-/// @return `1` 表示当前 hart 是全局初始化所有者，`0` 表示当前 hart 是 secondary。
-extern "C" fn clear_bss(_hart_id: usize) -> usize {
-    if BSS_STATE
-        .compare_exchange(
-            BSS_PENDING,
-            BSS_CLEARING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        unsafe extern "C" {
-            static mut sbss: u8;
-            static mut ebss: u8;
+/// @return `_start` 的物理入口地址。
+/// @errors 无错误。
+pub(crate) fn entry_address() -> usize {
+    _start as usize
+}
+
+/// @description 由唯一 cold-boot hart 清零 BSS。
+///
+/// @errors bootloader 若错误地同时放行多个 hart，会破坏该单写者前提。
+extern "C" fn clear_bss() {
+    unsafe extern "C" {
+        static mut sbss: u8;
+        static mut ebss: u8;
+    }
+    unsafe {
+        let start = sbss as *const u8 as usize;
+        let end = ebss as *const u8 as usize;
+        let count = end - start;
+        if count > 0 {
+            core::ptr::write_bytes(sbss as *mut u8, 0, count);
         }
-        unsafe {
-            let start = sbss as *const u8 as usize;
-            let end = ebss as *const u8 as usize;
-            let count = end - start;
-            if count > 0 {
-                core::ptr::write_bytes(sbss as *mut u8, 0, count);
-            }
-        }
-        // Release 发布所有 BSS 清零写；缺失时 secondary 可能把未清零的 Once/锁当作已初始化。
-        BSS_STATE.store(BSS_READY, Ordering::Release);
-        1
-    } else {
-        // Acquire 消费清零写，之后才允许 Rust 代码访问 BSS 中的全局对象。
-        while BSS_STATE.load(Ordering::Acquire) != BSS_READY {
-            core::hint::spin_loop();
-        }
-        0
     }
 }

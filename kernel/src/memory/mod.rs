@@ -37,13 +37,20 @@ unsafe extern "C" {
 
 pub static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
+/// @description 初始化构造动态 hart topology 所需的 kernel allocator。
+///
+/// @return 无返回值。
+/// @errors allocator 重复初始化或内存布局损坏时 fail-stop。
+pub fn init_allocator() {
+    heap_allocator::init();
+}
+
 pub fn init() {
     let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
     let memory_end_addr: PhysicalAddress = dtb::board_info().mem.end.into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
-    heap_allocator::init();
     frame_allocator::init(kernel_end_addr, memory_end_addr);
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));

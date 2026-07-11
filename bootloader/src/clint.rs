@@ -26,10 +26,10 @@ impl Ipi for Clint {
             possible
         } else if mask == 0 {
             0
-        } else if base >= constants::MAX_SUPPORTED_HARTS {
+        } else if base >= constants::HART_MASK_BITS {
             return SbiRet::invalid_param();
         } else {
-            let valid_bits = constants::MAX_SUPPORTED_HARTS - base;
+            let valid_bits = constants::HART_MASK_BITS - base;
             if valid_bits < usize::BITS as usize && (mask >> valid_bits) != 0 {
                 return SbiRet::invalid_param();
             }
@@ -41,15 +41,19 @@ impl Ipi for Clint {
         };
 
         // 先验证完整集合，避免对前半目标发送后才发现后半参数非法的部分执行。
-        for i in 0..constants::MAX_SUPPORTED_HARTS {
-            if selected & (1usize << i) != 0 && !remote_hsm(i).is_some_and(|hsm| hsm.allow_ipi()) {
+        let mut targets = selected;
+        while targets != 0 {
+            let i = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
+            if !remote_hsm(i).is_some_and(|hsm| hsm.allow_ipi()) {
                 return SbiRet::invalid_param();
             }
         }
-        for i in 0..constants::MAX_SUPPORTED_HARTS {
-            if selected & (1usize << i) != 0 {
-                set_msip(i);
-            }
+        let mut targets = selected;
+        while targets != 0 {
+            let i = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
+            set_msip(i);
         }
         SbiRet::success(0)
     }
@@ -68,7 +72,7 @@ impl Timer for Clint {
 #[inline]
 pub fn set_msip(hart_idx: usize) {
     assert!(
-        hart_idx < constants::MAX_SUPPORTED_HARTS,
+        hart_idx < constants::HART_MASK_BITS,
         "CLINT hart index out of range"
     );
     unsafe { &*CLINT.load(Ordering::Acquire) }.set_msip(hart_idx);

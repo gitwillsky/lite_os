@@ -48,7 +48,7 @@ pub trait InterruptController: Send + Sync {
 pub struct PlicInterruptController {
     base_addr: usize,
     max_interrupts: u32,
-    num_harts: u32,
+    hart_mask: usize,
     handlers: BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>,
     affinities: BTreeMap<InterruptVector, usize>,
 }
@@ -58,9 +58,17 @@ impl PlicInterruptController {
         base_addr: usize,
         size: usize,
         max_interrupts: u32,
-        num_harts: u32,
+        hart_mask: usize,
+        max_hart_id: usize,
     ) -> Result<Self, InterruptError> {
-        let last_context = Self::supervisor_context(num_harts.saturating_sub(1));
+        if hart_mask == 0
+            || max_hart_id >= usize::BITS as usize
+            || hart_mask & (1usize << max_hart_id) == 0
+            || hart_mask >> max_hart_id != 1
+        {
+            return Err(InterruptError::InvalidVector);
+        }
+        let last_context = Self::supervisor_context(max_hart_id as u32);
         let required_context_bytes = 0x200004usize
             .checked_add(last_context as usize * 0x1000)
             .and_then(|offset| offset.checked_add(4));
@@ -68,7 +76,6 @@ impl PlicInterruptController {
             .checked_add(1)
             .and_then(|count| count.checked_mul(4));
         if base_addr == 0
-            || num_harts == 0
             || base_addr.checked_add(size).is_none()
             || required_context_bytes.is_none_or(|required| required > size)
             || required_priority_bytes.is_none_or(|required| required > size)
@@ -79,7 +86,7 @@ impl PlicInterruptController {
         let controller = Self {
             base_addr,
             max_interrupts,
-            num_harts,
+            hart_mask,
             handlers: BTreeMap::new(),
             affinities: BTreeMap::new(),
         };
@@ -89,7 +96,10 @@ impl PlicInterruptController {
     }
 
     fn init_hardware(&self) -> Result<(), InterruptError> {
-        for hart in 0..self.num_harts {
+        let mut harts = self.hart_mask;
+        while harts != 0 {
+            let hart = harts.trailing_zeros();
+            harts &= harts - 1;
             self.set_threshold(Self::supervisor_context(hart), 0);
         }
 
@@ -195,8 +205,15 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::HandlerNotSet);
         }
 
-        let affinity = self.affinities.get(&vector).copied().unwrap_or(1);
-        for hart in 0..self.num_harts {
+        let affinity = self
+            .affinities
+            .get(&vector)
+            .copied()
+            .unwrap_or(self.hart_mask);
+        let mut harts = self.hart_mask;
+        while harts != 0 {
+            let hart = harts.trailing_zeros();
+            harts &= harts - 1;
             self.enable_interrupt_for_context(
                 vector,
                 Self::supervisor_context(hart),
@@ -226,9 +243,15 @@ impl InterruptController for PlicInterruptController {
         if vector == 0 || vector > self.max_interrupts {
             return Err(InterruptError::InvalidVector);
         }
+        if cpu_mask & !self.hart_mask != 0 {
+            return Err(InterruptError::InvalidVector);
+        }
 
         self.affinities.insert(vector, cpu_mask);
-        for hart in 0..self.num_harts {
+        let mut harts = self.hart_mask;
+        while harts != 0 {
+            let hart = harts.trailing_zeros();
+            harts &= harts - 1;
             let enable = (cpu_mask & (1 << hart)) != 0;
             self.enable_interrupt_for_context(vector, Self::supervisor_context(hart), enable);
         }
@@ -238,7 +261,7 @@ impl InterruptController for PlicInterruptController {
 
     fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError> {
         let hart = crate::arch::hart::hart_id() as u32;
-        if hart >= self.num_harts {
+        if self.hart_mask & (1usize << hart) == 0 {
             return Err(InterruptError::InvalidVector);
         }
         let context = Self::supervisor_context(hart);

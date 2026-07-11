@@ -100,7 +100,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 [rustsbi] RustSBI version {ver_sbi}, adapting to RISC-V SBI v2.0.0
 [rustsbi] Implementation     : RustSBI-QEMU Version {ver_impl}
 [rustsbi] Platform Name      : {model}
-[rustsbi] Platform SMP       : {smp}
+[rustsbi] Platform SMP       : {hart_count}
 [rustsbi] Platform HART Mask : {hart_mask:#x}
 [rustsbi] Platform Memory    : {mem_addr:#x?},{mem_size}MiB
 [rustsbi] Boot HART          : {hart_id}
@@ -111,7 +111,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             ver_sbi = rustsbi::VERSION,
             ver_impl = env!("CARGO_PKG_VERSION"),
             model = board_info.model,
-            smp = board_info.smp,
+            hart_count = board_info.hart_count,
             hart_mask = board_info.hart_mask,
             mem_addr = board_info.mem,
             mem_size = (board_info.mem.end - board_info.mem.start) / (1024 * 1024),
@@ -195,16 +195,16 @@ fn clear_bss() {
 }
 
 fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
-    assert!(board_info.smp != 0, "DTB contains no enabled hart");
+    assert!(board_info.hart_count != 0, "DTB contains no enabled hart");
     assert!(
         board_info.invalid_hart_id.is_none(),
-        "DTB hart ID {} exceeds firmware limit {}",
+        "DTB hart ID {} exceeds SBI hart-mask width {}",
         board_info.invalid_hart_id.unwrap_or(usize::MAX),
-        constants::MAX_SUPPORTED_HARTS
+        constants::HART_MASK_BITS
     );
     assert_eq!(
         board_info.hart_mask.count_ones() as usize,
-        board_info.smp,
+        board_info.hart_count,
         "DTB CPU count and unique hart mask disagree"
     );
     assert!(
@@ -216,7 +216,7 @@ fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
 
 fn dtb_contains_hart(hartid: usize) -> bool {
     let board_info = BOARD_INFO.wait();
-    hartid < constants::MAX_SUPPORTED_HARTS && (board_info.hart_mask & (1usize << hartid)) != 0
+    hartid < constants::HART_MASK_BITS && (board_info.hart_mask & (1usize << hartid)) != 0
 }
 
 /// 设置 PMP，物理内存保护
