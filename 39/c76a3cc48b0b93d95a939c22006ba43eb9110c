@@ -1,0 +1,49 @@
+README.md
+  s_d637a88cd4b00d::t_98ec086bfd6fda 16,18
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_eb1c23adc4309f 682,704,721,746-748,784,794,797,799,826,842-843,852,872
+docs/architecture.md
+  s_d637a88cd4b00d::t_2edae0bc077c33 118,120,194
+docs/phase-24-signal-wait.md
+  s_d637a88cd4b00d::t_3713e797d4702c 1-34
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_4e90dfd195a9dd 15,31,59,83,93
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_5a3627a2a73c12 78
+kernel/src/syscall/signal.rs
+  s_d637a88cd4b00d::t_7aa71feb209e1d 3,6-7,124-189
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_42e6de99a2adc3 17-18
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_44da508d30d1a8 34,70-142,286-287,425,509,584,663,668,673,677-681,685-706,721,752-753,756,797
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_1e3cb15ac32a95 425-437
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_54ba5d0141fe16 13,131,228-252,340-342,348-374,388-389,419-422,764-766,848-913,1122,1147,1164-1170,1183-1189,1207-1213
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_0da0c8150f1492 55,100-104
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_d035e607dc9c23 315
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_a2194d9ff2f873 34
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_b29960036bf91e 75,80,82-83,225-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "39c76a3cc48b0b93d95a939c22006ba43eb9110c",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
