@@ -1,14 +1,7 @@
 //! 信号投递机制
 
 use super::core::{Signal, SignalError};
-use crate::{
-    memory::{
-        address::VirtualAddress,
-        page_table::{PageTable, translated_byte_buffer},
-    },
-    task::TaskControlBlock,
-    trap::TrapContext,
-};
+use crate::{task::TaskControlBlock, trap::TrapContext};
 use core::mem::size_of;
 
 /// 保存在用户栈上的信号帧
@@ -27,6 +20,16 @@ pub struct SignalFrame {
     pub return_addr: usize,
 }
 
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(size_of::<usize>() == 8);
+    assert!(offset_of!(SignalFrame, pc) == 256);
+    assert!(offset_of!(SignalFrame, status) == 264);
+    assert!(offset_of!(SignalFrame, signal) == 272);
+    assert!(offset_of!(SignalFrame, return_addr) == 280);
+    assert!(size_of::<SignalFrame>() == 288);
+};
+
 /// 设置信号处理器执行环境
 pub fn setup_signal_handler(
     task: &TaskControlBlock,
@@ -35,7 +38,7 @@ pub fn setup_signal_handler(
     trap_cx: &mut TrapContext,
 ) -> Result<(), SignalError> {
     // 验证处理器地址
-    if handler_addr == 0 || handler_addr >= 0x80000000 {
+    if !task.mm.is_user_executable(handler_addr) {
         return Err(SignalError::InvalidAddress);
     }
 
@@ -51,7 +54,9 @@ pub fn setup_signal_handler(
     // 获取用户栈指针并预留空间
     let user_sp = trap_cx.x[2];
     let frame_size = size_of::<SignalFrame>();
-    let signal_frame_addr = user_sp - frame_size;
+    let signal_frame_addr = user_sp
+        .checked_sub(frame_size)
+        .ok_or(SignalError::InvalidAddress)?;
 
     // 检查栈地址合法性
     if signal_frame_addr == 0 {
@@ -63,12 +68,9 @@ pub fn setup_signal_handler(
         return Err(SignalError::InternalError);
     }
 
-    // 为信号处理函数预留更多栈空间
-    let handler_sp = signal_frame_addr - 1024; // 预留1KB栈空间给信号处理函数
-
     // 修改执行上下文，跳转到信号处理器
     trap_cx.sepc = handler_addr; // PC指向处理器
-    trap_cx.x[2] = handler_sp; // 更新栈指针，为信号处理函数预留栈空间
+    trap_cx.x[2] = signal_frame_addr; // frame 大小为 16-byte 倍数，保持 psABI 栈对齐
     trap_cx.x[10] = signal as usize; // a0: 信号编号
     // 将信号帧地址通过 a1 传递给用户态处理器，便于用户代码需要时获取
     trap_cx.x[11] = signal_frame_addr; // a1: 指向 SignalFrame 的用户地址（非可靠用于返回）
@@ -101,11 +103,20 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 
     // 验证信号帧完整性
     validate_signal_frame(&signal_frame)?;
+    if !task.mm.is_user_executable(signal_frame.pc) {
+        return Err(SignalError::InvalidAddress);
+    }
 
     // 恢复寄存器状态
     trap_cx.x = signal_frame.regs;
     trap_cx.sepc = signal_frame.pc;
-    trap_cx.sstatus = riscv::register::sstatus::Sstatus::from_bits(signal_frame.status);
+    let mut restored_status = riscv::register::sstatus::Sstatus::from_bits(signal_frame.status);
+    restored_status.set_spp(riscv::register::sstatus::SPP::User);
+    restored_status.set_sie(false);
+    restored_status.set_spie(true);
+    restored_status.set_sum(false);
+    restored_status.set_mxr(false);
+    trap_cx.sstatus = restored_status;
 
     debug!(
         "Signal {} sigreturn completed for PID {}",
@@ -118,34 +129,45 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 
 /// 写入信号帧到用户内存
 fn write_signal_frame(task: &TaskControlBlock, addr: usize, frame: &SignalFrame) -> Result<(), ()> {
-    let token = task.mm.memory_set.lock().token();
-    let frame_bytes = unsafe {
-        core::slice::from_raw_parts(
-            frame as *const SignalFrame as *const u8,
-            size_of::<SignalFrame>(),
-        )
-    };
-
-    let buffers = translated_byte_buffer(token, addr as *const u8, frame_bytes.len());
-    let mut offset = 0;
-    for buffer in buffers {
-        let len = buffer.len().min(frame_bytes.len() - offset);
-        buffer[..len].copy_from_slice(&frame_bytes[offset..offset + len]);
-        offset += len;
-    }
-    Ok(())
+    let bytes = encode_signal_frame(frame);
+    task.mm.copy_to_user(addr, &bytes).map_err(|_| ())
 }
 
 /// 从用户内存读取信号帧
 fn read_signal_frame(task: &TaskControlBlock, addr: usize) -> Result<SignalFrame, SignalError> {
-    let token = task.mm.memory_set.lock().token();
-    let page_table = PageTable::from_token(token);
-    let va = VirtualAddress::from(addr);
-    if let Some(pa) = page_table.translate_va(va) {
-        let frame_ptr: &mut SignalFrame = pa.get_mut();
-        Ok(*frame_ptr)
-    } else {
-        Err(SignalError::InvalidAddress)
+    let mut bytes = [0u8; size_of::<SignalFrame>()];
+    task.mm
+        .copy_from_user(addr, &mut bytes)
+        .map_err(|_| SignalError::InvalidAddress)?;
+    Ok(decode_signal_frame(&bytes))
+}
+
+fn encode_signal_frame(frame: &SignalFrame) -> [u8; size_of::<SignalFrame>()] {
+    let mut bytes = [0u8; size_of::<SignalFrame>()];
+    for (index, register) in frame.regs.iter().enumerate() {
+        let start = index * size_of::<usize>();
+        bytes[start..start + size_of::<usize>()].copy_from_slice(&register.to_ne_bytes());
+    }
+    bytes[256..264].copy_from_slice(&frame.pc.to_ne_bytes());
+    bytes[264..272].copy_from_slice(&frame.status.to_ne_bytes());
+    bytes[272..276].copy_from_slice(&frame.signal.to_ne_bytes());
+    bytes[280..288].copy_from_slice(&frame.return_addr.to_ne_bytes());
+    bytes
+}
+
+fn decode_signal_frame(bytes: &[u8; size_of::<SignalFrame>()]) -> SignalFrame {
+    let mut regs = [0usize; 32];
+    for (index, register) in regs.iter_mut().enumerate() {
+        let start = index * size_of::<usize>();
+        *register =
+            usize::from_ne_bytes(bytes[start..start + size_of::<usize>()].try_into().unwrap());
+    }
+    SignalFrame {
+        regs,
+        pc: usize::from_ne_bytes(bytes[256..264].try_into().unwrap()),
+        status: usize::from_ne_bytes(bytes[264..272].try_into().unwrap()),
+        signal: u32::from_ne_bytes(bytes[272..276].try_into().unwrap()),
+        return_addr: usize::from_ne_bytes(bytes[280..288].try_into().unwrap()),
     }
 }
 
@@ -162,7 +184,8 @@ fn validate_signal_frame(frame: &SignalFrame) -> Result<(), SignalError> {
     }
 
     // 检查PC地址是否合理（用户空间）
-    if frame.pc >= 0x80000000 {
+    let user_end = 1usize << (crate::memory::VIRTUAL_ADDRESS_WIDTH - 1);
+    if frame.pc == 0 || frame.pc >= user_end {
         return Err(SignalError::InvalidAddress);
     }
 

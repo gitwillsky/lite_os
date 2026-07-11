@@ -1,12 +1,8 @@
+use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{string::String, vec};
 use bitflags::bitflags;
 
-use crate::memory::address::PhysicalAddress;
-use crate::memory::{
-    address::{VirtualAddress, VirtualPageNumber},
-    frame_allocator::alloc,
-};
+use crate::memory::{address::VirtualPageNumber, frame_allocator::alloc};
 
 use super::{
     address::PhysicalPageNumber,
@@ -19,6 +15,8 @@ pub enum PageTableError {
     AlreadyMapped,
     NotMapped,
     OutOfMemory,
+    InvalidFlags,
+    InvalidPageTable,
 }
 
 impl core::fmt::Display for PageTableError {
@@ -27,6 +25,8 @@ impl core::fmt::Display for PageTableError {
             PageTableError::AlreadyMapped => write!(f, "Page is already mapped"),
             PageTableError::NotMapped => write!(f, "Page is not mapped"),
             PageTableError::OutOfMemory => write!(f, "Out of memory"),
+            PageTableError::InvalidFlags => write!(f, "Invalid page table flags"),
+            PageTableError::InvalidPageTable => write!(f, "Invalid page table structure"),
         }
     }
 }
@@ -78,10 +78,10 @@ impl PageTableEntry {
 
     /// 判断是否为叶子节点，指向物理页帧
     pub fn is_leaf(&self) -> bool {
+        let flags = self.flags();
         self.is_valid()
-            && self
-                .flags()
-                .intersects(PTEFlags::X | PTEFlags::W | PTEFlags::R)
+            && flags.intersects(PTEFlags::X | PTEFlags::W | PTEFlags::R)
+            && (!flags.contains(PTEFlags::W) || flags.contains(PTEFlags::R))
     }
 
     fn is_pointer_to_next_table(&self) -> bool {
@@ -105,70 +105,84 @@ pub struct PageTable {
 
 impl PageTable {
     pub fn new() -> Self {
-        let frame_tracker =
-            frame_allocator::alloc().expect("can not alloc new frame to create PageTable");
-        Self {
+        Self::try_new().expect("can not alloc root frame to create kernel PageTable")
+    }
+
+    /// @description 分配并初始化一个拥有 root frame 的空 Sv39 页表。
+    ///
+    /// @return 成功返回页表；物理页耗尽返回 `PageTableError::OutOfMemory`。
+    pub fn try_new() -> Result<Self, PageTableError> {
+        let frame_tracker = frame_allocator::alloc().ok_or(PageTableError::OutOfMemory)?;
+        Ok(Self {
             root_ppn: frame_tracker.ppn,
             entries: vec![frame_tracker],
-        }
+        })
     }
 
     pub fn token(&self) -> usize {
         self.root_ppn.as_usize() | 8usize << 60
     }
 
-    pub fn from_token(satp_val: usize) -> Self {
-        Self {
-            root_ppn: PhysicalPageNumber::from(satp_val & ((1 << 44) - 1)),
-            entries: vec![],
-        }
-    }
-
-    fn new_pte(&mut self, flags: Option<PTEFlags>) -> PageTableEntry {
-        let frame = alloc().expect("can not alloc new frame to create PageTableEntry");
+    fn allocate_table(&mut self) -> Result<PhysicalPageNumber, PageTableError> {
+        let frame = alloc().ok_or(PageTableError::OutOfMemory)?;
         let ppn = frame.ppn;
         self.entries.push(frame);
-        PageTableEntry::new(ppn, flags.unwrap_or(PTEFlags::V))
+        Ok(ppn)
     }
 
-    fn find_pte_create(&mut self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
+    fn read_entry(ppn: PhysicalPageNumber, index: usize) -> PageTableEntry {
+        let ptr = ppn.as_page_ptr().cast::<PageTableEntry>();
+        // SAFETY: 页表页由当前 PageTable 的 root/entries 持有，index 来自 Sv39 的 9-bit
+        // 索引，因此位于 512-entry 页内。volatile 访问用于与硬件 page-table walker 交互。
+        unsafe { ptr.add(index).read_volatile() }
+    }
+
+    fn write_entry(ppn: PhysicalPageNumber, index: usize, entry: PageTableEntry) {
+        let ptr = ppn.as_page_mut_ptr().cast::<PageTableEntry>();
+        // SAFETY: 调用方持有 &mut PageTable，保证软件写者唯一；ppn 是本页表 walk
+        // 已验证的 table page，index 位于 512-entry 页内。硬件可并发读取，后续 fence 生效。
+        unsafe { ptr.add(index).write_volatile(entry) }
+    }
+
+    fn find_pte_create(
+        &mut self,
+        vpn: VirtualPageNumber,
+    ) -> Result<(PhysicalPageNumber, usize), PageTableError> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
-        let mut result: Option<_> = None;
 
         for (i, idx) in idxs.iter().enumerate() {
-            let pte = &mut ppn.get_pte_array()[*idx];
             if i == 2 {
-                result = Some(pte);
-                break;
+                return Ok((ppn, *idx));
             }
+            let mut pte = Self::read_entry(ppn, *idx);
             if !pte.is_valid() {
-                *pte = self.new_pte(None);
+                let child_ppn = self.allocate_table()?;
+                pte = PageTableEntry::new(child_ppn, PTEFlags::V);
+                Self::write_entry(ppn, *idx, pte);
+            } else if !pte.is_pointer_to_next_table() {
+                return Err(PageTableError::InvalidPageTable);
             }
             ppn = pte.ppn();
         }
-        result
+        Err(PageTableError::InvalidPageTable)
     }
 
-    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<&mut PageTableEntry> {
+    fn find_pte(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         let idxs = vpn.indexes();
-
         let mut ppn = self.root_ppn;
-        let mut result: Option<&mut PageTableEntry> = None;
 
         for (i, idx) in idxs.iter().enumerate() {
-            let pte = &mut ppn.get_pte_array()[*idx];
+            let pte = Self::read_entry(ppn, *idx);
             if i == 2 {
-                result = Some(pte);
-                break;
+                return Some(pte);
             }
-            if !pte.is_valid() {
+            if !pte.is_pointer_to_next_table() {
                 return None;
             }
             ppn = pte.ppn();
         }
-
-        result
+        None
     }
 
     pub fn map(
@@ -177,9 +191,13 @@ impl PageTable {
         ppn: PhysicalPageNumber,
         flags: PTEFlags,
     ) -> Result<(), PageTableError> {
-        let pte = self
-            .find_pte_create(vpn)
-            .ok_or(PageTableError::OutOfMemory)?;
+        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R)
+            || flags.contains(PTEFlags::W | PTEFlags::X)
+        {
+            return Err(PageTableError::InvalidFlags);
+        }
+        let (table_ppn, index) = self.find_pte_create(vpn)?;
+        let pte = Self::read_entry(table_ppn, index);
         if pte.is_valid() {
             return Err(PageTableError::AlreadyMapped);
         }
@@ -188,107 +206,30 @@ impl PageTable {
         if flags.contains(PTEFlags::W) {
             final_flags |= PTEFlags::D;
         }
-        *pte = PageTableEntry::new(ppn, final_flags);
+        Self::write_entry(table_ppn, index, PageTableEntry::new(ppn, final_flags));
         Ok(())
     }
 
     pub fn unmap(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
-        let pte = self.find_pte(vpn).ok_or(PageTableError::NotMapped)?;
-        if !pte.is_valid() {
+        let idxs = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for idx in &idxs[..2] {
+            let pte = Self::read_entry(table_ppn, *idx);
+            if !pte.is_pointer_to_next_table() {
+                return Err(PageTableError::NotMapped);
+            }
+            table_ppn = pte.ppn();
+        }
+        let index = idxs[2];
+        if !Self::read_entry(table_ppn, index).is_valid() {
             return Err(PageTableError::NotMapped);
         }
-        *pte = PageTableEntry::empty();
+        Self::write_entry(table_ppn, index, PageTableEntry::empty());
         Ok(())
     }
 
     pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.find_pte(vpn)
-            .and_then(|pte| if pte.is_valid() { Some(*pte) } else { None })
+            .and_then(|pte| (pte.is_valid() && pte.is_leaf()).then_some(pte))
     }
-    
-    /// 更新指定虚拟页的权限标志
-    pub fn update_flags(&mut self, vpn: VirtualPageNumber, new_flags: PTEFlags) -> Result<(), PageTableError> {
-        if let Some(pte) = self.find_pte(vpn) {
-            if pte.is_valid() {
-                let ppn = pte.ppn();
-                *pte = PageTableEntry::new(ppn, new_flags);
-                Ok(())
-            } else {
-                Err(PageTableError::NotMapped)
-            }
-        } else {
-            Err(PageTableError::NotMapped)
-        }
-    }
-
-    pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
-        self.find_pte(va.clone().floor()).and_then(|pte| {
-            if pte.is_valid() {
-                let aligned_pa: PhysicalAddress = pte.ppn().into();
-                let offset = va.page_offset();
-                let aligned_pa_usize: usize = aligned_pa.into();
-                Some((aligned_pa_usize + offset).into())
-            } else {
-                None
-            }
-        })
-    }
-}
-
-/// translate a pointer to a mutable u8 Vec through page table
-pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
-    let page_table = PageTable::from_token(token);
-    let mut start = ptr as usize;
-    let end = start + len;
-    let mut v = Vec::new();
-    while start < end {
-        let start_va = VirtualAddress::from(start);
-        let vpn = start_va.floor();
-        let ppn = page_table
-            .translate(vpn)
-            .expect("Page table entry not found in translated_byte_buffer")
-            .ppn();
-        let next_vpn = vpn.next();
-        let mut end_va: VirtualAddress = next_vpn.into();
-        end_va = end_va.min(VirtualAddress::from(end));
-        if end_va.page_offset() == 0 {
-            v.push(&mut ppn.get_bytes_array_mut()[start_va.page_offset()..]);
-        } else {
-            v.push(&mut ppn.get_bytes_array_mut()[start_va.page_offset()..end_va.page_offset()]);
-        }
-        start = end_va.into();
-    }
-    v
-}
-
-pub fn translated_str(token: usize, ptr: *const u8) -> String {
-    let page_table = PageTable::from_token(token);
-    let mut string = String::new();
-    let mut va = ptr as usize;
-    loop {
-        let v_addr: VirtualAddress = va.into();
-        let ch: u8 = *(page_table
-            .translate_va(v_addr)
-            .expect("Page table entry not found in translated_str")
-            .get_mut());
-        if ch == 0 {
-            break;
-        } else {
-            string.push(ch as char);
-            va += 1
-        }
-    }
-    string
-}
-
-pub fn translated_ref_mut<T>(token: usize, ptr: *mut T) -> &'static mut T
-where
-    T: Sized,
-{
-    let page_table = PageTable::from_token(token);
-    let va = ptr as usize;
-    page_table
-        .translate_va(VirtualAddress::from(va))
-        .expect("Page table entry not found in translated_ref_mut")
-        .get_mut()
 }

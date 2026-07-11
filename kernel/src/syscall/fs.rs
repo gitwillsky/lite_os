@@ -4,9 +4,8 @@ use alloc::vec::Vec;
 
 use crate::{
     arch::sbi,
-    memory::page_table::translated_byte_buffer,
-    syscall::errno::{EBADF, EINVAL, EIO, ENOSYS, ESRCH},
-    task::{current_task, current_user_token, suspend_current_and_run_next},
+    syscall::errno::{EBADF, EFAULT, EINVAL, EIO, ENOSYS, ESRCH},
+    task::{current_task, suspend_current_and_run_next},
 };
 
 const STDIN_FILENO: usize = 0;
@@ -19,11 +18,37 @@ const STDOUT_FILENO: usize = 1;
 /// @param len 请求写入的字节数。
 /// @return 写入字节数，失败返回负 errno。
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+    let Some(task) = current_task() else {
+        return -ESRCH;
+    };
+
     if fd == STDOUT_FILENO {
-        let buffers = translated_byte_buffer(current_user_token(), buf, len);
+        let mut chunk = [0u8; 256];
         let mut written = 0usize;
-        for buffer in buffers {
-            for byte in buffer.iter().copied() {
+        while written < len {
+            let count = chunk.len().min(len - written);
+            let Some(address) = (buf as usize).checked_add(written) else {
+                return if written == 0 {
+                    -EFAULT
+                } else {
+                    written as isize
+                };
+            };
+            if task
+                .mm
+                .copy_from_user(address, &mut chunk[..count])
+                .is_err()
+            {
+                return if written == 0 {
+                    -EFAULT
+                } else {
+                    written as isize
+                };
+            }
+            for byte in chunk[..count].iter().copied() {
                 if sbi::console_putchar(byte).is_err() {
                     return if written == 0 { -EIO } else { written as isize };
                 }
@@ -33,22 +58,30 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         return written as isize;
     }
 
-    let Some(task) = current_task() else {
-        return -ESRCH;
-    };
     let Some(descriptor) = task.file.lock().fd(fd) else {
         return -EBADF;
     };
 
-    let buffers = translated_byte_buffer(current_user_token(), buf, len);
-    let mut data = Vec::with_capacity(len);
-    for buffer in buffers {
-        data.extend_from_slice(buffer);
+    let mut data = [0u8; 4096];
+    let mut total = 0usize;
+    while total < len {
+        let count = data.len().min(len - total);
+        let Some(address) = (buf as usize).checked_add(total) else {
+            return if total == 0 { -EFAULT } else { total as isize };
+        };
+        if task.mm.copy_from_user(address, &mut data[..count]).is_err() {
+            return if total == 0 { -EFAULT } else { total as isize };
+        }
+        let written = match descriptor.write_at(&data[..count]) {
+            Ok(written) if written <= count => written,
+            _ => return if total == 0 { -EINVAL } else { total as isize },
+        };
+        total += written;
+        if written < count {
+            break;
+        }
     }
-    descriptor
-        .write_at(&data)
-        .map(|written| written as isize)
-        .unwrap_or(-EINVAL)
+    total as isize
 }
 
 /// @description 从文件描述符读取字节到用户缓冲区。
@@ -61,8 +94,14 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
     if len == 0 {
         return 0;
     }
+    let Some(task) = current_task() else {
+        return -ESRCH;
+    };
 
     if fd == STDIN_FILENO {
+        if !task.mm.is_user_writable(buf as usize, 1) {
+            return -EFAULT;
+        }
         let byte = loop {
             match sbi::console_getchar() {
                 Ok(Some(byte)) => break byte,
@@ -70,34 +109,40 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                 Err(_) => return -EIO,
             }
         };
-        let mut buffers = translated_byte_buffer(current_user_token(), buf.cast_const(), 1);
-        let Some(destination) = buffers.first_mut().and_then(|buffer| buffer.first_mut()) else {
-            return -EINVAL;
+        return if task.mm.copy_to_user(buf as usize, &[byte]).is_ok() {
+            1
+        } else {
+            -EFAULT
         };
-        *destination = byte;
-        return 1;
     }
 
-    let Some(task) = current_task() else {
-        return -ESRCH;
-    };
     let Some(descriptor) = task.file.lock().fd(fd) else {
         return -EBADF;
     };
 
-    let mut data = alloc::vec![0u8; len];
-    let read = match descriptor.read_at(&mut data) {
-        Ok(read) => read,
-        Err(_) => return -EINVAL,
-    };
-    let buffers = translated_byte_buffer(current_user_token(), buf.cast_const(), read);
-    let mut copied = 0usize;
-    for buffer in buffers {
-        let count = buffer.len().min(read - copied);
-        buffer[..count].copy_from_slice(&data[copied..copied + count]);
-        copied += count;
+    let mut data = [0u8; 4096];
+    let mut total = 0usize;
+    while total < len {
+        let count = data.len().min(len - total);
+        let read = match descriptor.read_at(&mut data[..count]) {
+            Ok(read) if read <= count => read,
+            _ => return if total == 0 { -EINVAL } else { total as isize },
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(address) = (buf as usize).checked_add(total) else {
+            return if total == 0 { -EFAULT } else { total as isize };
+        };
+        if task.mm.copy_to_user(address, &data[..read]).is_err() {
+            return if total == 0 { -EFAULT } else { total as isize };
+        }
+        total += read;
+        if read < count {
+            break;
+        }
     }
-    read as isize
+    total as isize
 }
 
 /// @description 关闭文件描述符。
@@ -166,12 +211,8 @@ pub fn sys_get_cwd(buf: *mut u8, len: usize) -> isize {
     let mut bytes = Vec::with_capacity(required);
     bytes.extend_from_slice(cwd.as_bytes());
     bytes.push(0);
-    let buffers = translated_byte_buffer(current_user_token(), buf.cast_const(), required);
-    let mut copied = 0usize;
-    for buffer in buffers {
-        let count = buffer.len().min(required - copied);
-        buffer[..count].copy_from_slice(&bytes[copied..copied + count]);
-        copied += count;
+    if task.mm.copy_to_user(buf as usize, &bytes).is_err() {
+        return -EFAULT;
     }
     required as isize
 }

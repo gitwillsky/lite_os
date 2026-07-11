@@ -203,14 +203,10 @@ impl VirtQueue {
         let va = VirtualAddress::from(self.desc as usize);
 
         // 详细调试虚拟地址到物理地址的转换
-        let vpn = va.floor();
         let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
-        let pte = kernel_space
-            .translate(vpn)
-            .expect("Failed to translate virtual address to physical address");
-        let pa = PhysicalAddress::from(pte.ppn()).as_usize() + va.page_offset();
-
-        PhysicalAddress::from(pa)
+        kernel_space
+            .translate_kernel_address(va)
+            .expect("Failed to translate virtual address to physical address")
     }
 
     /// 返回需要写入MMIO的队列三段物理地址
@@ -246,7 +242,7 @@ impl VirtQueue {
 
             let pa = {
                 let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
-                match kernel_space.translate_va(cur_va) {
+                match kernel_space.translate_kernel_address(cur_va) {
                     Some(pa) => pa,
                     None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
                 }

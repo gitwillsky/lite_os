@@ -33,18 +33,6 @@ impl KernelStack {
         Self { handle }
     }
 
-    pub fn push_on_top<T>(&self, data: T) -> *mut T
-    where
-        T: Sized,
-    {
-        let kernel_stack_top = self.get_top();
-        let ptr_mut = (kernel_stack_top - core::mem::size_of::<T>()) as *mut T;
-        unsafe {
-            *ptr_mut = data;
-        }
-        ptr_mut
-    }
-
     pub fn get_top(&self) -> usize {
         let (_, top) = kernel_stack_position(self.handle.0);
         top

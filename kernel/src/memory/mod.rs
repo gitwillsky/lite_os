@@ -8,13 +8,11 @@ use crate::{
 
 pub mod address;
 mod config;
-pub mod dynamic_linker;
 pub mod frame_allocator;
 pub mod heap_allocator;
 pub mod kernel_stack;
 pub mod mm;
 pub mod page_table;
-pub mod slab_allocator;
 
 pub use config::*;
 unsafe extern "C" {
@@ -50,9 +48,6 @@ pub fn init() {
     heap_allocator::init();
     frame_allocator::init(kernel_end_addr, memory_end_addr);
 
-    // Initialize SLAB allocator after frame allocator is ready
-    heap_allocator::init_slab();
-
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();
     debug!("memory initialized");
@@ -61,7 +56,9 @@ pub fn init() {
 fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     let mut memory_set = MemorySet::new();
 
-    memory_set.map_trampoline();
+    memory_set
+        .map_trampoline()
+        .expect("Failed to map kernel trampoline");
 
     // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
     let board_info = dtb::board_info();

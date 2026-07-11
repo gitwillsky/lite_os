@@ -8,12 +8,8 @@ use crate::sync::IrqMutex;
 // frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭本地 SIE。
 static FRAME_ALLOCATOR: Once<IrqMutex<StackFrameAllocator>> = Once::new();
 
-// QEMU `virt` 当前声明最多 128 MiB physical memory，即 32768 个 4 KiB frame。
-// 固定回收栈保证 frame lock 内永不进入 global allocator；Vec 扩容会形成 frame→slab→frame 死锁。
-const MAX_TRACKED_FRAMES: usize = (128 * 1024 * 1024) / 4096;
-
 #[derive(Debug)]
-pub enum FrameAllocError {
+enum FrameAllocError {
     OutOfRange,
     Duplicate,
 }
@@ -24,24 +20,29 @@ pub struct FrameTracker {
 }
 
 impl FrameTracker {
-    pub fn new(ppn: PhysicalPageNumber) -> Self {
-        let bytes_array = ppn.get_bytes_array_mut();
-        for byte in bytes_array {
-            *byte = 0;
-        }
-        Self { ppn, pages: 1 }
+    fn new(ppn: PhysicalPageNumber) -> Self {
+        let mut tracker = Self { ppn, pages: 1 };
+        tracker.bytes_mut().fill(0);
+        tracker
     }
 
-    pub fn new_contiguous(ppn: PhysicalPageNumber, pages: usize) -> Self {
-        // Clear all pages in the contiguous range
-        for i in 0..pages {
-            let current_ppn = PhysicalPageNumber::from(ppn.as_usize() + i);
-            let bytes_array = current_ppn.get_bytes_array_mut();
-            for byte in bytes_array {
-                *byte = 0;
-            }
-        }
-        Self { ppn, pages }
+    fn new_contiguous(ppn: PhysicalPageNumber, pages: usize) -> Self {
+        let mut tracker = Self { ppn, pages };
+        tracker.bytes_mut().fill(0);
+        tracker
+    }
+
+    /// @description 独占借用 tracker 拥有的连续物理页内容。
+    ///
+    /// @return 生命周期绑定到 tracker 独占借用的可写字节切片。
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        let len = self
+            .pages
+            .checked_mul(super::config::PAGE_SIZE)
+            .expect("frame byte length overflow");
+        // SAFETY: &mut FrameTracker 保证本 tracker 的 Rust 访问独占；tracker 在借用期间
+        // 持有完整连续页范围，物理内存由 kernel identity mapping 覆盖且满足页对齐。
+        unsafe { core::slice::from_raw_parts_mut(self.ppn.as_page_mut_ptr(), len) }
     }
 }
 
@@ -50,7 +51,12 @@ impl Drop for FrameTracker {
         // For contiguous pages, deallocate each page individually
         for i in 0..self.pages {
             let current_ppn = PhysicalPageNumber::from(self.ppn.as_usize() + i);
-            let _ = FRAME_ALLOCATOR.wait().lock().dealloc(current_ppn);
+            if let Err(error) = FRAME_ALLOCATOR.wait().lock().dealloc(current_ppn) {
+                panic!(
+                    "invalid FrameTracker drop for {:?}: {:?}",
+                    current_ppn, error
+                );
+            }
         }
     }
 }
@@ -71,7 +77,7 @@ struct StackFrameAllocator {
     current_start_ppn: PhysicalPageNumber,
     end_ppn: PhysicalPageNumber,
 
-    recycled_ppns: [usize; MAX_TRACKED_FRAMES],
+    recycled_head: Option<PhysicalPageNumber>,
     recycled_len: usize,
 }
 
@@ -79,23 +85,19 @@ impl StackFrameAllocator {
     pub fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
         let end = end_addr.floor();
-        assert!(
-            end.as_usize() - start.as_usize() <= MAX_TRACKED_FRAMES,
-            "physical frame range exceeds fixed recycler capacity"
-        );
         Self {
             start_ppn: start,
             current_start_ppn: start,
             end_ppn: end,
-            recycled_ppns: [0; MAX_TRACKED_FRAMES],
+            recycled_head: None,
             recycled_len: 0,
         }
     }
 
     pub fn alloc(&mut self) -> Option<PhysicalPageNumber> {
-        if self.recycled_len != 0 {
+        if let Some(ppn) = self.recycled_head {
+            self.recycled_head = Self::recycled_next(ppn);
             self.recycled_len -= 1;
-            let ppn = PhysicalPageNumber::from(self.recycled_ppns[self.recycled_len]);
             // Never return PPN 0 from recycled pages
             if ppn.as_usize() == 0 {
                 panic!("Frame allocator recycled PPN 0, this should never happen");
@@ -121,14 +123,14 @@ impl StackFrameAllocator {
 
         // For contiguous allocation, we can only use the continuous range
         // Cannot use recycled pages as they might not be contiguous
-        if self.current_start_ppn.as_usize() + pages <= self.end_ppn.as_usize() {
+        let allocation_end = self.current_start_ppn.as_usize().checked_add(pages)?;
+        if allocation_end <= self.end_ppn.as_usize() {
             let start_ppn = self.current_start_ppn;
             // Never return PPN 0 from contiguous allocation
             if start_ppn.as_usize() == 0 {
                 panic!("Frame allocator current_start_ppn is 0, this should never happen");
             }
-            self.current_start_ppn =
-                PhysicalPageNumber::from(self.current_start_ppn.as_usize() + pages);
+            self.current_start_ppn = PhysicalPageNumber::from(allocation_end);
             Some(start_ppn)
         } else {
             None
@@ -148,40 +150,28 @@ impl StackFrameAllocator {
         }
 
         // 检查重复释放 - 这是一个原子操作在单线程环境下
-        if self.recycled_ppns[..self.recycled_len].contains(&ppn.as_usize()) {
-            return Err(FrameAllocError::Duplicate);
+        let mut cursor = self.recycled_head;
+        while let Some(recycled) = cursor {
+            if recycled == ppn {
+                return Err(FrameAllocError::Duplicate);
+            }
+            cursor = Self::recycled_next(recycled);
         }
 
-        assert!(
-            self.recycled_len < MAX_TRACKED_FRAMES,
-            "frame recycler capacity invariant violated"
-        );
-        self.recycled_ppns[self.recycled_len] = ppn.as_usize();
+        let next = self.recycled_head.map_or(0, |head| head.as_usize());
+        // SAFETY: dealloc 的范围/分配状态检查证明 ppn 是不再被 FrameTracker 拥有的完整页；
+        // frame lock 保证 intrusive free-list 只有一个写者，页首一个 usize 用作 next PPN。
+        unsafe { ppn.as_page_mut_ptr().cast::<usize>().write(next) };
+        self.recycled_head = Some(ppn);
         self.recycled_len += 1;
         Ok(())
     }
 
-    /// 获取内存统计信息
-    pub fn get_memory_stats(&self) -> (usize, usize, usize) {
-        let total_pages = self.end_ppn.as_usize() - self.start_ppn.as_usize();
-        let allocated_pages =
-            self.current_start_ppn.as_usize() - self.start_ppn.as_usize() - self.recycled_len;
-        let free_pages = total_pages - allocated_pages;
-
-        // 返回页数
-        (total_pages, allocated_pages, free_pages)
-    }
-
-    /// 获取内存统计信息（以字节为单位）
-    pub fn get_memory_stats_bytes(&self) -> (usize, usize, usize) {
-        let (total_pages, allocated_pages, free_pages) = self.get_memory_stats();
-        let page_size = 4096; // RISC-V页面大小为4KB
-
-        (
-            total_pages * page_size,
-            allocated_pages * page_size,
-            free_pages * page_size,
-        )
+    fn recycled_next(ppn: PhysicalPageNumber) -> Option<PhysicalPageNumber> {
+        // SAFETY: 只有 recycled_head 可达页会进入本函数；这些页由 dealloc 在相同 frame
+        // lock 下写入 next PPN，且在从链表移除前不会重新分配。
+        let next = unsafe { ppn.as_page_ptr().cast::<usize>().read() };
+        (next != 0).then(|| PhysicalPageNumber::from(next))
     }
 }
 
@@ -221,14 +211,4 @@ pub fn alloc() -> Option<FrameTracker> {
 pub fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
     res.map(|b| FrameTracker::new_contiguous(b, pages))
-}
-
-pub fn dealloc(ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
-    FRAME_ALLOCATOR.wait().lock().dealloc(ppn)
-}
-
-/// 获取系统内存统计信息（以字节为单位）
-/// 返回值：(总内存, 已用内存, 可用内存)
-pub fn get_memory_stats() -> (usize, usize, usize) {
-    FRAME_ALLOCATOR.wait().lock().get_memory_stats_bytes()
 }

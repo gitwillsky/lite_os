@@ -1,7 +1,6 @@
 use crate::{
-    memory::page_table::translated_byte_buffer,
     syscall::errno::{EFAULT, EINVAL},
-    task::current_user_token,
+    task::current_task,
 };
 
 /// @description Linux/riscv64 `timespec` 的最小 64 位布局。
@@ -22,16 +21,18 @@ pub fn sys_nanosleep(req: *const TimeSpec, _rem: *mut TimeSpec) -> isize {
         return -EINVAL;
     }
 
-    let buffers = translated_byte_buffer(
-        current_user_token(),
-        req.cast::<u8>(),
-        core::mem::size_of::<TimeSpec>(),
-    );
-    if buffers.is_empty() || buffers[0].len() < core::mem::size_of::<TimeSpec>() {
+    let Some(task) = current_task() else {
+        return -EFAULT;
+    };
+    let mut bytes = [0u8; core::mem::size_of::<TimeSpec>()];
+    if task.mm.copy_from_user(req as usize, &mut bytes).is_err() {
         return -EFAULT;
     }
 
-    let timespec = unsafe { (buffers[0].as_ptr() as *const TimeSpec).read_unaligned() };
+    let timespec = TimeSpec {
+        tv_sec: u64::from_ne_bytes(bytes[..8].try_into().unwrap()),
+        tv_nsec: u64::from_ne_bytes(bytes[8..].try_into().unwrap()),
+    };
     if timespec.tv_nsec >= 1_000_000_000 {
         return -EINVAL;
     }

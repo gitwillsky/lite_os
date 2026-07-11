@@ -73,7 +73,7 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     if let Some(current) = task::current_task() {
-                        let sepc = current.mm.trap_context().sepc;
+                        let sepc = current.mm.load_trap_context().sepc;
                         error!(
                             "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
                             sepc
@@ -92,25 +92,24 @@ pub fn trap_handler() {
                 Exception::UserEnvCall => {
                     if let Some(current) = task::current_task() {
                         // 1. 不允许 TrapContext 引用跨越系统调用；execve 会替换其底层地址空间。
-                        let (syscall_id, args) = {
-                            let cx = current.mm.trap_context();
-                            let syscall_id = cx.x[17];
-                            let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
-                            cx.sepc += 4;
-                            (syscall_id, args)
-                        };
+                        let mut cx = current.mm.load_trap_context();
+                        let syscall_id = cx.x[17];
+                        let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
+                        cx.sepc += 4;
+                        current.mm.set_trap_context(cx);
                         let result = syscall::syscall(syscall_id, args);
 
                         // 2. execve 成功时，新 TrapContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
-                        let cx = current.mm.trap_context();
+                        let mut cx = current.mm.load_trap_context();
                         if syscall_id != 221 || result != 0 {
                             cx.x[10] = result as usize;
                         }
 
-                        if !check_signals_and_maybe_exit_with_cx(cx) {
+                        if !check_signals_and_maybe_exit_with_cx(&mut cx) {
                             // Process was terminated, should not continue
                             return;
                         }
+                        current.mm.set_trap_context(cx);
                     } else {
                         error!("[kernel] UserEnvCall with no current task, terminating");
                         panic!("UserEnvCall with no current task");
@@ -125,10 +124,11 @@ pub fn trap_handler() {
                         // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
                         debug!("Signal handler return detected (VA=0), calling sigreturn");
                         let task = task::current_task().expect("No current task");
-                        let cx = task.mm.trap_context();
+                        let mut cx = task.mm.load_trap_context();
 
-                        match sig_return(&task, cx) {
+                        match sig_return(&task, &mut cx) {
                             Ok(()) => {
+                                task.mm.set_trap_context(cx);
                                 debug!("Sigreturn successful, continuing execution");
                                 // 成功恢复，继续执行
                             }
@@ -147,7 +147,7 @@ pub fn trap_handler() {
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
                     if let Some(current) = task::current_task() {
-                        let sepc_val = current.mm.trap_context().sepc;
+                        let sepc_val = current.mm.load_trap_context().sepc;
                         let sstatus_val = riscv::register::sstatus::read();
                         error!(
                             "[kernel] {:?} in application, bad addr = {:#x}, sepc = {:#x}, sstatus = {:#x}, core dumped.",
@@ -245,9 +245,10 @@ pub fn trap_return() -> ! {
         asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack));
     }
     {
-        let trap_context = current_task.mm.trap_context();
+        let mut trap_context = current_task.mm.load_trap_context();
         trap_context.kernel_hart_id = crate::arch::hart::hart_id();
         trap_context.kernel_gp = kernel_gp;
+        current_task.mm.set_trap_context(trap_context);
     }
 
     unsafe extern "C" {

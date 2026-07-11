@@ -268,16 +268,6 @@ pub fn current_task() -> Option<Arc<TaskControlBlock>> {
     with_current_processor(|processor| processor.current.clone())
 }
 
-/// 获取当前任务的用户空间页表令牌
-pub fn current_user_token() -> usize {
-    current_task()
-        .expect("No current task when getting user token")
-        .mm
-        .memory_set
-        .lock()
-        .token()
-}
-
 /// 获取当前工作目录
 pub fn current_cwd() -> alloc::string::String {
     current_task()

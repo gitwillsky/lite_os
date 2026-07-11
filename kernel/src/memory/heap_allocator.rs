@@ -1,11 +1,11 @@
 use core::{
     alloc::{self, GlobalAlloc, Layout},
-    ptr::{NonNull, addr_of_mut},
+    ptr::addr_of_mut,
 };
 
 use buddy_system_allocator::LockedHeap;
 
-use super::{config, slab_allocator::SLAB_ALLOCATOR};
+use super::config;
 use crate::sync::LocalIrqGuard;
 
 #[cfg(target_pointer_width = "32")]
@@ -18,10 +18,9 @@ static mut KERNEL_HEAP_MEMORY: [u8; config::MAX_HEAP_SIZE] = [0; config::MAX_HEA
 
 static BUDDY_ALLOCATOR: LockedHeapAllocator = LockedHeap::empty();
 
-/// Hybrid allocator that uses SLAB for small objects and buddy allocator for large ones
-pub struct HybridAllocator;
+pub struct KernelAllocator;
 
-unsafe impl GlobalAlloc for HybridAllocator {
+unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         // Per Rust GlobalAlloc contract: size==0 may return any non-null, well-aligned pointer
         if layout.size() == 0 {
@@ -29,19 +28,7 @@ unsafe impl GlobalAlloc for HybridAllocator {
         }
         // timer softirq 当前仍会分配；包围整个 allocator 路径可防止同 hart 中断重入内部 spin lock。
         let _irq = LocalIrqGuard::disable();
-        // Use SLAB allocator for small objects (<=2KB)
-        if layout.size() <= 2048 {
-            match SLAB_ALLOCATOR.alloc(layout) {
-                Ok(ptr) => ptr.as_ptr(),
-                Err(_) => {
-                    // Fall back to buddy allocator if SLAB fails
-                    unsafe { BUDDY_ALLOCATOR.alloc(layout) }
-                }
-            }
-        } else {
-            // Use buddy allocator for large objects
-            unsafe { BUDDY_ALLOCATOR.alloc(layout) }
-        }
+        unsafe { BUDDY_ALLOCATOR.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -53,40 +40,17 @@ unsafe impl GlobalAlloc for HybridAllocator {
         if ptr.is_null() {
             return;
         }
-        // 与 alloc 使用同一 IRQ 约束；缺失时 interrupt dealloc/alloc 可重入 buddy 或 slab lock。
+        // 与 alloc 使用同一 IRQ 约束；缺失时 interrupt dealloc/alloc 可重入 buddy lock。
         let _irq = LocalIrqGuard::disable();
 
-        // Determine which allocator owns this pointer by address range
-        if Self::is_buddy_ptr(ptr) {
-            // Pointer is in buddy allocator's memory range
-            unsafe {
-                BUDDY_ALLOCATOR.dealloc(ptr, layout);
-            }
-        } else {
-            // Try SLAB allocator for other addresses
-            if let Some(non_null_ptr) = NonNull::new(ptr) {
-                if SLAB_ALLOCATOR.dealloc(non_null_ptr, layout).is_err() {
-                    // This shouldn't happen - pointer doesn't belong to either allocator
-                    panic!("Invalid pointer in dealloc: {:p}", ptr);
-                }
-            }
+        unsafe {
+            BUDDY_ALLOCATOR.dealloc(ptr, layout);
         }
     }
 }
 
-impl HybridAllocator {
-    /// Check if a pointer belongs to the buddy allocator's memory range
-    fn is_buddy_ptr(ptr: *mut u8) -> bool {
-        let addr = ptr as usize;
-        let heap_start = { addr_of_mut!(KERNEL_HEAP_MEMORY) as usize };
-        let heap_end = heap_start + config::MAX_HEAP_SIZE;
-
-        addr >= heap_start && addr < heap_end
-    }
-}
-
 #[global_allocator]
-static HEAP_ALLOCATOR: HybridAllocator = HybridAllocator;
+static HEAP_ALLOCATOR: KernelAllocator = KernelAllocator;
 
 #[alloc_error_handler]
 pub fn handle_heap_alloc_error(layout: alloc::Layout) -> ! {
@@ -105,11 +69,5 @@ pub fn init() {
             config::MAX_HEAP_SIZE,
         );
     }
-    debug!("[heap_allocator::init] Buddy allocator initialized");
-}
-
-pub fn init_slab() {
-    // Initialize SLAB allocator after frame allocator is ready
-    SLAB_ALLOCATOR.init();
-    debug!("[heap_allocator::init_slab] SLAB allocator initialized");
+    debug!("[heap_allocator::init] allocator initialized");
 }

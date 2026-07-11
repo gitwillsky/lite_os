@@ -6,8 +6,7 @@ use riscv::register::satp::{self, Satp};
 
 use crate::memory::{
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
-    dynamic_linker::DynamicLinker,
-    frame_allocator::{FrameTracker, alloc, alloc_contiguous},
+    frame_allocator::{FrameTracker, alloc},
     page_table::{PTEFlags, PageTableEntry, PageTableError},
     strampoline,
 };
@@ -19,7 +18,34 @@ use super::{address::VirtualPageNumber, page_table::PageTable};
 pub enum MemoryError {
     OutOfMemory,
     PageTableError(PageTableError),
+    InvalidRange,
 }
+
+/// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserAccessError {
+    /// 地址为空、非用户 canonical 地址、未映射或权限不匹配。
+    Fault,
+    /// 地址加长度发生整数溢出。
+    Overflow,
+    /// 在调用方指定上限内没有找到 NUL。
+    Unterminated,
+    /// 字节串不是当前 VFS 接口可接受的 UTF-8。
+    InvalidUtf8,
+}
+
+impl core::fmt::Display for UserAccessError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Fault => write!(f, "invalid user address or permission"),
+            Self::Overflow => write!(f, "user address range overflow"),
+            Self::Unterminated => write!(f, "unterminated user string"),
+            Self::InvalidUtf8 => write!(f, "invalid UTF-8 user string"),
+        }
+    }
+}
+
+impl Error for UserAccessError {}
 
 impl From<PageTableError> for MemoryError {
     fn from(err: PageTableError) -> Self {
@@ -32,6 +58,7 @@ impl core::fmt::Display for MemoryError {
         match self {
             MemoryError::OutOfMemory => write!(f, "Out of memory"),
             MemoryError::PageTableError(err) => write!(f, "Page table error: {}", err),
+            MemoryError::InvalidRange => write!(f, "Invalid virtual memory range"),
         }
     }
 }
@@ -58,6 +85,7 @@ pub enum MapType {
 #[derive(Debug)]
 pub struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
+    data_page_offset: usize,
     data_frames: BTreeMap<VirtualPageNumber, FrameTracker>,
     map_type: MapType,
     map_permission: MapPermission,
@@ -79,6 +107,7 @@ impl MapArea {
                 start: start_vpn,
                 end: end_vpn,
             },
+            data_page_offset: start_va.page_offset(),
             data_frames: BTreeMap::new(),
             map_permission: permissions,
             map_type,
@@ -91,26 +120,34 @@ impl MapArea {
         self
     }
 
-    pub fn copy_data(&mut self, page_table: &PageTable, data: &[u8]) {
-        assert_eq!(self.map_type, MapType::Framed);
-        let mut start: usize = 0;
-        let mut current_vpn = self.vpn_range.start;
-        let len = data.len();
-
-        loop {
-            let src = &data[start..len.min(start + config::PAGE_SIZE)];
-            let pte = page_table
-                .translate(current_vpn)
-                .expect("Page table entry not found during data copy");
-            let ppn = pte.ppn();
-            let dst = &mut ppn.get_bytes_array_mut()[..src.len()];
-            dst.copy_from_slice(src);
-            start += config::PAGE_SIZE;
-            if start >= len {
-                break;
-            }
-            current_vpn = current_vpn.next();
+    fn copy_data(&mut self, data: &[u8]) -> Result<(), MemoryError> {
+        if self.map_type != MapType::Framed {
+            return Err(MemoryError::InvalidRange);
         }
+        let capacity = self
+            .data_frames
+            .len()
+            .checked_mul(config::PAGE_SIZE)
+            .and_then(|bytes| bytes.checked_sub(self.data_page_offset))
+            .ok_or(MemoryError::InvalidRange)?;
+        if data.len() > capacity {
+            return Err(MemoryError::InvalidRange);
+        }
+
+        let mut copied = 0usize;
+        for (index, frame) in self.data_frames.values_mut().enumerate() {
+            let page_offset = if index == 0 { self.data_page_offset } else { 0 };
+            let count = (config::PAGE_SIZE - page_offset).min(data.len() - copied);
+            frame.bytes_mut()[page_offset..page_offset + count]
+                .copy_from_slice(&data[copied..copied + count]);
+            copied += count;
+            if copied == data.len() {
+                return Ok(());
+            }
+        }
+        (copied == data.len())
+            .then_some(())
+            .ok_or(MemoryError::InvalidRange)
     }
 
     pub fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
@@ -124,24 +161,11 @@ impl MapArea {
         let start = self.vpn_range.start.as_usize();
         let end = self.vpn_range.end.as_usize();
 
-        // 第一阶段：仅解除页表映射（不触发 FrameTracker Drop）
         for vpn_usize in start..end {
             let vpn = VirtualPageNumber::from_vpn(vpn_usize);
             let _ = page_table.unmap(vpn);
         }
-
-        // 第二阶段：集中回收物理帧，避免与容器节点释放的堆操作交织，降低锁递归风险
-        if matches!(self.map_type, MapType::Framed) {
-            let mut reclaimed_frames: Vec<FrameTracker> = Vec::new();
-            for vpn_usize in start..end {
-                let vpn = VirtualPageNumber::from_vpn(vpn_usize);
-                if let Some(frame) = self.data_frames.remove(&vpn) {
-                    reclaimed_frames.push(frame);
-                }
-            }
-            // 在此处统一 Drop 帧，确保在不再持有 BTreeMap 节点的同时释放物理页，避免潜在死锁
-            drop(reclaimed_frames);
-        }
+        self.data_frames.clear();
     }
 
     fn map_one(
@@ -149,53 +173,41 @@ impl MapArea {
         page_table: &mut PageTable,
         vpn: VirtualPageNumber,
     ) -> Result<(), MemoryError> {
-        let ppn: PhysicalPageNumber;
-        match self.map_type {
+        let (ppn, frame) = match self.map_type {
             MapType::Framed => {
                 let frame = alloc().ok_or(MemoryError::OutOfMemory)?;
-                ppn = frame.ppn;
-                self.data_frames.insert(vpn, frame);
+                (frame.ppn, Some(frame))
             }
-            MapType::Identical => {
-                ppn = vpn.as_usize().into();
-            }
-        }
+            MapType::Identical => (vpn.as_usize().into(), None),
+        };
 
         let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
         if self.global {
             pte_flags |= PTEFlags::G;
         }
         page_table.map(vpn, ppn, pte_flags)?;
+        if let Some(frame) = frame {
+            let replaced = self.data_frames.insert(vpn, frame);
+            debug_assert!(replaced.is_none());
+        }
         Ok(())
     }
 
     fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) {
         let _ = page_table.unmap(vpn);
-        if let MapType::Framed = self.map_type {
-            // 改为在 MapArea::unmap 中统一批量释放，避免与容器释放交错
-            if let Some(frame) = self.data_frames.remove(&vpn) {
-                core::mem::forget(frame);
-            }
-        }
+        self.data_frames.remove(&vpn);
     }
 
-    pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtualPageNumber) {
-        for vpn in new_end.as_usize()..self.vpn_range.end.as_usize() {
-            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
-        }
-        self.vpn_range = Range {
-            start: self.vpn_range.start,
-            end: new_end,
-        }
-    }
-
-    pub fn append_to(
+    pub fn shrink_to(
         &mut self,
         page_table: &mut PageTable,
         new_end: VirtualPageNumber,
     ) -> Result<(), MemoryError> {
-        for vpn in self.vpn_range.end.as_usize()..new_end.as_usize() {
-            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
+        if new_end < self.vpn_range.start || new_end > self.vpn_range.end {
+            return Err(MemoryError::InvalidRange);
+        }
+        for vpn in new_end.as_usize()..self.vpn_range.end.as_usize() {
+            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
         }
         self.vpn_range = Range {
             start: self.vpn_range.start,
@@ -204,19 +216,29 @@ impl MapArea {
         Ok(())
     }
 
-    pub fn from_another(another: &MapArea) -> Self {
-        Self {
-            vpn_range: another.vpn_range.clone(),
-            data_frames: BTreeMap::new(),
-            map_type: another.map_type,
-            map_permission: another.map_permission,
-            global: another.global,
+    pub fn append_to(
+        &mut self,
+        page_table: &mut PageTable,
+        new_end: VirtualPageNumber,
+    ) -> Result<(), MemoryError> {
+        if new_end < self.vpn_range.end {
+            return Err(MemoryError::InvalidRange);
         }
-    }
-
-    /// Get the VPN range of this map area
-    pub fn vpn_range(&self) -> &Range<VirtualPageNumber> {
-        &self.vpn_range
+        let old_end = self.vpn_range.end;
+        for vpn in old_end.as_usize()..new_end.as_usize() {
+            let vpn = VirtualPageNumber::from_vpn(vpn);
+            if let Err(error) = self.map_one(page_table, vpn) {
+                for rollback in old_end.as_usize()..vpn.as_usize() {
+                    self.unmap_one(page_table, VirtualPageNumber::from_vpn(rollback));
+                }
+                return Err(error);
+            }
+        }
+        self.vpn_range = Range {
+            start: self.vpn_range.start,
+            end: new_end,
+        };
+        Ok(())
     }
 }
 
@@ -224,9 +246,13 @@ impl MapArea {
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
-    dynamic_linker: Option<DynamicLinker>,
-    // 持有DMA连续页帧，避免在返回后被释放
-    dma_allocations: Vec<FrameTracker>,
+    user_heap: Option<UserHeap>,
+}
+
+#[derive(Debug, Clone)]
+struct UserHeap {
+    range: Range<usize>,
+    limit: usize,
 }
 
 impl MemorySet {
@@ -234,9 +260,16 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
-            dynamic_linker: None,
-            dma_allocations: Vec::new(),
+            user_heap: None,
         }
+    }
+
+    fn try_new() -> Result<Self, MemoryError> {
+        Ok(Self {
+            page_table: PageTable::try_new()?,
+            areas: Vec::new(),
+            user_heap: None,
+        })
     }
 
     pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), MemoryError> {
@@ -247,7 +280,10 @@ impl MemorySet {
             return Err(e);
         }
         if let Some(data) = data {
-            map_area.copy_data(&mut self.page_table, data);
+            if let Err(error) = map_area.copy_data(data) {
+                map_area.unmap(&mut self.page_table);
+                return Err(error);
+            }
         }
         self.areas.push(map_area);
         Ok(())
@@ -269,17 +305,17 @@ impl MemorySet {
         self.page_table.token()
     }
 
-    pub fn map_trampoline(&mut self) {
+    pub fn map_trampoline(&mut self) -> Result<(), MemoryError> {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
         let strampoline_pa = PhysicalAddress::from(strampoline as usize);
 
-        // 忽略trampoline映射错误，某些情况下可能已经被映射了
-        let _ = self.page_table.map(
+        self.page_table.map(
             trampoline_va.into(),
             strampoline_pa.into(),
             // Trampoline 在所有地址空间通用，标记为 Global，避免跨进程切换时TLB混淆
             PTEFlags::R | PTEFlags::X | PTEFlags::G,
-        );
+        )?;
+        Ok(())
     }
 
     pub fn active(&self) {
@@ -306,167 +342,240 @@ impl MemorySet {
         crate::arch::sbi::remote_sfence_vma(targets, 0, 0, 0)
     }
 
-    pub fn get_page_table(&self) -> &PageTable {
-        &self.page_table
-    }
-
-    pub fn get_page_table_mut(&mut self) -> &mut PageTable {
-        &mut self.page_table
-    }
-
-    pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
+    fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.page_table.translate(vpn)
     }
 
-    /// 在用户地址空间中查找空闲区域（按 VPN，从高到低）
-    pub fn find_free_area_user(&self, length: usize) -> VirtualAddress {
-        if length == 0 {
-            return VirtualAddress::from(0);
-        }
-
-        let page_count = (length + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
-        // 用户空间仅使用低半区：bit38=0 的 canonical 范围
-        // 直接使用低半区的最高 VPN 作为上界，避免误用高半区常量的低位。
-        let upper_vpn_usize =
-            ((1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE) - 1;
-        if page_count == 0 || page_count > upper_vpn_usize {
-            return VirtualAddress::from(0);
-        }
-
-        // 从最高可用 VPN 开始向下探测
-        let mut start_vpn_usize = upper_vpn_usize.saturating_sub(page_count);
-        while start_vpn_usize + page_count <= upper_vpn_usize {
-            let mut is_free = true;
-            for vpn_usize in start_vpn_usize..start_vpn_usize + page_count {
-                if self
-                    .translate(VirtualPageNumber::from_vpn(vpn_usize))
-                    .is_some()
-                {
-                    is_free = false;
-                    break;
-                }
-            }
-            if is_free {
-                return VirtualPageNumber::from_vpn(start_vpn_usize).into();
-            }
-            if start_vpn_usize == 0 {
-                break;
-            }
-            start_vpn_usize -= 1;
-        }
-        VirtualAddress::from(0)
+    /// @description 将 kernel virtual address 翻译为物理地址值，不返回底层映射引用。
+    ///
+    /// @param virtual_address kernel 需要提交给设备的虚拟地址。
+    /// @return leaf PTE 存在时返回包含页内偏移的物理地址，否则返回 `None`。
+    pub fn translate_kernel_address(
+        &self,
+        virtual_address: VirtualAddress,
+    ) -> Option<PhysicalAddress> {
+        let pte = self.translate(virtual_address.floor())?;
+        let page_address = PhysicalAddress::from(pte.ppn()).as_usize();
+        page_address
+            .checked_add(virtual_address.page_offset())
+            .map(PhysicalAddress::from)
     }
 
-    /// 分配DMA内存页面
-    pub fn alloc_dma_pages(&mut self, page_count: usize) -> Result<PhysicalAddress, MemoryError> {
-        if page_count == 0 {
-            return Err(MemoryError::OutOfMemory);
+    fn checked_user_end(start: usize, len: usize) -> Result<usize, UserAccessError> {
+        if len == 0 {
+            return Ok(start);
         }
-
-        // 分配连续物理页，适合DMA需求
-        let frame = alloc_contiguous(page_count).ok_or(MemoryError::OutOfMemory)?;
-
-        // 记录以保持生命周期，避免被Drop释放
-        let phys_addr: PhysicalAddress = frame.ppn.into();
-        self.dma_allocations.push(frame);
-
-        Ok(phys_addr)
+        let end = start.checked_add(len).ok_or(UserAccessError::Overflow)?;
+        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        if start == 0 || start >= user_end || end > user_end {
+            return Err(UserAccessError::Fault);
+        }
+        Ok(end)
     }
 
-    /// 映射DMA内存到虚拟地址空间
-    pub fn map_dma(
-        &mut self,
-        phys_addr: PhysicalAddress,
-        size: usize,
-    ) -> Result<VirtualAddress, MemoryError> {
-        // 选择位于低半区、远离内核物理恒等映射 (physmap) 的基址，避免与其重叠
-        // 动态下界：max(4GiB, 物理内存末尾向上页对齐)
-        let phys_end = crate::arch::dtb::board_info().mem.end;
-        let phys_end_aligned = (phys_end + config::PAGE_SIZE - 1) & !(config::PAGE_SIZE - 1);
-        let mut base_candidate: usize = core::cmp::max(0x1_0000_0000usize, phys_end_aligned);
-        let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
-
-        // Sv39 低半区上界（不含），避免越界
-        let low_half_limit: usize = 1usize << config::VIRTUAL_ADDRESS_WIDTH; // 2^39
-
-        // 向上寻找一段连续未映射的虚拟区间
-        'search: loop {
-            // 越界保护：耗尽低半区虚拟地址空间
-            if base_candidate + page_count * config::PAGE_SIZE > low_half_limit {
-                return Err(MemoryError::OutOfMemory);
-            }
-            for i in 0..page_count {
-                let va = VirtualAddress::from(base_candidate + i * config::PAGE_SIZE);
-                if self.page_table.translate(va.floor()).is_some() {
-                    // 该候选区间中存在已映射页，跳到下一候选窗口
-                    base_candidate = base_candidate.saturating_add(page_count * config::PAGE_SIZE);
-                    continue 'search;
-                }
-            }
-            break; // 找到可用窗口
+    fn user_page(
+        &self,
+        address: usize,
+        required: PTEFlags,
+    ) -> Result<(PhysicalPageNumber, usize), UserAccessError> {
+        let va = VirtualAddress::from(address);
+        let pte = self
+            .page_table
+            .translate(va.floor())
+            .ok_or(UserAccessError::Fault)?;
+        let flags = pte.flags();
+        if !flags.contains(PTEFlags::U | required) {
+            return Err(UserAccessError::Fault);
         }
-
-        let dma_base = VirtualAddress::from(base_candidate);
-
-        // 映射物理页面到虚拟地址
-        for i in 0..page_count {
-            let va = VirtualAddress::from(dma_base.as_usize() + i * config::PAGE_SIZE);
-            let pa = PhysicalAddress::from(phys_addr.as_usize() + i * config::PAGE_SIZE);
-
-            self.page_table
-                .map(va.into(), pa.into(), PTEFlags::R | PTEFlags::W)?;
-        }
-
-        // 本核刷新 TLB，其他核通过 SSIP 在软中断入口刷新
-        unsafe { asm!("sfence.vma") }
-
-        Ok(dma_base)
+        Ok((pte.ppn(), va.page_offset()))
     }
 
-    /// 取消DMA内存映射
-    pub fn unmap_dma(&mut self, virt_addr: VirtualAddress, size: usize) -> Result<(), MemoryError> {
-        let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
-
-        for i in 0..page_count {
-            let va = VirtualAddress::from(virt_addr.as_usize() + i * config::PAGE_SIZE);
-            self.page_table.unmap(va.into())?;
+    fn validate_user_range(
+        &self,
+        start: usize,
+        len: usize,
+        required: PTEFlags,
+    ) -> Result<usize, UserAccessError> {
+        let end = Self::checked_user_end(start, len)?;
+        let mut current = start;
+        while current < end {
+            let (_, page_offset) = self.user_page(current, required)?;
+            current += (config::PAGE_SIZE - page_offset).min(end - current);
         }
+        Ok(end)
+    }
 
+    /// @description 从当前地址空间复制用户字节到 kernel-owned 缓冲区。
+    ///
+    /// @param user_address 用户缓冲区首地址。
+    /// @param destination kernel 目标缓冲区。
+    /// @return 完整复制成功返回 `Ok(())`；地址溢出、缺页或非 `U|R` leaf 返回错误，且不返回用户引用。
+    pub fn copy_from_user(
+        &self,
+        user_address: usize,
+        destination: &mut [u8],
+    ) -> Result<(), UserAccessError> {
+        // 1. 先验证完整范围，避免尾页 fault 时 destination 只得到前缀数据。
+        let end = self.validate_user_range(user_address, destination.len(), PTEFlags::R)?;
+        // 2. 验证成功后逐页复制；本阶段没有 lazy fault，映射在 &self 生命周期内稳定。
+        let mut current = user_address;
+        let mut copied = 0usize;
+        while current < end {
+            let (ppn, page_offset) = self.user_page(current, PTEFlags::R)?;
+            let count = (config::PAGE_SIZE - page_offset).min(end - current);
+            // SAFETY: user_page 证明源页在本 MemorySet 中以 U|R leaf 映射；&self 保证
+            // 映射和 FrameTracker 在调用期间不被修改/回收。destination 是有效独占切片。
+            unsafe {
+                core::ptr::copy(
+                    ppn.as_page_ptr().add(page_offset),
+                    destination.as_mut_ptr().add(copied),
+                    count,
+                );
+            }
+            current += count;
+            copied += count;
+        }
         Ok(())
     }
 
-    pub fn translate_va(&self, va: VirtualAddress) -> Option<PhysicalAddress> {
-        self.page_table.translate_va(va)
-    }
-
-    pub fn shrink_to(&mut self, start: VirtualAddress, new_end: VirtualAddress) -> bool {
-        if let Some(area) = self
-            .areas
-            .iter_mut()
-            .find(|area| area.vpn_range.start == start.floor())
-        {
-            area.shrink_to(&mut self.page_table, new_end.ceil());
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn append_to(
+    /// @description 将 kernel-owned 字节复制到当前地址空间的用户缓冲区。
+    ///
+    /// @param user_address 用户缓冲区首地址。
+    /// @param source kernel 源缓冲区。
+    /// @return 完整复制成功返回 `Ok(())`；地址溢出、缺页或非 `U|W` leaf 返回错误，且不返回用户引用。
+    pub fn copy_to_user(
         &mut self,
-        start: VirtualAddress,
-        new_end: VirtualAddress,
-    ) -> Result<bool, MemoryError> {
-        if let Some(area) = self
+        user_address: usize,
+        source: &[u8],
+    ) -> Result<(), UserAccessError> {
+        // 1. 先验证完整范围，避免尾页 fault 时用户缓冲区被部分修改。
+        let end = self.validate_user_range(user_address, source.len(), PTEFlags::W)?;
+        // 2. 验证成功后逐页复制；&mut self 阻止并发 unmap/permission change。
+        let mut current = user_address;
+        let mut copied = 0usize;
+        while current < end {
+            let (ppn, page_offset) = self.user_page(current, PTEFlags::W)?;
+            let count = (config::PAGE_SIZE - page_offset).min(end - current);
+            // SAFETY: user_page 证明目标页在本 MemorySet 中以 U|W leaf 映射；&mut self
+            // 保证软件写访问独占且映射存活。source 是有效只读切片。
+            unsafe {
+                core::ptr::copy(
+                    source.as_ptr().add(copied),
+                    ppn.as_page_mut_ptr().add(page_offset),
+                    count,
+                );
+            }
+            current += count;
+            copied += count;
+        }
+        Ok(())
+    }
+
+    /// @description 从用户空间复制有长度上限的 NUL 结尾 UTF-8 字符串。
+    ///
+    /// @param user_address 字符串首地址。
+    /// @param max_len 不含 NUL 的最大字节数。
+    /// @return 成功返回 owned `String`；fault、未终止或非法 UTF-8 分别返回明确错误。
+    pub fn copy_user_string(
+        &self,
+        user_address: usize,
+        max_len: usize,
+    ) -> Result<String, UserAccessError> {
+        if user_address == 0 {
+            return Err(UserAccessError::Fault);
+        }
+        let mut bytes = Vec::new();
+        let mut current = user_address;
+        while bytes.len() < max_len {
+            Self::checked_user_end(current, 1)?;
+            let (ppn, page_offset) = self.user_page(current, PTEFlags::R)?;
+            let count = (config::PAGE_SIZE - page_offset).min(max_len - bytes.len());
+            // SAFETY: user_page 证明本页在 MemorySet 存活期间可读；切片只在本次循环
+            // 内使用且不会逃逸，长度限制在当前 4 KiB 页内。
+            let page =
+                unsafe { core::slice::from_raw_parts(ppn.as_page_ptr().add(page_offset), count) };
+            if let Some(nul) = page.iter().position(|byte| *byte == 0) {
+                bytes.extend_from_slice(&page[..nul]);
+                return String::from_utf8(bytes).map_err(|_| UserAccessError::InvalidUtf8);
+            }
+            bytes.extend_from_slice(page);
+            current = current
+                .checked_add(count)
+                .ok_or(UserAccessError::Overflow)?;
+        }
+        Err(UserAccessError::Unterminated)
+    }
+
+    /// @description 检查单个用户虚拟地址是否由 `U|X` leaf 映射。
+    ///
+    /// @param user_address 待检查的用户指令地址。
+    /// @return 可由 U-mode 取指返回 `true`，否则返回 `false`。
+    pub fn is_user_executable(&self, user_address: usize) -> bool {
+        Self::checked_user_end(user_address, 1).is_ok()
+            && self.user_page(user_address, PTEFlags::X).is_ok()
+    }
+
+    /// @description 在不修改用户内存的情况下检查完整 `U|W` 范围。
+    ///
+    /// @param user_address 用户目标地址。
+    /// @param len 待写长度。
+    /// @return 完整范围可写返回 `true`；overflow、缺页或权限错误返回 `false`。
+    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
+        self.validate_user_range(user_address, len, PTEFlags::W)
+            .is_ok()
+    }
+
+    fn initialize_user_heap(&mut self, base: usize, limit: usize) -> Result<(), MemoryError> {
+        if base >= limit || !VirtualAddress::from(base).is_aligned() {
+            return Err(MemoryError::InvalidRange);
+        }
+        self.push(
+            MapArea::new(
+                base.into(),
+                base.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        )?;
+        self.user_heap = Some(UserHeap {
+            range: base..base,
+            limit,
+        });
+        Ok(())
+    }
+
+    /// @description 查询或原子提交当前用户地址空间的 program break。
+    ///
+    /// @param new_break 新 break；零表示只查询。
+    /// @return 成功返回提交后的 break；越界、映射冲突或 OOM 时返回错误且保持旧 break。
+    pub fn set_program_break(&mut self, new_break: usize) -> Result<usize, MemoryError> {
+        let heap = self.user_heap.clone().ok_or(MemoryError::InvalidRange)?;
+        if new_break == 0 {
+            return Ok(heap.range.end);
+        }
+        if new_break < heap.range.start || new_break > heap.limit {
+            return Err(MemoryError::InvalidRange);
+        }
+
+        let area = self
             .areas
             .iter_mut()
-            .find(|area| area.vpn_range.start == start.floor())
-        {
-            area.append_to(&mut self.page_table, new_end.ceil())?;
-            Ok(true)
-        } else {
-            Ok(false)
+            .find(|area| area.vpn_range.start == VirtualAddress::from(heap.range.start).floor())
+            .ok_or(MemoryError::InvalidRange)?;
+        let old_page_end = VirtualAddress::from(heap.range.end).ceil();
+        let new_page_end = VirtualAddress::from(new_break).ceil();
+        if new_page_end > old_page_end {
+            area.append_to(&mut self.page_table, new_page_end)?;
+        } else if new_page_end < old_page_end {
+            area.shrink_to(&mut self.page_table, new_page_end)?;
         }
+        self.user_heap.as_mut().unwrap().range.end = new_break;
+
+        if new_page_end != old_page_end {
+            Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after brk page-table update");
+        }
+        Ok(new_break)
     }
 
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
@@ -490,63 +599,67 @@ impl MemorySet {
     }
 
     pub fn from_elf(elf_data: &[u8]) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, &[], &[], false)
+        Self::from_elf_internal(elf_data, &[], &[])
     }
 
-    /// Create a memory set from ELF data with dynamic linking support
-    pub fn from_elf_with_dynamic_linking(
-        elf_data: &[u8],
-    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, &[], &[], true)
-    }
-
-    /// Internal ELF loading implementation with optional dynamic linking support
     fn from_elf_internal(
         elf_data: &[u8],
         args: &[String],
         envs: &[String],
-        enable_dynamic_linking: bool,
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        let mut memory_set = MemorySet::new();
-
-        memory_set.map_trampoline();
+        let mut memory_set = MemorySet::try_new()?;
+        memory_set.map_trampoline()?;
 
         let elf = xmas_elf::ElfFile::new(elf_data)?;
         let elf_header = elf.header;
-        let magic = elf_header.pt1.magic;
-        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf format");
-
-        // Check if this is a dynamically linked executable
-        let is_dynamic = elf_header.pt2.type_().as_type() == xmas_elf::header::Type::SharedObject
-            || elf.find_section_by_name(".dynamic").is_some();
-
-        if enable_dynamic_linking && is_dynamic {
-            info!("Loading dynamically linked ELF executable");
-
-            // Initialize dynamic linker
-            let mut dynamic_linker = DynamicLinker::new();
-
-            // Parse dynamic linking information
-            dynamic_linker.parse_dynamic_elf(&elf, VirtualAddress::from(0))?;
-
-            memory_set.dynamic_linker = Some(dynamic_linker);
+        if elf_header.pt1.class() != xmas_elf::header::Class::SixtyFour
+            || elf_header.pt1.data() != xmas_elf::header::Data::LittleEndian
+            || elf_header.pt2.machine().as_machine() != xmas_elf::header::Machine::RISC_V
+            || elf_header.pt2.type_().as_type() != xmas_elf::header::Type::Executable
+        {
+            return Err("unsupported ELF class, endian, machine, or type".into());
         }
 
         let ph_count = elf_header.pt2.ph_count();
         let mut max_mapped_vpn = VirtualPageNumber::from(0);
-        let mut plt_address = None;
-        let mut got_address = None;
+        let mut load_segments = 0usize;
 
-        // Process program headers
+        // 1. 每个 LOAD segment 先完成 checked bounds 与权限验证，再修改地址空间。
         for i in 0..ph_count {
             let ph = elf.program_header(i)?;
-
             match ph.get_type()? {
                 xmas_elf::program::Type::Load => {
-                    // Load regular segments
-                    let start_va: VirtualAddress = (ph.virtual_addr() as usize).into();
-                    let end_va: VirtualAddress =
-                        ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+                    if ph.file_size() > ph.mem_size() {
+                        return Err("ELF LOAD file size exceeds memory size".into());
+                    }
+                    let start = usize::try_from(ph.virtual_addr())?;
+                    let mem_size = usize::try_from(ph.mem_size())?;
+                    let end = start
+                        .checked_add(mem_size)
+                        .ok_or("ELF LOAD virtual range overflow")?;
+                    let file_start = usize::try_from(ph.offset())?;
+                    let file_size = usize::try_from(ph.file_size())?;
+                    let file_end = file_start
+                        .checked_add(file_size)
+                        .ok_or("ELF LOAD file range overflow")?;
+                    if mem_size == 0 {
+                        if file_size != 0 {
+                            return Err("zero-sized ELF LOAD contains file bytes".into());
+                        }
+                        continue;
+                    }
+                    let alignment = usize::try_from(ph.align())?;
+                    if alignment > 1
+                        && (!alignment.is_power_of_two()
+                            || start % alignment != file_start % alignment)
+                    {
+                        return Err("invalid ELF LOAD alignment".into());
+                    }
+                    let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+                    if start == 0 || start >= end || end > user_end || file_end > elf_data.len() {
+                        return Err("invalid ELF LOAD range".into());
+                    }
+                    load_segments += 1;
 
                     let mut map_perm = MapPermission::U;
                     let ph_flags = ph.flags();
@@ -559,66 +672,45 @@ impl MemorySet {
                     if ph_flags.is_write() {
                         map_perm |= MapPermission::W
                     }
-                    let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+                    if map_perm.contains(MapPermission::W | MapPermission::X) {
+                        return Err("writable executable ELF segment is forbidden".into());
+                    }
+                    let map_area =
+                        MapArea::new(start.into(), end.into(), MapType::Framed, map_perm);
 
-                    // 记录实际映射的最大页面号
                     max_mapped_vpn = max_mapped_vpn
                         .as_usize()
                         .max(map_area.vpn_range.end.as_usize())
                         .into();
-
-                    memory_set.push(
-                        map_area,
-                        Some(
-                            &elf.input
-                                [ph.offset() as usize..(ph.offset() + ph.file_size()) as usize],
-                        ),
-                    )?;
+                    memory_set.push(map_area, Some(&elf_data[file_start..file_end]))?;
                 }
-                xmas_elf::program::Type::Dynamic => {
-                    // Dynamic segment - already processed above
-                    debug!("Found PT_DYNAMIC segment at 0x{:x}", ph.virtual_addr());
+                xmas_elf::program::Type::Dynamic | xmas_elf::program::Type::Interp => {
+                    return Err("dynamic ELF is not supported".into());
                 }
-                xmas_elf::program::Type::Interp => {
-                    // Interpreter segment (dynamic linker path)
-                    debug!("Found PT_INTERP segment");
-                    if enable_dynamic_linking {
-                        // In a real implementation, this would specify the dynamic linker to use
-                        // For now, we use our built-in dynamic linker
-                    }
-                }
-                _ => {
-                    // Other program header types - ignore for now
-                }
+                _ => {}
             }
         }
-
-        // If dynamic linking is enabled, find PLT and GOT sections
-        if enable_dynamic_linking && memory_set.dynamic_linker.is_some() {
-            if let Some(plt_section) = elf.find_section_by_name(".plt") {
-                plt_address = Some(VirtualAddress::from(plt_section.address() as usize));
-                debug!("Found PLT section at 0x{:x}", plt_section.address());
-            }
-
-            if let Some(got_section) = elf.find_section_by_name(".got") {
-                got_address = Some(VirtualAddress::from(got_section.address() as usize));
-                debug!("Found GOT section at 0x{:x}", got_section.address());
-            }
-
-            // Setup PLT if both PLT and GOT are present
-            if let (Some(plt_addr), Some(got_addr)) = (plt_address, got_address) {
-                if let Some(ref mut linker) = memory_set.dynamic_linker {
-                    linker.setup_plt(plt_addr, got_addr)?;
-                }
-            }
+        if load_segments == 0 {
+            return Err("ELF has no LOAD segment".into());
         }
 
         let max_end_va: VirtualAddress = max_mapped_vpn.into();
-        let mut user_stack_bottom: usize = max_end_va.into();
-        // guard page
-        user_stack_bottom += config::PAGE_SIZE;
-        let user_stack_top = user_stack_bottom + config::USER_STACK_SIZE;
+        let heap_base = usize::from(max_end_va);
+        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        let user_stack_top = user_end
+            .checked_sub(config::PAGE_SIZE)
+            .ok_or("user stack top underflow")?;
+        let user_stack_bottom = user_stack_top
+            .checked_sub(config::USER_STACK_SIZE)
+            .ok_or("user stack range underflow")?;
+        let heap_limit = user_stack_bottom
+            .checked_sub(config::PAGE_SIZE)
+            .ok_or("user stack guard underflow")?;
+        if heap_base >= heap_limit {
+            return Err("ELF image overlaps user stack or guard".into());
+        }
 
+        // 2. heap 从最高 LOAD 末端开始；栈位于 Sv39 低半区顶部，栈上下各保留一页 guard。
         memory_set.push(
             MapArea::new(
                 user_stack_bottom.into(),
@@ -628,17 +720,7 @@ impl MemorySet {
             ),
             None,
         )?;
-
-        // used in sbrk
-        memory_set.push(
-            MapArea::new(
-                user_stack_top.into(),
-                user_stack_top.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        )?;
+        memory_set.initialize_user_heap(heap_base, heap_limit)?;
 
         memory_set.push(
             MapArea::new(
@@ -650,27 +732,16 @@ impl MemorySet {
             None,
         )?;
 
-        let entry_point = elf.header.pt2.entry_point() as usize;
-
-        // 参数栈是唯一的 argv/envp 传递路径；即使两者为空，也必须写入 argc 与两个终止指针。
-        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
-
-        // Apply dynamic relocations if dynamic linking is enabled
-        if enable_dynamic_linking && memory_set.dynamic_linker.is_some() {
-            // Take the linker temporarily to avoid borrow conflicts
-            if let Some(mut linker) = memory_set.dynamic_linker.take() {
-                // Apply relocations
-                {
-                    let page_table = memory_set.get_page_table();
-                    linker.apply_relocations(page_table)?;
-                }
-                // Run initializers
-                linker.run_initializers()?;
-                // Put linker back
-                memory_set.dynamic_linker = Some(linker);
-            }
+        let entry_point = usize::try_from(elf.header.pt2.entry_point())?;
+        let entry_pte = memory_set
+            .translate(VirtualAddress::from(entry_point).floor())
+            .ok_or("ELF entry is not mapped")?;
+        if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
+            return Err("ELF entry is not user executable".into());
         }
 
+        // 3. 参数栈是唯一 argv/envp 路径；即使为空也写入 argc 与两个终止指针。
+        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
         Ok((memory_set, actual_stack_top, entry_point))
     }
 
@@ -680,71 +751,71 @@ impl MemorySet {
         args: &[String],
         envs: &[String],
     ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, args, envs, false)
-    }
-
-    /// Create a new memory set from ELF data with arguments and dynamic linking support
-    pub fn from_elf_with_args_and_dynamic_linking(
-        elf_data: &[u8],
-        args: &[String],
-        envs: &[String],
-    ) -> Result<(Self, usize, usize), Box<dyn Error>> {
-        Self::from_elf_internal(elf_data, args, envs, true)
+        Self::from_elf_internal(elf_data, args, envs)
     }
 
     /// Build argc/argv/envp layout on user stack
     fn build_arg_stack(
-        &self,
+        &mut self,
         stack_top: usize,
         args: &[String],
         envs: &[String],
     ) -> Result<usize, Box<dyn Error>> {
-        let mut stack_ptr = stack_top;
-
-        // Calculate total space needed for strings
-        let mut total_string_size = 0;
-        for arg in args {
-            total_string_size += arg.len() + 1; // +1 for null terminator
-        }
-        for env in envs {
-            total_string_size += env.len() + 1; // +1 for null terminator
-        }
-
-        // Align to 8 bytes boundary for arguments
-        total_string_size = (total_string_size + 7) & !7;
-
-        // Space for pointers: argc + argv[] + envp[] + padding
+        let total_string_size = args
+            .iter()
+            .chain(envs)
+            .try_fold(0usize, |total, value| {
+                value
+                    .len()
+                    .checked_add(1)
+                    .and_then(|size| total.checked_add(size))
+            })
+            .ok_or("argument string bytes overflow")?;
         let argc = args.len();
-        let pointer_space = core::mem::size_of::<usize>() * (1 + argc + 1 + envs.len() + 1);
-        let pointer_space_aligned = (pointer_space + 7) & !7;
+        let pointer_count = 1usize
+            .checked_add(argc)
+            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_add(envs.len()))
+            .and_then(|count| count.checked_add(1))
+            .ok_or("argument pointer count overflow")?;
+        let pointer_space = pointer_count
+            .checked_mul(core::mem::size_of::<usize>())
+            .ok_or("argument pointer bytes overflow")?;
+        let total_size = pointer_space
+            .checked_add(total_string_size)
+            .and_then(|size| size.checked_add(15))
+            .ok_or("argument stack size overflow")?;
+        let stack_ptr = stack_top
+            .checked_sub(total_size)
+            .ok_or("argument stack underflow")?
+            & !15usize;
 
-        // Move stack pointer down to accommodate everything
-        stack_ptr -= total_string_size + pointer_space_aligned;
-        stack_ptr &= !7; // Align to 8 bytes
-
-        let string_area_start = stack_ptr + pointer_space_aligned;
+        let string_area_start = stack_ptr
+            .checked_add(pointer_space)
+            .ok_or("argument string address overflow")?;
         let mut string_ptr = string_area_start;
         let mut argv_ptrs = Vec::new();
         let mut envp_ptrs = Vec::new();
 
-        // Write argument strings and collect pointers
         for arg in args {
             argv_ptrs.push(string_ptr);
             self.write_string_to_user_stack(string_ptr, arg)?;
-            string_ptr += arg.len() + 1;
+            string_ptr = string_ptr
+                .checked_add(arg.len())
+                .and_then(|address| address.checked_add(1))
+                .ok_or("argument string address overflow")?;
         }
 
-        // Write environment strings and collect pointers
         for env in envs {
             envp_ptrs.push(string_ptr);
             self.write_string_to_user_stack(string_ptr, env)?;
-            string_ptr += env.len() + 1;
+            string_ptr = string_ptr
+                .checked_add(env.len())
+                .and_then(|address| address.checked_add(1))
+                .ok_or("environment string address overflow")?;
         }
 
-        // Write argc/argv/envp structure
         let mut ptr_writer = stack_ptr;
-
-        // Write argc
         self.write_usize_to_user_stack(ptr_writer, argc)?;
         ptr_writer += core::mem::size_of::<usize>();
 
@@ -753,7 +824,6 @@ impl MemorySet {
             self.write_usize_to_user_stack(ptr_writer, arg_ptr)?;
             ptr_writer += core::mem::size_of::<usize>();
         }
-        // Null terminator for argv
         self.write_usize_to_user_stack(ptr_writer, 0)?;
         ptr_writer += core::mem::size_of::<usize>();
 
@@ -762,149 +832,26 @@ impl MemorySet {
             self.write_usize_to_user_stack(ptr_writer, env_ptr)?;
             ptr_writer += core::mem::size_of::<usize>();
         }
-        // Null terminator for envp
         self.write_usize_to_user_stack(ptr_writer, 0)?;
 
         Ok(stack_ptr)
     }
 
-    /// Write a string to user stack memory
-    fn write_string_to_user_stack(&self, addr: usize, s: &str) -> Result<(), Box<dyn Error>> {
-        let vpn_start = VirtualAddress::from(addr).floor();
-        let vpn_end = VirtualAddress::from(addr + s.len() + 1).floor();
-
-        for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
-            let vpn = VirtualPageNumber::from_vpn(vpn);
-            if let Some(pte) = self.translate(vpn) {
-                let ppn = pte.ppn();
-                let page_bytes = ppn.get_bytes_array_mut();
-
-                let page_start = vpn.as_usize() * config::PAGE_SIZE;
-                let page_end = page_start + config::PAGE_SIZE;
-
-                let str_start = addr.max(page_start);
-                let str_end = (addr + s.len()).min(page_end);
-
-                if str_start < str_end {
-                    let page_offset = str_start - page_start;
-                    let str_offset = str_start - addr;
-                    let copy_len = str_end - str_start;
-
-                    page_bytes[page_offset..page_offset + copy_len]
-                        .copy_from_slice(&s.as_bytes()[str_offset..str_offset + copy_len]);
-                }
-
-                // Write null terminator if this page contains the end
-                if addr + s.len() >= page_start && addr + s.len() < page_end {
-                    let null_offset = (addr + s.len()) - page_start;
-                    page_bytes[null_offset] = 0;
-                }
-            }
-        }
+    fn write_string_to_user_stack(&mut self, addr: usize, s: &str) -> Result<(), Box<dyn Error>> {
+        self.copy_to_user(addr, s.as_bytes())?;
+        let nul_address = addr
+            .checked_add(s.len())
+            .ok_or("argument NUL address overflow")?;
+        self.copy_to_user(nul_address, &[0])?;
         Ok(())
     }
 
-    /// Write a usize value to user stack memory
-    fn write_usize_to_user_stack(&self, addr: usize, value: usize) -> Result<(), Box<dyn Error>> {
-        let bytes = value.to_le_bytes();
-        let vpn_start = VirtualAddress::from(addr).floor();
-        let vpn_end = VirtualAddress::from(addr + core::mem::size_of::<usize>() - 1).floor();
-
-        for vpn in vpn_start.as_usize()..=vpn_end.as_usize() {
-            let vpn = VirtualPageNumber::from_vpn(vpn);
-            if let Some(pte) = self.translate(vpn) {
-                let ppn = pte.ppn();
-                let page_bytes = ppn.get_bytes_array_mut();
-
-                let page_start = vpn.as_usize() * config::PAGE_SIZE;
-                let page_end = page_start + config::PAGE_SIZE;
-
-                let val_start = addr.max(page_start);
-                let val_end = (addr + core::mem::size_of::<usize>()).min(page_end);
-
-                if val_start < val_end {
-                    let page_offset = val_start - page_start;
-                    let val_offset = val_start - addr;
-                    let copy_len = val_end - val_start;
-
-                    page_bytes[page_offset..page_offset + copy_len]
-                        .copy_from_slice(&bytes[val_offset..val_offset + copy_len]);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub fn form_existed_user(user_space: &MemorySet) -> Result<Self, MemoryError> {
-        let mut memory_set = MemorySet::new();
-        memory_set.map_trampoline();
-
-        for area in user_space.areas.iter() {
-            let new_area = MapArea::from_another(area);
-            memory_set.push(new_area, None)?;
-
-            for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
-                let vpn = VirtualPageNumber::from_vpn(vpn);
-                let src_ppn = user_space
-                    .translate(vpn)
-                    .expect("Source page table entry not found during clone")
-                    .ppn();
-                let dst_ppn = memory_set
-                    .translate(vpn)
-                    .expect("Destination page table entry not found during clone")
-                    .ppn();
-                dst_ppn
-                    .get_bytes_array_mut()
-                    .copy_from_slice(&src_ppn.get_bytes_array_mut());
-            }
-        }
-        Ok(memory_set)
-    }
-
-    pub fn recycle_data_pages(&mut self) {
-        self.areas.clear();
-    }
-
-    /// Get a reference to the dynamic linker
-    pub fn get_dynamic_linker(&self) -> Option<&DynamicLinker> {
-        self.dynamic_linker.as_ref()
-    }
-
-    /// Get a mutable reference to the dynamic linker
-    pub fn get_dynamic_linker_mut(&mut self) -> Option<&mut DynamicLinker> {
-        self.dynamic_linker.as_mut()
-    }
-
-    /// Load a shared library at runtime
-    pub fn load_shared_library(
+    fn write_usize_to_user_stack(
         &mut self,
-        library_name: &str,
-    ) -> Result<VirtualAddress, Box<dyn Error>> {
-        if self.dynamic_linker.is_none() {
-            return Err("Dynamic linker not initialized".into());
-        }
-
-        // Take the linker temporarily to avoid double borrow
-        if let Some(mut linker) = self.dynamic_linker.take() {
-            let result = linker.load_shared_library(self, library_name);
-            self.dynamic_linker = Some(linker);
-            result
-        } else {
-            Err("Dynamic linker not available".into())
-        }
-    }
-
-    /// Resolve a symbol by name across all loaded libraries
-    pub fn resolve_symbol(&self, symbol_name: &str) -> Option<VirtualAddress> {
-        if let Some(ref linker) = self.dynamic_linker {
-            linker.resolve_symbol(symbol_name)
-        } else {
-            None
-        }
-    }
-
-    /// Get the areas for iterating over memory mappings
-    pub fn areas(&self) -> &[MapArea] {
-        &self.areas
+        addr: usize,
+        value: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        self.copy_to_user(addr, &value.to_le_bytes())?;
+        Ok(())
     }
 }

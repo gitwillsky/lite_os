@@ -18,7 +18,7 @@ use crate::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::VirtualAddress,
         kernel_stack::KernelStack,
-        mm::{self, MemorySet},
+        mm::{self, MemorySet, UserAccessError},
     },
     signal::SignalState,
     sync::IrqMutex,
@@ -84,35 +84,104 @@ pub struct Memory {
     kernel_stack: KernelStack,
     /// 用户态 TrapContext 的虚拟地址（每线程独立）
     trap_cx_va: Mutex<usize>,
-    /// 用户程序堆的基地址
-    pub heap_base: AtomicUsize,
-    /// 用户程序堆的顶部地址
-    pub heap_top: AtomicUsize,
     /// 用户态的 TaskContext
     pub task_cx: Mutex<TaskContext>,
 }
 
 impl Memory {
+    /// @description 覆盖 supervisor-only trap context 页中的保存上下文。
+    ///
+    /// @param trap_context 待写入的完整上下文值。
+    /// @return 无返回值；trap context 映射缺失表示 kernel 内部不变量损坏并 panic。
     pub fn set_trap_context(&self, trap_context: TrapContext) {
         let va = *self.trap_cx_va.lock();
-        let ppn = self.memory_set.lock().trap_context_ppn(va);
-        *ppn.get_mut() = trap_context;
+        let memory_set = self.memory_set.lock();
+        let ppn = memory_set.trap_context_ppn(va);
+        let offset = VirtualAddress::from(va).page_offset();
+        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
+        assert!(
+            ptr.is_aligned(),
+            "TrapContext physical address is not aligned"
+        );
+        // SAFETY: memory_set guard 保证映射和 FrameTracker 在写入期间存活；trap context
+        // 位于单页 supervisor-only framed area，当前 task 是该上下文的唯一软件写者。
+        unsafe { ptr.write(trap_context) };
     }
 
-    pub fn trap_context(&self) -> &'static mut TrapContext {
+    /// @description 复制 supervisor-only trap context，禁止底层用户映射引用逃逸锁。
+    ///
+    /// @return 当前完整 trap context 的 owned clone；映射缺失表示 kernel 内部不变量损坏并 panic。
+    pub fn load_trap_context(&self) -> TrapContext {
         let va = *self.trap_cx_va.lock();
-        let ppn = self.memory_set.lock().trap_context_ppn(va);
-        ppn.get_mut()
+        let memory_set = self.memory_set.lock();
+        let ppn = memory_set.trap_context_ppn(va);
+        let offset = VirtualAddress::from(va).page_offset();
+        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
+        assert!(
+            ptr.is_aligned(),
+            "TrapContext physical address is not aligned"
+        );
+        // SAFETY: memory_set guard 保证映射和 FrameTracker 存活；只读引用仅用于本行 clone，
+        // 不会离开 guard 生命周期，TrapContext 已由 set_trap_context 完整初始化。
+        unsafe { (&*ptr).clone() }
     }
 
-    pub fn remove_area_with_start_vpn(&self, start_va: VirtualAddress) {
+    /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
+    ///
+    /// @param user_address 用户源地址。
+    /// @param destination kernel 目标缓冲区。
+    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
+    pub fn copy_from_user(
+        &self,
+        user_address: usize,
+        destination: &mut [u8],
+    ) -> Result<(), UserAccessError> {
         self.memory_set
             .lock()
-            .remove_area_with_start_vpn(start_va.floor());
+            .copy_from_user(user_address, destination)
     }
 
-    pub fn user_token(&self) -> usize {
-        self.memory_set.lock().token()
+    /// @description 将 kernel 缓冲区复制到用户地址空间，地址空间锁覆盖整个复制。
+    ///
+    /// @param user_address 用户目标地址。
+    /// @param source kernel 源缓冲区。
+    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
+    pub fn copy_to_user(&self, user_address: usize, source: &[u8]) -> Result<(), UserAccessError> {
+        self.memory_set.lock().copy_to_user(user_address, source)
+    }
+
+    /// @description 从用户空间复制有上限的 NUL 结尾 UTF-8 字符串。
+    ///
+    /// @param user_address 用户字符串首地址。
+    /// @param max_len 不含 NUL 的最大字节数。
+    /// @return 成功返回 owned 字符串；fault、未终止或非法 UTF-8 返回明确错误。
+    pub fn copy_user_string(
+        &self,
+        user_address: usize,
+        max_len: usize,
+    ) -> Result<String, UserAccessError> {
+        self.memory_set
+            .lock()
+            .copy_user_string(user_address, max_len)
+    }
+
+    /// @description 检查用户指令地址是否具有 U-mode execute 权限。
+    ///
+    /// @param user_address 待检查地址。
+    /// @return `U|X` leaf 映射存在时返回 `true`。
+    pub fn is_user_executable(&self, user_address: usize) -> bool {
+        self.memory_set.lock().is_user_executable(user_address)
+    }
+
+    /// @description 检查完整用户地址范围是否可由 kernel copyout。
+    ///
+    /// @param user_address 用户目标地址。
+    /// @param len 待写长度。
+    /// @return 完整 `U|W` 范围存在时返回 `true`。
+    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
+        self.memory_set.lock().is_user_writable(user_address, len)
     }
 }
 
@@ -303,8 +372,6 @@ impl TaskControlBlock {
                 memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
-                heap_base: AtomicUsize::new(user_sp),
-                heap_top: AtomicUsize::new(0),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
             },
             file: Arc::new(Mutex::new(File {
@@ -357,12 +424,16 @@ impl TaskControlBlock {
         envs: &[String],
     ) -> Result<(), crate::memory::mm::MemoryError> {
         // 步骤1: 创建新的内存空间 - 在完全提交之前先准备好
+        let classify_load_error = |error: Box<dyn Error>| {
+            error
+                .downcast_ref::<crate::memory::mm::MemoryError>()
+                .copied()
+                .unwrap_or(crate::memory::mm::MemoryError::InvalidRange)
+        };
         let (new_memory_set, user_sp, entry_point) = if args.is_empty() && envs.is_empty() {
-            MemorySet::from_elf(elf_data)
-                .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+            MemorySet::from_elf(elf_data).map_err(classify_load_error)?
         } else {
-            MemorySet::from_elf_with_args(elf_data, args, envs)
-                .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+            MemorySet::from_elf_with_args(elf_data, args, envs).map_err(classify_load_error)?
         };
 
         // 步骤2: 关闭标记了O_CLOEXEC的文件描述符
@@ -382,29 +453,21 @@ impl TaskControlBlock {
         // 这是关键步骤 - 完全替换当前进程的地址空间
         let kernel_stack_top = self.mm.kernel_stack.get_top();
 
-        // 更新内存管理器
-        self.mm.memory_set.lock().recycle_data_pages(); // 清理旧的页面
+        // 单次赋值提交新地址空间；旧 MemorySet 在 guard 内被完整替换，不暴露 stale PTE 窗口。
         *self.mm.memory_set.lock() = new_memory_set;
         *self.mm.trap_cx_va.lock() = TRAP_CONTEXT;
-
-        // 重置堆指针
-        // 新地址空间的堆必须保持未初始化，由 brk/sbrk 在固定用户堆区建立。
-        // user_sp 可能已下移以容纳 argv/envp；把它当作堆基址会让分配器覆盖参数栈和返回地址。
-        self.mm.heap_base.store(0, atomic::Ordering::Relaxed);
-        self.mm.heap_top.store(0, atomic::Ordering::Relaxed);
 
         // 步骤5: 更新任务状态；参数与环境只存在于新初始栈中。
         *self.name.lock() = program_name.to_string();
 
         // 步骤6: 设置新程序的陷阱上下文
-        let trap_cx = self.mm.trap_context();
-        *trap_cx = TrapContext::app_init_context(
+        self.mm.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
             trap_handler as usize,
-        );
+        ));
 
         // 地址空间由统一的 trap 返回路径激活；在这里切换会让后续内核代码运行在用户页表上。
         Ok(())

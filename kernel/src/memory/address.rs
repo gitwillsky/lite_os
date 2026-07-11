@@ -1,5 +1,3 @@
-use crate::memory::page_table::PageTableEntry;
-
 use super::config::{self};
 use core::fmt::Debug;
 
@@ -124,17 +122,18 @@ impl PhysicalAddress {
         self.0
     }
 
-    pub fn get_mut<T>(&self) -> &'static mut T {
-        let ptr = self.0 as *mut T;
+    /// @description 将物理地址表示为只读裸指针，不创建引用或声明别名关系。
+    ///
+    /// @return 指向恒等映射物理地址的裸指针；调用方在解引用前必须证明映射、对齐和生命周期有效。
+    pub(crate) fn as_ptr<T>(&self) -> *const T {
+        self.0 as *const T
+    }
 
-        // 验证指针的安全性
-        assert!(!ptr.is_null(), "Physical address pointer is null");
-        assert!(ptr.is_aligned(), "Physical address pointer is not aligned");
-
-        unsafe {
-            ptr.as_mut()
-                .expect("Failed to convert physical address to mutable reference")
-        }
+    /// @description 将物理地址表示为可写裸指针，不创建引用或声明独占访问。
+    ///
+    /// @return 指向恒等映射物理地址的裸指针；调用方在解引用前必须证明映射、对齐、生命周期和独占访问有效。
+    pub(crate) fn as_mut_ptr<T>(&self) -> *mut T {
+        self.0 as *mut T
     }
 }
 
@@ -192,69 +191,20 @@ impl From<VirtualPageNumber> for VirtualAddress {
 }
 
 impl PhysicalPageNumber {
-    pub fn get_bytes_array_mut(self) -> &'static mut [u8] {
+    /// @description 返回物理页起始位置的只读裸指针，不创建引用。
+    ///
+    /// @return 指向该物理页第一个字节的裸指针；调用方负责证明页帧仍存活。
+    pub(crate) fn as_page_ptr(self) -> *const u8 {
         let pa: PhysicalAddress = self.into();
-        let ptr = pa.0 as *mut u8;
-
-        // 更详细的验证和调试信息
-        if ptr.is_null() || pa.0 == 0 || self.0 == 0 {
-            error!("ERROR: Attempting to access invalid physical page");
-            error!("  PPN: {:#x}", self.0);
-            error!("  PA: {:#x}", pa.0);
-            error!("  PTR: {:p}", ptr);
-            error!("  This indicates a bug in frame allocation or page table management");
-            panic!(
-                "Physical address pointer is null (PPN: {:#x}, PA: {:#x})",
-                self.0, pa.0
-            );
-        }
-
-        // 检查页面大小
-        if config::PAGE_SIZE > isize::MAX as usize {
-            panic!("Page size {} exceeds isize::MAX", config::PAGE_SIZE);
-        }
-
-        // 检查对齐 - 物理页面应该按页面大小对齐
-        if pa.0 % config::PAGE_SIZE != 0 {
-            panic!(
-                "Physical address not page-aligned (PPN: {:#x}, PA: {:#x})",
-                self.0, pa.0
-            );
-        }
-
-        unsafe { core::slice::from_raw_parts_mut(ptr, config::PAGE_SIZE) }
+        pa.as_ptr()
     }
 
-    pub fn get_pte_array(self) -> &'static mut [PageTableEntry] {
+    /// @description 返回物理页起始位置的可写裸指针，不创建引用。
+    ///
+    /// @return 指向该物理页第一个字节的裸指针；调用方负责证明页帧存活且当前访问独占。
+    pub(crate) fn as_page_mut_ptr(self) -> *mut u8 {
         let pa: PhysicalAddress = self.into();
-        let ptr = pa.0 as *mut PageTableEntry;
-
-        // 验证指针的安全性
-        assert!(!ptr.is_null(), "Physical address pointer is null");
-        assert!(ptr.is_aligned(), "Physical address pointer is not aligned");
-
-        // 验证数组大小不超过限制
-        let array_size = 512 * core::mem::size_of::<PageTableEntry>();
-        assert!(
-            array_size <= isize::MAX as usize,
-            "PTE array size exceeds isize::MAX"
-        );
-
-        unsafe { core::slice::from_raw_parts_mut(ptr, 512) }
-    }
-
-    pub fn get_mut<T>(self) -> &'static mut T {
-        let pa: PhysicalAddress = self.into();
-        let ptr = pa.0 as *mut T;
-
-        // 验证指针的安全性
-        assert!(!ptr.is_null(), "Physical address pointer is null");
-        assert!(ptr.is_aligned(), "Physical address pointer is not aligned");
-
-        unsafe {
-            ptr.as_mut()
-                .expect("Failed to convert physical address to mutable reference")
-        }
+        pa.as_mut_ptr()
     }
 
     pub fn as_usize(&self) -> usize {
