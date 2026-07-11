@@ -1,0 +1,39 @@
+AGENTS.md
+  s_d637a88cd4b00d::t_9cb2dc25818b70 15,18
+kernel/src/drivers/block.rs
+  s_d637a88cd4b00d::t_b8cb06fb3205ce 13,31-44
+kernel/src/drivers/hal/virtio.rs
+  s_d637a88cd4b00d::t_43d4070e7cf01c 6,75-78
+kernel/src/drivers/mod.rs
+  s_d637a88cd4b00d::t_ab61754f317a1e 12
+kernel/src/drivers/virtio_blk.rs
+  s_d637a88cd4b00d::t_ca25e785af7ece 12-14,32,45-47,88,92-93,99-138,182-183,185-209,211-213,215-236,249-257
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_466f7483e79993 1-3,11,14-39,41-44,51-80
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_c133d039fd0344 23,26,29-31,36
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_2e70ce9c05d8f3 13-28,30-44
+kernel/src/task/task.rs
+  s_d637a88cd4b00d::t_e6ff21b52c3648 10,154,187,317-348,372
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_ad72b2e2774ca8 6-16,18-20,31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d38d5c12a883e404cb723a4040580df9161ffd12",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
