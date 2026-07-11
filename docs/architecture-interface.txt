@@ -509,9 +509,11 @@ kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " ELF header、segment�
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " 物理页或页表页分配失败。"] OutOfMemory
 kernel/src/memory/mm.rs :: enum MapType :: Framed
 kernel/src/memory/mm.rs :: enum MapType :: Identical
+kernel/src/memory/mm.rs :: enum MemoryError :: AddressInUse
 kernel/src/memory/mm.rs :: enum MemoryError :: InvalidRange
 kernel/src/memory/mm.rs :: enum MemoryError :: OutOfMemory
 kernel/src/memory/mm.rs :: enum MemoryError :: PageTableError (PageTableError)
+kernel/src/memory/mm.rs :: enum MemoryError :: PermissionDenied
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 在调用方指定上限内没有找到 NUL。"] Unterminated
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址为空、非用户 canonical 地址、未映射或权限不匹配。"] Fault
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址加长度发生整数溢出。"] Overflow
@@ -526,6 +528,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn new (start_va : Virtua
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn set_global (mut self , global : bool) -> Self
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn shrink_to (& mut self , page_table : & mut PageTable , new_end : VirtualPageNumber ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn unmap (& mut self , page_table : & mut PageTable)
+kernel/src/memory/mm.rs :: pub (crate) impl MemoryError :: fn is_out_of_memory (self) -> bool
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn active (& self)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_to_user (& mut self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
@@ -533,14 +536,17 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_user_c_string (
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , isize >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (elf_data : & [u8] , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_trampoline (& mut self) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn new () -> Self
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn protect_anonymous (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn push (& mut self , mut map_area : MapArea , data : Option < & [u8] > ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (& mut self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_anonymous (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mod.rs :: pub (crate) fn init ()
@@ -551,7 +557,7 @@ kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , Virtu
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameTracker , alloc_contiguous }
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , MemoryError , MemorySet , UserAccessError }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , MapPermission , MemoryError , MemorySet , UserAccessError }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable
@@ -560,6 +566,7 @@ kernel/src/memory/page_table.rs :: enum PageTableError :: OutOfMemory
 kernel/src/memory/page_table.rs :: pub (crate) enum PageTableError
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn map (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn new () -> Self
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn token (& self) -> usize
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn translate (& self , vpn : VirtualPageNumber) -> Option < PageTableEntry >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn try_new () -> Result < Self , PageTableError >
@@ -618,6 +625,9 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * c
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isize
+kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , length : usize , prot : usize , flags : usize , fd : isize , offset : usize ,) -> isize
+kernel/src/syscall/memory.rs :: pub (crate) fn sys_mprotect (address : usize , length : usize , prot : usize) -> isize
+kernel/src/syscall/memory.rs :: pub (crate) fn sys_munmap (address : usize , length : usize) -> isize
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !
@@ -684,12 +694,15 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_flags (& 
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < alloc :: sync :: Arc < OpenFileDescription > >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_anonymous (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tgid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_anonymous (& self , address : usize , length : usize) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity

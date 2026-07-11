@@ -1,8 +1,9 @@
 use core::arch::asm;
 use syscall_abi::{
     SYSCALL_CLOSE, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC, SYSCALL_FTRUNCATE,
-    SYSCALL_GETDENTS64, SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_OPENAT, SYSCALL_READ,
-    SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_UNLINKAT, SYSCALL_WRITE,
+    SYSCALL_GETDENTS64, SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_MMAP, SYSCALL_MPROTECT,
+    SYSCALL_MUNMAP, SYSCALL_OPENAT, SYSCALL_READ, SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD,
+    SYSCALL_UNLINKAT, SYSCALL_WRITE,
 };
 
 pub const AT_FDCWD: isize = -100;
@@ -11,6 +12,12 @@ pub const O_CREAT: usize = 0x40;
 pub const O_TRUNC: usize = 0x200;
 pub const O_DIRECTORY: usize = 0x10000;
 pub const AT_REMOVEDIR: usize = 0x200;
+pub const PROT_READ: usize = 0x1;
+pub const PROT_WRITE: usize = 0x2;
+pub const PROT_EXEC: usize = 0x4;
+pub const MAP_PRIVATE: usize = 0x02;
+pub const MAP_ANONYMOUS: usize = 0x20;
+pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 
 /// @description 按 Linux/riscv64 ABI 发起系统调用，参数依次装入 `a0..a5`，编号装入 `a7`。
 ///
@@ -131,4 +138,34 @@ pub fn mkdirat(path: &[u8], mode: usize) -> isize {
 /// @return 成功返回零，失败返回负的 Linux errno。
 pub fn sched_yield() -> isize {
     syscall(SYSCALL_SCHED_YIELD, [0, 0, 0, 0, 0, 0])
+}
+
+/// @description 建立 anonymous private 映射；返回 kernel 裸 syscall 结果。
+///
+/// @param address 零、地址 hint 或配合 `MAP_FIXED_NOREPLACE` 的固定地址。
+/// @param length 非零映射长度。
+/// @param prot `PROT_*` 位。
+/// @param flags `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`。
+/// @return 成功为非负映射地址，失败为负 Linux errno。
+pub fn mmap(address: usize, length: usize, prot: usize, flags: usize) -> isize {
+    syscall(SYSCALL_MMAP, [address, length, prot, flags, usize::MAX, 0])
+}
+
+/// @description 解除地址区间映射。
+///
+/// @param address page-aligned 起始地址。
+/// @param length 非零长度。
+/// @return 成功返回零，失败返回负 Linux errno。
+pub fn munmap(address: usize, length: usize) -> isize {
+    syscall(SYSCALL_MUNMAP, [address, length, 0, 0, 0, 0])
+}
+
+/// @description 修改地址区间页权限。
+///
+/// @param address page-aligned 起始地址。
+/// @param length 非零长度。
+/// @param prot `PROT_*` 位。
+/// @return 成功返回零，失败返回负 Linux errno。
+pub fn mprotect(address: usize, length: usize, prot: usize) -> isize {
+    syscall(SYSCALL_MPROTECT, [address, length, prot, 0, 0, 0])
 }
