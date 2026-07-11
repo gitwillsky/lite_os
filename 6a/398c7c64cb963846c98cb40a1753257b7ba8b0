@@ -1,0 +1,25 @@
+kernel/src/memory/frame_allocator.rs
+  s_d637a88cd4b00d::t_f1bdf64d4a2a59 48-59
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_2941ba58740ff2 367-391,464-476
+kernel/src/task/pid.rs
+  s_d637a88cd4b00d::t_ca8115efcd5efe 13-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6a398c7c64cb963846c98cb40a1753257b7ba8b0",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
