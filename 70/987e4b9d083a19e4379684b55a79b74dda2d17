@@ -1,0 +1,49 @@
+README.md
+  s_d637a88cd4b00d::t_35f41288b2e41c 16,18,80
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_cb17685d2bdc26 45-46
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_d64346f53c55e0 487,561,564,656-659,678,689-690,694-696,708,730,732,737-738,745,754,814
+docs/architecture.md
+  s_d637a88cd4b00d::t_bda366eddaed8b 120-121,186,212,225-226
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_8e70147dd55671 15,31,55-57,80-81,90,93
+kernel/src/arch/riscv64/trap.S
+  s_d637a88cd4b00d::t_135473dfe6dfd0 25,149-154
+kernel/src/memory/config.rs
+  s_d637a88cd4b00d::t_59650ea2b5d43a 17
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_f63642975f6a29 488-492
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_a48c6c5d0aa6a3 39-43
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_b233ea8c089a7f 6,9,57-60
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_9f6267f7a33862 16-18
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_3e0d5cc5abd09f 19,203-213
+scripts/verify_boot.py
+  s_d637a88cd4b00d::t_518e6aa553f825 53
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_164c8e96706521 29-32
+user/src/bin/init.rs
+  s_d637a88cd4b00d::t_3b0b26e5ff0918 10-14,17-24,223-242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "70987e4b9d083a19e4379684b55a79b74dda2d17",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
