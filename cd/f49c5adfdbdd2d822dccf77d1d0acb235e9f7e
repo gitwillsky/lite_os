@@ -1,0 +1,49 @@
+README.md
+  s_d637a88cd4b00d::t_132afc07c009a4 12,15,18,105
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_7b4c54bf29ed76 41,44
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_aeee13e50b7fc7 200,204,625,668,682,696-699,712,717,788-789,803,815,818
+docs/architecture.md
+  s_d637a88cd4b00d::t_abe35ee592bcb7 74,118,128-129,131,184,214,227
+docs/phase-18-musl-pthread.md
+  s_d637a88cd4b00d::t_686508041f1a65 3-4
+docs/phase-19-musl-pthread-sync.md
+  s_d637a88cd4b00d::t_05bec802f81760 1-38
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_d53211b649b018 29,50,90,92
+kernel/src/arch/riscv64/hart.rs
+  s_d637a88cd4b00d::t_e2367c048274e1 12,213-241
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_e14ccfb2a40aaf 45-46
+kernel/src/syscall/futex.rs
+  s_d637a88cd4b00d::t_d1ef1256f5271f 4,7-32,38,49-53,58
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_26989b2e765dd2 106
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_15cec4c86321ee 17
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_cb0b835f45ac00 14,25,47,258
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_db0f3162713b07 216,222
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_4b58d1933c2e1a 1,8-11,15-21,29-31,33,49-54,58-70,72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cdf49c5adfdbdd2d822dccf77d1d0acb235e9f7e",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
