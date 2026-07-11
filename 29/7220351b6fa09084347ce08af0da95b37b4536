@@ -1,0 +1,53 @@
+README.md
+  s_d637a88cd4b00d::t_0e3d2cbb160921 11,16,18,79
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_83d49edda100d0 43-44
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_efef66be795130 536-537,550,557,637,650-651,684,718,720,732-733,736-738,762,773-777,782-783,785,789-790,797
+docs/architecture.md
+  s_d637a88cd4b00d::t_c5274741cd446a 112-113,116-118,184,209-210,223-225
+docs/phase-15-thread-futex.md
+  s_d637a88cd4b00d::t_139961bc031b43 1-26
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_bfe4cc8a1b37e8 3,15,29,31,48-51,60-61,64,89,91
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_b6dcc212c68b3c 1,649-682,1032-1065
+kernel/src/syscall/futex.rs
+  s_d637a88cd4b00d::t_dceadd4c205a40 1-41
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_45d57a02fde995 3,8,47-49
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_8fe336fdb05254 8-10,76-113,116-126,130-151,164-167,197-200
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_5e6de5bd80c586 5,36,45-59,139-140,215,240,247,260-261,325,332,343-344,369-522,589-598
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_67e93ac59e3e3c 392-395
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_59a7c76940b15d 21,54-55,60,88-89,94,101-112,128-167,199-201,220-227,241-280,398-472,676-682,685-702,706-714,717-718,721-737,740-742
+scripts/verify_boot.py
+  s_d637a88cd4b00d::t_77881e417787a6 52
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_3fa78b1f3754f4 23-25
+user/src/bin/init.rs
+  s_d637a88cd4b00d::t_ae384540cc5774 6-7,10-13,16-40,137-213
+user/src/syscall.rs
+  s_d637a88cd4b00d::t_15c25d07d0e1a9 1,3-7,10-39,90-96,225-228,239-309
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "297220351b6fa09084347ce08af0da95b37b4536",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
