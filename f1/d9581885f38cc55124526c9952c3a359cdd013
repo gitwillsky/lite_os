@@ -1,0 +1,39 @@
+kernel/src/timer.rs
+  s_d637a88cd4b00d::t_d669dcc65e52f1 1,18-19,80-90,92,157-160,163-164
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_a52f6dc3b369ad 10-11,14-16,22,35-36,43,48-50,54-102,105-118
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_28cc6f36b84339 21
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_c6ddde173129bb 14
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_d9f2b26b48e783 118-119
+docs/phase-7-signal-futex-time.md
+  s_d637a88cd4b00d::t_0642dbfcd67d4c 1-39
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_8fc77ee9dff5e1 15
+kernel/src/task/task.rs
+  s_d637a88cd4b00d::t_57fb51265c71db 522,530,533
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_67d022172a0bb3 374
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_bc59418a3b3052 7,20-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f1d9581885f38cc55124526c9952c3a359cdd013",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
