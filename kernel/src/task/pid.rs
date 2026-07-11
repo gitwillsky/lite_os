@@ -10,4 +10,12 @@ impl ProcessId {
     pub(crate) const fn init() -> Self {
         Self(INIT_PID)
     }
+
+    /// @description 由 TaskManager 的单一 PID allocator 构造动态 TGID。
+    ///
+    /// @param value 大于 INIT_PID 且从未分配过的数值。
+    /// @return 新 ProcessId；allocator 违反单调唯一性时由调用方 fail-stop。
+    pub(super) const fn allocated(value: usize) -> Self {
+        Self(value)
+    }
 }

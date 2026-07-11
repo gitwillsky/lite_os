@@ -14,6 +14,10 @@ pub(crate) const E2BIG: isize = 7;
 pub(crate) const ENOEXEC: isize = 8;
 /// 无效文件描述符。
 pub(crate) const EBADF: isize = 9;
+/// 没有匹配的 child process。
+pub(crate) const ECHILD: isize = 10;
+/// 暂时无法创建资源。
+pub(crate) const EAGAIN: isize = 11;
 /// 无法分配内存。
 pub(crate) const ENOMEM: isize = 12;
 /// 权限不足。

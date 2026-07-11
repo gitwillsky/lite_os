@@ -69,6 +69,18 @@ pub(crate) struct FileDescriptorTable {
 }
 
 impl FileDescriptorTable {
+    /// @description 复制 fd entries，同时保持每个 entry 共享原 OFD Arc。
+    ///
+    /// @return 成功返回独立 descriptor table；kernel heap 耗尽返回错误。
+    pub(crate) fn try_clone(&self) -> Result<Self, ()> {
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(self.entries.len())
+            .map_err(|_| ())?;
+        entries.extend(self.entries.iter().cloned());
+        Ok(Self { entries })
+    }
+
     pub(crate) fn with_console(console: Arc<dyn Console>) -> Self {
         Self {
             entries: vec![

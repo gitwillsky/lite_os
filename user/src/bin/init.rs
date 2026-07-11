@@ -5,9 +5,9 @@ extern crate user_lib;
 
 use user_lib::{
     AT_REMOVEDIR, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE, MAP_PRIVATE, O_CREAT, O_DIRECTORY, O_RDWR,
-    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, close, fstat, fsync, ftruncate, getdents64, lseek,
-    mkdirat, mmap, mprotect, munmap, openat, openat_from, read, renameat2, sched_yield, unlinkat,
-    unlinkat_from, write,
+    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, clone_process, close, exit_group, fstat, fsync,
+    ftruncate, getdents64, getppid, lseek, mkdirat, mmap, mprotect, munmap, openat, openat_from,
+    read, renameat2, sched_yield, unlinkat, unlinkat_from, wait4, write,
 };
 
 fn directory_contains(buffer: &[u8], name: &[u8]) -> bool {
@@ -82,6 +82,30 @@ extern "C" fn main(_argc: usize, _argv: *const *const u8, _envp: *const *const u
         false
     };
     let _ = write(1, if vma_ok { b"vma ok\n" } else { b"vma failed\n" });
+    let mut fork_probe = 0x51u8;
+    let child = clone_process();
+    if child == 0 {
+        fork_probe = 0x52;
+        exit_group(if getppid() == 1 && fork_probe == 0x52 {
+            23
+        } else {
+            24
+        });
+    }
+    let mut child_status = 0i32;
+    let process_ok = child > 0
+        && wait4(child, Some(&mut child_status), 0) == child
+        && child_status == 23 << 8
+        && fork_probe == 0x51
+        && wait4(child, None, 0) == -10;
+    let _ = write(
+        1,
+        if process_ok {
+            b"process ok\n"
+        } else {
+            b"process failed\n"
+        },
+    );
     let payload = b"ext2 read-write persistence\n";
     let previous = openat(b"/rw-check\0", O_RDWR, 0);
     if previous >= 0 {

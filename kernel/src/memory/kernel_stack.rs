@@ -1,4 +1,6 @@
-use super::{KERNEL_SPACE, KERNEL_STACK_SIZE, MapPermission, PAGE_SIZE, address::VirtualAddress};
+use super::{
+    KERNEL_SPACE, KERNEL_STACK_SIZE, MapPermission, MemoryError, PAGE_SIZE, address::VirtualAddress,
+};
 use crate::id::IdAllocator;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -10,6 +12,13 @@ pub(crate) struct KernelStack {
 
 impl KernelStack {
     pub(crate) fn new() -> Self {
+        Self::try_new().expect("Failed to allocate kernel stack memory")
+    }
+
+    /// @description 分配带 guard page 的 kernel stack，供可失败的 process 创建事务使用。
+    ///
+    /// @return 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
+    pub(crate) fn try_new() -> Result<Self, MemoryError> {
         let handle = KernelStackHandle(KernelStackHandleAllocator.lock().alloc());
         let (bottom, top) = kernel_stack_position(handle.0);
 
@@ -17,20 +26,16 @@ impl KernelStack {
         // 溢出将立刻触发缺页异常，便于定位问题
         let mapped_bottom = bottom + PAGE_SIZE;
 
-        KERNEL_SPACE
-            .wait()
-            .lock()
-            .insert_framed_area(
-                mapped_bottom.into(),
-                top.into(),
-                MapPermission::R | MapPermission::W,
-            )
-            .expect("Failed to allocate kernel stack memory");
+        KERNEL_SPACE.wait().lock().insert_framed_area(
+            mapped_bottom.into(),
+            top.into(),
+            MapPermission::R | MapPermission::W,
+        )?;
 
         super::mm::MemorySet::flush_tlb_all_cpus()
             .expect("SBI RFENCE failed after kernel stack mapping");
 
-        Self { handle }
+        Ok(Self { handle })
     }
 
     pub(crate) fn get_top(&self) -> usize {

@@ -364,6 +364,31 @@ impl MapArea {
         self.data_frames.append(&mut right.data_frames);
         self
     }
+
+    fn try_clone_into(&self, page_table: &mut PageTable) -> Result<Self, MemoryError> {
+        let mut cloned = Self {
+            vpn_range: self.vpn_range.clone(),
+            data_page_offset: self.data_page_offset,
+            data_frames: BTreeMap::new(),
+            map_type: self.map_type,
+            map_permission: self.map_permission,
+            global: self.global,
+            kind: self.kind,
+        };
+        if let Err(error) = cloned.map(page_table) {
+            cloned.unmap(page_table);
+            return Err(error);
+        }
+        for (vpn, source) in &self.data_frames {
+            cloned
+                .data_frames
+                .get_mut(vpn)
+                .expect("cloned framed VMA must own every source VPN")
+                .bytes_mut()
+                .copy_from_slice(source.bytes());
+        }
+        Ok(cloned)
+    }
 }
 
 #[derive(Debug)]
@@ -434,6 +459,19 @@ impl MemorySet {
 
     pub(crate) fn token(&self) -> usize {
         self.page_table.token()
+    }
+
+    /// @description 为 fork eager 深拷贝完整用户地址空间，保留 VMA 元数据但不共享物理页。
+    ///
+    /// @return 成功返回独立页表与 frame owner；OOM 时释放全部已复制 VMA。
+    pub(crate) fn try_clone_for_fork(&self) -> Result<Self, MemoryError> {
+        let mut cloned = Self::try_new()?;
+        cloned.map_trampoline()?;
+        for (key, area) in &self.areas {
+            let cloned_area = area.try_clone_into(&mut cloned.page_table)?;
+            assert!(cloned.areas.insert(*key, cloned_area).is_none());
+        }
+        Ok(cloned)
     }
 
     pub(crate) fn map_trampoline(&mut self) -> Result<(), MemoryError> {

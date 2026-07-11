@@ -1,9 +1,9 @@
 use core::arch::asm;
 use syscall_abi::{
-    SYSCALL_CLOSE, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC, SYSCALL_FTRUNCATE,
-    SYSCALL_GETDENTS64, SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_MMAP, SYSCALL_MPROTECT,
-    SYSCALL_MUNMAP, SYSCALL_OPENAT, SYSCALL_READ, SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD,
-    SYSCALL_UNLINKAT, SYSCALL_WRITE,
+    SYSCALL_CLONE, SYSCALL_CLOSE, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC,
+    SYSCALL_FTRUNCATE, SYSCALL_GETDENTS64, SYSCALL_GETPPID, SYSCALL_LSEEK, SYSCALL_MKDIRAT,
+    SYSCALL_MMAP, SYSCALL_MPROTECT, SYSCALL_MUNMAP, SYSCALL_OPENAT, SYSCALL_READ,
+    SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_UNLINKAT, SYSCALL_WAIT4, SYSCALL_WRITE,
 };
 
 pub const AT_FDCWD: isize = -100;
@@ -168,4 +168,29 @@ pub fn munmap(address: usize, length: usize) -> isize {
 /// @return 成功返回零，失败返回负 Linux errno。
 pub fn mprotect(address: usize, length: usize, prot: usize) -> isize {
     syscall(SYSCALL_MPROTECT, [address, length, prot, 0, 0, 0])
+}
+
+/// @description 以 Linux `clone(SIGCHLD, 0, 0, 0, 0)` 创建独立 child process。
+///
+/// @return parent 获得 child PID，child 获得零，失败为负 Linux errno。
+pub fn clone_process() -> isize {
+    syscall(SYSCALL_CLONE, [17, 0, 0, 0, 0, 0])
+}
+
+/// @description 返回当前 process 的 parent PID。
+///
+/// @return parent TGID；init 返回零。
+pub fn getppid() -> isize {
+    syscall(SYSCALL_GETPPID, [0, 0, 0, 0, 0, 0])
+}
+
+/// @description 等待指定 child 并取得 Linux wait status。
+///
+/// @param pid 正 child PID 或 `-1`。
+/// @param status 可选 wait status 输出。
+/// @param options 零或 `WNOHANG`。
+/// @return child PID、WNOHANG 的零，或负 Linux errno。
+pub fn wait4(pid: isize, status: Option<&mut i32>, options: usize) -> isize {
+    let status = status.map_or(0, |value| value as *mut i32 as usize);
+    syscall(SYSCALL_WAIT4, [pid as usize, status, options, 0, 0, 0])
 }
