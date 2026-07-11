@@ -48,25 +48,40 @@ pub trait InterruptController: Send + Sync {
 pub struct PlicInterruptController {
     base_addr: usize,
     max_interrupts: u32,
-    num_contexts: u32,
+    num_harts: u32,
     handlers: BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>,
+    affinities: BTreeMap<InterruptVector, usize>,
 }
 
 impl PlicInterruptController {
     pub fn new(
         base_addr: usize,
+        size: usize,
         max_interrupts: u32,
-        num_contexts: u32,
+        num_harts: u32,
     ) -> Result<Self, InterruptError> {
-        if base_addr == 0 {
+        let last_context = Self::supervisor_context(num_harts.saturating_sub(1));
+        let required_context_bytes = 0x200004usize
+            .checked_add(last_context as usize * 0x1000)
+            .and_then(|offset| offset.checked_add(4));
+        let required_priority_bytes = (max_interrupts as usize)
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(4));
+        if base_addr == 0
+            || num_harts == 0
+            || base_addr.checked_add(size).is_none()
+            || required_context_bytes.is_none_or(|required| required > size)
+            || required_priority_bytes.is_none_or(|required| required > size)
+        {
             return Err(InterruptError::InvalidVector);
         }
 
         let controller = Self {
             base_addr,
             max_interrupts,
-            num_contexts,
+            num_harts,
             handlers: BTreeMap::new(),
+            affinities: BTreeMap::new(),
         };
 
         controller.init_hardware()?;
@@ -74,12 +89,8 @@ impl PlicInterruptController {
     }
 
     fn init_hardware(&self) -> Result<(), InterruptError> {
-        for vector in 1..=self.max_interrupts {
-            self.set_interrupt_priority_raw(vector, 0);
-        }
-
-        for context in 0..self.num_contexts {
-            self.set_threshold(context, 0);
+        for hart in 0..self.num_harts {
+            self.set_threshold(Self::supervisor_context(hart), 0);
         }
 
         Ok(())
@@ -101,28 +112,24 @@ impl PlicInterruptController {
         self.base_addr + 0x200004 + (context as usize * 0x1000)
     }
 
+    fn supervisor_context(hart: u32) -> u32 {
+        hart * 2 + 1
+    }
+
     fn set_interrupt_priority_raw(&self, vector: u32, priority: u32) {
         if vector == 0 || vector > self.max_interrupts {
             return;
         }
 
         let addr = self.priority_offset(vector);
+        // SAFETY: `new` 已验证 priority 数组位于 DTB PLIC MMIO 区间，vector 也已检查。
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, priority);
         }
     }
 
-    fn get_interrupt_priority_raw(&self, vector: u32) -> u32 {
-        if vector == 0 || vector > self.max_interrupts {
-            return 0;
-        }
-
-        let addr = self.priority_offset(vector);
-        unsafe { core::ptr::read_volatile(addr as *const u32) }
-    }
-
     fn enable_interrupt_for_context(&self, vector: u32, context: u32, enable: bool) {
-        if vector > self.max_interrupts || context >= self.num_contexts {
+        if vector == 0 || vector > self.max_interrupts {
             return;
         }
 
@@ -130,6 +137,7 @@ impl PlicInterruptController {
         let bit = vector % 32;
         let addr = self.enable_offset(context) + (word as usize * 4);
 
+        // SAFETY: context 只由已验证的 hart 生成，vector 在范围内；PLIC MMIO 必须 volatile。
         unsafe {
             let mut current = core::ptr::read_volatile(addr as *const u32);
             if enable {
@@ -142,31 +150,22 @@ impl PlicInterruptController {
     }
 
     fn set_threshold(&self, context: u32, threshold: u32) {
-        if context >= self.num_contexts {
-            return;
-        }
-
         let addr = self.threshold_offset(context);
+        // SAFETY: context 只由已验证的 hart 生成，`new` 已检查 context 窗口边界。
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, threshold);
         }
     }
 
     fn claim_interrupt(&self, context: u32) -> u32 {
-        if context >= self.num_contexts {
-            return 0;
-        }
-
         let addr = self.claim_offset(context);
+        // SAFETY: context 位于已验证的 PLIC MMIO 区间；claim 是 volatile 设备读取。
         unsafe { core::ptr::read_volatile(addr as *const u32) }
     }
 
     fn complete_interrupt(&self, context: u32, vector: u32) {
-        if context >= self.num_contexts {
-            return;
-        }
-
         let addr = self.claim_offset(context);
+        // SAFETY: context 位于已验证的 PLIC MMIO 区间；complete 是 volatile 设备写入。
         unsafe {
             core::ptr::write_volatile(addr as *mut u32, vector);
         }
@@ -196,8 +195,13 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::HandlerNotSet);
         }
 
-        for context in 0..self.num_contexts {
-            self.enable_interrupt_for_context(vector, context, true);
+        let affinity = self.affinities.get(&vector).copied().unwrap_or(1);
+        for hart in 0..self.num_harts {
+            self.enable_interrupt_for_context(
+                vector,
+                Self::supervisor_context(hart),
+                affinity & (1usize << hart) != 0,
+            );
         }
 
         Ok(())
@@ -223,33 +227,38 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
 
-        for context in 0..self.num_contexts {
-            let enable = (cpu_mask & (1 << context)) != 0;
-            self.enable_interrupt_for_context(vector, context, enable);
+        self.affinities.insert(vector, cpu_mask);
+        for hart in 0..self.num_harts {
+            let enable = (cpu_mask & (1 << hart)) != 0;
+            self.enable_interrupt_for_context(vector, Self::supervisor_context(hart), enable);
         }
 
         Ok(())
     }
 
     fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError> {
+        let hart = crate::arch::hart::hart_id() as u32;
+        if hart >= self.num_harts {
+            return Err(InterruptError::InvalidVector);
+        }
+        let context = Self::supervisor_context(hart);
         let mut first_error = None;
-        for context in 0..self.num_contexts {
-            loop {
-                let vector = self.claim_interrupt(context);
-                if vector == 0 {
-                    break;
-                }
-                // 1. 只在查表期间持 handlers 锁；设备 handler 不得反向依赖该表。
-                let handler = self.handlers.get(&vector).cloned();
-                // 2. handler 在无 PLIC 内部锁时执行，当前实现只做设备 MMIO ack。
-                let result = handler
-                    .ok_or(InterruptError::HandlerNotSet)
-                    .and_then(|handler| handler.handle_interrupt(vector));
-                // 3. handler 完成后再通知 PLIC；提前 complete 会允许同一 IRQ 在状态未清除时重入。
-                self.complete_interrupt(context, vector);
-                if first_error.is_none() {
-                    first_error = result.err();
-                }
+        loop {
+            let vector = self.claim_interrupt(context);
+            if vector == 0 {
+                break;
+            }
+            // 1. claim 只读取当前 hart 的 S-mode context，不代理其他 hart 消费 IRQ。
+            let result = self
+                .handlers
+                .get(&vector)
+                .cloned()
+                .ok_or(InterruptError::HandlerNotSet)
+                .and_then(|handler| handler.handle_interrupt(vector));
+            // 2. 设备 ack 后再 complete，避免 level IRQ 在设备状态未清除时重入。
+            self.complete_interrupt(context, vector);
+            if first_error.is_none() {
+                first_error = result.err();
             }
         }
         first_error.map_or(Ok(()), Err)

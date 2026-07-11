@@ -14,7 +14,7 @@ use riscv::{
 };
 
 use crate::{
-    drivers::device_manager::{self},
+    drivers::platform,
     memory::TRAMPOLINE,
     syscall,
     task::{self, exit_current_and_run_next},
@@ -55,7 +55,7 @@ pub fn trap_handler() {
                     softirq::raise(softirq::SoftIrq::Timer);
                 }
                 Interrupt::SupervisorExternal => {
-                    device_manager::handle_external_interrupt();
+                    platform::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
                     handle_supervisor_soft_interrupt();
@@ -244,9 +244,9 @@ extern "C" fn rust_trap_from_kernel() {
                         softirq::raise(softirq::SoftIrq::Timer);
                     }
                     Interrupt::SupervisorExternal => {
-                        // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
-                        // 以便唤醒内核态等待 I/O 的任务，避免死等导致看门狗触发。
-                        device_manager::handle_external_interrupt();
+                        // 内核态 VirtIO 同步 I/O 可以被 external IRQ 打断；
+                        // 此处只确认设备/PLIC 状态，不在 hardirq 中调度。
+                        platform::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
                         handle_supervisor_soft_interrupt();

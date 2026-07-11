@@ -1,0 +1,203 @@
+use alloc::boxed::Box;
+
+use crate::arch::dtb::{BoardInfo, board_info};
+use crate::drivers::block::{get_primary_block_device, register_block_device};
+use crate::drivers::hal::bus::MmioBus;
+use crate::drivers::hal::interrupt::{
+    InterruptController, InterruptHandler, PlicInterruptController,
+};
+use crate::drivers::virtio_blk::VirtIOBlockDevice;
+use crate::fs::Ext2FileSystem;
+use crate::fs::vfs::vfs;
+use crate::sync::IrqMutex;
+
+/// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
+static INTERRUPT_CONTROLLER: spin::Once<IrqMutex<Box<dyn InterruptController>>> = spin::Once::new();
+
+fn interrupt_controller() -> Option<&'static IrqMutex<Box<dyn InterruptController>>> {
+    INTERRUPT_CONTROLLER.get()
+}
+
+fn init_interrupt_controller() {
+    let Some(plic) = board_info().plic_device.as_ref() else {
+        return;
+    };
+    match PlicInterruptController::new(plic.base_addr, plic.size, 1024, 8) {
+        Ok(controller) => {
+            INTERRUPT_CONTROLLER
+                .call_once(|| IrqMutex::new(Box::new(controller) as Box<dyn InterruptController>));
+        }
+        Err(error) => error!("[Platform] PLIC initialization failed: {:?}", error),
+    }
+}
+
+/// 系统初始化入口点
+pub fn init() {
+    init_interrupt_controller();
+    // 扫描和初始化设备
+    scan_and_init_devices();
+    // 初始化文件系统
+    init_filesystems();
+    info!("[Platform] Device initialization completed");
+}
+
+/// 扫描并初始化所有设备
+fn scan_and_init_devices() {
+    let board_info = board_info();
+
+    // 初始化VirtIO设备
+    init_virtio_devices(&board_info);
+}
+
+/// 初始化VirtIO设备
+fn init_virtio_devices(board_info: &BoardInfo) {
+    info!(
+        "[Platform] Scanning {} VirtIO devices",
+        board_info.virtio_count
+    );
+    info!("[Platform] Board info debug:\n{}", board_info);
+
+    for i in 0..board_info.virtio_count {
+        if let Some(virtio_dev) = &board_info.virtio_devices[i] {
+            let base_addr = virtio_dev.base_addr;
+            info!(
+                "[Platform] Attempting to probe VirtIO device {} at {:#x}, size={:#x}",
+                i, base_addr, virtio_dev.size
+            );
+            info!(
+                "[Platform] Processing VirtIO device {}/{}",
+                i + 1,
+                board_info.virtio_count
+            );
+
+            let Some(device_id) = read_virtio_device_id(base_addr, virtio_dev.size) else {
+                warn!("[Platform] Invalid VirtIO MMIO window at {:#x}", base_addr);
+                continue;
+            };
+            info!(
+                "[Platform] VirtIO device {} has device ID: {:#x}",
+                i, device_id
+            );
+
+            match device_id {
+                2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
+                _ => info!(
+                    "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
+                    device_id, base_addr
+                ),
+            }
+        }
+    }
+}
+
+#[inline]
+fn read_virtio_device_id(base_addr: usize, size: usize) -> Option<u32> {
+    MmioBus::new(base_addr, size).ok()?.read_u32(0x08).ok()
+}
+
+fn maybe_register_irq(
+    board_info: &BoardInfo,
+    irq: u32,
+    handler: alloc::sync::Arc<dyn InterruptHandler>,
+    label: &str,
+) {
+    if board_info.plic_device.is_none() || irq == 0 {
+        return;
+    }
+
+    if let Some(controller) = interrupt_controller() {
+        let mut ctrl = controller.lock();
+        let res = if let Err(e) = ctrl.register_handler(irq, handler.clone()) {
+            error!(
+                "[Platform] Failed to register {} IRQ handler: {:?}",
+                label, e
+            );
+            Err(())
+        } else if let Err(e) = ctrl.set_priority(irq) {
+            error!("[Platform] Failed to set {} IRQ priority: {:?}", label, e);
+            Err(())
+        } else if ctrl.supports_cpu_affinity() {
+            if let Err(e) = ctrl.set_affinity(irq, 1 << 0) {
+                warn!("[Platform] Failed to set {} IRQ affinity: {:?}", label, e);
+            } else {
+                info!("[Platform] Set {} IRQ affinity to CPU0", label);
+            }
+            if let Err(e) = ctrl.enable_interrupt(irq) {
+                error!("[Platform] Failed to enable {} IRQ {}: {:?}", label, irq, e);
+                Err(())
+            } else {
+                info!(
+                    "[Platform] Registered {} IRQ handler on vector {}",
+                    label, irq
+                );
+                Ok(())
+            }
+        } else if let Err(e) = ctrl.enable_interrupt(irq) {
+            error!("[Platform] Failed to enable {} IRQ {}: {:?}", label, irq, e);
+            Err(())
+        } else {
+            info!(
+                "[Platform] Registered {} IRQ handler on vector {}",
+                label, irq
+            );
+            Ok(())
+        };
+        drop(ctrl);
+        let _ = res;
+    }
+}
+
+fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+    info!("[Platform] Creating VirtIOBlockDevice at {:#x}", base_addr);
+    if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
+        let virtio_arc = virtio_block.clone();
+        match register_block_device(virtio_arc.clone()) {
+            Ok(device_id) => {
+                info!(
+                    "[Platform] VirtIO Block device #{} registered at {:#x}",
+                    device_id, base_addr
+                );
+            }
+            Err(e) => {
+                error!("[Platform] Failed to register block device: {:?}", e);
+            }
+        }
+        maybe_register_irq(board_info, irq, virtio_block.irq_handler_for(), "blk");
+    } else {
+        warn!(
+            "[Platform] Failed to create VirtIO Block device at {:#x}",
+            base_addr
+        );
+    }
+}
+
+/// 初始化文件系统
+fn init_filesystems() {
+    let Some(primary_device) = get_primary_block_device() else {
+        warn!("[Platform] No block devices found for filesystem initialization");
+        return;
+    };
+    info!("[Platform] Attempting filesystem initialization on primary block device");
+
+    match Ext2FileSystem::new(primary_device) {
+        Ok(ext2_fs) => match vfs().mount_root(ext2_fs) {
+            Ok(()) => info!("[Platform] Ext2 filesystem mounted successfully at /"),
+            Err(e) => error!("[Platform] Ext2 root mount failed: {:?}", e),
+        },
+        Err(e) => {
+            error!("[Platform] Ext2 filesystem initialization failed: {:?}", e);
+        }
+    }
+}
+
+/// 处理外部中断
+pub fn handle_external_interrupt() {
+    // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
+    if let Some(controller) = interrupt_controller() {
+        let result = controller.lock().handle_pending_interrupts();
+        if let Err(e) = result {
+            #[cfg(debug_assertions)]
+            debug!("[Platform] Interrupt handling failed: {:?}", e);
+        }
+    }
+}
