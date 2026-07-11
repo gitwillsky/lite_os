@@ -10,7 +10,7 @@ use crate::{
     arch::hart::{self, hart_id},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
-        Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
+        PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         pid::{INIT_PID, ProcessId},
         processor::{enqueue_new_task, request_reschedule},
@@ -128,6 +128,7 @@ enum IndexedWaitKind {
     Deadline,
     Futex { tgid: usize, address: usize },
     Console,
+    Signal { mask: u64 },
 }
 
 struct IndexedWaitEntry {
@@ -224,6 +225,31 @@ impl IndexedWaitQueue {
         id
     }
 
+    fn insert_signal(
+        &mut self,
+        mask: u64,
+        deadline: Option<u64>,
+        task: Arc<TaskControlBlock>,
+    ) -> u64 {
+        let id = self.allocate_id();
+        if let Some(deadline) = deadline {
+            assert!(self.deadline_index.insert((deadline, id)));
+        }
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Signal { mask },
+                        deadline,
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
     fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
         let entry = self.entries.remove(&id)?;
         if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
@@ -311,10 +337,39 @@ pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Resu
     if signal == 0 {
         Ok(())
     } else {
-        target.queue_signal(signal)?;
+        let sender = current_task().map_or(0, |task| task.tgid());
+        target.queue_signal(signal, PendingSignal::thread_directed(sender))?;
+        wake_signal_waiter(&target);
         interrupt_waiting_task(&target);
         Ok(())
     }
+}
+
+/// @description signal 发布后从统一 registry 消费匹配的 `rt_sigtimedwait` registration。
+///
+/// @param task 已持有新 pending signal 的目标 Thread。
+/// @return 成功取得并唤醒一个匹配 waiter 时返回 true。
+fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
+    let waiter = {
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let Some(WaitMembership::Signal(id)) = task.scheduling.state.lock().wait else {
+            return false;
+        };
+        // entry 已被另一个 waker 移除、membership 尚未清除是合法的短暂状态；若在这里
+        // panic，SMP 下 matching signal 与 timeout 竞争会把 stale wake 误判成 owner 损坏。
+        let Some(entry) = queue.entries.get(&id) else {
+            return false;
+        };
+        let IndexedWaitKind::Signal { mask } = entry.kind else {
+            panic!("signal wait membership has divergent registry kind");
+        };
+        task.with_pending_signal(mask, || queue.remove(id))
+            .flatten()
+    };
+    waiter.is_some_and(|entry| {
+        assert!(Arc::ptr_eq(&entry.task, task));
+        crate::task::processor::wake_signal_task(entry.task, WaitResult::Woken)
+    })
 }
 
 /// @description 从当前唯一 wait owner 取消目标 task 的 interruptible wait。
@@ -330,7 +385,8 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                 Some(
                     wait @ (WaitMembership::Deadline(id)
                     | WaitMembership::Futex(id)
-                    | WaitMembership::Console(id)),
+                    | WaitMembership::Console(id)
+                    | WaitMembership::Signal(id)),
                 ) => queue.remove(id).map(|entry| (id, wait, entry)),
                 _ => None,
             }
@@ -359,6 +415,10 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             (WaitMembership::Console(id), IndexedWaitKind::Console) => {
                 assert_eq!(id, wait_id);
                 crate::task::processor::wake_console_task(entry.task, wait_id)
+            }
+            (WaitMembership::Signal(id), IndexedWaitKind::Signal { .. }) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_signal_task(entry.task, WaitResult::Interrupted)
             }
             _ => panic!("indexed wait kind diverged from task membership"),
         };
@@ -701,6 +761,9 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
                 crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
             }
             IndexedWaitKind::Console => panic!("console wait cannot carry a deadline"),
+            IndexedWaitKind::Signal { .. } => {
+                crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
+            }
         };
         if woke {
             count += 1;
@@ -778,6 +841,72 @@ fn wake_console_waiters() -> usize {
         };
         if crate::task::processor::wake_console_task(task, wait_id) {
             count += 1;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignalWaitError {
+    Again,
+    Interrupted,
+}
+
+/// @description 在统一 wait registry 中等待并消费一个指定 pending signal。
+///
+/// @param mask 用户提供且已去除 SIGKILL/SIGSTOP 的 signal set。
+/// @param deadline 可选 absolute monotonic deadline；None 表示无限等待。
+/// @return 匹配 signal number 与 siginfo 来源。
+/// @errors zero/到期 timeout 返回 Again；无关的可交付 signal 返回 Interrupted。
+pub(crate) fn wait_for_signal(
+    mask: u64,
+    deadline: Option<u64>,
+) -> Result<(usize, PendingSignal), SignalWaitError> {
+    let task = current_task().expect("signal wait requires current task");
+    let cpu = hart_id();
+    loop {
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        if let Some(signal) = task.take_pending_signal(mask) {
+            return Ok(signal);
+        }
+        if deadline.is_some_and(|value| value <= get_time_ns()) {
+            return Err(SignalWaitError::Again);
+        }
+        if task.has_deliverable_signal() {
+            return Err(SignalWaitError::Interrupted);
+        }
+
+        let end_time = get_time_us();
+        let mut sched = task.scheduling.policy.lock();
+        let runtime = end_time.saturating_sub(sched.last_runtime);
+        sched.update_vruntime(runtime);
+        drop(sched);
+        with_current_processor(|processor| {
+            let current = processor
+                .current
+                .take()
+                .expect("signal wait requires current task");
+            assert!(Arc::ptr_eq(&current, &task));
+            let mut scheduling = task.scheduling.state.lock();
+            assert_eq!(scheduling.run_state, RunState::Running { cpu });
+            assert!(scheduling.wait.is_none());
+            assert!(scheduling.wait_result.is_none());
+            let wait_id = queue.insert_signal(mask, deadline, current);
+            scheduling.wait = Some(WaitMembership::Signal(wait_id));
+            scheduling.run_state = RunState::Blocking { cpu };
+        });
+        drop(queue);
+        schedule_with_task_context(task.clone());
+        let result = task
+            .scheduling
+            .state
+            .lock()
+            .wait_result
+            .take()
+            .expect("signal waiter resumed without a wake result");
+        match result {
+            WaitResult::Woken => {}
+            WaitResult::TimedOut => return Err(SignalWaitError::Again),
+            WaitResult::Interrupted => return Err(SignalWaitError::Interrupted),
         }
     }
 }
@@ -990,7 +1119,7 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         scheduling.run_state = RunState::Exited;
     };
     task.cleanup_robust_list();
-    let (removed, last_thread, parent_waiter, init_waiter) = {
+    let (removed, last_thread, parent_waiter, init_waiter, parent_signal_target) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let exiting_pid = task.tgid();
         let (removed, last_thread, parent) = {
@@ -1015,7 +1144,7 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         assert!(Arc::ptr_eq(&removed, &task));
 
         if !last_thread {
-            (removed, false, None, None)
+            (removed, false, None, None, None)
         } else {
             // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
             if exiting_pid != INIT_PID {
@@ -1032,6 +1161,13 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
                     .get_mut(&pid)
                     .and_then(|parent| parent.waiter.take())
             });
+            let parent_signal_target = parent.and_then(|pid| {
+                let parent = graph.nodes.get(&pid)?;
+                let ProcessState::Live(threads) = &parent.state else {
+                    return None;
+                };
+                threads.values().next().cloned()
+            });
             let adopted_exited = exiting_pid != INIT_PID
                 && graph.nodes.values().any(|child| {
                     child.parent == Some(INIT_PID) && matches!(child.state, ProcessState::Exited(_))
@@ -1044,7 +1180,13 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
                         .and_then(|init| init.waiter.take())
                 })
                 .flatten();
-            (removed, true, parent_waiter, init_waiter)
+            (
+                removed,
+                true,
+                parent_waiter,
+                init_waiter,
+                parent_signal_target,
+            )
         }
     };
     // 1. process graph 先注销 Thread owner，再发布 clear-child-tid completion。
@@ -1061,6 +1203,13 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
     }
     for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
         crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
+    }
+    if let Some(parent) = parent_signal_target {
+        parent
+            .queue_signal(17, PendingSignal::child_exited(task.tgid(), exit_code))
+            .expect("SIGCHLD number must be valid");
+        wake_signal_waiter(&parent);
+        interrupt_waiting_task(&parent);
     }
 
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);

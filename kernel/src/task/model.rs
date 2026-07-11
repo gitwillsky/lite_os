@@ -31,6 +31,7 @@ pub(crate) enum WaitMembership {
     Child,
     Futex(u64),
     Console(u64),
+    Signal(u64),
 }
 
 /// @description blocked task 恢复时由唯一 wait registration 发布的结果。
@@ -64,6 +65,79 @@ fn normalize_signal_mask(mask: u64) -> u64 {
 
 fn signal_is_ignored(signal: usize, action: LinuxSigAction) -> bool {
     action.handler == 1 || signal == 17 && action.handler == 0
+}
+
+/// @description coalesced standard signal 随 pending bit 保存的最小 Linux siginfo 来源。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PendingSignal {
+    code: i32,
+    pid: i32,
+    status: i32,
+}
+
+impl PendingSignal {
+    /// @description 构造 thread-directed signal 的 `SI_TKILL` 来源。
+    ///
+    /// @param pid 发送者 thread group ID。
+    /// @return 可用于 signal frame 或 `rt_sigtimedwait` 的来源。
+    pub(crate) fn thread_directed(pid: usize) -> Self {
+        Self {
+            code: -6,
+            pid: pid as i32,
+            status: 0,
+        }
+    }
+
+    /// @description 构造正常退出 child 的 `CLD_EXITED` 来源。
+    ///
+    /// @param pid 退出 child 的 thread group ID。
+    /// @param status child exit status。
+    /// @return SIGCHLD 的来源。
+    pub(crate) fn child_exited(pid: usize, status: i32) -> Self {
+        Self {
+            code: 1,
+            pid: pid as i32,
+            status,
+        }
+    }
+
+    /// @description 编码 Linux RV64 128-byte `siginfo_t` 公共头与 kill/SIGCHLD union 字段。
+    ///
+    /// @param signal Linux signal number。
+    /// @return 完整零初始化的 ABI 字节。
+    pub(crate) fn encode(self, signal: usize) -> [u8; 128] {
+        let mut bytes = [0u8; 128];
+        bytes[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
+        bytes[8..12].copy_from_slice(&self.code.to_ne_bytes());
+        bytes[16..20].copy_from_slice(&self.pid.to_ne_bytes());
+        bytes[24..28].copy_from_slice(&self.status.to_ne_bytes());
+        bytes
+    }
+}
+
+#[derive(Debug)]
+struct PendingSignals {
+    bits: u64,
+    info: [PendingSignal; 65],
+}
+
+impl PendingSignals {
+    fn new() -> Self {
+        Self {
+            bits: 0,
+            info: [PendingSignal::default(); 65],
+        }
+    }
+
+    fn take(&mut self, mask: u64) -> Option<(usize, PendingSignal)> {
+        let available = self.bits & mask;
+        if available == 0 {
+            return None;
+        }
+        let signal = available.trailing_zeros() as usize + 1;
+        self.bits &= !(1u64 << (signal - 1));
+        Some((signal, self.info[signal]))
+    }
 }
 
 #[repr(C)]
@@ -209,7 +283,8 @@ struct ThreadContext {
     clear_child_tid: Mutex<Option<usize>>,
     robust_list: Mutex<Option<usize>>,
     signal_mask: Mutex<u64>,
-    pending_signals: Mutex<u64>,
+    // OWNER: pending bit 与首个 siginfo 必须同锁发布；拆开会让 sigtimedwait 观察到错误来源。
+    pending_signals: Mutex<PendingSignals>,
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
     // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<Option<SyscallRestart>>,
@@ -347,7 +422,7 @@ impl TaskControlBlock {
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(0),
-                pending_signals: Mutex::new(0),
+                pending_signals: Mutex::new(PendingSignals::new()),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -431,7 +506,7 @@ impl TaskControlBlock {
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
-                pending_signals: Mutex::new(0),
+                pending_signals: Mutex::new(PendingSignals::new()),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -506,7 +581,7 @@ impl TaskControlBlock {
                 clear_child_tid: Mutex::new(clear_child_tid),
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
-                pending_signals: Mutex::new(0),
+                pending_signals: Mutex::new(PendingSignals::new()),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -585,22 +660,48 @@ impl TaskControlBlock {
         Ok(old)
     }
 
-    /// @description 将 standard signal 合并进当前 Thread 的 pending bitset。
+    /// @description 将 standard signal 及首个来源合并进当前 Thread 的 pending state。
     ///
     /// @param signal Linux signal number。
     /// @return signal 成功合并或按 disposition 丢弃时返回 `Ok(())`。
     /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
-    pub(super) fn queue_signal(&self, signal: usize) -> Result<(), ()> {
+    pub(super) fn queue_signal(&self, signal: usize, info: PendingSignal) -> Result<(), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
         let action = self.process.signal_actions.lock()[signal];
-        if signal_is_ignored(signal, action) {
+        if action.handler == 1 {
             return Ok(());
         }
         let bit = 1u64 << (signal - 1);
-        *self.thread.pending_signals.lock() |= bit;
+        let mut pending = self.thread.pending_signals.lock();
+        if pending.bits & bit == 0 {
+            pending.info[signal] = info;
+            pending.bits |= bit;
+        }
         Ok(())
+    }
+
+    /// @description 原子检查给定 signal set 是否含 pending signal，并在成立时执行短操作。
+    ///
+    /// @param mask `rt_sigtimedwait` 正在等待的 signal set。
+    /// @param action 与统一 wait owner lock 配合的非阻塞操作。
+    /// @return set 中有 pending signal 时返回操作结果，否则返回 None。
+    pub(super) fn with_pending_signal<T>(
+        &self,
+        mask: u64,
+        action: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let pending = self.thread.pending_signals.lock();
+        (pending.bits & mask != 0).then(action)
+    }
+
+    /// @description 消费 signal set 中编号最小的 coalesced standard signal。
+    ///
+    /// @param mask 待消费的 signal set。
+    /// @return signal number 与其首个 siginfo 来源；没有匹配时返回 None。
+    pub(super) fn take_pending_signal(&self, mask: u64) -> Option<(usize, PendingSignal)> {
+        self.thread.pending_signals.lock().take(mask)
     }
 
     /// @description 查询当前 Thread 是否有未屏蔽 pending signal。
@@ -617,7 +718,7 @@ impl TaskControlBlock {
     pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
         let mask = self.thread.signal_mask.lock();
         let pending = self.thread.pending_signals.lock();
-        (*pending & !*mask != 0).then(action)
+        (pending.bits & !*mask != 0).then(action)
     }
 
     /// @description 登记一次已转换为 userspace `EINTR` 的可重启 syscall。
@@ -648,15 +749,11 @@ impl TaskControlBlock {
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
             let old_mask = *self.thread.signal_mask.lock();
-            let mut pending = self.thread.pending_signals.lock();
-            let available = *pending & !old_mask;
-            if available == 0 {
+            let Some((signal, signal_info)) = self.thread.pending_signals.lock().take(!old_mask)
+            else {
                 self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::None);
-            }
-            let signal = available.trailing_zeros() as usize + 1;
-            *pending &= !(1u64 << (signal - 1));
-            drop(pending);
+            };
             let action = self.process.signal_actions.lock()[signal];
             if signal_is_ignored(signal, action) {
                 continue;
@@ -696,11 +793,8 @@ impl TaskControlBlock {
                 fp[index * 8..index * 8 + 8].copy_from_slice(&value.to_ne_bytes());
             }
             fp[256..260].copy_from_slice(&(context.fcsr as u32).to_ne_bytes());
-            let mut info = [0u8; 128];
-            info[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
-            info[8..12].copy_from_slice(&(-6i32).to_ne_bytes());
             let frame = LinuxRtSignalFrame {
-                info,
+                info: signal_info.encode(signal),
                 context: LinuxUContext {
                     flags: 0,
                     link: 0,

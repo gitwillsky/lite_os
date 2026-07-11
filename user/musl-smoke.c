@@ -72,11 +72,15 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_futex_failed[] = "LiteOS musl restart futex failed\n";
 	static const char restart_wait_failed[] = "LiteOS musl restart wait failed\n";
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
+	static const char sigwait_failed[] = "LiteOS musl sigwait failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
 	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
+	const struct timespec poll_timeout = { 0 };
 	struct sigaction action = { .sa_handler = signal_handler };
+	siginfo_t signal_info;
+	sigset_t wait_set;
 	struct timespec deadline;
 	struct timespec now;
 	struct timespec remaining = { 0 };
@@ -217,6 +221,30 @@ int main(int argc, char **argv, char **envp)
 	    || thread_result != (void *)(uintptr_t)0x534a) {
 		write(STDOUT_FILENO, restart_sleep_failed, sizeof restart_sleep_failed - 1);
 		return 10;
+	}
+	sigemptyset(&wait_set);
+	sigaddset(&wait_set, SIGUSR2);
+	sigaddset(&wait_set, SIGCHLD);
+	if (pthread_sigmask(SIG_BLOCK, &wait_set, 0) != 0) {
+		write(STDOUT_FILENO, sigwait_failed, sizeof sigwait_failed - 1);
+		return 11;
+	}
+	errno = 0;
+	if (sigtimedwait(&wait_set, &signal_info, &poll_timeout) != -1 || errno != EAGAIN
+	    || syscall(SYS_tgkill, getpid(), main_tid, SIGUSR2) != 0
+	    || sigwaitinfo(&wait_set, &signal_info) != SIGUSR2
+	    || signal_info.si_code != SI_TKILL || signal_info.si_pid != getpid()) {
+		write(STDOUT_FILENO, sigwait_failed, sizeof sigwait_failed - 1);
+		return 11;
+	}
+	child = fork();
+	if (child == 0) _exit(31);
+	if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
+	    || signal_info.si_code != CLD_EXITED || signal_info.si_pid != child
+	    || signal_info.si_status != 31 || waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 31) {
+		write(STDOUT_FILENO, sigwait_failed, sizeof sigwait_failed - 1);
+		return 11;
 	}
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 11;
 	return 0;

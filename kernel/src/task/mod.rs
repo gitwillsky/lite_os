@@ -14,7 +14,8 @@ mod trap_context;
 
 pub(crate) use loader::{ProgramLoadError, load_program_from_fs, load_program_from_inode};
 pub(crate) use model::{
-    LinuxSigAction, RunState, SignalDelivery, TaskControlBlock, WaitMembership, WaitResult,
+    LinuxSigAction, PendingSignal, RunState, SignalDelivery, TaskControlBlock, WaitMembership,
+    WaitResult,
 };
 pub(crate) use processor::*;
 pub(crate) use task_manager::*;

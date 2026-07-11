@@ -312,6 +312,7 @@ def main() -> int:
                     b"\necho LITEOS_BUSYBOX_SHELL_$((6*7))\n",
                 ),
             ),
+            forbidden_markers=("unsupported syscall_id: 137",),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)

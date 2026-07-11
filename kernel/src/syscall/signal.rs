@@ -1,7 +1,9 @@
 use crate::{
     syscall::errno,
-    task::{LinuxSigAction, current_task, send_thread_signal},
+    task::{LinuxSigAction, SignalWaitError, current_task, send_thread_signal, wait_for_signal},
 };
+
+use super::timer::{TimeSpec, decode_timespec};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -117,6 +119,72 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
         return send_thread_signal(tgid, tid, 0).map_or(-errno::ESRCH, |()| 0);
     }
     send_thread_signal(tgid, tid, signal).map_or(-errno::ESRCH, |()| 0)
+}
+
+/// @description 实现 Linux RV64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。
+///
+/// @param set 8-byte signal set 地址。
+/// @param info 可选 128-byte `siginfo_t` 输出地址。
+/// @param timeout 可选相对 monotonic `timespec` 地址；零表示无限等待。
+/// @param signal_set_size userspace sigset 大小，必须为 8。
+/// @return 成功返回 signal number；timeout、无关 signal 或用户内存错误返回负 errno。
+pub(crate) fn sys_rt_sigtimedwait(
+    set: usize,
+    info: usize,
+    timeout: usize,
+    signal_set_size: usize,
+) -> isize {
+    if signal_set_size != 8 {
+        return -errno::EINVAL;
+    }
+    if set == 0 {
+        return -errno::EFAULT;
+    }
+    let task = current_task().expect("rt_sigtimedwait requires current task");
+    let mut set_bytes = [0u8; 8];
+    if task.copy_from_user(set, &mut set_bytes).is_err() {
+        return -errno::EFAULT;
+    }
+    let unblockable = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
+    let mask = u64::from_ne_bytes(set_bytes) & !unblockable;
+    let deadline = if timeout == 0 {
+        None
+    } else {
+        let mut bytes = [0u8; core::mem::size_of::<TimeSpec>()];
+        if task.copy_from_user(timeout, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let timeout = decode_timespec(&bytes);
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return -errno::EINVAL;
+        }
+        let Some(relative) = timeout
+            .tv_sec
+            .checked_mul(1_000_000_000)
+            .and_then(|seconds| seconds.checked_add(timeout.tv_nsec))
+            .and_then(|value| u64::try_from(value).ok())
+        else {
+            return -errno::EINVAL;
+        };
+        let Some(deadline) = crate::timer::get_time_ns().checked_add(relative) else {
+            return -errno::EINVAL;
+        };
+        Some(deadline)
+    };
+    drop(task);
+
+    let (signal, pending) = match wait_for_signal(mask, deadline) {
+        Ok(signal) => signal,
+        Err(SignalWaitError::Again) => return -errno::EAGAIN,
+        Err(SignalWaitError::Interrupted) => return -errno::EINTR,
+    };
+    if info != 0 {
+        let task = current_task().expect("rt_sigtimedwait resumed without current task");
+        if task.copy_to_user(info, &pending.encode(signal)).is_err() {
+            return -errno::EFAULT;
+        }
+    }
+    signal as isize
 }
 
 /// @description 从当前用户 sp 指向的唯一 RV64 rt frame 恢复 signal 前上下文。

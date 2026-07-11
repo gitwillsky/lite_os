@@ -52,6 +52,7 @@ def boot(
     markers: tuple[str, ...],
     timeout_seconds: int = 30,
     interactions: tuple[tuple[str, bytes], ...] = (),
+    forbidden_markers: tuple[str, ...] = (),
 ) -> None:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。"""
     qemu = shutil.which("qemu-system-riscv64")
@@ -96,6 +97,11 @@ def boot(
                     break
                 output.extend(chunk)
                 text = ANSI.sub("", output.decode(errors="replace"))
+                found = [marker for marker in forbidden_markers if marker in text]
+                if found:
+                    raise RuntimeError(
+                        f"QEMU -smp {smp} reached forbidden markers: {found!r}"
+                    )
                 while pending_interactions and pending_interactions[0][0] in text:
                     _, data = pending_interactions.pop(0)
                     assert process.stdin is not None

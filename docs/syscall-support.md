@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 41 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 42 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 41 个入口
+## 2. 当前暴露的 42 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -56,6 +56,7 @@
 | 124 | `sched_yield` | 无参数 | `0` | POSIX `sched_yield`；musl direct wrapper | **Complete**。当前 task 回到唯一 CFS-like runqueue。 | `kernel/src/syscall/process.rs` |
 | 131 | `tgkill` | tgid、tid、signal | 0；`ESRCH/EINVAL` | Linux thread-directed signal；musl pthread | **Partial**。支持存在性 probe、standard signal pending 与 deadline/futex/child wait interruption；未屏蔽、非忽略 signal 在 trap return delivery。无 permission check/process-directed selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | RV64 24-byte action、8-byte sigset | 0；`EFAULT/EINVAL` | POSIX signal API；musl wrappers | **Partial**。Process disposition、per-Thread mask、SIGKILL/SIGSTOP 不可屏蔽；handler 的 `SA_RESTART` 可重放 blocking `wait4` 与无 timeout 的 futex WAIT。无 altstack、queued realtime value 与其他 syscall 的完整 restart coverage。 | `kernel/src/syscall/signal.rs` |
+| 137 | `rt_sigtimedwait` | 8-byte sigset、可选 128-byte siginfo、可选 relative timespec | signal number；`EAGAIN/EINTR/EFAULT/EINVAL` | POSIX sigwaitinfo/sigtimedwait；BusyBox init | **Partial**。从 Thread 唯一 pending owner 消费 coalesced standard signal，支持无限等待、零/有限 monotonic timeout、`SI_TKILL` 与 `SIGCHLD/CLD_EXITED` siginfo；registration 共用 indexed wait/deadline registry。无 realtime queued value、process-directed selection 和完整多线程 SIGCHLD target selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
 | 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
 | 173 | `getppid` | 无参数 | parent TGID；init 为 0 | POSIX `getppid`；musl direct wrapper | **Complete**。读取 TaskManager 唯一 parent edge；orphan 重新指向 PID 1。 | `kernel/src/syscall/process.rs` |
@@ -79,7 +80,7 @@
 | 29 | `ioctl` | Missing | 无标准 device file/ioctl UAPI，不用私有设备 syscall 替代。 |
 | 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
 | 65 | `readv` | Missing | 尚未实现 iovec copyout 与“已有输入后不得为后续向量再次阻塞”的 partial-read 语义。 |
-| 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 SIGCHLD/job-control 语义。 |
+| 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 job-control group 语义。 |
 | 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
 | 261 | `prlimit64` | Not Planned | 当前 init 启动不需 resource limits，不返回伪 infinity 表。 |
@@ -89,7 +90,7 @@
 
 ## 4. musl 结论
 
-当前 41 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait，以及 handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`。BusyBox gate 额外覆盖 UART console read wait、`writev`、init fork/exec 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 42 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait、handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`，以及 `rt_sigtimedwait` 的 zero-timeout、`SI_TKILL`、自动 `SIGCHLD/CLD_EXITED` 与回收。BusyBox gate 额外覆盖 UART console read wait、`writev`、init fork/exec、阻塞 signal wait 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；

@@ -422,6 +422,19 @@ pub(super) fn wake_console_task(task: Arc<TaskControlBlock>, wait_id: u64) -> bo
     )
 }
 
+/// @description 消费 `rt_sigtimedwait` membership，并发布 signal/timeout/interruption 结果。
+///
+/// @param task indexed wait registry 移出的 task owner。
+/// @param result 匹配 signal、timeout 或无关 signal interruption。
+/// @return membership 有效时返回 true；stale wake 返回 false。
+pub(super) fn wake_signal_task(task: Arc<TaskControlBlock>, result: WaitResult) -> bool {
+    let wait_id = match task.scheduling.state.lock().wait {
+        Some(WaitMembership::Signal(id)) => id,
+        _ => return false,
+    };
+    wake_waiting_task(task, WaitMembership::Signal(wait_id), Some(result))
+}
+
 fn wake_waiting_task(
     task: Arc<TaskControlBlock>,
     expected: WaitMembership,

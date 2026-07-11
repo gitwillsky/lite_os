@@ -31,6 +31,7 @@ pub const SYSCALL_SCHED_YIELD: usize = 124;
 pub const SYSCALL_TGKILL: usize = 131;
 pub const SYSCALL_RT_SIGACTION: usize = 134;
 pub const SYSCALL_RT_SIGPROCMASK: usize = 135;
+pub const SYSCALL_RT_SIGTIMEDWAIT: usize = 137;
 pub const SYSCALL_RT_SIGRETURN: usize = 139;
 pub const SYSCALL_GETPID: usize = 172;
 pub const SYSCALL_GETPPID: usize = 173;
