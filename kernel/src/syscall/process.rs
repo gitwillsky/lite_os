@@ -77,6 +77,13 @@ pub fn sys_get_pid() -> isize {
     current_task().unwrap().pid() as isize
 }
 
+/// @description 返回当前任务的线程标识；LiteOS 线程与任务共用 PID 分配器。
+///
+/// @return 当前任务 ID；当前调用路径始终存在任务上下文。
+pub fn sys_get_tid() -> isize {
+    current_task().unwrap().pid() as isize
+}
+
 pub fn sys_get_ppid() -> isize {
     if let Some(current) = current_task() {
         current.parent().unwrap().pid() as isize
@@ -672,11 +679,8 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
     // 步骤9: 执行程序替换
     // 注意：如果成功，这个调用不会返回
     match current_task.execve_replace(&path_str, &elf_data, &args, &envs) {
-        Ok(()) => {
-            // 如果到达这里，说明实现有问题，因为成功的execve不应该返回
-            error!("execve: unexpected return from successful execve");
-            -errno::EINVAL
-        },
+        // 0 是内核内部的“新上下文已就绪”状态，trap handler 据此直接恢复新程序。
+        Ok(()) => 0,
         Err(e) => {
             error!("execve: failed to execute {}: {:?}", path_str, e);
             match e {

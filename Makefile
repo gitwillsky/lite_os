@@ -1,5 +1,7 @@
 ELFS := $(patsubst user/src/bin/%.rs, target/riscv64gc-unknown-none-elf/release/%, $(wildcard user/src/bin/*.rs))
-OBJCOPY := rust-objcopy --binary-architecture=riscv64
+RUST_HOST := $(shell rustc -vV | sed -n 's/^host: //p')
+RUST_OBJCOPY := $(shell rustc --print sysroot)/lib/rustlib/$(RUST_HOST)/bin/rust-objcopy
+OBJCOPY := $(RUST_OBJCOPY) --binary-architecture=riscv64
 
 build-user:
 	cd user && cargo build --release && cd -

@@ -1,0 +1,85 @@
+#![no_std]
+
+//! LiteOS 用户态与内核共享的系统调用编号。
+
+pub const SYSCALL_GETCWD: usize = 17;
+pub const SYSCALL_DUP: usize = 23;
+pub const SYSCALL_DUP2: usize = 24;
+pub const SYSCALL_FCNTL: usize = 25;
+pub const SYSCALL_PAUSE: usize = 34;
+pub const SYSCALL_ALARM: usize = 37;
+pub const SYSCALL_SIGNAL: usize = 48;
+pub const SYSCALL_OPEN: usize = 56;
+pub const SYSCALL_CLOSE: usize = 57;
+pub const SYSCALL_PIPE: usize = 59;
+pub const SYSCALL_LSEEK: usize = 62;
+pub const SYSCALL_READ: usize = 63;
+pub const SYSCALL_WRITE: usize = 64;
+pub const SYSCALL_STAT: usize = 80;
+pub const SYSCALL_EXIT: usize = 93;
+pub const SYSCALL_NANOSLEEP: usize = 101;
+pub const SYSCALL_GETUID: usize = 102;
+pub const SYSCALL_GETGID: usize = 104;
+pub const SYSCALL_GETEUID: usize = 107;
+pub const SYSCALL_GETEGID: usize = 108;
+pub const SYSCALL_SHUTDOWN: usize = 110;
+pub const SYSCALL_YIELD: usize = 124;
+pub const SYSCALL_KILL: usize = 129;
+pub const SYSCALL_SIGACTION: usize = 134;
+pub const SYSCALL_SIGPROCMASK: usize = 135;
+pub const SYSCALL_SIGRETURN: usize = 139;
+pub const SYSCALL_FLOCK: usize = 143;
+pub const SYSCALL_SETUID: usize = 146;
+pub const SYSCALL_SETGID: usize = 147;
+pub const SYSCALL_SETEUID: usize = 148;
+pub const SYSCALL_SETEGID: usize = 149;
+pub const SYSCALL_GETPID: usize = 172;
+pub const SYSCALL_GETTID: usize = 178;
+pub const SYSCALL_BRK: usize = 214;
+pub const SYSCALL_SBRK: usize = 215;
+pub const SYSCALL_MUNMAP: usize = 216;
+pub const SYSCALL_FORK: usize = 220;
+pub const SYSCALL_EXEC: usize = 221;
+pub const SYSCALL_MMAP: usize = 223;
+pub const SYSCALL_WAIT: usize = 260;
+
+pub const SYSCALL_GUI_CREATE_CONTEXT: usize = 300;
+pub const SYSCALL_GUI_GET_SCREEN_INFO: usize = 311;
+pub const SYSCALL_GUI_FLUSH_RECTS: usize = 313;
+pub const SYSCALL_GUI_MAP_FRAMEBUFFER: usize = 315;
+
+pub const SYSCALL_LISTDIR: usize = 500;
+pub const SYSCALL_MKDIR: usize = 501;
+pub const SYSCALL_REMOVE: usize = 502;
+pub const SYSCALL_READ_FILE: usize = 503;
+pub const SYSCALL_CHDIR: usize = 504;
+pub const SYSCALL_MKFIFO: usize = 506;
+pub const SYSCALL_CHMOD: usize = 507;
+pub const SYSCALL_CHOWN: usize = 508;
+pub const SYSCALL_GET_ARGS: usize = 509;
+
+pub const SYSCALL_GET_PROCESS_LIST: usize = 700;
+pub const SYSCALL_GET_PROCESS_INFO: usize = 701;
+pub const SYSCALL_GET_SYSTEM_STATS: usize = 702;
+pub const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
+pub const SYSCALL_GET_TIME_MS: usize = 800;
+pub const SYSCALL_GET_TIME_US: usize = 801;
+pub const SYSCALL_GET_TIME_NS: usize = 802;
+pub const SYSCALL_TIME: usize = 803;
+pub const SYSCALL_GETTIMEOFDAY: usize = 804;
+pub const SYSCALL_WATCHDOG_CONFIGURE: usize = 900;
+pub const SYSCALL_WATCHDOG_START: usize = 901;
+pub const SYSCALL_WATCHDOG_STOP: usize = 902;
+pub const SYSCALL_WATCHDOG_FEED: usize = 903;
+pub const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
+pub const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
+pub const SYSCALL_THREAD_CREATE: usize = 1000;
+pub const SYSCALL_THREAD_EXIT: usize = 1001;
+pub const SYSCALL_THREAD_JOIN: usize = 1002;
+pub const SYSCALL_SHM_CREATE: usize = 2300;
+pub const SYSCALL_SHM_MAP: usize = 2301;
+pub const SYSCALL_SHM_CLOSE: usize = 2302;
+pub const SYSCALL_POLL: usize = 5070;
+pub const SYSCALL_UDS_LISTEN: usize = 5200;
+pub const SYSCALL_UDS_ACCEPT: usize = 5201;
+pub const SYSCALL_UDS_CONNECT: usize = 5202;

@@ -104,18 +104,23 @@ pub fn trap_handler() {
                     }
                 }
                 Exception::UserEnvCall => {
-                    // Check if there's a current task before accessing trap context
                     if let Some(current) = task::current_task() {
-                        let cx = current.mm.trap_context();
-                        let syscall_id = cx.x[17];
-                        let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
-
-                        cx.x[10] = {
+                        // 1. 不允许 TrapContext 引用跨越系统调用；execve 会替换其底层地址空间。
+                        let (syscall_id, args) = {
+                            let cx = current.mm.trap_context();
+                            let syscall_id = cx.x[17];
+                            let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
                             cx.sepc += 4;
-                            syscall::syscall(syscall_id, args) as usize
+                            (syscall_id, args)
                         };
+                        let result = syscall::syscall(syscall_id, args);
 
-                        // Check and handle pending signals after syscall using the existing trap context
+                        // 2. execve 成功时，新 TrapContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
+                        let cx = current.mm.trap_context();
+                        if syscall_id != 221 || result != 0 {
+                            cx.x[10] = result as usize;
+                        }
+
                         if !check_signals_and_maybe_exit_with_cx(cx) {
                             // Process was terminated, should not continue
                             return;

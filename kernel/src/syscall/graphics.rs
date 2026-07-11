@@ -5,16 +5,6 @@ use crate::memory::{KERNEL_SPACE, address::VirtualAddress};
 use crate::task::{current_task, current_user_token};
 use spin::Mutex;
 
-pub const SYSCALL_GUI_CREATE_CONTEXT: usize = 300;
-pub const SYSCALL_GUI_DESTROY_CONTEXT: usize = 301;
-pub const SYSCALL_GUI_CLEAR_SCREEN: usize = 302;
-pub const SYSCALL_GUI_PRESENT: usize = 312; // 以 RGBA8888 像素提交整帧
-pub const SYSCALL_GUI_FLUSH: usize = 310;
-pub const SYSCALL_GUI_GET_SCREEN_INFO: usize = 311;
-pub const SYSCALL_GUI_FLUSH_RECTS: usize = 313; // 刷新多个矩形区域
-pub const SYSCALL_GUI_PRESENT_RECTS: usize = 314; // 仅提交多个矩形
-pub const SYSCALL_GUI_MAP_FRAMEBUFFER: usize = 315; // 将帧缓冲映射到用户态
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct GuiScreenInfo {

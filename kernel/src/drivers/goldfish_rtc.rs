@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::board::RTCDevice;
+use crate::arch::dtb::RTCDevice;
 use crate::drivers::hal::bus::Bus;
 use crate::drivers::hal::device::{Device, DeviceError, DeviceState, DeviceType, GenericDevice};
 use crate::drivers::hal::interrupt::{InterruptHandler, InterruptVector};

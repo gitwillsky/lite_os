@@ -2,19 +2,20 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::memory::KERNEL_SPACE;
 use riscv::register;
 
 extern crate alloc;
+#[macro_use]
+extern crate bitflags;
 
+#[macro_use]
 mod arch;
 mod config;
 #[macro_use]
-mod console;
-#[macro_use]
 mod log;
 
-mod board;
 mod drivers;
 mod fs;
 mod ipc;
@@ -29,25 +30,28 @@ mod timer;
 mod trap;
 mod watchdog;
 
+/// 标记全局内核设施已完成初始化。
+///
+/// 次级 hart 不能仅等待内核页表，因为页表会在文件系统、驱动和首个用户任务
+/// 就绪前发布；缺少此屏障会让次级 hart 提前进入调度器并访问未初始化的全局状态。
+static INIT_READY: AtomicBool = AtomicBool::new(false);
+
 #[unsafe(no_mangle)]
 extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
-    // 立即设置当前核心的TP寄存器，这样hart_id()函数就能正常工作
-    crate::arch::hart::set_hart_id(hart_id);
+    // 每个 hart 都必须启用浮点状态，否则用户态或内核态浮点指令会触发非法指令异常。
+    unsafe {
+        register::sstatus::set_fs(register::sstatus::FS::Dirty);
+    }
 
     if hart_id == 0 {
-        // 完整系统初始化
         log::init(config::DEFAULT_LOG_LEVEL);
-        // log::disable_module("kernel::fs::fat32");
         log::disable_module("kernel::task::loader");
-        // log::disable_module("kernel::drivers::device_manager");
-        board::init(dtb_addr);
+        arch::dtb::init(dtb_addr);
         trap::init();
         memory::init();
         timer::init_rtc();
         timer::enable_timer_interrupt();
-        // 使能外部中断与全局中断
         unsafe {
-            // 启用软件中断，用于处理IPI
             register::sie::set_ssoft();
             register::sie::set_sext();
             register::sstatus::set_sie();
@@ -57,21 +61,21 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
         drivers::init();
         signal::init();
         task::init();
-
-        task::run_tasks();
+        INIT_READY.store(true, Ordering::Release);
     } else {
-        board::init(dtb_addr);
+        arch::dtb::init(dtb_addr);
         trap::init();
         KERNEL_SPACE.wait().lock().active();
+        while !INIT_READY.load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
         timer::enable_timer_interrupt();
-        // 使能外部中断与全局中断（次核）
         unsafe {
-            // 启用软件中断，用于处理IPI
             register::sie::set_ssoft();
             register::sie::set_sext();
             register::sstatus::set_sie();
         }
-
-        task::run_tasks();
     }
+
+    task::run_tasks();
 }

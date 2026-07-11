@@ -502,18 +502,18 @@ pub fn draw_text_ttf(
 
 #[inline(always)]
 pub fn gui_create_context() -> bool {
-    let ok = syscall(300, [0, 0, 0]) >= 0;
+    let ok = syscall(syscall_abi::SYSCALL_GUI_CREATE_CONTEXT, [0, 0, 0]) >= 0;
     if !ok {
         return false;
     }
     let mut info = GuiScreenInfo::default();
     let p = &mut info as *mut GuiScreenInfo as usize;
-    if syscall(311, [p, 0, 0]) < 0 {
+    if syscall(syscall_abi::SYSCALL_GUI_GET_SCREEN_INFO, [p, 0, 0]) < 0 {
         return false;
     }
     let mut mapped_addr: usize = 0;
     let out_ptr = &mut mapped_addr as *mut usize as usize;
-    if syscall(315, [out_ptr, 0, 0]) < 0 {
+    if syscall(syscall_abi::SYSCALL_GUI_MAP_FRAMEBUFFER, [out_ptr, 0, 0]) < 0 {
         return false;
     }
     let mut guard = GFX.lock();
@@ -615,7 +615,10 @@ pub fn gui_flush() {
                 width: (x1 - x0) as u32,
                 height: (y1 - y0) as u32,
             };
-            let _ = syscall(313, [&rect as *const Rect as usize, 1, 0]); // 仅刷新矩形
+            let _ = syscall(
+                syscall_abi::SYSCALL_GUI_FLUSH_RECTS,
+                [&rect as *const Rect as usize, 1, 0],
+            ); // 仅刷新矩形
         }
         g.dirty = false;
         g.dirty_rect = None;

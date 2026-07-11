@@ -1,4 +1,13 @@
-use core::arch::naked_asm;
+use core::{
+    arch::naked_asm,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
+const BSS_PENDING: usize = 0x4253_5350;
+const BSS_READY: usize = 0x4253_5352;
+
+// 该标志使用非零初值以确保位于 .data；若放在尚未清零的 BSS，次核可能误判初始化已完成。
+static BSS_STATE: AtomicUsize = AtomicUsize::new(BSS_PENDING);
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -6,24 +15,23 @@ use core::arch::naked_asm;
 unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
-            # 获取hart_id (在a0寄存器中)
-            # 计算每个核心的栈顶地址: boot_stack_top - hart_id * KERNEL_STACK_SIZE
-            # 使用移位代替乘法: KERNEL_STACK_SIZE = 16KB = 16384 = 1 << 14
-            slli t1, a0, 14         # t1 = hart_id << 14 = hart_id * 16384
-            la sp, boot_stack_top   # sp = boot_stack_top
-            sub sp, sp, t1          # sp = boot_stack_top - hart_id * KERNEL_STACK_SIZE
+            # 1. 每个 hart 使用 linker 预留的独立 128 KiB 启动栈。
+            slli t0, a0, 17
+            la sp, boot_stack_top
+            sub sp, sp, t0
 
-            # 保存参数
-            add t0, x10, x0         # hart_id
-            add t1, x11, x0         # dtb_addr
+            # 2. TP 是内核中 hart 身份的唯一来源；sscratch 在 trap 初始化前保持为零。
+            mv tp, a0
+            csrw sscratch, zero
 
-            # 保存BSS清理状态到全局变量，让第一个核心清理
-            # 这里简化处理：总是调用clear_bss，函数内部会处理重复调用
+            # 3. 使用被调用者保存寄存器跨越 clear_bss 调用保存 SBI 参数。
+            mv s0, a0
+            mv s1, a1
+
             call {clear_bss}
-        2:
-            # 恢复参数并调用kmain
-            mv x10, t0
-            mv x11, t1
+
+            mv a0, s0
+            mv a1, s1
             call kmain
         1:
             wfi
@@ -33,17 +41,8 @@ unsafe extern "C" fn _start() -> ! {
     )
 }
 
-extern "C" fn clear_bss() {
-    use core::sync::atomic::{AtomicBool, Ordering};
-
-    // 全局标志，确保BSS只被清理一次
-    static BSS_CLEARED: AtomicBool = AtomicBool::new(false);
-
-    // 只有第一个调用的核心才执行BSS清理
-    if BSS_CLEARED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
+extern "C" fn clear_bss(hart_id: usize) {
+    if hart_id == 0 {
         unsafe extern "C" {
             static mut sbss: u8;
             static mut ebss: u8;
@@ -55,6 +54,11 @@ extern "C" fn clear_bss() {
             if count > 0 {
                 core::ptr::write_bytes(sbss as *mut u8, 0, count);
             }
+        }
+        BSS_STATE.store(BSS_READY, Ordering::Release);
+    } else {
+        while BSS_STATE.load(Ordering::Acquire) != BSS_READY {
+            core::hint::spin_loop();
         }
     }
 }

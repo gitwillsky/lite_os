@@ -4,6 +4,17 @@ use core::{
 };
 
 use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
+use spin::Once;
+
+static BOARD_INFO: Once<BoardInfo> = Once::new();
+
+pub fn init(dtb_addr: usize) {
+    BOARD_INFO.call_once(|| BoardInfo::parse(dtb_addr));
+}
+
+pub fn board_info() -> &'static BoardInfo {
+    BOARD_INFO.wait()
+}
 
 pub struct StringInLine<const N: usize>(usize, [u8; N]);
 

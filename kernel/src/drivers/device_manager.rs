@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use riscv::register;
 
-use crate::board::board_info;
+use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::{
     GenericBlockDriver, get_all_block_devices, get_primary_block_device, register_block_device,
 };
@@ -30,7 +30,7 @@ pub fn device_manager() -> &'static spin::Mutex<DeviceManager> {
         let mut manager = DeviceManager::new(resource_manager);
 
         // 初始化PLIC中断控制器 - 使用从DTB解析的地址
-        let board_info = crate::board::board_info();
+        let board_info = board_info();
         if let Some(plic_dev) = &board_info.plic_device {
             if let Ok(plic) = PlicInterruptController::new(plic_dev.base_addr, 1024, 8) {
                 let interrupt_controller = Arc::new(spin::Mutex::new(plic));
@@ -93,7 +93,7 @@ fn scan_and_init_devices() {
 }
 
 /// 初始化VirtIO设备
-fn init_virtio_devices(board_info: &crate::board::BoardInfo) {
+fn init_virtio_devices(board_info: &BoardInfo) {
     info!(
         "[DeviceManager] Scanning {} VirtIO devices",
         board_info.virtio_count
@@ -138,7 +138,7 @@ fn read_virtio_device_id(base_addr: usize) -> u32 {
 }
 
 fn maybe_register_irq(
-    board_info: &crate::board::BoardInfo,
+    board_info: &BoardInfo,
     irq: u32,
     handler: alloc::sync::Arc<dyn InterruptHandler>,
     priority: InterruptPriority,
@@ -216,7 +216,7 @@ fn maybe_register_irq(
     }
 }
 
-fn init_virtio_blk_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
     info!(
         "[DeviceManager] Creating VirtIOBlockDevice at {:#x}",
         base_addr
@@ -249,7 +249,7 @@ fn init_virtio_blk_device(board_info: &crate::board::BoardInfo, irq: u32, base_a
     }
 }
 
-fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_gpu_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
     info!(
         "[DeviceManager] Creating VirtioGpuDevice at {:#x}",
         base_addr
@@ -298,7 +298,7 @@ fn init_virtio_gpu_device(board_info: &crate::board::BoardInfo, irq: u32, base_a
     }
 }
 
-fn init_virtio_input_device(board_info: &crate::board::BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_input_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
     info!(
         "[DeviceManager] Creating VirtioInputDevice at {:#x}",
         base_addr
@@ -324,7 +324,7 @@ fn init_virtio_input_device(board_info: &crate::board::BoardInfo, irq: u32, base
 }
 
 /// 初始化RTC设备
-fn init_rtc_devices(board_info: &crate::board::BoardInfo) {
+fn init_rtc_devices(board_info: &BoardInfo) {
     if let Some(rtc_info) = board_info.rtc_device.as_ref() {
         info!(
             "[DeviceManager] Initializing RTC device at {:#x}",

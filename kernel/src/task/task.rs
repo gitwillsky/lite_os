@@ -826,8 +826,10 @@ impl TaskControlBlock {
         *self.mm.trap_cx_va.lock() = TRAP_CONTEXT;
         
         // 重置堆指针
-        self.mm.heap_base.store(user_sp, atomic::Ordering::Relaxed);
-        self.mm.heap_top.store(user_sp, atomic::Ordering::Relaxed);
+        // 新地址空间的堆必须保持未初始化，由 brk/sbrk 在固定用户堆区建立。
+        // user_sp 可能已下移以容纳 argv/envp；把它当作堆基址会让分配器覆盖参数栈和返回地址。
+        self.mm.heap_base.store(0, atomic::Ordering::Relaxed);
+        self.mm.heap_top.store(0, atomic::Ordering::Relaxed);
 
         // 步骤5: 更新任务状态
         // 保留PID，但更新程序名称和参数
@@ -851,13 +853,7 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
 
-        // 步骤7: 激活新的地址空间
-        self.mm.memory_set.lock().active();
-
-        // 注意：在真实的execve中，我们应该从这里直接跳转到用户程序
-        // 而不是返回到系统调用的调用者。这需要特殊的汇编代码来实现
-        // 目前我们返回Ok(())，但调用者需要知道不应该期望返回到原程序
-        
+        // 地址空间由统一的 trap 返回路径激活；在这里切换会让后续内核代码运行在用户页表上。
         Ok(())
     }
 

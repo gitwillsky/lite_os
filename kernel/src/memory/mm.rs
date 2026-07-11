@@ -373,7 +373,7 @@ impl MemorySet {
     ) -> Result<VirtualAddress, MemoryError> {
         // 选择位于低半区、远离内核物理恒等映射 (physmap) 的基址，避免与其重叠
         // 动态下界：max(4GiB, 物理内存末尾向上页对齐)
-        let phys_end = crate::board::board_info().mem.end;
+        let phys_end = crate::arch::dtb::board_info().mem.end;
         let phys_end_aligned = (phys_end + config::PAGE_SIZE - 1) & !(config::PAGE_SIZE - 1);
         let mut base_candidate: usize = core::cmp::max(0x1_0000_0000usize, phys_end_aligned);
         let page_count = (size + config::PAGE_SIZE - 1) / config::PAGE_SIZE;

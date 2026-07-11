@@ -75,11 +75,11 @@ __kernel_trap:
 
 __restore:
     # a0: *TrapContext in user space(Constant); a1: user space token
-    # switch to user space
-    csrw satp, a1
-    sfence.vma
+    # 先切到新页表中确定存在的 TrapContext 栈，避免 satp 切换后仍持有仅内核页表可见的栈。
     csrw sscratch, a0
     mv sp, a0
+    csrw satp, a1
+    sfence.vma
     # now sp points to TrapContext in user space, start restoring based on it
     # restore sstatus/sepc
     ld t0, 32*8(sp)

@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::sbi, board, config, drivers::goldfish_rtc::GoldfishRTCDevice};
+use crate::{arch::{dtb, sbi}, config, drivers::goldfish_rtc::GoldfishRTCDevice};
 
 static mut TICK_INTERVAL_VALUE: u64 = 0;
 
@@ -26,7 +26,7 @@ static RTC_DEVICE: Mutex<Option<GoldfishRTCDevice>> = Mutex::new(None);
 
 // 初始化 RTC 设备
 fn init_rtc_device() -> Option<GoldfishRTCDevice> {
-    let board_info = board::board_info();
+    let board_info = dtb::board_info();
     debug!("Checking for RTC device...");
 
     if let Some(rtc_info) = board_info.rtc_device {
@@ -113,21 +113,21 @@ pub fn get_unix_timestamp_us() -> u64 {
 
 pub fn get_time_msec() -> u64 {
     let current_mtime = register::time::read64();
-    let time_base_freq = board::board_info().time_base_freq;
+    let time_base_freq = dtb::board_info().time_base_freq;
     // 使用128位运算避免溢出，保持精度
     ((current_mtime as u128 * MSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 pub fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
-    let time_base_freq = board::board_info().time_base_freq;
+    let time_base_freq = dtb::board_info().time_base_freq;
     // 使用128位运算避免溢出
     ((current_mtime as u128 * USEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 pub fn get_time_ns() -> u64 {
     let current_mtime = register::time::read64();
-    let time_base_freq = board::board_info().time_base_freq;
+    let time_base_freq = dtb::board_info().time_base_freq;
     // 使用128位运算避免溢出
     ((current_mtime as u128 * NSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
@@ -142,7 +142,7 @@ pub fn set_next_timer_interrupt() {
 }
 
 pub fn enable_timer_interrupt() {
-    let time_base_freq = board::board_info().time_base_freq;
+    let time_base_freq = dtb::board_info().time_base_freq;
 
     unsafe {
         // 防御性计算：确保分母与结果不为 0

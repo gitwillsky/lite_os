@@ -26,6 +26,10 @@ impl TrapContext {
     ) -> Self {
         let mut sstatus = sstatus::read(); // CSR status
         sstatus.set_spp(SPP::User);
+        // SIE 必须在 S 模式恢复阶段保持关闭，否则切换到用户页表后会在内核栈失去映射时被中断。
+        sstatus.set_sie(false);
+        // SPIE 控制 sret 后的中断状态，确保进入用户态后可以正常响应中断。
+        sstatus.set_spie(true);
         // 启用用户态浮点支持
         sstatus.set_fs(sstatus::FS::Dirty);
 

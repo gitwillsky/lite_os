@@ -1,3 +1,5 @@
+#[macro_use]
 mod riscv64;
 
-pub use riscv64::{hart, sbi};
+pub(crate) use riscv64::{console, dtb, sbi};
+pub use riscv64::hart;

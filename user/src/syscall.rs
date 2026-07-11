@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::arch::asm;
+use syscall_abi::*;
 
 /// CPU核心信息结构体
 #[repr(C)]
@@ -50,102 +51,6 @@ pub struct SystemStats {
     pub cpu_idle_time: u64,     // 空闲CPU时间（微秒）
     pub cpu_usage_percent: u32, // 总CPU使用率百分比（0-10000）
 }
-
-// 系统调用ID定义
-const SYSCALL_READ: usize = 63;
-const SYSCALL_WRITE: usize = 64;
-const SYSCALL_EXIT: usize = 93;
-const SYSCALL_YIELD: usize = 124;
-const SYSCALL_GETPID: usize = 172;
-const SYSCALL_GETTID: usize = 178;
-const SYSCALL_FORK: usize = 220;
-const SYSCALL_EXEC: usize = 221;
-const SYSCALL_EXECVE: usize = 222;
-const SYSCALL_WAIT: usize = 260;
-const SYSCALL_SHUTDOWN: usize = 110;
-
-// 文件系统系统调用
-const SYSCALL_OPEN: usize = 56;
-const SYSCALL_CLOSE: usize = 57;
-const SYSCALL_LISTDIR: usize = 500;
-const SYSCALL_MKDIR: usize = 501;
-const SYSCALL_REMOVE: usize = 502;
-const SYSCALL_STAT: usize = 80;
-const SYSCALL_READ_FILE: usize = 503;
-const SYSCALL_CHDIR: usize = 504;
-const SYSCALL_GETCWD: usize = 505;
-const SYSCALL_LSEEK: usize = 62;
-const SYSCALL_PIPE: usize = 59;
-const SYSCALL_DUP: usize = 23;
-const SYSCALL_DUP2: usize = 24;
-const SYSCALL_FLOCK: usize = 143;
-const SYSCALL_MKFIFO: usize = 506;
-const SYSCALL_CHMOD: usize = 507;
-const SYSCALL_CHOWN: usize = 508;
-const SYSCALL_GET_ARGS: usize = 509;
-const SYSCALL_FCNTL: usize = 25;
-
-// 权限相关系统调用
-const SYSCALL_GETUID: usize = 102;
-const SYSCALL_GETGID: usize = 104;
-const SYSCALL_SETUID: usize = 146;
-const SYSCALL_SETGID: usize = 147;
-const SYSCALL_GETEUID: usize = 107;
-const SYSCALL_GETEGID: usize = 108;
-const SYSCALL_SETEUID: usize = 148;
-const SYSCALL_SETEGID: usize = 149;
-
-// 内存管理系统调用
-const SYSCALL_BRK: usize = 214;
-const SYSCALL_SBRK: usize = 215;
-const SYSCALL_MMAP: usize = 223;
-const SYSCALL_MUNMAP: usize = 216;
-// 共享内存
-const SYSCALL_SHM_CREATE: usize = 2300;
-const SYSCALL_SHM_MAP: usize = 2301;
-const SYSCALL_SHM_CLOSE: usize = 2302;
-// 事件复用
-const SYSCALL_POLL: usize = 5070;
-// UDS
-const SYSCALL_UDS_LISTEN: usize = 5200;
-const SYSCALL_UDS_ACCEPT: usize = 5201;
-const SYSCALL_UDS_CONNECT: usize = 5202;
-
-// 信号相关系统调用
-const SYSCALL_KILL: usize = 129;
-const SYSCALL_SIGNAL: usize = 48;
-const SYSCALL_SIGACTION: usize = 134;
-const SYSCALL_SIGPROCMASK: usize = 135;
-const SYSCALL_SIGRETURN: usize = 139;
-const SYSCALL_PAUSE: usize = 34;
-const SYSCALL_ALARM: usize = 37;
-
-// 进程监控系统调用
-const SYSCALL_GET_PROCESS_LIST: usize = 700;
-const SYSCALL_GET_PROCESS_INFO: usize = 701;
-const SYSCALL_GET_CPU_CORE_INFO: usize = 703;
-const SYSCALL_GET_SYSTEM_STATS: usize = 702;
-
-// 时间相关系统调用
-const SYSCALL_GET_TIME_MS: usize = 800;
-const SYSCALL_GET_TIME_US: usize = 801;
-const SYSCALL_GET_TIME_NS: usize = 802;
-const SYSCALL_TIME: usize = 803;
-const SYSCALL_GETTIMEOFDAY: usize = 804;
-const SYSCALL_NANOSLEEP: usize = 101;
-
-// Watchdog 相关系统调用
-const SYSCALL_WATCHDOG_CONFIGURE: usize = 900;
-const SYSCALL_WATCHDOG_START: usize = 901;
-const SYSCALL_WATCHDOG_STOP: usize = 902;
-const SYSCALL_WATCHDOG_FEED: usize = 903;
-const SYSCALL_WATCHDOG_GET_INFO: usize = 904;
-const SYSCALL_WATCHDOG_SET_PRESET: usize = 905;
-
-// 线程相关系统调用
-const SYSCALL_THREAD_CREATE: usize = 1000;
-const SYSCALL_THREAD_EXIT: usize = 1001;
-const SYSCALL_THREAD_JOIN: usize = 1002;
 
 /// 系统调用
 ///
@@ -245,7 +150,7 @@ pub fn execve(path: &str, argv: &[&str], envp: &[&str]) -> isize {
     envp_ptrs.push(core::ptr::null()); // Null terminator
 
     syscall(
-        SYSCALL_EXECVE,
+        SYSCALL_EXEC,
         [
             null_terminated_path.as_ptr() as usize,
             argv_ptrs.as_ptr() as usize,
@@ -565,7 +470,7 @@ pub fn kill(pid: usize, sig: u32) -> isize {
 
 /// 设置信号处理函数
 pub fn signal(sig: u32, handler: usize) -> isize {
-    syscall(SYSCALL_SIGNAL, [0, sig as usize, handler])
+    syscall(SYSCALL_SIGNAL, [sig as usize, handler, 0])
 }
 
 /// sigaction结构体
