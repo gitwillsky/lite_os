@@ -1,0 +1,37 @@
+kernel/src/drivers/virtio_queue.rs
+  s_d637a88cd4b00d::t_9843a052a07320 207-209,245
+kernel/src/memory/address.rs
+  s_d637a88cd4b00d::t_2f0c96ce91a980 125-130,132-136,194-197,199,202-205,207
+kernel/src/memory/heap_allocator.rs
+  s_d637a88cd4b00d::t_48f9655ffa67af 3,8,21,23,31,43,46-47,53,72
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_7fc2e789e41cbb 59-61
+kernel/src/memory/page_table.rs
+  s_d637a88cd4b00d::t_a77bd46265fd7e 1,5,18-19,28-29,81,83-84,108-116,119,126-127,130,133-150,156,158,160-164,168,171,176,178,180,185,194-200,209,214-224,227,233
+kernel/src/syscall/memory.rs
+  s_d637a88cd4b00d::t_c3a4049c5c1b10 1,6,9-13
+kernel/src/syscall/signal.rs
+  s_d637a88cd4b00d::t_650657bcf8fe37 32-37
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_f755eddb0a574a 3,24-28,32-35
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_deb257333b2544 76,95-99,103,108,112,127,129,131,150,248,251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e868bcdd7fd06315eeb9463a8ecec4e5892b01fb",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
