@@ -1,93 +1,103 @@
-# little os
+# LiteOS
 
-一个使用 Rust 语言编写的、支持 RISC-V 64 架构的简单操作系统内核。
+LiteOS 是一个使用 Rust `no_std` 实现的 RISC-V 64 操作系统基线，当前目标平台是 QEMU `virt`。项目优先保证特权级、SMP、内存、调度、设备和 Linux/riscv64 ABI 的已声明子集正确，不以功能数量作为兼容性证明。
 
-## ✨ 功能特性
+## 当前边界
 
-- **RISC-V 64 支持**: 专为 `riscv64gc` 架构设计。
-- **两级启动加载**: 包含一个 M-Mode 的 `bootloader` 和一个 S-Mode 的 `kernel`。
-- **多任务处理**: 实现了基于 `fork` + `exec` 的进程模型和简单的任务调度。
-- **系统调用**: 支持 `read`, `write`, `fork`, `exec`, `wait`, `yield`, `shutdown` 等基础系统调用。
-- **虚拟内存管理**: 实现了多级页表，为每个进程提供独立的虚拟地址空间。
-- **用户态程序**: 支持在用户态运行独立的应用程序。
-- **简单的 Shell**: 内置一个 `user_shell`，可以交互式地执行其他程序。
+- M-mode bootloader + S-mode kernel + U-mode 静态 init 三层结构。
+- QEMU `virt`，RV64GC，最多 8 个 hart。
+- Sv39、独立用户地址空间、页级 W^X、栈 guard page、`brk`。
+- 显式 Process/Thread/SchedulingEntity 边界，但当前只有 PID 1 的单进程单线程模型。
+- 唯一 CFS-like vruntime runqueue、timer preemption、SMP mailbox 与 deadline sleep queue。
+- 只读 ext2 启动卷；没有用户可见的通用 fd/OFD 模型。
+- PLIC、Goldfish RTC、VirtIO MMIO legacy block；设备只服务启动路径。
+- 静态 ELF64 `ET_EXEC`，Linux 形式 `argc/argv/envp/auxv` 初始栈。
+- 12 个 Linux/riscv64 syscall number；8 个 Complete，4 个明确 Partial。未实现编号统一返回 `-ENOSYS`。
 
-## 🛠️ 环境要求
+LiteOS 当前不支持 fork/clone/wait、signal、futex、pipe/socket/IPC、通用文件 I/O、`mmap`、PIE、动态链接、TLS、shell、GUI、network userspace 或常规 musl 程序。项目不声称完整 Linux 兼容、POSIX.1-2024 符合或 musl 兼容。
 
-在开始之前，请确保你已经安装了以下工具：
+## 组件
 
-- **Rust Nightly 工具链**: 可以通过 `rustup` 安装。
-- **QEMU (riscv64 支持)**: 用于运行和模拟操作系统。
-- **RISC-V GNU 工具链**: 提供 `addr2line` 等调试工具。
+- `bootloader/`：M-mode RustSBI firmware，负责 DTB、UART/CLINT、HSM、TIME、IPI、RFENCE、SRST 和 DBCN。
+- `kernel/`：S-mode kernel，负责 trap/SMP、内存、task/scheduler、VFS/ext2、PLIC/VirtIO/RTC 和 syscall dispatch。
+- `syscall-abi/`：kernel 与自带 user runtime 共享的 Linux/riscv64 syscall number。
+- `user/`：`_start`、panic/output、三个 raw syscall wrapper 和最小 `/bin/init`。
 
-在 macOS 上，可以通过 Homebrew 安装依赖：
+完整调用链、所有权和不支持范围见 [当前架构](docs/architecture.md)；syscall 精确状态见 [Linux/riscv64 syscall 支持矩阵](docs/syscall-support.md)。
+
+## ABI 与规范基线
+
+- Linux/riscv64 UAPI：Linux `v7.1`，commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。
+- POSIX 语义目标：POSIX.1-2024 / Issue 8。
+- RISC-V ELF psABI：2026-07-01 的 `e03d44ae2f0e1144f9498c2896b5ae25b0449398`。
+- RISC-V Privileged Architecture：`v20260120`。
+- SBI：`v3.0` 用于审计当前实现的有效子集；firmware 对外由 RustSBI 报告 SBI `2.0`。
+- VirtIO：`1.4` CS01。
+- musl：`v1.2.6` 只作为 ABI consumer 审计对象。
+
+不可变 revision 和一手来源见 [规范基线](docs/standards-baseline.md)。
+
+## 环境
+
+- Rust nightly `nightly-2025-06-15`，由 `rust-toolchain.toml` 固定。
+- target `riscv64gc-unknown-none-elf`。
+- QEMU `qemu-system-riscv64`。
+- e2fsprogs：`mke2fs` 和 `debugfs`。
+- Rust `llvm-tools`；GDB/addr2line 只在调试时需要。
+
+macOS 可使用：
 
 ```bash
-# 安装 QEMU
-brew install qemu
-
-# 安装 RISC-V 调试工具链
+brew install qemu e2fsprogs
 brew tap riscv/riscv
 brew install riscv-gnu-toolchain
 ```
 
-在 Debian/Ubuntu 上：
+Debian/Ubuntu 可使用：
 
 ```bash
-# 安装 QEMU
-sudo apt-get install qemu-system-misc
-
-# 安装 RISC-V 调试工具链
-sudo apt-get install binutils-riscv64-unknown-elf
+sudo apt-get install qemu-system-misc e2fsprogs binutils-riscv64-unknown-elf
 ```
 
-## 🚀 构建与运行
+## 构建与启动
 
-1.  **克隆仓库**
+```bash
+# 构建 bootloader、kernel、user，并生成 ext2 镜像
+make build
 
-    ```bash
-    git clone <your-repo-url>
-    cd little-os
-    ```
+# 启动 QEMU virt / 8 hart
+make run
+```
 
-2.  **构建项目**
-    项目包含 bootloader, kernel 和 user 三个部分。`Makefile` 会自动处理所有构建步骤。
+成功启动后会看到 RustSBI/kernel 日志与：
 
-    ```bash
-    make build
-    ```
+```text
+LiteOS init
+```
 
-3.  **在 QEMU 中运行**
-    此命令会构建整个项目并在 QEMU 中启动操作系统。
+当前没有 shell 或交互提示符；init 在输出后持续 `sched_yield`。
 
-    ```bash
-    make run
-    ```
+分组构建：
 
-    启动后，你将看到 `$` 提示符，表示你已经进入了 `user_shell`。
+```bash
+make build-bootloader
+make build-kernel
+make build-user
+python3 create_fs.py create
+```
 
-4.  **调试 (GDB)**
-    如果你需要使用 GDB 调试内核：
+`create_fs.py` 只创建 128 MiB、4 KiB block 的 ext2 启动卷，只允许 `/bin/init` 进入镜像，并将其 mode 设为 `0755`。
 
-    - 在第一个终端窗口中，启动带调试服务器的 QEMU：
-      ```bash
-      make run-gdb
-      ```
-      QEMU 会暂停在启动的第一条指令。
-    - 在第二个终端窗口中，启动 GDB 并连接：
-      ```bash
-      make gdb
-      ```
+## 调试
 
-5.  **清理构建产物**
-    ```bash
-    make clean
-    ```
+```bash
+# 窗口 1
+make run-gdb
 
-## ⌨️ 使用
+# 窗口 2
+make gdb
+```
 
-系统启动后会进入一个简单的 shell。你可以输入以下命令来执行对应的程序：
+## 验证约束
 
-- `hello_world`: 打印 "Hello from user program!"。
-- `shutdown`: 安全地关闭 QEMU 模拟器。
-- 其他你添加到 `user/src/bin` 目录下的程序。
+本仓库不维护、不修正、不执行测试用例。当前验证使用 workspace/组件构建、ELF/反汇编检查与非测试 QEMU 冷启动观察。各阶段的证据保存在 `docs/phase-*.md`。

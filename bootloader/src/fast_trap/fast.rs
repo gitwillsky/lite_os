@@ -1,6 +1,4 @@
-use core::{mem::MaybeUninit, ptr::NonNull};
-
-use super::{TrapHandler, entire, hal};
+use super::{TrapHandler, hal};
 
 /// 快速路径函数。
 pub type FastHandler = extern "C" fn(
@@ -36,12 +34,6 @@ impl FastContext {
         unsafe { self.0.context.as_mut() }
     }
 
-    /// 交换上下文指针。
-    #[inline]
-    pub fn swap_context(&mut self, new: NonNull<hal::FlowContext>) -> NonNull<hal::FlowContext> {
-        core::mem::replace(&mut self.0.context, new)
-    }
-
     /// 启动一个带有 `argc` 个参数的新上下文。
     #[inline]
     pub fn call(self, argc: usize) -> FastResult {
@@ -60,25 +52,6 @@ impl FastContext {
     pub fn restore(self) -> FastResult {
         FastResult::Restore
     }
-
-    /// 丢弃当前上下文，并直接切换到另一个上下文。
-    #[inline]
-    pub fn switch_to(self, others: NonNull<hal::FlowContext>) -> FastResult {
-        unsafe { others.as_ref().load_others() };
-        self.0.context = others;
-        FastResult::Switch
-    }
-
-    /// 向完整路径 `f` 传递对象 `t`。
-    ///
-    /// > **NOTICE** 必须先手工调用 `save_args`，或通过其他方式设置参数寄存器。
-    #[inline]
-    pub fn continue_with<T: 'static>(self, f: entire::EntireHandler<T>, t: T) -> FastResult {
-        // TODO 检查栈溢出
-        unsafe { *self.0.locate_fast_mail() = MaybeUninit::new(t) };
-        self.0.scratch = f as _;
-        FastResult::Continue
-    }
 }
 
 /// 快速路径处理结果。
@@ -90,8 +63,4 @@ pub enum FastResult {
     Call = 1,
     /// 从快速路径直接返回。
     Restore = 2,
-    /// 直接切换到另一个上下文。
-    Switch = 3,
-    /// 调用完整路径函数。
-    Continue = 4,
 }

@@ -83,20 +83,6 @@ pub struct FlowContext {
     pub pc: usize,      // 31..
 }
 
-impl FlowContext {
-    /// 零初始化。
-    pub const ZERO: Self = Self {
-        ra: 0,
-        t: [0; 7],
-        a: [0; 8],
-        s: [0; 12],
-        gp: 0,
-        tp: 0,
-        sp: 0,
-        pc: 0,
-    };
-}
-
 /// # Safety
 ///
 /// See [proto](crate::hal::doc::reuse_stack_for_trap).

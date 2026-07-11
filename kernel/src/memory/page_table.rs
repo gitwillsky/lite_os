@@ -90,11 +90,6 @@ impl PageTableEntry {
                 .flags()
                 .intersects(PTEFlags::X | PTEFlags::W | PTEFlags::R)
     }
-
-    pub fn get_next_table_ppn(&self) -> PhysicalPageNumber {
-        assert!(self.is_pointer_to_next_table());
-        self.ppn()
-    }
 }
 
 #[derive(Debug)]

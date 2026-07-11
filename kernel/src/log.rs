@@ -91,30 +91,6 @@ impl Logger {
         self.level = level;
     }
 
-    pub fn set_default_enabled(&mut self, enabled: bool) {
-        self.default_enabled = enabled;
-    }
-
-    pub fn enable_module(&mut self, module: &str) -> bool {
-        // First check if module already exists in filters
-        for i in 0..self.filter_count {
-            if self.module_filters[i].matches(module) {
-                self.module_filters[i].enabled = true;
-                return true;
-            }
-        }
-
-        // Add new filter if space available
-        if self.filter_count < MAX_MODULE_FILTERS {
-            self.module_filters[self.filter_count].set_name(module);
-            self.module_filters[self.filter_count].enabled = true;
-            self.filter_count += 1;
-            true
-        } else {
-            false // No space for more filters
-        }
-    }
-
     pub fn disable_module(&mut self, module: &str) -> bool {
         // First check if module already exists in filters
         for i in 0..self.filter_count {
@@ -165,16 +141,6 @@ pub fn set_log_level(level: LogLevel) {
     LOGGER.lock().set_level(level);
 }
 
-/// Set the default enabled state for modules not in filter list
-pub fn set_default_module_enabled(enabled: bool) {
-    LOGGER.lock().set_default_enabled(enabled);
-}
-
-/// Enable logging for a specific module
-pub fn enable_module(module: &str) -> bool {
-    LOGGER.lock().enable_module(module)
-}
-
 /// Disable logging for a specific module
 pub fn disable_module(module: &str) -> bool {
     LOGGER.lock().disable_module(module)
@@ -220,10 +186,4 @@ macro_rules! error {
 /// Initialize logging system with specified level
 pub fn init(level: LogLevel) {
     set_log_level(level);
-}
-
-/// Initialize logging system with level and module filtering
-pub fn init_with_module_filter(level: LogLevel, default_enabled: bool) {
-    set_log_level(level);
-    set_default_module_enabled(default_enabled);
 }

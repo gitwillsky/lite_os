@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::hart_id,
-    sync::{IrqMutex, IrqRwLock, LocalIrqGuard},
+    sync::{IrqMutex, LocalIrqGuard},
     task::{
         Processor, RunState, TaskControlBlock, context::TaskContext, processor::enqueue_new_task,
         scheduler::cfs_scheduler::RunQueueEntry, with_current_processor,
@@ -18,14 +18,14 @@ use crate::{
 /// 该表只证明 task 存在；`SchedulingState` 才是 current/runqueue/wait membership 权威。
 pub struct TaskManager {
     /// 全局进程表：TGID -> 当前唯一 Thread
-    // IRQ-safe rwlock 防止 timer 与 task-context 查询在同 hart 重入。
-    tasks: IrqRwLock<BTreeMap<usize, Arc<TaskControlBlock>>>,
+    // 当前只有插入/删除；IRQ-safe mutex 同时防止同 hart 中断重入和跨 hart 并发。
+    tasks: IrqMutex<BTreeMap<usize, Arc<TaskControlBlock>>>,
 }
 
 impl TaskManager {
     pub fn new() -> Self {
         Self {
-            tasks: IrqRwLock::new(BTreeMap::new()),
+            tasks: IrqMutex::new(BTreeMap::new()),
         }
     }
 
@@ -36,7 +36,7 @@ impl TaskManager {
 
         // 添加到全局进程表
         {
-            let mut tasks = self.tasks.write();
+            let mut tasks = self.tasks.lock();
             let previous = tasks.insert(tgid, task.clone());
             assert!(
                 previous.is_none(),
@@ -48,7 +48,7 @@ impl TaskManager {
     }
 
     fn remove_task(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
-        self.tasks.write().remove(&tgid)
+        self.tasks.lock().remove(&tgid)
     }
 }
 

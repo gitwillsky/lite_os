@@ -1,0 +1,229 @@
+# LiteOS 当前架构
+
+> 更新日期：2026-07-11（Asia/Shanghai）
+>
+> 目标平台：QEMU `virt`、RV64GC、最多 8 hart
+> 状态边界：本文是当前仓库事实的权威描述；`phase-*.md` 是各阶段当时的审计记录，其“修改前”或“下一阶段”段落不代表当前能力。
+
+## 1. 架构原则
+
+LiteOS 只在能同时证明编号/格式、状态机、所有权、生命周期和并发语义时暴露能力。当前架构遵守：
+
+1. M-mode firmware、S-mode kernel 和 U-mode program 之间只使用明确 ABI。
+2. 每个复合状态只有一个权威 owner；runqueue/current/wait membership 不用全局任务表推导。
+3. 硬件地址、DMA、trap context 和用户指针不暴露可逃逸的静态可变引用。
+4. 不用私有 syscall、错号转发、忽略 flags 或同名 stub 填补标准语义。
+5. 当前未形成闭环的功能返回 `-ENOSYS` 或不存在于公共接口中。
+
+## 2. 组件和依赖方向
+
+```mermaid
+flowchart TD
+    Q["QEMU virt / DTB"] --> B["M-mode bootloader"]
+    B -->|"SBI + HSM handoff"| K["S-mode kernel"]
+    K --> A["arch / trap / timer / SMP"]
+    K --> M["memory / Sv39"]
+    K --> T["task / scheduler"]
+    K --> D["PLIC / RTC / VirtIO block"]
+    D --> F["read-only ext2 / single-root VFS"]
+    K --> S["Linux/riscv64 syscall dispatcher"]
+    F --> E["static RV64 ELF loader"]
+    E --> U["U-mode /bin/init"]
+    U -->|"ecall"| S
+```
+
+依赖不反向跨层：driver 不依赖 syscall，task 不依赖 GUI/设备策略，VFS 不保存用户 fd 假象。
+
+## 3. M-mode bootloader
+
+`bootloader/` 基于 RustSBI，它只负责 supervisor execution environment：
+
+- 任意合法 cold-boot hart 使用原子状态竞争全局初始化所有权。
+- 清 BSS、解析 DTB、初始化 UART/CLINT/QEMU reset、发布不可变 RustSBI 实例。
+- 验证 DTB hart mask；固定数组只允许 hart ID `0..7`，越界在使用栈前 fail-stop。
+- 每个 hart 独占 M-mode trap stack 和 local HSM state；cold-boot hart 等待全部 local state ready 后再发布 start payload。
+- 实现 RustSBI 对外报告的 SBI 2.0 子集：Base、TIME、IPI、RFENCE、HSM、SRST、DBCN。
+- RFENCE 向每个目标 hart 发布请求并同步等待 ack；普通 IPI 只负责唤醒。
+- PMP 将 firmware 与 S-mode kernel 范围分开，最终通过 `mret` 进入 S-mode。
+
+它不是通用真实硬件 firmware；CLINT、QEMU reset 和物理地址布局都针对 `virt` machine。
+
+## 4. Kernel 启动与 SMP
+
+kernel `_start` 在计算 per-hart 栈地址前验证 hart ID，并把 kernel hart identity 写入 `tp`。唯一 boot owner 执行：
+
+1. trap vector 和日志；
+2. DTB 发布与 required SBI extension probe；
+3. kernel allocator、frame allocator 和 kernel Sv39 page table；
+4. RTC/monotonic timer；
+5. single-root VFS；
+6. PLIC、VirtIO block 和 ext2 mount；
+7. PID 1 `/bin/init` 构造和入队。
+
+`INIT_READY.store(Release)` 一次性发布上述对象；secondary hart 用 Acquire 等待，再激活共享 kernel page table。每个 hart 初始化 timer/interrupt、发布 online bit，完成一次同步 RFENCE 后进入 `run_tasks()`。
+
+## 5. Trap 与上下文
+
+- U-mode trap 通过每个地址空间共享的 trampoline 进入，切换 kernel `satp` 和 kernel stack。
+- `TrapContext` 保存 32 个 GPR（包括用户 `gp/tp`）、32 个 FP register、`fcsr`、`sepc/sstatus` 和 kernel return metadata。
+- 进入 kernel 后恢复 kernel `gp/tp`，返回前恢复用户值，因此 U-mode `tp` 可作为未来 TLS base，但当前未初始化 TLS。
+- S-mode trap 不开启 nested interrupt；kernel exception fail-stop，用户 illegal/breakpoint/page fault 只终止当前 task。
+- timer hardirq 只设置 softirq/reschedule 工作；调度发生在统一用户返回点，不在 hardirq 中切换。
+- external interrupt 只从当前 hart 的 QEMU S-mode PLIC context `2 * hart + 1` claim/complete。
+
+## 6. 并发与同步
+
+- `LocalIrqGuard` 使用 RAII 保存/恢复本地 SIE，并且不可跨 hart 移动。
+- `IrqMutex<T>` 的获取顺序固定为 disable local interrupt -> spin mutex；释放顺序反向，防止同 hart interrupt reentrancy。
+- interrupt-safe lock 是非睡眠锁；guard 内不得调度、阻塞 I/O 或等待可睡眠对象。
+- per-hart `Processor` 的 current/runqueue/idle context 只由 owner hart 在 SIE 关闭时可变访问。
+- 远端 task 只通过 inbound mailbox + SBI IPI 发布，不跨 hart 借用其他 scheduler。
+- Release/Acquire 只用于初始化、online mask、mailbox 和 RFENCE 等真正发布关系；Relaxed 只用于负载 hint/计数。
+
+## 7. 内存模型
+
+### 7.1 Kernel
+
+- kernel linker 区间按 `.text=RX`、`.rodata=R`、`.data/.bss=RW+NX` 映射。
+- kernel 剩余物理内存在 physmap 中 RW+NX 映射。
+- 4 MiB buddy allocator 服务 kernel `alloc`；独立 frame allocator 用 `FrameTracker` RAII 拥有物理页。
+- 新 frame 在交给页表、ELF BSS 或 DMA 前清零。
+
+### 7.2 User
+
+- 每个 Process 拥有独立 Sv39 `MemorySet`，当前 ASID 固定为 0。
+- 用户映像只包含静态 ELF LOAD、空起始 `brk` heap、256 KiB RW+NX stack、上下 guard、supervisor-only TrapContext 与 trampoline。
+- ELF LOAD 权限来自 program header，W+X 直接拒绝。
+- user copyin/copyout 在 AddressSpace lock 内逐页验证 `U|R`/`U|W`，只返回 owned bytes，不返回指向用户 frame 的 Rust reference。
+- 页表修改用本地 `sfence.vma` + 同步 SBI RFENCE 刷新所有 online hart。
+
+当前是 eager paging；无 COW、lazy fault、VMA/VM object、`mmap/munmap/mprotect`。
+
+## 8. Process、Thread 与生命周期
+
+`TaskControlBlock` 显式组合：
+
+- `Process`：TGID、AddressSpace、cwd。
+- `ThreadContext`：TID、kernel stack、TrapContext VA、kernel `TaskContext`。
+- `SchedulingEntity`：`RunState`、enqueue generation、deadline membership、vruntime/nice 和 last-CPU hint。
+
+当前唯一 `ProcessId::init()` 创建 PID/TID 1，没有 parent/child/thread collection。TGID index 只保存存活 owner，不是调度状态权威。exit 立即从 index 移除并 deferred-drop；无 `wait4` 消费者，因此不保留 zombie 或 exit-code 假缓存。
+
+`execve` 先完整读取 file、复制 byte argv/envp、构造新 MemorySet/initial stack，然后一次替换 AddressSpace。失败不修改旧映像；成功后 trap 返回点不用旧 syscall result 覆盖新入口。
+
+## 9. 调度模型
+
+- 只有一个 `CfsRunQueue`；无 FIFO/Priority/策略切换双轨。
+- Ready entry 携带 generation 和 immutable vruntime snapshot；旧 generation 只能被丢弃，不会重复执行。
+- `SchedulingState` 在一个 `IrqMutex` 内统一管理 run state、generation 和 deadline key。
+- deadline wait queue 使用 `(absolute_deadline, sequence)`，timer softirq 只消费到期 entry，不扫描 TGID table。
+- Blocking -> WakePending -> Ready 协议解决 wake-before-switch；repeated/stale wake 不重复入队。
+- idle 在关中断的 drain -> select -> WFI 窗口内消除 IPI/WFI lost wakeup，无工作时不忙轮询。
+
+该调度器只是固定权重的最小公平排序，不声称 Linux CFS 的完整 weight、bandwidth、affinity、RT 或层级语义。当前也没有可用于证明 migration/work stealing 的多 task workload。
+
+## 10. VFS 与文件系统
+
+- `VirtualFileSystem` 只拥有一个 root filesystem；repeated mount 拒绝。
+- pathname 是 NUL 之前的 raw bytes，逐 component 查找；`.`/`..` 使用已验证 inode stack，不做错误词法化简。
+- 不跟随 symlink；遇到 symlink 明确拒绝。
+- 只有只读 ext2；inode API 只保留 type、size、execute bit、read-at 和 direct-child lookup。
+- ext2 对块号/目录项/间接块做边界验证，I/O 错误不冒充 sparse zero。
+- kernel ELF loader 要求 regular inode、至少一个 execute mode bit 和 full read。
+
+当前不存在 `FileDescriptorTable`、fd entry 或 open file description。`write(1)` 是唯一 bootstrap console 例外，不形成通用 fd 模型。
+
+## 11. 设备模型
+
+### 11.1 PLIC
+
+- 唯一 `IrqMutex<PlicInterruptController>`，QEMU S context 映射为 `2 * hart + 1`。
+- affinity map 是 enable 的唯一来源；注册 block IRQ 时绑定 CPU0。
+- handler 顺序是 current-context claim -> device ack -> PLIC complete。
+
+### 11.2 VirtIO block
+
+- legacy MMIO transport，feature=0，单 split virtqueue，只读。
+- queue ring 使用 contiguous `FrameTracker` DMA pages，`Mutex<VirtQueue>` 串行 descriptor/avail/used/free-list。
+- descriptor 先于 avail index release 发布，used index 以 acquire 消费。
+- used chain/descriptor ID/回收数损坏时 fail-stop，不继续使用被破坏的 free list。
+- request 在 device completion 前不返回；无 reset/quiesce 证明时不提供伪 timeout。
+
+### 11.3 RTC
+
+timer 拥有唯一 Goldfish RTC 实例，通过有界 volatile MMIO 读取 real-time base。monotonic time 来自 RISC-V time counter/SBI timer。
+
+当前不支持 VirtIO modern transport、queue reset、multi-request、non-coherent DMA cache maintenance、IOMMU 或非 QEMU PLIC topology。
+
+## 12. ELF 与最小用户态
+
+- 只接受 ELF64/LE/RISC-V/ET_EXEC，RVC + soft/single/double-float flags。
+- 拒绝 PIE/ET_DYN、`PT_DYNAMIC`、`PT_INTERP`、`PT_TLS`、W+X、executable stack、RV32E/quad/TSO/unknown flags。
+- program header table 必须完整位于可读 LOAD 中，entry 必须位于用户可执行 leaf。
+- initial `sp` 16-byte aligned，布局为 `argc, argv, NULL, envp, NULL, auxv`。
+- auxv 只包含 `AT_PHDR/AT_PHENT/AT_PHNUM/AT_PAGESZ/AT_ENTRY/AT_NULL`。
+- 自带 `_start` 初始化 `gp`，从栈推导 argc/argv/envp，main 返回后调用 `exit_group`。
+- `/bin/init` 是镜像中唯一 user binary，输出 `LiteOS init` 后持续 yield。
+
+无 `AT_RANDOM`、`AT_HWCAP`、vDSO、TLS、dynamic relocation 或 interpreter。这些缺失使当前系统不能运行常规 musl 程序。
+
+## 13. Syscall ABI
+
+U-mode 使用 Linux/riscv64 约定：`a7=number`、`a0..a5=args`、`a0=result`、kernel error 为负 errno。共享 crate 只有 12 个 Linux number，未识别 number 一律 `-ENOSYS`。
+
+完整状态、参数、结构体、errno、POSIX 与 musl 路径见 [syscall 支持矩阵](syscall-support.md)。
+
+## 14. 已删除的功能
+
+下列能力曾以私有 ABI、错号 Linux 入口、不完整 stub 或无调用抽象存在，已整链删除：
+
+- 38 个 LiteOS 私有 syscall number 以及全部错号/错签名入口。
+- GUI、framebuffer、VirtIO GPU/input、Web/window manager、字体与用户演示。
+- watchdog、power/resource/device registry、系统统计与管理 syscall。
+- 私有 thread create/join、fork/wait 草稿、伪 zombie/parent/child 状态。
+- 不完整 signal frame/kill/rt_sigreturn 与 futex 草稿。
+- pipe/FIFO、shared-memory handle、Unix-domain socket、private poll 和各自等待队列。
+- fd table/FileDescriptor、不可达 read/close/lseek/dup/fcntl 表面实现。
+- FAT32、ext2 write/allocation/xattr/transaction/cache 伪能力。
+- dynamic-loader syscall、PIE/TLS 草稿和错误 mmap/munmap 近似实现。
+- PCI/platform/power/resource 抽象、VirtIO console/network/GPU/input 驱动与 block write/async façade。
+- user shell、commands、GUI/Web、tests、自定义 user allocator 与测试工具。
+
+删除表示当前不支持，不表示该标准能力永久禁止。未来只能从正确 Linux/riscv64 ABI 和唯一内部模型重新实现。
+
+## 15. 明确不支持
+
+- 完整 Linux/POSIX conformance 或完整 musl runtime。
+- process creation、parent/child/wait/zombie、multi-thread/TLS。
+- signal、futex、robust list、pthread primitive。
+- fd/OFD、普通文件 I/O、directory iteration、pipe、socket、poll/epoll。
+- writable filesystem、crash consistency、symlink resolution、mount namespace。
+- VMA/`mmap`、COW、lazy paging、shared mapping。
+- PIE、dynamic linker、script interpreter、relocation、TLS、vDSO。
+- entropy/CRNG、`getrandom`、`AT_RANDOM`。
+- network/GPU/input/console user device ABI。
+- 真实硬件、非一致 DMA、IOMMU、VirtIO modern/packed ring、非 QEMU PLIC topology。
+
+## 16. 后续路线
+
+路线按可验证竖切排序，不同时铺开多个半实现子系统：
+
+1. **fd/OFD 只读竖切**：`openat -> read -> fstat -> lseek -> dup/close`，共享 offset/status flags/descriptor flags 一次成立。
+2. **VMA 竖切**：匿名 private `mmap/munmap/mprotect`，建立 VMA/VM object 与失败原子性，不立即加 file/shared mapping。
+3. **process 竖切**：`clone/fork + wait4 + exit_group`，同时加 parent/child owner 和最小 exit record，不复活完整 zombie TCB。
+4. **thread/futex 竖切**：`clone` thread flags、TLS、`set_tid_address`、futex wait/wake、robust cleanup 共用唯一 lost-wakeup 协议。
+5. **signal 竖切**：`rt_sigaction/rt_sigprocmask/rt_sigreturn/tgkill`、riscv64 rt frame、pending selection 和 syscall interruption 一次成立。
+6. **musl 验收竖切**：在 fd、VMA、TLS、futex、signal 成立后固定一个 musl commit，以静态非线程程序开始，再扩展 pthread/dynamic linker。
+7. **设备扩展**：只在标准 fd/ioctl/mmap/poll UAPI 成立后加入 console/network/GPU/input；真实硬件另行证明 PLIC topology 和 DMA coherence。
+
+## 17. 验证方法
+
+仓库规则禁止维护、修正或执行测试用例。当前采用：
+
+- workspace 与 bootloader/kernel/user 构建；
+- `git diff --check` 和 rustfmt 定向检查；
+- ELF header/program header/symbol/反汇编静态检查；
+- ext2 inode mode/content 检查；
+- 至少两轮 QEMU `virt -smp 8` 冷启动，观察随机 cold-boot hart、全 hart 上线、RTC/block/ext2/init 与 `LiteOS init`。
+
+此类观察只证明已走过的路径，不代替并发、损坏镜像、OOM 或真实硬件的形式证明。

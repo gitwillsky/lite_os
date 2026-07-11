@@ -16,8 +16,6 @@ pub mod page_table;
 
 pub use config::*;
 unsafe extern "C" {
-    fn skernel();
-
     fn stext();
     fn etext();
 

@@ -1,11 +1,5 @@
-ELFS := $(patsubst user/src/bin/%.rs, target/riscv64gc-unknown-none-elf/release/%, $(wildcard user/src/bin/*.rs))
-RUST_HOST := $(shell rustc -vV | sed -n 's/^host: //p')
-RUST_OBJCOPY := $(shell rustc --print sysroot)/lib/rustlib/$(RUST_HOST)/bin/rust-objcopy
-OBJCOPY := $(RUST_OBJCOPY) --binary-architecture=riscv64
-
 build-user:
 	cd user && cargo build --release && cd -
-	@$(foreach elf, $(ELFS), $(OBJCOPY) $(elf) --strip-all -O binary $(patsubst target/riscv64gc-unknown-none-elf/release/%, target/riscv64gc-unknown-none-elf/release/%.bin, $(elf));)
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -13,22 +7,7 @@ build-kernel:
 build-bootloader:
 	cd bootloader && cargo build --release && cd -
 
-run-with-timeout: build-kernel
-	sleep 15 && killall qemu-system-riscv64 & \
-	qemu-system-riscv64 \
-	-machine virt \
-	-nographic \
-	-smp 8 \
-	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
-	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
-	-drive file=fs.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-device,drive=x0 \
-	-device virtio-rng-device \
-	-rtc base=localtime \
-	-device virtio-net-device,netdev=net0 \
-	-netdev user,id=net0,hostfwd=tcp::5555-:5555
-
-run: build-kernel build-user create-fs
+run: build-bootloader build-kernel build-user create-fs
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \
@@ -37,12 +16,9 @@ run: build-kernel build-user create-fs
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-device,drive=x0 \
-	-device virtio-rng-device \
-	-device virtio-net-device,netdev=net0 \
-	-netdev user,id=net0,hostfwd=tcp::5555-:5555
+	-device virtio-blk-device,drive=x0
 
-run-gdb: build-kernel
+run-gdb: build-bootloader build-kernel build-user create-fs
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -S -s
 
 clean:

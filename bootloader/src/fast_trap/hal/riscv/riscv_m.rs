@@ -16,8 +16,6 @@ macro_rules! r#return {
     };
 }
 
-use crate::fast_trap::hal::trap_entry;
-
 use super::FlowContext;
 
 pub(super) use {exchange, r#return};
@@ -47,32 +45,4 @@ impl FlowContext {
 pub(crate) fn exchange_scratch(mut val: usize) -> usize {
     unsafe { asm!("csrrw {0}, mscratch, {0}", inlateout(reg) val) };
     val
-}
-
-/// # Safety
-///
-/// See [proto](crate::hal::doc::soft_trap).
-#[inline]
-pub unsafe fn soft_trap(cause: usize) {
-    unsafe {
-        asm!(
-            "   la   {0},    1f
-            csrw mepc,   {0}
-            csrw mcause, {cause}
-            j    {trap}
-         1:
-        ",
-            out(reg) _,
-            cause = in(reg) cause,
-            trap  = sym trap_entry,
-        );
-    }
-}
-
-/// # Safety
-///
-/// See [proto](crate::hal::doc::load_direct_trap_entry).
-#[inline]
-pub unsafe fn load_direct_trap_entry() {
-    unsafe { asm!("csrw mtvec, {0}", in(reg) trap_entry, options(nomem)) }
 }

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import subprocess
 import os
-import glob
 import tempfile
 import shutil
 import argparse
@@ -60,31 +59,13 @@ def create_ext2_filesystem(filename, size_mb=128):
 def collect_binaries():
     """仅收集最小用户态启动骨架允许进入镜像的 ELF。"""
 
-    # 查找并复制用户程序ELF文件（原始ELF文件，不是.bin）
-    user_elfs = []
-    for elf_file in glob.glob("target/riscv64gc-unknown-none-elf/release/*"):
-        basename = os.path.basename(elf_file)
-        if (os.path.isfile(elf_file) and
-            not elf_file.endswith('.d') and
-            not elf_file.endswith('.bin') and
-            not elf_file.endswith('.json') and
-            not elf_file.endswith('.rlib') and
-            not basename.startswith('._') and  # 过滤 macOS AppleDouble 文件
-            '.' not in basename):
-            user_elfs.append(elf_file)
+    init_elf = "target/riscv64gc-unknown-none-elf/release/init"
+    if not os.path.isfile(init_elf):
+        print(f"⚠ 未找到用户程序 ELF: {init_elf}")
+        return []
 
-    bin_commands = {'init'}
-    bin_entries = []   # (src, '/bin/name')
-    if user_elfs:
-        for elf_file in user_elfs:
-            basename = os.path.basename(elf_file)
-            if basename in bin_commands:
-                bin_entries.append((elf_file, f"/bin/{basename}"))
-        print(f"允许写入镜像的用户程序: {[os.path.basename(src) for src, _ in bin_entries]}")
-    else:
-        print("⚠ 未找到用户程序ELF文件")
-
-    return bin_entries
+    print("允许写入镜像的用户程序: ['init']")
+    return [(init_elf, "/bin/init")]
 
 def copy_files_to_ext2(image_path, debugfs_bin):
     """通过 debugfs 将文件写入 ext2 镜像。"""

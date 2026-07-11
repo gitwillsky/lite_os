@@ -1,17 +1,10 @@
-mod entire;
 mod fast;
 mod hal;
 
 pub(crate) use fast::*;
 pub(crate) use hal::*;
 
-use core::{
-    alloc::Layout,
-    marker::PhantomPinned,
-    mem::{MaybeUninit, align_of, forget},
-    ops::Range,
-    ptr::NonNull,
-};
+use core::{alloc::Layout, marker::PhantomPinned, mem::forget, ops::Range, ptr::NonNull};
 
 /// 游离的陷入栈。
 pub struct FreeTrapStack(NonNull<TrapHandler>);
@@ -68,20 +61,6 @@ impl Drop for FreeTrapStack {
 }
 
 impl LoadedTrapStack {
-    /// 获取从 `sscratch` 寄存器中换出的值。
-    #[inline]
-    pub const fn val(&self) -> usize {
-        self.0
-    }
-
-    /// 卸载陷入栈。
-    #[inline]
-    pub fn unload(self) -> FreeTrapStack {
-        let ans = unsafe { self.unload_unchecked() };
-        forget(self);
-        ans
-    }
-
     /// 卸载但不消费所有权。
     ///
     /// # Safety
@@ -133,15 +112,4 @@ struct TrapHandler {
     ///
     /// `TrapHandler` 是放在其内部定义的 `block` 块里的，这是一种自引用结构，不能移动。
     pinned: PhantomPinned,
-}
-
-impl TrapHandler {
-    /// 如果从快速路径向完整路径转移，可以把一个对象放在栈底。
-    /// 用这个方法找到栈底的一个对齐的位置。
-    #[inline]
-    fn locate_fast_mail<T>(&mut self) -> *mut MaybeUninit<T> {
-        let top = self.range.end as *mut u8;
-        let offset = top.align_offset(align_of::<T>());
-        unsafe { &mut *top.add(offset).cast() }
-    }
 }
