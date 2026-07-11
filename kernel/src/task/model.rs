@@ -213,6 +213,17 @@ struct ThreadContext {
     robust_list: Mutex<Option<usize>>,
     signal_mask: Mutex<u64>,
     pending_signals: Mutex<u64>,
+    // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
+    // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
+    syscall_restart: Mutex<Option<SyscallRestart>>,
+}
+
+/// @description signal handler 返回后重放一次 Linux/riscv64 ecall 的完整寄存输入。
+#[derive(Debug, Clone, Copy)]
+struct SyscallRestart {
+    syscall_id: usize,
+    args: [usize; 6],
+    ecall_pc: usize,
 }
 
 #[derive(Debug)]
@@ -339,6 +350,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(0),
                 pending_signals: Mutex::new(0),
+                syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -427,6 +439,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
                 pending_signals: Mutex::new(0),
+                syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -501,6 +514,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
                 pending_signals: Mutex::new(0),
+                syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -613,11 +627,30 @@ impl TaskControlBlock {
         (*pending & !*mask != 0).then(action)
     }
 
+    /// @description 登记一次已转换为 userspace `EINTR` 的可重启 syscall。
+    ///
+    /// @param syscall_id Linux/riscv64 syscall number。
+    /// @param args 原始 `a0..a5` 六个参数。
+    /// @param ecall_pc 原始 ecall 指令地址。
+    /// @return 无返回值。
+    pub(crate) fn arm_syscall_restart(&self, syscall_id: usize, args: [usize; 6], ecall_pc: usize) {
+        // RV64GC 的 IALIGN=16，32-bit ecall 可以从 2-byte 边界开始；要求 4-byte 对齐会误杀合法 RVC 指令流。
+        assert_eq!(ecall_pc & 0x1, 0, "restart ecall PC must be aligned");
+        let mut restart = self.thread.syscall_restart.lock();
+        assert!(restart.is_none(), "syscall restart armed twice");
+        *restart = Some(SyscallRestart {
+            syscall_id,
+            args,
+            ecall_pc,
+        });
+    }
+
     /// @description 在 trap return 前选择 pending signal，并构造唯一 RV64 rt frame。
     ///
     /// @return 无可交付 signal/handler frame 已就绪时返回 `None`；默认终止返回状态码。
     /// @errors 用户栈 frame 无法完整写入时返回 `UserAccessError`。
     pub(crate) fn prepare_signal_delivery(&self) -> Result<SignalDelivery, UserAccessError> {
+        const SA_RESTART: usize = 0x1000_0000;
         const SA_NODEFER: usize = 0x4000_0000;
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
@@ -625,6 +658,7 @@ impl TaskControlBlock {
             let mut pending = self.thread.pending_signals.lock();
             let available = *pending & !old_mask;
             if available == 0 {
+                self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::None);
             }
             let signal = available.trailing_zeros() as usize + 1;
@@ -635,10 +669,27 @@ impl TaskControlBlock {
                 continue;
             }
             if action.handler == 0 {
+                self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::Terminate(128 + signal as i32));
             }
 
             let mut context = self.load_trap_context();
+            let restart = self.thread.syscall_restart.lock().take();
+            if action.flags & SA_RESTART != 0
+                && let Some(restart) = restart
+            {
+                assert_eq!(
+                    context.sepc,
+                    restart
+                        .ecall_pc
+                        .checked_add(4)
+                        .expect("restart ecall PC overflow"),
+                    "restart record does not match interrupted ecall"
+                );
+                context.x[10..16].copy_from_slice(&restart.args);
+                context.x[17] = restart.syscall_id;
+                context.sepc = restart.ecall_pc;
+            }
             let frame_size = core::mem::size_of::<LinuxRtSignalFrame>();
             let frame_address = context.x[2]
                 .checked_sub(frame_size)

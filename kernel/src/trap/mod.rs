@@ -14,7 +14,7 @@ use crate::{
     arch::hart,
     drivers,
     memory::TRAMPOLINE,
-    syscall,
+    syscall::{self, SyscallOutcome},
     task::{self, SignalDelivery, exit_current_and_run_next},
     timer,
 };
@@ -86,6 +86,7 @@ pub(crate) fn trap_handler() {
                         let mut cx = current.load_trap_context();
                         let syscall_id = cx.x[17];
                         let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
+                        let ecall_pc = cx.sepc;
                         cx.sepc += 4;
                         current.set_trap_context(cx);
                         // sys_exit 不返回；若保留该 Arc，它会永久留在即将释放的 task stack 上。
@@ -96,8 +97,16 @@ pub(crate) fn trap_handler() {
 
                         // 2. execve 成功时，新 TrapContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
                         let mut cx = current.load_trap_context();
-                        if syscall_id != SYSCALL_EXECVE || result != 0 {
-                            cx.x[10] = result as usize;
+                        match result {
+                            SyscallOutcome::Return(result) => {
+                                if syscall_id != SYSCALL_EXECVE || result != 0 {
+                                    cx.x[10] = result as usize;
+                                }
+                            }
+                            SyscallOutcome::Restart => {
+                                cx.x[10] = crate::syscall::INTERRUPTED_RESULT as usize;
+                                current.arm_syscall_restart(syscall_id, args, ecall_pc);
+                            }
                         }
 
                         current.set_trap_context(cx);

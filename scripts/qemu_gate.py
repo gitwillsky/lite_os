@@ -20,11 +20,29 @@ def terminate(process: subprocess.Popen[bytes]) -> None:
     """终止围栏创建的整个 QEMU process group。"""
     if process.poll() is not None:
         return
-    os.killpg(process.pid, signal.SIGTERM)
+
+    def send(value: signal.Signals) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            process_group = os.getpgid(process.pid)
+            if process_group == process.pid:
+                os.killpg(process_group, value)
+                return
+        except (ProcessLookupError, PermissionError):
+            pass
+        # macOS 可能在 child 退出竞态中拒绝 killpg；回退只作用于本 gate 创建的直接 child。
+        # 缺少此分支会在成功 marker 已出现后把清理竞态误报为 kernel 启动失败。
+        try:
+            process.send_signal(value)
+        except ProcessLookupError:
+            pass
+
+    send(signal.SIGTERM)
     try:
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        send(signal.SIGKILL)
         process.wait(timeout=3)
 
 

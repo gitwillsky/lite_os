@@ -11,6 +11,8 @@ use crate::{
     },
 };
 
+use super::INTERNAL_RESTART_SYS;
+
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_ARG_STRING_BYTES: usize = 32 * 4096;
 const MAX_ARG_BYTES: usize = 128 * 1024;
@@ -174,7 +176,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
         Ok(None) => return 0,
         Err(WaitChildError::NoChild) => return -errno::ECHILD,
         Err(WaitChildError::InvalidSelector) => return -errno::EINVAL,
-        Err(WaitChildError::Interrupted) => return -errno::EINTR,
+        Err(WaitChildError::Interrupted) => return INTERNAL_RESTART_SYS,
     };
     if !status.is_null() {
         let task = current_task().expect("wait4 copyout requires current task");

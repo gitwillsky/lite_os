@@ -39,6 +39,8 @@ Phase 19 consumer 继续验证 create/join、mutex/condition 和 timedwait。sig
 
 本阶段不实现 `SA_RESTART`。需要 restart 的 syscall 仍会向 userspace 返回 `EINTR`；后续必须在 trap/syscall 边界保存可重放参数，使用内部 restart 结果，并由实际交付 signal 的 disposition 决定是否重启；不得把内部 errno 暴露给 userspace。仍无 altstack、queued realtime value、process-directed kill 和自动 SIGCHLD。
 
+> 后续状态：Phase 21 已实现上述 restart 边界。本文保留 Phase 20 当时的历史结论；当前能力以 `phase-21-syscall-restart.md` 和 syscall 支持矩阵为准。
+
 consumer 还暴露并修复了两个相邻生命周期/ABI 问题：Thread 必须先从 process graph 注销，再用 clear-child-tid 唤醒 joiner；`clone(SIGCHLD, 0)` 必须忽略 flags 未启用的 parent_tid/tls/child_tid 寄存器。否则 musl `pthread_join -> fork` 分别会遇到短暂假多线程状态或错误 `EINVAL`。
 
 ## 验证

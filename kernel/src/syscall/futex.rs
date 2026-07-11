@@ -4,7 +4,10 @@ use crate::{
     timer::get_time_ns,
 };
 
-use super::timer::{TimeSpec, decode_timespec};
+use super::{
+    INTERNAL_RESTART_SYS,
+    timer::{TimeSpec, decode_timespec},
+};
 
 fn timeout_deadline(address: usize) -> Result<Option<u64>, isize> {
     if address == 0 {
@@ -56,6 +59,7 @@ pub(crate) fn sys_futex(address: usize, operation: usize, value: u32, timeout: u
                 Err(FutexWaitError::Fault) => -errno::EFAULT,
                 Err(FutexWaitError::Invalid) => -errno::EINVAL,
                 Err(FutexWaitError::TimedOut) => -errno::ETIMEDOUT,
+                Err(FutexWaitError::Interrupted) if timeout == 0 => INTERNAL_RESTART_SYS,
                 Err(FutexWaitError::Interrupted) => -errno::EINTR,
             }
         }

@@ -9,8 +9,24 @@ mod timer;
 use crate::syscall::{fs::*, futex::*, memory::*, process::*, signal::*, timer::*};
 use syscall_abi::*;
 
-pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
-    match syscall_id {
+const INTERNAL_RESTART_SYS: isize = isize::MIN;
+pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
+
+/// @description syscall dispatcher 向 trap layer 返回的唯一控制结果。
+pub(crate) enum SyscallOutcome {
+    /// 将 Linux 返回值或负 errno 写回 `a0`。
+    Return(isize),
+    /// 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 ecall。
+    Restart,
+}
+
+/// @description 解码一个 Linux/riscv64 syscall，并隔离不得暴露给用户态的内部重启结果。
+///
+/// @param syscall_id `a7` 中的 Linux/riscv64 syscall number。
+/// @param args `a0..a5` 中的六个原始参数。
+/// @return 普通返回值/负 errno，或只允许 trap layer 消费的重启控制结果。
+pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
+    let result = match syscall_id {
         SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
@@ -88,5 +104,10 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
             error!("syscall: invalid syscall_id: {}", syscall_id);
             -errno::ENOSYS
         }
+    };
+    if result == INTERNAL_RESTART_SYS {
+        SyscallOutcome::Restart
+    } else {
+        SyscallOutcome::Return(result)
     }
 }

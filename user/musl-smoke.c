@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
@@ -11,11 +12,12 @@
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
 static int interrupt_futex;
+static _Atomic int restart_futex;
 static int state;
 static pid_t main_tid;
 static volatile sig_atomic_t signal_count;
 
-enum { FUTEX_WAIT_PRIVATE = 128 };
+enum { FUTEX_WAIT_PRIVATE = 128, FUTEX_WAKE_PRIVATE = 129 };
 
 static void signal_handler(int signal)
 {
@@ -43,6 +45,17 @@ static void *interrupt_main(void *argument)
 	return argument;
 }
 
+static void *restart_futex_main(void *argument)
+{
+	const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+	if (nanosleep(&delay, 0) != 0) return 0;
+	if (syscall(SYS_tgkill, getpid(), main_tid, SIGUSR1) != 0) return 0;
+	if (nanosleep(&delay, 0) != 0) return 0;
+	atomic_store_explicit(&restart_futex, 1, memory_order_release);
+	if (syscall(SYS_futex, &restart_futex, FUTEX_WAKE_PRIVATE, 1) != 1) return 0;
+	return argument;
+}
+
 int main(int argc, char **argv, char **envp)
 {
 	static const char create_failed[] = "LiteOS musl pthread create failed\n";
@@ -53,6 +66,10 @@ int main(int argc, char **argv, char **envp)
 	static const char wait_setup_failed[] = "LiteOS musl wait setup failed\n";
 	static const char wait_interrupt_failed[] = "LiteOS musl wait interrupt failed\n";
 	static const char wait_reap_failed[] = "LiteOS musl wait reap failed\n";
+	static const char restart_setup_failed[] = "LiteOS musl restart setup failed\n";
+	static const char restart_futex_failed[] = "LiteOS musl restart futex failed\n";
+	static const char restart_wait_failed[] = "LiteOS musl restart wait failed\n";
+	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
 	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
@@ -148,6 +165,48 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, wait_reap_failed, sizeof wait_reap_failed - 1);
 		return 9;
 	}
-	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 10;
+	action.sa_flags = SA_RESTART;
+	if (sigaction(SIGUSR1, &action, 0) != 0
+	    || pthread_create(&thread, 0, restart_futex_main, (void *)(uintptr_t)0x5349) != 0) {
+		write(STDOUT_FILENO, restart_setup_failed, sizeof restart_setup_failed - 1);
+		return 10;
+	}
+	errno = 0;
+	if (syscall(SYS_futex, &restart_futex, FUTEX_WAIT_PRIVATE, 0, 0) != 0
+	    || signal_count != 4 || atomic_load_explicit(&restart_futex, memory_order_acquire) != 1
+	    || pthread_join(thread, &thread_result) != 0
+	    || thread_result != (void *)(uintptr_t)0x5349) {
+		write(STDOUT_FILENO, restart_futex_failed, sizeof restart_futex_failed - 1);
+		return 10;
+	}
+	errno = 0;
+	child = fork();
+	if (child == 0) {
+		const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+		if (nanosleep(&delay, 0) != 0
+		    || syscall(SYS_tgkill, getppid(), main_tid, SIGUSR1) != 0
+		    || nanosleep(&delay, 0) != 0) _exit(26);
+		_exit(25);
+	}
+	if (child <= 0 || waitpid(child, &child_status, 0) != child
+	    || signal_count != 5 || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 25) {
+		write(STDOUT_FILENO, restart_wait_failed, sizeof restart_wait_failed - 1);
+		return 10;
+	}
+	if (pthread_create(&thread, 0, interrupt_main, (void *)(uintptr_t)0x534a) != 0) {
+		write(STDOUT_FILENO, restart_setup_failed, sizeof restart_setup_failed - 1);
+		return 10;
+	}
+	remaining = (struct timespec){ 0 };
+	errno = 0;
+	if (nanosleep(&interrupt_sleep, &remaining) != -1 || errno != EINTR
+	    || signal_count != 6 || remaining.tv_sec != 0
+	    || remaining.tv_nsec <= 0 || remaining.tv_nsec >= interrupt_sleep.tv_nsec
+	    || pthread_join(thread, &thread_result) != 0
+	    || thread_result != (void *)(uintptr_t)0x534a) {
+		write(STDOUT_FILENO, restart_sleep_failed, sizeof restart_sleep_failed - 1);
+		return 10;
+	}
+	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 11;
 	return 0;
 }
