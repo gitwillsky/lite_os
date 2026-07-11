@@ -15,7 +15,7 @@
 - 每个复合状态只有一个 owner；禁止复制状态并人工同步。
 - `main.rs` 只负责装配；syscall 只负责 ABI、user-copy 与 errno；trap 只负责入口和事件投递。
 - 下层不得依赖上层，具体 adapter 不得泄漏穿过其 seam。
-- 默认 private；扩大 `pub(crate)` interface 必须更新 interface contract 并说明调用者。
+- 默认 private；扩大任何 scoped interface 必须更新 interface contract 并说明调用者。
 - 禁止私有 ABI、固定 hart 数、双轨实现、兼容入口和无领域含义的 module。
 - 新增 unsafe、global、lock、Atomic、Once、cache 或 flag 必须记录证明、owner 与失败后果。
 

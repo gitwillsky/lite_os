@@ -104,4 +104,4 @@ make gdb
 
 ## 验证约束
 
-本仓库不维护、不修正、不执行测试用例。当前验证使用 workspace/组件构建、ELF/反汇编检查与非测试 QEMU 冷启动观察。各阶段的证据保存在 `docs/phase-*.md`。
+本仓库不维护、不修正、不执行测试用例。统一运行 `make verify`；它执行 AST 架构围栏、workspace/组件构建、Clippy、ELF 静态检查与 `-smp 1/3/8` 非测试 QEMU 冷启动 gate。各阶段的证据保存在 `docs/phase-*.md`。

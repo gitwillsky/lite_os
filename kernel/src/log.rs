@@ -138,7 +138,7 @@ impl Logger {
 static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 
 /// Set the global log level
-pub(crate) fn set_log_level(level: LogLevel) {
+fn set_log_level(level: LogLevel) {
     LOGGER.lock().set_level(level);
 }
 
@@ -184,7 +184,10 @@ macro_rules! error {
     };
 }
 
-/// Initialize logging system with specified level
-pub(crate) fn init(level: LogLevel) {
-    set_log_level(level);
+/// Initialize logging with the build-profile default owned by this module.
+pub(crate) fn init() {
+    #[cfg(debug_assertions)]
+    set_log_level(LogLevel::Debug);
+    #[cfg(not(debug_assertions))]
+    set_log_level(LogLevel::Info);
 }

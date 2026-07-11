@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 mod aclint;
 mod clint;
@@ -63,6 +64,8 @@ static SBI: Once<FixedRustSBI<'static>> = Once::new();
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
+// SAFETY: QEMU enters in M-mode with SBI boot registers and no Rust stack; locate establishes the
+// validated per-hart firmware stack before rust_main, and failure remains in naked trap assembly.
 unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "  call {locate_stack}
@@ -186,6 +189,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 }
 
 fn clear_bss() {
+    // SAFETY: linker script defines aligned immutable address symbols for the firmware BSS range.
     unsafe extern "C" {
         static sbss: u64;
         static ebss: u64;
@@ -217,8 +221,7 @@ fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
     );
     assert!(
         board_info.hart_mask & (1usize << cold_boot_hart) != 0,
-        "cold-boot hart {} is absent from DTB",
-        cold_boot_hart
+        "cold-boot hart {cold_boot_hart} is absent from DTB"
     );
 }
 
@@ -392,7 +395,7 @@ struct FixedRustSBI<'a> {
     clint: &'a clint::Clint,
     hsm: Hsm,
     reset: &'a qemu_test::QemuTest,
-    dbcn: &'a dbcn::DBCN,
+    dbcn: &'a dbcn::Dbcn,
 }
 
 struct Hsm;

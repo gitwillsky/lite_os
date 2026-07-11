@@ -1,57 +1,53 @@
-use crate::memory::{
-    PAGE_SIZE,
-    address::{PhysicalAddress, VirtualAddress},
-    frame_allocator::{self, FrameTracker},
-};
+use crate::memory::{FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress, alloc_contiguous};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
 
 // VirtIO Ring 描述符标志
-pub(crate) const VIRTQ_DESC_F_NEXT: u16 = 1;
-pub(crate) const VIRTQ_DESC_F_WRITE: u16 = 2;
+pub(super) const VIRTQ_DESC_F_NEXT: u16 = 1;
+pub(super) const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VirtqDesc {
-    pub(crate) addr: u64,
-    pub(crate) len: u32,
-    pub(crate) flags: u16,
-    pub(crate) next: u16,
+pub(super) struct VirtqDesc {
+    pub(super) addr: u64,
+    pub(super) len: u32,
+    pub(super) flags: u16,
+    pub(super) next: u16,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct VirtqAvail {
-    pub(crate) flags: AtomicU16,
-    pub(crate) idx: AtomicU16,
-    pub(crate) ring: [u16; 0], // 实际大小由队列大小决定
+pub(super) struct VirtqAvail {
+    pub(super) flags: AtomicU16,
+    pub(super) idx: AtomicU16,
+    pub(super) ring: [u16; 0], // 实际大小由队列大小决定
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VirtqUsedElem {
-    pub(crate) id: u32,
-    pub(crate) len: u32,
+pub(super) struct VirtqUsedElem {
+    pub(super) id: u32,
+    pub(super) len: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct VirtqUsed {
-    pub(crate) flags: AtomicU16,
-    pub(crate) idx: AtomicU16,
-    pub(crate) ring: [VirtqUsedElem; 0], // 实际大小由队列大小决定
+pub(super) struct VirtqUsed {
+    pub(super) flags: AtomicU16,
+    pub(super) idx: AtomicU16,
+    pub(super) ring: [VirtqUsedElem; 0], // 实际大小由队列大小决定
 }
 
-pub(crate) struct VirtQueue {
-    pub(crate) size: u16,
-    pub(crate) desc: *mut VirtqDesc,
-    pub(crate) avail: *mut VirtqAvail,
-    pub(crate) used: *mut VirtqUsed,
-    pub(crate) free_head: u16,
-    pub(crate) num_free: u16,
-    pub(crate) last_used_idx: u16,
-    pub(crate) avail_idx: u16,
+pub(super) struct VirtQueue {
+    pub(super) size: u16,
+    pub(super) desc: *mut VirtqDesc,
+    pub(super) avail: *mut VirtqAvail,
+    pub(super) used: *mut VirtqUsed,
+    pub(super) free_head: u16,
+    pub(super) num_free: u16,
+    pub(super) last_used_idx: u16,
+    pub(super) avail_idx: u16,
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
@@ -60,7 +56,7 @@ pub(crate) struct VirtQueue {
 }
 
 impl VirtQueue {
-    pub(crate) fn new(size: u16) -> Option<Self> {
+    pub(super) fn new(size: u16) -> Option<Self> {
         if size == 0 || size & (size - 1) != 0 {
             error!(
                 "[VirtQueue] Invalid queue size: {} (must be power of 2)",
@@ -88,9 +84,9 @@ impl VirtQueue {
         let total_size = (used_offset + used_size + 4095) & !4095;
 
         // 分配足够的连续页面
-        let pages_needed = (total_size + 4095) / 4096;
+        let pages_needed = total_size.div_ceil(4096);
         debug!("[VirtQueue] Allocating {} pages for queue", pages_needed);
-        let frame_tracker = frame_allocator::alloc_contiguous(pages_needed)?;
+        let frame_tracker = alloc_contiguous(pages_needed)?;
 
         let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
@@ -147,7 +143,7 @@ impl VirtQueue {
         })
     }
 
-    pub(crate) fn physical_address(&self) -> PhysicalAddress {
+    pub(super) fn physical_address(&self) -> PhysicalAddress {
         self.mem_paddr
     }
 
@@ -189,7 +185,7 @@ impl VirtQueue {
         segments
     }
 
-    pub(crate) fn add_buffer(
+    pub(super) fn add_buffer(
         &mut self,
         inputs: &[&[u8]],
         outputs: &mut [&mut [u8]],
@@ -267,7 +263,7 @@ impl VirtQueue {
         Some(head)
     }
 
-    pub(crate) fn add_to_avail(&mut self, desc_idx: u16) {
+    pub(super) fn add_to_avail(&mut self, desc_idx: u16) {
         // Update available ring following virtio-drivers pattern
         let avail_slot = self.avail_idx & (self.size - 1);
 
@@ -290,7 +286,7 @@ impl VirtQueue {
         }
     }
 
-    pub(crate) fn used(&mut self) -> Result<Option<(u16, u32)>, ()> {
+    pub(super) fn used(&mut self) -> Result<Option<(u16, u32)>, ()> {
         // SAFETY: used ring 完整位于 `_frame_tracker` 保持存活的共享页内；
         // Acquire 读 used.idx 后才读取对应 ring slot，slot 通过 power-of-two size 限制。
         unsafe {

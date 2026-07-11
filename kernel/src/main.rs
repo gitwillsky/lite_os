@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::memory::KERNEL_SPACE;
 use alloc::sync::Arc;
@@ -38,7 +39,7 @@ static INIT_READY: AtomicBool = AtomicBool::new(false);
 extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     init_local_arch(hart_id);
 
-    log::init(config::DEFAULT_LOG_LEVEL);
+    log::init();
     log::disable_module("kernel::task::loader");
     arch::dtb::init(dtb_addr);
     arch::hart::validate_boot_hart(arch::dtb::board_info(), hart_id);
@@ -54,7 +55,7 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     );
     memory::init();
     timer::init_rtc();
-    fs::vfs::init();
+    fs::init_vfs();
     drivers::init();
     mount_root_filesystem();
     task::init(
@@ -87,7 +88,7 @@ fn mount_root_filesystem() {
     let device =
         drivers::block::get_primary_block_device().expect("boot requires one primary block device");
     let filesystem = fs::Ext2FileSystem::new(device).expect("invalid ext2 root filesystem");
-    fs::vfs::vfs()
+    fs::vfs()
         .mount_root(filesystem)
         .expect("root filesystem mounted more than once");
     info!("ext2 root filesystem mounted at /");
@@ -159,8 +160,7 @@ fn enter_scheduler() -> ! {
     }
     // 每个 hart 上线时同步一次共享 kernel 页表。除建立一致性外，这也保证 firmware
     // RFENCE 的同步完成路径在进入长期调度前已实际经过，而不是保留未连接的实现。
-    memory::mm::MemorySet::flush_tlb_all_cpus()
-        .expect("SBI RFENCE failed during per-hart activation");
+    memory::MemorySet::flush_tlb_all_cpus().expect("SBI RFENCE failed during per-hart activation");
 
     task::run_tasks();
 }

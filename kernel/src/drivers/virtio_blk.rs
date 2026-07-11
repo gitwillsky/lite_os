@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use crate::drivers::hal::{interrupt, virtio::VirtIODevice};
-
 use super::{
+    InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
+    VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     block::{BLOCK_SIZE, BlockDevice, BlockError},
     virtio_queue::*,
 };
@@ -13,9 +13,9 @@ const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
 const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
 
-pub(crate) const VIRTIO_BLK_S_OK: u8 = 0;
-pub(crate) const VIRTIO_BLK_S_IOERR: u8 = 1;
-pub(crate) const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+pub(super) const VIRTIO_BLK_S_OK: u8 = 0;
+pub(super) const VIRTIO_BLK_S_IOERR: u8 = 1;
+pub(super) const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -25,7 +25,7 @@ struct VirtIOBlkReq {
     sector: u64,
 }
 
-pub(crate) struct VirtIOBlockDevice {
+pub(super) struct VirtIOBlockDevice {
     device: VirtIODevice,
     queue: Mutex<VirtQueue>,
     capacity: u64,
@@ -33,7 +33,7 @@ pub(crate) struct VirtIOBlockDevice {
 }
 
 impl VirtIOBlockDevice {
-    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(super) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut virtio_device = VirtIODevice::new(base_addr, 0x1000).ok()?;
 
         if virtio_device.device_id() != 2 {
@@ -48,10 +48,10 @@ impl VirtIOBlockDevice {
 
         let status = virtio_device.get_status().ok()?;
         virtio_device
-            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK)
+            .set_status(status | VIRTIO_CONFIG_S_FEATURES_OK)
             .ok()?;
 
-        if virtio_device.get_status().ok()? & super::hal::virtio::VIRTIO_CONFIG_S_FEATURES_OK == 0 {
+        if virtio_device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
 
@@ -73,7 +73,7 @@ impl VirtIOBlockDevice {
 
         let status = virtio_device.get_status().ok()?;
         virtio_device
-            .set_status(status | super::hal::virtio::VIRTIO_CONFIG_S_DRIVER_OK)
+            .set_status(status | VIRTIO_CONFIG_S_DRIVER_OK)
             .ok()?;
 
         info!(
@@ -265,26 +265,22 @@ struct VirtIOBlockIrqHandler {
     device: Arc<VirtIOBlockDevice>,
 }
 
-impl interrupt::InterruptHandler for VirtIOBlockIrqHandler {
-    fn handle_interrupt(
-        &self,
-        _vector: interrupt::InterruptVector,
-    ) -> Result<(), interrupt::InterruptError> {
+impl InterruptHandler for VirtIOBlockIrqHandler {
+    fn handle_interrupt(&self, _vector: InterruptVector) -> Result<(), InterruptError> {
         // 仅做最小化的中断确认，避免与同步 I/O 路径上的队列锁竞争
         if let Ok(status) = self.device.device.interrupt_status() {
             // 确认 VRING 与 CONFIG 两类中断（如存在）
-            let _ = self.device.device.interrupt_ack(
-                status
-                    & (super::hal::virtio::VIRTIO_MMIO_INT_VRING
-                        | super::hal::virtio::VIRTIO_MMIO_INT_CONFIG),
-            );
+            let _ = self
+                .device
+                .device
+                .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG));
         }
         Ok(())
     }
 }
 
 impl VirtIOBlockDevice {
-    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn interrupt::InterruptHandler> {
+    pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::new(VirtIOBlockIrqHandler {
             device: self.clone(),
         })

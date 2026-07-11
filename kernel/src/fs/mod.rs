@@ -1,13 +1,17 @@
 use alloc::sync::Arc;
 
-pub(crate) mod ext2;
-pub(crate) mod file;
-pub(crate) mod inode;
-pub(crate) mod vfs;
+mod ext2;
+mod file;
+mod inode;
+mod vfs;
 
 pub(crate) use ext2::Ext2FileSystem;
-pub(crate) use file::{Console, FileDescriptorTable, OpenFileDescription, OpenFileKind};
+pub(crate) use file::{
+    Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_RDONLY,
+    O_WRONLY, OpenFileDescription, OpenFileKind,
+};
 pub(crate) use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use vfs::{init as init_vfs, vfs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileSystemError {

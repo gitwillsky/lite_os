@@ -2,11 +2,9 @@ use alloc::boxed::Box;
 
 use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::register_block_device;
-use crate::drivers::hal::bus::MmioBus;
-use crate::drivers::hal::interrupt::{
-    InterruptController, InterruptHandler, PlicInterruptController,
+use crate::drivers::{
+    InterruptController, InterruptHandler, MmioBus, PlicInterruptController, VirtIOBlockDevice,
 };
-use crate::drivers::virtio_blk::VirtIOBlockDevice;
 use crate::sync::IrqMutex;
 
 /// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
@@ -37,7 +35,7 @@ fn init_interrupt_controller() {
 }
 
 /// 系统初始化入口点
-pub(crate) fn init() {
+pub(super) fn init() {
     init_interrupt_controller();
     // 扫描和初始化设备
     scan_and_init_devices();
@@ -49,7 +47,7 @@ fn scan_and_init_devices() {
     let board_info = board_info();
 
     // 初始化VirtIO设备
-    init_virtio_devices(&board_info);
+    init_virtio_devices(board_info);
 }
 
 /// 初始化VirtIO设备
@@ -179,7 +177,7 @@ fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
 }
 
 /// 处理外部中断
-pub(crate) fn handle_external_interrupt() {
+pub(super) fn handle_external_interrupt() {
     // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
     if let Some(controller) = interrupt_controller() {
         let result = controller.lock().handle_pending_interrupts();

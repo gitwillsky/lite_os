@@ -110,7 +110,7 @@ impl PhysicalAddress {
         if self.0 == 0 {
             PhysicalPageNumber(0)
         } else {
-            PhysicalPageNumber((self.0 + config::PAGE_SIZE - 1) / config::PAGE_SIZE)
+            PhysicalPageNumber(self.0.div_ceil(config::PAGE_SIZE))
         }
     }
 

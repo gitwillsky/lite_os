@@ -55,7 +55,7 @@ pub(crate) fn panic_print_fmt(args: core::fmt::Arguments) {
 }
 
 pub(crate) fn panic_println_fmt(args: core::fmt::Arguments) {
-    panic_print_fmt(format_args!("{}\n", args));
+    panic_print_fmt(format_args!("{args}\n"));
 }
 
 struct PanicConsoleWriter;

@@ -2,10 +2,10 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::fmt;
 
-pub(crate) type InterruptVector = u32;
+pub(in crate::drivers) type InterruptVector = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InterruptError {
+pub(in crate::drivers) enum InterruptError {
     HandlerNotSet,
     InvalidVector,
 }
@@ -19,11 +19,11 @@ impl fmt::Display for InterruptError {
     }
 }
 
-pub(crate) trait InterruptHandler: Send + Sync {
+pub(in crate::drivers) trait InterruptHandler: Send + Sync {
     fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
 }
 
-pub(crate) trait InterruptController: Send + Sync {
+pub(in crate::drivers) trait InterruptController: Send + Sync {
     fn register_handler(
         &mut self,
         vector: InterruptVector,
@@ -45,7 +45,7 @@ pub(crate) trait InterruptController: Send + Sync {
     }
 }
 
-pub(crate) struct PlicInterruptController {
+pub(in crate::drivers) struct PlicInterruptController {
     base_addr: usize,
     max_interrupts: u32,
     hart_mask: usize,
@@ -54,7 +54,7 @@ pub(crate) struct PlicInterruptController {
 }
 
 impl PlicInterruptController {
-    pub(crate) fn new(
+    pub(in crate::drivers) fn new(
         base_addr: usize,
         size: usize,
         max_interrupts: u32,

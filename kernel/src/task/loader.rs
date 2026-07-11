@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::fs::{FileSystemError, InodeType, vfs::vfs};
+use crate::fs::{FileSystemError, InodeType, vfs};
 
 /// @description 从启动文件系统读取可执行文件时的可观察失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

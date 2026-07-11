@@ -6,14 +6,14 @@ use spin::Mutex;
 use crate::{
     arch::{dtb, sbi},
     config,
-    drivers::goldfish_rtc::GoldfishRTCDevice,
+    drivers::GoldfishRTCDevice,
 };
 
 // OWNER: timer module owns the calibrated scheduler tick interval.
 static TICK_INTERVAL_VALUE: AtomicU64 = AtomicU64::new(0);
 
-const USEC_PER_SEC: u64 = 1000_000;
-const NSEC_PER_SEC: u64 = 1000_000_000;
+const USEC_PER_SEC: u64 = 1_000_000;
+const NSEC_PER_SEC: u64 = 1_000_000_000;
 
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
 // OWNER: timer module owns the boot-time offset from monotonic to realtime clock.

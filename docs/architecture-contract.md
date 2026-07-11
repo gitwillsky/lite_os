@@ -11,16 +11,22 @@
 
 ## 2. Kernel dependency contract
 
-| Module | 允许依赖 | 禁止依赖 |
+| Module | 允许依赖（机器读取） | 说明 |
 |---|---|---|
-| `arch` | config、memory constants、sync mechanism | task、fs、drivers、syscall、trap |
-| `sync` | arch interrupt mechanism | task、fs、drivers、syscall、trap |
-| `memory` | arch、config、id、sync | task、fs、drivers、syscall、trap |
-| `drivers` | arch、memory、sync | task、fs、syscall、trap |
-| `fs` | block interface、timer、sync | task、syscall、trap、具体 device adapter |
-| `task` | arch mechanism、memory、fs interface、sync、timer | drivers、syscall、trap |
-| `trap` | arch、drivers interrupt interface、task、syscall、timer | filesystem implementation |
-| `syscall` | task、VFS、memory interface、timer | arch、drivers、trap、ext2、scheduler/page-table implementation |
+| `arch` | `config`, `memory`, `sync` | architecture mechanism 不得消费上层领域状态 |
+| `config` | 无 | 只保存无运行时依赖的常量 |
+| `sync` | `arch` | 只依赖本地中断机制 |
+| `memory` | `arch`, `config`, `id`, `sync` | 不感知 task、filesystem 或 driver policy |
+| `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
+| `fs` | `drivers`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
+| `task` | `arch`, `fs`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
+| `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
+| `syscall` | `fs`, `memory`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
+| `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
+| `id` | 无 | 纯 ID allocation mechanism |
+| `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
+| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `task`, `timer`, `trap` | 唯一 composition root |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 
@@ -48,8 +54,8 @@
 
 ## 4. Interface and capability contract
 
-- kernel 与 bootloader 是 binary crate，跨 module interface 使用 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
-- 默认 private；`pub(crate)` surface 由 `architecture-interface.txt` 完整记录。
+- kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
+- 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
@@ -58,6 +64,6 @@
 
 ## 5. Change contract
 
-修改前必须确定所属 module、状态 owner、interface 变化、依赖变化以及 error/exit/interrupt cleanup。扩大 interface 或新增 global state 必须更新对应权威契约；不得修改围栏来掩盖实现问题。
+修改前必须确定所属 module、状态 owner、interface 变化、依赖变化以及 error/exit/interrupt cleanup。依赖采用正向 allowlist，未列出的跨 module 依赖一律失败。扩大 interface 或新增 global state 必须更新对应权威契约；不得修改围栏来掩盖实现问题。只有其他架构规则全部通过时，`cargo run -p architecture-check -- --write-interface` 才能更新 interface contract。
 
 唯一强制验证入口是 `make verify`。

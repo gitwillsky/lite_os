@@ -67,9 +67,7 @@ pub(crate) fn verify_required_extensions() {
     ] {
         assert!(
             probe_extension(eid).unwrap_or(false),
-            "required SBI extension {} ({:#x}) is unavailable",
-            name,
-            eid
+            "required SBI extension {name} ({eid:#x}) is unavailable"
         );
     }
 }

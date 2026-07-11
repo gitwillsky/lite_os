@@ -78,7 +78,7 @@ impl Display for BoardInfo {
         writeln!(f, "Hart Mask: {:#x}", self.hart_mask)?;
         writeln!(f, "Max Hart ID: {}", self.max_hart_id)?;
         if let Some(invalid) = self.invalid_hart_id {
-            writeln!(f, "Invalid Hart ID: {}", invalid)?;
+            writeln!(f, "Invalid Hart ID: {invalid}")?;
         }
         writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
         writeln!(f, "Memory: {:#x?}", self.mem)?;
@@ -215,13 +215,11 @@ impl BoardInfo {
                     } else {
                         WalkOperation::StepOver
                     }
+                } else if current == Str::from(CPUS) && name.starts_with("cpu@") {
+                    ans.hart_count += 1;
+                    WalkOperation::StepInto
                 } else {
-                    if current == Str::from(CPUS) && name.starts_with("cpu@") {
-                        ans.hart_count += 1;
-                        WalkOperation::StepInto
-                    } else {
-                        WalkOperation::StepOver
-                    }
+                    WalkOperation::StepOver
                 }
             }
             DtbObj::Property(Property::Model(model)) if ctx.is_root() => {

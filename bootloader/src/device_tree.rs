@@ -81,13 +81,11 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
                 } else {
                     WalkOperation::StepOver
                 }
+            } else if current == Str::from(CPUS) && name.starts_with("cpu@") {
+                ans.hart_count += 1;
+                WalkOperation::StepInto
             } else {
-                if current == Str::from(CPUS) && name.starts_with("cpu@") {
-                    ans.hart_count += 1;
-                    WalkOperation::StepInto
-                } else {
-                    WalkOperation::StepOver
-                }
+                WalkOperation::StepOver
             }
         }
         DtbObj::Property(Property::Model(model)) if ctx.is_root() => {

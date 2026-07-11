@@ -34,6 +34,8 @@ static HSM_CELLS: [hsm_cell::HsmCell<Supervisor>; constants::HART_MASK_BITS] =
 ///
 /// @return 正常路径返回调用者；非法 hart 永久 fail-stop。
 #[unsafe(naked)]
+// SAFETY: called before Rust from M-mode entry; assembly bounds mhartid before indexing the static
+// stack array and establishes sp/mscratch without observing uninitialized Rust state.
 pub(crate) unsafe extern "C" fn locate() {
     core::arch::naked_asm!(
         "   csrr t1, mhartid

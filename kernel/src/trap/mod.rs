@@ -1,4 +1,4 @@
-pub(crate) mod softirq;
+mod softirq;
 
 use core::{arch::asm, panic};
 
@@ -13,7 +13,7 @@ use riscv::{
 use syscall_abi::SYSCALL_EXECVE;
 
 use crate::{
-    drivers::platform,
+    drivers,
     memory::TRAMPOLINE,
     syscall,
     task::{self, exit_current_and_run_next},
@@ -56,7 +56,7 @@ pub(crate) fn trap_handler() {
                     softirq::raise(softirq::SoftIrq::Timer);
                 }
                 Interrupt::SupervisorExternal => {
-                    platform::handle_external_interrupt();
+                    drivers::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
                     handle_supervisor_soft_interrupt();
@@ -167,6 +167,7 @@ pub(crate) fn trap_handler() {
 
 fn set_kernel_trap_entry() {
     let mut val = stvec::Stvec::from_bits(0);
+    // SAFETY: assembly defines this aligned symbol with C linkage in the kernel trap text.
     unsafe extern "C" {
         fn __kernel_trap();
     }
@@ -214,6 +215,8 @@ pub(crate) fn trap_return() -> ! {
         current_task.set_trap_context(trap_context);
     }
 
+    // SAFETY: both symbols are emitted by the trampoline assembly in one section; their addresses
+    // are used only to derive the mapped restore entry offset.
     unsafe extern "C" {
         fn __restore();
         fn __alltraps();
@@ -255,7 +258,7 @@ extern "C" fn rust_trap_from_kernel() {
                     Interrupt::SupervisorExternal => {
                         // 内核态 VirtIO 同步 I/O 可以被 external IRQ 打断；
                         // 此处只确认设备/PLIC 状态，不在 hardirq 中调度。
-                        platform::handle_external_interrupt();
+                        drivers::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
                         handle_supervisor_soft_interrupt();

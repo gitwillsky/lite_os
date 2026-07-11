@@ -27,8 +27,7 @@ impl IdAllocator {
         assert!(id < self.current);
         assert!(
             !self.recycled.contains(&id),
-            "id {} is already deallocated",
-            id
+            "id {id} is already deallocated"
         );
         self.recycled.push(id);
     }

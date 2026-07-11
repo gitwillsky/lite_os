@@ -5,6 +5,8 @@ use super::hart;
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
+// SAFETY: firmware enters with SBI a0/a1, paging disabled, and no Rust stack; this naked entry
+// establishes gp/tp/sscratch and a topology-owned stack before calling any Rust function.
 unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         "
@@ -86,6 +88,7 @@ pub(crate) fn entry_address() -> usize {
 ///
 /// @errors bootloader 若错误地同时放行多个 hart，会破坏该单写者前提。
 extern "C" fn clear_bss() {
+    // SAFETY: linker script provides immutable address symbols delimiting the kernel BSS.
     unsafe extern "C" {
         static sbss: u8;
         static ebss: u8;

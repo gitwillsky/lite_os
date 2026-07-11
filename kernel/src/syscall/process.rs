@@ -2,12 +2,11 @@ use alloc::vec::Vec;
 
 use crate::{
     fs::FileSystemError,
-    memory::mm::{ElfLoadError, UserAccessError},
+    memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        TaskControlBlock, current_task, exit_current_and_run_next,
-        loader::{ProgramLoadError, load_program_from_fs},
-        suspend_current_and_run_next,
+        ProgramLoadError, TaskControlBlock, current_task, exit_current_and_run_next,
+        load_program_from_fs, suspend_current_and_run_next,
     },
 };
 

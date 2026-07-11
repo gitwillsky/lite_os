@@ -1,0 +1,10 @@
+[package]
+name = "architecture-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+proc-macro2 = { version = "=1.0.95", features = ["span-locations"] }
+quote = "=1.0.40"
+syn = { version = "=2.0.101", features = ["full", "parsing", "visit"] }

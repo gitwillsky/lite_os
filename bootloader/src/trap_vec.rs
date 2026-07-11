@@ -10,6 +10,8 @@ use core::arch::naked_asm;
 ///
 /// 裸函数。
 #[unsafe(naked)]
+// SAFETY: mtvec uses this aligned vectored table only in M-mode; every slot transfers directly to
+// a naked handler that preserves the interrupted supervisor context.
 pub(crate) unsafe extern "C" fn trap_vec() {
     naked_asm!(
         ".align 2",
@@ -40,6 +42,8 @@ pub(crate) unsafe extern "C" fn trap_vec() {
 ///
 /// 裸函数。
 #[unsafe(naked)]
+// SAFETY: entered only from trap_vec for MTIP with a valid mscratch stack; the routine saves every
+// clobbered ABI register, bounds CLINT access through the initialized hart mapping, then mret.
 unsafe extern "C" fn mtimer() {
     naked_asm!(
         // 换栈：
@@ -90,6 +94,8 @@ unsafe extern "C" fn mtimer() {
 ///
 /// 裸函数。
 #[unsafe(naked)]
+// SAFETY: entered only from trap_vec for MSIP with a valid mscratch stack; all clobbered registers
+// are saved and restored around RFENCE/HSM handling before mret.
 unsafe extern "C" fn msoft() {
     naked_asm!(
         ".option arch, +a",

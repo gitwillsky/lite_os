@@ -1,20 +1,23 @@
-use address::PhysicalAddress;
 use spin::{Mutex, Once};
 
-use crate::{
-    arch::dtb,
-    memory::mm::{MapArea, MapPermission, MemorySet},
-};
+use self::mm::{MapArea, MapPermission};
+use crate::arch::dtb;
 
-pub(crate) mod address;
+mod address;
 mod config;
-pub(crate) mod frame_allocator;
-pub(crate) mod heap_allocator;
-pub(crate) mod kernel_stack;
-pub(crate) mod mm;
-pub(crate) mod page_table;
+mod frame_allocator;
+mod heap_allocator;
+mod kernel_stack;
+mod mm;
+mod page_table;
 
+pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
+pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous};
+pub(crate) use kernel_stack::KernelStack;
+pub(crate) use mm::{ElfLoadError, MemoryError, MemorySet, UserAccessError};
+// SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
+// section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {
     fn stext();
     fn etext();

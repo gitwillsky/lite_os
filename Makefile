@@ -29,10 +29,14 @@ build: build-user build-kernel build-bootloader create-fs
 verify:
 	cargo fmt --all -- --check
 	cargo check --workspace
+	cargo clippy --workspace --bins --lib -- -D warnings
+	cd bootloader && cargo clippy --release -- -D warnings && cd -
 	$(MAKE) build-user
 	$(MAKE) build-kernel
 	$(MAKE) build-bootloader
-	python3 scripts/architecture_check.py
+	cargo run --quiet -p architecture-check
+	python3 scripts/verify_artifacts.py
+	python3 scripts/verify_boot.py
 	git diff --check
 
 gdb:

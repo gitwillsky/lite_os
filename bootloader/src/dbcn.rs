@@ -3,21 +3,21 @@ use core::ops::Range;
 use rustsbi::{Console, Physical, SbiRet};
 use spin::Once;
 
-/// 调试控制提扩展(Debug Console Extension,DBCN)
-pub(crate) struct DBCN(Range<usize>);
+/// 调试控制提扩展(Debug Console Extension,Dbcn)
+pub(crate) struct Dbcn(Range<usize>);
 
-// OWNER: DBCN module owns the unique SBI debug-console adapter.
-static INSTANCE: Once<DBCN> = Once::new();
+// OWNER: Dbcn module owns the unique SBI debug-console adapter.
+static INSTANCE: Once<Dbcn> = Once::new();
 
 pub(crate) fn init(memory: Range<usize>) {
-    INSTANCE.call_once(|| DBCN(memory));
+    INSTANCE.call_once(|| Dbcn(memory));
 }
 
-pub(crate) fn get() -> &'static DBCN {
+pub(crate) fn get() -> &'static Dbcn {
     INSTANCE.wait()
 }
 
-impl Console for DBCN {
+impl Console for Dbcn {
     fn write(&self, bytes: Physical<&[u8]>) -> SbiRet {
         let Some((start, end)) = self.valid_range(&bytes) else {
             return SbiRet::invalid_param();
@@ -58,7 +58,7 @@ impl Console for DBCN {
     }
 }
 
-impl DBCN {
+impl Dbcn {
     fn valid_range<T>(&self, bytes: &Physical<T>) -> Option<(usize, usize)> {
         if bytes.phys_addr_hi() != 0 {
             return None;

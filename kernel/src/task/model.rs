@@ -9,10 +9,8 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, OpenFileDescription},
     memory::{
-        KERNEL_SPACE, TRAP_CONTEXT,
-        address::VirtualAddress,
-        kernel_stack::KernelStack,
-        mm::{self, ElfLoadError, MemorySet, UserAccessError},
+        ElfLoadError, KERNEL_SPACE, KernelStack, MemoryError, MemorySet, TRAP_CONTEXT,
+        UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
     task::{TrapContext, context::TaskContext, pid::ProcessId},
@@ -31,7 +29,7 @@ pub(crate) enum RunState {
 
 #[derive(Debug)]
 struct AddressSpace {
-    memory_set: Mutex<mm::MemorySet>,
+    memory_set: Mutex<MemorySet>,
 }
 
 impl AddressSpace {
@@ -134,7 +132,7 @@ impl Sched {
     pub(crate) fn get_dynamic_priority(&self) -> i32 {
         // Linux-like priority calculation: priority = 20 + nice
         // 范围: 0-39 (nice: -20到19)
-        (20 + self.nice).max(0).min(39)
+        (20 + self.nice).clamp(0, 39)
     }
 
     /// 更新虚拟运行时间 (CFS算法核心)
@@ -311,7 +309,7 @@ impl TaskControlBlock {
         self.process.address_space.memory_set.lock().token()
     }
 
-    pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, mm::MemoryError> {
+    pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, MemoryError> {
         self.process
             .address_space
             .memory_set

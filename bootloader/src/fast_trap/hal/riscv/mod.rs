@@ -87,6 +87,8 @@ pub(crate) struct FlowContext {
 ///
 /// See [proto](crate::hal::doc::reuse_stack_for_trap).
 #[unsafe(naked)]
+// SAFETY: caller is the trap assembly protocol documented above; sp names the owned trap range
+// and the function only aligns/reserves the statically checked TrapHandler layout.
 pub(crate) unsafe extern "C" fn reuse_stack_for_trap() {
     const LAYOUT: Layout = Layout::new::<TrapHandler>();
     core::arch::naked_asm!(
@@ -103,6 +105,8 @@ pub(crate) unsafe extern "C" fn reuse_stack_for_trap() {
 ///
 /// See [proto](crate::hal::doc::trap_entry).
 #[unsafe(naked)]
+// SAFETY: mtvec transfers control here with the documented mscratch/trap-stack state; this naked
+// routine saves the complete machine context before entering any Rust handler.
 pub(crate) unsafe extern "C" fn trap_entry() {
     core::arch::naked_asm!(
         ".align 2",

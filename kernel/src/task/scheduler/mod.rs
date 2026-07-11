@@ -1,1 +1,1 @@
-pub(crate) mod cfs_scheduler;
+pub(super) mod cfs_scheduler;

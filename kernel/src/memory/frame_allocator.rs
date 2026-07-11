@@ -206,7 +206,7 @@ pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
 
 pub(crate) fn alloc() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc();
-    res.map(|b| FrameTracker::new(b))
+    res.map(FrameTracker::new)
 }
 
 pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {

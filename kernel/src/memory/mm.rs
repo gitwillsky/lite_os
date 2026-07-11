@@ -57,7 +57,7 @@ impl core::fmt::Display for MemoryError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             MemoryError::OutOfMemory => write!(f, "Out of memory"),
-            MemoryError::PageTableError(err) => write!(f, "Page table error: {}", err),
+            MemoryError::PageTableError(err) => write!(f, "Page table error: {err}"),
             MemoryError::InvalidRange => write!(f, "Invalid virtual memory range"),
         }
     }
@@ -314,11 +314,11 @@ impl MemorySet {
             map_area.unmap(&mut self.page_table);
             return Err(e);
         }
-        if let Some(data) = data {
-            if let Err(error) = map_area.copy_data(data) {
-                map_area.unmap(&mut self.page_table);
-                return Err(error);
-            }
+        if let Some(data) = data
+            && let Err(error) = map_area.copy_data(data)
+        {
+            map_area.unmap(&mut self.page_table);
+            return Err(error);
         }
         self.areas.push(map_area);
         Ok(())

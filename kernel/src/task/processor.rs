@@ -294,8 +294,7 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
     let target = per_hart(cpu_id);
     assert!(
         target_state.is_active(),
-        "cannot enqueue task to inactive CPU {}",
-        cpu_id
+        "cannot enqueue task to inactive CPU {cpu_id}"
     );
     let mut inbound = target.inbound.lock();
     inbound.push_back(entry);

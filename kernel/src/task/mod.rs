@@ -1,23 +1,25 @@
 use alloc::sync::Arc;
 
 use crate::fs::Console;
-use crate::task::{context::TaskContext, loader::load_program_from_fs, pid::ProcessId};
+use crate::task::{context::TaskContext, pid::ProcessId};
 
 mod context;
-pub(crate) mod loader;
+mod loader;
+mod model;
 mod pid;
-pub(crate) mod processor;
+mod processor;
 mod scheduler;
-mod task;
-pub(crate) mod task_manager;
+mod task_manager;
 mod trap_context;
 
+pub(crate) use loader::{ProgramLoadError, load_program_from_fs};
+pub(crate) use model::{RunState, TaskControlBlock};
 pub(crate) use processor::*;
-pub(crate) use task::RunState;
-pub(crate) use task::TaskControlBlock;
 pub(crate) use task_manager::*;
 pub(crate) use trap_context::TrapContext;
 
+// SAFETY: the linked assembly routine obeys the declared C ABI; individual calls must additionally
+// uphold the TaskContext lifetime and exclusive-save-target contract below.
 unsafe extern "C" {
     /// Switch to the context of 'next_task_cx_ptr', saving the current context
     /// in `current_task_cx_ptr`

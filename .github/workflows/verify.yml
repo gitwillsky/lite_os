@@ -1,0 +1,26 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main, std]
+
+permissions:
+  contents: read
+
+jobs:
+  architecture-and-boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes e2fsprogs llvm qemu-system-misc
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install nightly-2025-06-15 --profile minimal --component rustfmt
+          rustup target add riscv64gc-unknown-none-elf --toolchain nightly-2025-06-15
+      - name: Verify architecture, artifacts, and cold boots
+        run: make verify

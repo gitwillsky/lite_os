@@ -3,11 +3,10 @@ use core::mem;
 
 use crate::{
     fs::{
-        FileSystemError, Inode, InodeMetadata, InodeType, OpenFileDescription, OpenFileKind,
-        file::{MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY},
-        vfs::vfs,
+        FileSystemError, Inode, InodeMetadata, InodeType, MAX_FILE_DESCRIPTORS, O_ACCMODE,
+        O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, vfs,
     },
-    memory::mm::UserAccessError,
+    memory::UserAccessError,
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };

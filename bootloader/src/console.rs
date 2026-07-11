@@ -56,7 +56,7 @@ macro_rules! println {
 impl Write for Logger {
     #[inline]
     fn write_str(&mut self, s: &str) -> Result<(), fmt::Error> {
-        let _ = CONSOLE.get().unwrap().put_str(s);
+        CONSOLE.get().unwrap().put_str(s);
         Ok(())
     }
 }

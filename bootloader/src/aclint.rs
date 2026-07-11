@@ -1,36 +1,36 @@
 use core::{arch::naked_asm, cell::UnsafeCell};
 
-/// MTIME register.
+/// Mtime register.
 #[repr(transparent)]
-pub(crate) struct MTIME(UnsafeCell<u64>);
+pub(crate) struct Mtime(UnsafeCell<u64>);
 
-/// One MTIMECMP register.
+/// One Mtimecmp register.
 #[repr(transparent)]
-pub(crate) struct MTIMECMP(UnsafeCell<u64>);
+pub(crate) struct Mtimecmp(UnsafeCell<u64>);
 
-/// One MSIP register.
+/// One Msip register.
 #[repr(transparent)]
-pub(crate) struct MSIP(UnsafeCell<u32>);
+pub(crate) struct Msip(UnsafeCell<u32>);
 
-/// Machine-level Timer Device (MTIMER).
+/// Machine-level Timer Device (Mtimer).
 #[repr(transparent)]
-pub(crate) struct MTIMER([MTIMECMP; 4095]);
+pub(crate) struct Mtimer([Mtimecmp; 4095]);
 
-/// Machine-level Software Interrupt Device (MSWI).
+/// Machine-level Software Interrupt Device (Mswi).
 #[repr(transparent)]
-pub(crate) struct MSWI([MSIP; 4095]);
+pub(crate) struct Mswi([Msip; 4095]);
 
 /// Sifive CLINT device.
 #[repr(C)]
 pub(crate) struct SifiveClint {
-    mswi: MSWI,
+    mswi: Mswi,
     reserve: u32,
-    mtimer: MTIMER,
-    _mtime: MTIME,
+    mtimer: Mtimer,
+    _mtime: Mtime,
 }
 
 impl SifiveClint {
-    const MTIMER_OFFSET: usize = size_of::<MSWI>() + size_of::<u32>();
+    const MTIMER_OFFSET: usize = size_of::<Mswi>() + size_of::<u32>();
 
     #[inline]
     pub(crate) fn write_mtimecmp(&self, hart_idx: usize, val: u64) {
@@ -41,14 +41,14 @@ impl SifiveClint {
 
     #[inline]
     pub(crate) fn set_msip(&self, hart_idx: usize) {
-        // SAFETY: caller bounds hart_idx to the mapped MSWI array; volatile preserves the MMIO
+        // SAFETY: caller bounds hart_idx to the mapped Mswi array; volatile preserves the MMIO
         // side effect and each element is a distinct hart register.
         unsafe { self.mswi.0[hart_idx].0.get().write_volatile(1) }
     }
 
     #[inline]
     pub(crate) fn clear_msip(&self, hart_idx: usize) {
-        // SAFETY: caller bounds hart_idx to the mapped MSWI array; volatile preserves the MMIO
+        // SAFETY: caller bounds hart_idx to the mapped Mswi array; volatile preserves the MMIO
         // side effect and each element is a distinct hart register.
         unsafe { self.mswi.0[hart_idx].0.get().write_volatile(0) }
     }
@@ -56,6 +56,8 @@ impl SifiveClint {
 
 impl SifiveClint {
     #[unsafe(naked)]
+    // SAFETY: caller supplies the permanent CLINT base and a validated hart index; naked assembly
+    // follows the C register ABI and performs one volatile-equivalent MMIO store before returning.
     pub(crate) unsafe extern "C" fn write_mtimecmp_naked(&self, hart_idx: usize, val: u64) {
         naked_asm!(
             "   slli a1, a1, 3
@@ -72,6 +74,8 @@ impl SifiveClint {
     }
 
     #[unsafe(naked)]
+    // SAFETY: caller supplies the permanent CLINT base and a validated hart index; naked assembly
+    // follows the C register ABI and clears exactly that hart's Msip register.
     pub(crate) unsafe extern "C" fn clear_msip_naked(&self, hart_idx: usize) {
         naked_asm!(
             "   slli a1, a1, 2
