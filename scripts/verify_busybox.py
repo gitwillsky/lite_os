@@ -305,14 +305,23 @@ def main() -> int:
                 "all DTB harts online: count=1, mask=0x1",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
+                "LITEOS_TTY_CTRL_C_OK",
             ),
             interactions=(
                 (
                     "Please press Enter to activate this console.",
                     b"\necho LITEOS_BUSYBOX_SHELL_$((6*7))\n",
                 ),
+                (
+                    "LITEOS_BUSYBOX_SHELL_42",
+                    b"echo LITEOS_TTY_LOOP_READY; while :; do :; done\n",
+                ),
+                ("LITEOS_TTY_LOOP_READY", b"\x03echo LITEOS_TTY_CTRL_C_OK\n"),
             ),
-            forbidden_markers=("unsupported syscall_id: 137",),
+            forbidden_markers=tuple(
+                f"unsupported syscall_id: {number}"
+                for number in (29, 137, 154, 155, 156, 157)
+            ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)

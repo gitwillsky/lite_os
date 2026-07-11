@@ -27,6 +27,8 @@ enum ProcessState {
 
 struct ProcessNode {
     parent: Option<usize>,
+    session: usize,
+    process_group: usize,
     state: ProcessState,
     waiter: Option<Arc<TaskControlBlock>>,
 }
@@ -60,6 +62,8 @@ impl TaskManager {
             tgid,
             ProcessNode {
                 parent: None,
+                session: INIT_PID,
+                process_group: INIT_PID,
                 state: ProcessState::Live(threads),
                 waiter: None,
             },
@@ -81,19 +85,21 @@ impl TaskManager {
     fn publish_child(&self, parent: usize, child: Arc<TaskControlBlock>) {
         let pid = child.tgid();
         let mut graph = self.graph.lock();
-        assert!(
-            matches!(
-                graph.nodes.get(&parent).map(|node| &node.state),
-                Some(ProcessState::Live(_))
-            ),
-            "fork parent disappeared before child publication"
-        );
+        let parent_node = graph
+            .nodes
+            .get(&parent)
+            .expect("fork parent disappeared before child publication");
+        assert!(matches!(parent_node.state, ProcessState::Live(_)));
+        let session = parent_node.session;
+        let process_group = parent_node.process_group;
         let mut threads = BTreeMap::new();
         threads.insert(child.tid(), child);
         let previous = graph.nodes.insert(
             pid,
             ProcessNode {
                 parent: Some(parent),
+                session,
+                process_group,
                 state: ProcessState::Live(threads),
                 waiter: None,
             },
@@ -310,6 +316,175 @@ pub(crate) fn parent_pid(pid: usize) -> usize {
     TASK_MANAGER.parent_pid(pid)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessGroupError {
+    NotFound,
+    Permission,
+    NotTerminal,
+}
+
+/// @description 将当前 Process 建为新 session 与 process-group leader。
+///
+/// @return 成功返回新 SID（等于 TGID）。
+/// @errors 当前 PID 已是任一 process group ID 时返回 Permission。
+pub(crate) fn create_session() -> Result<usize, ProcessGroupError> {
+    let pid = current_task().expect("setsid requires current task").tgid();
+    let mut graph = TASK_MANAGER.graph.lock();
+    if graph.nodes.values().any(|node| node.process_group == pid) {
+        return Err(ProcessGroupError::Permission);
+    }
+    let node = graph
+        .nodes
+        .get_mut(&pid)
+        .ok_or(ProcessGroupError::NotFound)?;
+    node.session = pid;
+    node.process_group = pid;
+    Ok(pid)
+}
+
+/// @description 查询指定 Process 的 process group ID。
+///
+/// @param pid 零表示当前 TGID，否则为目标 TGID。
+/// @return live/zombie process 的 PGID。
+/// @errors 目标不存在时返回 NotFound。
+pub(crate) fn process_group(pid: usize) -> Result<usize, ProcessGroupError> {
+    let current = current_task()
+        .expect("getpgid requires current task")
+        .tgid();
+    TASK_MANAGER
+        .graph
+        .lock()
+        .nodes
+        .get(&if pid == 0 { current } else { pid })
+        .map(|node| node.process_group)
+        .ok_or(ProcessGroupError::NotFound)
+}
+
+/// @description 查询指定 Process 的 session ID。
+///
+/// @param pid 零表示当前 TGID，否则为目标 TGID。
+/// @return live/zombie process 的 SID。
+/// @errors 目标不存在时返回 NotFound。
+pub(crate) fn session_id(pid: usize) -> Result<usize, ProcessGroupError> {
+    let current = current_task().expect("getsid requires current task").tgid();
+    TASK_MANAGER
+        .graph
+        .lock()
+        .nodes
+        .get(&if pid == 0 { current } else { pid })
+        .map(|node| node.session)
+        .ok_or(ProcessGroupError::NotFound)
+}
+
+/// @description 按 Linux parent/child/session 约束修改 process group membership。
+///
+/// @param pid 零表示 caller；非零只允许 caller 的直接 child。
+/// @param pgid 零表示目标 TGID；非零必须是同 session 已存在 group 或目标自身。
+/// @return 成功返回 `Ok(())`。
+/// @errors 目标不存在返回 NotFound；跨 session、session leader 或非法 group 返回 Permission。
+pub(crate) fn set_process_group(pid: usize, pgid: usize) -> Result<(), ProcessGroupError> {
+    let caller = current_task()
+        .expect("setpgid requires current task")
+        .tgid();
+    let target = if pid == 0 { caller } else { pid };
+    let desired = if pgid == 0 { target } else { pgid };
+    let mut graph = TASK_MANAGER.graph.lock();
+    let caller_session = graph
+        .nodes
+        .get(&caller)
+        .ok_or(ProcessGroupError::NotFound)?
+        .session;
+    let target_node = graph
+        .nodes
+        .get(&target)
+        .ok_or(ProcessGroupError::NotFound)?;
+    if target != caller && target_node.parent != Some(caller) {
+        return Err(ProcessGroupError::NotFound);
+    }
+    if target_node.session != caller_session || target_node.session == target {
+        return Err(ProcessGroupError::Permission);
+    }
+    if desired != target
+        && !graph
+            .nodes
+            .values()
+            .any(|node| node.session == caller_session && node.process_group == desired)
+    {
+        return Err(ProcessGroupError::Permission);
+    }
+    graph
+        .nodes
+        .get_mut(&target)
+        .expect("validated process disappeared under graph lock")
+        .process_group = desired;
+    Ok(())
+}
+
+/// @description 当前 session leader 尝试取得一个 Terminal 作为 controlling TTY。
+///
+/// @param terminal ioctl fd 指向的 TTY owner。
+/// @param force TIOCSCTTY force 参数；当前无 capability model，只接受零。
+/// @return 成功取得或重复确认同一 session 时返回 `Ok(())`。
+/// @errors 非 session leader/force 请求返回 Permission；TTY 属于其他 session 返回 Permission。
+pub(crate) fn claim_controlling_terminal(
+    terminal: &crate::fs::Terminal,
+    force: usize,
+) -> Result<(), ProcessGroupError> {
+    let pid = current_task()
+        .expect("TIOCSCTTY requires current task")
+        .tgid();
+    let (session, pgid) = {
+        let graph = TASK_MANAGER.graph.lock();
+        let node = graph.nodes.get(&pid).ok_or(ProcessGroupError::NotFound)?;
+        (node.session, node.process_group)
+    };
+    if force != 0 || session != pid {
+        return Err(ProcessGroupError::Permission);
+    }
+    terminal
+        .claim_session(session, pgid)
+        .map_err(|()| ProcessGroupError::Permission)
+}
+
+/// @description 查询当前 session controlling TTY 的 foreground process group。
+///
+/// @param terminal ioctl fd 指向的 TTY owner。
+/// @return foreground PGID。
+/// @errors fd 的 TTY 不属于 caller session 时返回 NotTerminal。
+pub(crate) fn terminal_foreground_group(
+    terminal: &crate::fs::Terminal,
+) -> Result<usize, ProcessGroupError> {
+    let session = session_id(0)?;
+    terminal
+        .foreground_pgid(session)
+        .map_err(|()| ProcessGroupError::NotTerminal)
+}
+
+/// @description 将 caller session 内已存在的 process group 设为 TTY foreground owner。
+///
+/// @param terminal ioctl fd 指向的 TTY owner。
+/// @param pgid 同 session 的已存在 process group ID。
+/// @return 成功返回 `Ok(())`。
+/// @errors group 不存在/跨 session 返回 Permission；TTY 不属于 caller session 返回 NotTerminal。
+pub(crate) fn set_terminal_foreground_group(
+    terminal: &crate::fs::Terminal,
+    pgid: usize,
+) -> Result<(), ProcessGroupError> {
+    let session = session_id(0)?;
+    let graph = TASK_MANAGER.graph.lock();
+    if !graph
+        .nodes
+        .values()
+        .any(|node| node.session == session && node.process_group == pgid)
+    {
+        return Err(ProcessGroupError::Permission);
+    }
+    drop(graph);
+    terminal
+        .set_foreground_pgid(session, pgid)
+        .map_err(|()| ProcessGroupError::NotTerminal)
+}
+
 pub(crate) fn thread_count(tgid: usize) -> usize {
     let graph = TASK_MANAGER.graph.lock();
     match graph.nodes.get(&tgid).map(|node| &node.state) {
@@ -343,6 +518,72 @@ pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Resu
         interrupt_waiting_task(&target);
         Ok(())
     }
+}
+
+/// @description 向一个 process group 的每个 live Process 投递一次 kernel-generated signal。
+///
+/// @param pgid process graph 中的 process group ID。
+/// @param signal Linux signal number。
+/// @return 实际定位到的 live Process 数。
+pub(crate) fn send_process_group_signal(pgid: usize, signal: usize) -> usize {
+    let targets = {
+        let graph = TASK_MANAGER.graph.lock();
+        graph
+            .nodes
+            .values()
+            .filter(|node| node.process_group == pgid)
+            .filter_map(|node| {
+                let ProcessState::Live(threads) = &node.state else {
+                    return None;
+                };
+                threads.values().next().cloned()
+            })
+            .collect::<alloc::vec::Vec<_>>()
+    };
+    let count = targets.len();
+    for target in targets {
+        target
+            .queue_signal(signal, PendingSignal::kernel())
+            .expect("TTY signal number must be valid");
+        wake_signal_waiter(&target);
+        interrupt_waiting_task(&target);
+    }
+    count
+}
+
+fn process_terminal_input() {
+    let terminal = {
+        let graph = TASK_MANAGER.graph.lock();
+        graph.nodes.values().find_map(|node| {
+            let ProcessState::Live(threads) = &node.state else {
+                return None;
+            };
+            threads.values().next().map(|task| task.terminal())
+        })
+    };
+    let Some(terminal) = terminal else {
+        return;
+    };
+    if drain_terminal_input(&terminal).is_err() {
+        debug!("TTY line discipline failed to drain UART input");
+    }
+}
+
+/// @description 将指定 Terminal 的 raw input 送入 line discipline 并投递 foreground signals。
+///
+/// @param terminal console OFD 与 Process 共享的唯一 TTY owner。
+/// @return drain 成功返回 `Ok(())`；设备或固定 queue 失败返回 `Err(())`。
+pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(), ()> {
+    let signals = terminal.drain_input().map_err(|_| ())?;
+    let Some(pgid) = terminal.signal_target_group() else {
+        return Ok(());
+    };
+    for signal in 1..=64 {
+        if signals & (1u64 << (signal - 1)) != 0 {
+            send_process_group_signal(pgid, signal);
+        }
+    }
+    Ok(())
 }
 
 /// @description signal 发布后从统一 registry 消费匹配的 `rt_sigtimedwait` registration。
@@ -784,6 +1025,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
         wake_expired_tasks(get_time_ns());
     }
     if work & hart::CONSOLE_SOFTIRQ != 0 {
+        process_terminal_input();
         wake_console_waiters();
     }
     request_reschedule();
@@ -1119,10 +1361,17 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         scheduling.run_state = RunState::Exited;
     };
     task.cleanup_robust_list();
-    let (removed, last_thread, parent_waiter, init_waiter, parent_signal_target) = {
+    let (
+        removed,
+        last_thread,
+        parent_waiter,
+        init_waiter,
+        parent_signal_target,
+        release_terminal_session,
+    ) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let exiting_pid = task.tgid();
-        let (removed, last_thread, parent) = {
+        let (removed, last_thread, parent, session_leader) = {
             let node = graph
                 .nodes
                 .get_mut(&exiting_pid)
@@ -1135,16 +1384,17 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
                 .expect("exiting thread missing from process graph");
             let last_thread = threads.is_empty();
             let parent = node.parent;
+            let session_leader = node.session == exiting_pid;
             if last_thread {
                 assert!(node.waiter.is_none());
                 node.state = ProcessState::Exited(exit_code);
             }
-            (removed, last_thread, parent)
+            (removed, last_thread, parent, session_leader)
         };
         assert!(Arc::ptr_eq(&removed, &task));
 
         if !last_thread {
-            (removed, false, None, None, None)
+            (removed, false, None, None, None, false)
         } else {
             // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
             if exiting_pid != INIT_PID {
@@ -1186,6 +1436,7 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
                 parent_waiter,
                 init_waiter,
                 parent_signal_target,
+                session_leader,
             )
         }
     };
@@ -1210,6 +1461,9 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
             .expect("SIGCHLD number must be valid");
         wake_signal_waiter(&parent);
         interrupt_waiting_task(&parent);
+    }
+    if release_terminal_session {
+        task.terminal().release_session(task.tgid());
     }
 
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);

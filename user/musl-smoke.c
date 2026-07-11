@@ -6,8 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -73,12 +75,15 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_wait_failed[] = "LiteOS musl restart wait failed\n";
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
 	static const char sigwait_failed[] = "LiteOS musl sigwait failed\n";
+	static const char tty_failed[] = "LiteOS musl tty session failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
 	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
 	const struct timespec poll_timeout = { 0 };
 	struct sigaction action = { .sa_handler = signal_handler };
+	struct termios terminal_settings;
+	struct winsize window_size;
 	siginfo_t signal_info;
 	sigset_t wait_set;
 	struct timespec deadline;
@@ -106,6 +111,28 @@ int main(int argc, char **argv, char **envp)
 	*(volatile uint64_t *)allocation = UINT64_C(0x4c6974654f53);
 	free(allocation);
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 4;
+	if (tcgetattr(STDIN_FILENO, &terminal_settings) != 0
+	    || !(terminal_settings.c_lflag & ICANON)
+	    || tcsetattr(STDIN_FILENO, TCSANOW, &terminal_settings) != 0
+	    || ioctl(STDIN_FILENO, TIOCGWINSZ, &window_size) != 0
+	    || window_size.ws_row != 24 || window_size.ws_col != 80) {
+		write(STDOUT_FILENO, tty_failed, sizeof tty_failed - 1);
+		return 4;
+	}
+	child = fork();
+	if (child == 0) {
+		pid_t self = getpid();
+		if (setsid() != self || getsid(0) != self || getpgrp() != self
+		    || ioctl(STDIN_FILENO, TIOCSCTTY, 0) != 0 || tcgetpgrp(STDIN_FILENO) != self) _exit(40);
+		errno = 0;
+		if (setpgid(0, 0) != -1 || errno != EPERM) _exit(41);
+		_exit(0);
+	}
+	if (child <= 0 || waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+		write(STDOUT_FILENO, tty_failed, sizeof tty_failed - 1);
+		return 4;
+	}
 	if (pthread_create(&thread, 0, thread_main, (void *)(uintptr_t)0x4f53) != 0) {
 		write(STDOUT_FILENO, create_failed, sizeof create_failed - 1);
 		return 5;

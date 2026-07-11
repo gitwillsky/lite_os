@@ -4,11 +4,12 @@ use core::mem;
 use crate::{
     fs::{
         FileSystemError, Inode, InodeMetadata, InodeType, MAX_FILE_DESCRIPTORS, O_ACCMODE,
-        O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, vfs,
+        O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, TerminalRead,
+        vfs,
     },
     memory::UserAccessError,
     syscall::errno,
-    task::{TaskControlBlock, current_task},
+    task::{TaskControlBlock, current_task, drain_terminal_input},
 };
 
 const AT_FDCWD: isize = -100;
@@ -163,23 +164,27 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
-    if let OpenFileKind::Console(console) = &ofd.kind {
+    if let OpenFileKind::Terminal(console) = &ofd.kind {
         if length == 0 {
             return 0;
         }
         let mut chunk = [0u8; 512];
         loop {
+            if drain_terminal_input(console).is_err() {
+                return -errno::EIO;
+            }
             let count = length.min(chunk.len());
             let read = match console.read(&mut chunk[..count]) {
-                Ok(0) => match crate::task::wait_for_console(|| console.input_ready()) {
+                TerminalRead::Empty => match crate::task::wait_for_console(|| console.wait_ready())
+                {
                     crate::task::WaitResult::Woken => continue,
                     crate::task::WaitResult::Interrupted => return -errno::EINTR,
                     crate::task::WaitResult::TimedOut => {
                         panic!("console wait cannot time out")
                     }
                 },
-                Ok(read) => read,
-                Err(error) => return ferr(error),
+                TerminalRead::Bytes(read) => read,
+                TerminalRead::Eof => return 0,
             };
             return task
                 .copy_to_user(pointer as usize, &chunk[..read])
@@ -187,7 +192,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
         }
     }
     let OpenFileKind::Inode(inode) = &ofd.kind else {
-        unreachable!("console handled above")
+        unreachable!("terminal handled above")
     };
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
@@ -246,7 +251,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             };
         }
         let wrote = match &ofd.kind {
-            OpenFileKind::Console(console) => match console.write(&chunk[..count]) {
+            OpenFileKind::Terminal(console) => match console.write(&chunk[..count]) {
                 Ok(written) => written,
                 Err(error) => {
                     return if total == 0 {

@@ -1,5 +1,7 @@
 //! 当前 syscall handler 实际返回的 Linux errno。
 
+/// 操作不允许。
+pub(crate) const EPERM: isize = 1;
 /// 文件或目录不存在。
 pub(crate) const ENOENT: isize = 2;
 /// 进程不存在。
@@ -31,6 +33,8 @@ pub(crate) const EISDIR: isize = 21;
 /// 无效参数。
 pub(crate) const EINVAL: isize = 22;
 pub(crate) const EMFILE: isize = 24;
+/// fd 不是 TTY 或 TTY 不属于 caller session。
+pub(crate) const ENOTTY: isize = 25;
 pub(crate) const ENOSPC: isize = 28;
 pub(crate) const ESPIPE: isize = 29;
 /// 结果超出支持范围。

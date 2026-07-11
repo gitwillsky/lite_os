@@ -5,9 +5,10 @@ use crate::{
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
-        current_task, exit_current_and_run_next, fork_current_process, load_program_from_inode,
-        parent_pid, reap_child, suspend_current_and_run_next, thread_count, wait_child,
+        ProcessGroupError, ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError,
+        clone_current_thread, create_session, current_task, exit_current_and_run_next,
+        fork_current_process, load_program_from_inode, parent_pid, process_group, reap_child,
+        session_id, set_process_group, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
 
@@ -57,6 +58,46 @@ pub(crate) fn sys_get_tid() -> isize {
     current_task()
         .expect("gettid requires a current task")
         .tid() as isize
+}
+
+fn process_group_error(error: ProcessGroupError) -> isize {
+    match error {
+        ProcessGroupError::NotFound => -errno::ESRCH,
+        ProcessGroupError::Permission => -errno::EPERM,
+        ProcessGroupError::NotTerminal => -errno::ENOTTY,
+    }
+}
+
+/// @description 修改 caller 或其直接 child 的 process group membership。
+///
+/// @param pid 零表示 caller，否则为 direct child TGID。
+/// @param pgid 零表示目标 TGID，否则为同 session process group。
+/// @return 成功返回零；目标/权限错误返回负 errno。
+pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> isize {
+    set_process_group(pid, pgid).map_or_else(process_group_error, |()| 0)
+}
+
+/// @description 查询 live/zombie Process 的 process group ID。
+///
+/// @param pid 零表示 caller。
+/// @return PGID 或负 errno。
+pub(crate) fn sys_getpgid(pid: usize) -> isize {
+    process_group(pid).map_or_else(process_group_error, |value| value as isize)
+}
+
+/// @description 查询 live/zombie Process 的 session ID。
+///
+/// @param pid 零表示 caller。
+/// @return SID 或负 errno。
+pub(crate) fn sys_getsid(pid: usize) -> isize {
+    session_id(pid).map_or_else(process_group_error, |value| value as isize)
+}
+
+/// @description 创建以 caller TGID 命名的新 session 与 process group。
+///
+/// @return 新 SID；caller 已是 process-group leader 时返回 `EPERM`。
+pub(crate) fn sys_setsid() -> isize {
+    create_session().map_or_else(process_group_error, |value| value as isize)
 }
 
 /// @description 实现 fork-shaped Linux/riscv64 clone；不伪造 thread/TLS/tid-pointer 语义。

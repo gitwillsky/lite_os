@@ -1,5 +1,7 @@
 # Phase 23：UART IRQ console 与真实 ash 输入
 
+> 本文保留 Phase 23 的历史边界；Phase 24 已补 `rt_sigtimedwait/SIGCHLD`，Phase 25 已把 raw console 原地升级为 Terminal/session/termios/foreground Ctrl-C 模型。
+
 ## 目标
 
 让固定 BusyBox rootfs 不只打印 init banner，而是从 QEMU UART 接收真实输入、阻塞/唤醒 console reader，并由 ash 执行命令产生不可由输入原文伪造的输出标记。

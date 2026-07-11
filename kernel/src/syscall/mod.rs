@@ -5,8 +5,9 @@ mod memory;
 mod process;
 mod signal;
 mod timer;
+mod tty;
 
-use crate::syscall::{fs::*, futex::*, memory::*, process::*, signal::*, timer::*};
+use crate::syscall::{fs::*, futex::*, memory::*, process::*, signal::*, timer::*, tty::*};
 use syscall_abi::*;
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
@@ -31,6 +32,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as u32, args[2]),
+        SYSCALL_IOCTL => sys_ioctl(args[0], args[1], args[2]),
         SYSCALL_MKDIRAT => sys_mkdirat(args[0] as isize, args[1] as *const u8, args[2] as u32),
         SYSCALL_UNLINKAT => sys_unlinkat(args[0] as isize, args[1] as *const u8, args[2]),
         SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
@@ -77,6 +79,10 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
+        SYSCALL_SETPGID => sys_setpgid(args[0], args[1]),
+        SYSCALL_GETPGID => sys_getpgid(args[0]),
+        SYSCALL_GETSID => sys_getsid(args[0]),
+        SYSCALL_SETSID => sys_setsid(),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
         SYSCALL_GETTID => sys_get_tid(),

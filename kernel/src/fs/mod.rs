@@ -8,7 +8,7 @@ mod vfs;
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
     Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_RDONLY,
-    O_WRONLY, OpenFileDescription, OpenFileKind,
+    O_WRONLY, OpenFileDescription, OpenFileKind, Terminal, TerminalRead,
 };
 pub(crate) use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use vfs::{init as init_vfs, vfs};

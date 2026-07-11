@@ -4,7 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-    fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, vfs},
+    fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, Terminal, vfs},
     memory::{
         ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
         TRAP_CONTEXT, UserAccessError, VirtualAddress,
@@ -98,6 +98,17 @@ impl PendingSignal {
             code: 1,
             pid: pid as i32,
             status,
+        }
+    }
+
+    /// @description 构造由 kernel TTY line discipline 产生的 `SI_KERNEL` signal 来源。
+    ///
+    /// @return pid/uid/status 为零的 kernel 来源。
+    pub(crate) fn kernel() -> Self {
+        Self {
+            code: 128,
+            pid: 0,
+            status: 0,
         }
     }
 
@@ -368,6 +379,7 @@ struct Process {
     // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
     cwd: Mutex<Arc<dyn Inode>>,
     files: Mutex<FileDescriptorTable>,
+    terminal: Arc<Terminal>,
     signal_actions: Mutex<[LinuxSigAction; 65]>,
 }
 
@@ -398,13 +410,15 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
+        let terminal = Terminal::new(console);
         let process = Arc::new(Process {
             tgid: pid,
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
             },
             cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
-            files: Mutex::new(FileDescriptorTable::with_console(console)),
+            files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
+            terminal,
             signal_actions: Mutex::new([LinuxSigAction::default(); 65]),
         });
         let tcb = Self {
@@ -491,6 +505,7 @@ impl TaskControlBlock {
                 },
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
+                terminal: self.process.terminal.clone(),
                 signal_actions: Mutex::new(signal_actions),
             }),
             thread: ThreadContext {
@@ -1105,6 +1120,13 @@ impl TaskControlBlock {
 
     pub(crate) fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {
         self.process.files.lock().get(fd)
+    }
+
+    /// @description 返回当前 Process 可继承的 platform Terminal identity。
+    ///
+    /// @return 与 console OFD 指向同一 TTY owner 的 Arc。
+    pub(crate) fn terminal(&self) -> Arc<Terminal> {
+        self.process.terminal.clone()
     }
 
     pub(crate) fn fd_allocate(
