@@ -365,7 +365,9 @@ impl MemorySet {
         unsafe { asm!("sfence.vma") }
         // 2. Acquire online mask 只选择已发布可接收远端请求的 hart。
         let current = crate::arch::hart::hart_id();
-        let targets = crate::arch::hart::online_hart_mask() & !(1usize << current);
+        let targets = crate::arch::hart::online_hart_mask()
+            & crate::arch::hart::possible_hart_mask()
+            & !(1usize << current);
         if targets == 0 {
             return Ok(());
         }

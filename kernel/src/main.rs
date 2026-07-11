@@ -40,7 +40,7 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize, is_boot_hart: usize) -> ! {
     }
     assert_eq!(
         hart_id,
-        arch::hart::hart_id(),
+        arch::hart::raw_hart_id(),
         "SBI hart ID and kernel tp disagree"
     );
 
@@ -50,6 +50,7 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize, is_boot_hart: usize) -> ! {
         log::init(config::DEFAULT_LOG_LEVEL);
         log::disable_module("kernel::task::loader");
         arch::dtb::init(dtb_addr);
+        arch::hart::init_topology(arch::dtb::board_info(), hart_id);
         arch::sbi::verify_required_extensions();
         memory::init();
         timer::init_rtc();
