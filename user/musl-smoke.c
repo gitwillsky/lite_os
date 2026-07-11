@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -96,6 +97,8 @@ int main(int argc, char **argv, char **envp)
 	int child_status;
 	int wait_result;
 	int pipe_fds[2];
+	int poll_a[2];
+	int poll_b[2];
 	char pipe_first[4];
 	char pipe_second[3];
 	char cwd[16];
@@ -163,6 +166,36 @@ int main(int argc, char **argv, char **envp)
 	    || memcmp(pipe_first, "pipe", 4) != 0 || memcmp(pipe_second, "-ok", 3) != 0
 	    || read(pipe_fds[0], pipe_first, 1) != 0 || close(pipe_fds[0]) != 0
 	    || waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
+		return 4;
+	}
+	if (pipe(poll_a) != 0 || pipe(poll_b) != 0) {
+		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
+		return 4;
+	}
+	child = fork();
+	if (child == 0) {
+		const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+		close(poll_a[0]); close(poll_a[1]); close(poll_b[0]);
+		if (nanosleep(&delay, 0) != 0 || write(poll_b[1], "P", 1) != 1) _exit(43);
+		_exit(0);
+	}
+	close(poll_b[1]);
+	{
+		struct pollfd descriptors[2] = {
+			{ .fd = poll_a[0], .events = POLLIN },
+			{ .fd = poll_b[0], .events = POLLIN },
+		};
+		if (child <= 0 || poll(descriptors, 2, 0) != 0
+		    || poll(descriptors, 2, -1) != 1 || !(descriptors[1].revents & POLLIN)
+		    || read(poll_b[0], pipe_first, 1) != 1 || pipe_first[0] != 'P') {
+			write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
+			return 4;
+		}
+	}
+	close(poll_a[0]); close(poll_a[1]); close(poll_b[0]);
+	if (waitpid(child, &child_status, 0) != child
 	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
 		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 		return 4;

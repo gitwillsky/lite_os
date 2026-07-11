@@ -33,6 +33,7 @@ pub(crate) enum WaitMembership {
     Console(u64),
     Signal(u64),
     Pipe(u64),
+    Poll(u64),
 }
 
 /// @description blocked task 恢复时由唯一 wait registration 发布的结果。
@@ -695,6 +696,16 @@ impl TaskControlBlock {
         old
     }
 
+    /// @description ppoll 在非 signal 完成路径撤销临时 mask。
+    ///
+    /// @return 成功恢复返回 `Ok(())`；没有 active 临时 mask 返回 `Err(())`。
+    pub(crate) fn restore_temporary_signal_mask(&self) -> Result<(), ()> {
+        let mut mask = self.thread.signal_mask.lock();
+        let old = self.thread.suspend_restore_mask.lock().take().ok_or(())?;
+        *mask = old;
+        Ok(())
+    }
+
     /// @description 从候选 set 排除当前 disposition 明确忽略的 signal。
     ///
     /// @param candidates 临时 mask 下未屏蔽的 signal set。
@@ -769,7 +780,14 @@ impl TaskControlBlock {
     pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
         let mask = self.thread.signal_mask.lock();
         let pending = self.thread.pending_signals.lock();
-        (pending.bits & !*mask != 0).then(action)
+        let available = pending.bits & !*mask;
+        let actions = self.process.signal_actions.lock();
+        (1..=64)
+            .any(|signal| {
+                available & (1u64 << (signal - 1)) != 0
+                    && !signal_is_ignored(signal, actions[signal])
+            })
+            .then(action)
     }
 
     /// @description 登记一次已转换为 userspace `EINTR` 的可重启 syscall。

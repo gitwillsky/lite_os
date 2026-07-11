@@ -4,7 +4,7 @@ use spin::Mutex;
 pub(crate) const PIPE_BUF: usize = 4096;
 const PIPE_CAPACITY: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub(crate) enum PipeDirection {
     Read,
@@ -23,6 +23,14 @@ pub(crate) enum PipeWrite {
     Bytes(usize),
     Full,
     Broken,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PipePollState {
+    pub(crate) readable: bool,
+    pub(crate) writable: bool,
+    pub(crate) hangup: bool,
+    pub(crate) error: bool,
 }
 
 pub(crate) trait PipeNotifier: Send + Sync {
@@ -88,6 +96,24 @@ impl Pipe {
     pub(crate) fn writable(&self) -> bool {
         let state = self.state.lock();
         state.readers == 0 || state.length != state.bytes.len()
+    }
+
+    pub(crate) fn poll_state(&self, direction: PipeDirection) -> PipePollState {
+        let state = self.state.lock();
+        match direction {
+            PipeDirection::Read => PipePollState {
+                readable: state.length != 0 || state.writers == 0,
+                writable: false,
+                hangup: state.writers == 0,
+                error: false,
+            },
+            PipeDirection::Write => PipePollState {
+                readable: false,
+                writable: state.readers != 0 && state.length != state.bytes.len(),
+                hangup: false,
+                error: state.readers == 0,
+            },
+        }
     }
 
     fn read(self: &Arc<Self>, output: &mut [u8]) -> PipeRead {

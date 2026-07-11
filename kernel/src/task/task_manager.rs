@@ -145,12 +145,32 @@ enum IndexedWaitKind {
         identity: usize,
         direction: PipeDirection,
     },
+    Poll,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PollWaitKey {
+    Console,
+    Pipe {
+        identity: usize,
+        direction: PipeDirection,
+    },
+}
+
+impl PollWaitKey {
+    pub(crate) fn pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> Self {
+        Self::Pipe {
+            identity: Pipe::identity(pipe),
+            direction,
+        }
+    }
 }
 
 struct IndexedWaitEntry {
     task: Arc<TaskControlBlock>,
     kind: IndexedWaitKind,
     deadline: Option<u64>,
+    poll_keys: Option<alloc::vec::Vec<PollWaitKey>>,
 }
 
 struct IndexedWaitQueue {
@@ -191,6 +211,7 @@ impl IndexedWaitQueue {
                         task,
                         kind: IndexedWaitKind::Deadline,
                         deadline: Some(deadline),
+                        poll_keys: None,
                     },
                 )
                 .is_none()
@@ -218,6 +239,7 @@ impl IndexedWaitQueue {
                         task,
                         kind: IndexedWaitKind::Futex { tgid, address },
                         deadline,
+                        poll_keys: None,
                     },
                 )
                 .is_none()
@@ -236,6 +258,7 @@ impl IndexedWaitQueue {
                         task,
                         kind: IndexedWaitKind::Console,
                         deadline: None,
+                        poll_keys: None,
                     },
                 )
                 .is_none()
@@ -261,6 +284,7 @@ impl IndexedWaitQueue {
                         task,
                         kind: IndexedWaitKind::Signal { mask },
                         deadline,
+                        poll_keys: None,
                     },
                 )
                 .is_none()
@@ -288,6 +312,42 @@ impl IndexedWaitQueue {
                             direction,
                         },
                         deadline: None,
+                        poll_keys: None,
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
+    fn insert_poll(
+        &mut self,
+        keys: alloc::vec::Vec<PollWaitKey>,
+        deadline: Option<u64>,
+        task: Arc<TaskControlBlock>,
+    ) -> u64 {
+        let id = self.allocate_id();
+        for key in &keys {
+            match *key {
+                PollWaitKey::Console => assert!(self.console_index.insert(id)),
+                PollWaitKey::Pipe {
+                    identity,
+                    direction,
+                } => assert!(self.pipe_index.insert((identity, direction as u8, id))),
+            }
+        }
+        if let Some(deadline) = deadline {
+            assert!(self.deadline_index.insert((deadline, id)));
+        }
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Poll,
+                        deadline,
+                        poll_keys: Some(keys),
                     },
                 )
                 .is_none()
@@ -309,6 +369,17 @@ impl IndexedWaitQueue {
         } = entry.kind
         {
             assert!(self.pipe_index.remove(&(identity, direction as u8, id)));
+        }
+        if let Some(keys) = &entry.poll_keys {
+            for key in keys {
+                match *key {
+                    PollWaitKey::Console => assert!(self.console_index.remove(&id)),
+                    PollWaitKey::Pipe {
+                        identity,
+                        direction,
+                    } => assert!(self.pipe_index.remove(&(identity, direction as u8, id))),
+                }
+            }
         }
         if let Some(deadline) = entry.deadline {
             assert!(self.deadline_index.remove(&(deadline, id)));
@@ -332,21 +403,21 @@ impl IndexedWaitQueue {
         self.remove(id).map(|entry| (id, entry.task, entry.kind))
     }
 
-    fn take_console(&mut self) -> Option<(u64, Arc<TaskControlBlock>)> {
+    fn take_console(&mut self) -> Option<(u64, IndexedWaitEntry)> {
         let id = *self.console_index.first()?;
-        self.remove(id).map(|entry| (id, entry.task))
+        self.remove(id).map(|entry| (id, entry))
     }
 
     fn take_pipe(
         &mut self,
         identity: usize,
         direction: PipeDirection,
-    ) -> Option<(u64, Arc<TaskControlBlock>)> {
+    ) -> Option<(u64, IndexedWaitEntry)> {
         let (_, _, id) = *self
             .pipe_index
             .range((identity, direction as u8, 0)..=(identity, direction as u8, u64::MAX))
             .next()?;
-        self.remove(id).map(|entry| (id, entry.task))
+        self.remove(id).map(|entry| (id, entry))
     }
 }
 
@@ -686,7 +757,8 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                     | WaitMembership::Futex(id)
                     | WaitMembership::Console(id)
                     | WaitMembership::Signal(id)
-                    | WaitMembership::Pipe(id)),
+                    | WaitMembership::Pipe(id)
+                    | WaitMembership::Poll(id)),
                 ) => queue.remove(id).map(|entry| (id, wait, entry)),
                 _ => None,
             }
@@ -723,6 +795,10 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             (WaitMembership::Pipe(id), IndexedWaitKind::Pipe { .. }) => {
                 assert_eq!(id, wait_id);
                 crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
+            }
+            (WaitMembership::Poll(id), IndexedWaitKind::Poll) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Interrupted)
             }
             _ => panic!("indexed wait kind diverged from task membership"),
         };
@@ -1069,6 +1145,9 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
                 crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
             }
             IndexedWaitKind::Pipe { .. } => panic!("pipe wait cannot carry a deadline"),
+            IndexedWaitKind::Poll => {
+                crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
+            }
         };
         if woke {
             count += 1;
@@ -1142,10 +1221,19 @@ fn wake_console_waiters() -> usize {
     let mut count = 0;
     loop {
         let waiter = INDEXED_WAIT_QUEUE.lock().take_console();
-        let Some((wait_id, task)) = waiter else {
+        let Some((wait_id, entry)) = waiter else {
             return count;
         };
-        if crate::task::processor::wake_console_task(task, wait_id) {
+        let woke = match entry.kind {
+            IndexedWaitKind::Console => {
+                crate::task::processor::wake_console_task(entry.task, wait_id)
+            }
+            IndexedWaitKind::Poll => {
+                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken)
+            }
+            _ => panic!("console index contains non-console wait"),
+        };
+        if woke {
             count += 1;
         }
     }
@@ -1184,8 +1272,16 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
     }
     drop(queue);
     let count = waiters.len();
-    for (wait_id, task) in waiters {
-        crate::task::processor::wake_pipe_task(task, wait_id, WaitResult::Woken);
+    for (wait_id, entry) in waiters {
+        match entry.kind {
+            IndexedWaitKind::Pipe { .. } => {
+                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Woken);
+            }
+            IndexedWaitKind::Poll => {
+                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken);
+            }
+            _ => panic!("pipe index contains non-pipe wait"),
+        }
     }
     count
 }
@@ -1236,6 +1332,60 @@ pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> WaitR
         .wait_result
         .take()
         .expect("pipe waiter resumed without a wake result")
+}
+
+/// @description 为一次 ppoll 在多个 I/O source index 上发布唯一 wait registration。
+///
+/// @param keys 去重前的 Pipe/Console readiness keys。
+/// @param deadline 可选 absolute monotonic timeout。
+/// @param ready 在 registry owner lock 内执行的无阻塞 readiness 复查。
+/// @return source ready、timeout 或 signal interruption。
+pub(crate) fn wait_for_poll(
+    mut keys: alloc::vec::Vec<PollWaitKey>,
+    deadline: Option<u64>,
+    ready: impl FnOnce() -> bool,
+) -> WaitResult {
+    keys.sort_unstable();
+    keys.dedup();
+    let task = current_task().expect("ppoll wait requires current task");
+    let cpu = hart_id();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    if ready() {
+        return WaitResult::Woken;
+    }
+    if deadline.is_some_and(|value| value <= get_time_ns()) {
+        return WaitResult::TimedOut;
+    }
+    if task.has_deliverable_signal() {
+        return WaitResult::Interrupted;
+    }
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
+    with_current_processor(|processor| {
+        let current = processor
+            .current
+            .take()
+            .expect("ppoll wait requires current task");
+        assert!(Arc::ptr_eq(&current, &task));
+        let mut scheduling = task.scheduling.state.lock();
+        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert!(scheduling.wait.is_none());
+        assert!(scheduling.wait_result.is_none());
+        let wait_id = queue.insert_poll(keys, deadline, current);
+        scheduling.wait = Some(WaitMembership::Poll(wait_id));
+        scheduling.run_state = RunState::Blocking { cpu };
+    });
+    drop(queue);
+    schedule_with_task_context(task.clone());
+    task.scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("ppoll waiter resumed without result")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

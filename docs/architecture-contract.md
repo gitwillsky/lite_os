@@ -42,7 +42,7 @@
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table | Process；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
-| deadline/futex/pipe/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；SchedulingState 保存唯一 ID |
+| deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；一次 ppoll 只有一个 membership，可挂多个 source index |
 | signal disposition | Arc<Process> signal-actions table |
 | signal mask、pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |

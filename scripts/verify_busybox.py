@@ -330,7 +330,7 @@ def main() -> int:
             ),
             forbidden_markers=tuple(
                 f"unsupported syscall_id: {number}"
-                for number in (29, 59, 65, 133, 137, 154, 155, 156, 157, 174, 175, 176, 177)
+                for number in (29, 59, 65, 73, 133, 137, 154, 155, 156, 157, 174, 175, 176, 177)
             ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:

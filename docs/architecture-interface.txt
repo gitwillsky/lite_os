@@ -489,12 +489,17 @@ kernel/src/ipc.rs :: enum PipeRead :: Eof
 kernel/src/ipc.rs :: enum PipeWrite :: Broken
 kernel/src/ipc.rs :: enum PipeWrite :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeWrite :: Full
+kernel/src/ipc.rs :: pub (crate) PipePollState :: error : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: hangup : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: readable : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: writable : bool
 kernel/src/ipc.rs :: pub (crate) const PIPE_BUF : usize = 4096
 kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readable (& self) -> bool
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn writable (& self) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
@@ -503,6 +508,7 @@ kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mu
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write (& self , input : & [u8]) -> PipeWrite
 kernel/src/ipc.rs :: pub (crate) struct Pipe
 kernel/src/ipc.rs :: pub (crate) struct PipeEnd
+kernel/src/ipc.rs :: pub (crate) struct PipePollState
 kernel/src/ipc.rs :: pub (crate) trait PipeNotifier
 kernel/src/ipc.rs :: trait PipeNotifier :: fn notify (& self , pipe : & Arc < Pipe >)
 kernel/src/log.rs :: enum LogLevel :: Debug = 0
@@ -721,6 +727,7 @@ kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`
 kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - errno :: EINTR
 kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
+kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !
@@ -781,6 +788,7 @@ kernel/src/task/model.rs :: enum WaitMembership :: Console (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Deadline (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Futex (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Pipe (u64)
+kernel/src/task/model.rs :: enum WaitMembership :: Poll (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Signal (u64)
 kernel/src/task/model.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model.rs :: enum WaitResult :: TimedOut
@@ -833,6 +841,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymou
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_anonymous (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
@@ -893,6 +902,7 @@ kernel/src/task/processor.rs :: pub (super) fn wake_console_task (task : Arc < T
 kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_pipe_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_poll_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_signal_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
@@ -909,6 +919,8 @@ kernel/src/task/task_manager.rs :: enum FutexWaitError :: Fault
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Invalid
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: TimedOut
+kernel/src/task/task_manager.rs :: enum PollWaitKey :: Console
+kernel/src/task/task_manager.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , }
 kernel/src/task/task_manager.rs :: enum ProcessGroupError :: NotFound
 kernel/src/task/task_manager.rs :: enum ProcessGroupError :: NotTerminal
 kernel/src/task/task_manager.rs :: enum ProcessGroupError :: Permission
@@ -922,6 +934,7 @@ kernel/src/task/task_manager.rs :: enum WaitChildError :: NoChild
 kernel/src/task/task_manager.rs :: pub (crate) ChildExit :: pid : usize
 kernel/src/task/task_manager.rs :: pub (crate) ChildExit :: status : i32
 kernel/src/task/task_manager.rs :: pub (crate) enum FutexWaitError
+kernel/src/task/task_manager.rs :: pub (crate) enum PollWaitKey
 kernel/src/task/task_manager.rs :: pub (crate) enum ProcessGroupError
 kernel/src/task/task_manager.rs :: pub (crate) enum SignalWaitError
 kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
@@ -954,9 +967,11 @@ kernel/src/task/task_manager.rs :: pub (crate) fn thread_count (tgid : usize) ->
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool ,) -> Result < Option < ChildExit > , WaitChildError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (input_ready : impl FnOnce () -> bool) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> WaitResult
+kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64)
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
+kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) struct ChildExit
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]

@@ -2,12 +2,15 @@ mod errno;
 mod fs;
 mod futex;
 mod memory;
+mod poll;
 mod process;
 mod signal;
 mod timer;
 mod tty;
 
-use crate::syscall::{fs::*, futex::*, memory::*, process::*, signal::*, timer::*, tty::*};
+use crate::syscall::{
+    fs::*, futex::*, memory::*, poll::*, process::*, signal::*, timer::*, tty::*,
+};
 use syscall_abi::*;
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
@@ -51,6 +54,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_READV => sys_readv(args[0], args[1], args[2]),
         SYSCALL_WRITEV => sys_writev(args[0], args[1], args[2]),
+        SYSCALL_PPOLL => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(
             args[0] as isize,
             args[1] as *const u8,
