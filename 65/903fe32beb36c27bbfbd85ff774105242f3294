@@ -1,0 +1,53 @@
+Cargo.lock
+  s_d637a88cd4b00d::t_e157268279b119 5-13
+Cargo.toml
+  s_d637a88cd4b00d::t_b0f1d36f6b7f55 2
+bootloader/src/fast_trap/hal/riscv/mod.rs
+  s_d637a88cd4b00d::t_69c47464c9a2d4 90-91,108-109
+bootloader/src/trap_stack.rs
+  s_d637a88cd4b00d::t_75f6fd531adb0c 37-38
+bootloader/src/trap_vec.rs
+  s_d637a88cd4b00d::t_d8471a11a126a8 13-14,45-46,97-98
+kernel/src/arch/riscv64/start.rs
+  s_d637a88cd4b00d::t_c1642e1ead5cba 8-9,91
+kernel/src/drivers/hal/bus.rs
+  s_d637a88cd4b00d::t_29c820f74678cc 3,8,15,34,40
+kernel/src/drivers/hal/interrupt.rs
+  s_d637a88cd4b00d::t_ec2fa632b504de 5,8,22,26,48,57
+kernel/src/drivers/hal/mod.rs
+  s_d637a88cd4b00d::t_f6526c52e12157 1-12
+kernel/src/drivers/hal/virtio.rs
+  s_d637a88cd4b00d::t_b786a9c15bff6b 21-26,31,51,57,61,71,75,79,83,87,91,95,99,103,107,111,115,119,123,127
+kernel/src/drivers/mod.rs
+  s_d637a88cd4b00d::t_18ace6f6f347fa 2-14,27-31
+kernel/src/drivers/virtio_blk.rs
+  s_d637a88cd4b00d::t_715d95f2cdc1df 5-6,16-18,28,36,51,54,76,268-269,273-276,283
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_2c292ca97faa5c 3-6,9-12,14
+kernel/src/task/loader.rs
+  s_d637a88cd4b00d::t_87ce190b7a5fd5 3
+kernel/src/task/scheduler/mod.rs
+  s_d637a88cd4b00d::t_6b1bf336ddcb55 1
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_76115cbc89eb50 1,16,59,170,218-219,261
+tools/architecture-check/Cargo.toml
+  s_d637a88cd4b00d::t_3f1cc2fc84e8ce 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "65903fe32beb36c27bbfbd85ff774105242f3294",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
