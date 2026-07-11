@@ -61,9 +61,9 @@ pub(crate) fn sys_get_tid() -> isize {
 ///
 /// @param flags 当前必须精确为 `SIGCHLD`。
 /// @param stack fork child 继承栈，必须为零。
-/// @param parent_tid 尚不支持，必须为零。
-/// @param tls 尚不支持，必须为零。
-/// @param child_tid 尚不支持，必须为零。
+/// @param parent_tid fork flags 未启用对应语义，按 Linux 规则忽略。
+/// @param tls fork flags 未启用对应语义，按 Linux 规则忽略。
+/// @param child_tid fork flags 未启用对应语义，按 Linux 规则忽略。
 /// @return parent 获得 child PID，child 获得零；失败返回负 errno。
 pub(crate) fn sys_clone(
     flags: usize,
@@ -74,7 +74,7 @@ pub(crate) fn sys_clone(
 ) -> isize {
     const SIGCHLD: usize = 17;
     if flags == SIGCHLD {
-        if stack != 0 || parent_tid != 0 || tls != 0 || child_tid != 0 {
+        if stack != 0 {
             return -errno::EINVAL;
         }
         let current = current_task().expect("clone requires current task");
@@ -174,6 +174,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
         Ok(None) => return 0,
         Err(WaitChildError::NoChild) => return -errno::ECHILD,
         Err(WaitChildError::InvalidSelector) => return -errno::EINVAL,
+        Err(WaitChildError::Interrupted) => return -errno::EINTR,
     };
     if !status.is_null() {
         let task = current_task().expect("wait4 copyout requires current task");

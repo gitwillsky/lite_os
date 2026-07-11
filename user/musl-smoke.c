@@ -1,13 +1,26 @@
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
+static int interrupt_futex;
 static int state;
+static pid_t main_tid;
+static volatile sig_atomic_t signal_count;
+
+enum { FUTEX_WAIT_PRIVATE = 128 };
+
+static void signal_handler(int signal)
+{
+	if (signal == SIGUSR1) signal_count++;
+}
 
 static void *thread_main(void *argument)
 {
@@ -22,15 +35,34 @@ static void *thread_main(void *argument)
 	return argument;
 }
 
+static void *interrupt_main(void *argument)
+{
+	const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+	if (nanosleep(&delay, 0) != 0) return 0;
+	if (syscall(SYS_tgkill, getpid(), main_tid, SIGUSR1) != 0) return 0;
+	return argument;
+}
+
 int main(int argc, char **argv, char **envp)
 {
 	static const char create_failed[] = "LiteOS musl pthread create failed\n";
 	static const char join_failed[] = "LiteOS musl pthread join failed\n";
+	static const char signal_setup_failed[] = "LiteOS musl signal setup failed\n";
+	static const char futex_signal_failed[] = "LiteOS musl futex signal failed\n";
+	static const char sleep_signal_failed[] = "LiteOS musl sleep signal failed\n";
+	static const char wait_setup_failed[] = "LiteOS musl wait setup failed\n";
+	static const char wait_interrupt_failed[] = "LiteOS musl wait interrupt failed\n";
+	static const char wait_reap_failed[] = "LiteOS musl wait reap failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
-	static const char message[] = "LiteOS musl pthread sync ok\n";
+	static const char message[] = "LiteOS musl pthread signal ok\n";
+	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
+	struct sigaction action = { .sa_handler = signal_handler };
 	struct timespec deadline;
 	struct timespec now;
+	struct timespec remaining = { 0 };
+	int child_status;
 	int wait_result;
+	pid_t child;
 	pthread_t thread;
 	void *thread_result;
 	void *allocation;
@@ -69,6 +101,53 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, sync_failed, sizeof sync_failed - 1);
 		return 8;
 	}
-	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 9;
+	main_tid = (pid_t)syscall(SYS_gettid);
+	sigemptyset(&action.sa_mask);
+	if (main_tid <= 0 || sigaction(SIGUSR1, &action, 0) != 0
+	    || pthread_create(&thread, 0, interrupt_main, (void *)(uintptr_t)0x5347) != 0) {
+		write(STDOUT_FILENO, signal_setup_failed, sizeof signal_setup_failed - 1);
+		return 9;
+	}
+	errno = 0;
+	if (syscall(SYS_futex, &interrupt_futex, FUTEX_WAIT_PRIVATE, 0, 0) != -1 || errno != EINTR
+	    || signal_count != 1 || pthread_join(thread, &thread_result) != 0
+	    || thread_result != (void *)(uintptr_t)0x5347
+	    || pthread_create(&thread, 0, interrupt_main, (void *)(uintptr_t)0x5348) != 0) {
+		write(STDOUT_FILENO, futex_signal_failed, sizeof futex_signal_failed - 1);
+		return 9;
+	}
+	errno = 0;
+	if (nanosleep(&interrupt_sleep, &remaining) != -1 || errno != EINTR
+	    || signal_count != 2 || remaining.tv_sec != 0
+	    || remaining.tv_nsec <= 0 || remaining.tv_nsec >= interrupt_sleep.tv_nsec
+	    || pthread_join(thread, &thread_result) != 0
+	    || thread_result != (void *)(uintptr_t)0x5348) {
+		write(STDOUT_FILENO, sleep_signal_failed, sizeof sleep_signal_failed - 1);
+		return 9;
+	}
+	errno = 0;
+	child = fork();
+	if (child == 0) {
+		const struct timespec delay = { .tv_sec = 0, .tv_nsec = 20 * 1000 * 1000 };
+		if (nanosleep(&delay, 0) != 0
+		    || syscall(SYS_tgkill, getppid(), main_tid, SIGUSR1) != 0
+		    || nanosleep(&delay, 0) != 0) _exit(24);
+		_exit(23);
+	}
+	if (child <= 0) {
+		write(STDOUT_FILENO, wait_setup_failed, sizeof wait_setup_failed - 1);
+		return 9;
+	}
+	errno = 0;
+	if (waitpid(child, &child_status, 0) != -1 || errno != EINTR || signal_count != 3) {
+		write(STDOUT_FILENO, wait_interrupt_failed, sizeof wait_interrupt_failed - 1);
+		return 9;
+	}
+	if (waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 23) {
+		write(STDOUT_FILENO, wait_reap_failed, sizeof wait_reap_failed - 1);
+		return 9;
+	}
+	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 10;
 	return 0;
 }

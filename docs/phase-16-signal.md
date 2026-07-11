@@ -1,5 +1,7 @@
 # Phase 16：RV64 signal frame 与 thread-directed delivery
 
+> 本文保留 Phase 16 历史边界；blocked wait interruption 后续结论见 [Phase 20](phase-20-signal-interruption.md)。
+
 ## 固定 ABI
 
 实现以项目固定的 Linux v7.1 commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6` 为准：`sigset_t` 为 8 bytes，RV64 sigaction 为 handler/flags/mask 三个 word，rt frame 为 128-byte siginfo 加 952-byte ucontext。sigcontext 保存 32-word `user_regs_struct` 与 528-byte FP/extension union。

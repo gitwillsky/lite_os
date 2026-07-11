@@ -56,6 +56,7 @@ pub(crate) fn sys_futex(address: usize, operation: usize, value: u32, timeout: u
                 Err(FutexWaitError::Fault) => -errno::EFAULT,
                 Err(FutexWaitError::Invalid) => -errno::EINVAL,
                 Err(FutexWaitError::TimedOut) => -errno::ETIMEDOUT,
+                Err(FutexWaitError::Interrupted) => -errno::EINTR,
             }
         }
         FUTEX_WAKE => futex_wake(

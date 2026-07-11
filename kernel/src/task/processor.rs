@@ -376,23 +376,31 @@ pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
 ///
 /// @param task wait queue 移出的 task owner。
 /// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
+/// @param result deadline 到期或 signal interruption 的唯一结果。
 /// @return 本次调用真正消费 membership 时返回 true；重复/stale wake 返回 false。
-pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_id: u64) -> bool {
-    wake_waiting_task(
-        task,
-        WaitMembership::Deadline(wait_id),
-        Some(WaitResult::TimedOut),
-    )
+pub(super) fn wake_deadline_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
+    wake_waiting_task(task, WaitMembership::Deadline(wait_id), Some(result))
 }
 
 /// @description 消费 child-exit wait membership，并完成无丢失唤醒转换。
 ///
 /// @param task Process graph 移出的唯一 waiter owner。
+/// @param result child exit 或 signal interruption 的唯一结果。
 /// @return membership 有效时返回 true；stale wake 返回 false。
-pub(super) fn wake_child_task(task: Arc<TaskControlBlock>) -> bool {
-    wake_waiting_task(task, WaitMembership::Child, None)
+pub(super) fn wake_child_task(task: Arc<TaskControlBlock>, result: WaitResult) -> bool {
+    wake_waiting_task(task, WaitMembership::Child, Some(result))
 }
 
+/// @description 消费 futex wait membership，并发布 wake/timeout/interruption 结果。
+///
+/// @param task indexed wait registry 移出的 task owner。
+/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
+/// @param result futex wait 的唯一完成结果。
+/// @return membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_futex_task(
     task: Arc<TaskControlBlock>,
     wait_id: u64,

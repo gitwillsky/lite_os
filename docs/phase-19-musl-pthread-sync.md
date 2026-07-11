@@ -1,5 +1,7 @@
 # Phase 19：musl pthread 同步与 timedwait
 
+> 本文保留 Phase 19 历史边界；signal-interrupted wait 后续结论见 [Phase 20](phase-20-signal-interruption.md)。
+
 ## 固定 consumer
 
 继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/musl-smoke.c` 在 Phase 18 的 create/join 路径上增加：

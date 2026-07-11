@@ -282,8 +282,77 @@ pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Resu
     if signal == 0 {
         Ok(())
     } else {
-        target.queue_signal(signal)
+        target.queue_signal(signal)?;
+        interrupt_waiting_task(&target);
+        Ok(())
     }
+}
+
+/// @description 从当前唯一 wait owner 取消目标 task 的 interruptible wait。
+///
+/// @param task 已有未屏蔽、非忽略 pending signal 的目标 Thread。
+/// @return 成功消费一个 indexed/child wait 时返回 true；目标未阻塞或已被其他 waker 消费时返回 false。
+fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
+    let indexed = {
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        task.with_deliverable_signal(|| {
+            let membership = task.scheduling.state.lock().wait;
+            match membership {
+                Some(wait @ (WaitMembership::Deadline(id) | WaitMembership::Futex(id))) => {
+                    queue.remove(id).map(|entry| (id, wait, entry))
+                }
+                _ => None,
+            }
+        })
+        .flatten()
+    };
+    if let Some((wait_id, membership, entry)) = indexed {
+        assert!(Arc::ptr_eq(&entry.task, task));
+        return match (membership, entry.kind) {
+            (WaitMembership::Deadline(id), IndexedWaitKind::Deadline) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_deadline_task(
+                    entry.task,
+                    wait_id,
+                    WaitResult::Interrupted,
+                )
+            }
+            (WaitMembership::Futex(id), IndexedWaitKind::Futex { .. }) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_futex_task(
+                    entry.task,
+                    wait_id,
+                    WaitResult::Interrupted,
+                )
+            }
+            _ => panic!("indexed wait kind diverged from task membership"),
+        };
+    }
+
+    let child = {
+        let mut graph = TASK_MANAGER.graph.lock();
+        task.with_deliverable_signal(|| {
+            let scheduling = task.scheduling.state.lock();
+            if scheduling.wait != Some(WaitMembership::Child) {
+                None
+            } else {
+                let waiter = graph
+                    .nodes
+                    .get_mut(&task.tgid())
+                    .expect("waiting process disappeared from graph")
+                    .waiter
+                    .take();
+                if let Some(waiter) = &waiter {
+                    assert!(Arc::ptr_eq(waiter, task));
+                }
+                waiter
+            }
+        })
+        .flatten()
+    };
+    child.is_some_and(|waiter| {
+        crate::task::processor::wake_child_task(waiter, WaitResult::Interrupted)
+    })
 }
 
 /// @description eager fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
@@ -345,10 +414,12 @@ pub(crate) struct ChildExit {
     pub(crate) status: i32,
 }
 
+/// @description wait4 在 task layer 的精确结果分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WaitChildError {
     NoChild,
     InvalidSelector,
+    Interrupted,
 }
 
 fn matching_child(child: usize, selector: isize) -> bool {
@@ -387,7 +458,7 @@ fn find_waitable_child(
 ///
 /// @param selector `-1` 表示任一 child，正数表示指定 PID。
 /// @param nohang 无可消费 record 时是否立即返回。
-/// @return exit record、WNOHANG 的 None，或 selector/child 错误；record 尚未被消费。
+/// @return exit record、WNOHANG 的 None，或 selector/child/interruption 错误；record 尚未被消费。
 pub(crate) fn wait_child(
     selector: isize,
     nohang: bool,
@@ -400,6 +471,9 @@ pub(crate) fn wait_child(
             Some(record) => return Ok(Some(record)),
             None if nohang => return Ok(None),
             None => {}
+        }
+        if task.has_deliverable_signal() {
+            return Err(WaitChildError::Interrupted);
         }
 
         let cpu = hart_id();
@@ -422,6 +496,7 @@ pub(crate) fn wait_child(
                 scheduling.wait.is_none(),
                 "task already owns wait membership"
             );
+            assert!(scheduling.wait_result.is_none());
             let parent_node = graph
                 .nodes
                 .get_mut(&parent)
@@ -436,6 +511,18 @@ pub(crate) fn wait_child(
         });
         drop(graph);
         schedule_with_task_context(task.clone());
+        match task
+            .scheduling
+            .state
+            .lock()
+            .wait_result
+            .take()
+            .expect("child waiter resumed without a wake result")
+        {
+            WaitResult::Woken => {}
+            WaitResult::Interrupted => return Err(WaitChildError::Interrupted),
+            WaitResult::TimedOut => panic!("child waiter cannot time out"),
+        }
     }
 }
 
@@ -463,6 +550,7 @@ pub(crate) enum FutexWaitError {
     Fault,
     Invalid,
     TimedOut,
+    Interrupted,
 }
 
 /// @description 按 `(tgid,uaddr)` 等待用户 u32 改变，队列锁覆盖比较与 membership 发布。
@@ -470,7 +558,7 @@ pub(crate) enum FutexWaitError {
 /// @param address 4-byte aligned 用户地址。
 /// @param expected 入队前必须匹配的当前值。
 /// @param deadline 可选的绝对 monotonic 纳秒 deadline。
-/// @return 被 wake 后返回成功；值不等、fault、对齐错误或超时返回明确分类。
+/// @return 被 wake 后返回成功；值不等、fault、对齐错误、超时或 signal interruption 返回明确分类。
 pub(crate) fn futex_wait(
     address: usize,
     expected: u32,
@@ -490,6 +578,9 @@ pub(crate) fn futex_wait(
     }
     if deadline.is_some_and(|value| value <= get_time_ns()) {
         return Err(FutexWaitError::TimedOut);
+    }
+    if task.has_deliverable_signal() {
+        return Err(FutexWaitError::Interrupted);
     }
 
     let end_time = get_time_us();
@@ -523,6 +614,7 @@ pub(crate) fn futex_wait(
     match result {
         WaitResult::Woken => Ok(()),
         WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
+        WaitResult::Interrupted => Err(FutexWaitError::Interrupted),
     }
 }
 
@@ -567,7 +659,9 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
             return count;
         };
         let woke = match kind {
-            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(task, wait_id),
+            IndexedWaitKind::Deadline => {
+                crate::task::processor::wake_deadline_task(task, wait_id, WaitResult::TimedOut)
+            }
             IndexedWaitKind::Futex { .. } => {
                 crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
             }
@@ -602,8 +696,11 @@ pub(crate) fn nanosleep(nanoseconds: u64) -> isize {
     let Some(deadline) = start_time.checked_add(nanoseconds) else {
         return -22;
     };
-    block_current_until(deadline);
-    if get_time_ns() >= deadline { 0 } else { -4 }
+    match block_current_until(deadline) {
+        WaitResult::TimedOut => 0,
+        WaitResult::Interrupted => -4,
+        WaitResult::Woken => panic!("deadline wait cannot complete through generic wake"),
+    }
 }
 
 /// 获取并移除当前任务
@@ -728,8 +825,8 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
 /// @description 将当前 task 加入 indexed wait registry 并切回 idle。
 ///
 /// @param deadline 绝对 monotonic 纳秒 deadline。
-/// @return task 被唤醒并重新调度后返回。
-fn block_current_until(deadline: u64) {
+/// @return task 被重新调度后返回 timeout 或 signal interruption 结果。
+fn block_current_until(deadline: u64) -> WaitResult {
     let task = current_task().expect("deadline wait requires current task");
     let cpu = hart_id();
 
@@ -740,6 +837,9 @@ fn block_current_until(deadline: u64) {
     drop(sched);
 
     let mut queue = INDEXED_WAIT_QUEUE.lock();
+    if task.has_deliverable_signal() {
+        return WaitResult::Interrupted;
+    }
     with_current_processor(|processor| {
         let current = processor
             .current
@@ -767,14 +867,12 @@ fn block_current_until(deadline: u64) {
     });
     drop(queue);
     schedule_with_task_context(task.clone());
-    let result = task
-        .scheduling
+    task.scheduling
         .state
         .lock()
         .wait_result
         .take()
-        .expect("deadline waiter resumed without a wake result");
-    assert_eq!(result, WaitResult::TimedOut);
+        .expect("deadline waiter resumed without a wake result")
 }
 
 /// 退出当前任务并运行下一个任务
@@ -794,11 +892,6 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         scheduling.run_state = RunState::Exited;
     };
     task.cleanup_robust_list();
-    if let Some(address) = task.take_clear_child_tid()
-        && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
-    {
-        futex_wake(task.tgid(), address, 1);
-    }
     let (removed, last_thread, parent_waiter, init_waiter) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let exiting_pid = task.tgid();
@@ -856,12 +949,20 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
             (removed, true, parent_waiter, init_waiter)
         }
     };
+    // 1. process graph 先注销 Thread owner，再发布 clear-child-tid completion。
+    // 2. 若顺序相反，pthread_join 可在 graph 仍计数已退出 sibling 时返回，使紧随的
+    //    single-thread-only fork/exec 错误观察到 EAGAIN。
+    if let Some(address) = task.take_clear_child_tid()
+        && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
+    {
+        futex_wake(task.tgid(), address, 1);
+    }
     drop(removed);
     if !last_thread {
         task.remove_thread_trap_context();
     }
     for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
-        crate::task::processor::wake_child_task(waiter);
+        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
 
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);

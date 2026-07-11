@@ -695,6 +695,7 @@ kernel/src/task/model.rs :: enum SignalDelivery :: Terminate (i32)
 kernel/src/task/model.rs :: enum WaitMembership :: Child
 kernel/src/task/model.rs :: enum WaitMembership :: Deadline (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Futex (u64)
+kernel/src/task/model.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model.rs :: enum WaitResult :: TimedOut
 kernel/src/task/model.rs :: enum WaitResult :: Woken
 kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: flags : usize
@@ -758,10 +759,12 @@ kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (name : & [u8] , elf_data : & [u8] , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn queue_signal (& self , signal : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliverable_signal < T > (& self , action : impl FnOnce () -> T) -> Option < T >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
@@ -784,8 +787,8 @@ kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < Tas
 kernel/src/task/processor.rs :: pub (super) fn finish_blocking_transition (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
-kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock >) -> bool
-kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
@@ -799,10 +802,12 @@ kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct RunQueueEntry
 kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Again
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Fault
+kernel/src/task/task_manager.rs :: enum FutexWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Invalid
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: TimedOut
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
+kernel/src/task/task_manager.rs :: enum WaitChildError :: Interrupted
 kernel/src/task/task_manager.rs :: enum WaitChildError :: InvalidSelector
 kernel/src/task/task_manager.rs :: enum WaitChildError :: NoChild
 kernel/src/task/task_manager.rs :: pub (crate) ChildExit :: pid : usize

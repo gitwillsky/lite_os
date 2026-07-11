@@ -41,6 +41,7 @@ pub(crate) enum WaitMembership {
 pub(crate) enum WaitResult {
     Woken,
     TimedOut,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -62,6 +63,10 @@ const UNBLOCKABLE_SIGNAL_MASK: u64 = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
 
 fn normalize_signal_mask(mask: u64) -> u64 {
     mask & !UNBLOCKABLE_SIGNAL_MASK
+}
+
+fn signal_is_ignored(signal: usize, action: LinuxSigAction) -> bool {
+    action.handler == 1 || signal == 17 && action.handler == 0
 }
 
 #[repr(C)]
@@ -576,14 +581,36 @@ impl TaskControlBlock {
     /// @description 将 standard signal 合并进当前 Thread 的 pending bitset。
     ///
     /// @param signal Linux signal number。
-    /// @return signal 成功入队返回 `Ok(())`。
+    /// @return signal 成功合并或按 disposition 丢弃时返回 `Ok(())`。
     /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
     pub(super) fn queue_signal(&self, signal: usize) -> Result<(), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
-        *self.thread.pending_signals.lock() |= 1u64 << (signal - 1);
+        let action = self.process.signal_actions.lock()[signal];
+        if signal_is_ignored(signal, action) {
+            return Ok(());
+        }
+        let bit = 1u64 << (signal - 1);
+        *self.thread.pending_signals.lock() |= bit;
         Ok(())
+    }
+
+    /// @description 查询当前 Thread 是否有未屏蔽 pending signal。
+    ///
+    /// @return 至少一个 signal 可在 trap return 交付时返回 true。
+    pub(super) fn has_deliverable_signal(&self) -> bool {
+        self.with_deliverable_signal(|| ()).is_some()
+    }
+
+    /// @description 持有 mask/pending 锁复查 signal，并在其仍可交付时执行一次操作。
+    ///
+    /// @param action 必须与 wait owner lock 配合的短临界区，不得阻塞或调度。
+    /// @return signal 仍可交付时返回 action 结果，否则返回 None。
+    pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
+        let mask = self.thread.signal_mask.lock();
+        let pending = self.thread.pending_signals.lock();
+        (*pending & !*mask != 0).then(action)
     }
 
     /// @description 在 trap return 前选择 pending signal，并构造唯一 RV64 rt frame。
@@ -604,7 +631,7 @@ impl TaskControlBlock {
             *pending &= !(1u64 << (signal - 1));
             drop(pending);
             let action = self.process.signal_actions.lock()[signal];
-            if action.handler == 1 || signal == 17 && action.handler == 0 {
+            if signal_is_ignored(signal, action) {
                 continue;
             }
             if action.handler == 0 {
