@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
@@ -8,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -76,6 +78,7 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
 	static const char sigwait_failed[] = "LiteOS musl sigwait failed\n";
 	static const char tty_failed[] = "LiteOS musl tty session failed\n";
+	static const char pipe_failed[] = "LiteOS musl pipe readv failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
@@ -84,6 +87,7 @@ int main(int argc, char **argv, char **envp)
 	struct sigaction action = { .sa_handler = signal_handler };
 	struct termios terminal_settings;
 	struct winsize window_size;
+	struct iovec pipe_input[2];
 	siginfo_t signal_info;
 	sigset_t wait_set;
 	struct timespec deadline;
@@ -91,6 +95,9 @@ int main(int argc, char **argv, char **envp)
 	struct timespec remaining = { 0 };
 	int child_status;
 	int wait_result;
+	int pipe_fds[2];
+	char pipe_first[4];
+	char pipe_second[3];
 	char cwd[16];
 	pid_t child;
 	pthread_t thread;
@@ -131,6 +138,33 @@ int main(int argc, char **argv, char **envp)
 	if (child <= 0 || waitpid(child, &child_status, 0) != child
 	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
 		write(STDOUT_FILENO, tty_failed, sizeof tty_failed - 1);
+		return 4;
+	}
+	if (pipe(pipe_fds) != 0) {
+		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
+		return 4;
+	}
+	child = fork();
+	if (child == 0) {
+		static const char first[] = "pipe";
+		static const char second[] = "-ok";
+		struct iovec output[2] = {
+			{ .iov_base = (void *)first, .iov_len = sizeof first - 1 },
+			{ .iov_base = (void *)second, .iov_len = sizeof second - 1 },
+		};
+		close(pipe_fds[0]);
+		if (writev(pipe_fds[1], output, 2) != 7) _exit(42);
+		_exit(0);
+	}
+	close(pipe_fds[1]);
+	pipe_input[0] = (struct iovec){ .iov_base = pipe_first, .iov_len = sizeof pipe_first };
+	pipe_input[1] = (struct iovec){ .iov_base = pipe_second, .iov_len = sizeof pipe_second };
+	if (child <= 0 || readv(pipe_fds[0], pipe_input, 2) != 7
+	    || memcmp(pipe_first, "pipe", 4) != 0 || memcmp(pipe_second, "-ok", 3) != 0
+	    || read(pipe_fds[0], pipe_first, 1) != 0 || close(pipe_fds[0]) != 0
+	    || waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 		return 4;
 	}
 	if (pthread_create(&thread, 0, thread_main, (void *)(uintptr_t)0x4f53) != 0) {

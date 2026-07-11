@@ -18,15 +18,16 @@
 | `sync` | `arch` | 只依赖本地中断机制 |
 | `memory` | `arch`, `config`, `id`, `sync` | 不感知 task、filesystem 或 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
-| `fs` | `drivers`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
-| `task` | `arch`, `fs`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
+| `ipc` | `sync` | 只拥有 Pipe data/lifecycle，不感知 fd、task 或 syscall |
+| `fs` | `drivers`, `ipc`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
+| `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
-| `syscall` | `fs`, `memory`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `syscall` | `fs`, `ipc`, `memory`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
 | `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
 | `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
-| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `task`, `timer`, `trap` | 唯一 composition root |
+| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `task`, `timer`, `trap` | 唯一 composition root |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 
@@ -39,13 +40,14 @@
 | hart possible/online/active、startup stack | HartTopology |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address space、cwd inode、fd table | Process；cwd absolute path 只由 VFS 目录项反向推导，不缓存第二份状态 |
+| process address space、cwd inode、fd table | Process；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
-| deadline/futex wait registration 及其 `(TGID,uaddr)`/deadline index | TaskManager 唯一 IndexedWaitQueue；SchedulingState 保存唯一 ID |
+| deadline/futex/pipe/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；SchedulingState 保存唯一 ID |
 | signal disposition | Arc<Process> signal-actions table |
 | signal mask、pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
 | OFD offset/status flags | OpenFileDescription |
+| anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | root mount、pathname traversal | VFS |

@@ -44,10 +44,12 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[3] as u32,
         ),
         SYSCALL_CLOSE => sys_close(args[0]),
+        SYSCALL_PIPE2 => sys_pipe2(args[0], args[1] as u32),
         SYSCALL_GETDENTS64 => sys_getdents64(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_LSEEK => sys_lseek(args[0], args[1] as i64, args[2] as u32),
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
+        SYSCALL_READV => sys_readv(args[0], args[1], args[2]),
         SYSCALL_WRITEV => sys_writev(args[0], args[1], args[2]),
         SYSCALL_NEWFSTATAT => sys_newfstatat(
             args[0] as isize,
@@ -75,6 +77,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut timer::TimeSpec),
         SYSCALL_SCHED_YIELD => sys_sched_yield(),
         SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
+        SYSCALL_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0], args[1]),
         SYSCALL_RT_SIGACTION => sys_rt_sigaction(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
@@ -85,6 +88,9 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_SETSID => sys_setsid(),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
+        SYSCALL_GETUID | SYSCALL_GETEUID | SYSCALL_GETGID | SYSCALL_GETEGID => {
+            sys_get_root_identity()
+        }
         SYSCALL_GETTID => sys_get_tid(),
         SYSCALL_BRK => sys_brk(args[0]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),

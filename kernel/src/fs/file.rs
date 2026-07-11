@@ -2,17 +2,20 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
 use super::{FileSystemError, Inode};
+use crate::ipc::PipeEnd;
 
 pub(crate) const O_ACCMODE: u32 = 3;
 pub(crate) const O_RDONLY: u32 = 0;
 pub(crate) const O_WRONLY: u32 = 1;
 pub(crate) const O_APPEND: u32 = 0x400;
+pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1024;
 
 /// @description OFD 后端；console 和 inode 共享同一 fd 表，不保留 syscall 特判旁路。
 pub(crate) enum OpenFileKind {
     Terminal(Arc<Terminal>),
+    Pipe(Arc<PipeEnd>),
     Inode(Arc<dyn Inode>),
 }
 
@@ -391,10 +394,19 @@ impl OpenFileDescription {
         })
     }
 
+    pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Arc<Self> {
+        Arc::new(Self {
+            kind: OpenFileKind::Pipe(endpoint),
+            offset: Mutex::new(0),
+            flags: Mutex::new(flags),
+        })
+    }
+
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(inode) => Some(inode.clone()),
             OpenFileKind::Terminal(_) => None,
+            OpenFileKind::Pipe(_) => None,
         }
     }
 }
@@ -475,12 +487,60 @@ impl FileDescriptorTable {
         Ok(fd)
     }
 
-    pub(crate) fn close(&mut self, fd: usize) -> Result<(), ()> {
-        let entry = self.entries.get_mut(fd).ok_or(())?;
-        if entry.take().is_none() {
+    /// @description 原子分配 pipe read/write 两个 descriptor entry。
+    ///
+    /// @param first read endpoint OFD。
+    /// @param second write endpoint OFD。
+    /// @param cloexec 两个 descriptor 的 FD_CLOEXEC 初值。
+    /// @return 两个 fd；容量不足时 fd table 不变。
+    pub(crate) fn allocate_pair(
+        &mut self,
+        first: Arc<OpenFileDescription>,
+        second: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<(usize, usize), ()> {
+        let mut available = [usize::MAX; 2];
+        let mut found = 0;
+        for fd in 0..MAX_FILE_DESCRIPTORS {
+            if self.entries.get(fd).is_none_or(Option::is_none) {
+                available[found] = fd;
+                found += 1;
+                if found == 2 {
+                    break;
+                }
+            }
+        }
+        if found != 2 {
             return Err(());
         }
+        let required = available[1] + 1;
+        if self.entries.len() < required {
+            self.entries.resize(required, None);
+        }
+        self.entries[available[0]] = Some(FileDescriptor {
+            ofd: first,
+            cloexec,
+        });
+        self.entries[available[1]] = Some(FileDescriptor {
+            ofd: second,
+            cloexec,
+        });
+        Ok((available[0], available[1]))
+    }
+
+    pub(crate) fn close(&mut self, fd: usize) -> Result<(), ()> {
+        let entry = self.entries.get_mut(fd).ok_or(())?;
+        entry.take().ok_or(())?;
         Ok(())
+    }
+
+    /// @description 从 live Process 原子取走全部 fd entry，供 exit 在 files lock 外关闭。
+    ///
+    /// @return 拥有原全部 entry 的独立 table；self 变为空 table。
+    pub(crate) fn take_all(&mut self) -> Self {
+        Self {
+            entries: core::mem::take(&mut self.entries),
+        }
     }
 
     pub(crate) fn duplicate(

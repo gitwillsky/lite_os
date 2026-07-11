@@ -21,6 +21,7 @@ mod fs;
 mod lang_item;
 
 mod id;
+mod ipc;
 mod memory;
 mod sync;
 mod syscall;

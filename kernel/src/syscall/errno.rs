@@ -36,6 +36,8 @@ pub(crate) const EMFILE: isize = 24;
 /// fd 不是 TTY 或 TTY 不属于 caller session。
 pub(crate) const ENOTTY: isize = 25;
 pub(crate) const ENOSPC: isize = 28;
+/// pipe 没有 reader。
+pub(crate) const EPIPE: isize = 32;
 pub(crate) const ESPIPE: isize = 29;
 /// 结果超出支持范围。
 pub(crate) const ERANGE: isize = 34;

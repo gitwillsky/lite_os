@@ -1,5 +1,7 @@
 # LiteOS Phase 11：Linux/riscv64 syscall ABI 矩阵
 
+> 本文表格是 Phase 11 的历史快照；Pipe/readv、signal wait 与 TTY 后续实现状态以 `syscall-support.md` 及 Phase 24-26 文档为准。
+
 > 审计日期：2026-07-11（Asia/Shanghai）  
 > 代码基线：提交 `ad2b4a8`（Phase 0–10）  
 > 权威基线：[standards-baseline.md](standards-baseline.md) 固定的 Linux `v7.1` / RISC-V UAPI、POSIX.1-2024 与 musl `v1.2.6`  

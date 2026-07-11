@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 47 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 54 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 47 个入口
+## 2. 当前暴露的 54 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -40,10 +40,10 @@
 | 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EISDIR/ENOSPC/EIO` | POSIX ftruncate | **Complete**。支持稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
 | 49 | `chdir` | NUL 结尾 raw pathname | 0；`EFAULT/ENOENT/ENOTDIR/ELOOP/ENOMEM/EIO` | POSIX chdir；musl direct wrapper | **Partial**。absolute/relative、`.`/`..` 与重复分隔符统一经 VFS cwd inode 解析；fork 共享初始 identity 后各 Process 独立替换。无 credentials/execute permission、mount 与 symlink following。 | `kernel/src/syscall/fs.rs`, `kernel/src/task/model.rs` |
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path errno | POSIX openat/close | **Partial**。regular/directory OFD、create/excl/trunc/append/directory/cloexec 完整；无 permissions、symlink following 和设备节点。 | `kernel/src/syscall/fs.rs` |
+| 59 | `pipe2` | `int[2]`、`O_CLOEXEC/O_NONBLOCK` | 0；`EFAULT/EINVAL/EMFILE/ENOMEM` | POSIX pipe；BusyBox pipeline | **Complete**（当前 fd/wait 模型）。64 KiB ring、4096-byte PIPE_BUF atomic write、blocking/nonblocking、EOF、EPIPE+SIGPIPE、fork/dup endpoint lifecycle 与 exit-time fd close 共用单一 Pipe owner。 | `kernel/src/ipc.rs`, `kernel/src/syscall/fs.rs` |
 | 61 | `getdents64` | fd、`linux_dirent64` buffer、length | bytes；`EBADF/ENOTDIR/EFAULT/EINVAL` | libc readdir backend | **Complete**。目录 OFD 保存逐项位置，记录按 8 bytes 对齐并包含 `d_type`；并发目录变更后的 cookie 与 Linux 一样不承诺快照语义。 | `kernel/src/syscall/fs.rs` |
 | 62 | `lseek` | fd、signed offset、whence | new offset；`EBADF/EINVAL/ESPIPE` | POSIX lseek | **Complete**。实现 `SEEK_SET/CUR/END`，offset 位于共享 OFD。 | `kernel/src/syscall/fs.rs` |
-| 63/64 | `read` / `write` | fd、用户 buffer、count | byte count；允许 partial result；Terminal 可 `EINTR` | POSIX read/write | **Partial**。regular file 共享 offset，write 支持 append；Terminal OFD 使用 deferred termios line discipline、canonical/echo/EOF 与 OPOST/ONLCR，空 cooked queue 进入统一 interruptible wait。无完整 VMIN/VTIME、background SIGTTIN/SIGTTOU enforcement、pipe/socket。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/file.rs` |
-| 66 | `writev` | fd、RV64 `struct iovec *`、iovcnt | total/partial bytes；`EBADF/EFAULT/EINVAL/ENOMEM` | POSIX writev；musl/BusyBox stdio | **Partial**。一次性导入至多 1024 个 16-byte iovec，验证总长度不超过 `SSIZE_MAX`，随后共享同一 OFD offset 并保留首错/partial-write 语义；尚未证明不同 OFD 并发 write 间的整组原子性，也无 pipe/socket。 | `kernel/src/syscall/fs.rs` |
+| 63-66 | `read/write/readv/writev` | fd、buffer 或 RV64 iovec | byte count；partial/EOF；标准 fd/stream errno | POSIX I/O；musl/BusyBox | **Partial**。regular file 共享 offset；Terminal 使用 termios；Pipe 支持 blocking/nonblocking、scatter readv、gather writev、EOF 与 EPIPE/SIGPIPE。iovec 最大 1024、总长不超过 SSIZE_MAX。无 socket；Terminal 仍缺完整 VMIN/VTIME/background enforcement。 | `kernel/src/syscall/fs.rs` |
 | 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 当前只接受 flags 0。 | `kernel/src/syscall/fs.rs` |
 | 82 | `fsync` | fd | 0；`EBADF/EIO` | POSIX fsync | **Complete**。等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request。 | `kernel/src/syscall/fs.rs` |
 | 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
@@ -56,12 +56,14 @@
 | 113 | `clock_gettime` | `clockid_t, struct timespec *`；RV64 `i64,i64` | `0`；`EINVAL/EFAULT` | POSIX `clock_gettime`；musl vDSO fallback | **Partial**。只支持 `CLOCK_REALTIME(0)` 和 `CLOCK_MONOTONIC(1)`；其他 Linux clock ID 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 124 | `sched_yield` | 无参数 | `0` | POSIX `sched_yield`；musl direct wrapper | **Complete**。当前 task 回到唯一 CFS-like runqueue。 | `kernel/src/syscall/process.rs` |
 | 131 | `tgkill` | tgid、tid、signal | 0；`ESRCH/EINVAL` | Linux thread-directed signal；musl pthread | **Partial**。支持存在性 probe、standard signal pending 与 deadline/futex/child wait interruption；未屏蔽、非忽略 signal 在 trap return delivery。无 permission check/process-directed selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
+| 133 | `rt_sigsuspend` | 8-byte sigset | 固定 `EINTR` | POSIX sigsuspend；BusyBox wait | **Complete**（当前 signal set）。临时 mask 与 Signal membership 原子封闭 lost wakeup；pending bit 不被 waiter 消费，trap frame 恢复调用前 mask。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | RV64 24-byte action、8-byte sigset | 0；`EFAULT/EINVAL` | POSIX signal API；musl wrappers | **Partial**。Process disposition、per-Thread mask、SIGKILL/SIGSTOP 不可屏蔽；handler 的 `SA_RESTART` 可重放 blocking `wait4` 与无 timeout 的 futex WAIT。无 altstack、queued realtime value 与其他 syscall 的完整 restart coverage。 | `kernel/src/syscall/signal.rs` |
 | 137 | `rt_sigtimedwait` | 8-byte sigset、可选 128-byte siginfo、可选 relative timespec | signal number；`EAGAIN/EINTR/EFAULT/EINVAL` | POSIX sigwaitinfo/sigtimedwait；BusyBox init | **Partial**。从 Thread 唯一 pending owner 消费 coalesced standard signal，支持无限等待、零/有限 monotonic timeout、`SI_TKILL` 与 `SIGCHLD/CLD_EXITED` siginfo；registration 共用 indexed wait/deadline registry。无 realtime queued value、process-directed selection 和完整多线程 SIGCHLD target selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
 | 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 154-157 | `setpgid/getpgid/getsid/setsid` | PID/PGID 或无参数 | 0/ID；`ESRCH/EPERM` | POSIX session/job control；BusyBox init/ash | **Partial**。process graph 唯一拥有 SID/PGID；fork 继承，setsid 创建新 session/group，setpgid 校验 direct-child、session leader 与同 session group。尚无 exec-generation 的 setpgid `EACCES`、credentials/namespace 与 stopped/continued lifecycle。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
 | 173 | `getppid` | 无参数 | parent TGID；init 为 0 | POSIX `getppid`；musl direct wrapper | **Complete**。读取 TaskManager 唯一 parent edge；orphan 重新指向 PID 1。 | `kernel/src/syscall/process.rs` |
+| 174-177 | `getuid/geteuid/getgid/getegid` | 无参数 | 0 | POSIX identity；BusyBox prompt | **Complete**（固定 root identity 基线）。当前没有 credential mutation ABI，real/effective UID/GID 均为 root 0。 | `kernel/src/syscall/process.rs` |
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
 | 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator | **Partial**。支持 anonymous private VMA 删除、洞忽略和左右拆分；触及 ELF/stack/heap 等非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
@@ -79,8 +81,6 @@
 
 | 编号 | Linux 名称 | 状态 | 处理结论 |
 |---:|---|---|---|
-| 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
-| 65 | `readv` | Missing | 尚未实现 iovec copyout 与“已有输入后不得为后续向量再次阻塞”的 partial-read 语义。 |
 | 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 job-control group 语义。 |
 | 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
@@ -91,7 +91,7 @@
 
 ## 4. musl 结论
 
-当前 47 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait、signal wait，以及 termios/session/process-group ioctl。BusyBox gate 额外覆盖 UART canonical/raw 切换、foreground group、Ctrl-C、`writev`、init fork/exec 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 54 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C 与 ash builtin。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；

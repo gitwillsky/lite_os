@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::{self, hart_id},
+    ipc::{Pipe, PipeDirection, PipeEnd, PipeNotifier},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
@@ -132,9 +133,18 @@ impl TaskManager {
 #[derive(Clone, Copy)]
 enum IndexedWaitKind {
     Deadline,
-    Futex { tgid: usize, address: usize },
+    Futex {
+        tgid: usize,
+        address: usize,
+    },
     Console,
-    Signal { mask: u64 },
+    Signal {
+        mask: u64,
+    },
+    Pipe {
+        identity: usize,
+        direction: PipeDirection,
+    },
 }
 
 struct IndexedWaitEntry {
@@ -149,6 +159,7 @@ struct IndexedWaitQueue {
     futex_index: BTreeSet<(usize, usize, u64)>,
     deadline_index: BTreeSet<(u64, u64)>,
     console_index: BTreeSet<u64>,
+    pipe_index: BTreeSet<(usize, u8, u64)>,
 }
 
 impl IndexedWaitQueue {
@@ -159,6 +170,7 @@ impl IndexedWaitQueue {
             futex_index: BTreeSet::new(),
             deadline_index: BTreeSet::new(),
             console_index: BTreeSet::new(),
+            pipe_index: BTreeSet::new(),
         }
     }
 
@@ -256,6 +268,33 @@ impl IndexedWaitQueue {
         id
     }
 
+    fn insert_pipe(
+        &mut self,
+        pipe: &Arc<Pipe>,
+        direction: PipeDirection,
+        task: Arc<TaskControlBlock>,
+    ) -> u64 {
+        let id = self.allocate_id();
+        let identity = Pipe::identity(pipe);
+        assert!(self.pipe_index.insert((identity, direction as u8, id)));
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Pipe {
+                            identity,
+                            direction,
+                        },
+                        deadline: None,
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
     fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
         let entry = self.entries.remove(&id)?;
         if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
@@ -263,6 +302,13 @@ impl IndexedWaitQueue {
         }
         if matches!(entry.kind, IndexedWaitKind::Console) {
             assert!(self.console_index.remove(&id));
+        }
+        if let IndexedWaitKind::Pipe {
+            identity,
+            direction,
+        } = entry.kind
+        {
+            assert!(self.pipe_index.remove(&(identity, direction as u8, id)));
         }
         if let Some(deadline) = entry.deadline {
             assert!(self.deadline_index.remove(&(deadline, id)));
@@ -288,6 +334,18 @@ impl IndexedWaitQueue {
 
     fn take_console(&mut self) -> Option<(u64, Arc<TaskControlBlock>)> {
         let id = *self.console_index.first()?;
+        self.remove(id).map(|entry| (id, entry.task))
+    }
+
+    fn take_pipe(
+        &mut self,
+        identity: usize,
+        direction: PipeDirection,
+    ) -> Option<(u64, Arc<TaskControlBlock>)> {
+        let (_, _, id) = *self
+            .pipe_index
+            .range((identity, direction as u8, 0)..=(identity, direction as u8, u64::MAX))
+            .next()?;
         self.remove(id).map(|entry| (id, entry.task))
     }
 }
@@ -627,7 +685,8 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                     wait @ (WaitMembership::Deadline(id)
                     | WaitMembership::Futex(id)
                     | WaitMembership::Console(id)
-                    | WaitMembership::Signal(id)),
+                    | WaitMembership::Signal(id)
+                    | WaitMembership::Pipe(id)),
                 ) => queue.remove(id).map(|entry| (id, wait, entry)),
                 _ => None,
             }
@@ -660,6 +719,10 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             (WaitMembership::Signal(id), IndexedWaitKind::Signal { .. }) => {
                 assert_eq!(id, wait_id);
                 crate::task::processor::wake_signal_task(entry.task, WaitResult::Interrupted)
+            }
+            (WaitMembership::Pipe(id), IndexedWaitKind::Pipe { .. }) => {
+                assert_eq!(id, wait_id);
+                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
             }
             _ => panic!("indexed wait kind diverged from task membership"),
         };
@@ -1005,6 +1068,7 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
             IndexedWaitKind::Signal { .. } => {
                 crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
             }
+            IndexedWaitKind::Pipe { .. } => panic!("pipe wait cannot carry a deadline"),
         };
         if woke {
             count += 1;
@@ -1087,6 +1151,93 @@ fn wake_console_waiters() -> usize {
     }
 }
 
+struct TaskPipeNotifier;
+
+impl PipeNotifier for TaskPipeNotifier {
+    fn notify(&self, pipe: &Arc<Pipe>) {
+        wake_pipe_waiters(pipe);
+    }
+}
+
+/// @description 创建绑定统一 task wait registry 的 anonymous pipe endpoints。
+///
+/// @return read/write endpoints；kernel heap 不足返回错误。
+pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+    Pipe::pair(Arc::new(TaskPipeNotifier))
+}
+
+fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
+    let identity = Pipe::identity(pipe);
+    let mut waiters = alloc::vec::Vec::new();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    for direction in [PipeDirection::Read, PipeDirection::Write] {
+        let ready = match direction {
+            PipeDirection::Read => pipe.readable(),
+            PipeDirection::Write => pipe.writable(),
+        };
+        if !ready {
+            continue;
+        }
+        while let Some(waiter) = queue.take_pipe(identity, direction) {
+            waiters.push(waiter);
+        }
+    }
+    drop(queue);
+    let count = waiters.len();
+    for (wait_id, task) in waiters {
+        crate::task::processor::wake_pipe_task(task, wait_id, WaitResult::Woken);
+    }
+    count
+}
+
+/// @description 在统一 wait registry 阻塞到 pipe endpoint ready 或 signal interruption。
+///
+/// @param pipe anonymous pipe owner。
+/// @param direction read 等待 data/EOF；write 等待 space/broken reader。
+/// @return ready 返回 Woken；signal 返回 Interrupted。
+pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> WaitResult {
+    let task = current_task().expect("pipe wait requires current task");
+    let cpu = hart_id();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let ready = match direction {
+        PipeDirection::Read => pipe.readable(),
+        PipeDirection::Write => pipe.writable(),
+    };
+    if ready {
+        return WaitResult::Woken;
+    }
+    if task.has_deliverable_signal() {
+        return WaitResult::Interrupted;
+    }
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
+    with_current_processor(|processor| {
+        let current = processor
+            .current
+            .take()
+            .expect("pipe wait requires current task");
+        assert!(Arc::ptr_eq(&current, &task));
+        let mut scheduling = task.scheduling.state.lock();
+        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert!(scheduling.wait.is_none());
+        assert!(scheduling.wait_result.is_none());
+        let wait_id = queue.insert_pipe(pipe, direction, current);
+        scheduling.wait = Some(WaitMembership::Pipe(wait_id));
+        scheduling.run_state = RunState::Blocking { cpu };
+    });
+    drop(queue);
+    schedule_with_task_context(task.clone());
+    task.scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("pipe waiter resumed without a wake result")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalWaitError {
     Again,
@@ -1151,6 +1302,52 @@ pub(crate) fn wait_for_signal(
             WaitResult::Interrupted => return Err(SignalWaitError::Interrupted),
         }
     }
+}
+
+/// @description 用 Signal membership 等待 trap-return 可交付 signal，但不消费 pending bit。
+///
+/// @param deliverable_set sigsuspend 临时 mask 的补集。
+/// @return signal 发布后返回；pending signal 留给唯一 trap delivery path。
+pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
+    let task = current_task().expect("signal delivery wait requires current task");
+    let cpu = hart_id();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    if task.with_pending_signal(deliverable_set, || ()).is_some() {
+        return;
+    }
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
+    with_current_processor(|processor| {
+        let current = processor
+            .current
+            .take()
+            .expect("signal delivery wait requires current task");
+        assert!(Arc::ptr_eq(&current, &task));
+        let mut scheduling = task.scheduling.state.lock();
+        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert!(scheduling.wait.is_none());
+        assert!(scheduling.wait_result.is_none());
+        let wait_id = queue.insert_signal(deliverable_set, None, current);
+        scheduling.wait = Some(WaitMembership::Signal(wait_id));
+        scheduling.run_state = RunState::Blocking { cpu };
+    });
+    drop(queue);
+    schedule_with_task_context(task.clone());
+    let result = task
+        .scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("signal delivery waiter resumed without result");
+    assert_eq!(
+        result,
+        WaitResult::Woken,
+        "sigsuspend has no timeout/cancellation path"
+    );
 }
 
 /// @description 在统一 wait registry 上阻塞当前 task。
@@ -1447,6 +1644,9 @@ pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
         && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
     {
         futex_wake(task.tgid(), address, 1);
+    }
+    if last_thread {
+        task.close_all_files();
     }
     drop(removed);
     if !last_thread {

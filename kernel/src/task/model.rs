@@ -32,6 +32,7 @@ pub(crate) enum WaitMembership {
     Futex(u64),
     Console(u64),
     Signal(u64),
+    Pipe(u64),
 }
 
 /// @description blocked task 恢复时由唯一 wait registration 发布的结果。
@@ -296,6 +297,8 @@ struct ThreadContext {
     signal_mask: Mutex<u64>,
     // OWNER: pending bit 与首个 siginfo 必须同锁发布；拆开会让 sigtimedwait 观察到错误来源。
     pending_signals: Mutex<PendingSignals>,
+    // OWNER: sigsuspend 临时 mask 对应的原 mask；signal frame 必须恢复它而非临时值。
+    suspend_restore_mask: Mutex<Option<u64>>,
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
     // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<Option<SyscallRestart>>,
@@ -437,6 +440,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(0),
                 pending_signals: Mutex::new(PendingSignals::new()),
+                suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -522,6 +526,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
                 pending_signals: Mutex::new(PendingSignals::new()),
+                suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -597,6 +602,7 @@ impl TaskControlBlock {
                 robust_list: Mutex::new(None),
                 signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
                 pending_signals: Mutex::new(PendingSignals::new()),
+                suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
             },
             scheduling: SchedulingEntity {
@@ -673,6 +679,36 @@ impl TaskControlBlock {
             };
         }
         Ok(old)
+    }
+
+    /// @description 安装 sigsuspend 临时 mask，并保存 signal frame 应恢复的旧 mask。
+    ///
+    /// @param temporary 用户提供且将 SIGKILL/SIGSTOP 清除后的 mask。
+    /// @return 修改前 mask。
+    pub(crate) fn begin_signal_suspend(&self, temporary: u64) -> u64 {
+        let mut mask = self.thread.signal_mask.lock();
+        let old = *mask;
+        let mut restore = self.thread.suspend_restore_mask.lock();
+        assert!(restore.is_none(), "nested sigsuspend state");
+        *restore = Some(old);
+        *mask = normalize_signal_mask(temporary);
+        old
+    }
+
+    /// @description 从候选 set 排除当前 disposition 明确忽略的 signal。
+    ///
+    /// @param candidates 临时 mask 下未屏蔽的 signal set。
+    /// @return 会进入 handler 或默认终止路径的 signal set。
+    pub(crate) fn caught_signal_set(&self, candidates: u64) -> u64 {
+        let actions = self.process.signal_actions.lock();
+        let mut result = 0;
+        for signal in 1..=64 {
+            let bit = 1u64 << (signal - 1);
+            if candidates & bit != 0 && !signal_is_ignored(signal, actions[signal]) {
+                result |= bit;
+            }
+        }
+        result
     }
 
     /// @description 将 standard signal 及首个来源合并进当前 Thread 的 pending state。
@@ -763,8 +799,9 @@ impl TaskControlBlock {
         const SA_NODEFER: usize = 0x4000_0000;
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
-            let old_mask = *self.thread.signal_mask.lock();
-            let Some((signal, signal_info)) = self.thread.pending_signals.lock().take(!old_mask)
+            let selection_mask = *self.thread.signal_mask.lock();
+            let Some((signal, signal_info)) =
+                self.thread.pending_signals.lock().take(!selection_mask)
             else {
                 self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::None);
@@ -774,9 +811,17 @@ impl TaskControlBlock {
                 continue;
             }
             if action.handler == 0 {
+                self.thread.suspend_restore_mask.lock().take();
                 self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::Terminate(128 + signal as i32));
             }
+
+            let old_mask = self
+                .thread
+                .suspend_restore_mask
+                .lock()
+                .take()
+                .unwrap_or(selection_mask);
 
             let mut context = self.load_trap_context();
             let restart = self.thread.syscall_restart.lock().take();
@@ -1137,8 +1182,28 @@ impl TaskControlBlock {
         self.process.files.lock().allocate(ofd, 0, cloexec)
     }
 
+    pub(crate) fn fd_allocate_pair(
+        &self,
+        first: Arc<OpenFileDescription>,
+        second: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<(usize, usize), ()> {
+        self.process
+            .files
+            .lock()
+            .allocate_pair(first, second, cloexec)
+    }
+
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
         self.process.files.lock().close(fd)
+    }
+
+    /// @description 在最后一个 Thread exit commit 后立即关闭 Process 的全部 fd。
+    ///
+    /// @return 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
+    pub(super) fn close_all_files(&self) {
+        let files = self.process.files.lock().take_all();
+        drop(files);
     }
 
     pub(crate) fn fd_duplicate(

@@ -1,6 +1,9 @@
 use crate::{
     syscall::errno,
-    task::{LinuxSigAction, SignalWaitError, current_task, send_thread_signal, wait_for_signal},
+    task::{
+        LinuxSigAction, SignalWaitError, current_task, send_thread_signal, wait_for_signal,
+        wait_for_signal_delivery,
+    },
 };
 
 use super::timer::{TimeSpec, decode_timespec};
@@ -119,6 +122,32 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
         return send_thread_signal(tgid, tid, 0).map_or(-errno::ESRCH, |()| 0);
     }
     send_thread_signal(tgid, tid, signal).map_or(-errno::ESRCH, |()| 0)
+}
+
+/// @description 原子安装临时 mask 并等待一个将由 trap-return handler 消费的 signal。
+///
+/// @param mask 8-byte userspace signal set 地址。
+/// @param signal_set_size 必须为 8。
+/// @return 捕获 signal 后固定返回 `EINTR`；frame 恢复调用前 mask。
+pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
+    if signal_set_size != 8 {
+        return -errno::EINVAL;
+    }
+    if mask == 0 {
+        return -errno::EFAULT;
+    }
+    let task = current_task().expect("rt_sigsuspend requires current task");
+    let mut bytes = [0u8; 8];
+    if task.copy_from_user(mask, &mut bytes).is_err() {
+        return -errno::EFAULT;
+    }
+    let unblockable = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
+    let temporary = u64::from_ne_bytes(bytes) & !unblockable;
+    task.begin_signal_suspend(temporary);
+    let deliverable = task.caught_signal_set(!temporary);
+    drop(task);
+    wait_for_signal_delivery(deliverable);
+    -errno::EINTR
 }
 
 /// @description 实现 Linux RV64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。

@@ -1,5 +1,7 @@
 # LiteOS Phase 9：IPC 能力边界
 
+> 本文保留 Phase 9 当时“尚无 fd/OFD”的历史结论；anonymous Pipe 已在 Phase 26 按标准 OFD、wait、EOF/SIGPIPE 全链恢复，当前状态以 syscall 矩阵为准。
+
 > 审计日期：2026-07-11（Asia/Shanghai）
 > 代码基线：提交 `e4243f2`（Phase 0–8）
 > 验证约束：不维护、不修正、不执行测试；只做生产代码静态检索、构建和非测试 QEMU 启动观察。

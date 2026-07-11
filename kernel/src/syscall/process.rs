@@ -51,6 +51,13 @@ pub(crate) fn sys_get_ppid() -> isize {
     parent_pid(task.tgid()) as isize
 }
 
+/// @description 返回当前无 credential-mutation ABI 基线的固定 root UID/GID identity。
+///
+/// @return real/effective UID/GID 均为零。
+pub(crate) fn sys_get_root_identity() -> isize {
+    0
+}
+
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
 ///
 /// @return 当前任务的 TID。
@@ -205,7 +212,9 @@ pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
 /// @return child PID、WNOHANG 的零，或负 Linux errno。
 pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *mut u8) -> isize {
     const WNOHANG: usize = 1;
-    if options & !WNOHANG != 0 || !rusage.is_null() {
+    const WUNTRACED: usize = 2;
+    const WCONTINUED: usize = 8;
+    if options & !(WNOHANG | WUNTRACED | WCONTINUED) != 0 || !rusage.is_null() {
         return -errno::EINVAL;
     }
     let current = current_task().expect("wait4 requires current task");

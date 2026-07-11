@@ -1,0 +1,190 @@
+use alloc::{sync::Arc, vec::Vec};
+use spin::Mutex;
+
+pub(crate) const PIPE_BUF: usize = 4096;
+const PIPE_CAPACITY: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum PipeDirection {
+    Read,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipeRead {
+    Bytes(usize),
+    Empty,
+    Eof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipeWrite {
+    Bytes(usize),
+    Full,
+    Broken,
+}
+
+pub(crate) trait PipeNotifier: Send + Sync {
+    fn notify(&self, pipe: &Arc<Pipe>);
+}
+
+struct PipeState {
+    bytes: Vec<u8>,
+    head: usize,
+    length: usize,
+    readers: usize,
+    writers: usize,
+}
+
+/// @description anonymous pipe 的唯一 byte ring 与 endpoint lifecycle owner。
+pub(crate) struct Pipe {
+    state: Mutex<PipeState>,
+    notifier: Arc<dyn PipeNotifier>,
+}
+
+impl Pipe {
+    /// @description 创建一对唯一 read/write endpoint。
+    ///
+    /// @param notifier 在状态变为可读、可写、EOF 或 broken 时唤醒 task registry。
+    /// @return 两个 endpoint；kernel heap 不足返回错误。
+    pub(crate) fn pair(
+        notifier: Arc<dyn PipeNotifier>,
+    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(PIPE_CAPACITY).map_err(|_| ())?;
+        bytes.resize(PIPE_CAPACITY, 0);
+        let pipe = Arc::new(Self {
+            state: Mutex::new(PipeState {
+                bytes,
+                head: 0,
+                length: 0,
+                readers: 1,
+                writers: 1,
+            }),
+            notifier,
+        });
+        Ok((
+            Arc::new(PipeEnd {
+                pipe: pipe.clone(),
+                direction: PipeDirection::Read,
+            }),
+            Arc::new(PipeEnd {
+                pipe,
+                direction: PipeDirection::Write,
+            }),
+        ))
+    }
+
+    pub(crate) fn identity(pipe: &Arc<Self>) -> usize {
+        Arc::as_ptr(pipe) as usize
+    }
+
+    pub(crate) fn readable(&self) -> bool {
+        let state = self.state.lock();
+        state.length != 0 || state.writers == 0
+    }
+
+    pub(crate) fn writable(&self) -> bool {
+        let state = self.state.lock();
+        state.readers == 0 || state.length != state.bytes.len()
+    }
+
+    fn read(self: &Arc<Self>, output: &mut [u8]) -> PipeRead {
+        let result = {
+            let mut state = self.state.lock();
+            if state.length == 0 {
+                if state.writers == 0 {
+                    PipeRead::Eof
+                } else {
+                    PipeRead::Empty
+                }
+            } else {
+                let count = output.len().min(state.length);
+                for byte in output.iter_mut().take(count) {
+                    *byte = state.bytes[state.head];
+                    state.head = (state.head + 1) % state.bytes.len();
+                    state.length -= 1;
+                }
+                PipeRead::Bytes(count)
+            }
+        };
+        if matches!(result, PipeRead::Bytes(_)) {
+            self.notifier.notify(self);
+        }
+        result
+    }
+
+    fn write(self: &Arc<Self>, input: &[u8]) -> PipeWrite {
+        let result = {
+            let mut state = self.state.lock();
+            if state.readers == 0 {
+                PipeWrite::Broken
+            } else {
+                let available = state.bytes.len() - state.length;
+                if available == 0 || input.len() <= PIPE_BUF && available < input.len() {
+                    PipeWrite::Full
+                } else {
+                    let count = available.min(input.len());
+                    for byte in input.iter().take(count) {
+                        let tail = (state.head + state.length) % state.bytes.len();
+                        state.bytes[tail] = *byte;
+                        state.length += 1;
+                    }
+                    PipeWrite::Bytes(count)
+                }
+            }
+        };
+        if matches!(result, PipeWrite::Bytes(_)) {
+            self.notifier.notify(self);
+        }
+        result
+    }
+
+    fn close(self: &Arc<Self>, direction: PipeDirection) {
+        {
+            let mut state = self.state.lock();
+            match direction {
+                PipeDirection::Read => {
+                    assert_ne!(state.readers, 0, "pipe reader underflow");
+                    state.readers -= 1;
+                }
+                PipeDirection::Write => {
+                    assert_ne!(state.writers, 0, "pipe writer underflow");
+                    state.writers -= 1;
+                }
+            }
+        }
+        self.notifier.notify(self);
+    }
+}
+
+/// @description 一个 OFD-owned anonymous pipe endpoint；dup/fork 共享同一 endpoint Arc。
+pub(crate) struct PipeEnd {
+    pipe: Arc<Pipe>,
+    direction: PipeDirection,
+}
+
+impl PipeEnd {
+    pub(crate) fn direction(&self) -> PipeDirection {
+        self.direction
+    }
+
+    pub(crate) fn pipe(&self) -> Arc<Pipe> {
+        self.pipe.clone()
+    }
+
+    pub(crate) fn read(&self, output: &mut [u8]) -> PipeRead {
+        self.pipe.read(output)
+    }
+
+    pub(crate) fn write(&self, input: &[u8]) -> PipeWrite {
+        self.pipe.write(input)
+    }
+}
+
+impl Drop for PipeEnd {
+    fn drop(&mut self) {
+        self.pipe.close(self.direction);
+    }
+}

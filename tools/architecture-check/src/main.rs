@@ -23,6 +23,7 @@ const KERNEL_MODULES: &[&str] = &[
     "drivers",
     "fs",
     "id",
+    "ipc",
     "lang_item",
     "log",
     "main",

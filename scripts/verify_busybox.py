@@ -305,7 +305,10 @@ def main() -> int:
                 "all DTB harts online: count=1, mask=0x1",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
-                "LITEOS_TTY_CTRL_C_OK",
+                "LITEOS_PIPE_42",
+                "LITEOS_REDIR_42",
+                "LITEOS_BG_42",
+                "LITEOS_TTY_CTRL_C_42",
             ),
             interactions=(
                 (
@@ -314,13 +317,20 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    b"echo LITEOS_TTY_LOOP_READY; while :; do :; done\n",
+                    b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg\n",
                 ),
-                ("LITEOS_TTY_LOOP_READY", b"\x03echo LITEOS_TTY_CTRL_C_OK\n"),
+                (
+                    "LITEOS_BG_42",
+                    b"echo LITEOS_TTY_LOOP_$((6*7)); while :; do :; done\n",
+                ),
+                (
+                    "LITEOS_TTY_LOOP_42",
+                    b"\x03echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                ),
             ),
             forbidden_markers=tuple(
                 f"unsupported syscall_id: {number}"
-                for number in (29, 137, 154, 155, 156, 157)
+                for number in (29, 59, 65, 133, 137, 154, 155, 156, 157, 174, 175, 176, 177)
             ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
