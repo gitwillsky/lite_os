@@ -13,7 +13,7 @@ const MAP_ANONYMOUS: usize = 0x20;
 const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 
 fn permission_from_prot(prot: usize) -> Result<MapPermission, isize> {
-    if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 || prot == 0 {
+    if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
         return Err(errno::EINVAL);
     }
     if prot & PROT_WRITE != 0 && prot & PROT_EXEC != 0 {
@@ -62,7 +62,7 @@ pub(crate) fn sys_brk(new_brk: usize) -> isize {
 ///
 /// @param address 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
 /// @param length 非零映射长度。
-/// @param prot `PROT_READ/WRITE/EXEC` 子集；当前不支持 `PROT_NONE`，强制 W^X。
+/// @param prot `PROT_NONE/READ/WRITE/EXEC` 子集，强制 W^X。
 /// @param flags 必须为 `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`。
 /// @param fd anonymous mapping 必须传 `-1`。
 /// @param offset anonymous mapping 必须传零。
@@ -114,7 +114,7 @@ pub(crate) fn sys_munmap(address: usize, length: usize) -> isize {
 ///
 /// @param address page-aligned 起始地址。
 /// @param length 非零长度，向上取整到整页。
-/// @param prot `PROT_READ/WRITE/EXEC` 子集；当前不支持 `PROT_NONE`。
+/// @param prot `PROT_NONE/READ/WRITE/EXEC` 子集。
 /// @return 成功返回零；缺页、越界或权限策略失败返回负 errno。
 pub(crate) fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize {
     let permission = match permission_from_prot(prot) {

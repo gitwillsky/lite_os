@@ -33,3 +33,5 @@ Rust init 的 `-smp 1/3/8` 功能围栏和 musl consumer 围栏共享 `scripts/q
 固定 musl 最小静态 consumer 已经真实启动，首次验收没有要求新增 syscall 或 kernel fallback。当前证明范围不包含 pthread、TLS program header、stdio/locale、文件遍历、signal interruption、process-directed signal、PIE、动态链接、共享/file mapping 与安全随机数。
 
 最终执行 `make verify`：架构 fence、Rust workspace check/clippy、三组件构建、ELF 静态围栏、Rust init QEMU `-smp 1/3/8` 和固定 musl 静态 consumer QEMU 冷启动全部通过。
+
+后续 Phase 18 将同一个 consumer/gate 前进到 `pthread_create/join`；本文件保留首次纯静态启动时的历史证据，不代表当前验收上限。

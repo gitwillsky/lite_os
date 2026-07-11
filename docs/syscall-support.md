@@ -60,10 +60,10 @@
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
 | 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator | **Partial**。支持 anonymous private VMA 删除、洞忽略和左右拆分；触及 ELF/stack/heap 等非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
-| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/pthread | **Partial**。支持 fork-shaped process clone，以及 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone；多线程 fork 返回 `EAGAIN`，无 vfork/namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
+| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/pthread | **Partial**。支持 fork-shaped process clone，以及 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone；按 Linux 语义接受并忽略历史 `CLONE_DETACHED`。多线程 fork 返回 `EAGAIN`，无 vfork/namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 | 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；标准 errno | POSIX `execve`；musl direct wrapper | **Partial**。static ET_EXEC/initial stack/rollback 完整；多线程 Process 返回 `EAGAIN`，避免 sibling stale context。缺失 symlink/script/PIE/dynamic、credentials 与 signal reset。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
-| 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。只支持 eager `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`；fd 必须为 -1、offset 为 0。无 `PROT_NONE`、destructive `MAP_FIXED`、file/shared/lazy mapping，强制 W^X。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
-| 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。完整 anonymous private 区间可拆分、变更 PTE 并合并等价 VMA；缺页整体失败。无 `PROT_NONE`，强制 W^X，非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。只支持 eager `MAP_PRIVATE|MAP_ANONYMOUS`，含 `PROT_NONE`，可附加 `MAP_FIXED_NOREPLACE`；fd 必须为 -1、offset 为 0。无 destructive `MAP_FIXED`、file/shared/lazy mapping，强制 W^X。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。完整 anonymous private 区间可拆分、在同一 frame 上切换 `PROT_NONE`/leaf PTE 并合并等价 VMA；缺页整体失败。强制 W^X，非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
 | 260 | `wait4` | pid、status、options、rusage | child PID/0；标准 errno | POSIX waitpid backend；musl direct wrapper | **Partial**。单线程 Process 支持正 PID/`-1`、blocking/`WNOHANG`、copyout-before-reap；多线程调用返回 `EAGAIN`。rusage 必须为空，无 process-group/stopped/continued/signal status。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 
 文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单线程 Process 模型。
@@ -87,11 +87,11 @@
 
 ## 4. musl 结论
 
-当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 最小静态 consumer：真实路径覆盖 musl crt/libc 初始化、内建主线程区、`set_tid_address`、`sysconf/getpid/malloc/free/clock_gettime/write/exit_group`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、内建主线程区、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit 与 `pthread_create/join`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex timeout/requeue/PI、完整 clone/exit_group 语义；
 2. signal interruption/restart、altstack、process-directed delivery；
 3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
-4. file/shared mapping、`PROT_NONE` 与 destructive `MAP_FIXED`。
+4. file/shared mapping 与 destructive `MAP_FIXED`。
 
 因此不能将固定 smoke 通过、编号一致或具有 Linux 格式 auxv 提升为通用 musl 兼容声明。

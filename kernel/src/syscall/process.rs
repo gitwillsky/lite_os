@@ -96,6 +96,7 @@ pub(crate) fn sys_clone(
     const CLONE_SETTLS: usize = 0x8_0000;
     const CLONE_PARENT_SETTID: usize = 0x10_0000;
     const CLONE_CHILD_CLEARTID: usize = 0x20_0000;
+    const CLONE_DETACHED: usize = 0x40_0000;
     const CLONE_CHILD_SETTID: usize = 0x100_0000;
     const REQUIRED: usize = CLONE_VM
         | CLONE_FS
@@ -104,7 +105,10 @@ pub(crate) fn sys_clone(
         | CLONE_THREAD
         | CLONE_SYSVSEM
         | CLONE_SETTLS;
-    const OPTIONAL: usize = CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
+    // Linux 保留并忽略历史 CLONE_DETACHED；musl pthread_create 始终携带该 bit。
+    // 若把它当未知 flag 拒绝，标准 pthread clone 会在任何 Thread 发布前错误返回 EINVAL。
+    const OPTIONAL: usize =
+        CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_DETACHED;
     if flags & REQUIRED != REQUIRED
         || flags & !(REQUIRED | OPTIONAL) != 0
         || stack == 0

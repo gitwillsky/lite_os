@@ -157,6 +157,10 @@ pub(crate) struct MapArea {
 }
 
 impl MapArea {
+    fn has_leaf_permission(permission: MapPermission) -> bool {
+        permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
+    }
+
     pub(crate) fn new(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
@@ -270,11 +274,19 @@ impl MapArea {
             MapType::Identical => (vpn.as_usize().into(), None),
         };
 
-        let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
-        if self.global {
-            pte_flags |= PTEFlags::G;
+        if Self::has_leaf_permission(self.map_permission) {
+            let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
+            if self.global {
+                pte_flags |= PTEFlags::G;
+            }
+            page_table.map(vpn, ppn, pte_flags)?;
+        } else if self.map_type == MapType::Framed {
+            // PROT_NONE VMA 仍由 data_frames 唯一持有物理页，但 leaf slot 必须保持 invalid。
+            // 若写入 V|U 且 R/W/X 全零，RISC-V walker 会把数据页误当成下一级页表。
+            page_table.reserve(vpn)?;
+        } else {
+            return Err(MemoryError::InvalidRange);
         }
-        page_table.map(vpn, ppn, pte_flags)?;
         if let Some(frame) = frame {
             let replaced = self.data_frames.insert(vpn, frame);
             debug_assert!(replaced.is_none());
@@ -833,7 +845,7 @@ impl MemorySet {
     ///
     /// @param address 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
     /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 用户页权限；必须含 U，禁止空权限和 W+X。
+    /// @param permission 用户页权限；必须含 U，允许 PROT_NONE，禁止 W+X。
     /// @param fixed_noreplace 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
     /// @return 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
     pub(crate) fn map_anonymous(
@@ -845,7 +857,6 @@ impl MemorySet {
     ) -> Result<usize, MemoryError> {
         if length == 0
             || !permission.contains(MapPermission::U)
-            || !permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
             || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
@@ -979,7 +990,7 @@ impl MemorySet {
     ///
     /// @param address page-aligned 起始地址。
     /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 新用户权限；禁止空权限与 W+X。
+    /// @param permission 新用户权限；允许 PROT_NONE，禁止 W+X。
     /// @return 成功返回空值；缺页或非 anonymous 区间在修改前整体失败。
     pub(crate) fn protect_anonymous(
         &mut self,
@@ -988,7 +999,6 @@ impl MemorySet {
         permission: MapPermission,
     ) -> Result<(), MemoryError> {
         if !permission.contains(MapPermission::U)
-            || !permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
             || permission.contains(MapPermission::W | MapPermission::X)
         {
             return Err(MemoryError::InvalidRange);
@@ -1012,10 +1022,31 @@ impl MemorySet {
             let change_end = range.end.min(area.vpn_range.end);
             let (left, mut middle, right) = area.partition_anonymous(change_start, change_end);
             let pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
+            let old_has_leaf = MapArea::has_leaf_permission(middle.map_permission);
+            let new_has_leaf = MapArea::has_leaf_permission(permission);
             for vpn in change_start.as_usize()..change_end.as_usize() {
-                self.page_table
-                    .set_flags(VirtualPageNumber::from_vpn(vpn), pte_flags)
-                    .expect("validated anonymous VMA must own a leaf PTE");
+                let vpn = VirtualPageNumber::from_vpn(vpn);
+                match (old_has_leaf, new_has_leaf) {
+                    (true, true) => self
+                        .page_table
+                        .set_flags(vpn, pte_flags)
+                        .expect("accessible anonymous VMA must own a leaf PTE"),
+                    (true, false) => self
+                        .page_table
+                        .unmap(vpn)
+                        .expect("accessible anonymous VMA must own a leaf PTE"),
+                    (false, true) => {
+                        let ppn = middle
+                            .data_frames
+                            .get(&vpn)
+                            .expect("anonymous VMA must own every reserved frame")
+                            .ppn;
+                        self.page_table
+                            .map(vpn, ppn, pte_flags)
+                            .expect("PROT_NONE VMA must own an empty reserved leaf slot");
+                    }
+                    (false, false) => {}
+                }
             }
             middle.map_permission = permission;
             for segment in [left, Some(middle), right].into_iter().flatten() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""构建固定 musl 静态 consumer，并通过 ELF 与 QEMU 冷启动围栏。"""
+"""构建固定 musl pthread consumer，并通过 ELF 与 QEMU 冷启动围栏。"""
 
 from __future__ import annotations
 
@@ -213,13 +213,13 @@ def main() -> int:
             (
                 "dynamic hart topology initialized: count=1, mask=0x1",
                 "all DTB harts online: count=1, mask=0x1",
-                "LiteOS musl static ok",
+                "LiteOS musl pthread ok",
             ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"musl verification failed: {error}", file=sys.stderr)
         return 1
-    print("musl 1.2.6 static verification passed")
+    print("musl 1.2.6 pthread verification passed")
     return 0
 
 

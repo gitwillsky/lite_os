@@ -577,6 +577,7 @@ kernel/src/memory/page_table.rs :: enum PageTableError :: OutOfMemory
 kernel/src/memory/page_table.rs :: pub (crate) enum PageTableError
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn map (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn new () -> Self
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn reserve (& mut self , vpn : VirtualPageNumber) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn token (& self) -> usize
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn translate (& self , vpn : VirtualPageNumber) -> Option < PageTableEntry >

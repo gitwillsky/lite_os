@@ -180,6 +180,18 @@ impl PageTable {
         None
     }
 
+    /// @description 为暂不可访问的 VMA 预留 leaf slot，但不写入有效 leaf PTE。
+    ///
+    /// @param vpn 需要确保中间页表存在的虚拟页号。
+    /// @return slot 为空时返回成功；已映射或页表损坏返回明确错误。
+    pub(crate) fn reserve(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
+        let (table_ppn, index) = self.find_pte_create(vpn)?;
+        if Self::read_entry(table_ppn, index).is_valid() {
+            return Err(PageTableError::AlreadyMapped);
+        }
+        Ok(())
+    }
+
     pub(crate) fn map(
         &mut self,
         vpn: VirtualPageNumber,
