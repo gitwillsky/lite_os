@@ -1,0 +1,45 @@
+.github/workflows/verify.yml
+  s_d637a88cd4b00d::t_69b3c04e7f47b2 20
+.gitignore
+  s_d637a88cd4b00d::t_7184aa94d60a1d 8-9
+Makefile
+  s_d637a88cd4b00d::t_b3ab3c22ea4bec 42,45-47
+README.md
+  s_d637a88cd4b00d::t_0e83df9ab52cf6 15,18,60,99-106,119
+create_fs.py
+  s_d637a88cd4b00d::t_68cc5d52b7ef6d 17,20-22,62,64,70,72,119-120,125
+docs/architecture.md
+  s_d637a88cd4b00d::t_48be63feb01313 184-185,227-229
+docs/phase-17-musl-static.md
+  s_d637a88cd4b00d::t_c76e5a17dea3ce 1-35
+docs/standards-baseline.md
+  s_d637a88cd4b00d::t_21de9d61ef00e1 17
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_ed7ace9d26a211 90,97
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_8058360ac466de 1-87
+scripts/verify_boot.py
+  s_d637a88cd4b00d::t_5e7f165459a48c 10-11,26,39,45
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_e42b00a71de723 1-227
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_f41a70e11f5cf8 1-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cf183ea754a0059c07361142447c5868f3076230",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
