@@ -1,0 +1,39 @@
+AGENTS.md
+  s_d637a88cd4b00d::t_d426e1dd92ce96 1,3,5,7-10,12,14-16,18,20,24,28,31,33,35,37-41,43
+CLAUDE.md
+  s_d637a88cd4b00d::t_d59cc65d27d185 1,3,5
+README.md
+  s_d637a88cd4b00d::t_60326a1ae0e3d1 1,3,5,7-15,17,19,21-24,26,28-40,42-51,56,59,62,64-66,68-70,72,74-76,78,80,82-87,89,91,93-95,97-99,101,103
+bootloader/src/aclint.rs
+  s_d637a88cd4b00d::t_1840da089434da 29
+bootloader/src/fast_trap/fast.rs
+  s_d637a88cd4b00d::t_86b312018db4b1 1
+bootloader/src/fast_trap/mod.rs
+  s_d637a88cd4b00d::t_eaf62b6b6310a4 7
+kernel/src/arch/mod.rs
+  s_d637a88cd4b00d::t_9ced7713c064b3 5
+kernel/src/arch/riscv64/mod.rs
+  s_d637a88cd4b00d::t_f4a56802e0a4dd 7
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_7c202d633cb751 59
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_9c7d68554cb23c 8,21-22,28,39,51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ca7394820f9aff66b6d2b6e63850d10a8d064fce",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
