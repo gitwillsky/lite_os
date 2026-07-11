@@ -7,6 +7,7 @@ use alloc::{
 use spin::Mutex;
 
 use crate::{
+    fs::{FileDescriptorTable, OpenFileDescription},
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::VirtualAddress,
@@ -150,6 +151,7 @@ struct Process {
     tgid: ProcessId,
     address_space: AddressSpace,
     cwd: Mutex<String>,
+    files: Mutex<FileDescriptorTable>,
 }
 
 /// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
@@ -182,6 +184,7 @@ impl TaskControlBlock {
                 memory_set: Mutex::new(memory_set),
             },
             cwd: Mutex::new("/".to_string()),
+            files: Mutex::new(FileDescriptorTable::with_console()),
         };
         let tcb = Self {
             process,
@@ -311,6 +314,38 @@ impl TaskControlBlock {
         self.process.cwd.lock().clone()
     }
 
+    pub fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {
+        self.process.files.lock().get(fd)
+    }
+
+    pub fn fd_allocate(
+        &self,
+        ofd: alloc::sync::Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
+        self.process.files.lock().allocate(ofd, 0, cloexec)
+    }
+
+    pub fn fd_close(&self, fd: usize) -> Result<(), ()> {
+        self.process.files.lock().close(fd)
+    }
+
+    pub fn fd_duplicate(&self, old: usize, minimum: usize, cloexec: bool) -> Result<usize, ()> {
+        self.process.files.lock().duplicate(old, minimum, cloexec)
+    }
+
+    pub fn fd_duplicate_to(&self, old: usize, new: usize, cloexec: bool) -> Result<usize, ()> {
+        self.process.files.lock().duplicate_to(old, new, cloexec)
+    }
+
+    pub fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
+        self.process.files.lock().descriptor_flags(fd)
+    }
+
+    pub fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
+        self.process.files.lock().set_descriptor_flags(fd, flags)
+    }
+
     /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
     ///
     /// @param elf_data 已完整读入 kernel 的 ELF bytes。
@@ -334,6 +369,7 @@ impl TaskControlBlock {
         // 单次赋值提交新地址空间；旧 MemorySet 在 guard 内被完整替换，不暴露 stale PTE 窗口。
         *self.process.address_space.memory_set.lock() = new_memory_set;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
+        self.process.files.lock().close_cloexec();
 
         // 步骤3: 设置新程序的陷阱上下文。参数与环境只存在于新初始栈中。
         self.set_trap_context(TrapContext::app_init_context(

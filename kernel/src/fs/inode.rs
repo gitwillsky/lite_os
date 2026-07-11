@@ -1,4 +1,6 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
+
+use super::FileSystemError;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,49 +8,74 @@ pub enum InodeType {
     File = 0,
     Directory = 1,
     SymLink = 2,
-    Fifo = 4, // Named pipe (FIFO)
+    Fifo = 4,
 }
 
+/// @description VFS 与 Linux stat/getdents 共享的稳定 inode 元数据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InodeMetadata {
+    pub inode: u64,
+    pub kind: InodeType,
+    pub mode: u32,
+    pub links: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub size: u64,
+    pub blocks: u64,
+    pub block_size: u32,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+}
+
+/// @description 一个目录项的原始字节名称与 inode identity。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryEntry {
+    pub inode: u64,
+    pub kind: InodeType,
+    pub name: Vec<u8>,
+}
+
+/// @description 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub trait Inode: Send + Sync {
-    /// 返回 inode 在磁盘上记录的类型。
+    fn filesystem_id(&self) -> usize;
+
+    fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
+
     fn inode_type(&self) -> InodeType;
 
-    /// 返回文件的字节长度。
     fn size(&self) -> u64;
 
-    /// @description 按磁盘 mode 判断 root identity 是否可执行该 inode。
-    ///
-    /// @return 普通文件任一 execute bit 置位时返回 `true`。
     fn is_executable(&self) -> bool;
 
-    /// 从指定偏移读取 inode 数据。
-    ///
-    /// # Parameters
-    ///
-    /// - `offset`: 起始字节偏移。
-    /// - `buf`: 接收数据的内核缓冲区。
-    ///
-    /// # Returns
-    ///
-    /// 成功时返回实际读取字节数；到达 EOF 返回 `0`。
-    ///
-    /// # Errors
-    ///
-    /// 块设备读取或 inode 映射失败时返回对应的 `FileSystemError`。
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, super::FileSystemError>;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
 
-    /// 在目录 inode 中查找直接子项。
-    ///
-    /// # Parameters
-    ///
-    /// - `name`: 不含路径分隔符的单个目录项名。
-    ///
-    /// # Returns
-    ///
-    /// 成功时返回子 inode 的共享引用。
-    ///
-    /// # Errors
-    ///
-    /// 当前 inode 不是目录、子项不存在或磁盘数据无效时返回错误。
-    fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, super::FileSystemError>;
+    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
+
+    fn append(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
+
+    fn truncate(&self, size: u64) -> Result<(), FileSystemError>;
+
+    fn sync(&self) -> Result<(), FileSystemError>;
+
+    fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError>;
+
+    fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError>;
+
+    fn create(
+        &self,
+        name: &[u8],
+        kind: InodeType,
+        mode: u32,
+    ) -> Result<Arc<dyn Inode>, FileSystemError>;
+
+    fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError>;
+
+    fn rename(
+        &self,
+        old_name: &[u8],
+        new_parent_inode: u64,
+        new_name: &[u8],
+        no_replace: bool,
+    ) -> Result<(), FileSystemError>;
 }

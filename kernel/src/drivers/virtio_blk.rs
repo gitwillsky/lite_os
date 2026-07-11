@@ -9,6 +9,9 @@ use super::{
 };
 
 const VIRTIO_BLK_T_IN: u32 = 0;
+const VIRTIO_BLK_T_OUT: u32 = 1;
+const VIRTIO_BLK_T_FLUSH: u32 = 4;
+const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
 
 pub const VIRTIO_BLK_S_OK: u8 = 0;
 pub const VIRTIO_BLK_S_IOERR: u8 = 1;
@@ -26,6 +29,7 @@ pub struct VirtIOBlockDevice {
     device: VirtIODevice,
     queue: Mutex<VirtQueue>,
     capacity: u64,
+    supports_flush: bool,
 }
 
 impl VirtIOBlockDevice {
@@ -38,7 +42,9 @@ impl VirtIOBlockDevice {
 
         virtio_device.initialize().ok()?;
 
-        virtio_device.set_driver_features(0).ok()?;
+        let device_features = virtio_device.device_features().ok()?;
+        let driver_features = device_features & VIRTIO_BLK_F_FLUSH;
+        virtio_device.set_driver_features(driver_features).ok()?;
 
         let status = virtio_device.get_status().ok()?;
         virtio_device
@@ -79,22 +85,57 @@ impl VirtIOBlockDevice {
             device: virtio_device,
             queue: Mutex::new(queue),
             capacity,
+            supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
         }))
     }
 
-    fn read(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        if buf.len() != BLOCK_SIZE {
+    fn validate_block(&self, block_id: usize, len: usize) -> Result<(), BlockError> {
+        if len != BLOCK_SIZE {
             return Err(BlockError::InvalidBlock);
         }
-
         if block_id >= (self.capacity * 512 / BLOCK_SIZE as u64) as usize {
-            debug!(
-                "[VIRTIO_BLK] Block {} exceeds capacity {}",
-                block_id,
-                (self.capacity * 512 / BLOCK_SIZE as u64)
-            );
             return Err(BlockError::InvalidBlock);
         }
+        Ok(())
+    }
+
+    fn complete_request(
+        &self,
+        queue: &mut VirtQueue,
+        desc_idx: u16,
+        status: &[u8; 1],
+    ) -> Result<(), BlockError> {
+        loop {
+            if let Ok(int_status) = self.device.interrupt_status()
+                && int_status & 0x1 != 0
+            {
+                let _ = self.device.interrupt_ack(0x1);
+            }
+            loop {
+                match queue.used() {
+                    Ok(Some((id, _))) if id == desc_idx => return Self::decode_status(status[0]),
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(()) => panic!("VirtIO device returned a corrupt used-ring chain"),
+                }
+            }
+            for _ in 0..200 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    fn decode_status(status: u8) -> Result<(), BlockError> {
+        match status {
+            VIRTIO_BLK_S_OK => Ok(()),
+            VIRTIO_BLK_S_IOERR => Err(BlockError::IoError),
+            VIRTIO_BLK_S_UNSUPP => Err(BlockError::DeviceError),
+            _ => Err(BlockError::DeviceError),
+        }
+    }
+
+    fn read(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.validate_block(block_id, buf.len())?;
 
         let mut queue = self.queue.lock();
 
@@ -136,64 +177,63 @@ impl VirtIOBlockDevice {
             panic!("VirtIO queue notify failed after publishing DMA descriptors");
         }
 
-        let mut completed = false;
-
         // 设备完成前不能返回：描述符仍引用当前栈上的 request/status/buffer，
         // 没有 reset + DMA quiesce 协议时超时返回会让设备晚到写入已复用的栈内存。
-        while !completed {
-            // Check and acknowledge interrupt if present
-            if let Ok(int_status) = self.device.interrupt_status() {
-                if int_status & 0x1 != 0 {
-                    let _ = self.device.interrupt_ack(0x1);
-                }
-            }
+        self.complete_request(&mut queue, desc_idx, &status)
+    }
 
-            // Drain used ring entries
-            loop {
-                match queue.used() {
-                    Ok(Some((id, _len))) if id == desc_idx => {
-                        completed = true;
-                        break;
-                    }
-                    Ok(Some(_)) => {}
-                    Ok(None) => break,
-                    Err(()) => panic!("VirtIO device returned a corrupt used-ring chain"),
-                }
-            }
+    fn write(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
+        self.validate_block(block_id, buf.len())?;
+        let mut queue = self.queue.lock();
+        let req = VirtIOBlkReq {
+            type_: VIRTIO_BLK_T_OUT,
+            reserved: 0,
+            sector: (block_id * (BLOCK_SIZE / 512)) as u64,
+        };
+        let req_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &req as *const _ as *const u8,
+                core::mem::size_of::<VirtIOBlkReq>(),
+            )
+        };
+        let mut status = [0u8; 1];
+        let mut outputs: [&mut [u8]; 1] = [&mut status];
+        let desc_idx = queue
+            .add_buffer(&[req_bytes, buf], &mut outputs)
+            .ok_or(BlockError::DeviceError)?;
+        queue.add_to_avail(desc_idx);
+        self.device
+            .notify_queue(0)
+            .unwrap_or_else(|_| panic!("VirtIO queue notify failed after publishing write"));
+        self.complete_request(&mut queue, desc_idx, &status)
+    }
 
-            if completed {
-                break;
-            }
-
-            for _ in 0..200 {
-                core::hint::spin_loop();
-            }
+    fn flush_device(&self) -> Result<(), BlockError> {
+        if !self.supports_flush {
+            return Ok(());
         }
-
-        match status[0] {
-            VIRTIO_BLK_S_OK => Ok(()),
-            VIRTIO_BLK_S_IOERR => {
-                debug!(
-                    "[VIRTIO_BLK] Device reported I/O error for block {}",
-                    block_id
-                );
-                Err(BlockError::IoError)
-            }
-            VIRTIO_BLK_S_UNSUPP => {
-                debug!(
-                    "[VIRTIO_BLK] Device reported unsupported operation for block {}",
-                    block_id
-                );
-                Err(BlockError::DeviceError)
-            }
-            _ => {
-                debug!(
-                    "[VIRTIO_BLK] Device reported unknown status {} for block {}",
-                    status[0], block_id
-                );
-                Err(BlockError::DeviceError)
-            }
-        }
+        let mut queue = self.queue.lock();
+        let req = VirtIOBlkReq {
+            type_: VIRTIO_BLK_T_FLUSH,
+            reserved: 0,
+            sector: 0,
+        };
+        let req_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &req as *const _ as *const u8,
+                core::mem::size_of::<VirtIOBlkReq>(),
+            )
+        };
+        let mut status = [0u8; 1];
+        let mut outputs: [&mut [u8]; 1] = [&mut status];
+        let desc_idx = queue
+            .add_buffer(&[req_bytes], &mut outputs)
+            .ok_or(BlockError::DeviceError)?;
+        queue.add_to_avail(desc_idx);
+        self.device
+            .notify_queue(0)
+            .unwrap_or_else(|_| panic!("VirtIO queue notify failed after publishing flush"));
+        self.complete_request(&mut queue, desc_idx, &status)
     }
 }
 
@@ -205,6 +245,15 @@ impl BlockDevice for VirtIOBlockDevice {
 
     fn block_size(&self) -> usize {
         BLOCK_SIZE
+    }
+
+    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+        self.write(block_id, buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        self.flush_device()
     }
 }
 

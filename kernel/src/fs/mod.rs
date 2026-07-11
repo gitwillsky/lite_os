@@ -1,21 +1,27 @@
 use alloc::sync::Arc;
 
 pub mod ext2;
+pub mod file;
 pub mod inode;
 pub mod vfs;
 
 pub use ext2::Ext2FileSystem;
-pub use inode::{Inode, InodeType};
+pub use file::{FileDescriptorTable, OpenFileDescription, OpenFileKind};
+pub use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileSystemError {
     NotFound,
     AlreadyExists,
     NotDirectory,
+    IsDirectory,
+    DirectoryNotEmpty,
     InvalidPath,
     IoError,
     InvalidFileSystem,
     InvalidOperation,
+    SymbolicLink,
+    NoSpace,
 }
 
 /// @description 为 VFS 提供根 inode 的文件系统实例。

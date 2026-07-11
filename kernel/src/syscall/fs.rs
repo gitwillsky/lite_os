@@ -1,78 +1,582 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
+use core::mem;
 
 use crate::{
     arch::sbi,
-    syscall::errno::{EBADF, EFAULT, EIO, ERANGE, ESRCH},
-    task::current_task,
+    fs::{
+        FileSystemError, Inode, InodeMetadata, InodeType, OpenFileDescription, OpenFileKind,
+        file::{MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY},
+        vfs::vfs,
+    },
+    memory::mm::UserAccessError,
+    syscall::errno,
+    task::{TaskControlBlock, current_task},
 };
 
-const STDOUT_FILENO: usize = 1;
+const AT_FDCWD: isize = -100;
+const AT_REMOVEDIR: usize = 0x200;
+const O_CREAT: u32 = 0x40;
+const O_EXCL: u32 = 0x80;
+const O_TRUNC: u32 = 0x200;
+const O_DIRECTORY: u32 = 0x10000;
 
-/// @description 向文件描述符写入用户缓冲区中的字节。
-///
-/// @param fd 目标文件描述符。
-/// @param buf 用户缓冲区起始地址。
-/// @param len 请求写入的字节数。
-/// @return 写入字节数，失败返回负 errno。
-pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
-    if fd != STDOUT_FILENO {
-        return -EBADF;
-    }
-    if len == 0 {
-        return 0;
-    }
-    let Some(task) = current_task() else {
-        return -ESRCH;
-    };
-
-    let mut chunk = [0u8; 256];
-    let mut written = 0usize;
-    while written < len {
-        let count = chunk.len().min(len - written);
-        let Some(address) = (buf as usize).checked_add(written) else {
-            return if written == 0 {
-                -EFAULT
-            } else {
-                written as isize
-            };
-        };
-        if task.copy_from_user(address, &mut chunk[..count]).is_err() {
-            return if written == 0 {
-                -EFAULT
-            } else {
-                written as isize
-            };
-        }
-        for byte in chunk[..count].iter().copied() {
-            if sbi::console_putchar(byte).is_err() {
-                return if written == 0 { -EIO } else { written as isize };
-            }
-            written += 1;
-        }
-    }
-    written as isize
+fn ferr(error: FileSystemError) -> isize {
+    -(match error {
+        FileSystemError::NotFound => errno::ENOENT,
+        FileSystemError::AlreadyExists => errno::EEXIST,
+        FileSystemError::NotDirectory => errno::ENOTDIR,
+        FileSystemError::IsDirectory => errno::EISDIR,
+        FileSystemError::DirectoryNotEmpty => errno::ENOTEMPTY,
+        FileSystemError::NoSpace => errno::ENOSPC,
+        FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
+        FileSystemError::SymbolicLink => errno::ELOOP,
+        FileSystemError::IoError | FileSystemError::InvalidFileSystem => errno::EIO,
+    })
 }
 
-/// @description 将当前工作目录复制到用户缓冲区。
-///
-/// @param buf 用户缓冲区起始地址。
-/// @param len 缓冲区长度。
-/// @return 成功返回包含 NUL 的字节数，失败返回负 errno。
-pub fn sys_get_cwd(buf: *mut u8, len: usize) -> isize {
-    let Some(task) = current_task() else {
-        return -ESRCH;
-    };
-    let cwd = task.cwd();
-    let required = cwd.len() + 1;
-    if len < required {
-        return -ERANGE;
+fn path(task: &TaskControlBlock, pointer: *const u8) -> Result<Vec<u8>, isize> {
+    if pointer.is_null() {
+        return Err(-errno::EFAULT);
     }
+    let path = task
+        .copy_user_c_string(pointer as usize, 4096)
+        .map_err(|error| match error {
+            UserAccessError::Unterminated => -errno::ENAMETOOLONG,
+            UserAccessError::OutOfMemory => -errno::ENOMEM,
+            UserAccessError::Fault | UserAccessError::Overflow => -errno::EFAULT,
+        })?;
+    if path.is_empty() {
+        return Err(-errno::ENOENT);
+    }
+    Ok(path)
+}
 
-    let mut bytes = Vec::with_capacity(required);
-    bytes.extend_from_slice(cwd.as_bytes());
-    bytes.push(0);
-    if task.copy_to_user(buf as usize, &bytes).is_err() {
-        return -EFAULT;
+fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<Option<Arc<dyn Inode>>, isize> {
+    if path.first() == Some(&b'/') || fd == AT_FDCWD {
+        return Ok(None);
     }
-    required as isize
+    let inode = task
+        .fd_get(fd as usize)
+        .and_then(|ofd| ofd.inode_ref())
+        .ok_or(-errno::EBADF)?;
+    if inode.inode_type() != InodeType::Directory {
+        return Err(-errno::ENOTDIR);
+    }
+    Ok(Some(inode))
+}
+
+pub fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match path(&task, name) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if flags & O_ACCMODE == O_ACCMODE {
+        return -errno::EINVAL;
+    }
+    let start = match base(&task, fd, &path) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let inode = match vfs().open_at(start.clone(), &path) {
+        Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -errno::EEXIST,
+        Ok(v) => v,
+        Err(FileSystemError::NotFound) if flags & O_CREAT != 0 => {
+            if path.last() == Some(&b'/') {
+                return -errno::ENOTDIR;
+            }
+            match vfs().create_at(start, &path, InodeType::File, mode) {
+                Ok(v) => v,
+                Err(e) => return ferr(e),
+            }
+        }
+        Err(e) => return ferr(e),
+    };
+    if flags & O_DIRECTORY != 0 && inode.inode_type() != InodeType::Directory {
+        return -errno::ENOTDIR;
+    }
+    if inode.inode_type() == InodeType::Directory && flags & O_ACCMODE != O_RDONLY {
+        return -errno::EISDIR;
+    }
+    if flags & O_TRUNC != 0
+        && flags & O_ACCMODE != O_RDONLY
+        && let Err(error) = inode.truncate(0)
+    {
+        return ferr(error);
+    }
+    task.fd_allocate(
+        OpenFileDescription::inode(inode, flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC)),
+        flags & O_CLOEXEC != 0,
+    )
+    .map_or(-errno::EMFILE, |v| v as isize)
+}
+
+pub fn sys_close(fd: usize) -> isize {
+    current_task().map_or(-errno::ESRCH, |t| {
+        t.fd_close(fd).map_or(-errno::EBADF, |_| 0)
+    })
+}
+
+pub fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
+        return -errno::EBADF;
+    }
+    let Some(inode) = ofd.inode_ref() else {
+        return 0;
+    };
+    if inode.inode_type() == InodeType::Directory {
+        return -errno::EISDIR;
+    }
+    let mut offset = ofd.offset.lock();
+    let mut total = 0;
+    let mut chunk = [0u8; 512];
+    while total < length {
+        let count = chunk.len().min(length - total);
+        let got = match inode.read_at(*offset, &mut chunk[..count]) {
+            Ok(v) => v,
+            Err(e) => return if total == 0 { ferr(e) } else { total as isize },
+        };
+        if got == 0 {
+            break;
+        }
+        if task
+            .copy_to_user(pointer as usize + total, &chunk[..got])
+            .is_err()
+        {
+            return if total == 0 {
+                -errno::EFAULT
+            } else {
+                total as isize
+            };
+        }
+        *offset += got as u64;
+        total += got;
+    }
+    total as isize
+}
+
+pub fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+        return -errno::EBADF;
+    }
+    let mut offset = ofd.offset.lock();
+    let mut total = 0;
+    let mut chunk = [0u8; 512];
+    while total < length {
+        let count = chunk.len().min(length - total);
+        if task
+            .copy_from_user(pointer as usize + total, &mut chunk[..count])
+            .is_err()
+        {
+            return if total == 0 {
+                -errno::EFAULT
+            } else {
+                total as isize
+            };
+        }
+        let wrote = match &ofd.kind {
+            OpenFileKind::Console => {
+                for byte in &chunk[..count] {
+                    if sbi::console_putchar(*byte).is_err() {
+                        return -errno::EIO;
+                    }
+                }
+                count
+            }
+            OpenFileKind::Inode(inode) => {
+                if *ofd.flags.lock() & O_APPEND != 0 {
+                    match inode.append(&chunk[..count]) {
+                        Ok((append_offset, written)) => {
+                            *offset = append_offset + written as u64;
+                            total += written;
+                            if written < count {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            return if total == 0 {
+                                ferr(error)
+                            } else {
+                                total as isize
+                            };
+                        }
+                    }
+                }
+                match inode.write_at(*offset, &chunk[..count]) {
+                    Ok(v) => v,
+                    Err(e) => return if total == 0 { ferr(e) } else { total as isize },
+                }
+            }
+        };
+        *offset += wrote as u64;
+        total += wrote;
+        if wrote < count {
+            break;
+        }
+    }
+    total as isize
+}
+
+pub fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let Some(inode) = ofd.inode_ref() else {
+        return -errno::ESPIPE;
+    };
+    let base = match whence {
+        0 => 0,
+        1 => *ofd.offset.lock() as i128,
+        2 => inode.size() as i128,
+        _ => return -errno::EINVAL,
+    };
+    let value = base + offset as i128;
+    if value < 0 || value > u64::MAX as i128 {
+        return -errno::EINVAL;
+    }
+    *ofd.offset.lock() = value as u64;
+    value as isize
+}
+
+pub fn sys_mkdirat(fd: isize, name: *const u8, mode: u32) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let p = match path(&task, name) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let b = match base(&task, fd, &p) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    vfs()
+        .create_at(b, &p, InodeType::Directory, mode)
+        .map_or_else(ferr, |_| 0)
+}
+pub fn sys_unlinkat(fd: isize, name: *const u8, flags: usize) -> isize {
+    if flags & !AT_REMOVEDIR != 0 {
+        return -errno::EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let p = match path(&task, name) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let b = match base(&task, fd, &p) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    vfs()
+        .unlink_at(b, &p, flags & AT_REMOVEDIR != 0)
+        .map_or_else(ferr, |_| 0)
+}
+pub fn sys_renameat2(ofd: isize, on: *const u8, nfd: isize, nn: *const u8, flags: u32) -> isize {
+    if flags & !1 != 0 {
+        return -errno::EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let op = match path(&task, on) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let np = match path(&task, nn) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let ob = match base(&task, ofd, &op) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let nb = match base(&task, nfd, &np) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    vfs()
+        .rename_at(ob, &op, nb, &np, flags & 1 != 0)
+        .map_or_else(ferr, |_| 0)
+}
+pub fn sys_ftruncate(fd: usize, size: u64) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+        return -errno::EBADF;
+    }
+    ofd.inode_ref()
+        .ok_or(-errno::EINVAL)
+        .and_then(|i| i.truncate(size).map_err(ferr))
+        .map_or_else(|e| e, |_| 0)
+}
+pub fn sys_fsync(fd: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    ofd.inode_ref()
+        .map_or(0, |i| i.sync().map_or_else(ferr, |_| 0))
+}
+
+#[repr(C)]
+struct LinuxStat {
+    st_dev: u64,
+    st_ino: u64,
+    st_mode: u32,
+    st_nlink: u32,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: u64,
+    pad1: u64,
+    st_size: i64,
+    st_blksize: i32,
+    pad2: i32,
+    st_blocks: i64,
+    st_atime: i64,
+    st_atime_nsec: u64,
+    st_mtime: i64,
+    st_mtime_nsec: u64,
+    st_ctime: i64,
+    st_ctime_nsec: u64,
+    unused: [u32; 2],
+}
+
+const _: () = assert!(mem::size_of::<LinuxStat>() == 128);
+
+fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMetadata>) -> isize {
+    let stat = if let Some(metadata) = metadata {
+        LinuxStat {
+            st_dev: 1,
+            st_ino: metadata.inode,
+            st_mode: metadata.mode,
+            st_nlink: metadata.links,
+            st_uid: metadata.uid,
+            st_gid: metadata.gid,
+            st_rdev: 0,
+            pad1: 0,
+            st_size: metadata.size as i64,
+            st_blksize: metadata.block_size as i32,
+            pad2: 0,
+            st_blocks: metadata.blocks as i64,
+            st_atime: metadata.atime as i64,
+            st_atime_nsec: 0,
+            st_mtime: metadata.mtime as i64,
+            st_mtime_nsec: 0,
+            st_ctime: metadata.ctime as i64,
+            st_ctime_nsec: 0,
+            unused: [0; 2],
+        }
+    } else {
+        LinuxStat {
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: 0o020666,
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0,
+            pad1: 0,
+            st_size: 0,
+            st_blksize: 1,
+            pad2: 0,
+            st_blocks: 0,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            unused: [0; 2],
+        }
+    };
+    // SAFETY: `LinuxStat` 是固定的 Linux/asm-generic C ABI POD，且切片不逃逸本函数。
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&stat as *const LinuxStat).cast::<u8>(),
+            mem::size_of::<LinuxStat>(),
+        )
+    };
+    task.copy_to_user(pointer as usize, bytes)
+        .map_or(-errno::EFAULT, |_| 0)
+}
+
+pub fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    match ofd.inode_ref() {
+        Some(inode) => match inode.metadata() {
+            Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
+            Err(error) => ferr(error),
+        },
+        None => copy_stat(&task, pointer, None),
+    }
+}
+
+pub fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
+    if flags != 0 {
+        return -errno::EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match path(&task, name) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let start = match base(&task, fd, &path) {
+        Ok(start) => start,
+        Err(error) => return error,
+    };
+    match vfs()
+        .open_at(start, &path)
+        .and_then(|inode| inode.metadata())
+    {
+        Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
+        Err(error) => ferr(error),
+    }
+}
+
+pub fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let Some(inode) = ofd.inode_ref() else {
+        return -errno::ENOTDIR;
+    };
+    let entries = match inode.list() {
+        Ok(entries) => entries,
+        Err(error) => return ferr(error),
+    };
+    let mut index = *ofd.offset.lock() as usize;
+    let mut output = Vec::new();
+    while let Some(entry) = entries.get(index) {
+        let record_length = (19 + entry.name.len() + 1 + 7) & !7;
+        if record_length > length.saturating_sub(output.len()) {
+            break;
+        }
+        output.extend_from_slice(&entry.inode.to_ne_bytes());
+        output.extend_from_slice(&((index + 1) as i64).to_ne_bytes());
+        output.extend_from_slice(&(record_length as u16).to_ne_bytes());
+        output.push(match entry.kind {
+            InodeType::Directory => 4,
+            InodeType::Fifo => 1,
+            InodeType::SymLink => 10,
+            InodeType::File => 8,
+        });
+        output.extend_from_slice(&entry.name);
+        output.push(0);
+        output.resize(output.len() + record_length - 20 - entry.name.len(), 0);
+        index += 1;
+    }
+    if output.is_empty() && index < entries.len() {
+        return -errno::EINVAL;
+    }
+    if task.copy_to_user(pointer as usize, &output).is_err() {
+        return -errno::EFAULT;
+    }
+    *ofd.offset.lock() = index as u64;
+    output.len() as isize
+}
+pub fn sys_dup(fd: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    if task.fd_get(fd).is_none() {
+        return -errno::EBADF;
+    }
+    task.fd_duplicate(fd, 0, false)
+        .map_or(-errno::EMFILE, |value| value as isize)
+}
+pub fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
+    if old == new || flags & !O_CLOEXEC != 0 {
+        return -errno::EINVAL;
+    }
+    if new >= MAX_FILE_DESCRIPTORS {
+        return -errno::EBADF;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    task.fd_duplicate_to(old, new, flags & O_CLOEXEC != 0)
+        .map_or(-errno::EBADF, |value| value as isize)
+}
+pub fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
+    let Some(t) = current_task() else {
+        return -errno::ESRCH;
+    };
+    match cmd {
+        0 if arg < MAX_FILE_DESCRIPTORS => {
+            if t.fd_get(fd).is_none() {
+                -errno::EBADF
+            } else {
+                t.fd_duplicate(fd, arg, false)
+                    .map_or(-errno::EMFILE, |value| value as isize)
+            }
+        }
+        1 => t.fd_flags(fd).map_or(-errno::EBADF, |v| v as isize),
+        2 => t.fd_set_flags(fd, arg as u32).map_or(-errno::EBADF, |_| 0),
+        3 => t
+            .fd_get(fd)
+            .map_or(-errno::EBADF, |v| *v.flags.lock() as isize),
+        4 => t.fd_get(fd).map_or(-errno::EBADF, |ofd| {
+            let mut flags = ofd.flags.lock();
+            *flags = (*flags & !O_APPEND) | (arg as u32 & O_APPEND);
+            0
+        }),
+        1030 if arg < MAX_FILE_DESCRIPTORS => {
+            if t.fd_get(fd).is_none() {
+                -errno::EBADF
+            } else {
+                t.fd_duplicate(fd, arg, true)
+                    .map_or(-errno::EMFILE, |value| value as isize)
+            }
+        }
+        _ => -errno::EINVAL,
+    }
+}
+
+pub fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let mut bytes = task.cwd().into_bytes();
+    bytes.push(0);
+    if bytes.len() > length {
+        return -errno::ERANGE;
+    }
+    task.copy_to_user(pointer as usize, &bytes)
+        .map_or(-errno::EFAULT, |_| bytes.len() as isize)
 }

@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 12 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 27 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,12 +28,22 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `exit_group` 在当前只有一个 thread 的 thread group 内语义完整，但 LiteOS 并不支持创建线程。
 
-## 2. 当前暴露的 12 个入口
+## 2. 当前暴露的 27 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
 | 17 | `getcwd` | `char *buf, size_t size` | 含 NUL 的长度；`ERANGE/EFAULT` | POSIX `getcwd`；musl direct wrapper | **Complete**。无 `chdir`，因此当前 cwd 唯一值为 `/`；copyout 契约完整。 | `kernel/src/syscall/fs.rs` |
-| 64 | `write` | `unsigned fd, const void *buf, size_t count` | byte count；`EBADF/EFAULT/EIO`；允许 partial result | POSIX `write`；musl direct wrapper | **Partial**。只支持 fd 1 -> SBI DBCN bootstrap console；无 fd table/OFD、file/pipe/socket/offset/append 语义。 | `kernel/src/syscall/fs.rs` |
+| 23/24 | `dup` / `dup3` | fd、目标 fd、`O_CLOEXEC` | 新 fd；`EBADF/EINVAL` | POSIX dup；Linux dup3 | **Complete**。fd entry 复制后共享同一 OFD offset/status flags；descriptor flag 独立。 | `kernel/src/syscall/fs.rs` |
+| 25 | `fcntl` | fd、command、argument | command 对应值；`EBADF/EINVAL` | POSIX fcntl | **Partial**。实现 `F_DUPFD/F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD_CLOEXEC`；`F_SETFL` 当前只允许修改 `O_APPEND`。 | `kernel/src/syscall/fs.rs` |
+| 34/35 | `mkdirat` / `unlinkat` | dirfd、raw path、mode/`AT_REMOVEDIR` | 0；标准 pathname errno | POSIX mkdirat/unlinkat | **Partial**。支持绝对路径、`AT_FDCWD` 和目录 fd；无 credentials、mount point 与 symlink following。 | `kernel/src/syscall/fs.rs` |
+| 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EISDIR/ENOSPC/EIO` | POSIX ftruncate | **Complete**。支持稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
+| 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path errno | POSIX openat/close | **Partial**。regular/directory OFD、create/excl/trunc/append/directory/cloexec 完整；无 permissions、symlink following 和设备节点。 | `kernel/src/syscall/fs.rs` |
+| 61 | `getdents64` | fd、`linux_dirent64` buffer、length | bytes；`EBADF/ENOTDIR/EFAULT/EINVAL` | libc readdir backend | **Complete**。目录 OFD 保存逐项位置，记录按 8 bytes 对齐并包含 `d_type`；并发目录变更后的 cookie 与 Linux 一样不承诺快照语义。 | `kernel/src/syscall/fs.rs` |
+| 62 | `lseek` | fd、signed offset、whence | new offset；`EBADF/EINVAL/ESPIPE` | POSIX lseek | **Complete**。实现 `SEEK_SET/CUR/END`，offset 位于共享 OFD。 | `kernel/src/syscall/fs.rs` |
+| 63/64 | `read` / `write` | fd、用户 buffer、count | byte count；允许 partial result | POSIX read/write | **Partial**。regular file 共享 offset，write 支持 append；console 通过同一 OFD 路径，当前 console input 返回 EOF；无 pipe/socket。 | `kernel/src/syscall/fs.rs` |
+| 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 当前只接受 flags 0。 | `kernel/src/syscall/fs.rs` |
+| 82 | `fsync` | fd | 0；`EBADF/EIO` | POSIX fsync | **Complete**。等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request。 | `kernel/src/syscall/fs.rs` |
+| 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
 | 93 | `exit` | `int status` | 不返回 | POSIX `_exit`；musl `_Exit` fallback | **Complete**。当前调用 thread 是 Process 的唯一 thread；无 wait consumer，不保留 zombie。 | `kernel/src/syscall/process.rs` |
 | 94 | `exit_group` | `int status` | 不返回 | Linux extension；musl `_Exit` 首选 | **Complete**。当前 thread group 恰好只有 calling thread，与 `exit` 共用唯一终止路径。 | `kernel/src/syscall/process.rs` |
 | 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。有 monotonic deadline wait；无 signal interruption/restart 闭环，`rem` 只在早醒分支生效；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
@@ -43,9 +53,9 @@
 | 173 | `getppid` | 无参数 | `0` | POSIX `getppid`；musl direct wrapper | **Complete**。当前唯一 Process 是 kernel-created PID 1，无 parent。引入 process creation 时必须与 parent owner 同步扩展。 | `kernel/src/syscall/process.rs` |
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
-| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；`E2BIG/EACCES/EFAULT/EIO/ELOOP/ENAMETOOLONG/ENOENT/ENOEXEC/ENOMEM/ENOTDIR` | POSIX `execve`；musl direct wrapper | **Partial**。已支持 relative/root path、non-UTF8 bytes、full read、execute bit、static ET_EXEC、BSS/W^X、Linux initial stack/auxv 和 failure rollback。缺失 symlink following、script interpreter、PIE/dynamic/TLS、完整 credentials、CLOEXEC、signal reset 和 sibling-thread handling；相关子系统当前均不存在。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
+| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；`E2BIG/EACCES/EFAULT/EIO/ELOOP/ENAMETOOLONG/ENOENT/ENOEXEC/ENOMEM/ENOTDIR` | POSIX `execve`；musl direct wrapper | **Partial**。已支持 relative/root path、non-UTF8 bytes、full read、execute bit、CLOEXEC close、static ET_EXEC、BSS/W^X、Linux initial stack/auxv 和 failure rollback。缺失 symlink following、script interpreter、PIE/dynamic/TLS、完整 credentials、signal reset 和 sibling-thread handling；相关子系统当前均不存在。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
 
-汇总：8 `Complete`，4 `Partial`。
+文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单进程模型。
 
 ## 3. 第一阶段标准 ABI 缺口
 
@@ -53,19 +63,9 @@
 
 | 编号 | Linux 名称 | 状态 | 处理结论 |
 |---:|---|---|---|
-| 23 | `dup` | Removed | 无 fd entry/OFD 时不伪造共享 offset/status flags。 |
-| 24 | `dup3` | Missing | 与 fd/OFD/CLOEXEC 竖切一起实现。 |
-| 25 | `fcntl` | Removed | 已删除忽略 command 与 fd/OFD flag 分层的半实现。 |
 | 29 | `ioctl` | Missing | 无标准 device file/ioctl UAPI，不用私有设备 syscall 替代。 |
-| 34/35 | `mkdirat` / `unlinkat` | Missing | ext2 只读，无 dirfd/path mutation 闭环。 |
-| 56 | `openat` | Missing | 需 fd entry + OFD + pathname/flags 唯一模型。 |
-| 57 | `close` | Removed | 已删除不可达 fd table 上的表面 handler。 |
-| 59 | `pipe2` | Not Planned | 无 fd/OFD/close/dup/poll/signal 闭环前不接入。 |
-| 61 | `getdents64` | Missing | 无 directory OFD/offset，kernel inode lookup 不暴露为用户遍历 ABI。 |
-| 62 | `lseek` | Removed | 无可共享 OFD offset。 |
-| 63 | `read` | Removed | 已删除无事件唤醒、持续 runnable 的 SBI stdin 轮询。 |
-| 65/66 | `readv` / `writev` | Missing | 无 fd/OFD，不用 kernel 聚合 buffer 伪造 atomicity。 |
-| 79/80 | `newfstatat` / `fstat` | Missing | 无 Linux RV64 `struct stat` copyout 和用户 fd/dirfd。 |
+| 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
+| 65/66 | `readv` / `writev` | Missing | 尚未实现 iovec user-copy 与 partial-transfer 语义。 |
 | 96 | `set_tid_address` | Not Planned | 无 clone thread、clear-child-tid 和 futex wake。 |
 | 98 | `futex` | Removed | 无 address-space key、lost-wakeup 状态机、timeout/signal 与 exit cleanup 前不恢复。 |
 | 99 | `set_robust_list` | Not Planned | 无 futex owner-death/robust cleanup。 |
@@ -86,12 +86,11 @@
 
 ## 4. musl 结论
 
-当前 12 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
+当前 27 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
 
 1. `mmap/munmap/mprotect`；
-2. `openat/read/close/fstat`；
-3. TLS/`clone/futex/set_tid_address/set_robust_list`；
-4. signal ABI；
-5. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation。
+2. TLS/`clone/futex/set_tid_address/set_robust_list`；
+3. signal ABI；
+4. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation。
 
 因此不能将“编号与 musl header 一致”或“具有 Linux 格式 auxv”提升为 musl 兼容声明。

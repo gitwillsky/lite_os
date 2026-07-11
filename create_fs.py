@@ -36,7 +36,9 @@ def create_ext2_filesystem(filename, size_mb=128):
         return False
 
     try:
-        subprocess.run([mke2fs, '-t', 'ext2', '-b', '4096', '-L', 'LITEOS', filename],
+        subprocess.run([mke2fs, '-t', 'ext2', '-b', '4096', '-I', '256',
+                        '-O', '^ext_attr,^resize_inode,^dir_index,filetype,sparse_super,large_file',
+                        '-L', 'LITEOS', filename],
                        check=True, capture_output=True)
         print("✓ ext2 文件系统创建成功 (4K 块)")
     except subprocess.CalledProcessError as e:

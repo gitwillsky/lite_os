@@ -20,14 +20,20 @@ pub const ENOMEM: isize = 12;
 pub const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub const EFAULT: isize = 14;
+pub const EEXIST: isize = 17;
 /// 路径分量不是目录。
 pub const ENOTDIR: isize = 20;
+pub const EISDIR: isize = 21;
 /// 无效参数。
 pub const EINVAL: isize = 22;
+pub const EMFILE: isize = 24;
+pub const ENOSPC: isize = 28;
+pub const ESPIPE: isize = 29;
 /// 结果超出支持范围。
 pub const ERANGE: isize = 34;
 /// 路径或参数字符串过长。
 pub const ENAMETOOLONG: isize = 36;
+pub const ENOTEMPTY: isize = 39;
 /// 系统调用未实现。
 pub const ENOSYS: isize = 38;
 /// 符号链接解析超出支持范围。

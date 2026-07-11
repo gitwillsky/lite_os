@@ -3,7 +3,21 @@
 //! LiteOS 用户态与内核共享的系统调用编号。
 
 pub const SYSCALL_GETCWD: usize = 17;
+pub const SYSCALL_DUP: usize = 23;
+pub const SYSCALL_DUP3: usize = 24;
+pub const SYSCALL_FCNTL: usize = 25;
+pub const SYSCALL_MKDIRAT: usize = 34;
+pub const SYSCALL_UNLINKAT: usize = 35;
+pub const SYSCALL_FTRUNCATE: usize = 46;
+pub const SYSCALL_OPENAT: usize = 56;
+pub const SYSCALL_CLOSE: usize = 57;
+pub const SYSCALL_GETDENTS64: usize = 61;
+pub const SYSCALL_LSEEK: usize = 62;
+pub const SYSCALL_READ: usize = 63;
 pub const SYSCALL_WRITE: usize = 64;
+pub const SYSCALL_NEWFSTATAT: usize = 79;
+pub const SYSCALL_FSTAT: usize = 80;
+pub const SYSCALL_FSYNC: usize = 82;
 pub const SYSCALL_EXIT: usize = 93;
 pub const SYSCALL_EXIT_GROUP: usize = 94;
 pub const SYSCALL_NANOSLEEP: usize = 101;
@@ -14,3 +28,4 @@ pub const SYSCALL_GETPPID: usize = 173;
 pub const SYSCALL_GETTID: usize = 178;
 pub const SYSCALL_BRK: usize = 214;
 pub const SYSCALL_EXECVE: usize = 221;
+pub const SYSCALL_RENAMEAT2: usize = 276;

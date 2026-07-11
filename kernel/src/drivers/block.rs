@@ -10,7 +10,7 @@ pub enum BlockError {
     AlreadyRegistered,
 }
 
-/// @description 为只读启动文件系统提供固定块读取。
+/// @description 为文件系统提供同步固定块读写与持久化屏障。
 pub trait BlockDevice: Send + Sync {
     /// 读取一个完整逻辑块。
     ///
@@ -27,6 +27,20 @@ pub trait BlockDevice: Send + Sync {
     ///
     /// 块号越界、缓冲区长度错误或设备 I/O 失败时返回错误。
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError>;
+
+    /// @description 写入一个完整逻辑块，返回前设备已消费 DMA buffer。
+    ///
+    /// @param block_id 从零开始的逻辑块号。
+    /// @param buf 长度必须等于 `block_size()` 的源缓冲区。
+    /// @return 成功时返回完整块字节数。
+    /// @errors 块号越界、缓冲区长度错误或设备 I/O 失败时返回错误。
+    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError>;
+
+    /// @description 把设备已接受的写入推进到稳定存储能力边界。
+    ///
+    /// @return flush 完成或设备明确不需要额外 flush 时返回成功。
+    /// @errors 设备报告 I/O 或 unsupported 时返回错误。
+    fn flush(&self) -> Result<(), BlockError>;
 
     /// 返回逻辑块字节数。
     fn block_size(&self) -> usize;

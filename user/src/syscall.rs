@@ -1,5 +1,16 @@
 use core::arch::asm;
-use syscall_abi::{SYSCALL_EXIT_GROUP, SYSCALL_SCHED_YIELD, SYSCALL_WRITE};
+use syscall_abi::{
+    SYSCALL_CLOSE, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC, SYSCALL_FTRUNCATE,
+    SYSCALL_GETDENTS64, SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_OPENAT, SYSCALL_READ,
+    SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_UNLINKAT, SYSCALL_WRITE,
+};
+
+pub const AT_FDCWD: isize = -100;
+pub const O_RDWR: usize = 2;
+pub const O_CREAT: usize = 0x40;
+pub const O_TRUNC: usize = 0x200;
+pub const O_DIRECTORY: usize = 0x10000;
+pub const AT_REMOVEDIR: usize = 0x200;
 
 /// @description 按 Linux/riscv64 ABI 发起系统调用，参数依次装入 `a0..a5`，编号装入 `a7`。
 ///
@@ -45,6 +56,71 @@ pub fn write(fd: usize, buf: &[u8]) -> isize {
     syscall(
         SYSCALL_WRITE,
         [fd, buf.as_ptr() as usize, buf.len(), 0, 0, 0],
+    )
+}
+
+pub fn openat(path: &[u8], flags: usize, mode: usize) -> isize {
+    openat_from(AT_FDCWD, path, flags, mode)
+}
+pub fn openat_from(dirfd: isize, path: &[u8], flags: usize, mode: usize) -> isize {
+    syscall(
+        SYSCALL_OPENAT,
+        [dirfd as usize, path.as_ptr() as usize, flags, mode, 0, 0],
+    )
+}
+pub fn read(fd: usize, buf: &mut [u8]) -> isize {
+    syscall(
+        SYSCALL_READ,
+        [fd, buf.as_mut_ptr() as usize, buf.len(), 0, 0, 0],
+    )
+}
+pub fn close(fd: usize) -> isize {
+    syscall(SYSCALL_CLOSE, [fd, 0, 0, 0, 0, 0])
+}
+pub fn fsync(fd: usize) -> isize {
+    syscall(SYSCALL_FSYNC, [fd, 0, 0, 0, 0, 0])
+}
+pub fn ftruncate(fd: usize, size: usize) -> isize {
+    syscall(SYSCALL_FTRUNCATE, [fd, size, 0, 0, 0, 0])
+}
+pub fn fstat(fd: usize, stat: &mut [u8; 128]) -> isize {
+    syscall(SYSCALL_FSTAT, [fd, stat.as_mut_ptr() as usize, 0, 0, 0, 0])
+}
+pub fn getdents64(fd: usize, buffer: &mut [u8]) -> isize {
+    syscall(
+        SYSCALL_GETDENTS64,
+        [fd, buffer.as_mut_ptr() as usize, buffer.len(), 0, 0, 0],
+    )
+}
+pub fn lseek(fd: usize, offset: isize, whence: usize) -> isize {
+    syscall(SYSCALL_LSEEK, [fd, offset as usize, whence, 0, 0, 0])
+}
+pub fn renameat2(old: &[u8], new: &[u8]) -> isize {
+    syscall(
+        SYSCALL_RENAMEAT2,
+        [
+            AT_FDCWD as usize,
+            old.as_ptr() as usize,
+            AT_FDCWD as usize,
+            new.as_ptr() as usize,
+            0,
+            0,
+        ],
+    )
+}
+pub fn unlinkat(path: &[u8]) -> isize {
+    unlinkat_from(AT_FDCWD, path, 0)
+}
+pub fn unlinkat_from(dirfd: isize, path: &[u8], flags: usize) -> isize {
+    syscall(
+        SYSCALL_UNLINKAT,
+        [dirfd as usize, path.as_ptr() as usize, flags, 0, 0, 0],
+    )
+}
+pub fn mkdirat(path: &[u8], mode: usize) -> isize {
+    syscall(
+        SYSCALL_MKDIRAT,
+        [AT_FDCWD as usize, path.as_ptr() as usize, mode, 0, 0, 0],
     )
 }
 

@@ -210,13 +210,17 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
         ProgramLoadError::NotRegularFile | ProgramLoadError::NotExecutable => errno::EACCES,
         ProgramLoadError::FileSystem(FileSystemError::NotFound) => errno::ENOENT,
         ProgramLoadError::FileSystem(FileSystemError::NotDirectory) => errno::ENOTDIR,
-        ProgramLoadError::FileSystem(FileSystemError::InvalidOperation) => errno::ELOOP,
+        ProgramLoadError::FileSystem(FileSystemError::SymbolicLink) => errno::ELOOP,
         ProgramLoadError::FileSystem(
             FileSystemError::AlreadyExists
+            | FileSystemError::IsDirectory
+            | FileSystemError::DirectoryNotEmpty
             | FileSystemError::InvalidPath
+            | FileSystemError::InvalidOperation
             | FileSystemError::IoError
             | FileSystemError::InvalidFileSystem,
         ) => errno::EIO,
+        ProgramLoadError::FileSystem(FileSystemError::NoSpace) => errno::ENOMEM,
     };
     -errno
 }

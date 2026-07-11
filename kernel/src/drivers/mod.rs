@@ -9,7 +9,7 @@ pub mod virtio_queue;
 ///
 /// 1. 初始化 PLIC。
 /// 2. 扫描 DTB VirtIO MMIO 区间并选定唯一 block device。
-/// 3. 挂载只读根文件系统。
+/// 3. 挂载同步读写根文件系统。
 pub fn init() {
     info!("[Drivers] Initializing LiteOS driver subsystem");
 

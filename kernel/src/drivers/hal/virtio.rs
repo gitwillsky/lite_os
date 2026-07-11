@@ -3,6 +3,7 @@ use super::bus::{BusError, MmioBus};
 const MAGIC: usize = 0x000;
 const VERSION: usize = 0x004;
 const DEVICE_ID: usize = 0x008;
+const DEVICE_FEATURES: usize = 0x010;
 const DRIVER_FEATURES: usize = 0x020;
 const GUEST_PAGE_SIZE: usize = 0x028;
 const QUEUE_SEL: usize = 0x030;
@@ -69,6 +70,10 @@ impl VirtIODevice {
 
     pub fn set_driver_features(&self, features: u32) -> Result<(), BusError> {
         self.bus.write_u32(DRIVER_FEATURES, features)
+    }
+
+    pub fn device_features(&self) -> Result<u32, BusError> {
+        self.bus.read_u32(DEVICE_FEATURES)
     }
 
     pub fn set_status(&self, status: u32) -> Result<(), BusError> {

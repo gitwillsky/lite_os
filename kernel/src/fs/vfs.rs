@@ -9,6 +9,69 @@ pub struct VirtualFileSystem {
 }
 
 impl VirtualFileSystem {
+    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.root_fs
+            .lock()
+            .as_ref()
+            .ok_or(FileSystemError::NotFound)?
+            .root_inode()
+    }
+
+    fn resolve_from(
+        &self,
+        start: Arc<dyn Inode>,
+        path: &[u8],
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let root = self.root_inode()?;
+        let root_identity = (root.filesystem_id(), root.metadata()?.inode);
+        let mut inode = if path.first() == Some(&b'/') {
+            root
+        } else {
+            start
+        };
+        for component in path.split(|byte| *byte == b'/') {
+            match component {
+                b"" | b"." => {}
+                b".." => {
+                    if (inode.filesystem_id(), inode.metadata()?.inode) != root_identity {
+                        inode = inode.find_child(b"..")?;
+                    }
+                }
+                name => {
+                    inode = inode.find_child(name)?;
+                    if inode.inode_type() == InodeType::SymLink {
+                        return Err(FileSystemError::SymbolicLink);
+                    }
+                }
+            }
+        }
+        if path.len() > 1
+            && path.last() == Some(&b'/')
+            && inode.inode_type() != InodeType::Directory
+        {
+            return Err(FileSystemError::NotDirectory);
+        }
+        Ok(inode)
+    }
+
+    fn parent_from(
+        &self,
+        start: Arc<dyn Inode>,
+        path: &[u8],
+    ) -> Result<(Arc<dyn Inode>, Vec<u8>), FileSystemError> {
+        let trimmed = path.strip_suffix(b"/").unwrap_or(path);
+        let split = trimmed.iter().rposition(|byte| *byte == b'/');
+        let (parent_path, name) = match split {
+            Some(0) => (&b"/"[..], &trimmed[1..]),
+            Some(index) => (&trimmed[..index], &trimmed[index + 1..]),
+            None => (&b"."[..], trimmed),
+        };
+        if name.is_empty() {
+            return Err(FileSystemError::InvalidPath);
+        }
+        Ok((self.resolve_from(start, parent_path)?, name.to_vec()))
+    }
+
     /// 创建尚未挂载根文件系统的 VFS。
     ///
     /// # Returns
@@ -60,45 +123,62 @@ impl VirtualFileSystem {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
+        self.resolve_from(self.root_inode()?, path)
+    }
 
-        let root_fs = self.root_fs.lock();
-        let fs = root_fs.as_ref().ok_or(FileSystemError::NotFound)?;
-        let root_inode = fs.root_inode()?;
-        drop(root_fs);
+    pub fn open_at(
+        &self,
+        start: Option<Arc<dyn Inode>>,
+        path: &[u8],
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let start = start.unwrap_or(self.root_inode()?);
+        self.resolve_from(start, path)
+    }
 
-        // 1. 从根 inode 逐层查找，使 `/missing/..` 不会被词法化简错误变成 `/`。
-        // 2. inode 栈保留已验证的父链，`..` 只能回退到根，不会逃出当前文件系统。
-        // 3. 最后校验尾随斜杠，避免把普通文件当目录打开。
-        let mut inode_stack = Vec::from([root_inode]);
-        for component in path.split(|byte| *byte == b'/') {
-            match component {
-                b"" | b"." => {}
-                b".." => {
-                    if inode_stack.len() > 1 {
-                        inode_stack.pop();
-                    }
-                }
-                name => {
-                    let inode = inode_stack
-                        .last()
-                        .ok_or(FileSystemError::InvalidPath)?
-                        .find_child(name)?;
-                    if inode.inode_type() == InodeType::SymLink {
-                        return Err(FileSystemError::InvalidOperation);
-                    }
-                    inode_stack.push(inode);
-                }
-            }
+    pub fn create_at(
+        &self,
+        start: Option<Arc<dyn Inode>>,
+        path: &[u8],
+        kind: InodeType,
+        mode: u32,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let start = start.unwrap_or(self.root_inode()?);
+        let (parent, name) = self.parent_from(start, path)?;
+        parent.create(&name, kind, mode)
+    }
+
+    pub fn unlink_at(
+        &self,
+        start: Option<Arc<dyn Inode>>,
+        path: &[u8],
+        directory: bool,
+    ) -> Result<(), FileSystemError> {
+        let start = start.unwrap_or(self.root_inode()?);
+        let (parent, name) = self.parent_from(start, path)?;
+        parent.unlink(&name, directory)
+    }
+
+    pub fn rename_at(
+        &self,
+        old_start: Option<Arc<dyn Inode>>,
+        old_path: &[u8],
+        new_start: Option<Arc<dyn Inode>>,
+        new_path: &[u8],
+        no_replace: bool,
+    ) -> Result<(), FileSystemError> {
+        let old_start = old_start.unwrap_or(self.root_inode()?);
+        let new_start = new_start.unwrap_or(self.root_inode()?);
+        let (old_parent, old_name) = self.parent_from(old_start, old_path)?;
+        let (new_parent, new_name) = self.parent_from(new_start, new_path)?;
+        if old_parent.filesystem_id() != new_parent.filesystem_id() {
+            return Err(FileSystemError::InvalidOperation);
         }
-        let inode = inode_stack.pop().ok_or(FileSystemError::InvalidPath)?;
-
-        if path.len() > 1
-            && path.last() == Some(&b'/')
-            && inode.inode_type() != InodeType::Directory
-        {
-            return Err(FileSystemError::NotDirectory);
-        }
-        Ok(inode)
+        old_parent.rename(
+            &old_name,
+            new_parent.metadata()?.inode,
+            &new_name,
+            no_replace,
+        )
     }
 }
 
