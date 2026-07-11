@@ -41,7 +41,7 @@
 | task run state、generation、wait membership | SchedulingState |
 | process address space、cwd、fd table | Process |
 | OFD offset/status flags | OpenFileDescription |
-| virtual mappings | MemorySet/PageTable owner |
+| VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | root mount、pathname traversal | VFS |
 | inode/on-disk allocation state | filesystem adapter mutation domain |
@@ -58,6 +58,7 @@
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
+- syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。

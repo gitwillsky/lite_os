@@ -4,8 +4,9 @@
 extern crate user_lib;
 
 use user_lib::{
-    AT_REMOVEDIR, O_CREAT, O_DIRECTORY, O_RDWR, O_TRUNC, close, fstat, fsync, ftruncate,
-    getdents64, lseek, mkdirat, openat, openat_from, read, renameat2, sched_yield, unlinkat,
+    AT_REMOVEDIR, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE, MAP_PRIVATE, O_CREAT, O_DIRECTORY, O_RDWR,
+    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, close, fstat, fsync, ftruncate, getdents64, lseek,
+    mkdirat, mmap, mprotect, munmap, openat, openat_from, read, renameat2, sched_yield, unlinkat,
     unlinkat_from, write,
 };
 
@@ -32,6 +33,55 @@ fn directory_contains(buffer: &[u8], name: &[u8]) -> bool {
 #[unsafe(no_mangle)]
 extern "C" fn main(_argc: usize, _argv: *const *const u8, _envp: *const *const u8) -> i32 {
     let _ = write(1, b"LiteOS init\n");
+    let mapping = mmap(
+        0,
+        3 * 4096,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS,
+    );
+    let vma_ok = if mapping >= 0 {
+        let base = mapping as usize;
+        // SAFETY: mmap 成功后这三页属于当前进程且为 RW；每次访问均位于映射页内。
+        unsafe {
+            (base as *mut u8).write_volatile(0x11);
+            ((base + 4096) as *mut u8).write_volatile(0x22);
+            ((base + 8192) as *mut u8).write_volatile(0x33);
+        }
+        let protected = mprotect(base + 4096, 4096, PROT_READ) == 0
+            && mprotect(base + 4096, 4096, PROT_READ | PROT_WRITE) == 0;
+        // SAFETY: 第二次 mprotect 已恢复中间页 RW，指针仍位于原映射。
+        unsafe { ((base + 4096) as *mut u8).write_volatile(0x44) };
+        let split = munmap(base + 4096, 4096) == 0;
+        let remapped = mmap(
+            base + 4096,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+        ) == (base + 4096) as isize;
+        let collision = mmap(
+            base + 4096,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,
+        ) == -17;
+        let wx_rejected = mmap(0, 4096, PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS) == -13;
+        // SAFETY: first/last values remain mapped; middle was remapped and is zero-filled.
+        let contents = unsafe {
+            (base as *const u8).read_volatile() == 0x11
+                && ((base + 4096) as *const u8).read_volatile() == 0
+                && ((base + 8192) as *const u8).read_volatile() == 0x33
+        };
+        protected
+            && split
+            && remapped
+            && collision
+            && wx_rejected
+            && contents
+            && munmap(base, 3 * 4096) == 0
+    } else {
+        false
+    };
+    let _ = write(1, if vma_ok { b"vma ok\n" } else { b"vma failed\n" });
     let payload = b"ext2 read-write persistence\n";
     let previous = openat(b"/rw-check\0", O_RDWR, 0);
     if previous >= 0 {

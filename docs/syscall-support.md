@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 27 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 30 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `exit_group` 在当前只有一个 thread 的 thread group 内语义完整，但 LiteOS 并不支持创建线程。
 
-## 2. 当前暴露的 27 个入口
+## 2. 当前暴露的 30 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -53,7 +53,10 @@
 | 173 | `getppid` | 无参数 | `0` | POSIX `getppid`；musl direct wrapper | **Complete**。当前唯一 Process 是 kernel-created PID 1，无 parent。引入 process creation 时必须与 parent owner 同步扩展。 | `kernel/src/syscall/process.rs` |
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
+| 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator | **Partial**。支持 anonymous private VMA 删除、洞忽略和左右拆分；触及 ELF/stack/heap 等非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
 | 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；`E2BIG/EACCES/EFAULT/EIO/ELOOP/ENAMETOOLONG/ENOENT/ENOEXEC/ENOMEM/ENOTDIR` | POSIX `execve`；musl direct wrapper | **Partial**。已支持 relative/root path、non-UTF8 bytes、full read、execute bit、CLOEXEC close、static ET_EXEC、BSS/W^X、Linux initial stack/auxv 和 failure rollback。缺失 symlink following、script interpreter、PIE/dynamic/TLS、完整 credentials、signal reset 和 sibling-thread handling；相关子系统当前均不存在。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
+| 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。只支持 eager `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`；fd 必须为 -1、offset 为 0。无 `PROT_NONE`、destructive `MAP_FIXED`、file/shared/lazy mapping，强制 W^X。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。完整 anonymous private 区间可拆分、变更 PTE 并合并等价 VMA；缺页整体失败。无 `PROT_NONE`，强制 W^X，非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
 
 文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单进程模型。
 
@@ -74,10 +77,7 @@
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | Not Planned | 不暴露部分 signal ABI。 |
 | 139 | `rt_sigreturn` | Removed | 已删除私有 frame 和取指地址 0 fallback。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
-| 215 | `munmap` | Missing | 无 VMA/VM object 模型。 |
 | 220 | `clone` | Not Planned | 无 parent/child/thread group、TLS、clear-tid、signal/futex 闭环。 |
-| 222 | `mmap` | Missing | 已删除错误近似实现；未建 VMA/VM object/file mapping 前不恢复。 |
-| 226 | `mprotect` | Missing | 无 VMA split/merge 和用户 W^X 变更契约。 |
 | 260 | `wait4` | Not Planned | 无 child relation；exit 直接回收，不保留伪 zombie。 |
 | 261 | `prlimit64` | Not Planned | 当前 init 启动不需 resource limits，不返回伪 infinity 表。 |
 | 278 | `getrandom` | Missing | 无经证明 entropy source/CRNG，不以 RTC/timer 冒充随机。 |
@@ -86,11 +86,11 @@
 
 ## 4. musl 结论
 
-当前 27 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
+当前 30 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
 
-1. `mmap/munmap/mprotect`；
-2. TLS/`clone/futex/set_tid_address/set_robust_list`；
-3. signal ABI；
-4. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation。
+1. TLS/`clone/futex/set_tid_address/set_robust_list`；
+2. signal ABI；
+3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
+4. file/shared mapping、`PROT_NONE` 与 destructive `MAP_FIXED`。
 
 因此不能将“编号与 musl header 一致”或“具有 Linux 格式 auxv”提升为 musl 兼容声明。

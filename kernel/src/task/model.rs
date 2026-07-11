@@ -9,8 +9,8 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, OpenFileDescription},
     memory::{
-        ElfLoadError, KERNEL_SPACE, KernelStack, MemoryError, MemorySet, TRAP_CONTEXT,
-        UserAccessError, VirtualAddress,
+        ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
+        TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
     task::{TrapContext, context::TaskContext, pid::ProcessId},
@@ -33,6 +33,33 @@ struct AddressSpace {
 }
 
 impl AddressSpace {
+    fn map_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+    ) -> Result<usize, MemoryError> {
+        self.memory_set
+            .lock()
+            .map_anonymous(address, length, permission, fixed_noreplace)
+    }
+
+    fn unmap_anonymous(&self, address: usize, length: usize) -> Result<(), MemoryError> {
+        self.memory_set.lock().unmap_anonymous(address, length)
+    }
+
+    fn protect_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+    ) -> Result<(), MemoryError> {
+        self.memory_set
+            .lock()
+            .protect_anonymous(address, length, permission)
+    }
+
     /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
     ///
     /// @param user_address 用户源地址。
@@ -315,6 +342,33 @@ impl TaskControlBlock {
             .memory_set
             .lock()
             .set_program_break(new_break)
+    }
+
+    pub(crate) fn map_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+    ) -> Result<usize, MemoryError> {
+        self.process
+            .address_space
+            .map_anonymous(address, length, permission, fixed_noreplace)
+    }
+
+    pub(crate) fn unmap_anonymous(&self, address: usize, length: usize) -> Result<(), MemoryError> {
+        self.process.address_space.unmap_anonymous(address, length)
+    }
+
+    pub(crate) fn protect_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+    ) -> Result<(), MemoryError> {
+        self.process
+            .address_space
+            .protect_anonymous(address, length, permission)
     }
 
     /// @description 取得当前 Thread 的 context-switch 保存区锁。

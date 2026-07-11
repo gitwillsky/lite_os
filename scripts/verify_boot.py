@@ -47,6 +47,7 @@ def boot(qemu: str, smp: int) -> None:
         f"dynamic hart topology initialized: count={smp}, mask={expected_mask:#x}",
         f"all DTB harts online: count={smp}, mask={expected_mask:#x}",
         "LiteOS init",
+        "vma ok",
         "ext2 rw ok",
     )
     command = [

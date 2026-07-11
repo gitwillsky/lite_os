@@ -223,6 +223,47 @@ impl PageTable {
         Ok(())
     }
 
+    /// @description 原地更新现有 leaf PTE 的访问权限并保留物理页号。
+    ///
+    /// @param vpn 必须已映射的虚拟页号。
+    /// @param flags 新权限；禁止 W-only 与 W+X。
+    /// @return 成功返回空值；缺页或非法权限返回明确错误。
+    pub(crate) fn set_flags(
+        &mut self,
+        vpn: VirtualPageNumber,
+        flags: PTEFlags,
+    ) -> Result<(), PageTableError> {
+        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R)
+            || flags.contains(PTEFlags::W | PTEFlags::X)
+        {
+            return Err(PageTableError::InvalidFlags);
+        }
+        let idxs = vpn.indexes();
+        let mut table_ppn = self.root_ppn;
+        for idx in &idxs[..2] {
+            let pte = Self::read_entry(table_ppn, *idx);
+            if !pte.is_pointer_to_next_table() {
+                return Err(PageTableError::NotMapped);
+            }
+            table_ppn = pte.ppn();
+        }
+        let index = idxs[2];
+        let old = Self::read_entry(table_ppn, index);
+        if !old.is_leaf() {
+            return Err(PageTableError::NotMapped);
+        }
+        let mut final_flags = flags | PTEFlags::V | PTEFlags::A;
+        if flags.contains(PTEFlags::W) {
+            final_flags |= PTEFlags::D;
+        }
+        Self::write_entry(
+            table_ppn,
+            index,
+            PageTableEntry::new(old.ppn(), final_flags),
+        );
+        Ok(())
+    }
+
     pub(crate) fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.find_pte(vpn)
             .and_then(|pte| (pte.is_valid() && pte.is_leaf()).then_some(pte))

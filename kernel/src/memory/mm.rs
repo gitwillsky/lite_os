@@ -19,6 +19,8 @@ pub(crate) enum MemoryError {
     OutOfMemory,
     PageTableError(PageTableError),
     InvalidRange,
+    AddressInUse,
+    PermissionDenied,
 }
 
 /// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
@@ -59,11 +61,25 @@ impl core::fmt::Display for MemoryError {
             MemoryError::OutOfMemory => write!(f, "Out of memory"),
             MemoryError::PageTableError(err) => write!(f, "Page table error: {err}"),
             MemoryError::InvalidRange => write!(f, "Invalid virtual memory range"),
+            MemoryError::AddressInUse => write!(f, "Virtual memory range is already mapped"),
+            MemoryError::PermissionDenied => write!(f, "Virtual memory operation is not allowed"),
         }
     }
 }
 
 impl Error for MemoryError {}
+
+impl MemoryError {
+    /// @description 判断失败是否来自物理页或页表页资源耗尽，不向上层泄漏页表错误类型。
+    ///
+    /// @return 资源耗尽返回 true，其他地址或权限错误返回 false。
+    pub(crate) fn is_out_of_memory(self) -> bool {
+        matches!(
+            self,
+            Self::OutOfMemory | Self::PageTableError(PageTableError::OutOfMemory)
+        )
+    }
+}
 
 /// @description 构造新用户映像时需要暴露给 `execve` 的失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +96,10 @@ impl From<MemoryError> for ElfLoadError {
             MemoryError::OutOfMemory | MemoryError::PageTableError(PageTableError::OutOfMemory) => {
                 Self::OutOfMemory
             }
-            MemoryError::PageTableError(_) | MemoryError::InvalidRange => Self::InvalidElf,
+            MemoryError::PageTableError(_)
+            | MemoryError::InvalidRange
+            | MemoryError::AddressInUse
+            | MemoryError::PermissionDenied => Self::InvalidElf,
         }
     }
 }
@@ -98,7 +117,7 @@ impl Error for ElfLoadError {}
 
 bitflags! {
     // PTE Flags 的子集
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct MapPermission: u8 {
         const R = 1 << 1; // 可读
         const W = 1 << 2; // 可写
@@ -113,6 +132,17 @@ pub(crate) enum MapType {
     Framed,    // 映射到分配的物理页帧
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum VmaKind {
+    System,
+    Heap {
+        base: usize,
+        program_break: usize,
+        limit: usize,
+    },
+    Anonymous,
+}
+
 #[derive(Debug)]
 pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
@@ -122,6 +152,7 @@ pub(crate) struct MapArea {
     map_permission: MapPermission,
     /// 是否标记为全局页（G位）。仅用于内核空间映射。
     global: bool,
+    kind: VmaKind,
 }
 
 impl MapArea {
@@ -143,7 +174,33 @@ impl MapArea {
             map_permission: permissions,
             map_type,
             global: false,
+            kind: VmaKind::System,
         }
+    }
+
+    fn anonymous(
+        start_va: VirtualAddress,
+        end_va: VirtualAddress,
+        permissions: MapPermission,
+    ) -> Self {
+        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
+        area.kind = VmaKind::Anonymous;
+        area
+    }
+
+    fn heap(base: usize, limit: usize) -> Self {
+        let mut area = Self::new(
+            base.into(),
+            base.into(),
+            MapType::Framed,
+            MapPermission::R | MapPermission::W | MapPermission::U,
+        );
+        area.kind = VmaKind::Heap {
+            base,
+            program_break: base,
+            limit,
+        };
+        area
     }
 
     pub(crate) fn set_global(mut self, global: bool) -> Self {
@@ -271,35 +328,64 @@ impl MapArea {
         };
         Ok(())
     }
+
+    fn partition_anonymous(
+        mut self,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+    ) -> (Option<Self>, Self, Option<Self>) {
+        debug_assert_eq!(self.kind, VmaKind::Anonymous);
+        debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
+        let original_start = self.vpn_range.start;
+        let original_end = self.vpn_range.end;
+        let right_frames = self.data_frames.split_off(&end);
+        let middle_frames = self.data_frames.split_off(&start);
+        let build = |range: Range<VirtualPageNumber>, data_frames| Self {
+            vpn_range: range,
+            data_page_offset: 0,
+            data_frames,
+            map_type: MapType::Framed,
+            map_permission: self.map_permission,
+            global: false,
+            kind: VmaKind::Anonymous,
+        };
+        let left = (original_start < start).then(|| build(original_start..start, self.data_frames));
+        let middle = build(start..end, middle_frames);
+        let right = (end < original_end).then(|| build(end..original_end, right_frames));
+        (left, middle, right)
+    }
+
+    fn merge_anonymous(mut self, mut right: Self) -> Self {
+        debug_assert_eq!(self.kind, VmaKind::Anonymous);
+        debug_assert_eq!(right.kind, VmaKind::Anonymous);
+        debug_assert_eq!(self.vpn_range.end, right.vpn_range.start);
+        debug_assert_eq!(self.map_permission, right.map_permission);
+        self.vpn_range.end = right.vpn_range.end;
+        self.data_frames.append(&mut right.data_frames);
+        self
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct MemorySet {
     page_table: PageTable,
-    areas: Vec<MapArea>,
-    user_heap: Option<UserHeap>,
-}
-
-#[derive(Debug, Clone)]
-struct UserHeap {
-    range: Range<usize>,
-    limit: usize,
+    areas: BTreeMap<VirtualPageNumber, MapArea>,
 }
 
 impl MemorySet {
+    const MMAP_BASE: usize = 0x4000_0000;
+
     pub(crate) fn new() -> Self {
         Self {
             page_table: PageTable::new(),
-            areas: Vec::new(),
-            user_heap: None,
+            areas: BTreeMap::new(),
         }
     }
 
     fn try_new() -> Result<Self, MemoryError> {
         Ok(Self {
             page_table: PageTable::try_new()?,
-            areas: Vec::new(),
-            user_heap: None,
+            areas: BTreeMap::new(),
         })
     }
 
@@ -308,7 +394,17 @@ impl MemorySet {
         mut map_area: MapArea,
         data: Option<&[u8]>,
     ) -> Result<(), MemoryError> {
-        // 先尝试映射；若中途失败，需要回滚已映射的页面，避免留下半映射导致后续查找空闲区域极慢
+        let start = map_area.vpn_range.start;
+        let end = map_area.vpn_range.end;
+        if self
+            .areas
+            .values()
+            .any(|area| start < area.vpn_range.end && area.vpn_range.start < end)
+            || self.areas.contains_key(&start)
+        {
+            return Err(MemoryError::AddressInUse);
+        }
+        // 先尝试映射；若中途失败，需要回滚已映射页面，保持 VMA 表与页表同时不变。
         if let Err(e) = map_area.map(&mut self.page_table) {
             // 回滚：解除已经映射的页面
             map_area.unmap(&mut self.page_table);
@@ -320,7 +416,7 @@ impl MemorySet {
             map_area.unmap(&mut self.page_table);
             return Err(error);
         }
-        self.areas.push(map_area);
+        self.areas.insert(start, map_area);
         Ok(())
     }
 
@@ -556,20 +652,7 @@ impl MemorySet {
         if base >= limit || !VirtualAddress::from(base).is_aligned() {
             return Err(MemoryError::InvalidRange);
         }
-        self.push(
-            MapArea::new(
-                base.into(),
-                base.into(),
-                MapType::Framed,
-                MapPermission::R | MapPermission::W | MapPermission::U,
-            ),
-            None,
-        )?;
-        self.user_heap = Some(UserHeap {
-            range: base..base,
-            limit,
-        });
-        Ok(())
+        self.push(MapArea::heap(base, limit), None)
     }
 
     /// @description 查询或原子提交当前用户地址空间的 program break。
@@ -577,27 +660,55 @@ impl MemorySet {
     /// @param new_break 新 break；零表示只查询。
     /// @return 成功返回提交后的 break；越界、映射冲突或 OOM 时返回错误且保持旧 break。
     pub(crate) fn set_program_break(&mut self, new_break: usize) -> Result<usize, MemoryError> {
-        let heap = self.user_heap.clone().ok_or(MemoryError::InvalidRange)?;
+        let heap_key = self
+            .areas
+            .iter()
+            .find_map(|(key, area)| matches!(area.kind, VmaKind::Heap { .. }).then_some(*key))
+            .ok_or(MemoryError::InvalidRange)?;
+        let (base, old_break, limit, old_page_end) = match self.areas[&heap_key].kind {
+            VmaKind::Heap {
+                base,
+                program_break,
+                limit,
+            } => (
+                base,
+                program_break,
+                limit,
+                self.areas[&heap_key].vpn_range.end,
+            ),
+            _ => return Err(MemoryError::InvalidRange),
+        };
         if new_break == 0 {
-            return Ok(heap.range.end);
+            return Ok(old_break);
         }
-        if new_break < heap.range.start || new_break > heap.limit {
+        if new_break < base || new_break > limit {
             return Err(MemoryError::InvalidRange);
         }
-
+        let new_page_end = VirtualAddress::from(new_break).ceil();
+        if new_page_end > old_page_end
+            && self
+                .areas
+                .range((
+                    core::ops::Bound::Excluded(heap_key),
+                    core::ops::Bound::Unbounded,
+                ))
+                .next()
+                .is_some_and(|(next, _)| new_page_end > *next)
+        {
+            return Err(MemoryError::AddressInUse);
+        }
         let area = self
             .areas
-            .iter_mut()
-            .find(|area| area.vpn_range.start == VirtualAddress::from(heap.range.start).floor())
+            .get_mut(&heap_key)
             .ok_or(MemoryError::InvalidRange)?;
-        let old_page_end = VirtualAddress::from(heap.range.end).ceil();
-        let new_page_end = VirtualAddress::from(new_break).ceil();
         if new_page_end > old_page_end {
             area.append_to(&mut self.page_table, new_page_end)?;
         } else if new_page_end < old_page_end {
             area.shrink_to(&mut self.page_table, new_page_end)?;
         }
-        self.user_heap.as_mut().unwrap().range.end = new_break;
+        if let VmaKind::Heap { program_break, .. } = &mut area.kind {
+            *program_break = new_break;
+        }
 
         if new_page_end != old_page_end {
             Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after brk page-table update");
@@ -605,14 +716,242 @@ impl MemorySet {
         Ok(new_break)
     }
 
-    pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
-        if let Some(idx) = self
-            .areas
-            .iter()
-            .position(|area| area.vpn_range.start == start_vpn)
+    fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
+        start < end
+            && !self
+                .areas
+                .values()
+                .any(|area| start < area.vpn_range.end && area.vpn_range.start < end)
+    }
+
+    fn find_free_user_range(
+        &self,
+        first: VirtualPageNumber,
+        page_count: usize,
+    ) -> Option<Range<VirtualPageNumber>> {
+        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let mut start = first.as_usize().max(1);
+        for area in self.areas.values() {
+            let area_start = area.vpn_range.start.as_usize();
+            let area_end = area.vpn_range.end.as_usize();
+            if area_end <= start {
+                continue;
+            }
+            if let Some(end) = start.checked_add(page_count)
+                && end <= area_start.min(user_end)
+            {
+                return Some(start.into()..end.into());
+            }
+            start = start.max(area_end);
+            if start >= user_end {
+                return None;
+            }
+        }
+        let end = start.checked_add(page_count)?;
+        (end <= user_end).then(|| start.into()..end.into())
+    }
+
+    /// @description 建立 eager anonymous private 用户映射，VMA 表是区间与页帧的唯一 owner。
+    ///
+    /// @param address 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
+    /// @param length 非零字节长度，向上取整到整页。
+    /// @param permission 用户页权限；必须含 U，禁止空权限和 W+X。
+    /// @param fixed_noreplace 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
+    /// @return 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
+    pub(crate) fn map_anonymous(
+        &mut self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+    ) -> Result<usize, MemoryError> {
+        if length == 0
+            || !permission.contains(MapPermission::U)
+            || !permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
+            || permission.contains(MapPermission::W | MapPermission::X)
+            || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
+            return Err(MemoryError::InvalidRange);
+        }
+        let page_count = length
+            .checked_add(config::PAGE_SIZE - 1)
+            .ok_or(MemoryError::InvalidRange)?
+            / config::PAGE_SIZE;
+        let hinted_start = VirtualAddress::from(address).floor();
+        let hinted_end = hinted_start
+            .as_usize()
+            .checked_add(page_count)
+            .map(VirtualPageNumber::from_vpn)
+            .ok_or(MemoryError::InvalidRange)?;
+        let user_end_vpn = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let hint_is_valid = address != 0
+            && hinted_start.as_usize() < user_end_vpn
+            && hinted_end.as_usize() <= user_end_vpn;
+        let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
+            hinted_start..hinted_end
+        } else if fixed_noreplace {
+            return Err(if hint_is_valid {
+                MemoryError::AddressInUse
+            } else {
+                MemoryError::InvalidRange
+            });
+        } else {
+            self.find_free_user_range(VirtualAddress::from(Self::MMAP_BASE).floor(), page_count)
+                .ok_or(MemoryError::OutOfMemory)?
+        };
+        let start_address = usize::from(VirtualAddress::from(range.start));
+        let end_address = usize::from(VirtualAddress::from(range.end));
+        self.push(
+            MapArea::anonymous(start_address.into(), end_address.into(), permission),
+            None,
+        )?;
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mmap page-table update");
+        Ok(start_address)
+    }
+
+    fn overlapping_anonymous_keys(
+        &self,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+    ) -> Result<Vec<VirtualPageNumber>, MemoryError> {
+        let mut keys = Vec::new();
+        for (key, area) in &self.areas {
+            if start < area.vpn_range.end && area.vpn_range.start < end {
+                if area.kind != VmaKind::Anonymous {
+                    return Err(MemoryError::PermissionDenied);
+                }
+                keys.push(*key);
+            }
+        }
+        Ok(keys)
+    }
+
+    fn merge_adjacent_anonymous(&mut self) {
+        loop {
+            let keys: Vec<_> = self.areas.keys().copied().collect();
+            let Some((left_key, right_key)) = keys.windows(2).find_map(|pair| {
+                let left = &self.areas[&pair[0]];
+                let right = &self.areas[&pair[1]];
+                (left.kind == VmaKind::Anonymous
+                    && right.kind == VmaKind::Anonymous
+                    && left.vpn_range.end == right.vpn_range.start
+                    && left.map_permission == right.map_permission)
+                    .then_some((pair[0], pair[1]))
+            }) else {
+                break;
+            };
+            let left = self.areas.remove(&left_key).unwrap();
+            let right = self.areas.remove(&right_key).unwrap();
+            self.areas.insert(left_key, left.merge_anonymous(right));
+        }
+    }
+
+    /// @description 解除 anonymous private 页；未映射洞按 Linux `munmap` 语义忽略。
+    ///
+    /// @param address page-aligned 起始地址。
+    /// @param length 非零字节长度，向上取整到整页。
+    /// @return 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
+    pub(crate) fn unmap_anonymous(
+        &mut self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), MemoryError> {
+        let range = Self::checked_page_range(address, length)?;
+        let keys = self.overlapping_anonymous_keys(range.start, range.end)?;
+        for key in keys {
+            let area = self.areas.remove(&key).unwrap();
+            let cut_start = range.start.max(area.vpn_range.start);
+            let cut_end = range.end.min(area.vpn_range.end);
+            let (left, mut middle, right) = area.partition_anonymous(cut_start, cut_end);
+            middle.unmap(&mut self.page_table);
+            if let Some(left) = left {
+                self.areas.insert(left.vpn_range.start, left);
+            }
+            if let Some(right) = right {
+                self.areas.insert(right.vpn_range.start, right);
+            }
+        }
+        if !self.range_is_free(range.start, range.end) {
+            return Err(MemoryError::PermissionDenied);
+        }
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after munmap page-table update");
+        Ok(())
+    }
+
+    fn checked_page_range(
+        address: usize,
+        length: usize,
+    ) -> Result<Range<VirtualPageNumber>, MemoryError> {
+        if address == 0 || length == 0 || !VirtualAddress::from(address).is_aligned() {
+            return Err(MemoryError::InvalidRange);
+        }
+        let end = address
+            .checked_add(length)
+            .and_then(|value| value.checked_add(config::PAGE_SIZE - 1))
+            .map(|value| value / config::PAGE_SIZE * config::PAGE_SIZE)
+            .ok_or(MemoryError::InvalidRange)?;
+        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        if end > user_end {
+            return Err(MemoryError::InvalidRange);
+        }
+        Ok(VirtualAddress::from(address).floor()..VirtualAddress::from(end).floor())
+    }
+
+    /// @description 修改完整 anonymous private 区间权限，并按边界拆分后合并等价 VMA。
+    ///
+    /// @param address page-aligned 起始地址。
+    /// @param length 非零字节长度，向上取整到整页。
+    /// @param permission 新用户权限；禁止空权限与 W+X。
+    /// @return 成功返回空值；缺页或非 anonymous 区间在修改前整体失败。
+    pub(crate) fn protect_anonymous(
+        &mut self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+    ) -> Result<(), MemoryError> {
+        if !permission.contains(MapPermission::U)
+            || !permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
+            || permission.contains(MapPermission::W | MapPermission::X)
+        {
+            return Err(MemoryError::InvalidRange);
+        }
+        let range = Self::checked_page_range(address, length)?;
+        let keys = self.overlapping_anonymous_keys(range.start, range.end)?;
+        let mut covered = range.start;
+        for key in &keys {
+            let area = &self.areas[key];
+            if area.vpn_range.start > covered {
+                return Err(MemoryError::InvalidRange);
+            }
+            covered = covered.max(area.vpn_range.end);
+        }
+        if covered < range.end {
+            return Err(MemoryError::InvalidRange);
+        }
+        for key in keys {
+            let area = self.areas.remove(&key).unwrap();
+            let change_start = range.start.max(area.vpn_range.start);
+            let change_end = range.end.min(area.vpn_range.end);
+            let (left, mut middle, right) = area.partition_anonymous(change_start, change_end);
+            let pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
+            for vpn in change_start.as_usize()..change_end.as_usize() {
+                self.page_table
+                    .set_flags(VirtualPageNumber::from_vpn(vpn), pte_flags)
+                    .expect("validated anonymous VMA must own a leaf PTE");
+            }
+            middle.map_permission = permission;
+            for segment in [left, Some(middle), right].into_iter().flatten() {
+                self.areas.insert(segment.vpn_range.start, segment);
+            }
+        }
+        self.merge_adjacent_anonymous();
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mprotect page-table update");
+        Ok(())
+    }
+
+    pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
+        if let Some(mut area) = self.areas.remove(&start_vpn) {
             // 将目标区域移出容器后再执行 unmap，规避潜在别名问题
-            let mut area = self.areas.remove(idx);
             area.unmap(&mut self.page_table);
         }
     }
