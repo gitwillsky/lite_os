@@ -1,0 +1,33 @@
+kernel/src/fs/file.rs
+  s_d637a88cd4b00d::t_ad9726b304f9a0 5,11,18,397-404,409,490-513,516-533,537-545
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_1fa4f9a513b3db 10-11
+kernel/src/ipc.rs
+  s_d637a88cd4b00d::t_60617653cbea90 1-190
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_81ef8c45aa9110 24
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_6dbfe7c102facd 39-40
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_00aa219d86636c 438-445
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_3bea9424ddd593 11,136-139,141-147,162,173,271-297,306-312,339-350,688-689,723-726,1071,1154-1240,1307-1352,1648-1650
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "25dbcce957b049da29b8f5475fd1640799cdb563",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
