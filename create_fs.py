@@ -14,9 +14,12 @@ def find_tool(candidates):
             return path
     return None
 
-def create_ext2_filesystem(filename, size_mb=128):
+def create_ext2_filesystem(filename, init_elf, size_mb=128):
     """创建 4K 块大小的 ext2 文件系统并用 debugfs 写入文件（兼容 macOS）。"""
 
+    if not os.path.isfile(init_elf):
+        print(f"✗ 未找到用户程序 ELF: {init_elf}")
+        return False
     print(f"创建 {size_mb}MB 的ext2(4K) 文件系统映像: {filename}")
 
     # 1. 创建空的映像文件
@@ -56,22 +59,17 @@ def create_ext2_filesystem(filename, size_mb=128):
         print("✗ 未找到 debugfs（e2fsprogs）。请安装: brew install e2fsprogs 或 apt install e2fsprogs")
         return False
 
-    return copy_files_to_ext2(filename, debugfs)
+    return copy_files_to_ext2(filename, debugfs, init_elf)
 
-def collect_binaries():
+def collect_binaries(init_elf):
     """仅收集最小用户态启动骨架允许进入镜像的 ELF。"""
-
-    init_elf = "target/riscv64gc-unknown-none-elf/release/init"
-    if not os.path.isfile(init_elf):
-        print(f"⚠ 未找到用户程序 ELF: {init_elf}")
-        return []
 
     print("允许写入镜像的用户程序: ['init']")
     return [(init_elf, "/bin/init")]
 
-def copy_files_to_ext2(image_path, debugfs_bin):
+def copy_files_to_ext2(image_path, debugfs_bin, init_elf):
     """通过 debugfs 将文件写入 ext2 镜像。"""
-    bin_entries = collect_binaries()
+    bin_entries = collect_binaries(init_elf)
 
     # 构建 debugfs 命令脚本
     commands = []
@@ -118,11 +116,13 @@ def main():
                        help='文件系统映像文件名 (默认: fs.img)')
     parser.add_argument('--size', '-s', type=int, default=128,
                        help='文件系统大小(MB) (默认: 128)')
+    parser.add_argument('--init', default='target/riscv64gc-unknown-none-elf/release/init',
+                       help='写入 /bin/init 的静态 ELF')
 
     args = parser.parse_args()
 
     print(f"创建LiteOS文件系统(ext2): {args.file} ({args.size}MB)")
-    if create_ext2_filesystem(args.file, args.size):
+    if create_ext2_filesystem(args.file, args.init, args.size):
         print("\n🎉 文件系统创建成功!")
     else:
         print("\n❌ 文件系统创建失败!")

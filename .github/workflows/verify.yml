@@ -17,7 +17,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes e2fsprogs llvm qemu-system-misc
+          sudo apt-get install --yes e2fsprogs gcc-riscv64-linux-gnu llvm qemu-system-misc
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install nightly-2025-06-15 --profile minimal --component rustfmt

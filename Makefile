@@ -39,7 +39,11 @@ verify:
 	cargo run --quiet -p architecture-check
 	python3 scripts/verify_artifacts.py
 	python3 scripts/verify_boot.py
+	python3 scripts/verify_musl.py
 	git diff --check
+
+verify-musl: build-kernel build-bootloader
+	python3 scripts/verify_musl.py
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'

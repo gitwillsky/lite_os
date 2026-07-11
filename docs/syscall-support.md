@@ -87,11 +87,11 @@
 
 ## 4. musl 结论
 
-当前 39 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
+当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 最小静态 consumer：真实路径覆盖 musl crt/libc 初始化、内建主线程区、`set_tid_address`、`sysconf/getpid/malloc/free/clock_gettime/write/exit_group`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex timeout/requeue/PI、完整 clone/exit_group 语义；
 2. signal interruption/restart、altstack、process-directed delivery；
 3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
 4. file/shared mapping、`PROT_NONE` 与 destructive `MAP_FIXED`。
 
-因此不能将“编号与 musl header 一致”或“具有 Linux 格式 auxv”提升为 musl 兼容声明。
+因此不能将固定 smoke 通过、编号一致或具有 Linux 格式 auxv 提升为通用 musl 兼容声明。

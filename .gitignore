@@ -6,3 +6,4 @@ link_app.S
 *.img
 virtio-drivers/
 *.wasm
+__pycache__/
