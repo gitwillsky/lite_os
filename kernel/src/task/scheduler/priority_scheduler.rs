@@ -17,7 +17,7 @@ impl PriorityScheduler {
 
 impl Scheduler for PriorityScheduler {
     fn add_task(&mut self, task: Arc<TaskControlBlock>) {
-        let priority = task.sched.lock().get_dynamic_priority() as usize;
+        let priority = task.scheduling.policy.lock().get_dynamic_priority() as usize;
         let priority = priority.min(39); // 确保不越界
         self.priority_queues[priority].push_back(task);
     }
@@ -36,11 +36,10 @@ impl Scheduler for PriorityScheduler {
         self.priority_queues.iter().map(|queue| queue.len()).sum()
     }
 
-    fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+    fn find_task_by_tid(&self, tid: usize) -> Option<Arc<TaskControlBlock>> {
         self.priority_queues
             .iter()
-            .find(|queue| queue.iter().find(|t| t.pid() == pid).is_some())
-            .map(|queue| queue.iter().find(|t| t.pid() == pid).unwrap().clone())
+            .find_map(|queue| queue.iter().find(|task| task.tid() == tid).cloned())
     }
 
     fn get_all_tasks(&self) -> alloc::vec::Vec<Arc<TaskControlBlock>> {

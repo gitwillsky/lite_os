@@ -37,11 +37,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
                     written as isize
                 };
             };
-            if task
-                .mm
-                .copy_from_user(address, &mut chunk[..count])
-                .is_err()
-            {
+            if task.copy_from_user(address, &mut chunk[..count]).is_err() {
                 return if written == 0 {
                     -EFAULT
                 } else {
@@ -58,7 +54,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         return written as isize;
     }
 
-    let Some(descriptor) = task.file.lock().fd(fd) else {
+    let Some(descriptor) = task.file_table().lock().fd(fd) else {
         return -EBADF;
     };
 
@@ -69,7 +65,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
         let Some(address) = (buf as usize).checked_add(total) else {
             return if total == 0 { -EFAULT } else { total as isize };
         };
-        if task.mm.copy_from_user(address, &mut data[..count]).is_err() {
+        if task.copy_from_user(address, &mut data[..count]).is_err() {
             return if total == 0 { -EFAULT } else { total as isize };
         }
         let written = match descriptor.write_at(&data[..count]) {
@@ -99,7 +95,7 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
     };
 
     if fd == STDIN_FILENO {
-        if !task.mm.is_user_writable(buf as usize, 1) {
+        if !task.is_user_writable(buf as usize, 1) {
             return -EFAULT;
         }
         let byte = loop {
@@ -109,14 +105,14 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
                 Err(_) => return -EIO,
             }
         };
-        return if task.mm.copy_to_user(buf as usize, &[byte]).is_ok() {
+        return if task.copy_to_user(buf as usize, &[byte]).is_ok() {
             1
         } else {
             -EFAULT
         };
     }
 
-    let Some(descriptor) = task.file.lock().fd(fd) else {
+    let Some(descriptor) = task.file_table().lock().fd(fd) else {
         return -EBADF;
     };
 
@@ -134,7 +130,7 @@ pub fn sys_read(fd: usize, buf: *mut u8, len: usize) -> isize {
         let Some(address) = (buf as usize).checked_add(total) else {
             return if total == 0 { -EFAULT } else { total as isize };
         };
-        if task.mm.copy_to_user(address, &data[..read]).is_err() {
+        if task.copy_to_user(address, &data[..read]).is_err() {
             return if total == 0 { -EFAULT } else { total as isize };
         }
         total += read;
@@ -156,7 +152,7 @@ pub fn sys_close(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -ESRCH;
     };
-    if task.file.lock().close_fd(fd) {
+    if task.file_table().lock().close_fd(fd) {
         0
     } else {
         -EBADF
@@ -173,7 +169,7 @@ pub fn sys_lseek(fd: usize, offset: isize, whence: usize) -> isize {
     let Some(task) = current_task() else {
         return -ESRCH;
     };
-    let Some(descriptor) = task.file.lock().fd(fd) else {
+    let Some(descriptor) = task.file_table().lock().fd(fd) else {
         return -EBADF;
     };
 
@@ -202,7 +198,7 @@ pub fn sys_get_cwd(buf: *mut u8, len: usize) -> isize {
     let Some(task) = current_task() else {
         return -ESRCH;
     };
-    let cwd = task.cwd.lock();
+    let cwd = task.cwd();
     let required = cwd.len() + 1;
     if len < required {
         return -EINVAL;
@@ -211,7 +207,7 @@ pub fn sys_get_cwd(buf: *mut u8, len: usize) -> isize {
     let mut bytes = Vec::with_capacity(required);
     bytes.extend_from_slice(cwd.as_bytes());
     bytes.push(0);
-    if task.mm.copy_to_user(buf as usize, &bytes).is_err() {
+    if task.copy_to_user(buf as usize, &bytes).is_err() {
         return -EFAULT;
     }
     required as isize
@@ -225,7 +221,7 @@ pub fn sys_dup(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -ESRCH;
     };
-    task.file
+    task.file_table()
         .lock()
         .dup_fd(fd)
         .map(|new_fd| new_fd as isize)
@@ -248,7 +244,7 @@ pub fn sys_fcntl(fd: usize, cmd: i32, _arg: usize) -> isize {
         return if cmd == F_GETFL { 0 } else { -ENOSYS };
     }
 
-    let Some(descriptor) = task.file.lock().fd(fd) else {
+    let Some(descriptor) = task.file_table().lock().fd(fd) else {
         return -EBADF;
     };
     match cmd {

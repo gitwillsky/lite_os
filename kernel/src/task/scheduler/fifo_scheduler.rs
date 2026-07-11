@@ -27,10 +27,10 @@ impl Scheduler for FIFOScheduler {
         self.tasks.len()
     }
 
-    fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+    fn find_task_by_tid(&self, tid: usize) -> Option<Arc<TaskControlBlock>> {
         self.tasks
             .iter()
-            .find(|t| t.pid() == pid)
+            .find(|task| task.tid() == tid)
             .map(|t| t.clone())
     }
 

@@ -20,9 +20,9 @@ use crate::{
         kernel_stack::KernelStack,
         mm::{self, MemorySet, UserAccessError},
     },
-    signal::SignalState,
+    signal::{SignalDispositions, ThreadSignalState},
     sync::IrqMutex,
-    task::{context::TaskContext, pid::PidHandle, task_manager::set_task_status},
+    task::{context::TaskContext, pid::ProcessId, task_manager::set_task_status},
     trap::{TrapContext, trap_handler},
 };
 
@@ -71,63 +71,17 @@ impl FileDescriptor {
 pub enum TaskStatus {
     Ready,
     Running,
-    Zombie,
+    Exited,
     Sleeping, // 对应Linux的TASK_INTERRUPTIBLE，可中断的睡眠/阻塞
     Stopped,  // 对应Linux的TASK_STOPPED，被信号暂停（如SIGTSTP）
 }
 
 #[derive(Debug)]
-pub struct Memory {
-    /// 用户态的内存空间（线程共享）
-    pub memory_set: alloc::sync::Arc<Mutex<mm::MemorySet>>,
-    /// 内核栈
-    kernel_stack: KernelStack,
-    /// 用户态 TrapContext 的虚拟地址（每线程独立）
-    trap_cx_va: Mutex<usize>,
-    /// 用户态的 TaskContext
-    pub task_cx: Mutex<TaskContext>,
+struct AddressSpace {
+    memory_set: Mutex<mm::MemorySet>,
 }
 
-impl Memory {
-    /// @description 覆盖 supervisor-only trap context 页中的保存上下文。
-    ///
-    /// @param trap_context 待写入的完整上下文值。
-    /// @return 无返回值；trap context 映射缺失表示 kernel 内部不变量损坏并 panic。
-    pub fn set_trap_context(&self, trap_context: TrapContext) {
-        let va = *self.trap_cx_va.lock();
-        let memory_set = self.memory_set.lock();
-        let ppn = memory_set.trap_context_ppn(va);
-        let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
-        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
-        assert!(
-            ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
-        );
-        // SAFETY: memory_set guard 保证映射和 FrameTracker 在写入期间存活；trap context
-        // 位于单页 supervisor-only framed area，当前 task 是该上下文的唯一软件写者。
-        unsafe { ptr.write(trap_context) };
-    }
-
-    /// @description 复制 supervisor-only trap context，禁止底层用户映射引用逃逸锁。
-    ///
-    /// @return 当前完整 trap context 的 owned clone；映射缺失表示 kernel 内部不变量损坏并 panic。
-    pub fn load_trap_context(&self) -> TrapContext {
-        let va = *self.trap_cx_va.lock();
-        let memory_set = self.memory_set.lock();
-        let ppn = memory_set.trap_context_ppn(va);
-        let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
-        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
-        assert!(
-            ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
-        );
-        // SAFETY: memory_set guard 保证映射和 FrameTracker 存活；只读引用仅用于本行 clone，
-        // 不会离开 guard 生命周期，TrapContext 已由 set_trap_context 完整初始化。
-        unsafe { (&*ptr).clone() }
-    }
-
+impl AddressSpace {
     /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
     ///
     /// @param user_address 用户源地址。
@@ -183,6 +137,15 @@ impl Memory {
     pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
         self.memory_set.lock().is_user_writable(user_address, len)
     }
+}
+
+#[derive(Debug)]
+struct ThreadContext {
+    tid: usize,
+    kernel_stack: KernelStack,
+    trap_cx_va: Mutex<usize>,
+    task_cx: Mutex<TaskContext>,
+    signals: Mutex<ThreadSignalState>,
 }
 
 #[derive(Debug)]
@@ -251,11 +214,6 @@ impl File {
         self.fd_table.remove(&fd).is_some()
     }
 
-    /// 关闭所有文件描述符（进程退出时调用）
-    pub fn close_all_fds(&mut self) {
-        self.fd_table.clear();
-    }
-
     /// 关闭标记了O_CLOEXEC的文件描述符（execve时调用）
     pub fn close_cloexec_fds(&mut self) {
         const O_CLOEXEC: u32 = 0o2000000;
@@ -286,13 +244,26 @@ impl File {
 }
 
 #[derive(Debug)]
-pub struct Sched {
+pub(crate) struct Sched {
     /// 本次运行开始的 monotonic 时间，只在 sched mutex 内访问。
     pub last_runtime: u64,
     /// nice值 (-20到19, 影响动态优先级计算)
     pub nice: i32,
     /// 累计运行时间 (用于CFS调度算法)
     pub vruntime: u64,
+}
+
+/// @description 调度器唯一拥有和解释的 Thread 运行状态。
+pub(crate) struct SchedulingEntity {
+    // timer softirq 与 task context 共同转换该状态；普通 spin lock 会在同 hart 再入时死锁。
+    pub(crate) status: IrqMutex<TaskStatus>,
+    pub(crate) policy: Mutex<Sched>,
+    /// 只作为下次 CPU 选择的亲和性 hint，不发布 task 状态。
+    pub(crate) last_cpu: AtomicUsize,
+    /// 睡眠唤醒时间（纳秒），0 表示不在 deadline sleep 中。
+    pub(crate) wake_time_ns: AtomicU64,
+    /// 被停止前的状态，仅用于 SIGCONT 恢复。
+    pub(crate) status_before_stop: Mutex<Option<TaskStatus>>,
 }
 
 impl Sched {
@@ -316,84 +287,78 @@ impl Sched {
     }
 }
 
-/// Task Control block structure
-pub struct TaskControlBlock {
-    name: Mutex<String>,
-
-    pid: PidHandle,
-    /// 进程状态
-    // timer softirq 与 task context 共同转换该状态；普通 spin lock 会在同 hart 再入时死锁。
-    pub task_status: IrqMutex<TaskStatus>,
-
-    pub mm: Memory,
-    pub file: Arc<Mutex<File>>,
-    pub sched: Mutex<Sched>,
-    /// 信号状态
-    pub signal_state: Mutex<SignalState>,
-
-    /// 任务退出状态
-    exit_code: Mutex<i32>,
-    /// 当前工作目录
-    pub cwd: Mutex<String>,
-
-    /// 只作为下次 CPU 选择的亲和性 hint，不发布 task 状态。
-    pub last_cpu: AtomicUsize,
-
-    /// 当前最小 credentials 状态；uid/euid 必须在同一临界区检查并更新。
-    credentials: Mutex<Credentials>,
-
-    /// 睡眠唤醒时间（纳秒），0表示不在睡眠中
-    pub wake_time_ns: AtomicU64,
-
-    /// 被停止前的状态（用于SIGCONT恢复）
-    pub prev_status_before_stop: Mutex<Option<TaskStatus>>,
-}
-
 struct Credentials {
     uid: u32,
     euid: u32,
 }
 
+/// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
+struct Process {
+    name: Mutex<String>,
+    tgid: ProcessId,
+    address_space: AddressSpace,
+    file: Mutex<File>,
+    cwd: Mutex<String>,
+    credentials: Mutex<Credentials>,
+    signal_dispositions: Mutex<SignalDispositions>,
+}
+
+/// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
+pub struct TaskControlBlock {
+    process: Process,
+    thread: ThreadContext,
+    pub(crate) scheduling: SchedulingEntity,
+}
+
 impl TaskControlBlock {
-    pub fn new_with_pid(
+    pub(super) fn new_with_pid(
         name: &str,
         elf_data: &[u8],
-        pid: PidHandle,
+        pid: ProcessId,
     ) -> Result<Self, Box<dyn Error>> {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data)?;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
-        let tcb = Self {
+        let tid = pid.0;
+        let process = Process {
             name: Mutex::new(name.to_string()),
-            pid,
-            task_status: IrqMutex::new(TaskStatus::Ready),
-            mm: Memory {
-                memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
+            tgid: pid,
+            address_space: AddressSpace {
+                memory_set: Mutex::new(memory_set),
+            },
+            file: Mutex::new(File {
+                fd_table: BTreeMap::new(),
+                next_fd: 3,
+            }),
+            cwd: Mutex::new("/".to_string()),
+            credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
+            signal_dispositions: Mutex::new(SignalDispositions::new()),
+        };
+        let tcb = Self {
+            process,
+            thread: ThreadContext {
+                tid,
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
+                signals: Mutex::new(ThreadSignalState::new()),
             },
-            file: Arc::new(Mutex::new(File {
-                fd_table: BTreeMap::new(),
-                next_fd: 3,
-            })),
-            sched: Mutex::new(Sched {
-                last_runtime: 0,
-                nice: 0,
-                vruntime: 0,
-            }),
-            signal_state: Mutex::new(SignalState::new()),
-            exit_code: Mutex::new(0),
-            cwd: Mutex::new("/".to_string()), // 新进程默认工作目录为根目录
-            last_cpu: AtomicUsize::new(0),
-            credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
-            wake_time_ns: AtomicU64::new(0),
-            prev_status_before_stop: Mutex::new(None),
+            scheduling: SchedulingEntity {
+                status: IrqMutex::new(TaskStatus::Ready),
+                policy: Mutex::new(Sched {
+                    last_runtime: 0,
+                    nice: 0,
+                    vruntime: 0,
+                }),
+                last_cpu: AtomicUsize::new(0),
+                wake_time_ns: AtomicU64::new(0),
+                status_before_stop: Mutex::new(None),
+            },
         };
 
         // prepare TrapContext in user space
-        tcb.mm.set_trap_context(TrapContext::app_init_context(
+        tcb.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
@@ -405,19 +370,139 @@ impl TaskControlBlock {
 
     /// 获取当前线程TrapContext虚拟地址
     pub fn trap_context_va(&self) -> usize {
-        *self.mm.trap_cx_va.lock()
+        *self.thread.trap_cx_va.lock()
     }
 
-    /// execve_replace - Linux标准的execve实现
+    /// @description 覆盖当前 Thread 的 supervisor-only trap context。
     ///
-    /// 完全替换当前进程的内存映像，按照POSIX标准：
-    /// - 保留PID、PPID、会话ID、进程组ID
-    /// - 关闭标记了O_CLOEXEC的文件描述符  
-    /// - 重置信号处理器为默认状态
-    /// - 重置地址空间和程序状态
-    /// - 成功时不返回（进程被新程序替换）
+    /// @param trap_context 待写入的完整上下文值。
+    /// @return 无返回值；映射缺失表示 kernel 不变量损坏并 panic。
+    pub fn set_trap_context(&self, trap_context: TrapContext) {
+        let va = self.trap_context_va();
+        let memory_set = self.process.address_space.memory_set.lock();
+        let ppn = memory_set.trap_context_ppn(va);
+        let offset = VirtualAddress::from(va).page_offset();
+        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
+        assert!(
+            ptr.is_aligned(),
+            "TrapContext physical address is not aligned"
+        );
+        // SAFETY: address-space guard 保证映射存活；当前 Thread 是该 trap context 的唯一写者。
+        unsafe { ptr.write(trap_context) };
+    }
+
+    /// @description 复制当前 Thread trap context，不让底层映射引用逃逸地址空间锁。
+    ///
+    /// @return owned TrapContext clone；映射缺失表示 kernel 不变量损坏并 panic。
+    pub fn load_trap_context(&self) -> TrapContext {
+        let va = self.trap_context_va();
+        let memory_set = self.process.address_space.memory_set.lock();
+        let ppn = memory_set.trap_context_ppn(va);
+        let offset = VirtualAddress::from(va).page_offset();
+        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
+        assert!(
+            ptr.is_aligned(),
+            "TrapContext physical address is not aligned"
+        );
+        // SAFETY: guard 保证 frame 存活；只读引用仅用于本行 clone 且不会逃逸。
+        unsafe { (&*ptr).clone() }
+    }
+
+    pub fn copy_from_user(
+        &self,
+        user_address: usize,
+        destination: &mut [u8],
+    ) -> Result<(), UserAccessError> {
+        self.process
+            .address_space
+            .copy_from_user(user_address, destination)
+    }
+
+    pub fn copy_to_user(&self, user_address: usize, source: &[u8]) -> Result<(), UserAccessError> {
+        self.process
+            .address_space
+            .copy_to_user(user_address, source)
+    }
+
+    pub fn copy_user_string(
+        &self,
+        user_address: usize,
+        max_len: usize,
+    ) -> Result<String, UserAccessError> {
+        self.process
+            .address_space
+            .copy_user_string(user_address, max_len)
+    }
+
+    pub fn is_user_executable(&self, user_address: usize) -> bool {
+        self.process.address_space.is_user_executable(user_address)
+    }
+
+    pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
+        self.process
+            .address_space
+            .is_user_writable(user_address, len)
+    }
+
+    pub fn user_token(&self) -> usize {
+        self.process.address_space.memory_set.lock().token()
+    }
+
+    pub fn set_program_break(&self, new_break: usize) -> Result<usize, mm::MemoryError> {
+        self.process
+            .address_space
+            .memory_set
+            .lock()
+            .set_program_break(new_break)
+    }
+
+    /// @description 取得当前 Thread 的 context-switch 保存区锁。
+    ///
+    /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
+    pub fn task_context(&self) -> &Mutex<TaskContext> {
+        &self.thread.task_cx
+    }
+
+    /// @description 取得当前 Thread 独占的 signal pending/mask 锁。
+    ///
+    /// @return ThreadSignalState mutex；不得用于修改 process dispositions。
+    pub fn thread_signals(&self) -> &Mutex<ThreadSignalState> {
+        &self.thread.signals
+    }
+
+    /// @description 取得 Process 级共享 signal dispositions 锁。
+    ///
+    /// @return SignalDispositions mutex；不得用于修改 thread pending/mask。
+    pub fn signal_dispositions(&self) -> &Mutex<SignalDispositions> {
+        &self.process.signal_dispositions
+    }
+
+    /// @description 取得 Process 独占的 FileDescriptorTable 锁。
+    ///
+    /// @return 当前 Process 的 fd table mutex。
+    pub fn file_table(&self) -> &Mutex<File> {
+        &self.process.file
+    }
+
+    /// @description 复制当前 Process 的工作目录。
+    ///
+    /// @return owned cwd path。
+    pub fn cwd(&self) -> String {
+        self.process.cwd.lock().clone()
+    }
+
+    /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
+    ///
+    /// @param program_name 新进程映像名称。
+    /// @param elf_data 已完整读入 kernel 的 ELF bytes。
+    /// @param args 写入新用户栈的参数。
+    /// @param envs 写入新用户栈的环境。
+    /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
+    /// @errors 不支持的 ELF、范围错误与内存不足映射为 `MemoryError`。
     pub fn execve_replace(
-        self: &Arc<Self>,
+        &self,
         program_name: &str,
         elf_data: &[u8],
         args: &[String],
@@ -439,29 +524,26 @@ impl TaskControlBlock {
         // 步骤2: 关闭标记了O_CLOEXEC的文件描述符
         // 这必须在更换内存空间之前完成，以确保能够正确访问文件描述符表
         {
-            let mut file_table = self.file.lock();
+            let mut file_table = self.process.file.lock();
             file_table.close_cloexec_fds();
         }
 
-        // 步骤3: 重置信号处理器为默认状态
-        {
-            let mut signal_state = self.signal_state.lock();
-            signal_state.reset_to_default();
-        }
+        // 步骤3: exec 只重置 process dispositions；thread mask 与 pending 按 Linux 语义保留。
+        self.process.signal_dispositions.lock().reset_for_exec();
 
         // 步骤4: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
-        let kernel_stack_top = self.mm.kernel_stack.get_top();
+        let kernel_stack_top = self.thread.kernel_stack.get_top();
 
         // 单次赋值提交新地址空间；旧 MemorySet 在 guard 内被完整替换，不暴露 stale PTE 窗口。
-        *self.mm.memory_set.lock() = new_memory_set;
-        *self.mm.trap_cx_va.lock() = TRAP_CONTEXT;
+        *self.process.address_space.memory_set.lock() = new_memory_set;
+        *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
 
         // 步骤5: 更新任务状态；参数与环境只存在于新初始栈中。
-        *self.name.lock() = program_name.to_string();
+        *self.process.name.lock() = program_name.to_string();
 
         // 步骤6: 设置新程序的陷阱上下文
-        self.mm.set_trap_context(TrapContext::app_init_context(
+        self.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
@@ -474,16 +556,19 @@ impl TaskControlBlock {
     }
 
     pub fn name(&self) -> String {
-        self.name.lock().clone()
+        self.process.name.lock().clone()
     }
 
-    pub fn is_zombie(&self) -> bool {
-        *self.task_status.lock() == TaskStatus::Zombie
+    /// @description 判断 SchedulingEntity 是否已经进入 terminal 状态。
+    ///
+    /// @return 状态为 Exited 时返回 true。
+    pub fn is_exited(&self) -> bool {
+        *self.scheduling.status.lock() == TaskStatus::Exited
     }
 
     /// 设置用户ID (需要root权限)
     pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
-        let mut credentials = self.credentials.lock();
+        let mut credentials = self.process.credentials.lock();
         // 只有root用户可以设置任意UID
         if credentials.euid != 0 && credentials.euid != uid {
             return Err(-1); // EPERM
@@ -493,20 +578,22 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    pub fn pid(&self) -> usize {
-        self.pid.0
+    /// @description 返回当前 Process/thread group ID。
+    ///
+    /// @return TGID；Linux getpid 与 process-directed lookup 使用该值。
+    pub fn tgid(&self) -> usize {
+        self.process.tgid.0
     }
 
-    pub fn set_exit_code(&self, exit_code: i32) {
-        *self.exit_code.lock() = exit_code;
-    }
-
-    pub fn exit_code(&self) -> i32 {
-        *self.exit_code.lock()
+    /// @description 返回当前 Thread ID。
+    ///
+    /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。
+    pub fn tid(&self) -> usize {
+        self.thread.tid
     }
 
     pub fn wakeup(self: &Arc<Self>) {
-        let current_status = *self.task_status.lock();
+        let current_status = *self.scheduling.status.lock();
         if current_status == TaskStatus::Sleeping || current_status == TaskStatus::Stopped {
             set_task_status(self, TaskStatus::Ready);
         }
@@ -519,15 +606,15 @@ impl core::fmt::Debug for TaskControlBlock {
             f,
             r#"
             TaskControlBlock {{
-                pid: {},
+                tgid: {},
+                tid: {},
                 name: {},
-                exit_code: {},
                 task_status: {:?}
             }}"#,
-            self.pid(),
+            self.tgid(),
+            self.tid(),
             self.name(),
-            self.exit_code(),
-            self.task_status.lock()
+            self.scheduling.status.lock()
         )
     }
 }

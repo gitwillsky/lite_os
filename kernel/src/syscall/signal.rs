@@ -29,10 +29,10 @@ pub fn sys_rt_sigreturn() -> isize {
     let Some(task) = current_task() else {
         return -ESRCH;
     };
-    let mut trap_context = task.mm.load_trap_context();
+    let mut trap_context = task.load_trap_context();
     match sig_return(&task, &mut trap_context) {
         Ok(()) => {
-            task.mm.set_trap_context(trap_context);
+            task.set_trap_context(trap_context);
             0
         }
         Err(_) => -EINVAL,

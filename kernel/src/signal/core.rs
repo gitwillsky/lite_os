@@ -90,7 +90,7 @@ impl SignalCore {
     /// 发送信号到指定进程
     pub fn send_signal(&self, pid: usize, signal: Signal) -> Result<(), SignalError> {
         // 查找目标任务
-        let task = task::find_task_by_pid(pid).ok_or(SignalError::ProcessNotFound)?;
+        let task = task::find_task_by_tgid(pid).ok_or(SignalError::ProcessNotFound)?;
 
         // 处理不可捕获的信号
         if signal.is_uncatchable() {
@@ -98,7 +98,7 @@ impl SignalCore {
         }
 
         // 获取任务状态并决定处理方式
-        let status = *task.task_status.lock();
+        let status = *task.scheduling.status.lock();
 
         match status {
             TaskStatus::Stopped if signal == Signal::SIGCONT => {
@@ -108,7 +108,7 @@ impl SignalCore {
             }
             _ => {
                 // 添加信号到待处理队列
-                task.signal_state.lock().add_pending_signal(signal);
+                task.thread_signals().lock().add_pending(signal);
 
                 // 根据任务状态决定是否需要中断
                 match status {
@@ -160,16 +160,15 @@ impl SignalCore {
         task: &TaskControlBlock,
         trap_cx: Option<&mut TrapContext>,
     ) -> (bool, Option<i32>) {
-        let mut signal_state = task.signal_state.lock();
+        let mut thread_signals = task.thread_signals().lock();
 
         // 获取下一个可处理的信号
-        let signal = match signal_state.next_deliverable_signal() {
+        let signal = match thread_signals.take_next_deliverable() {
             Some(s) => s,
             None => return (true, None), // 没有待处理信号
         };
-
-        let handler = signal_state.get_handler(signal);
-        drop(signal_state);
+        drop(thread_signals);
+        let handler = task.signal_dispositions().lock().get(signal);
 
         // 根据信号处理方式进行处理
         match handler.action {
@@ -190,12 +189,12 @@ impl SignalCore {
                         delivery::setup_signal_handler(task, signal, handler_addr, trap_cx)
                     {
                         // 设置失败，发送SIGSEGV
-                        task.signal_state.lock().add_pending_signal(Signal::SIGSEGV);
+                        task.thread_signals().lock().add_pending(Signal::SIGSEGV);
                     }
                     (true, None)
                 } else {
                     // 没有trap context，重新加入队列等待后续处理
-                    task.signal_state.lock().add_pending_signal(signal);
+                    task.thread_signals().lock().add_pending(signal);
                     (true, None)
                 }
             }
@@ -224,10 +223,10 @@ impl SignalCore {
             }
         };
 
-        let mut signal_state = task.signal_state.lock();
-        let old_handler = signal_state.get_handler(signal);
+        let mut dispositions = task.signal_dispositions().lock();
+        let old_handler = dispositions.get(signal);
 
-        signal_state.set_handler(
+        dispositions.set(
             signal,
             super::state::SignalDisposition {
                 action,
@@ -253,22 +252,22 @@ impl SignalCore {
         set: Option<&SignalSet>,
         oldset: Option<&mut SignalSet>,
     ) -> Result<(), SignalError> {
-        let mut signal_state = task.signal_state.lock();
+        let mut thread_signals = task.thread_signals().lock();
 
         if let Some(oldset) = oldset {
-            *oldset = signal_state.get_blocked();
+            *oldset = thread_signals.mask();
         }
 
         if let Some(set) = set {
             match how {
                 SIG_BLOCK => {
-                    signal_state.block_signals(*set);
+                    thread_signals.block(*set);
                 }
                 SIG_UNBLOCK => {
-                    signal_state.unblock_signals(*set);
+                    thread_signals.unblock(*set);
                 }
                 SIG_SETMASK => {
-                    signal_state.set_blocked(*set);
+                    thread_signals.set_mask(*set);
                 }
                 _ => return Err(SignalError::InvalidSignal),
             }
@@ -285,8 +284,8 @@ impl SignalCore {
     ) -> Result<(), SignalError> {
         match signal {
             Signal::SIGKILL => {
-                task.signal_state.lock().add_pending_signal(signal);
-                if *task.task_status.lock() == TaskStatus::Sleeping {
+                task.thread_signals().lock().add_pending(signal);
+                if *task.scheduling.status.lock() == TaskStatus::Sleeping {
                     task.wakeup();
                 }
                 Ok(())
@@ -301,29 +300,23 @@ impl SignalCore {
 
     /// 停止任务
     fn stop_task(&self, task: &TaskControlBlock) {
-        let old_status = *task.task_status.lock();
-        *task.prev_status_before_stop.lock() = Some(old_status);
+        let old_status = *task.scheduling.status.lock();
+        *task.scheduling.status_before_stop.lock() = Some(old_status);
 
-        if let Some(task_arc) = task::find_task_by_pid(task.pid()) {
+        if let Some(task_arc) = task::find_task_by_tgid(task.tgid()) {
             task::set_task_status(&task_arc, TaskStatus::Stopped);
         }
     }
 
     /// 继续被停止的任务
     fn continue_task(&self, task: &TaskControlBlock) {
-        // 清理信号状态，防止状态不一致
-        {
-            let mut signal_state = task.signal_state.lock();
-            signal_state.clear_trap_context_flag();
-        }
-
         // 恢复任务状态为Ready，让调度器重新调度
-        if let Some(task_arc) = task::find_task_by_pid(task.pid()) {
+        if let Some(task_arc) = task::find_task_by_tgid(task.tgid()) {
             task::set_task_status(&task_arc, TaskStatus::Ready);
         }
 
         // 清除停止前的状态记录
-        *task.prev_status_before_stop.lock() = None;
+        *task.scheduling.status_before_stop.lock() = None;
     }
 }
 

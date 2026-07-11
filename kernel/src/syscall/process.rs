@@ -18,8 +18,7 @@ const MAX_ARRAY_BYTES: usize = 128 * 1024;
 /// @param exit_code 用户态退出状态。
 /// @return 此函数不返回。
 pub fn sys_exit(exit_code: i32) -> ! {
-    exit_current_and_run_next(exit_code);
-    unreachable!()
+    exit_current_and_run_next(exit_code)
 }
 
 /// @description 主动让出处理器。
@@ -36,7 +35,7 @@ pub fn sys_sched_yield() -> isize {
 pub fn sys_get_pid() -> isize {
     current_task()
         .expect("getpid requires a current task")
-        .pid() as isize
+        .tgid() as isize
 }
 
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
@@ -45,7 +44,7 @@ pub fn sys_get_pid() -> isize {
 pub fn sys_get_tid() -> isize {
     current_task()
         .expect("gettid requires a current task")
-        .pid() as isize
+        .tid() as isize
 }
 
 /// @description 用新的 ELF 映像、参数和环境替换当前进程。
@@ -105,7 +104,7 @@ fn copy_user_string(
     if pointer.is_null() {
         return Err(-errno::EFAULT);
     }
-    match task.mm.copy_user_string(pointer as usize, max_len) {
+    match task.copy_user_string(pointer as usize, max_len) {
         Ok(value) => Ok(value),
         Err(UserAccessError::Unterminated) => Err(-errno::ENAMETOOLONG),
         Err(UserAccessError::InvalidUtf8) => Err(-errno::EINVAL),
@@ -132,7 +131,6 @@ fn copy_user_string_array(
             .ok_or(-errno::EFAULT)?;
         let mut pointer_bytes = [0u8; core::mem::size_of::<usize>()];
         if task
-            .mm
             .copy_from_user(pointer_address, &mut pointer_bytes)
             .is_err()
         {

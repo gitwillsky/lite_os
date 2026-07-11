@@ -73,7 +73,7 @@ pub fn trap_handler() {
             match exception {
                 Exception::IllegalInstruction => {
                     if let Some(current) = task::current_task() {
-                        let sepc = current.mm.load_trap_context().sepc;
+                        let sepc = current.load_trap_context().sepc;
                         error!(
                             "[kernel] IllegalInstruction in application at PC:{:#x}, kernel killed it.",
                             sepc
@@ -92,24 +92,32 @@ pub fn trap_handler() {
                 Exception::UserEnvCall => {
                     if let Some(current) = task::current_task() {
                         // 1. 不允许 TrapContext 引用跨越系统调用；execve 会替换其底层地址空间。
-                        let mut cx = current.mm.load_trap_context();
+                        let mut cx = current.load_trap_context();
                         let syscall_id = cx.x[17];
                         let args = [cx.x[10], cx.x[11], cx.x[12], cx.x[13], cx.x[14], cx.x[15]];
                         cx.sepc += 4;
-                        current.mm.set_trap_context(cx);
+                        current.set_trap_context(cx);
+                        // sys_exit 不返回；若保留该 Arc，它会永久留在即将释放的 task stack 上。
+                        drop(current);
                         let result = syscall::syscall(syscall_id, args);
+                        let current = task::current_task()
+                            .expect("returning syscall must still have a current task");
 
                         // 2. execve 成功时，新 TrapContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
-                        let mut cx = current.mm.load_trap_context();
+                        let mut cx = current.load_trap_context();
                         if syscall_id != 221 || result != 0 {
                             cx.x[10] = result as usize;
                         }
 
+                        // pending fatal signal 也可能不返回；signal helper 必须成为唯一 task-stack owner。
+                        drop(current);
                         if !check_signals_and_maybe_exit_with_cx(&mut cx) {
                             // Process was terminated, should not continue
                             return;
                         }
-                        current.mm.set_trap_context(cx);
+                        let current = task::current_task()
+                            .expect("signal check returned without a current task");
+                        current.set_trap_context(cx);
                     } else {
                         error!("[kernel] UserEnvCall with no current task, terminating");
                         panic!("UserEnvCall with no current task");
@@ -124,16 +132,18 @@ pub fn trap_handler() {
                         // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
                         debug!("Signal handler return detected (VA=0), calling sigreturn");
                         let task = task::current_task().expect("No current task");
-                        let mut cx = task.mm.load_trap_context();
+                        let mut cx = task.load_trap_context();
 
                         match sig_return(&task, &mut cx) {
                             Ok(()) => {
-                                task.mm.set_trap_context(cx);
+                                task.set_trap_context(cx);
                                 debug!("Sigreturn successful, continuing execution");
                                 // 成功恢复，继续执行
                             }
                             Err(_) => {
                                 error!("Sigreturn failed, terminating process");
+                                // terminal switch 前必须释放 trap stack 上的所有 TCB owner。
+                                drop(task);
                                 exit_current_and_run_next(-5);
                             }
                         }
@@ -147,7 +157,7 @@ pub fn trap_handler() {
                 | Exception::StoreFault
                 | Exception::StorePageFault => {
                     if let Some(current) = task::current_task() {
-                        let sepc_val = current.mm.load_trap_context().sepc;
+                        let sepc_val = current.load_trap_context().sepc;
                         let sstatus_val = riscv::register::sstatus::read();
                         error!(
                             "[kernel] {:?} in application, bad addr = {:#x}, sepc = {:#x}, sstatus = {:#x}, core dumped.",
@@ -191,12 +201,13 @@ fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
         let (should_continue, exit_code) = handle_signals(&task, Some(trap_cx));
         if !should_continue {
             if let Some(code) = exit_code {
+                // fatal signal 不返回；否则此局部 Arc 会永久留在 exiting task stack。
+                drop(task);
                 exit_current_and_run_next(code);
-                // This function may return if there's no other task to run
-                // In that case, we should end execution anyway
-                return false;
             } else {
                 // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
+                // stopped task 可能在恢复前被终止；不能把 owning Arc 留在它的 suspended stack。
+                drop(task);
                 task::suspend_current_and_run_next();
                 // Process was suspended and then resumed, continue execution
                 return true;
@@ -238,17 +249,17 @@ pub fn trap_return() -> ! {
 
     // 简化的原子获取方案：最小化锁持有时间
     let current_task = crate::task::current_task().expect("No current task in trap_return");
-    let user_satp = current_task.mm.memory_set.lock().token();
+    let user_satp = current_task.user_token();
     let trap_context_va = current_task.trap_context_va();
     let kernel_gp: usize;
     unsafe {
         asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack));
     }
     {
-        let mut trap_context = current_task.mm.load_trap_context();
+        let mut trap_context = current_task.load_trap_context();
         trap_context.kernel_hart_id = crate::arch::hart::hart_id();
         trap_context.kernel_gp = kernel_gp;
-        current_task.mm.set_trap_context(trap_context);
+        current_task.set_trap_context(trap_context);
     }
 
     unsafe extern "C" {

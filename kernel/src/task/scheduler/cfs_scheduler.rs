@@ -29,10 +29,10 @@ impl Scheduler for CFScheduler {
         self.tasks.len()
     }
 
-    fn find_task_by_pid(&self, pid: usize) -> Option<Arc<TaskControlBlock>> {
+    fn find_task_by_tid(&self, tid: usize) -> Option<Arc<TaskControlBlock>> {
         self.tasks
             .iter()
-            .find(|t| t.0.pid() == pid)
+            .find(|task| task.0.tid() == tid)
             .map(|t| t.0.clone())
     }
 
@@ -56,7 +56,7 @@ impl CFSTask {
 
 impl PartialEq for CFSTask {
     fn eq(&self, other: &Self) -> bool {
-        self.0.sched.lock().vruntime == other.0.sched.lock().vruntime
+        self.0.scheduling.policy.lock().vruntime == other.0.scheduling.policy.lock().vruntime
     }
 }
 
@@ -73,9 +73,10 @@ impl Ord for CFSTask {
         // 最小堆：vruntime小的任务优先级高
         other
             .0
-            .sched
+            .scheduling
+            .policy
             .lock()
             .vruntime
-            .cmp(&self.0.sched.lock().vruntime)
+            .cmp(&self.0.scheduling.policy.lock().vruntime)
     }
 }

@@ -25,7 +25,7 @@ pub fn sys_nanosleep(req: *const TimeSpec, _rem: *mut TimeSpec) -> isize {
         return -EFAULT;
     };
     let mut bytes = [0u8; core::mem::size_of::<TimeSpec>()];
-    if task.mm.copy_from_user(req as usize, &mut bytes).is_err() {
+    if task.copy_from_user(req as usize, &mut bytes).is_err() {
         return -EFAULT;
     }
 

@@ -38,7 +38,7 @@ pub fn setup_signal_handler(
     trap_cx: &mut TrapContext,
 ) -> Result<(), SignalError> {
     // 验证处理器地址
-    if !task.mm.is_user_executable(handler_addr) {
+    if !task.is_user_executable(handler_addr) {
         return Err(SignalError::InvalidAddress);
     }
 
@@ -83,7 +83,7 @@ pub fn setup_signal_handler(
         "Signal {} handler setup at {:#x} for PID {}",
         signal as u32,
         handler_addr,
-        task.pid()
+        task.tgid()
     );
 
     Ok(())
@@ -103,7 +103,7 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 
     // 验证信号帧完整性
     validate_signal_frame(&signal_frame)?;
-    if !task.mm.is_user_executable(signal_frame.pc) {
+    if !task.is_user_executable(signal_frame.pc) {
         return Err(SignalError::InvalidAddress);
     }
 
@@ -121,7 +121,7 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
     debug!(
         "Signal {} sigreturn completed for PID {}",
         signal_frame.signal,
-        task.pid()
+        task.tgid()
     );
 
     Ok(())
@@ -130,14 +130,13 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 /// 写入信号帧到用户内存
 fn write_signal_frame(task: &TaskControlBlock, addr: usize, frame: &SignalFrame) -> Result<(), ()> {
     let bytes = encode_signal_frame(frame);
-    task.mm.copy_to_user(addr, &bytes).map_err(|_| ())
+    task.copy_to_user(addr, &bytes).map_err(|_| ())
 }
 
 /// 从用户内存读取信号帧
 fn read_signal_frame(task: &TaskControlBlock, addr: usize) -> Result<SignalFrame, SignalError> {
     let mut bytes = [0u8; size_of::<SignalFrame>()];
-    task.mm
-        .copy_from_user(addr, &mut bytes)
+    task.copy_from_user(addr, &mut bytes)
         .map_err(|_| SignalError::InvalidAddress)?;
     Ok(decode_signal_frame(&bytes))
 }

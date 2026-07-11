@@ -1,6 +1,6 @@
 //! @description 为正在其他 hart 上执行的 task 发送信号检查 IPI。
 //!
-//! 信号内容和 pending 状态只存于 `TaskControlBlock::signal_state`；本模块不维护第二套
+//! 信号 pending 状态只存于 ThreadContext；本模块不维护第二套
 //! 消息队列或 PID map。`CURRENT_PID` 只是定位运行 hart 的瞬时 hint，不拥有 task 状态。
 
 use core::sync::atomic::{AtomicUsize, Ordering};

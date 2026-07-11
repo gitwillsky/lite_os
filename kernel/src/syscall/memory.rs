@@ -6,9 +6,8 @@ use crate::task::current_task;
 /// @return Linux `brk` 语义：成功返回新 break，失败返回未改变的旧 break。
 pub fn sys_brk(new_brk: usize) -> isize {
     let task = current_task().expect("brk requires a current task");
-    let mut memory_set = task.mm.memory_set.lock();
-    let current = memory_set
+    let current = task
         .set_program_break(0)
         .expect("user address space must own a heap area");
-    memory_set.set_program_break(new_brk).unwrap_or(current) as isize
+    task.set_program_break(new_brk).unwrap_or(current) as isize
 }

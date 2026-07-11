@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::INIT_PID};
+use crate::task::{context::TaskContext, loader::get_app_data_by_name, pid::ProcessId};
 
 mod context;
 pub mod loader;
@@ -27,7 +27,7 @@ const INIT_PROC_NAME: &str = "/bin/init";
 
 pub fn init() {
     let elf_data = get_app_data_by_name(INIT_PROC_NAME).expect("Failed to get init proc data");
-    let init_proc = TaskControlBlock::new_with_pid(INIT_PROC_NAME, &elf_data, INIT_PID.into());
+    let init_proc = TaskControlBlock::new_with_pid(INIT_PROC_NAME, &elf_data, ProcessId::init());
     match init_proc {
         Ok(init_proc) => {
             let init_task = Arc::new(init_proc);

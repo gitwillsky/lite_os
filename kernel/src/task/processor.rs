@@ -31,6 +31,7 @@ pub struct Processor {
     pub current: Option<Arc<TaskControlBlock>>,
     idle_context: TaskContext,
     scheduler: Box<dyn Scheduler>,
+    deferred_reap: Option<Arc<TaskControlBlock>>,
 }
 
 impl Processor {
@@ -42,6 +43,7 @@ impl Processor {
             current: None,
             idle_context,
             scheduler: Box::new(CFScheduler::new()),
+            deferred_reap: None,
         }
     }
 
@@ -96,6 +98,18 @@ impl Processor {
         // Release 发布 local Processor 初始化；远端负载均衡读取 active(Acquire) 后
         // 才能向 inbound 入队。缺失时会向尚未开始 drain 的 hart 投递任务。
         per_hart(self.hart_id).active.store(true, Ordering::Release);
+    }
+
+    fn defer_reap(&mut self, task: Arc<TaskControlBlock>) {
+        assert!(
+            self.deferred_reap.is_none(),
+            "deferred reap slot must be drained before another task exits"
+        );
+        self.deferred_reap = Some(task);
+    }
+
+    fn take_deferred_reap(&mut self) -> Option<Arc<TaskControlBlock>> {
+        self.deferred_reap.take()
     }
 }
 
@@ -168,6 +182,22 @@ pub fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
     f(local_processor())
 }
 
+/// @description 将当前 exiting Task 在 task stack 上的 owner 移交给所属 hart。
+///
+/// @param task 必须是已从 current、PID index 与 runqueue 移除的退出任务。
+/// @return 无返回值；slot 未先 drain 表示 terminal ownership 协议损坏并 panic。
+pub(super) fn defer_task_reap(task: Arc<TaskControlBlock>) {
+    with_current_processor(|processor| processor.defer_reap(task));
+}
+
+/// @description 在 idle stack 上取得并释放 deferred exiting Task。
+///
+/// @return slot 为空时不执行操作；存在任务时 deferred Arc 在本函数返回前于 idle stack Drop。
+pub(super) fn reap_deferred_task() {
+    let task = with_current_processor(Processor::take_deferred_reap);
+    drop(task);
+}
+
 /// @description 将任务投递给指定 active hart。
 ///
 /// @param cpu_id 目标 hart ID。
@@ -205,7 +235,7 @@ pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
     let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_CORES;
     let current = hart_id();
     // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
-    let last = task.last_cpu.load(Ordering::Relaxed);
+    let last = task.scheduling.last_cpu.load(Ordering::Relaxed);
     let mut best_cpu = current;
     let mut best_load = usize::MAX;
     let mut last_load = None;

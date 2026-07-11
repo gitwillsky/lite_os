@@ -6,7 +6,7 @@ mod state;
 use crate::{task::TaskControlBlock, trap::TrapContext};
 
 pub use core::{Signal, SignalError, SignalSet};
-pub use state::SignalState;
+pub use state::{SignalDispositions, ThreadSignalState};
 
 pub const SIG_RETURN_ADDR: usize = 0;
 
@@ -49,5 +49,5 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 }
 
 pub fn has_pending_signals(task: &TaskControlBlock) -> bool {
-    task.signal_state.lock().has_deliverable_signals()
+    task.thread_signals().lock().has_deliverable()
 }
