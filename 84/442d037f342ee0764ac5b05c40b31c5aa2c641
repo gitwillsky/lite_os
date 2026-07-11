@@ -1,0 +1,45 @@
+docs/phase-7-signal-futex-time.md
+  s_d637a88cd4b00d::t_0642dbfcd67d4c 1-39
+kernel/src/arch/mod.rs
+  s_d637a88cd4b00d::t_8c89d2510d5534 5
+kernel/src/arch/riscv64/mod.rs
+  s_d637a88cd4b00d::t_183038445859a6 7
+kernel/src/drivers/block.rs
+  s_d637a88cd4b00d::t_529439c9e9a59d 5
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_bc59418a3b3052 7,20-24
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_a52f6dc3b369ad 10-11,14-16,22,35-36,43,48-50,54-102,105-118
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_8fc77ee9dff5e1 15
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_67d022172a0bb3 374
+kernel/src/task/task.rs
+  s_d637a88cd4b00d::t_57fb51265c71db 522,530,533
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_28cc6f36b84339 21
+kernel/src/timer.rs
+  s_d637a88cd4b00d::t_d669dcc65e52f1 1,18-19,80-90,92,157-160,163-164
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_d9f2b26b48e783 118-119
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_c6ddde173129bb 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "84442d037f342ee0764ac5b05c40b31c5aa2c641",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
