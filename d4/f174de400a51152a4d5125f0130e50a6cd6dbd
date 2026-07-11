@@ -1,0 +1,43 @@
+Cargo.toml
+  s_d637a88cd4b00d::t_8a5c0124e6ac98 2
+Makefile
+  s_d637a88cd4b00d::t_e0ec052cf30733 7-13,24,29-30,32,37,39,41,52
+README.md
+  s_d637a88cd4b00d::t_9fbb20de02ff73 7,18,24-25,38,67,74,77-78,83,90-91,94,110,124
+create_fs.py
+  s_d637a88cd4b00d::t_f5193dbf267a17 65,119-120
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_f6798028d3e5cd 7-9,78
+docs/architecture.md
+  s_d637a88cd4b00d::t_a1860c5e6f1d8d 31,176,183-184,190,233-235,241,246
+docs/phase-29-default-busybox.md
+  s_d637a88cd4b00d::t_741f4ee07a8421 1-20
+scripts/verify_artifacts.py
+  s_d637a88cd4b00d::t_7394bd9984850f 2,65
+scripts/verify_boot.py
+  s_d637a88cd4b00d::t_48fd98d7575f1b 20,30
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_043ac749c5d574 7,248,293-305,312-315
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_00c3f5937b74dd 7,203-209,217-219
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_9ec904ffacb859 97,132-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d4f174de400a51152a4d5125f0130e50a6cd6dbd",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
