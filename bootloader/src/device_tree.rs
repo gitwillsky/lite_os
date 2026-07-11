@@ -105,7 +105,7 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
                 WalkOperation::StepOut
             } else if node.starts_with("cpu@") {
                 let hart_id = reg.next().unwrap().start;
-                if hart_id < crate::constants::MAX_HART_NUM {
+                if hart_id < crate::constants::MAX_SUPPORTED_HARTS {
                     ans.hart_mask |= 1usize << hart_id;
                 } else {
                     ans.invalid_hart_id = Some(hart_id);

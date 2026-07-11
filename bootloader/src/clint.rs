@@ -13,31 +13,40 @@ pub(crate) fn init(base: usize) {
     CLINT.store(base as _, Ordering::Release);
 }
 
+fn dtb_hart_mask() -> usize {
+    crate::BOARD_INFO.wait().hart_mask
+}
+
 impl Ipi for Clint {
     #[inline]
     fn send_ipi(&self, hart_mask: HartMask) -> SbiRet {
         let (mask, base) = hart_mask.into_inner();
+        let possible = dtb_hart_mask();
         let selected = if base == usize::MAX {
-            (1usize << constants::MAX_HART_NUM) - 1
+            possible
         } else if mask == 0 {
             0
-        } else if base >= constants::MAX_HART_NUM {
+        } else if base >= constants::MAX_SUPPORTED_HARTS {
             return SbiRet::invalid_param();
         } else {
-            let valid_bits = constants::MAX_HART_NUM - base;
+            let valid_bits = constants::MAX_SUPPORTED_HARTS - base;
             if valid_bits < usize::BITS as usize && (mask >> valid_bits) != 0 {
                 return SbiRet::invalid_param();
             }
-            mask << base
+            let selected = mask << base;
+            if selected & !possible != 0 {
+                return SbiRet::invalid_param();
+            }
+            selected
         };
 
         // 先验证完整集合，避免对前半目标发送后才发现后半参数非法的部分执行。
-        for i in 0..constants::MAX_HART_NUM {
+        for i in 0..constants::MAX_SUPPORTED_HARTS {
             if selected & (1usize << i) != 0 && !remote_hsm(i).is_some_and(|hsm| hsm.allow_ipi()) {
                 return SbiRet::invalid_param();
             }
         }
-        for i in 0..constants::MAX_HART_NUM {
+        for i in 0..constants::MAX_SUPPORTED_HARTS {
             if selected & (1usize << i) != 0 {
                 set_msip(i);
             }
@@ -59,7 +68,7 @@ impl Timer for Clint {
 #[inline]
 pub fn set_msip(hart_idx: usize) {
     assert!(
-        hart_idx < constants::MAX_HART_NUM,
+        hart_idx < constants::MAX_SUPPORTED_HARTS,
         "CLINT hart index out of range"
     );
     unsafe { &*CLINT.load(Ordering::Acquire) }.set_msip(hart_idx);

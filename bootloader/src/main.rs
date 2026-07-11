@@ -53,7 +53,7 @@ const COUNTER_TIME: usize = 1 << 1;
 // 非零初值保证状态位于 .data；其他 hart 读取 GLOBAL_READY(Acquire) 前不得访问正被清零的 BSS。
 static GLOBAL_STATE: AtomicUsize = AtomicUsize::new(GLOBAL_PENDING);
 static READY_HARTS: AtomicUsize = AtomicUsize::new(0);
-static BOARD_INFO: Once<BoardInfo> = Once::new();
+pub(crate) static BOARD_INFO: Once<BoardInfo> = Once::new();
 static SBI: Once<FixedRustSBI<'static>> = Once::new();
 
 #[unsafe(naked)]
@@ -163,7 +163,6 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             }),
             "cold-boot hart HSM was not stopped"
         );
-        start_all_cores(board_info, opaque);
     }
 
     // 清理 clint
@@ -201,7 +200,7 @@ fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
         board_info.invalid_hart_id.is_none(),
         "DTB hart ID {} exceeds firmware limit {}",
         board_info.invalid_hart_id.unwrap_or(usize::MAX),
-        constants::MAX_HART_NUM
+        constants::MAX_SUPPORTED_HARTS
     );
     assert_eq!(
         board_info.hart_mask.count_ones() as usize,
@@ -215,40 +214,9 @@ fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
     );
 }
 
-/// 启动所有其他核心
-fn start_all_cores(board_info: &BoardInfo, opaque: usize) {
-    use crate::hart::hart_id;
-
-    let current_hart = hart_id();
-    println!(
-        "[rustsbi] Starting {} cores (current: {})",
-        board_info.smp, current_hart
-    );
-
-    // 只按 DTB 的实际 hart mask 启动，不能把 CPU 数量误当作连续 hart ID 上界。
-    for hart_id in 0..constants::MAX_HART_NUM {
-        if board_info.hart_mask & (1usize << hart_id) == 0 {
-            continue;
-        }
-        if hart_id != current_hart {
-            match remote_hsm(hart_id) {
-                Some(remote) => {
-                    if remote.start(Supervisor {
-                        start_addr: KERNEL_ENTRY,
-                        opaque,
-                    }) {
-                        clint::set_msip(hart_id);
-                        println!("[rustsbi] Successfully started core {}", hart_id);
-                    } else {
-                        panic!("ready hart {} HSM was not stopped", hart_id);
-                    }
-                }
-                None => {
-                    panic!("validated DTB hart {} has no HSM slot", hart_id);
-                }
-            }
-        }
-    }
+fn dtb_contains_hart(hartid: usize) -> bool {
+    let board_info = BOARD_INFO.wait();
+    hartid < constants::MAX_SUPPORTED_HARTS && (board_info.hart_mask & (1usize << hartid)) != 0
 }
 
 /// 设置 PMP，物理内存保护
@@ -418,6 +386,9 @@ struct Hsm;
 
 impl rustsbi::Hsm for Hsm {
     fn hart_start(&self, hartid: usize, start_addr: usize, opaque: usize) -> SbiRet {
+        if !dtb_contains_hart(hartid) {
+            return SbiRet::invalid_param();
+        }
         match remote_hsm(hartid) {
             Some(remote) => {
                 if remote.start(Supervisor { start_addr, opaque }) {
@@ -439,6 +410,9 @@ impl rustsbi::Hsm for Hsm {
 
     #[inline]
     fn hart_get_status(&self, hartid: usize) -> SbiRet {
+        if !dtb_contains_hart(hartid) {
+            return SbiRet::invalid_param();
+        }
         match remote_hsm(hartid) {
             Some(remote) => SbiRet::success(remote.sbi_get_status()),
             None => SbiRet::invalid_param(),

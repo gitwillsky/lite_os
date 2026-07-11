@@ -10,16 +10,16 @@ pub(crate) fn raw_hart_id() -> usize {
 
 /// @description 获取已验证可索引 firmware per-hart 状态的 hart ID。
 ///
-/// @return 小于 `MAX_HART_NUM` 的 hart ID。
+/// @return 小于 `MAX_SUPPORTED_HARTS` 的 hart ID。
 /// @errors 越界表示入口不变量破坏并触发 panic，绝不映射到其他 hart。
 #[inline(always)]
 pub(crate) fn hart_id() -> usize {
     let hart = raw_hart_id();
     assert!(
-        hart < crate::constants::MAX_HART_NUM,
+        hart < crate::constants::MAX_SUPPORTED_HARTS,
         "mhartid {} exceeds firmware limit {}",
         hart,
-        crate::constants::MAX_HART_NUM
+        crate::constants::MAX_SUPPORTED_HARTS
     );
     hart
 }
