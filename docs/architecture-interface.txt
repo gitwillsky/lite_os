@@ -484,6 +484,7 @@ kernel/src/memory/config.rs :: pub (crate) const PAGE_SIZE : usize = 4096
 kernel/src/memory/config.rs :: pub (crate) const PHYSICAL_ADDRESS_WIDTH : usize = 56
 kernel/src/memory/config.rs :: pub (crate) const PPN_WIDTH : usize = PHYSICAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
 kernel/src/memory/config.rs :: pub (crate) const PTE_FLAGS_WIDTH : usize = 10
+kernel/src/memory/config.rs :: pub (crate) const SIGNAL_TRAMPOLINE : usize = TRAP_CONTEXT - PAGE_SIZE
 kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = usize :: MAX - PAGE_SIZE + 1
 kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = TRAMPOLINE - PAGE_SIZE
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8192 * 32
@@ -557,8 +558,10 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_anonymous (& m
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& self , address : usize , length : usize ,) -> Result < () , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
+kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
 kernel/src/memory/mod.rs :: pub (crate) fn init ()
 kernel/src/memory/mod.rs :: pub (crate) fn init_allocator ()
+kernel/src/memory/mod.rs :: pub (crate) fn signal_trampoline_entry () -> usize
 kernel/src/memory/mod.rs :: pub (crate) fn strampoline ()
 kernel/src/memory/mod.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex < MemorySet > >
 kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , VirtualAddress }
@@ -650,6 +653,10 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_sched_yield () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_set_robust_list (head : usize , length : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_set_tid_address (address : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
+kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
+kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigprocmask (how : usize , set : usize , old_set : usize , signal_set_size : usize ,) -> isize
+kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigreturn () -> isize
+kernel/src/syscall/signal.rs :: pub (crate) fn sys_tgkill (tgid : usize , tid : usize , signal : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_nsec : i64
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_sec : i64
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_gettime (clock_id : i32 , result : * mut TimeSpec) -> isize
@@ -668,7 +675,7 @@ kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8])
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs }
-kernel/src/task/mod.rs :: pub (crate) use model :: { RunState , TaskControlBlock , WaitMembership }
+kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , RunState , SignalDelivery , TaskControlBlock , WaitMembership , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
@@ -679,9 +686,14 @@ kernel/src/task/model.rs :: enum RunState :: New
 kernel/src/task/model.rs :: enum RunState :: Ready { cpu : usize , generation : u64 }
 kernel/src/task/model.rs :: enum RunState :: Running { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
+kernel/src/task/model.rs :: enum SignalDelivery :: None
+kernel/src/task/model.rs :: enum SignalDelivery :: Terminate (i32)
 kernel/src/task/model.rs :: enum WaitMembership :: Child
 kernel/src/task/model.rs :: enum WaitMembership :: Deadline ((u64 , u64))
 kernel/src/task/model.rs :: enum WaitMembership :: Futex ((usize , usize , u64))
+kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: flags : usize
+kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: handler : usize
+kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: mask : u64
 kernel/src/task/model.rs :: pub (crate) Sched :: last_runtime : u64
 kernel/src/task/model.rs :: pub (crate) Sched :: nice : i32
 kernel/src/task/model.rs :: pub (crate) Sched :: vruntime : u64
@@ -693,6 +705,7 @@ kernel/src/task/model.rs :: pub (crate) SchedulingState :: run_state : RunState
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
 kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) enum RunState
+kernel/src/task/model.rs :: pub (crate) enum SignalDelivery
 kernel/src/task/model.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
@@ -714,17 +727,22 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& se
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_anonymous (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < LinuxSigAction > ,) -> Result < LinuxSigAction , () >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tgid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_anonymous (& self , address : usize , length : usize) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
+kernel/src/task/model.rs :: pub (crate) struct LinuxSigAction
 kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) struct SchedulingState
@@ -733,6 +751,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robu
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (name : & [u8] , elf_data : & [u8] , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn queue_signal (& self , signal : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
@@ -792,6 +811,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) 
 kernel/src/task/task_manager.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn reap_child (pid : usize)
 kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
+kernel/src/task/task_manager.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize) -> Result < () , () >
 kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next ()
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn thread_count (tgid : usize) -> usize

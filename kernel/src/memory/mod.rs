@@ -36,6 +36,11 @@ unsafe extern "C" {
 
     fn ekernel();
     pub(crate) fn strampoline();
+    pub(crate) fn __signal_trampoline();
+}
+
+pub(crate) fn signal_trampoline_entry() -> usize {
+    SIGNAL_TRAMPOLINE + (__signal_trampoline as usize - strampoline as usize)
 }
 
 // OWNER: memory module owns the canonical kernel address space after initialization.

@@ -14,3 +14,4 @@ pub(crate) const KERNEL_STACK_SIZE: usize = 8192 * 16; // boot/task/dynamic hart
 
 pub(crate) const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
 pub(crate) const TRAP_CONTEXT: usize = TRAMPOLINE - PAGE_SIZE;
+pub(crate) const SIGNAL_TRAMPOLINE: usize = TRAP_CONTEXT - PAGE_SIZE;

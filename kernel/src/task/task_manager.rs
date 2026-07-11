@@ -225,6 +225,29 @@ pub(crate) fn thread_count(tgid: usize) -> usize {
     }
 }
 
+/// @description 通过唯一 process graph 定位 Thread 并合并一个 thread-directed signal。
+///
+/// @param tgid 目标 Thread 所属 Process ID。
+/// @param tid 目标 Thread ID。
+/// @param signal Linux signal number；零仅执行存在性检查。
+/// @return 目标存在且 signal 合法时返回 `Ok(())`。
+/// @errors Process/Thread 不存在或 signal 非法时返回 `Err(())`。
+pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Result<(), ()> {
+    let target = {
+        let graph = TASK_MANAGER.graph.lock();
+        let Some(ProcessState::Live(threads)) = graph.nodes.get(&tgid).map(|node| &node.state)
+        else {
+            return Err(());
+        };
+        threads.get(&tid).cloned().ok_or(())?
+    };
+    if signal == 0 {
+        Ok(())
+    } else {
+        target.queue_signal(signal)
+    }
+}
+
 /// @description eager fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
 ///
 /// @return parent 成功获得 child PID；地址空间复制 OOM 时 graph 不发布 child。

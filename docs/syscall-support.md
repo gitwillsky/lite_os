@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 35 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 39 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex timeout、signal interruption 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 35 个入口
+## 2. 当前暴露的 39 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -52,6 +52,9 @@
 | 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。有 monotonic deadline wait；无 signal interruption/restart 闭环，`rem` 只在早醒分支生效；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 113 | `clock_gettime` | `clockid_t, struct timespec *`；RV64 `i64,i64` | `0`；`EINVAL/EFAULT` | POSIX `clock_gettime`；musl vDSO fallback | **Partial**。只支持 `CLOCK_REALTIME(0)` 和 `CLOCK_MONOTONIC(1)`；其他 Linux clock ID 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 124 | `sched_yield` | 无参数 | `0` | POSIX `sched_yield`；musl direct wrapper | **Complete**。当前 task 回到唯一 CFS-like runqueue。 | `kernel/src/syscall/process.rs` |
+| 131 | `tgkill` | tgid、tid、signal | 0；`ESRCH/EINVAL` | Linux thread-directed signal；musl pthread | **Partial**。支持存在性 probe 与 standard signal pending；running/ready target 在 trap return delivery，blocked syscall 不被 signal 中断。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
+| 134/135 | `rt_sigaction` / `rt_sigprocmask` | RV64 24-byte action、8-byte sigset | 0；`EFAULT/EINVAL` | POSIX signal API；musl wrappers | **Partial**。Process disposition、per-Thread mask、SIGKILL/SIGSTOP 不可屏蔽；无 altstack、queued realtime value 与完整 SA_RESTART。 | `kernel/src/syscall/signal.rs` |
+| 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
 | 173 | `getppid` | 无参数 | parent TGID；init 为 0 | POSIX `getppid`；musl direct wrapper | **Complete**。读取 TaskManager 唯一 parent edge；orphan 重新指向 PID 1。 | `kernel/src/syscall/process.rs` |
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
@@ -74,10 +77,8 @@
 | 29 | `ioctl` | Missing | 无标准 device file/ioctl UAPI，不用私有设备 syscall 替代。 |
 | 59 | `pipe2` | Not Planned | 无 pipe buffer、阻塞唤醒、poll 与 SIGPIPE 闭环前不接入。 |
 | 65/66 | `readv` / `writev` | Missing | 尚未实现 iovec user-copy 与 partial-transfer 语义。 |
-| 129 | `kill` | Removed | 已删除无 action/mask/frame 闭环的 handler。 |
-| 130/131 | `tkill` / `tgkill` | Not Planned | 需完整 signal + thread group；不单独恢复过时 `tkill`。 |
-| 134/135 | `rt_sigaction` / `rt_sigprocmask` | Not Planned | 不暴露部分 signal ABI。 |
-| 139 | `rt_sigreturn` | Removed | 已删除私有 frame 和取指地址 0 fallback。 |
+| 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 SIGCHLD/job-control 语义。 |
+| 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
 | 261 | `prlimit64` | Not Planned | 当前 init 启动不需 resource limits，不返回伪 infinity 表。 |
 | 278 | `getrandom` | Missing | 无经证明 entropy source/CRNG，不以 RTC/timer 冒充随机。 |
@@ -86,10 +87,10 @@
 
 ## 4. musl 结论
 
-当前 35 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
+当前 39 个入口和静态 initial stack 只足以支撑仓库自带最小 runtime。常规 musl 程序至少被下列缺口阻断：
 
 1. futex timeout/requeue/PI、完整 clone/exit_group 语义；
-2. signal ABI；
+2. signal interruption/restart、altstack、process-directed delivery；
 3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
 4. file/shared mapping、`PROT_NONE` 与 destructive `MAP_FIXED`。
 

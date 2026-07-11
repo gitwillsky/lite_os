@@ -50,6 +50,7 @@ def boot(qemu: str, smp: int) -> None:
         "vma ok",
         "process ok",
         "thread futex ok",
+        "signal ok",
         "ext2 rw ok",
     )
     command = [

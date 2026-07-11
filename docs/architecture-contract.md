@@ -42,6 +42,8 @@
 | process address space、cwd、fd table | Process |
 | PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
 | `(TGID,uaddr)` futex waiter membership | TaskManager futex queue；SchedulingState 保存唯一 token |
+| signal disposition | Arc<Process> signal-actions table |
+| signal mask、pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | OFD offset/status flags | OpenFileDescription |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |

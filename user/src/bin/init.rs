@@ -7,11 +7,20 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use user_lib::{
     AT_REMOVEDIR, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE, MAP_PRIVATE, O_CREAT, O_DIRECTORY, O_RDWR,
-    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, clone_process, clone_thread, close, exit_group,
-    exit_thread, fstat, fsync, ftruncate, futex_wait, futex_wake, getdents64, getppid, gettid,
-    lseek, mkdirat, mmap, mprotect, munmap, openat, openat_from, read, renameat2, sched_yield,
-    set_robust_list, thread_pointer, unlinkat, unlinkat_from, wait4, write,
+    O_TRUNC, PROT_EXEC, PROT_READ, PROT_WRITE, SigAction, clone_process, clone_thread, close,
+    exit_group, exit_thread, fstat, fsync, ftruncate, futex_wait, futex_wake, getdents64, getpid,
+    getppid, gettid, lseek, mkdirat, mmap, mprotect, munmap, openat, openat_from, read, renameat2,
+    rt_sigaction, rt_sigprocmask, sched_yield, set_robust_list, tgkill, thread_pointer, unlinkat,
+    unlinkat_from, wait4, write,
 };
+
+static SIGNAL_COUNT: AtomicU32 = AtomicU32::new(0);
+
+extern "C" fn signal_handler(signal: usize, _info: usize, _context: usize) {
+    if signal == 10 {
+        SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[repr(C)]
 struct ThreadProbe {
@@ -209,6 +218,26 @@ extern "C" fn main(_argc: usize, _argv: *const *const u8, _envp: *const *const u
             b"thread futex ok\n"
         } else {
             b"thread futex failed\n"
+        },
+    );
+    let action = SigAction {
+        handler: signal_handler as usize,
+        flags: 4,
+        mask: 0,
+    };
+    let signal_bit = 1u64 << 9;
+    let signal_ok = rt_sigaction(10, Some(&action), None) == 0
+        && rt_sigprocmask(0, Some(&signal_bit), None) == 0
+        && tgkill(getpid() as usize, gettid() as usize, 10) == 0
+        && SIGNAL_COUNT.load(Ordering::Relaxed) == 0
+        && rt_sigprocmask(1, Some(&signal_bit), None) == 0
+        && SIGNAL_COUNT.load(Ordering::Relaxed) == 1;
+    let _ = write(
+        1,
+        if signal_ok {
+            b"signal ok\n"
+        } else {
+            b"signal failed\n"
         },
     );
     let payload = b"ext2 read-write persistence\n";

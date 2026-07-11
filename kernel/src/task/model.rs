@@ -36,6 +36,67 @@ pub(crate) enum WaitMembership {
     Futex((usize, usize, u64)),
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+/// @description Linux RV64 signal disposition 的 kernel 表示。
+pub(crate) struct LinuxSigAction {
+    pub(crate) handler: usize,
+    pub(crate) flags: usize,
+    pub(crate) mask: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// @description trap return 完成 pending signal 选择后的唯一控制结果。
+pub(crate) enum SignalDelivery {
+    None,
+    Terminate(i32),
+}
+
+const UNBLOCKABLE_SIGNAL_MASK: u64 = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
+
+fn normalize_signal_mask(mask: u64) -> u64 {
+    mask & !UNBLOCKABLE_SIGNAL_MASK
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxStack {
+    sp: usize,
+    flags: i32,
+    padding: u32,
+    size: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxSigContext {
+    regs: [usize; 32],
+    fp: [u8; 528],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxUContext {
+    flags: usize,
+    link: usize,
+    stack: LinuxStack,
+    signal_mask: u64,
+    unused: [u8; 120],
+    context: LinuxSigContext,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxRtSignalFrame {
+    info: [u8; 128],
+    context: LinuxUContext,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<LinuxSigContext>() == 784);
+    assert!(core::mem::size_of::<LinuxUContext>() == 952);
+    assert!(core::mem::size_of::<LinuxRtSignalFrame>() == 1080);
+};
+
 #[derive(Debug)]
 struct AddressSpace {
     memory_set: Mutex<MemorySet>,
@@ -138,6 +199,8 @@ struct ThreadContext {
     kernel_trap_return: usize,
     clear_child_tid: Mutex<Option<usize>>,
     robust_list: Mutex<Option<usize>>,
+    signal_mask: Mutex<u64>,
+    pending_signals: Mutex<u64>,
 }
 
 #[derive(Debug)]
@@ -208,6 +271,7 @@ struct Process {
     address_space: AddressSpace,
     cwd: Mutex<String>,
     files: Mutex<FileDescriptorTable>,
+    signal_actions: Mutex<[LinuxSigAction; 65]>,
 }
 
 /// @description 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
@@ -244,6 +308,7 @@ impl TaskControlBlock {
             },
             cwd: Mutex::new("/".to_string()),
             files: Mutex::new(FileDescriptorTable::with_console(console)),
+            signal_actions: Mutex::new([LinuxSigAction::default(); 65]),
         });
         let tcb = Self {
             process,
@@ -259,6 +324,8 @@ impl TaskControlBlock {
                 kernel_trap_return,
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
+                signal_mask: Mutex::new(0),
+                pending_signals: Mutex::new(0),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -311,6 +378,7 @@ impl TaskControlBlock {
             .lock()
             .try_clone()
             .map_err(|_| MemoryError::OutOfMemory)?;
+        let signal_actions = *self.process.signal_actions.lock();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let policy = self.scheduling.policy.lock();
@@ -329,6 +397,7 @@ impl TaskControlBlock {
                 },
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
+                signal_actions: Mutex::new(signal_actions),
             }),
             thread: ThreadContext {
                 tid,
@@ -342,6 +411,8 @@ impl TaskControlBlock {
                 kernel_trap_return: self.thread.kernel_trap_return,
                 clear_child_tid: Mutex::new(None),
                 robust_list: Mutex::new(None),
+                signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
+                pending_signals: Mutex::new(0),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -413,6 +484,8 @@ impl TaskControlBlock {
                 kernel_trap_return: self.thread.kernel_trap_return,
                 clear_child_tid: Mutex::new(clear_child_tid),
                 robust_list: Mutex::new(None),
+                signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
+                pending_signals: Mutex::new(0),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -440,6 +513,193 @@ impl TaskControlBlock {
     pub(crate) fn set_clear_child_tid(&self, address: usize) -> usize {
         *self.thread.clear_child_tid.lock() = (address != 0).then_some(address);
         self.tid()
+    }
+
+    /// @description 查询或原子替换当前 Process 共享的 signal disposition。
+    ///
+    /// @param signal Linux signal number。
+    /// @param replacement 新 disposition；`None` 仅查询。
+    /// @return 修改前的 disposition。
+    /// @errors signal 越界，或尝试修改 SIGKILL/SIGSTOP 时返回 `Err(())`。
+    pub(crate) fn signal_action(
+        &self,
+        signal: usize,
+        replacement: Option<LinuxSigAction>,
+    ) -> Result<LinuxSigAction, ()> {
+        if signal == 0 || signal > 64 || matches!(signal, 9 | 19) && replacement.is_some() {
+            return Err(());
+        }
+        let mut actions = self.process.signal_actions.lock();
+        let old = actions[signal];
+        if let Some(mut action) = replacement {
+            action.mask = normalize_signal_mask(action.mask);
+            actions[signal] = action;
+        }
+        Ok(old)
+    }
+
+    /// @description 查询或按 Linux `SIG_BLOCK/UNBLOCK/SETMASK` 更新当前 Thread mask。
+    ///
+    /// @param how mask 更新方式；仅查询时忽略。
+    /// @param replacement 待应用的 mask；`None` 仅查询。
+    /// @return 修改前的 mask。
+    /// @errors 更新时 `how` 非法返回 `Err(())`。
+    pub(crate) fn signal_mask(&self, how: usize, replacement: Option<u64>) -> Result<u64, ()> {
+        const SIG_BLOCK: usize = 0;
+        const SIG_UNBLOCK: usize = 1;
+        const SIG_SETMASK: usize = 2;
+        let mut mask = self.thread.signal_mask.lock();
+        let old = *mask;
+        if let Some(value) = replacement {
+            let value = normalize_signal_mask(value);
+            *mask = match how {
+                SIG_BLOCK => old | value,
+                SIG_UNBLOCK => old & !value,
+                SIG_SETMASK => value,
+                _ => return Err(()),
+            };
+        }
+        Ok(old)
+    }
+
+    /// @description 将 standard signal 合并进当前 Thread 的 pending bitset。
+    ///
+    /// @param signal Linux signal number。
+    /// @return signal 成功入队返回 `Ok(())`。
+    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
+    pub(super) fn queue_signal(&self, signal: usize) -> Result<(), ()> {
+        if signal == 0 || signal > 64 {
+            return Err(());
+        }
+        *self.thread.pending_signals.lock() |= 1u64 << (signal - 1);
+        Ok(())
+    }
+
+    /// @description 在 trap return 前选择 pending signal，并构造唯一 RV64 rt frame。
+    ///
+    /// @return 无可交付 signal/handler frame 已就绪时返回 `None`；默认终止返回状态码。
+    /// @errors 用户栈 frame 无法完整写入时返回 `UserAccessError`。
+    pub(crate) fn prepare_signal_delivery(&self) -> Result<SignalDelivery, UserAccessError> {
+        const SA_NODEFER: usize = 0x4000_0000;
+        const SA_RESETHAND: usize = 0x8000_0000;
+        loop {
+            let old_mask = *self.thread.signal_mask.lock();
+            let mut pending = self.thread.pending_signals.lock();
+            let available = *pending & !old_mask;
+            if available == 0 {
+                return Ok(SignalDelivery::None);
+            }
+            let signal = available.trailing_zeros() as usize + 1;
+            *pending &= !(1u64 << (signal - 1));
+            drop(pending);
+            let action = self.process.signal_actions.lock()[signal];
+            if action.handler == 1 || signal == 17 && action.handler == 0 {
+                continue;
+            }
+            if action.handler == 0 {
+                return Ok(SignalDelivery::Terminate(128 + signal as i32));
+            }
+
+            let mut context = self.load_trap_context();
+            let frame_size = core::mem::size_of::<LinuxRtSignalFrame>();
+            let frame_address = context.x[2]
+                .checked_sub(frame_size)
+                .ok_or(UserAccessError::Fault)?
+                & !0xf;
+            let mut registers = [0usize; 32];
+            registers[0] = context.sepc;
+            registers[1..].copy_from_slice(&context.x[1..]);
+            let mut fp = [0u8; 528];
+            for (index, value) in context.f.iter().enumerate() {
+                fp[index * 8..index * 8 + 8].copy_from_slice(&value.to_ne_bytes());
+            }
+            fp[256..260].copy_from_slice(&(context.fcsr as u32).to_ne_bytes());
+            let mut info = [0u8; 128];
+            info[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
+            info[8..12].copy_from_slice(&(-6i32).to_ne_bytes());
+            let frame = LinuxRtSignalFrame {
+                info,
+                context: LinuxUContext {
+                    flags: 0,
+                    link: 0,
+                    stack: LinuxStack {
+                        sp: 0,
+                        flags: 2,
+                        padding: 0,
+                        size: 0,
+                    },
+                    signal_mask: old_mask,
+                    unused: [0; 120],
+                    context: LinuxSigContext {
+                        regs: registers,
+                        fp,
+                    },
+                },
+            };
+            // SAFETY: repr(C) frame contains no references or padding with uninitialized data.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    (&frame as *const LinuxRtSignalFrame).cast::<u8>(),
+                    frame_size,
+                )
+            };
+            self.copy_to_user(frame_address, bytes)?;
+            let mut new_mask = old_mask | action.mask;
+            if action.flags & SA_NODEFER == 0 {
+                new_mask |= 1u64 << (signal - 1);
+            }
+            *self.thread.signal_mask.lock() = normalize_signal_mask(new_mask);
+            if action.flags & SA_RESETHAND != 0 {
+                self.process.signal_actions.lock()[signal] = LinuxSigAction::default();
+            }
+            context.x[1] = crate::memory::signal_trampoline_entry();
+            context.x[2] = frame_address;
+            context.x[10] = signal;
+            context.x[11] = frame_address;
+            context.x[12] = frame_address + 128;
+            context.sepc = action.handler;
+            self.set_trap_context(context);
+            return Ok(SignalDelivery::None);
+        }
+    }
+
+    /// @description 从当前用户 sp 读取并恢复唯一 RV64 rt signal frame。
+    ///
+    /// @return 恢复后的用户 `a0`。
+    /// @errors frame 不可读或包含未支持 extension 时返回 `UserAccessError`。
+    pub(crate) fn restore_signal_frame(&self) -> Result<usize, UserAccessError> {
+        let frame_address = self.load_trap_context().x[2];
+        let mut bytes = [0u8; core::mem::size_of::<LinuxRtSignalFrame>()];
+        self.copy_from_user(frame_address, &mut bytes)?;
+        // SAFETY: byte array has the exact size/alignment-independent representation; read_unaligned
+        // produces an owned frame before any field is inspected.
+        let frame =
+            unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<LinuxRtSignalFrame>()) };
+        // Linux 将 extra-extension 的 reserved word 与 END header 覆盖在 FP union 尾部。
+        // 这里尚不支持 vector/CFI extension；若不校验这 12 bytes，损坏或伪造的扩展链会被
+        // 静默接受，并把一个并非本实现能够完整恢复的上下文当作有效 frame。
+        if frame.context.context.fp[516..528]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(UserAccessError::Fault);
+        }
+        let mut context = self.load_trap_context();
+        context.sepc = frame.context.context.regs[0];
+        context.x[1..].copy_from_slice(&frame.context.context.regs[1..]);
+        for index in 0..32 {
+            context.f[index] = u64::from_ne_bytes(
+                frame.context.context.fp[index * 8..index * 8 + 8]
+                    .try_into()
+                    .unwrap(),
+            );
+        }
+        context.fcsr =
+            u32::from_ne_bytes(frame.context.context.fp[256..260].try_into().unwrap()) as usize;
+        *self.thread.signal_mask.lock() = normalize_signal_mask(frame.context.signal_mask);
+        let result = context.x[10];
+        self.set_trap_context(context);
+        Ok(result)
     }
 
     pub(super) fn take_clear_child_tid(&self) -> Option<usize> {
@@ -725,6 +985,7 @@ impl TaskControlBlock {
         *self.process.address_space.memory_set.lock() = new_memory_set;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
         self.process.files.lock().close_cloexec();
+        *self.process.signal_actions.lock() = [LinuxSigAction::default(); 65];
 
         // 步骤3: 设置新程序的陷阱上下文。参数与环境只存在于新初始栈中。
         self.set_trap_context(TrapContext::app_init_context(

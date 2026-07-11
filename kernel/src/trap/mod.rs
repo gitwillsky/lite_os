@@ -16,7 +16,7 @@ use crate::{
     drivers,
     memory::TRAMPOLINE,
     syscall,
-    task::{self, exit_current_and_run_next},
+    task::{self, SignalDelivery, exit_current_and_run_next},
     timer,
 };
 
@@ -200,6 +200,17 @@ pub(crate) fn trap_return() -> ! {
 
     // 简化的原子获取方案：最小化锁持有时间
     let current_task = crate::task::current_task().expect("No current task in trap_return");
+    match current_task.prepare_signal_delivery() {
+        Ok(SignalDelivery::None) => {}
+        Ok(SignalDelivery::Terminate(status)) => {
+            drop(current_task);
+            exit_current_and_run_next(status);
+        }
+        Err(_) => {
+            drop(current_task);
+            exit_current_and_run_next(139);
+        }
+    }
     let user_satp = current_task.user_token();
     let trap_context_va = current_task.trap_context_va();
     let kernel_gp: usize;

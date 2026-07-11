@@ -22,6 +22,7 @@
     .globl __alltraps
     .globl __restore
     .globl __kernel_trap
+    .globl __signal_trampoline
     .align 2
 __alltraps:
     csrrw sp, sscratch, sp
@@ -145,3 +146,9 @@ __restore:
     # back to user stack
     ld sp, 2*8(sp)
     sret
+
+    .align 2
+__signal_trampoline:
+    li a7, 139
+    ecall
+    unimp

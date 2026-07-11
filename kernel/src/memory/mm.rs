@@ -485,6 +485,11 @@ impl MemorySet {
             // Trampoline 在所有地址空间通用，标记为 Global，避免跨进程切换时TLB混淆
             PTEFlags::R | PTEFlags::X | PTEFlags::G,
         )?;
+        self.page_table.map(
+            VirtualAddress::from(config::SIGNAL_TRAMPOLINE).into(),
+            strampoline_pa.into(),
+            PTEFlags::R | PTEFlags::X | PTEFlags::U,
+        )?;
         Ok(())
     }
 

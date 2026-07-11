@@ -1,10 +1,11 @@
 use core::arch::{asm, global_asm};
 use syscall_abi::{
     SYSCALL_CLONE, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_EXIT_GROUP, SYSCALL_FSTAT, SYSCALL_FSYNC,
-    SYSCALL_FTRUNCATE, SYSCALL_FUTEX, SYSCALL_GETDENTS64, SYSCALL_GETPPID, SYSCALL_GETTID,
-    SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_MMAP, SYSCALL_MPROTECT, SYSCALL_MUNMAP, SYSCALL_OPENAT,
-    SYSCALL_READ, SYSCALL_RENAMEAT2, SYSCALL_SCHED_YIELD, SYSCALL_SET_ROBUST_LIST,
-    SYSCALL_SET_TID_ADDRESS, SYSCALL_UNLINKAT, SYSCALL_WAIT4, SYSCALL_WRITE,
+    SYSCALL_FTRUNCATE, SYSCALL_FUTEX, SYSCALL_GETDENTS64, SYSCALL_GETPID, SYSCALL_GETPPID,
+    SYSCALL_GETTID, SYSCALL_LSEEK, SYSCALL_MKDIRAT, SYSCALL_MMAP, SYSCALL_MPROTECT, SYSCALL_MUNMAP,
+    SYSCALL_OPENAT, SYSCALL_READ, SYSCALL_RENAMEAT2, SYSCALL_RT_SIGACTION, SYSCALL_RT_SIGPROCMASK,
+    SYSCALL_SCHED_YIELD, SYSCALL_SET_ROBUST_LIST, SYSCALL_SET_TID_ADDRESS, SYSCALL_TGKILL,
+    SYSCALL_UNLINKAT, SYSCALL_WAIT4, SYSCALL_WRITE,
 };
 
 global_asm!(
@@ -49,6 +50,15 @@ pub const PROT_EXEC: usize = 0x4;
 pub const MAP_PRIVATE: usize = 0x02;
 pub const MAP_ANONYMOUS: usize = 0x20;
 pub const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+/// @description Linux RV64 `rt_sigaction` 的 24-byte userspace ABI。
+pub struct SigAction {
+    pub handler: usize,
+    pub flags: usize,
+    pub mask: u64,
+}
 
 /// @description 按 Linux/riscv64 ABI 发起系统调用，参数依次装入 `a0..a5`，编号装入 `a7`。
 ///
@@ -222,6 +232,16 @@ pub fn getppid() -> isize {
     syscall(SYSCALL_GETPPID, [0, 0, 0, 0, 0, 0])
 }
 
+/// @description 返回当前 Process 的 TGID。
+///
+/// @return 当前 TGID。
+pub fn getpid() -> isize {
+    syscall(SYSCALL_GETPID, [0, 0, 0, 0, 0, 0])
+}
+
+/// @description 返回当前 Thread 的 TID。
+///
+/// @return 当前 TID。
 pub fn gettid() -> isize {
     syscall(SYSCALL_GETTID, [0, 0, 0, 0, 0, 0])
 }
@@ -299,6 +319,60 @@ pub fn set_robust_list(head: *mut usize) -> isize {
         SYSCALL_SET_ROBUST_LIST,
         [head as usize, 3 * core::mem::size_of::<usize>(), 0, 0, 0, 0],
     )
+}
+
+/// @description 查询或修改当前 Process 的 signal disposition。
+///
+/// @param signal Linux signal number。
+/// @param action 新 disposition；`None` 仅查询。
+/// @param old 可选的旧 disposition 输出位置。
+/// @return 成功返回零，失败返回负 errno。
+pub fn rt_sigaction(
+    signal: usize,
+    action: Option<&SigAction>,
+    old: Option<&mut SigAction>,
+) -> isize {
+    syscall(
+        SYSCALL_RT_SIGACTION,
+        [
+            signal,
+            action.map_or(0, |value| value as *const SigAction as usize),
+            old.map_or(0, |value| value as *mut SigAction as usize),
+            8,
+            0,
+            0,
+        ],
+    )
+}
+
+/// @description 查询或修改当前 Thread 的 signal mask。
+///
+/// @param how `SIG_BLOCK/UNBLOCK/SETMASK` 对应值。
+/// @param set 待应用 mask；`None` 仅查询。
+/// @param old 可选的旧 mask 输出位置。
+/// @return 成功返回零，失败返回负 errno。
+pub fn rt_sigprocmask(how: usize, set: Option<&u64>, old: Option<&mut u64>) -> isize {
+    syscall(
+        SYSCALL_RT_SIGPROCMASK,
+        [
+            how,
+            set.map_or(0, |value| value as *const u64 as usize),
+            old.map_or(0, |value| value as *mut u64 as usize),
+            8,
+            0,
+            0,
+        ],
+    )
+}
+
+/// @description 向指定 Thread 投递 Linux thread-directed signal。
+///
+/// @param tgid 目标 Process ID。
+/// @param tid 目标 Thread ID。
+/// @param signal Linux signal number；零仅检查目标存在性。
+/// @return 成功返回零，失败返回负 errno。
+pub fn tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
+    syscall(SYSCALL_TGKILL, [tgid, tid, signal, 0, 0, 0])
 }
 
 pub fn thread_pointer() -> usize {
