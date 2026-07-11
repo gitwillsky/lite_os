@@ -135,6 +135,64 @@ impl VirtualFileSystem {
         self.resolve_from(start, path)
     }
 
+    /// @description 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。
+    ///
+    /// @param inode 必须属于当前 root filesystem 且为目录。
+    /// @return root 返回 `/`；其他目录返回当前目录项关系对应的 absolute path。
+    /// @errors inode 已不可达、目录关系损坏、跨 filesystem 或底层 I/O 失败时返回明确错误。
+    pub(crate) fn absolute_path(&self, inode: Arc<dyn Inode>) -> Result<Vec<u8>, FileSystemError> {
+        if inode.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        let root = self.root_inode()?;
+        let root_identity = (root.filesystem_id(), root.metadata()?.inode);
+        let mut current = inode;
+        let mut components = Vec::new();
+        let mut visited = Vec::new();
+        loop {
+            let identity = (current.filesystem_id(), current.metadata()?.inode);
+            if identity == root_identity {
+                break;
+            }
+            if current.filesystem_id() != root.filesystem_id() || visited.contains(&identity) {
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+            visited.push(identity);
+            let parent = current.find_child(b"..")?;
+            let name = parent
+                .list()?
+                .into_iter()
+                .find(|entry| {
+                    entry.inode == identity.1
+                        && entry.name.as_slice() != b"."
+                        && entry.name.as_slice() != b".."
+                })
+                .ok_or(FileSystemError::NotFound)?
+                .name;
+            components.push(name);
+            current = parent;
+        }
+
+        let names_size = components
+            .iter()
+            .try_fold(0usize, |size, component| size.checked_add(component.len()));
+        let size = names_size
+            .and_then(|size| size.checked_add(components.len().saturating_sub(1)))
+            .and_then(|size| size.checked_add(1))
+            .ok_or(FileSystemError::InvalidFileSystem)?;
+        let mut path = Vec::new();
+        path.try_reserve_exact(size)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        path.push(b'/');
+        for component in components.iter().rev() {
+            if path.len() > 1 {
+                path.push(b'/');
+            }
+            path.extend_from_slice(component);
+        }
+        Ok(path)
+    }
+
     pub(crate) fn create_at(
         &self,
         start: Option<Arc<dyn Inode>>,

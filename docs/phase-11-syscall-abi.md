@@ -29,6 +29,8 @@ LiteOS 当前对 U-mode 只暴露 Linux/riscv64 的 `a7` syscall number、`a0..a
 
 `Complete` 不是“Linux 兼容”总声明。例如 `exit_group` 在当前单线程模型内完整，但 LiteOS 仍不支持创建线程。
 
+> 后续状态：本表是 Phase 11 的历史快照。Phase 22 已增加标准 `chdir(49)`、Process-owned cwd inode、relative lookup 与 VFS reverse `getcwd`；当前结论以 `syscall-support.md` 为准。
+
 ## 3. 当前有效入口
 
 | 编号 / Linux 名称 | LiteOS handler / 代码位置 | 参数、userspace 结构与 flags | 返回值与 errno | POSIX 接口 / musl 路径 | 状态、已知差异与结论 |

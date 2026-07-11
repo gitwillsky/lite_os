@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
-use crate::fs::{FileSystemError, InodeType, vfs};
+use crate::fs::{FileSystemError, Inode, InodeType, vfs};
 
 /// @description 从启动文件系统读取可执行文件时的可观察失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,15 @@ pub(crate) enum ProgramLoadError {
 /// @errors 路径、inode 类型、I/O 或 short read 失败均保留为明确错误。
 pub(crate) fn load_program_from_fs(path: &[u8]) -> Result<Vec<u8>, ProgramLoadError> {
     let inode = vfs().open(path).map_err(ProgramLoadError::FileSystem)?;
+    load_program_from_inode(inode)
+}
+
+/// @description 从已由 VFS 解析的 inode 完整读入可执行映像。
+///
+/// @param inode pathname lookup 产生且在读取期间保活的 inode。
+/// @return 成功返回完整 file bytes。
+/// @errors inode 类型、execute mode、内存、I/O 或 short read 失败时返回明确错误。
+pub(crate) fn load_program_from_inode(inode: Arc<dyn Inode>) -> Result<Vec<u8>, ProgramLoadError> {
     if inode.inode_type() != InodeType::File {
         return Err(ProgramLoadError::NotRegularFile);
     }

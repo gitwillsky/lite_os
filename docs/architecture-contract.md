@@ -39,7 +39,7 @@
 | hart possible/online/active、startup stack | HartTopology |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address space、cwd、fd table | Process |
+| process address space、cwd inode、fd table | Process；cwd absolute path 只由 VFS 目录项反向推导，不缓存第二份状态 |
 | PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
 | deadline/futex wait registration 及其 `(TGID,uaddr)`/deadline index | TaskManager 唯一 IndexedWaitQueue；SchedulingState 保存唯一 ID |
 | signal disposition | Arc<Process> signal-actions table |

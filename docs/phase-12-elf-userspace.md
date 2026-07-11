@@ -110,6 +110,8 @@ kernel-created init 得到 `argc=1, argv[0]="/bin/init"`。`execve` 对 NULL 或
 
 1. 在旧 AddressSpace 锁下复制 path/argv/envp，所有字节成为 kernel-owned `Vec<u8>`。
 2. 相对 path 按当前 cwd 解析；当前 cwd 唯一可能值为 `/`。
+
+> 后续状态：Phase 22 已将 cwd 收敛为 Process-owned directory inode，并使 relative `execve` 直接从该 inode 解析；本条只记录 Phase 12 当时边界。
 3. VFS 对 raw byte components 逐层查找，要求 regular inode，并在当前 root identity 模型下要求至少一个 execute mode bit。
 4. loader 要求 full read；short read 是 I/O error，不在零填充 buffer 上解析 ELF。
 5. 创建全新 MemorySet、LOAD/BSS、heap boundary、stack、auxv 与 trap-context page。

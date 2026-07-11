@@ -12,7 +12,7 @@ mod scheduler;
 mod task_manager;
 mod trap_context;
 
-pub(crate) use loader::{ProgramLoadError, load_program_from_fs};
+pub(crate) use loader::{ProgramLoadError, load_program_from_fs, load_program_from_inode};
 pub(crate) use model::{
     LinuxSigAction, RunState, SignalDelivery, TaskControlBlock, WaitMembership, WaitResult,
 };

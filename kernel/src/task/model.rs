@@ -1,14 +1,10 @@
 use core::sync::atomic::AtomicUsize;
 
-use alloc::{
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-    fs::{Console, FileDescriptorTable, OpenFileDescription},
+    fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, vfs},
     memory::{
         ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
         TRAP_CONTEXT, UserAccessError, VirtualAddress,
@@ -293,7 +289,8 @@ impl Sched {
 struct Process {
     tgid: ProcessId,
     address_space: AddressSpace,
-    cwd: Mutex<String>,
+    // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
+    cwd: Mutex<Arc<dyn Inode>>,
     files: Mutex<FileDescriptorTable>,
     signal_actions: Mutex<[LinuxSigAction; 65]>,
 }
@@ -330,7 +327,7 @@ impl TaskControlBlock {
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
             },
-            cwd: Mutex::new("/".to_string()),
+            cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_console(console)),
             signal_actions: Mutex::new([LinuxSigAction::default(); 65]),
         });
@@ -392,12 +389,7 @@ impl TaskControlBlock {
             .memory_set
             .lock()
             .try_clone_for_fork()?;
-        let source_cwd = self.process.cwd.lock();
-        let mut cwd = String::new();
-        cwd.try_reserve_exact(source_cwd.len())
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        cwd.push_str(&source_cwd);
-        drop(source_cwd);
+        let cwd = self.process.cwd.lock().clone();
         let files = self
             .process
             .files
@@ -1001,11 +993,19 @@ impl TaskControlBlock {
         &self.thread.task_cx
     }
 
-    /// @description 复制当前 Process 的工作目录。
+    /// @description 复制当前 Process 工作目录的唯一 inode identity。
     ///
-    /// @return owned cwd path。
-    pub(crate) fn cwd(&self) -> String {
+    /// @return 当前目录的共享 inode。
+    pub(crate) fn working_directory(&self) -> Arc<dyn Inode> {
         self.process.cwd.lock().clone()
+    }
+
+    /// @description 原子替换当前 Process 的工作目录 identity。
+    ///
+    /// @param inode 已由 VFS 证明为目录的 inode。
+    /// @return 无返回值。
+    pub(crate) fn set_working_directory(&self, inode: Arc<dyn Inode>) {
+        *self.process.cwd.lock() = inode;
     }
 
     pub(crate) fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {

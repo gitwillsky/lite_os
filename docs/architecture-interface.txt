@@ -418,6 +418,7 @@ kernel/src/fs/mod.rs :: enum FileSystemError :: IsDirectory
 kernel/src/fs/mod.rs :: enum FileSystemError :: NoSpace
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotDirectory
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotFound
+kernel/src/fs/mod.rs :: enum FileSystemError :: OutOfMemory
 kernel/src/fs/mod.rs :: enum FileSystemError :: SymbolicLink
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
@@ -428,6 +429,7 @@ kernel/src/fs/mod.rs :: pub (crate) use vfs :: { init as init_vfs , vfs }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , inode : Arc < dyn Inode >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , kind : InodeType , mode : u32 ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , fs : Arc < dyn FileSystem >) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
@@ -623,6 +625,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const ERANGE : isize = 34
 kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
 kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
 kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_chdir (name : * const u8) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup3 (old : usize , new : usize , flags : u32) -> isize
@@ -680,9 +683,10 @@ kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 普通文件没
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 最终 inode 不是普通文件。"] NotRegularFile
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
 kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8]) -> Result < Vec < u8 > , ProgramLoadError >
+kernel/src/task/loader.rs :: pub (crate) fn load_program_from_inode (inode : Arc < dyn Inode >) -> Result < Vec < u8 > , ProgramLoadError >
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
-kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs }
+kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs , load_program_from_inode }
 kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , RunState , SignalDelivery , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
@@ -730,7 +734,6 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn cwd (& self) -> String
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , elf_data : & [u8] , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : alloc :: sync :: Arc < OpenFileDescription > , cloexec : bool ,) -> Result < usize , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
@@ -748,6 +751,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_ch
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , inode : Arc < dyn Inode >)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < LinuxSigAction > ,) -> Result < LinuxSigAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
@@ -756,6 +760,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_anonymous (& self , address : usize , length : usize) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < dyn Inode >
 kernel/src/task/model.rs :: pub (crate) struct LinuxSigAction
 kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity

@@ -4,6 +4,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -70,6 +72,7 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_futex_failed[] = "LiteOS musl restart futex failed\n";
 	static const char restart_wait_failed[] = "LiteOS musl restart wait failed\n";
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
+	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
 	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
@@ -79,6 +82,7 @@ int main(int argc, char **argv, char **envp)
 	struct timespec remaining = { 0 };
 	int child_status;
 	int wait_result;
+	char cwd[16];
 	pid_t child;
 	pthread_t thread;
 	void *thread_result;
@@ -86,6 +90,13 @@ int main(int argc, char **argv, char **envp)
 
 	if (argc != 1 || !argv || !argv[0] || !envp || envp[0]) return 1;
 	if (sysconf(_SC_PAGESIZE) != 4096 || getpid() <= 0) return 2;
+	if (mkdir("/cwd", 0755) != 0 || chdir("/cwd") != 0
+	    || !getcwd(cwd, sizeof cwd) || strcmp(cwd, "/cwd") != 0
+	    || chdir("..") != 0 || !getcwd(cwd, sizeof cwd) || strcmp(cwd, "/") != 0
+	    || rmdir("/cwd") != 0) {
+		write(STDOUT_FILENO, cwd_failed, sizeof cwd_failed - 1);
+		return 2;
+	}
 	allocation = malloc(64);
 	if (!allocation) return 3;
 	*(volatile uint64_t *)allocation = UINT64_C(0x4c6974654f53);

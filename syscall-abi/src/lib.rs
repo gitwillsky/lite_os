@@ -9,6 +9,7 @@ pub const SYSCALL_FCNTL: usize = 25;
 pub const SYSCALL_MKDIRAT: usize = 34;
 pub const SYSCALL_UNLINKAT: usize = 35;
 pub const SYSCALL_FTRUNCATE: usize = 46;
+pub const SYSCALL_CHDIR: usize = 49;
 pub const SYSCALL_OPENAT: usize = 56;
 pub const SYSCALL_CLOSE: usize = 57;
 pub const SYSCALL_GETDENTS64: usize = 61;

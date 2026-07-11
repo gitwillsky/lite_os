@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
 
 use crate::{
-    fs::FileSystemError,
+    fs::{FileSystemError, vfs},
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
         ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
-        current_task, exit_current_and_run_next, fork_current_process, load_program_from_fs,
+        current_task, exit_current_and_run_next, fork_current_process, load_program_from_inode,
         parent_pid, reap_child, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
@@ -210,11 +210,6 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Ok(_) => return -errno::ENOENT,
         Err(error) => return error,
     };
-    let path = match resolve_exec_path(&task, path) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-
     let mut argument_bytes = 0;
     let mut argv = match copy_user_string_array(&task, argv, &mut argument_bytes) {
         Ok(argv) => argv,
@@ -239,7 +234,12 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Err(error) => return error,
     };
 
-    let elf = match load_program_from_fs(&path) {
+    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
+    let inode = match vfs().open_at(start, &path) {
+        Ok(inode) => inode,
+        Err(error) => return program_load_errno(ProgramLoadError::FileSystem(error)),
+    };
+    let elf = match load_program_from_inode(inode) {
         Ok(elf) => elf,
         Err(error) => return program_load_errno(error),
     };
@@ -248,27 +248,6 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Err(ElfLoadError::OutOfMemory) => -errno::ENOMEM,
         Err(ElfLoadError::InvalidElf) => -errno::ENOEXEC,
     }
-}
-
-fn resolve_exec_path(task: &TaskControlBlock, path: Vec<u8>) -> Result<Vec<u8>, isize> {
-    if path.first() == Some(&b'/') {
-        return Ok(path);
-    }
-
-    let cwd = task.cwd();
-    let mut resolved = Vec::new();
-    resolved
-        .try_reserve_exact(cwd.len() + 1 + path.len())
-        .map_err(|_| -errno::ENOMEM)?;
-    resolved.extend_from_slice(cwd.as_bytes());
-    if resolved.last() != Some(&b'/') {
-        resolved.push(b'/');
-    }
-    resolved.extend_from_slice(&path);
-    if resolved.len() >= MAX_PATH_BYTES {
-        return Err(-errno::ENAMETOOLONG);
-    }
-    Ok(resolved)
 }
 
 fn copy_user_c_string(
@@ -349,6 +328,7 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
         ProgramLoadError::FileSystem(FileSystemError::NotFound) => errno::ENOENT,
         ProgramLoadError::FileSystem(FileSystemError::NotDirectory) => errno::ENOTDIR,
         ProgramLoadError::FileSystem(FileSystemError::SymbolicLink) => errno::ELOOP,
+        ProgramLoadError::FileSystem(FileSystemError::OutOfMemory) => errno::ENOMEM,
         ProgramLoadError::FileSystem(
             FileSystemError::AlreadyExists
             | FileSystemError::IsDirectory

@@ -28,6 +28,7 @@ fn ferr(error: FileSystemError) -> isize {
         FileSystemError::NoSpace => errno::ENOSPC,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::SymbolicLink => errno::ELOOP,
+        FileSystemError::OutOfMemory => errno::ENOMEM,
         FileSystemError::IoError | FileSystemError::InvalidFileSystem => errno::EIO,
     })
 }
@@ -50,8 +51,11 @@ fn path(task: &TaskControlBlock, pointer: *const u8) -> Result<Vec<u8>, isize> {
 }
 
 fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<Option<Arc<dyn Inode>>, isize> {
-    if path.first() == Some(&b'/') || fd == AT_FDCWD {
+    if path.first() == Some(&b'/') {
         return Ok(None);
+    }
+    if fd == AT_FDCWD {
+        return Ok(Some(task.working_directory()));
     }
     let inode = task
         .fd_get(fd as usize)
@@ -61,6 +65,30 @@ fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<Option<Arc<dy
         return Err(-errno::ENOTDIR);
     }
     Ok(Some(inode))
+}
+
+/// @description 将当前 Process 工作目录切换到 Linux pathname 指定的目录。
+///
+/// @param name NUL 结尾的 raw pathname；相对路径从当前 cwd inode 解析。
+/// @return 成功返回零；用户指针、路径、类型、I/O 或内存错误返回负 errno。
+pub(crate) fn sys_chdir(name: *const u8) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match path(&task, name) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
+    let inode = match vfs().open_at(start, &path) {
+        Ok(inode) => inode,
+        Err(error) => return ferr(error),
+    };
+    if inode.inode_type() != InodeType::Directory {
+        return -errno::ENOTDIR;
+    }
+    task.set_working_directory(inode);
+    0
 }
 
 pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
@@ -578,7 +606,10 @@ pub(crate) fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
-    let mut bytes = task.cwd().into_bytes();
+    let mut bytes = match vfs().absolute_path(task.working_directory()) {
+        Ok(path) => path,
+        Err(error) => return ferr(error),
+    };
     bytes.push(0);
     if bytes.len() > length {
         return -errno::ERANGE;

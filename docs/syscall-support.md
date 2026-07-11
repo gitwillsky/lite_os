@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 39 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 40 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,15 +28,16 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 39 个入口
+## 2. 当前暴露的 40 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
-| 17 | `getcwd` | `char *buf, size_t size` | 含 NUL 的长度；`ERANGE/EFAULT` | POSIX `getcwd`；musl direct wrapper | **Complete**。无 `chdir`，因此当前 cwd 唯一值为 `/`；copyout 契约完整。 | `kernel/src/syscall/fs.rs` |
+| 17 | `getcwd` | `char *buf, size_t size` | 含 NUL 的长度；`ERANGE/EFAULT/ENOENT` | POSIX `getcwd`；musl direct wrapper | **Complete**（当前单 root namespace）。从 cwd inode 沿 VFS 目录项反向生成 raw absolute path，不缓存 rename 后会漂移的字符串；目录不可达返回 `ENOENT`。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/vfs.rs` |
 | 23/24 | `dup` / `dup3` | fd、目标 fd、`O_CLOEXEC` | 新 fd；`EBADF/EINVAL` | POSIX dup；Linux dup3 | **Complete**。fd entry 复制后共享同一 OFD offset/status flags；descriptor flag 独立。 | `kernel/src/syscall/fs.rs` |
 | 25 | `fcntl` | fd、command、argument | command 对应值；`EBADF/EINVAL` | POSIX fcntl | **Partial**。实现 `F_DUPFD/F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD_CLOEXEC`；`F_SETFL` 当前只允许修改 `O_APPEND`。 | `kernel/src/syscall/fs.rs` |
 | 34/35 | `mkdirat` / `unlinkat` | dirfd、raw path、mode/`AT_REMOVEDIR` | 0；标准 pathname errno | POSIX mkdirat/unlinkat | **Partial**。支持绝对路径、`AT_FDCWD` 和目录 fd；无 credentials、mount point 与 symlink following。 | `kernel/src/syscall/fs.rs` |
 | 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EISDIR/ENOSPC/EIO` | POSIX ftruncate | **Complete**。支持稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
+| 49 | `chdir` | NUL 结尾 raw pathname | 0；`EFAULT/ENOENT/ENOTDIR/ELOOP/ENOMEM/EIO` | POSIX chdir；musl direct wrapper | **Partial**。absolute/relative、`.`/`..` 与重复分隔符统一经 VFS cwd inode 解析；fork 共享初始 identity 后各 Process 独立替换。无 credentials/execute permission、mount 与 symlink following。 | `kernel/src/syscall/fs.rs`, `kernel/src/task/model.rs` |
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path errno | POSIX openat/close | **Partial**。regular/directory OFD、create/excl/trunc/append/directory/cloexec 完整；无 permissions、symlink following 和设备节点。 | `kernel/src/syscall/fs.rs` |
 | 61 | `getdents64` | fd、`linux_dirent64` buffer、length | bytes；`EBADF/ENOTDIR/EFAULT/EINVAL` | libc readdir backend | **Complete**。目录 OFD 保存逐项位置，记录按 8 bytes 对齐并包含 `d_type`；并发目录变更后的 cookie 与 Linux 一样不承诺快照语义。 | `kernel/src/syscall/fs.rs` |
 | 62 | `lseek` | fd、signed offset、whence | new offset；`EBADF/EINVAL/ESPIPE` | POSIX lseek | **Complete**。实现 `SEEK_SET/CUR/END`，offset 位于共享 OFD。 | `kernel/src/syscall/fs.rs` |
@@ -87,7 +88,7 @@
 
 ## 4. musl 结论
 
-当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、内建主线程区、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait，以及 handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`。consumer 同时验证非 restart 的 `EINTR`/`rem`/reap，以及 `SA_RESTART` 下无 timeout futex 与 `waitpid` 的透明重放；`nanosleep` 仍返回 `EINTR`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 40 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、cwd inode/`chdir/getcwd`、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition/timedwait，以及 handler + `tgkill` + signal-interrupted futex/`nanosleep`/`waitpid`。consumer 同时验证非 restart 的 `EINTR`/`rem`/reap，以及 `SA_RESTART` 下无 timeout futex 与 `waitpid` 的透明重放；`nanosleep` 仍返回 `EINTR`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；
