@@ -20,7 +20,6 @@ use crate::{
         kernel_stack::KernelStack,
         mm::{self, MemorySet, UserAccessError},
     },
-    signal::{SignalDispositions, ThreadSignalState},
     sync::IrqMutex,
     task::{context::TaskContext, pid::ProcessId},
     trap::{TrapContext, trap_handler},
@@ -75,7 +74,6 @@ pub(crate) enum RunState {
     Blocking { cpu: usize },
     Blocked,
     WakePending { cpu: usize },
-    Stopped,
     Exited,
 }
 
@@ -124,14 +122,6 @@ impl AddressSpace {
             .copy_user_string(user_address, max_len)
     }
 
-    /// @description 检查用户指令地址是否具有 U-mode execute 权限。
-    ///
-    /// @param user_address 待检查地址。
-    /// @return `U|X` leaf 映射存在时返回 `true`。
-    pub fn is_user_executable(&self, user_address: usize) -> bool {
-        self.memory_set.lock().is_user_executable(user_address)
-    }
-
     /// @description 检查完整用户地址范围是否可由 kernel copyout。
     ///
     /// @param user_address 用户目标地址。
@@ -148,7 +138,6 @@ struct ThreadContext {
     kernel_stack: KernelStack,
     trap_cx_va: Mutex<usize>,
     task_cx: Mutex<TaskContext>,
-    signals: Mutex<ThreadSignalState>,
 }
 
 #[derive(Debug)]
@@ -321,7 +310,6 @@ struct Process {
     file: Mutex<File>,
     cwd: Mutex<String>,
     credentials: Mutex<Credentials>,
-    signal_dispositions: Mutex<SignalDispositions>,
 }
 
 /// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
@@ -354,7 +342,6 @@ impl TaskControlBlock {
             }),
             cwd: Mutex::new("/".to_string()),
             credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
-            signal_dispositions: Mutex::new(SignalDispositions::new()),
         };
         let tcb = Self {
             process,
@@ -363,7 +350,6 @@ impl TaskControlBlock {
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
-                signals: Mutex::new(ThreadSignalState::new()),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -459,10 +445,6 @@ impl TaskControlBlock {
             .copy_user_string(user_address, max_len)
     }
 
-    pub fn is_user_executable(&self, user_address: usize) -> bool {
-        self.process.address_space.is_user_executable(user_address)
-    }
-
     pub fn is_user_writable(&self, user_address: usize, len: usize) -> bool {
         self.process
             .address_space
@@ -486,20 +468,6 @@ impl TaskControlBlock {
     /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
     pub fn task_context(&self) -> &Mutex<TaskContext> {
         &self.thread.task_cx
-    }
-
-    /// @description 取得当前 Thread 独占的 signal pending/mask 锁。
-    ///
-    /// @return ThreadSignalState mutex；不得用于修改 process dispositions。
-    pub fn thread_signals(&self) -> &Mutex<ThreadSignalState> {
-        &self.thread.signals
-    }
-
-    /// @description 取得 Process 级共享 signal dispositions 锁。
-    ///
-    /// @return SignalDispositions mutex；不得用于修改 thread pending/mask。
-    pub fn signal_dispositions(&self) -> &Mutex<SignalDispositions> {
-        &self.process.signal_dispositions
     }
 
     /// @description 取得 Process 独占的 FileDescriptorTable 锁。
@@ -551,10 +519,7 @@ impl TaskControlBlock {
             file_table.close_cloexec_fds();
         }
 
-        // 步骤3: exec 只重置 process dispositions；thread mask 与 pending 按 Linux 语义保留。
-        self.process.signal_dispositions.lock().reset_for_exec();
-
-        // 步骤4: 替换内存管理结构
+        // 步骤3: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
         let kernel_stack_top = self.thread.kernel_stack.get_top();
 
@@ -562,10 +527,10 @@ impl TaskControlBlock {
         *self.process.address_space.memory_set.lock() = new_memory_set;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
 
-        // 步骤5: 更新任务状态；参数与环境只存在于新初始栈中。
+        // 步骤4: 更新任务状态；参数与环境只存在于新初始栈中。
         *self.process.name.lock() = program_name.to_string();
 
-        // 步骤6: 设置新程序的陷阱上下文
+        // 步骤5: 设置新程序的陷阱上下文
         self.set_trap_context(TrapContext::app_init_context(
             entry_point,
             user_sp,
@@ -606,10 +571,6 @@ impl TaskControlBlock {
     /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。
     pub fn tid(&self) -> usize {
         self.thread.tid
-    }
-
-    pub fn wakeup(self: &Arc<Self>) {
-        crate::task::task_manager::wake_task(self);
     }
 }
 

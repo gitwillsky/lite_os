@@ -16,7 +16,6 @@ use riscv::{
 use crate::{
     drivers::device_manager::{self},
     memory::TRAMPOLINE,
-    signal::{SIG_RETURN_ADDR, handle_signals, sig_return},
     syscall,
     task::{self, exit_current_and_run_next},
     timer,
@@ -109,14 +108,6 @@ pub fn trap_handler() {
                             cx.x[10] = result as usize;
                         }
 
-                        // pending fatal signal 也可能不返回；signal helper 必须成为唯一 task-stack owner。
-                        drop(current);
-                        if !check_signals_and_maybe_exit_with_cx(&mut cx) {
-                            // Process was terminated, should not continue
-                            return;
-                        }
-                        let current = task::current_task()
-                            .expect("signal check returned without a current task");
                         current.set_trap_context(cx);
                     } else {
                         error!("[kernel] UserEnvCall with no current task, terminating");
@@ -124,33 +115,8 @@ pub fn trap_handler() {
                     }
                 }
                 Exception::InstructionPageFault => {
-                    // 当 CPU 的取指单元 (Instruction Fetch Unit) 试图从一个虚拟地址获取下一条要执行的指令时，
-                    // 如果该虚拟地址的转换失败或权限不足，就会发生指令缺页异常
-
-                    // 检查是否是信号处理函数返回时的特殊情况 (地址为0)
-                    if stval == SIG_RETURN_ADDR {
-                        // 这是信号处理函数返回的特殊情况，调用sigreturn恢复原始上下文
-                        debug!("Signal handler return detected (VA=0), calling sigreturn");
-                        let task = task::current_task().expect("No current task");
-                        let mut cx = task.load_trap_context();
-
-                        match sig_return(&task, &mut cx) {
-                            Ok(()) => {
-                                task.set_trap_context(cx);
-                                debug!("Sigreturn successful, continuing execution");
-                                // 成功恢复，继续执行
-                            }
-                            Err(_) => {
-                                error!("Sigreturn failed, terminating process");
-                                // terminal switch 前必须释放 trap stack 上的所有 TCB owner。
-                                drop(task);
-                                exit_current_and_run_next(-5);
-                            }
-                        }
-                    } else {
-                        error!("Instruction Page Fault, VA:{:#x}", stval);
-                        exit_current_and_run_next(-5);
-                    }
+                    error!("Instruction Page Fault, VA:{:#x}", stval);
+                    exit_current_and_run_next(-5);
                 }
                 Exception::LoadFault
                 | Exception::LoadPageFault
@@ -191,47 +157,11 @@ pub fn trap_handler() {
         }
     }
 
-    // IPI/interrupt 返回前处理 pending signal；Running → Stopped/Exited 只能由 owner hart 完成。
-    if let Some(current) = task::current_task()
-        && crate::signal::has_pending_signals(&current)
-    {
-        let mut cx = current.load_trap_context();
-        drop(current);
-        check_signals_and_maybe_exit_with_cx(&mut cx);
-        let current = task::current_task().expect("signal handling returned without current task");
-        current.set_trap_context(cx);
-    }
-
     // kernel/user timer softirq 共用该 flag；只在即将返回用户态时切换，避免在 hardirq 中调度。
     if task::take_reschedule() && task::current_task().is_some() {
         task::suspend_current_and_run_next();
     }
     trap_return();
-}
-
-/// Helper function to check and handle pending signals with existing trap context
-/// Returns true if execution should continue, false if process should exit
-fn check_signals_and_maybe_exit_with_cx(trap_cx: &mut TrapContext) -> bool {
-    if let Some(task) = task::current_task() {
-        let (should_continue, exit_code) = handle_signals(&task, Some(trap_cx));
-        if !should_continue {
-            if let Some(code) = exit_code {
-                // fatal signal 不返回；否则此局部 Arc 会永久留在 exiting task stack。
-                drop(task);
-                exit_current_and_run_next(code);
-            } else {
-                // 进程被信号停止（如SIGTSTP），需要暂停当前进程并切换到其他进程
-                // stopped task 可能在恢复前被终止；不能把 owning Arc 留在它的 suspended stack。
-                drop(task);
-                task::stop_current_and_run_next();
-                // Process was suspended and then resumed, continue execution
-                return true;
-            }
-        }
-        should_continue
-    } else {
-        true
-    }
 }
 
 fn set_kernel_trap_entry() {

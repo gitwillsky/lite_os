@@ -2,10 +2,9 @@ mod errno;
 mod fs;
 mod memory;
 mod process;
-mod signal;
 mod timer;
 
-use crate::syscall::{fs::*, memory::*, process::*, signal::*, timer::*};
+use crate::syscall::{fs::*, memory::*, process::*, timer::*};
 use syscall_abi::*;
 
 pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
@@ -18,12 +17,12 @@ pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
         SYSCALL_READ => sys_read(args[0], args[1] as *mut u8, args[2]),
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_NANOSLEEP => {
-            sys_nanosleep(args[0] as *const timer::TimeSpec, args[1] as *mut timer::TimeSpec)
-        }
+        SYSCALL_NANOSLEEP => sys_nanosleep(
+            args[0] as *const timer::TimeSpec,
+            args[1] as *mut timer::TimeSpec,
+        ),
+        SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut timer::TimeSpec),
         SYSCALL_SCHED_YIELD => sys_sched_yield(),
-        SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
-        SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
         SYSCALL_SETUID => sys_setuid(args[0] as u32),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETTID => sys_get_tid(),

@@ -11,8 +11,8 @@ mod task;
 pub mod task_manager;
 
 pub use processor::*;
-pub use task::TaskControlBlock;
 pub(crate) use task::RunState;
+pub use task::TaskControlBlock;
 pub use task_manager::*;
 
 unsafe extern "C" {

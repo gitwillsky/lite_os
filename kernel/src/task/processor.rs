@@ -371,34 +371,13 @@ pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_key: (u64, u6
                 let generation = scheduling.transition_to_ready(target_cpu);
                 Some((target_cpu, generation))
             }
-            RunState::Stopped | RunState::Exited => None,
+            RunState::Exited => None,
             state => panic!("deadline wait attached to invalid state {state:?}"),
         }
     };
     if let Some((cpu, generation)) = ready {
         deliver_ready_entry(cpu, ready_entry(task, generation));
     }
-    true
-}
-
-/// @description 将 Stopped task 转为一个新的 Ready generation。
-///
-/// @param task 当前由 TGID index 保活的 stopped task。
-/// @return 成功转换返回 true；非 Stopped 状态返回 false。
-pub(super) fn continue_stopped_task(task: Arc<TaskControlBlock>) -> bool {
-    let cpu = select_cpu(&task);
-    let generation = {
-        let mut scheduling = task.scheduling.state.lock();
-        if scheduling.run_state != RunState::Stopped {
-            return false;
-        }
-        assert!(
-            scheduling.deadline_wait.is_none(),
-            "continue must detach deadline wait first"
-        );
-        scheduling.transition_to_ready(cpu)
-    };
-    deliver_ready_entry(cpu, ready_entry(task, generation));
     true
 }
 

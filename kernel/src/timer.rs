@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use riscv::register;
 use spin::Mutex;
@@ -15,7 +15,8 @@ const USEC_PER_SEC: u64 = 1000_000;
 const NSEC_PER_SEC: u64 = 1000_000_000;
 
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
-static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
+static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
+static REALTIME_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 // 全局 RTC 设备实例
 static RTC_DEVICE: Mutex<Option<GoldfishRTCDevice>> = Mutex::new(None);
@@ -76,20 +77,19 @@ fn read_goldfish_rtc_ns() -> Option<u64> {
 
 // 获取真实的 Unix 时间戳（秒）
 pub fn get_unix_timestamp() -> u64 {
-    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Acquire);
-    if boot_time == 0 {
-        // 如果还没有初始化，直接从 RTC 读取当前时间
-        if let Some(rtc_ns) = read_goldfish_rtc_ns() {
-            rtc_ns / NSEC_PER_SEC
-        } else {
-            // RTC 不可用，返回基于系统运行时间的估计值
-            warn!("RTC not available, using boot time estimate");
-            1704067200 + (get_time_ns() / NSEC_PER_SEC) // 2024-01-01 + uptime
-        }
-    } else {
-        // 使用启动时间偏移 + 系统运行时间
-        boot_time + (get_time_ns() / NSEC_PER_SEC)
+    get_realtime_ns() / NSEC_PER_SEC
+}
+
+/// @description 返回 Unix epoch realtime 纳秒值。
+///
+/// @return RTC 启动 offset 加 monotonic；初始化前直接读取 RTC，失败则使用固定 epoch offset。
+pub fn get_realtime_ns() -> u64 {
+    if REALTIME_INITIALIZED.load(Ordering::Acquire) {
+        return REALTIME_OFFSET_NS
+            .load(Ordering::Relaxed)
+            .saturating_add(get_time_ns());
     }
+    read_goldfish_rtc_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
 pub fn get_time_us() -> u64 {
@@ -154,18 +154,14 @@ pub fn init_rtc() {
 
     // 从 Goldfish RTC 获取真实的启动时间
     if let Some(current_unix_ns) = read_goldfish_rtc_ns() {
-        // RTC 给出“现在”，而 BOOT_TIME 保存 epoch offset；若直接保存现在并在读取时
-        // 再加 uptime，会把启动前已经流逝的 uptime 重复计算一次。
-        let boot_time =
-            (current_unix_ns / NSEC_PER_SEC).saturating_sub(get_time_ns() / NSEC_PER_SEC);
-        BOOT_TIME_UNIX_SECONDS.store(boot_time, Ordering::Release);
-        debug!(
-            "Boot time set to Unix timestamp: {} (from Goldfish RTC)",
-            boot_time
-        );
+        let offset = current_unix_ns.saturating_sub(get_time_ns());
+        REALTIME_OFFSET_NS.store(offset, Ordering::Relaxed);
+        REALTIME_INITIALIZED.store(true, Ordering::Release);
+        debug!("Realtime offset set to {} ns (from Goldfish RTC)", offset);
     } else {
         warn!("Goldfish RTC not available, using default boot time");
-        BOOT_TIME_UNIX_SECONDS.store(1704067200, Ordering::Release);
+        REALTIME_OFFSET_NS.store(1_704_067_200u64 * NSEC_PER_SEC, Ordering::Relaxed);
+        REALTIME_INITIALIZED.store(true, Ordering::Release);
     }
     debug!("timer initialized with real-time clock");
 }

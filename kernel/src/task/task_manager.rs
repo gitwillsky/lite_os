@@ -18,7 +18,7 @@ use crate::{
 /// 该表只证明 task 存在；`SchedulingState` 才是 current/runqueue/wait membership 权威。
 pub struct TaskManager {
     /// 全局进程表：TGID -> 当前唯一 Thread
-    // IRQ-safe rwlock 防止 signal/timer 与 task-context 查询在同 hart 重入。
+    // IRQ-safe rwlock 防止 timer 与 task-context 查询在同 hart 重入。
     tasks: IrqRwLock<BTreeMap<usize, Arc<TaskControlBlock>>>,
 }
 
@@ -47,13 +47,6 @@ impl TaskManager {
         enqueue_new_task(task);
     }
 
-    /// 根据 TGID 查找进程的当前唯一 Thread。
-    /// 这是查找进程的统一接口，性能优化的O(log n)查找
-    pub fn find_task_by_tgid(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
-        let processes = self.tasks.read();
-        processes.get(&tgid).cloned()
-    }
-
     fn remove_task(&self, tgid: usize) -> Option<Arc<TaskControlBlock>> {
         self.tasks.write().remove(&tgid)
     }
@@ -80,10 +73,6 @@ impl DeadlineWaitQueue {
         key
     }
 
-    fn remove(&mut self, key: (u64, u64)) -> Option<Arc<TaskControlBlock>> {
-        self.entries.remove(&key)
-    }
-
     fn pop_expired(&mut self, now: u64) -> Option<((u64, u64), Arc<TaskControlBlock>)> {
         let key = *self.entries.first_key_value()?.0;
         if key.0 > now {
@@ -103,11 +92,6 @@ lazy_static! {
 /// 添加任务到系统
 pub fn add_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.add_task(task);
-}
-
-/// 根据 TGID 查找进程的当前唯一 Thread。
-pub fn find_task_by_tgid(tgid: usize) -> Option<Arc<TaskControlBlock>> {
-    TASK_MANAGER.find_task_by_tgid(tgid)
 }
 
 /// @description 从唯一 TGID index 移除 terminal task owner。
@@ -135,37 +119,6 @@ pub fn wake_expired_tasks(current_time_ns: u64) -> usize {
         }
     }
     count
-}
-
-/// @description 中断当前 deadline wait；重复 wake 不创建第二个 Ready entry。
-///
-/// @param task 目标 task。
-/// @return 消费 wait membership 时返回 true，目标未阻塞时返回 false。
-pub fn wake_task(task: &Arc<TaskControlBlock>) -> bool {
-    let wait_key = task.scheduling.state.lock().deadline_wait;
-    let Some(wait_key) = wait_key else {
-        return false;
-    };
-    let owner = DEADLINE_WAIT_QUEUE.lock().remove(wait_key);
-    crate::task::processor::wake_deadline_task(owner.unwrap_or_else(|| task.clone()), wait_key)
-}
-
-/// @description 从 Stopped 恢复，并移除可能残留的 deadline wait membership。
-///
-/// @param task TGID index 查询得到的 task。
-/// @return 成功创建 Ready generation 返回 true；非 Stopped 返回 false。
-pub fn continue_task(task: &Arc<TaskControlBlock>) -> bool {
-    let wait_key = {
-        let mut scheduling = task.scheduling.state.lock();
-        if scheduling.run_state != RunState::Stopped {
-            return false;
-        }
-        scheduling.deadline_wait.take()
-    };
-    if let Some(key) = wait_key {
-        DEADLINE_WAIT_QUEUE.lock().remove(key);
-    }
-    crate::task::processor::continue_stopped_task(task.clone())
 }
 
 /// @description 在明确 deadline wait queue 上阻塞当前 task。
@@ -240,7 +193,6 @@ pub fn suspend_current_and_run_next() {
     drop(sched);
     let vruntime = task.scheduling.policy.lock().vruntime;
 
-    crate::signal::clear_task_on_core(hart_id(), task.tgid());
     with_current_processor(|processor| {
         let current = processor
             .current
@@ -262,7 +214,6 @@ pub fn suspend_current_and_run_next() {
                         vruntime,
                     })
                 }
-                RunState::Stopped => None,
                 state => panic!("cannot suspend task in state {state:?}"),
             }
         };
@@ -271,44 +222,6 @@ pub fn suspend_current_and_run_next() {
         }
     });
 
-    schedule_with_task_context(task);
-}
-
-/// @description 原子完成 Running/current → Stopped，并切回 idle。
-///
-/// @return task 被 SIGCONT 重新调度后返回。
-pub fn stop_current_and_run_next() {
-    let task = current_task().expect("stop requires current task");
-    let cpu = hart_id();
-
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-
-    crate::signal::clear_task_on_core(cpu, task.tgid());
-    with_current_processor(|processor| {
-        let current = processor
-            .current
-            .take()
-            .expect("stop requires processor current");
-        assert!(
-            Arc::ptr_eq(&current, &task),
-            "processor current changed during stop"
-        );
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(
-            scheduling.run_state,
-            RunState::Running { cpu },
-            "only running task can stop"
-        );
-        assert!(
-            scheduling.deadline_wait.is_none(),
-            "running task cannot retain wait membership"
-        );
-        scheduling.run_state = RunState::Stopped;
-    });
     schedule_with_task_context(task);
 }
 
@@ -346,8 +259,6 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
 fn block_current_until(deadline: u64) {
     let task = current_task().expect("deadline wait requires current task");
     let cpu = hart_id();
-
-    crate::signal::clear_task_on_core(hart_id(), task.tgid());
 
     let end_time = get_time_us();
     let mut sched = task.scheduling.policy.lock();
@@ -387,7 +298,6 @@ fn block_current_until(deadline: u64) {
 pub fn exit_current_and_run_next(_exit_code: i32) -> ! {
     let task = take_current_task().expect("No current task to exit");
 
-    crate::signal::clear_task_on_core(hart_id(), task.tgid());
     {
         let mut scheduling = task.scheduling.state.lock();
         assert!(
@@ -443,8 +353,6 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     task.scheduling.policy.lock().last_runtime = start_time;
     // last_cpu 只记录下次调度 hint，不发布 task 内部状态。
     task.scheduling.last_cpu.store(hart_id(), Ordering::Relaxed);
-
-    crate::signal::update_task_on_core(hart_id(), task.tgid());
 
     // 只保留 raw context 地址，避免 mutable Processor borrow 跨越切换。
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);

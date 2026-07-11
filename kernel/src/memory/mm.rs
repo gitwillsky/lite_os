@@ -506,15 +506,6 @@ impl MemorySet {
         Err(UserAccessError::Unterminated)
     }
 
-    /// @description 检查单个用户虚拟地址是否由 `U|X` leaf 映射。
-    ///
-    /// @param user_address 待检查的用户指令地址。
-    /// @return 可由 U-mode 取指返回 `true`，否则返回 `false`。
-    pub fn is_user_executable(&self, user_address: usize) -> bool {
-        Self::checked_user_end(user_address, 1).is_ok()
-            && self.user_page(user_address, PTEFlags::X).is_ok()
-    }
-
     /// @description 在不修改用户内存的情况下检查完整 `U|W` 范围。
     ///
     /// @param user_address 用户目标地址。

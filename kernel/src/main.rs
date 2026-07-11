@@ -22,7 +22,6 @@ mod lang_item;
 
 mod id;
 mod memory;
-mod signal;
 mod sync;
 mod syscall;
 mod task;
@@ -58,7 +57,6 @@ extern "C" fn kmain(hart_id: usize, dtb_addr: usize, is_boot_hart: usize) -> ! {
         timer::init_rtc();
         fs::vfs::init();
         drivers::init();
-        signal::init();
         task::init();
         // Release 发布页表、设备、文件系统、信号和首个任务；缺失时 secondary
         // 可能在这些全局对象仍处于构造中时进入调度循环。
