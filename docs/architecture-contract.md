@@ -4,9 +4,9 @@
 
 ## 1. Crate contract
 
-- `bootloader` 是独立 M-mode domain，不依赖 kernel 或 user。
-- `syscall-abi` 只保存用户可见 Linux/riscv64 ABI 常量，不依赖实现 crate。
-- `user` 只依赖 `syscall-abi` 与自身 runtime。
+- `bootloader` 是独立 M-mode domain，不依赖 kernel 或 userspace。
+- `syscall-abi` 只保存 kernel dispatcher 接入的 Linux/riscv64 ABI 常量，不依赖实现 crate。
+- 产品 userspace 只有固定上游 musl + BusyBox rootfs；禁止恢复 Rust user crate、自有 runtime/init 或第二条默认镜像路径。
 - kernel 的 `main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。
 
 ## 2. Kernel dependency contract
@@ -75,6 +75,7 @@
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
+- `user/` 顶层只允许 `busybox.config`、`inittab` 与 `musl-smoke.c`；围栏禁止其他文件/目录、Rust user crate/source/linker、`build-user` 和旧 init artifact。
 
 ## 5. Change contract
 

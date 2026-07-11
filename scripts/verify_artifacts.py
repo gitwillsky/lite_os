@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the architecture-relevant properties of the three linked ELF images."""
+"""Validate the architecture-relevant properties of the linked product ELF images."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def main() -> int:
                 "EXEC",
             ),
             "target/riscv64gc-unknown-none-elf/debug/kernel": ("ELF64", "RISC-V", "EXEC"),
-            "target/riscv64gc-unknown-none-elf/release/init": (
+            "target/busybox-static/source/busybox": (
                 "ELF64",
                 "RISC-V",
                 "EXEC",

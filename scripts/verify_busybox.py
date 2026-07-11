@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import os
 import shutil
 import subprocess
@@ -244,9 +245,8 @@ def find_debugfs() -> Path:
     raise RuntimeError("debugfs from e2fsprogs is required")
 
 
-def create_image(binary: Path) -> Path:
+def create_image(binary: Path, image: Path) -> Path:
     """构造单一 BusyBox inode、hardlink applets 与固定 inittab 的 ext2 rootfs。"""
-    image = WORK / "fs.img"
     run(
         [
             sys.executable,
@@ -290,13 +290,29 @@ def create_image(binary: Path) -> Path:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="只构建并校验固定 BusyBox rootfs，不启动 QEMU",
+    )
+    parser.add_argument(
+        "--image",
+        type=Path,
+        default=WORK / "fs.img",
+        help="rootfs 输出路径",
+    )
+    args = parser.parse_args()
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         compiler = find_compiler()
         source = obtain_source()
         binary = build_busybox(source, compiler)
         verify_elf(binary, compiler)
-        image = create_image(binary)
+        image = create_image(binary, args.image.resolve())
+        if args.build_only:
+            print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
+            return 0
         boot(
             image,
             1,

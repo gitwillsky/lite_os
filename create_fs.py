@@ -62,7 +62,7 @@ def create_ext2_filesystem(filename, init_elf, size_mb=128):
     return copy_files_to_ext2(filename, debugfs, init_elf)
 
 def collect_binaries(init_elf):
-    """仅收集最小用户态启动骨架允许进入镜像的 ELF。"""
+    """底层 ext2 primitive 只安装调用方显式指定的 init ELF。"""
 
     print("允许写入镜像的用户程序: ['init']")
     return [(init_elf, "/bin/init")]
@@ -116,8 +116,8 @@ def main():
                        help='文件系统映像文件名 (默认: fs.img)')
     parser.add_argument('--size', '-s', type=int, default=128,
                        help='文件系统大小(MB) (默认: 128)')
-    parser.add_argument('--init', default='target/riscv64gc-unknown-none-elf/release/init',
-                       help='写入 /bin/init 的静态 ELF')
+    parser.add_argument('--init', required=True,
+                       help='写入 /bin/init 的静态 ELF（默认 rootfs 由 make build 传入 BusyBox）')
 
     args = parser.parse_args()
 

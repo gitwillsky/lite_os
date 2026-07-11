@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
 import os
 import shutil
 import subprocess
@@ -199,6 +200,13 @@ def create_image(binary: Path) -> Path:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="只构建并校验固定 musl consumer，不创建镜像或启动 QEMU",
+    )
+    args = parser.parse_args()
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         compiler = find_compiler()
@@ -206,6 +214,9 @@ def main() -> int:
         install = build_musl(source, compiler)
         binary = link_smoke(install, compiler)
         verify_elf(binary, compiler)
+        if args.build_only:
+            print(f"musl {MUSL_VERSION} static userspace build passed")
+            return 0
         image = create_image(binary)
         boot(
             image,

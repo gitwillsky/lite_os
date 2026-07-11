@@ -51,10 +51,6 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         root: "bootloader/src",
         binary_crate: true,
     },
-    SourceDomain {
-        root: "user/src",
-        binary_crate: false,
-    },
 ];
 
 struct SourceFile {
@@ -98,6 +94,7 @@ fn main() -> ExitCode {
     check_unsafe_proofs(&sources, &mut errors);
     check_abi(&root, &mut errors);
     check_documentation(&root, &mut errors);
+    check_userspace_single_track(&root, &mut errors);
 
     let surface = interface_surface(&sources);
     if write_interface {
@@ -130,6 +127,51 @@ fn repository_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("architecture-check must live under tools/")
         .to_path_buf()
+}
+
+fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
+    let allowed_user_files = BTreeSet::from(["busybox.config", "inittab", "musl-smoke.c"]);
+    match fs::read_dir(root.join("user")) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !allowed_user_files.contains(name.as_str()) {
+                    errors.push(format!(
+                        "user/{name}: only fixed BusyBox config/inittab and the musl consumer are allowed"
+                    ));
+                }
+            }
+        }
+        Err(error) => errors.push(format!("failed to inspect user/: {error}")),
+    }
+    for relative in ["user/Cargo.toml", "user/src", "user/linker.ld"] {
+        if root.join(relative).exists() {
+            errors.push(format!(
+                "{relative}: Rust userspace track is forbidden; BusyBox is the unique product rootfs"
+            ));
+        }
+    }
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    if manifest
+        .lines()
+        .any(|line| line.starts_with("members") && line.split('"').any(|member| member == "user"))
+    {
+        errors.push("Cargo.toml: user crate must not re-enter the workspace".to_owned());
+    }
+    let makefile = fs::read_to_string(root.join("Makefile")).unwrap_or_default();
+    for forbidden in ["build-user", "release/init", "create-fs"] {
+        if makefile.contains(forbidden) {
+            errors.push(format!(
+                "Makefile: legacy userspace path `{forbidden}` is forbidden"
+            ));
+        }
+    }
+    let required = "python3 scripts/verify_busybox.py --build-only --image fs.img";
+    if !makefile.contains(required) {
+        errors.push(format!(
+            "Makefile: default rootfs must be built through `{required}`"
+        ));
+    }
 }
 
 fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -350,17 +392,6 @@ fn check_dependencies(root: &Path, sources: &[SourceFile], errors: &mut Vec<Stri
         if source.text.contains("kernel::") || source.text.contains("user::") {
             errors.push(format!(
                 "{}: bootloader must remain an independent M-mode domain",
-                source.relative
-            ));
-        }
-    }
-    for source in sources
-        .iter()
-        .filter(|source| source.relative.starts_with("user/src/"))
-    {
-        if source.text.contains("kernel::") || source.text.contains("bootloader::") {
-            errors.push(format!(
-                "{}: user may depend only on syscall-abi and its runtime",
                 source.relative
             ));
         }
