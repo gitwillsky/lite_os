@@ -1,7 +1,7 @@
 use crate::sync::{IrqMutex, LocalIrqGuard};
 use crate::{
     arch::{
-        hart::{MAX_CORES, hart_id},
+        hart::{MAX_SUPPORTED_HARTS, hart_id},
         sbi,
     },
     task::{
@@ -177,7 +177,7 @@ impl PerHartProcessor {
 // active/queued_entries 原子和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
 unsafe impl Sync for PerHartProcessor {}
 
-static PER_HART_PROCESSORS: [PerHartProcessor; MAX_CORES] = [
+static PER_HART_PROCESSORS: [PerHartProcessor; MAX_SUPPORTED_HARTS] = [
     const { PerHartProcessor::new() },
     const { PerHartProcessor::new() },
     const { PerHartProcessor::new() },
@@ -194,7 +194,7 @@ static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 fn per_hart(hart: usize) -> &'static PerHartProcessor {
     PER_HART_PROCESSORS
         .get(hart)
-        .expect("processor hart index exceeds MAX_CORES")
+        .expect("processor hart index exceeds MAX_SUPPORTED_HARTS")
 }
 
 fn local_processor() -> &'static mut Processor {
@@ -259,8 +259,8 @@ pub fn take_reschedule() -> bool {
 /// @errors 目标越界、未 active 或 SBI IPI 失败均触发内核不变量失败，不做 CPU fallback。
 fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
     assert!(
-        cpu_id < MAX_CORES,
-        "target CPU {} exceeds MAX_CORES",
+        cpu_id < MAX_SUPPORTED_HARTS,
+        "target CPU {} exceeds MAX_SUPPORTED_HARTS",
         cpu_id
     );
     let current = hart_id();
@@ -288,7 +288,7 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
 /// @return 被选中的 hart ID。
 fn select_cpu(task: &TaskControlBlock) -> usize {
     // Relaxed 只用于分散扫描起点，不承担任何状态发布。
-    let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_CORES;
+    let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_SUPPORTED_HARTS;
     let current = hart_id();
     // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
     let last = task.scheduling.last_cpu.load(Ordering::Relaxed);
@@ -296,8 +296,8 @@ fn select_cpu(task: &TaskControlBlock) -> usize {
     let mut best_load = usize::MAX;
     let mut last_load = None;
 
-    for offset in 0..MAX_CORES {
-        let cpu = (start + offset) % MAX_CORES;
+    for offset in 0..MAX_SUPPORTED_HARTS {
+        let cpu = (start + offset) % MAX_SUPPORTED_HARTS;
         let slot = per_hart(cpu);
         if !slot.active.load(Ordering::Acquire) {
             continue;

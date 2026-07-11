@@ -54,7 +54,7 @@ unsafe extern "C" fn _start() -> ! {
             wfi
             j 3b
         ",
-        max_cores = const crate::arch::hart::MAX_CORES,
+        max_cores = const crate::arch::hart::MAX_SUPPORTED_HARTS,
         clear_bss = sym clear_bss,
     )
 }

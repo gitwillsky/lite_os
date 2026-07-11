@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
-    arch::hart::{MAX_CORES, hart_id},
+    arch::hart::{MAX_SUPPORTED_HARTS, hart_id},
     task::{self},
     timer,
 };
@@ -19,7 +19,7 @@ impl SoftIrq {
 }
 
 // 每核挂起的软中断位图 - 使用固定大小数组避免Vec的潜在问题
-static PENDING: [AtomicU32; MAX_CORES] = [
+static PENDING: [AtomicU32; MAX_SUPPORTED_HARTS] = [
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
@@ -48,7 +48,7 @@ pub fn raise(irq: SoftIrq) {
 
 #[inline(always)]
 fn take_pending_for(cpu: usize) -> u32 {
-    assert!(cpu < MAX_CORES, "softirq CPU index out of range");
+    assert!(cpu < MAX_SUPPORTED_HARTS, "softirq CPU index out of range");
     PENDING[cpu].swap(0, Ordering::AcqRel)
 }
 

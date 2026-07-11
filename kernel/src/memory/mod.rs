@@ -217,8 +217,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         boot_stack_bottom_addr, boot_stack_top_addr
     );
     {
-        use crate::arch::hart::MAX_CORES;
-        for hart in 0..MAX_CORES {
+        use crate::arch::hart::MAX_SUPPORTED_HARTS;
+        for hart in 0..MAX_SUPPORTED_HARTS {
             let stack_top = boot_stack_top_addr - hart * KERNEL_STACK_SIZE;
             let stack_bottom = stack_top - KERNEL_STACK_SIZE;
             let mapped_bottom = stack_bottom + PAGE_SIZE; // 保留 1 页守护页

@@ -45,6 +45,9 @@ pub struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,
     pub smp: usize,
+    pub hart_mask: usize,
+    pub max_hart_id: usize,
+    pub invalid_hart_id: Option<usize>,
     pub time_base_freq: u64,
     pub mem: Range<usize>,
     pub uart: Range<usize>,
@@ -69,6 +72,11 @@ impl Display for BoardInfo {
         writeln!(f, "DTB: {:#x?}", self.dtb)?;
         writeln!(f, "Model: {}", self.model)?;
         writeln!(f, "SMP: {}", self.smp)?;
+        writeln!(f, "Hart Mask: {:#x}", self.hart_mask)?;
+        writeln!(f, "Max Hart ID: {}", self.max_hart_id)?;
+        if let Some(invalid) = self.invalid_hart_id {
+            writeln!(f, "Invalid Hart ID: {}", invalid)?;
+        }
         writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
         writeln!(f, "Memory: {:#x?}", self.mem)?;
         writeln!(f, "UART: {:#x?}", self.uart)?;
@@ -122,6 +130,9 @@ impl BoardInfo {
             dtb: dtb_addr..dtb_addr,
             model: StringInLine(0, [0; 128]),
             smp: 0,
+            hart_mask: 0,
+            max_hart_id: 0,
+            invalid_hart_id: None,
             mem: 0..0,
             uart: 0..0,
             test: 0..0,
@@ -202,8 +213,10 @@ impl BoardInfo {
                 } else {
                     if current == Str::from(CPUS) && name.starts_with("cpu@") {
                         ans.smp += 1;
+                        WalkOperation::StepInto
+                    } else {
+                        WalkOperation::StepOver
                     }
-                    WalkOperation::StepOver
                 }
             }
             DtbObj::Property(Property::Model(model)) if ctx.is_root() => {
@@ -225,6 +238,15 @@ impl BoardInfo {
                 } else if node.starts_with(MEM) {
                     ans.mem = reg.next().unwrap();
                     WalkOperation::StepOut
+                } else if node.starts_with("cpu@") {
+                    let hart_id = reg.next().unwrap().start;
+                    if hart_id < crate::arch::hart::MAX_SUPPORTED_HARTS {
+                        ans.hart_mask |= 1usize << hart_id;
+                        ans.max_hart_id = ans.max_hart_id.max(hart_id);
+                    } else {
+                        ans.invalid_hart_id = Some(hart_id);
+                    }
+                    WalkOperation::StepOver
                 } else if node.starts_with(VIRTIO) {
                     // VirtIO 设备的 reg 属性
                     if let Some(reg_range) = reg.next() {

@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// @description QEMU virt 目标可索引的最大 hart 数。
-pub const MAX_CORES: usize = 8;
+/// @description kernel 可索引的 hart 容量上限，不表示 DTB 实际启用核数。
+pub const MAX_SUPPORTED_HARTS: usize = 8;
 
 static ONLINE_HARTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -19,16 +19,16 @@ pub(crate) fn raw_hart_id() -> usize {
 
 /// @description 获取已经过内核入口验证的当前 hart ID。
 ///
-/// @return 小于 [`MAX_CORES`] 的 hart ID。
+/// @return 小于 [`MAX_SUPPORTED_HARTS`] 的 hart ID。
 /// @errors `tp` 越界表示入口或 trap 上下文已被破坏，将触发内核 panic；不得映射到 CPU0。
 #[inline(always)]
 pub fn hart_id() -> usize {
     let hart = raw_hart_id();
     assert!(
-        hart < MAX_CORES,
-        "hart invariant violated: tp={} >= MAX_CORES={}",
+        hart < MAX_SUPPORTED_HARTS,
+        "hart invariant violated: tp={} >= MAX_SUPPORTED_HARTS={}",
         hart,
-        MAX_CORES
+        MAX_SUPPORTED_HARTS
     );
     hart
 }
