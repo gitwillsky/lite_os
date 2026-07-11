@@ -7,6 +7,7 @@ use rustsbi::{HartMask, Ipi, SbiRet, Timer};
 
 pub(crate) struct Clint;
 
+// OWNER: CLINT module owns the DTB-selected controller pointer after global initialization.
 pub(crate) static CLINT: AtomicPtr<aclint::SifiveClint> = AtomicPtr::new(null_mut());
 
 pub(crate) fn init(base: usize) {
@@ -62,6 +63,8 @@ impl Ipi for Clint {
 impl Timer for Clint {
     #[inline]
     fn set_timer(&self, time_value: u64) {
+        // SAFETY: firmware runs in M-mode; CLINT is published before SBI service exposure and
+        // current hart_id indexes the DTB-validated controller mapping.
         unsafe {
             riscv::register::mip::clear_stimer();
             (*CLINT.load(Ordering::Acquire)).write_mtimecmp(hart_id(), time_value)
@@ -70,22 +73,28 @@ impl Timer for Clint {
 }
 
 #[inline]
-pub fn set_msip(hart_idx: usize) {
+pub(crate) fn set_msip(hart_idx: usize) {
     assert!(
         hart_idx < constants::HART_MASK_BITS,
         "CLINT hart index out of range"
     );
+    // SAFETY: initialization publishes a non-null DTB-validated CLINT pointer before any IPI;
+    // explicit assertion bounds the destination register index.
     unsafe { &*CLINT.load(Ordering::Acquire) }.set_msip(hart_idx);
 }
 
 #[inline]
-pub fn clear_msip() {
+pub(crate) fn clear_msip() {
+    // SAFETY: initialization publishes a non-null CLINT pointer before hart execution reaches
+    // this path, and current hart_id belongs to the validated firmware hart set.
     unsafe { &*CLINT.load(Ordering::Acquire) }.clear_msip(hart_id());
 }
 
 #[inline]
-pub fn clear() {
+pub(crate) fn clear() {
     loop {
+        // SAFETY: `as_ref` is used only to poll initialization; a non-null value is a permanent
+        // DTB-validated MMIO mapping stored with Release ordering.
         if let Some(clint) = unsafe { CLINT.load(Ordering::Acquire).as_ref() } {
             clint.clear_msip(hart_id());
             clint.write_mtimecmp(hart_id(), u64::MAX);

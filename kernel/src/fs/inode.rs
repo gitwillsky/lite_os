@@ -4,7 +4,7 @@ use super::FileSystemError;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InodeType {
+pub(crate) enum InodeType {
     File = 0,
     Directory = 1,
     SymLink = 2,
@@ -13,31 +13,31 @@ pub enum InodeType {
 
 /// @description VFS 与 Linux stat/getdents 共享的稳定 inode 元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InodeMetadata {
-    pub inode: u64,
-    pub kind: InodeType,
-    pub mode: u32,
-    pub links: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub size: u64,
-    pub blocks: u64,
-    pub block_size: u32,
-    pub atime: u64,
-    pub mtime: u64,
-    pub ctime: u64,
+pub(crate) struct InodeMetadata {
+    pub(crate) inode: u64,
+    pub(crate) kind: InodeType,
+    pub(crate) mode: u32,
+    pub(crate) links: u32,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) size: u64,
+    pub(crate) blocks: u64,
+    pub(crate) block_size: u32,
+    pub(crate) atime: u64,
+    pub(crate) mtime: u64,
+    pub(crate) ctime: u64,
 }
 
 /// @description 一个目录项的原始字节名称与 inode identity。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DirectoryEntry {
-    pub inode: u64,
-    pub kind: InodeType,
-    pub name: Vec<u8>,
+pub(crate) struct DirectoryEntry {
+    pub(crate) inode: u64,
+    pub(crate) kind: InodeType,
+    pub(crate) name: Vec<u8>,
 }
 
 /// @description 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
-pub trait Inode: Send + Sync {
+pub(crate) trait Inode: Send + Sync {
     fn filesystem_id(&self) -> usize;
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;

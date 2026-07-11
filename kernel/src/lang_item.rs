@@ -3,6 +3,8 @@ use riscv::register;
 
 #[panic_handler]
 fn panic_handler(info: &PanicInfo) -> ! {
+    // SAFETY: panic handling runs in S-mode and disables only the current hart's interrupt bit
+    // before entering a non-returning diagnostic path.
     unsafe {
         register::sstatus::clear_sie();
     }

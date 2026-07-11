@@ -10,7 +10,7 @@ use crate::{
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
 };
-use alloc::{collections::VecDeque, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
@@ -21,14 +21,14 @@ use core::{
 ///
 /// @return 永不返回。
 #[unsafe(no_mangle)]
-pub extern "C" fn idle_return() -> ! {
+pub(crate) extern "C" fn idle_return() -> ! {
     panic!("idle context returned unexpectedly");
 }
 
 /// @description 仅由所属 hart 可变访问的调度执行状态。
-pub struct Processor {
+pub(crate) struct Processor {
     hart_id: usize,
-    pub current: Option<Arc<TaskControlBlock>>,
+    pub(crate) current: Option<Arc<TaskControlBlock>>,
     idle_context: TaskContext,
     runqueue: CfsRunQueue,
     deferred_reap: Option<Arc<TaskControlBlock>>,
@@ -52,7 +52,7 @@ impl Processor {
     /// @description 获取当前 hart idle context 的稳定地址。
     ///
     /// @return 指向本 hart `TaskContext` 的唯一可变指针。
-    pub fn idle_context_ptr(&mut self) -> *mut TaskContext {
+    pub(crate) fn idle_context_ptr(&mut self) -> *mut TaskContext {
         &mut self.idle_context
     }
 
@@ -60,7 +60,7 @@ impl Processor {
     ///
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
     /// @return 无返回值。
-    pub fn add_ready_entry(&mut self, entry: RunQueueEntry) {
+    pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
         self.runqueue.push(entry);
         // queued_entries 与 local heap 每次 push/pop 一一对应，不统计 mailbox/current。
         per_hart(self.hart_id)
@@ -77,7 +77,7 @@ impl Processor {
     /// @description 消费 stale entry，原子完成 Ready → Running 与 current 发布。
     ///
     /// @return 队列为空时返回 `None`，否则返回唯一取出的任务引用。
-    pub fn select_task(&mut self) -> Option<Arc<TaskControlBlock>> {
+    pub(crate) fn select_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         assert!(self.current.is_none(), "CPU already owns a current task");
         loop {
             let entry = self.runqueue.pop()?;
@@ -104,7 +104,7 @@ impl Processor {
     /// @description 把远端 mailbox 中的任务转移到本 hart scheduler。
     ///
     /// @return 无返回值。
-    pub fn drain_inbound_to_local(&mut self) {
+    pub(crate) fn drain_inbound_to_local(&mut self) {
         let slot = per_hart(self.hart_id);
         let mut inbound = slot.inbound.lock();
         let mut local = VecDeque::new();
@@ -121,7 +121,7 @@ impl Processor {
     /// @description 发布当前 processor 已进入 idle/scheduler 循环。
     ///
     /// @return 无返回值。
-    pub fn mark_active(&self) {
+    pub(crate) fn mark_active(&self) {
         // Release 发布 local Processor 初始化；远端负载均衡读取 active(Acquire) 后
         // 才能向 inbound 入队。缺失时会向尚未开始 drain 的 hart 投递任务。
         hart::state(self.hart_id)
@@ -150,7 +150,7 @@ impl Processor {
     }
 }
 
-pub(crate) struct PerHartProcessor {
+struct PerHartProcessor {
     local: UnsafeCell<MaybeUninit<Processor>>,
     initialized: AtomicBool,
     // 仅供跨 hart 负载选择；Relaxed 过期值只影响选择，不发布或拥有 runqueue entry。
@@ -166,7 +166,7 @@ impl PerHartProcessor {
     ///
     /// @return 空 local processor、mailbox 和负载计数。
     /// @errors 无错误。
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             local: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicBool::new(false),
@@ -177,17 +177,49 @@ impl PerHartProcessor {
     }
 }
 
-// SAFETY: `local` 只能由 ID 等于所属 HartState 的执行流访问；远端 hart 只能触及
+// SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 hart 只能触及
 // queued/inbound 计数和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
 unsafe impl Sync for PerHartProcessor {}
 
+struct ProcessorSlot {
+    hart_id: usize,
+    processor: PerHartProcessor,
+}
+
+struct ProcessorTopology {
+    slots: Box<[ProcessorSlot]>,
+}
+
+// OWNER: processor module owns scheduler-local state for every DTB hart.
+static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
+
+pub(super) fn init_topology() {
+    assert!(
+        PROCESSOR_TOPOLOGY.get().is_none(),
+        "processor topology initialized twice"
+    );
+    let mut slots = Vec::with_capacity(hart::hart_count());
+    for state in hart::states() {
+        slots.push(ProcessorSlot {
+            hart_id: state.hart_id(),
+            processor: PerHartProcessor::new(),
+        });
+    }
+    PROCESSOR_TOPOLOGY.call_once(|| ProcessorTopology {
+        slots: slots.into_boxed_slice(),
+    });
+}
+
+// OWNER: processor module owns the round-robin cursor used for initial task placement.
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 fn per_hart(hart: usize) -> &'static PerHartProcessor {
-    hart::state(hart)
-        .unwrap_or_else(|| panic!("processor hart {} is absent from DTB topology", hart))
-        .processor()
+    let slots = &PROCESSOR_TOPOLOGY.wait().slots;
+    let index = slots
+        .binary_search_by_key(&hart, |slot| slot.hart_id)
+        .unwrap_or_else(|_| panic!("processor hart {} is absent from DTB topology", hart));
+    &slots[index].processor
 }
 
 fn local_processor() -> &'static mut Processor {
@@ -208,7 +240,7 @@ fn local_processor() -> &'static mut Processor {
 /// @param f 不得保存或泄漏 `Processor` 引用的同步闭包。
 /// @return 闭包的返回值。
 /// @errors `tp` 越界属于内核不变量破坏。
-pub fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
+pub(crate) fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
     let _irq = LocalIrqGuard::disable();
     // 中断关闭保证同 hart 的 trap handler 不能在该 mutable borrow 存活时再次借用 local processor。
     f(local_processor())
@@ -233,14 +265,14 @@ pub(super) fn reap_deferred_task() {
 /// @description 标记当前 hart 在返回用户态前需要重新调度。
 ///
 /// @return 无返回值；flag 仅由本 hart 在关中断临界区访问。
-pub fn request_reschedule() {
+pub(crate) fn request_reschedule() {
     with_current_processor(Processor::request_reschedule);
 }
 
 /// @description 消费当前 hart 的 reschedule flag。
 ///
 /// @return 本次用户态返回是否应先 yield。
-pub fn take_reschedule() -> bool {
+pub(crate) fn take_reschedule() -> bool {
     with_current_processor(Processor::take_reschedule)
 }
 
@@ -259,7 +291,7 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
         return;
     }
 
-    let target = target_state.processor();
+    let target = per_hart(cpu_id);
     assert!(
         target_state.is_active(),
         "cannot enqueue task to inactive CPU {}",
@@ -293,7 +325,7 @@ fn select_cpu(task: &TaskControlBlock) -> usize {
             continue;
         }
         let cpu = state.hart_id();
-        let slot = state.processor();
+        let slot = per_hart(cpu);
         let load = slot
             .queued_entries
             .load(Ordering::Relaxed)
@@ -326,7 +358,7 @@ fn ready_entry(task: Arc<TaskControlBlock>, generation: u64) -> RunQueueEntry {
 ///
 /// @param task TGID index 已拥有的初始 Task。
 /// @return 选中的 CPU。
-pub fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
+pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
     let cpu = select_cpu(&task);
     let generation = {
         let mut scheduling = task.scheduling.state.lock();

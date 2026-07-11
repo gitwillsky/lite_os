@@ -1,17 +1,16 @@
 use alloc::boxed::Box;
 
 use crate::arch::dtb::{BoardInfo, board_info};
-use crate::drivers::block::{get_primary_block_device, register_block_device};
+use crate::drivers::block::register_block_device;
 use crate::drivers::hal::bus::MmioBus;
 use crate::drivers::hal::interrupt::{
     InterruptController, InterruptHandler, PlicInterruptController,
 };
 use crate::drivers::virtio_blk::VirtIOBlockDevice;
-use crate::fs::Ext2FileSystem;
-use crate::fs::vfs::vfs;
 use crate::sync::IrqMutex;
 
 /// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
+// OWNER: platform layer owns the unique interrupt controller discovered from DTB.
 static INTERRUPT_CONTROLLER: spin::Once<IrqMutex<Box<dyn InterruptController>>> = spin::Once::new();
 
 fn interrupt_controller() -> Option<&'static IrqMutex<Box<dyn InterruptController>>> {
@@ -38,12 +37,10 @@ fn init_interrupt_controller() {
 }
 
 /// 系统初始化入口点
-pub fn init() {
+pub(crate) fn init() {
     init_interrupt_controller();
     // 扫描和初始化设备
     scan_and_init_devices();
-    // 初始化文件系统
-    init_filesystems();
     info!("[Platform] Device initialization completed");
 }
 
@@ -181,27 +178,8 @@ fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
     }
 }
 
-/// 初始化文件系统
-fn init_filesystems() {
-    let Some(primary_device) = get_primary_block_device() else {
-        warn!("[Platform] No block devices found for filesystem initialization");
-        return;
-    };
-    info!("[Platform] Attempting filesystem initialization on primary block device");
-
-    match Ext2FileSystem::new(primary_device) {
-        Ok(ext2_fs) => match vfs().mount_root(ext2_fs) {
-            Ok(()) => info!("[Platform] Ext2 filesystem mounted successfully at /"),
-            Err(e) => error!("[Platform] Ext2 root mount failed: {:?}", e),
-        },
-        Err(e) => {
-            error!("[Platform] Ext2 filesystem initialization failed: {:?}", e);
-        }
-    }
-}
-
 /// 处理外部中断
-pub fn handle_external_interrupt() {
+pub(crate) fn handle_external_interrupt() {
     // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
     if let Some(controller) = interrupt_controller() {
         let result = controller.lock().handle_pending_interrupts();

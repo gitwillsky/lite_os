@@ -7,24 +7,26 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub enum SoftIrq {
+pub(crate) enum SoftIrq {
     Timer = 0,
 }
 
 impl SoftIrq {
     #[inline(always)]
-    pub fn as_index(&self) -> usize {
+    pub(crate) fn as_index(&self) -> usize {
         *self as usize
     }
 }
 
 #[inline(always)]
 fn set_ssip() {
+    // SAFETY: kernel runs in S-mode and sets only the current hart's supervisor software
+    // interrupt-pending bit to request local deferred work.
     unsafe { riscv::register::sip::set_ssoft() }
 }
 
 #[inline(always)]
-pub fn raise(irq: SoftIrq) {
+pub(crate) fn raise(irq: SoftIrq) {
     let bit = 1u32 << irq.as_index();
     let cpu = hart_id();
 
@@ -46,7 +48,7 @@ fn take_pending_for(cpu: usize) -> u32 {
 }
 
 #[inline(always)]
-pub fn dispatch_current_cpu() {
+pub(crate) fn dispatch_current_cpu() {
     let cpu = hart_id();
     let mask = take_pending_for(cpu);
     if (mask & (1u32 << SoftIrq::Timer.as_index())) != 0 {

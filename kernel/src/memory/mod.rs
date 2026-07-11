@@ -6,15 +6,15 @@ use crate::{
     memory::mm::{MapArea, MapPermission, MemorySet},
 };
 
-pub mod address;
+pub(crate) mod address;
 mod config;
-pub mod frame_allocator;
-pub mod heap_allocator;
-pub mod kernel_stack;
-pub mod mm;
-pub mod page_table;
+pub(crate) mod frame_allocator;
+pub(crate) mod heap_allocator;
+pub(crate) mod kernel_stack;
+pub(crate) mod mm;
+pub(crate) mod page_table;
 
-pub use config::*;
+pub(crate) use config::*;
 unsafe extern "C" {
     fn stext();
     fn etext();
@@ -32,20 +32,21 @@ unsafe extern "C" {
     fn boot_stack_top();
 
     fn ekernel();
-    pub fn strampoline();
+    pub(crate) fn strampoline();
 }
 
-pub static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
+// OWNER: memory module owns the canonical kernel address space after initialization.
+pub(crate) static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
 /// @description 初始化构造动态 hart topology 所需的 kernel allocator。
 ///
 /// @return 无返回值。
 /// @errors allocator 重复初始化或内存布局损坏时 fail-stop。
-pub fn init_allocator() {
+pub(crate) fn init_allocator() {
     heap_allocator::init();
 }
 
-pub fn init() {
+pub(crate) fn init() {
     let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
     let memory_end_addr: PhysicalAddress = dtb::board_info().mem.end.into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());

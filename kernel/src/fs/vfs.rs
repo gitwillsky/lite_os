@@ -4,7 +4,7 @@ use spin::Mutex;
 use super::{FileSystem, FileSystemError, Inode, InodeType};
 
 /// @description 管理唯一根文件系统，并为内核 ELF 加载器解析绝对路径。
-pub struct VirtualFileSystem {
+pub(crate) struct VirtualFileSystem {
     root_fs: Mutex<Option<Arc<dyn FileSystem>>>,
 }
 
@@ -77,7 +77,7 @@ impl VirtualFileSystem {
     /// # Returns
     ///
     /// 空的 VFS 实例。
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             root_fs: Mutex::new(None),
         }
@@ -96,7 +96,7 @@ impl VirtualFileSystem {
     /// # Errors
     ///
     /// 根文件系统已挂载时返回 `AlreadyExists`，防止静默替换启动卷。
-    pub fn mount_root(&self, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
+    pub(crate) fn mount_root(&self, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
         let mut root_fs = self.root_fs.lock();
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
@@ -119,14 +119,14 @@ impl VirtualFileSystem {
     ///
     /// 路径非绝对路径、根文件系统未挂载、分量不存在、遇到符号链接，
     /// 或者带尾随 `/` 的结果不是目录时返回错误。
-    pub fn open(&self, path: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+    pub(crate) fn open(&self, path: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
         self.resolve_from(self.root_inode()?, path)
     }
 
-    pub fn open_at(
+    pub(crate) fn open_at(
         &self,
         start: Option<Arc<dyn Inode>>,
         path: &[u8],
@@ -135,7 +135,7 @@ impl VirtualFileSystem {
         self.resolve_from(start, path)
     }
 
-    pub fn create_at(
+    pub(crate) fn create_at(
         &self,
         start: Option<Arc<dyn Inode>>,
         path: &[u8],
@@ -147,7 +147,7 @@ impl VirtualFileSystem {
         parent.create(&name, kind, mode)
     }
 
-    pub fn unlink_at(
+    pub(crate) fn unlink_at(
         &self,
         start: Option<Arc<dyn Inode>>,
         path: &[u8],
@@ -158,7 +158,7 @@ impl VirtualFileSystem {
         parent.unlink(&name, directory)
     }
 
-    pub fn rename_at(
+    pub(crate) fn rename_at(
         &self,
         old_start: Option<Arc<dyn Inode>>,
         old_path: &[u8],
@@ -184,12 +184,13 @@ impl VirtualFileSystem {
 
 use spin::Once;
 
-pub static VFS_MANAGER: Once<VirtualFileSystem> = Once::new();
+// OWNER: VFS module owns the unique namespace and root mount table.
+pub(crate) static VFS_MANAGER: Once<VirtualFileSystem> = Once::new();
 
-pub fn init() {
+pub(crate) fn init() {
     VFS_MANAGER.call_once(VirtualFileSystem::new);
 }
 
-pub fn vfs() -> &'static VirtualFileSystem {
+pub(crate) fn vfs() -> &'static VirtualFileSystem {
     VFS_MANAGER.wait()
 }

@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
 use crate::{
-    arch::sbi,
     fs::{
         FileSystemError, Inode, InodeMetadata, InodeType, OpenFileDescription, OpenFileKind,
         file::{MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_RDONLY, O_WRONLY},
@@ -65,7 +64,7 @@ fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<Option<Arc<dy
     Ok(Some(inode))
 }
 
-pub fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
+pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -113,13 +112,13 @@ pub fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
     .map_or(-errno::EMFILE, |v| v as isize)
 }
 
-pub fn sys_close(fd: usize) -> isize {
+pub(crate) fn sys_close(fd: usize) -> isize {
     current_task().map_or(-errno::ESRCH, |t| {
         t.fd_close(fd).map_or(-errno::EBADF, |_| 0)
     })
 }
 
-pub fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
+pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -163,7 +162,7 @@ pub fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     total as isize
 }
 
-pub fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
+pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -189,14 +188,16 @@ pub fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             };
         }
         let wrote = match &ofd.kind {
-            OpenFileKind::Console => {
-                for byte in &chunk[..count] {
-                    if sbi::console_putchar(*byte).is_err() {
-                        return -errno::EIO;
-                    }
+            OpenFileKind::Console(console) => match console.write(&chunk[..count]) {
+                Ok(written) => written,
+                Err(error) => {
+                    return if total == 0 {
+                        ferr(error)
+                    } else {
+                        total as isize
+                    };
                 }
-                count
-            }
+            },
             OpenFileKind::Inode(inode) => {
                 if *ofd.flags.lock() & O_APPEND != 0 {
                     match inode.append(&chunk[..count]) {
@@ -232,7 +233,7 @@ pub fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
     total as isize
 }
 
-pub fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
+pub(crate) fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -256,7 +257,7 @@ pub fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
     value as isize
 }
 
-pub fn sys_mkdirat(fd: isize, name: *const u8, mode: u32) -> isize {
+pub(crate) fn sys_mkdirat(fd: isize, name: *const u8, mode: u32) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -272,7 +273,7 @@ pub fn sys_mkdirat(fd: isize, name: *const u8, mode: u32) -> isize {
         .create_at(b, &p, InodeType::Directory, mode)
         .map_or_else(ferr, |_| 0)
 }
-pub fn sys_unlinkat(fd: isize, name: *const u8, flags: usize) -> isize {
+pub(crate) fn sys_unlinkat(fd: isize, name: *const u8, flags: usize) -> isize {
     if flags & !AT_REMOVEDIR != 0 {
         return -errno::EINVAL;
     }
@@ -291,7 +292,13 @@ pub fn sys_unlinkat(fd: isize, name: *const u8, flags: usize) -> isize {
         .unlink_at(b, &p, flags & AT_REMOVEDIR != 0)
         .map_or_else(ferr, |_| 0)
 }
-pub fn sys_renameat2(ofd: isize, on: *const u8, nfd: isize, nn: *const u8, flags: u32) -> isize {
+pub(crate) fn sys_renameat2(
+    ofd: isize,
+    on: *const u8,
+    nfd: isize,
+    nn: *const u8,
+    flags: u32,
+) -> isize {
     if flags & !1 != 0 {
         return -errno::EINVAL;
     }
@@ -318,7 +325,7 @@ pub fn sys_renameat2(ofd: isize, on: *const u8, nfd: isize, nn: *const u8, flags
         .rename_at(ob, &op, nb, &np, flags & 1 != 0)
         .map_or_else(ferr, |_| 0)
 }
-pub fn sys_ftruncate(fd: usize, size: u64) -> isize {
+pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -333,7 +340,7 @@ pub fn sys_ftruncate(fd: usize, size: u64) -> isize {
         .and_then(|i| i.truncate(size).map_err(ferr))
         .map_or_else(|e| e, |_| 0)
 }
-pub fn sys_fsync(fd: usize) -> isize {
+pub(crate) fn sys_fsync(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -426,7 +433,7 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMe
         .map_or(-errno::EFAULT, |_| 0)
 }
 
-pub fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
+pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -442,7 +449,7 @@ pub fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     }
 }
 
-pub fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
+pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
     if flags != 0 {
         return -errno::EINVAL;
     }
@@ -466,7 +473,7 @@ pub fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) 
     }
 }
 
-pub fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isize {
+pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -510,7 +517,7 @@ pub fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isize {
     *ofd.offset.lock() = index as u64;
     output.len() as isize
 }
-pub fn sys_dup(fd: usize) -> isize {
+pub(crate) fn sys_dup(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -520,7 +527,7 @@ pub fn sys_dup(fd: usize) -> isize {
     task.fd_duplicate(fd, 0, false)
         .map_or(-errno::EMFILE, |value| value as isize)
 }
-pub fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
+pub(crate) fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
     if old == new || flags & !O_CLOEXEC != 0 {
         return -errno::EINVAL;
     }
@@ -533,7 +540,7 @@ pub fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
     task.fd_duplicate_to(old, new, flags & O_CLOEXEC != 0)
         .map_or(-errno::EBADF, |value| value as isize)
 }
-pub fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
+pub(crate) fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
     let Some(t) = current_task() else {
         return -errno::ESRCH;
     };
@@ -568,7 +575,7 @@ pub fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
     }
 }
 
-pub fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
+pub(crate) fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };

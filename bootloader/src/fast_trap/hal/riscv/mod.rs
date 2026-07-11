@@ -72,22 +72,22 @@ use crate::fast_trap::TrapHandler;
 
 #[repr(C)]
 #[allow(missing_docs)]
-pub struct FlowContext {
-    pub ra: usize,      // 0..
-    pub t: [usize; 7],  // 1..
-    pub a: [usize; 8],  // 8..
-    pub s: [usize; 12], // 16..
-    pub gp: usize,      // 28..
-    pub tp: usize,      // 29..
-    pub sp: usize,      // 30..
-    pub pc: usize,      // 31..
+pub(crate) struct FlowContext {
+    pub(crate) ra: usize,      // 0..
+    pub(crate) t: [usize; 7],  // 1..
+    pub(crate) a: [usize; 8],  // 8..
+    pub(crate) s: [usize; 12], // 16..
+    pub(crate) gp: usize,      // 28..
+    pub(crate) tp: usize,      // 29..
+    pub(crate) sp: usize,      // 30..
+    pub(crate) pc: usize,      // 31..
 }
 
 /// # Safety
 ///
 /// See [proto](crate::hal::doc::reuse_stack_for_trap).
 #[unsafe(naked)]
-pub unsafe extern "C" fn reuse_stack_for_trap() {
+pub(crate) unsafe extern "C" fn reuse_stack_for_trap() {
     const LAYOUT: Layout = Layout::new::<TrapHandler>();
     core::arch::naked_asm!(
         "   addi sp, sp, {size}

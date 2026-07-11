@@ -5,23 +5,23 @@ use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
 use crate::task::TaskControlBlock;
 
 /// @description 唯一生效的 cooperative vruntime runqueue。
-pub struct CfsRunQueue {
+pub(crate) struct CfsRunQueue {
     tasks: BinaryHeap<RunQueueEntry>,
 }
 
 /// @description 带 enqueue generation 的唯一 runqueue membership token。
 #[derive(Debug)]
-pub struct RunQueueEntry {
-    pub task: Arc<TaskControlBlock>,
-    pub generation: u64,
-    pub vruntime: u64,
+pub(crate) struct RunQueueEntry {
+    pub(crate) task: Arc<TaskControlBlock>,
+    pub(crate) generation: u64,
+    pub(crate) vruntime: u64,
 }
 
 impl CfsRunQueue {
     /// @description 创建空的 local runqueue。
     ///
     /// @return 无 task 的 CfsRunQueue。
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             tasks: BinaryHeap::new(),
         }
@@ -31,21 +31,21 @@ impl CfsRunQueue {
     ///
     /// @param entry runqueue 获得的 membership token 与 task owner。
     /// @return 无返回值。
-    pub fn push(&mut self, entry: RunQueueEntry) {
+    pub(crate) fn push(&mut self, entry: RunQueueEntry) {
         self.tasks.push(entry);
     }
 
     /// @description 取出 vruntime 最小的 task。
     ///
     /// @return 队列为空时为 None，否则返回被移除的 membership owner。
-    pub fn pop(&mut self) -> Option<RunQueueEntry> {
+    pub(crate) fn pop(&mut self) -> Option<RunQueueEntry> {
         self.tasks.pop()
     }
 
     /// @description 返回真实 local heap entry 数。
     ///
     /// @return 当前容器长度。
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.tasks.len()
     }
 }

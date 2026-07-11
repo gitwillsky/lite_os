@@ -11,7 +11,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub enum PageTableError {
+pub(crate) enum PageTableError {
     AlreadyMapped,
     NotMapped,
     OutOfMemory,
@@ -35,7 +35,7 @@ impl core::error::Error for PageTableError {}
 
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct PTEFlags: u8 {
+    pub(crate) struct PTEFlags: u8 {
         const V = 1 << 0; // Valid
         const R = 1 << 1; // Read
         const W = 1 << 2; // Write
@@ -49,35 +49,35 @@ bitflags! {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)] // 确保内存布局与 u64 完全相同
-pub struct PageTableEntry(usize);
+pub(crate) struct PageTableEntry(usize);
 
 impl PageTableEntry {
-    pub fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
+    pub(crate) fn new(ppn: PhysicalPageNumber, flags: PTEFlags) -> Self {
         let ppn_val = usize::from(ppn);
         let flags_val = flags.bits() as usize;
         let result = (ppn_val << PTE_FLAGS_WIDTH) | flags_val;
         Self(result)
     }
 
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self(0)
     }
 
-    pub fn flags(&self) -> PTEFlags {
+    pub(crate) fn flags(&self) -> PTEFlags {
         PTEFlags::from_bits(self.0 as u8).unwrap()
     }
 
-    pub fn ppn(&self) -> PhysicalPageNumber {
+    pub(crate) fn ppn(&self) -> PhysicalPageNumber {
         let ppn_val = self.0 >> PTE_FLAGS_WIDTH;
         ppn_val.into()
     }
 
-    pub fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         self.flags().contains(PTEFlags::V)
     }
 
     /// 判断是否为叶子节点，指向物理页帧
-    pub fn is_leaf(&self) -> bool {
+    pub(crate) fn is_leaf(&self) -> bool {
         let flags = self.flags();
         self.is_valid()
             && flags.intersects(PTEFlags::X | PTEFlags::W | PTEFlags::R)
@@ -93,20 +93,20 @@ impl PageTableEntry {
 }
 
 #[derive(Debug)]
-pub struct PageTable {
+pub(crate) struct PageTable {
     root_ppn: PhysicalPageNumber,
     entries: Vec<FrameTracker>,
 }
 
 impl PageTable {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::try_new().expect("can not alloc root frame to create kernel PageTable")
     }
 
     /// @description 分配并初始化一个拥有 root frame 的空 Sv39 页表。
     ///
     /// @return 成功返回页表；物理页耗尽返回 `PageTableError::OutOfMemory`。
-    pub fn try_new() -> Result<Self, PageTableError> {
+    pub(crate) fn try_new() -> Result<Self, PageTableError> {
         let frame_tracker = frame_allocator::alloc().ok_or(PageTableError::OutOfMemory)?;
         Ok(Self {
             root_ppn: frame_tracker.ppn,
@@ -114,7 +114,7 @@ impl PageTable {
         })
     }
 
-    pub fn token(&self) -> usize {
+    pub(crate) fn token(&self) -> usize {
         self.root_ppn.as_usize() | 8usize << 60
     }
 
@@ -180,7 +180,7 @@ impl PageTable {
         None
     }
 
-    pub fn map(
+    pub(crate) fn map(
         &mut self,
         vpn: VirtualPageNumber,
         ppn: PhysicalPageNumber,
@@ -205,7 +205,7 @@ impl PageTable {
         Ok(())
     }
 
-    pub fn unmap(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
+    pub(crate) fn unmap(&mut self, vpn: VirtualPageNumber) -> Result<(), PageTableError> {
         let idxs = vpn.indexes();
         let mut table_ppn = self.root_ppn;
         for idx in &idxs[..2] {
@@ -223,7 +223,7 @@ impl PageTable {
         Ok(())
     }
 
-    pub fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
+    pub(crate) fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.find_pte(vpn)
             .and_then(|pte| (pte.is_valid() && pte.is_leaf()).then_some(pte))
     }

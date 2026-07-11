@@ -53,7 +53,8 @@ fn pmpcfg(i: usize) -> usize {
         2 => pmpcfg2::read().bits,
         #[cfg(target_arch = "riscv32")]
         3 => pmpcfg3::read().bits,
-        _ => todo!(),
+        // RV64 的 CFG_STEP 为 2，调用者循环只会请求 pmpcfg0/2；其他索引表示循环不变量损坏。
+        _ => unreachable!("unsupported PMP config CSR index {i}"),
     }
 }
 
@@ -76,7 +77,8 @@ fn pmpaddr(i: usize) -> usize {
         0xd => pmpaddr13::read(),
         0xe => pmpaddr14::read(),
         0xf => pmpaddr15::read(),
-        _ => todo!(),
+        // print_pmps 最多遍历实现已公开的 16 个 PMP address CSR。
+        _ => unreachable!("unsupported PMP address CSR index {i}"),
     }
 }
 

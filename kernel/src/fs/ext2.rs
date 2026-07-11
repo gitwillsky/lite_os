@@ -183,7 +183,7 @@ fn ceil_div(a: usize, b: usize) -> usize {
 }
 
 /// @description 单一根挂载的同步读写 ext2 revision 1 文件系统。
-pub struct Ext2FileSystem {
+pub(crate) struct Ext2FileSystem {
     device: Arc<dyn BlockDevice>,
     superblock: Mutex<Ext2SuperBlock>,
     block_size: usize,
@@ -547,7 +547,7 @@ impl Ext2FileSystem {
     /// # Errors
     ///
     /// 设备 I/O 失败、超级块或块组描述符无效、特性不受支持时返回错误。
-    pub fn new(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, FileSystemError> {
+    pub(crate) fn new(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, FileSystemError> {
         let dev_block_size = device.block_size();
         if dev_block_size != BLOCK_SIZE {
             return Err(FileSystemError::InvalidFileSystem);
@@ -1467,6 +1467,8 @@ impl Ext2Inode {
                     header.inode = child;
                     header.name_len = name.len() as u8;
                     header.file_type = Self::file_type(kind);
+                    // SAFETY: directory validation proved `record` covers a complete header at
+                    // `pos`; write_unaligned updates that on-disk header without forming a reference.
                     unsafe {
                         ptr::write_unaligned(
                             buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
@@ -1480,6 +1482,8 @@ impl Ext2Inode {
                 }
                 if header.inode != 0 && record >= ideal + needed {
                     header.rec_len = ideal as u16;
+                    // SAFETY: `pos` names the validated current record and its complete header
+                    // lies inside the full block buffer.
                     unsafe {
                         ptr::write_unaligned(
                             buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
@@ -1493,6 +1497,8 @@ impl Ext2Inode {
                         name_len: name.len() as u8,
                         file_type: Self::file_type(kind),
                     };
+                    // SAFETY: split condition proves `new_pos + header_size <= pos + record`, so
+                    // the new unaligned header lies wholly inside the current block buffer.
                     unsafe {
                         ptr::write_unaligned(
                             buf.as_mut_ptr().add(new_pos) as *mut Ext2DirEntry2Header,
@@ -1519,6 +1525,8 @@ impl Ext2Inode {
             let mut pos = 0;
             let mut previous = None;
             while pos < self.fs.block_size {
+                // SAFETY: prior record validation advances `pos` by a nonzero aligned rec_len;
+                // the loop bound and filesystem validation guarantee a complete header remains.
                 let header = unsafe {
                     ptr::read_unaligned(buf.as_ptr().add(pos) as *const Ext2DirEntry2Header)
                 };
@@ -1532,12 +1540,16 @@ impl Ext2Inode {
                     && &buf[start..start + header.name_len as usize] == name
                 {
                     if let Some(previous_pos) = previous {
+                        // SAFETY: `previous_pos` was recorded only after validating a complete
+                        // preceding directory record in this same live block buffer.
                         let mut previous_header = unsafe {
                             ptr::read_unaligned(
                                 buf.as_ptr().add(previous_pos) as *const Ext2DirEntry2Header
                             )
                         };
                         previous_header.rec_len += header.rec_len;
+                        // SAFETY: previous header remains inside the block; merging adjacent
+                        // validated lengths cannot extend beyond their original combined span.
                         unsafe {
                             ptr::write_unaligned(
                                 buf.as_mut_ptr().add(previous_pos) as *mut Ext2DirEntry2Header,
@@ -1547,6 +1559,8 @@ impl Ext2Inode {
                     } else {
                         let mut empty = header;
                         empty.inode = 0;
+                        // SAFETY: `pos` currently identifies a validated complete header in buf;
+                        // write_unaligned changes only its inode field representation.
                         unsafe {
                             ptr::write_unaligned(
                                 buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,

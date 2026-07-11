@@ -7,7 +7,7 @@ mod timer;
 use crate::syscall::{fs::*, memory::*, process::*, timer::*};
 use syscall_abi::*;
 
-pub fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
+pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> isize {
     match syscall_id {
         SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
         SYSCALL_DUP => sys_dup(args[0]),

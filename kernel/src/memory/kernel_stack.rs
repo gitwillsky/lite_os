@@ -4,12 +4,12 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 
 #[derive(Debug)]
-pub struct KernelStack {
+pub(crate) struct KernelStack {
     handle: KernelStackHandle,
 }
 
 impl KernelStack {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let handle = KernelStackHandle(KernelStackHandleAllocator.lock().alloc());
         let (bottom, top) = kernel_stack_position(handle.0);
 
@@ -33,7 +33,7 @@ impl KernelStack {
         Self { handle }
     }
 
-    pub fn get_top(&self) -> usize {
+    pub(crate) fn get_top(&self) -> usize {
         let (_, top) = kernel_stack_position(self.handle.0);
         top
     }
@@ -71,5 +71,6 @@ impl Drop for KernelStackHandle {
 }
 
 lazy_static! {
+    // OWNER: kernel-stack module exclusively allocates virtual stack handles.
     static ref KernelStackHandleAllocator: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));
 }

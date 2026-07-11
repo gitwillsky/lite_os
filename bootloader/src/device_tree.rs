@@ -7,20 +7,22 @@ use dtb_walker::{Dtb, DtbObj, HeaderError as E, Property, Str, WalkOperation};
 pub(crate) struct StringInLine<const N: usize>(usize, [u8; N]);
 
 pub(crate) struct BoardInfo {
-    pub dtb: Range<usize>,
-    pub model: StringInLine<128>,
-    pub hart_count: usize,
-    pub hart_mask: usize,
-    pub max_hart_id: usize,
-    pub invalid_hart_id: Option<usize>,
-    pub mem: Range<usize>,
-    pub uart: Range<usize>,
-    pub test: Range<usize>,
-    pub clint: Range<usize>,
+    pub(crate) dtb: Range<usize>,
+    pub(crate) model: StringInLine<128>,
+    pub(crate) hart_count: usize,
+    pub(crate) hart_mask: usize,
+    pub(crate) max_hart_id: usize,
+    pub(crate) invalid_hart_id: Option<usize>,
+    pub(crate) mem: Range<usize>,
+    pub(crate) uart: Range<usize>,
+    pub(crate) test: Range<usize>,
+    pub(crate) clint: Range<usize>,
 }
 
 impl<const N: usize> Display for StringInLine<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SAFETY: parser appends only validated UTF-8 DTB name bytes and `self.0` tracks the
+        // initialized prefix within the fixed buffer.
         write!(f, "{}", unsafe {
             core::str::from_utf8_unchecked(&self.1[..self.0])
         })
@@ -50,6 +52,8 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
         clint: 0..0,
     };
 
+    // SAFETY: boot ABI supplies a valid DTB physical pointer in opaque; parser validates header,
+    // totalsize, tokens, and filtered compatibility deviations before use.
     let dtb = unsafe {
         Dtb::from_raw_parts_filtered(opaque as *const u8, |node| {
             matches!(node, E::Misaligned(4) | E::LastCompVersion(_))

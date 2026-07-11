@@ -6,6 +6,7 @@ use spin::Once;
 /// 调试控制提扩展(Debug Console Extension,DBCN)
 pub(crate) struct DBCN(Range<usize>);
 
+// OWNER: DBCN module owns the unique SBI debug-console adapter.
 static INSTANCE: Once<DBCN> = Once::new();
 
 pub(crate) fn init(memory: Range<usize>) {
@@ -24,6 +25,8 @@ impl Console for DBCN {
         if start == end {
             SbiRet::success(0)
         } else {
+            // SAFETY: valid_range proves start..end lies in DRAM and its checked length equals
+            // bytes.num_bytes(); the immutable slice lives only for this synchronous call.
             let buf = unsafe { core::slice::from_raw_parts(start as *const u8, bytes.num_bytes()) };
             SbiRet::success(uart16550::UART.lock().get().write(buf))
         }
@@ -36,6 +39,8 @@ impl Console for DBCN {
         if start == end {
             SbiRet::success(0)
         } else {
+            // SAFETY: valid_range proves start..end lies in DRAM and exclusively represents the
+            // supervisor output buffer for this synchronous SBI call.
             let buf =
                 unsafe { core::slice::from_raw_parts_mut(start as *mut u8, bytes.num_bytes()) };
             SbiRet::success(uart16550::UART.lock().get().read(buf))

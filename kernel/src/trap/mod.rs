@@ -1,9 +1,7 @@
-pub mod context;
-pub mod softirq;
+pub(crate) mod softirq;
 
 use core::{arch::asm, panic};
 
-pub use context::TrapContext;
 use riscv::{
     ExceptionNumber, InterruptNumber,
     interrupt::{Exception, Interrupt, Trap},
@@ -24,6 +22,8 @@ use crate::{
 
 #[inline(always)]
 fn clear_ssip() {
+    // SAFETY: trap code runs in S-mode and clears only the current hart's supervisor software
+    // interrupt-pending bit after consuming the event.
     unsafe { register::sip::clear_ssoft() }
 }
 
@@ -34,12 +34,12 @@ fn handle_supervisor_soft_interrupt() {
     softirq::dispatch_current_cpu();
 }
 
-pub fn init() {
+pub(crate) fn init() {
     set_kernel_trap_entry();
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_handler() {
+pub(crate) fn trap_handler() {
     set_kernel_trap_entry();
 
     let scause_val = register::scause::read();
@@ -172,6 +172,7 @@ fn set_kernel_trap_entry() {
     }
     val.set_address(__kernel_trap as usize);
     val.set_trap_mode(TrapMode::Direct);
+    // SAFETY: `__kernel_trap` is an aligned linked trap entry and this updates only local stvec.
     unsafe {
         stvec::write(val);
     }
@@ -181,14 +182,17 @@ fn set_user_trap_entry() {
     let mut val = stvec::Stvec::from_bits(0);
     val.set_address(TRAMPOLINE);
     val.set_trap_mode(TrapMode::Direct);
+    // SAFETY: TRAMPOLINE is the aligned executable user-trap entry mapped in every address space.
     unsafe {
         stvec::write(val);
     }
 }
 
 #[unsafe(no_mangle)]
-pub fn trap_return() -> ! {
+pub(crate) fn trap_return() -> ! {
     // 关键修复：先关闭中断防止任务切换，然后获取必要信息
+    // SAFETY: trap return runs in S-mode and disables only current-hart SIE while assembling
+    // the restore state.
     unsafe {
         riscv::register::sstatus::clear_sie();
     }
@@ -198,6 +202,8 @@ pub fn trap_return() -> ! {
     let user_satp = current_task.user_token();
     let trap_context_va = current_task.trap_context_va();
     let kernel_gp: usize;
+    // SAFETY: reading `gp` has no memory effect and preserves the kernel global-pointer value
+    // required by the trampoline on its next supervisor entry.
     unsafe {
         asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack));
     }
@@ -217,6 +223,8 @@ pub fn trap_return() -> ! {
     // 设置用户陷阱入口
     set_user_trap_entry();
 
+    // SAFETY: restore_va points to linked trampoline code; trap_context_va and user_satp belong
+    // to the current live task, and the jump never returns through this Rust frame.
     unsafe {
         asm!(
             "fence.i",

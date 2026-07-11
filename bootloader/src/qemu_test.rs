@@ -10,6 +10,7 @@ use spin::Once;
 
 pub(crate) struct QemuTest(usize);
 
+// OWNER: QEMU test module owns the DTB-selected reset/test device.
 static TEST: Once<QemuTest> = Once::new();
 
 pub(crate) fn init(base: usize) {
@@ -22,6 +23,8 @@ pub(crate) fn get() -> &'static QemuTest {
 
 impl Reset for QemuTest {
     fn system_reset(&self, reset_type: u32, reset_reason: u32) -> SbiRet {
+        // SAFETY: DTB initialization stores a validated SiFive test MMIO base in TEST and the
+        // mapping remains valid for firmware lifetime.
         let test = unsafe { &*(TEST.wait().0 as *const SifiveTestDevice) };
         match reset_type {
             RESET_TYPE_SHUTDOWN => match reset_reason {
@@ -29,9 +32,7 @@ impl Reset for QemuTest {
                 RESET_REASON_SYSTEM_FAILURE => test.fail(-1 as _),
                 value => test.fail(value as _),
             },
-            RESET_TYPE_COLD_REBOOT | RESET_TYPE_WARM_REBOOT => {
-                todo!()
-            }
+            RESET_TYPE_COLD_REBOOT | RESET_TYPE_WARM_REBOOT => test.reset(),
             _ => SbiRet::invalid_param(),
         }
     }

@@ -9,16 +9,20 @@ use crate::{
     drivers::goldfish_rtc::GoldfishRTCDevice,
 };
 
+// OWNER: timer module owns the calibrated scheduler tick interval.
 static TICK_INTERVAL_VALUE: AtomicU64 = AtomicU64::new(0);
 
 const USEC_PER_SEC: u64 = 1000_000;
 const NSEC_PER_SEC: u64 = 1000_000_000;
 
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
+// OWNER: timer module owns the boot-time offset from monotonic to realtime clock.
 static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
+// OWNER: timer module publishes whether the realtime offset is valid.
 static REALTIME_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 // 全局 RTC 设备实例
+// OWNER: timer module owns the unique RTC selected by platform discovery.
 static RTC_DEVICE: Mutex<Option<GoldfishRTCDevice>> = Mutex::new(None);
 
 // 初始化 RTC 设备
@@ -78,7 +82,7 @@ fn read_goldfish_rtc_ns() -> Option<u64> {
 /// @description 返回 Unix epoch realtime 纳秒值。
 ///
 /// @return RTC 启动 offset 加 monotonic；初始化前直接读取 RTC，失败则使用固定 epoch offset。
-pub fn get_realtime_ns() -> u64 {
+pub(crate) fn get_realtime_ns() -> u64 {
     if REALTIME_INITIALIZED.load(Ordering::Acquire) {
         return REALTIME_OFFSET_NS
             .load(Ordering::Relaxed)
@@ -87,14 +91,14 @@ pub fn get_realtime_ns() -> u64 {
     read_goldfish_rtc_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
-pub fn get_time_us() -> u64 {
+pub(crate) fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = dtb::board_info().time_base_freq;
     // 使用128位运算避免溢出
     ((current_mtime as u128 * USEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
-pub fn get_time_ns() -> u64 {
+pub(crate) fn get_time_ns() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = dtb::board_info().time_base_freq;
     // 使用128位运算避免溢出
@@ -102,7 +106,7 @@ pub fn get_time_ns() -> u64 {
 }
 
 #[inline(always)]
-pub fn set_next_timer_interrupt() {
+pub(crate) fn set_next_timer_interrupt() {
     let current_mtime = register::time::read64();
     // 避免在 debug 构建下触发算术溢出 panic：采用 wrapping 加法
     let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
@@ -115,7 +119,7 @@ pub fn set_next_timer_interrupt() {
     sbi::set_timer(next_mtime).expect("SBI TIME set_timer failed");
 }
 
-pub fn enable_timer_interrupt() {
+pub(crate) fn enable_timer_interrupt() {
     let time_base_freq = dtb::board_info().time_base_freq;
 
     // 1. DTB 的 timebase-frequency 是平台契约，零值不能被静默改写为伪造频率。
@@ -130,6 +134,7 @@ pub fn enable_timer_interrupt() {
 
     // 2. Release 发布 interval，set_next_timer_interrupt 的 Acquire 保证不会读到未初始化值。
     TICK_INTERVAL_VALUE.store(interval, Ordering::Release);
+    // SAFETY: timer initialization runs in S-mode and changes only the current hart's STIE bit.
     unsafe {
         // 3. 每个 hart 独立启用 STIE，并在打开全局 SIE 前写入首个 deadline。
         register::sie::set_stimer();
@@ -138,7 +143,7 @@ pub fn enable_timer_interrupt() {
     set_next_timer_interrupt();
 }
 
-pub fn init_rtc() {
+pub(crate) fn init_rtc() {
     // 初始化 RTC 设备
     if let Some(rtc) = init_rtc_device() {
         *RTC_DEVICE.lock() = Some(rtc);

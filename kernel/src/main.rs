@@ -3,6 +3,7 @@
 #![feature(alloc_error_handler)]
 
 use crate::memory::KERNEL_SPACE;
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use riscv::register;
 
@@ -30,6 +31,7 @@ mod trap;
 ///
 /// 次级 hart 不能仅等待内核页表，因为页表会在文件系统、驱动和首个用户任务
 /// 就绪前发布；缺少此屏障会让次级 hart 提前进入调度器并访问未初始化的全局状态。
+// OWNER: boot hart publishes completion of global initialization to secondary harts.
 static INIT_READY: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
@@ -54,7 +56,12 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     timer::init_rtc();
     fs::vfs::init();
     drivers::init();
-    task::init();
+    mount_root_filesystem();
+    task::init(
+        trap::trap_handler as usize,
+        trap::trap_return as usize,
+        Arc::new(SbiConsole),
+    );
 
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
@@ -76,6 +83,27 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     enter_scheduler()
 }
 
+fn mount_root_filesystem() {
+    let device =
+        drivers::block::get_primary_block_device().expect("boot requires one primary block device");
+    let filesystem = fs::Ext2FileSystem::new(device).expect("invalid ext2 root filesystem");
+    fs::vfs::vfs()
+        .mount_root(filesystem)
+        .expect("root filesystem mounted more than once");
+    info!("ext2 root filesystem mounted at /");
+}
+
+struct SbiConsole;
+
+impl fs::Console for SbiConsole {
+    fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {
+        for byte in bytes {
+            arch::sbi::console_putchar(*byte).map_err(|_| fs::FileSystemError::IoError)?;
+        }
+        Ok(bytes.len())
+    }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn kmain_secondary(hart_id: usize, dtb_addr: usize) -> ! {
     init_local_arch(hart_id);
@@ -95,6 +123,7 @@ extern "C" fn kmain_secondary(hart_id: usize, dtb_addr: usize) -> ! {
 
 fn init_local_arch(hart_id: usize) {
     // 每个 hart 都必须启用浮点状态，否则用户态或内核态浮点指令会触发非法指令异常。
+    // SAFETY: kernel runs in S-mode and updates only the current hart's sstatus.FS field.
     unsafe {
         register::sstatus::set_fs(register::sstatus::FS::Dirty);
     }
@@ -109,6 +138,8 @@ fn init_local_arch(hart_id: usize) {
 
 fn enter_scheduler() -> ! {
     timer::enable_timer_interrupt();
+    // SAFETY: all local trap state and interrupt controllers are initialized before enabling
+    // the current hart's supervisor interrupt sources and global SIE bit.
     unsafe {
         register::sie::set_ssoft();
         register::sie::set_sext();

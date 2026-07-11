@@ -15,7 +15,7 @@ use super::config;
 use super::{address::VirtualPageNumber, page_table::PageTable};
 
 #[derive(Debug, Clone, Copy)]
-pub enum MemoryError {
+pub(crate) enum MemoryError {
     OutOfMemory,
     PageTableError(PageTableError),
     InvalidRange,
@@ -23,7 +23,7 @@ pub enum MemoryError {
 
 /// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UserAccessError {
+pub(crate) enum UserAccessError {
     /// 地址为空、非用户 canonical 地址、未映射或权限不匹配。
     Fault,
     /// 地址加长度发生整数溢出。
@@ -67,7 +67,7 @@ impl Error for MemoryError {}
 
 /// @description 构造新用户映像时需要暴露给 `execve` 的失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ElfLoadError {
+pub(crate) enum ElfLoadError {
     /// 物理页或页表页分配失败。
     OutOfMemory,
     /// ELF header、segment、地址、权限或初始栈不满足当前静态 RV64 契约。
@@ -99,7 +99,7 @@ impl Error for ElfLoadError {}
 bitflags! {
     // PTE Flags 的子集
     #[derive(Debug, Clone, Copy)]
-    pub struct MapPermission: u8 {
+    pub(crate) struct MapPermission: u8 {
         const R = 1 << 1; // 可读
         const W = 1 << 2; // 可写
         const X = 1 << 3; // 可执行
@@ -108,13 +108,13 @@ bitflags! {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum MapType {
+pub(crate) enum MapType {
     Identical, // PA <-> VA 恒等映射
     Framed,    // 映射到分配的物理页帧
 }
 
 #[derive(Debug)]
-pub struct MapArea {
+pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_page_offset: usize,
     data_frames: BTreeMap<VirtualPageNumber, FrameTracker>,
@@ -125,7 +125,7 @@ pub struct MapArea {
 }
 
 impl MapArea {
-    pub fn new(
+    pub(crate) fn new(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
         map_type: MapType,
@@ -146,7 +146,7 @@ impl MapArea {
         }
     }
 
-    pub fn set_global(mut self, global: bool) -> Self {
+    pub(crate) fn set_global(mut self, global: bool) -> Self {
         self.global = global;
         self
     }
@@ -181,14 +181,14 @@ impl MapArea {
             .ok_or(MemoryError::InvalidRange)
     }
 
-    pub fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
+    pub(crate) fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
             self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
         }
         Ok(())
     }
 
-    pub fn unmap(&mut self, page_table: &mut PageTable) {
+    pub(crate) fn unmap(&mut self, page_table: &mut PageTable) {
         let start = self.vpn_range.start.as_usize();
         let end = self.vpn_range.end.as_usize();
 
@@ -229,7 +229,7 @@ impl MapArea {
         self.data_frames.remove(&vpn);
     }
 
-    pub fn shrink_to(
+    pub(crate) fn shrink_to(
         &mut self,
         page_table: &mut PageTable,
         new_end: VirtualPageNumber,
@@ -247,7 +247,7 @@ impl MapArea {
         Ok(())
     }
 
-    pub fn append_to(
+    pub(crate) fn append_to(
         &mut self,
         page_table: &mut PageTable,
         new_end: VirtualPageNumber,
@@ -274,7 +274,7 @@ impl MapArea {
 }
 
 #[derive(Debug)]
-pub struct MemorySet {
+pub(crate) struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
     user_heap: Option<UserHeap>,
@@ -287,7 +287,7 @@ struct UserHeap {
 }
 
 impl MemorySet {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             page_table: PageTable::new(),
             areas: Vec::new(),
@@ -303,7 +303,11 @@ impl MemorySet {
         })
     }
 
-    pub fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> Result<(), MemoryError> {
+    pub(crate) fn push(
+        &mut self,
+        mut map_area: MapArea,
+        data: Option<&[u8]>,
+    ) -> Result<(), MemoryError> {
         // 先尝试映射；若中途失败，需要回滚已映射的页面，避免留下半映射导致后续查找空闲区域极慢
         if let Err(e) = map_area.map(&mut self.page_table) {
             // 回滚：解除已经映射的页面
@@ -320,7 +324,7 @@ impl MemorySet {
         Ok(())
     }
 
-    pub fn insert_framed_area(
+    pub(crate) fn insert_framed_area(
         &mut self,
         start_va: VirtualAddress,
         end_va: VirtualAddress,
@@ -332,11 +336,11 @@ impl MemorySet {
         )
     }
 
-    pub fn token(&self) -> usize {
+    pub(crate) fn token(&self) -> usize {
         self.page_table.token()
     }
 
-    pub fn map_trampoline(&mut self) -> Result<(), MemoryError> {
+    pub(crate) fn map_trampoline(&mut self) -> Result<(), MemoryError> {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
         let strampoline_pa = PhysicalAddress::from(strampoline as usize);
 
@@ -349,8 +353,10 @@ impl MemorySet {
         Ok(())
     }
 
-    pub fn active(&self) {
+    pub(crate) fn active(&self) {
         let satp = self.page_table.token();
+        // SAFETY: token encodes this live Sv39 root table; activation runs in S-mode and the
+        // following local fence invalidates translations derived from the previous root.
         unsafe {
             satp::write(Satp::from_bits(satp));
             asm!("sfence.vma")
@@ -360,8 +366,9 @@ impl MemorySet {
     /// @description 同步刷新所有 online hart 的 S-stage TLB。
     ///
     /// @return 所有目标 hart 完成 `SFENCE.VMA` 后返回 `Ok(())`；SBI RFENCE 失败时返回错误码。
-    pub fn flush_tlb_all_cpus() -> Result<(), isize> {
+    pub(crate) fn flush_tlb_all_cpus() -> Result<(), isize> {
         // 1. 本 hart 先完成 fence；当前页表写在后续 SBI ecall 之前保持程序顺序。
+        // SAFETY: `sfence.vma` is executed in S-mode and affects only architectural TLB state.
         unsafe { asm!("sfence.vma") }
         // 2. Acquire online mask 只选择已发布可接收远端请求的 hart。
         let current = crate::arch::hart::hart_id();
@@ -383,7 +390,7 @@ impl MemorySet {
     ///
     /// @param virtual_address kernel 需要提交给设备的虚拟地址。
     /// @return leaf PTE 存在时返回包含页内偏移的物理地址，否则返回 `None`。
-    pub fn translate_kernel_address(
+    pub(crate) fn translate_kernel_address(
         &self,
         virtual_address: VirtualAddress,
     ) -> Option<PhysicalAddress> {
@@ -443,7 +450,7 @@ impl MemorySet {
     /// @param user_address 用户缓冲区首地址。
     /// @param destination kernel 目标缓冲区。
     /// @return 完整复制成功返回 `Ok(())`；地址溢出、缺页或非 `U|R` leaf 返回错误，且不返回用户引用。
-    pub fn copy_from_user(
+    pub(crate) fn copy_from_user(
         &self,
         user_address: usize,
         destination: &mut [u8],
@@ -476,7 +483,7 @@ impl MemorySet {
     /// @param user_address 用户缓冲区首地址。
     /// @param source kernel 源缓冲区。
     /// @return 完整复制成功返回 `Ok(())`；地址溢出、缺页或非 `U|W` leaf 返回错误，且不返回用户引用。
-    pub fn copy_to_user(
+    pub(crate) fn copy_to_user(
         &mut self,
         user_address: usize,
         source: &[u8],
@@ -509,7 +516,7 @@ impl MemorySet {
     /// @param user_address 字符串首地址。
     /// @param max_len 包含终止 NUL 的最大总字节数。
     /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
-    pub fn copy_user_c_string(
+    pub(crate) fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
@@ -569,7 +576,7 @@ impl MemorySet {
     ///
     /// @param new_break 新 break；零表示只查询。
     /// @return 成功返回提交后的 break；越界、映射冲突或 OOM 时返回错误且保持旧 break。
-    pub fn set_program_break(&mut self, new_break: usize) -> Result<usize, MemoryError> {
+    pub(crate) fn set_program_break(&mut self, new_break: usize) -> Result<usize, MemoryError> {
         let heap = self.user_heap.clone().ok_or(MemoryError::InvalidRange)?;
         if new_break == 0 {
             return Ok(heap.range.end);
@@ -598,7 +605,7 @@ impl MemorySet {
         Ok(new_break)
     }
 
-    pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
+    pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
         if let Some(idx) = self
             .areas
             .iter()
@@ -611,7 +618,7 @@ impl MemorySet {
     }
 
     /// 获取给定TrapContext虚拟地址的物理页号
-    pub fn trap_context_ppn(&self, trap_va: usize) -> PhysicalPageNumber {
+    pub(crate) fn trap_context_ppn(&self, trap_va: usize) -> PhysicalPageNumber {
         self.page_table
             .translate(VirtualAddress::from(trap_va).into())
             .expect("TrapContext VA should be mapped")
@@ -625,7 +632,7 @@ impl MemorySet {
     /// @param envs 不含 NUL 的 envp 字节串。
     /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
     /// @errors 只区分资源耗尽与非法/不支持的 ELF，且失败时不修改现有地址空间。
-    pub fn from_elf(
+    pub(crate) fn from_elf(
         elf_data: &[u8],
         args: &[Vec<u8>],
         envs: &[Vec<u8>],

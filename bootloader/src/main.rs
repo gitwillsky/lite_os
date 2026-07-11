@@ -51,9 +51,13 @@ const DELEGATED_U_EXCEPTIONS: usize = (1 << 0)
 const COUNTER_TIME: usize = 1 << 1;
 
 // 非零初值保证状态位于 .data；其他 hart 读取 GLOBAL_READY(Acquire) 前不得访问正被清零的 BSS。
+// OWNER: cold-boot election owns the global initialization state machine.
 static GLOBAL_STATE: AtomicUsize = AtomicUsize::new(GLOBAL_PENDING);
+// OWNER: firmware entry owns the count of harts that reached a stable HSM state.
 static READY_HARTS: AtomicUsize = AtomicUsize::new(0);
+// OWNER: firmware main module publishes the immutable DTB board description.
 pub(crate) static BOARD_INFO: Once<BoardInfo> = Once::new();
+// OWNER: firmware main module owns the unique RustSBI service composition.
 static SBI: Once<FixedRustSBI<'static>> = Once::new();
 
 #[unsafe(naked)]
@@ -168,6 +172,8 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
     // 清理 clint
     clint::clear();
     // 准备启动调度
+    // SAFETY: cold boot runs in M-mode after DTB validation; delegated masks intentionally cover
+    // only S-mode consumers and counter access exposes only the time CSR.
     unsafe {
         // 只委托 S-mode 实际消费的中断与来自 U-mode 的异常；S-mode ecall 必须留在 M-mode 作为 SBI。
         asm!("csrw mideleg,    {}", in(reg) DELEGATED_S_INTERRUPTS);
@@ -181,9 +187,11 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 
 fn clear_bss() {
     unsafe extern "C" {
-        unsafe static mut sbss: u64;
-        unsafe static mut ebss: u64;
+        static sbss: u64;
+        static ebss: u64;
     }
+    // SAFETY: linker symbols bound an aligned writable BSS range and global init elects exactly
+    // one cold-boot hart before any BSS-backed object is observed.
     unsafe {
         let mut ptr = sbss as *mut u64;
         let end = ebss as *mut u64;
@@ -223,6 +231,8 @@ fn dtb_contains_hart(hartid: usize) -> bool {
 fn set_pmp(board_info: &BoardInfo) {
     use riscv::register::*;
     let mem = &board_info.mem;
+    // SAFETY: runs once in M-mode; DTB ranges were validated and PMP entries are programmed in
+    // OFF/TOR order before entering supervisor mode.
     unsafe {
         pmpcfg0::set_pmp(0, Range::OFF, Permission::NONE, false);
         pmpaddr0::write(0);
@@ -258,6 +268,8 @@ extern "C" fn fast_handler(
 
     #[inline]
     fn boot(mut ctx: FastContext, start_addr: usize, opaque: usize) -> FastResult {
+        // SAFETY: trap handler executes in M-mode; clearing SIE and satp establishes the required
+        // bare supervisor entry state before setting mstatus/mepc for mret.
         unsafe {
             sstatus::clear_sie();
             satp::write(0);
@@ -280,6 +292,7 @@ extern "C" fn fast_handler(
             }
             Err(rustsbi::spec::hsm::HART_STOP) => {
                 mie::write(mie::MSIE);
+                // SAFETY: M-mode enables MSIE first; wfi only suspends this hart until an event.
                 unsafe { riscv::asm::wfi() };
                 clint::clear_msip();
             }
@@ -423,6 +436,8 @@ impl rustsbi::Hsm for Hsm {
         use rustsbi::spec::hsm::suspend_type::{NON_RETENTIVE, RETENTIVE};
         if matches!(suspend_type, NON_RETENTIVE | RETENTIVE) {
             local_hsm().suspend();
+            // SAFETY: HSM state is published as suspended before M-mode waits; wake resumes at
+            // the next instruction and restores the local state machine.
             unsafe { riscv::asm::wfi() };
             local_hsm().resume();
             SbiRet::success(0)

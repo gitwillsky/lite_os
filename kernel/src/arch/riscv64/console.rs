@@ -19,9 +19,10 @@ macro_rules! println {
 }
 
 // print 宏可在中断上下文使用；IRQ-safe lock 防止 task 输出被打断后同 hart 再入。
+// OWNER: console module owns the unique kernel console endpoint.
 static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> = crate::sync::IrqMutex::new(ConsoleWriter);
 
-pub fn _print_fmt(args: core::fmt::Arguments) {
+pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
     let mut writer = CONSOLE.lock();
 
@@ -47,13 +48,13 @@ impl core::fmt::Write for ConsoleWriter {
 // 注意：仅在 panic 路径中调用，避免与正常日志互相打乱
 //=============================================================================
 
-pub fn panic_print_fmt(args: core::fmt::Arguments) {
+pub(crate) fn panic_print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
     let mut w = PanicConsoleWriter;
     let _ = w.write_fmt(args);
 }
 
-pub fn panic_println_fmt(args: core::fmt::Arguments) {
+pub(crate) fn panic_println_fmt(args: core::fmt::Arguments) {
     panic_print_fmt(format_args!("{}\n", args));
 }
 

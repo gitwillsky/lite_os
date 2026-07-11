@@ -19,14 +19,14 @@ const MAX_ARG_BYTES: usize = 128 * 1024;
 ///
 /// @param exit_code 用户态退出状态。
 /// @return 此函数不返回。
-pub fn sys_exit(exit_code: i32) -> ! {
+pub(crate) fn sys_exit(exit_code: i32) -> ! {
     exit_current_and_run_next(exit_code)
 }
 
 /// @description 主动让出处理器。
 ///
 /// @return 成功返回零。
-pub fn sys_sched_yield() -> isize {
+pub(crate) fn sys_sched_yield() -> isize {
     suspend_current_and_run_next();
     0
 }
@@ -34,7 +34,7 @@ pub fn sys_sched_yield() -> isize {
 /// @description 返回当前进程标识。
 ///
 /// @return 当前任务的 PID。
-pub fn sys_get_pid() -> isize {
+pub(crate) fn sys_get_pid() -> isize {
     current_task()
         .expect("getpid requires a current task")
         .tgid() as isize
@@ -43,7 +43,7 @@ pub fn sys_get_pid() -> isize {
 /// @description 返回当前进程的父进程标识。
 ///
 /// @return 当前唯一的 init process 由 kernel 创建，因此父 PID 为零。
-pub fn sys_get_ppid() -> isize {
+pub(crate) fn sys_get_ppid() -> isize {
     // 当前没有 clone/fork 入口，不存在第二个 Process；缺少这个边界会伪造尚未存在的 parent graph。
     0
 }
@@ -51,7 +51,7 @@ pub fn sys_get_ppid() -> isize {
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
 ///
 /// @return 当前任务的 TID。
-pub fn sys_get_tid() -> isize {
+pub(crate) fn sys_get_tid() -> isize {
     current_task()
         .expect("gettid requires a current task")
         .tid() as isize
@@ -63,7 +63,7 @@ pub fn sys_get_tid() -> isize {
 /// @param argv NUL 结尾的参数指针数组。
 /// @param envp NUL 结尾的环境指针数组。
 /// @return 新上下文准备完成时返回零，失败返回负 errno。
-pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
+pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };

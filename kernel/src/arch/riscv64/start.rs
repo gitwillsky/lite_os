@@ -87,9 +87,11 @@ pub(crate) fn entry_address() -> usize {
 /// @errors bootloader 若错误地同时放行多个 hart，会破坏该单写者前提。
 extern "C" fn clear_bss() {
     unsafe extern "C" {
-        static mut sbss: u8;
-        static mut ebss: u8;
+        static sbss: u8;
+        static ebss: u8;
     }
+    // SAFETY: linker symbols delimit the writable BSS range; the unique cold-boot hart executes
+    // this before publishing any reference into BSS, so byte-wise zeroing has no aliases.
     unsafe {
         let start = sbss as *const u8 as usize;
         let end = ebss as *const u8 as usize;

@@ -4,7 +4,7 @@ use crate::fs::{FileSystemError, InodeType, vfs::vfs};
 
 /// @description 从启动文件系统读取可执行文件时的可观察失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProgramLoadError {
+pub(crate) enum ProgramLoadError {
     /// 无法为完整 file image 分配 kernel 缓冲区。
     OutOfMemory,
     /// VFS 路径解析或块读取失败。
@@ -20,7 +20,7 @@ pub enum ProgramLoadError {
 /// @param path 不含 NUL 的绝对路径字节。
 /// @return 成功返回完整 file bytes。
 /// @errors 路径、inode 类型、I/O 或 short read 失败均保留为明确错误。
-pub fn load_program_from_fs(path: &[u8]) -> Result<Vec<u8>, ProgramLoadError> {
+pub(crate) fn load_program_from_fs(path: &[u8]) -> Result<Vec<u8>, ProgramLoadError> {
     let inode = vfs().open(path).map_err(ProgramLoadError::FileSystem)?;
     if inode.inode_type() != InodeType::File {
         return Err(ProgramLoadError::NotRegularFile);

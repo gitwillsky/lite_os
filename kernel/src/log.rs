@@ -4,7 +4,7 @@ use crate::sync::IrqMutex;
 
 /// Log levels in order of severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LogLevel {
+pub(crate) enum LogLevel {
     Debug = 0,
     Info = 1,
     Warn = 2,
@@ -13,7 +13,7 @@ pub enum LogLevel {
 
 impl LogLevel {
     /// Get the colored string representation of the log level
-    pub fn colored_str(&self) -> &'static str {
+    pub(crate) fn colored_str(&self) -> &'static str {
         match self {
             LogLevel::Debug => "\x1b[36mDEBUG\x1b[0m", // Cyan
             LogLevel::Info => "\x1b[32mINFO\x1b[0m",   // Green
@@ -34,7 +34,7 @@ const MAX_MODULE_FILTERS: usize = 32;
 
 /// Module filter entry
 #[derive(Debug, Clone, Copy)]
-pub struct ModuleFilter {
+pub(crate) struct ModuleFilter {
     name: [u8; 32], // Fixed-size module name
     name_len: usize,
     enabled: bool,
@@ -70,7 +70,7 @@ impl ModuleFilter {
 }
 
 /// Global logger configuration
-pub struct Logger {
+pub(crate) struct Logger {
     level: LogLevel,
     module_filters: [ModuleFilter; MAX_MODULE_FILTERS],
     filter_count: usize,
@@ -87,11 +87,11 @@ impl Logger {
         }
     }
 
-    pub fn set_level(&mut self, level: LogLevel) {
+    pub(crate) fn set_level(&mut self, level: LogLevel) {
         self.level = level;
     }
 
-    pub fn disable_module(&mut self, module: &str) -> bool {
+    pub(crate) fn disable_module(&mut self, module: &str) -> bool {
         // First check if module already exists in filters
         for i in 0..self.filter_count {
             if self.module_filters[i].matches(module) {
@@ -122,7 +122,7 @@ impl Logger {
         self.default_enabled
     }
 
-    pub fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
+    pub(crate) fn log(&self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.level && self.is_module_enabled(module) {
             let hart_id = crate::arch::hart::hart_id();
             println!(
@@ -134,20 +134,21 @@ impl Logger {
 }
 
 // logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 hart 中断重入时自死锁。
+// OWNER: logging module owns the process-wide logger registered with the log facade.
 static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 
 /// Set the global log level
-pub fn set_log_level(level: LogLevel) {
+pub(crate) fn set_log_level(level: LogLevel) {
     LOGGER.lock().set_level(level);
 }
 
 /// Disable logging for a specific module
-pub fn disable_module(module: &str) -> bool {
+pub(crate) fn disable_module(module: &str) -> bool {
     LOGGER.lock().disable_module(module)
 }
 
 /// Internal logging function
-pub fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
+pub(crate) fn __log(level: LogLevel, module: &str, args: fmt::Arguments) {
     LOGGER.lock().log(level, module, args);
 }
 
@@ -184,6 +185,6 @@ macro_rules! error {
 }
 
 /// Initialize logging system with specified level
-pub fn init(level: LogLevel) {
+pub(crate) fn init(level: LogLevel) {
     set_log_level(level);
 }

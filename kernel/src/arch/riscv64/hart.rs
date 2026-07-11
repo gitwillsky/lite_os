@@ -6,15 +6,18 @@ use core::{
 
 use spin::Once;
 
-use crate::{memory::KERNEL_STACK_SIZE, task::processor::PerHartProcessor};
+use crate::memory::KERNEL_STACK_SIZE;
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
 
+// OWNER: hart module owns the immutable DTB-derived topology and per-hart states.
 static HART_TOPOLOGY: Once<HartTopology> = Once::new();
 
 // 非零哨兵把变量放入 .data。cold-boot `_start` 在 BSS 清零前读取它；若使用零初始化，
 // 未清零 BSS 可能让入口把首个 hart 误判为 secondary 并解引用无效表地址。
+// OWNER: boot hart publishes the topology table address consumed by secondary entry assembly.
 pub(crate) static HART_TABLE_ADDRESS: AtomicUsize = AtomicUsize::new(UNPUBLISHED_TABLE);
+// OWNER: boot hart publishes the matching topology table length with the address.
 pub(crate) static HART_TABLE_LENGTH: AtomicUsize = AtomicUsize::new(UNPUBLISHED_TABLE);
 
 /// @description DTB hart 的动态启动栈。
@@ -27,7 +30,6 @@ pub(crate) struct HartState {
     hart_id: usize,
     startup_stack_top: usize,
     _startup_stack: Box<StartupStack>,
-    processor: PerHartProcessor,
     softirq_pending: AtomicU32,
     online: AtomicBool,
     active: AtomicBool,
@@ -42,7 +44,6 @@ impl HartState {
             hart_id,
             startup_stack_top,
             _startup_stack: startup_stack,
-            processor: PerHartProcessor::new(),
             softirq_pending: AtomicU32::new(0),
             online: AtomicBool::new(false),
             active: AtomicBool::new(false),
@@ -55,14 +56,6 @@ impl HartState {
     /// @errors 无错误。
     pub(crate) fn hart_id(&self) -> usize {
         self.hart_id
-    }
-
-    /// @description 获取该 hart 的 processor slot。
-    ///
-    /// @return 与该 hart 一一对应的 processor slot。
-    /// @errors 无错误。
-    pub(crate) fn processor(&self) -> &PerHartProcessor {
-        &self.processor
     }
 
     /// @description 获取该 hart 的 softirq pending 位图。
@@ -200,6 +193,8 @@ fn topology() -> &'static HartTopology {
 #[inline(always)]
 pub(crate) fn raw_hart_id() -> usize {
     let value: usize;
+    // SAFETY: `_start` installs the current SBI hart ID in `tp` before entering Rust and no
+    // kernel code repurposes `tp`; the instruction reads only this hart-local register.
     unsafe {
         core::arch::asm!("mv {}, tp", out(reg) value, options(nomem, nostack));
     }
@@ -211,7 +206,7 @@ pub(crate) fn raw_hart_id() -> usize {
 /// @return 已存在于 DTB hart table 的 hart ID。
 /// @errors `tp` 不在 DTB table 中表示入口或 trap 上下文被破坏，将触发 panic。
 #[inline(always)]
-pub fn hart_id() -> usize {
+pub(crate) fn hart_id() -> usize {
     let hart = raw_hart_id();
     assert!(
         state(hart).is_some(),

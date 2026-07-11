@@ -16,14 +16,14 @@ use crate::{
 /// 系统中存活 Process 的 TGID 索引。
 ///
 /// 该表只证明 task 存在；`SchedulingState` 才是 current/runqueue/wait membership 权威。
-pub struct TaskManager {
+pub(crate) struct TaskManager {
     /// 全局进程表：TGID -> 当前唯一 Thread
     // 当前只有插入/删除；IRQ-safe mutex 同时防止同 hart 中断重入和跨 hart 并发。
     tasks: IrqMutex<BTreeMap<usize, Arc<TaskControlBlock>>>,
 }
 
 impl TaskManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             tasks: IrqMutex::new(BTreeMap::new()),
         }
@@ -31,7 +31,7 @@ impl TaskManager {
 
     /// 添加新进程到系统
     /// 这是创建进程的统一入口点
-    pub fn add_task(&self, task: Arc<TaskControlBlock>) {
+    pub(crate) fn add_task(&self, task: Arc<TaskControlBlock>) {
         let tgid = task.tgid();
 
         // 添加到全局进程表
@@ -84,13 +84,15 @@ impl DeadlineWaitQueue {
 
 // TGID index 只拥有 Process 存活性；SchedulingState 是运行/membership 唯一权威。
 lazy_static! {
-    pub static ref TASK_MANAGER: TaskManager = TaskManager::new();
+    // OWNER: task manager owns the process-lifetime index keyed by TGID.
+    pub(crate) static ref TASK_MANAGER: TaskManager = TaskManager::new();
+    // OWNER: task manager owns the deadline index for sleeping tasks.
     static ref DEADLINE_WAIT_QUEUE: IrqMutex<DeadlineWaitQueue> =
         IrqMutex::new(DeadlineWaitQueue::new());
 }
 
 /// 添加任务到系统
-pub fn add_task(task: Arc<TaskControlBlock>) {
+pub(crate) fn add_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.add_task(task);
 }
 
@@ -106,7 +108,7 @@ fn remove_task(tgid: usize) -> Option<Arc<TaskControlBlock>> {
 ///
 /// @param current_time_ns 当前 monotonic 时间。
 /// @return 唤醒数量。
-pub fn wake_expired_tasks(current_time_ns: u64) -> usize {
+pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
     const WAKE_BATCH: usize = 32;
     let mut count = 0;
     for _ in 0..WAKE_BATCH {
@@ -125,7 +127,7 @@ pub fn wake_expired_tasks(current_time_ns: u64) -> usize {
 ///
 /// @param nanoseconds 相对 monotonic 睡眠时长。
 /// @return deadline 到期返回 0；提前唤醒返回 -EINTR，overflow 返回 -EINVAL。
-pub fn nanosleep(nanoseconds: u64) -> isize {
+pub(crate) fn nanosleep(nanoseconds: u64) -> isize {
     if nanoseconds == 0 {
         return 0;
     }
@@ -138,16 +140,16 @@ pub fn nanosleep(nanoseconds: u64) -> isize {
 }
 
 /// 获取并移除当前任务
-pub fn take_current_task() -> Option<Arc<TaskControlBlock>> {
+pub(crate) fn take_current_task() -> Option<Arc<TaskControlBlock>> {
     with_current_processor(|processor| processor.current.take())
 }
 
 /// 获取当前任务的引用
-pub fn current_task() -> Option<Arc<TaskControlBlock>> {
+pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
     with_current_processor(|processor| processor.current.clone())
 }
 
-pub fn run_tasks() -> ! {
+pub(crate) fn run_tasks() -> ! {
     with_current_processor(|processor| processor.mark_active());
 
     loop {
@@ -169,7 +171,7 @@ pub fn run_tasks() -> ! {
 }
 
 /// 挂起当前任务并运行下一个任务
-pub fn suspend_current_and_run_next() {
+pub(crate) fn suspend_current_and_run_next() {
     let Some(task) = current_task() else {
         return;
     };
@@ -240,6 +242,8 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     // TaskManager 以及 ready runqueue/sleep index 中的 owner 保证 raw context 在切换期间存活。
     // 此处必须先释放 task-stack Arc；否则 task 若不再恢复，该 Arc 会永久埋在自身 stack。
     drop(task);
+    // SAFETY: both contexts are retained by per-hart/task ownership, all guards are released,
+    // and the idle context is the valid continuation for this hart.
     unsafe {
         crate::task::__switch(task_cx_ptr, idle_task_cx_ptr);
     }
@@ -288,7 +292,7 @@ fn block_current_until(deadline: u64) {
 }
 
 /// 退出当前任务并运行下一个任务
-pub fn exit_current_and_run_next(_exit_code: i32) -> ! {
+pub(crate) fn exit_current_and_run_next(_exit_code: i32) -> ! {
     let task = take_current_task().expect("No current task to exit");
 
     {
@@ -319,6 +323,8 @@ pub fn exit_current_and_run_next(_exit_code: i32) -> ! {
     // 1. owning Arc 必须先移交 per-hart slot，task stack 上不能留下永不恢复的 owner。
     crate::task::processor::defer_task_reap(task);
     // 2. 切回 idle stack；switch_to_task 的返回点负责 drain slot 并安全 Drop kernel stack。
+    // SAFETY: deferred owner keeps the exiting task stack/context alive through the switch;
+    // idle context is hart-local and remains valid for the kernel lifetime.
     unsafe { crate::task::__switch(task_cx_ptr, idle_task_cx_ptr) };
     panic!("exited task context resumed")
 }
@@ -362,6 +368,8 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     }
 
     // 所有 guard 已释放，只携带由 task Arc 保活的 context raw pointer。
+    // SAFETY: owning task Arc keeps the next context alive, the hart-local idle context is an
+    // exclusive save target, and scheduling state prevents concurrent execution of next.
     unsafe {
         crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
     }

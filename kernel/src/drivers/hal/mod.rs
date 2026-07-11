@@ -1,3 +1,3 @@
-pub mod bus;
-pub mod interrupt;
-pub mod virtio;
+pub(crate) mod bus;
+pub(crate) mod interrupt;
+pub(crate) mod virtio;

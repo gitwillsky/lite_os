@@ -15,7 +15,7 @@ use core::{
 /// 构造时保存 SIE 并关闭本地 S-mode 中断；释放时仅在原状态为 enabled 时恢复。
 /// 嵌套 guard 的内层观察到 SIE 已关闭，因此不会提前打开中断。
 #[must_use = "dropping the guard immediately re-enables local interrupts"]
-pub struct LocalIrqGuard {
+pub(crate) struct LocalIrqGuard {
     restore_sie: bool,
     // guard 只能在创建它的 hart 上释放；缺失该约束会在错误 hart 上修改 SIE。
     _not_send: PhantomData<*mut ()>,
@@ -27,7 +27,7 @@ impl LocalIrqGuard {
     /// @return 离开作用域时恢复构造前 SIE 状态的 guard。
     /// @errors 无可恢复错误；必须在 S-mode kernel 上下文调用。
     #[inline(always)]
-    pub fn disable() -> Self {
+    pub(crate) fn disable() -> Self {
         let restore_sie = riscv::register::sstatus::read().sie();
         // SAFETY: kernel 在 S-mode 执行；只修改当前 hart 的 SIE，原值由同 hart guard 保存。
         unsafe { riscv::register::sstatus::clear_sie() };
@@ -56,7 +56,7 @@ impl Drop for LocalIrqGuard {
 ///
 /// 该锁防止同 hart interrupt reentrancy，并由底层 spin mutex 串行化其他 hart。
 /// guard 内禁止调度、阻塞 I/O 或执行无界工作。
-pub struct IrqMutex<T: ?Sized> {
+pub(crate) struct IrqMutex<T: ?Sized> {
     inner: spin::Mutex<T>,
 }
 
@@ -66,7 +66,7 @@ impl<T> IrqMutex<T> {
     /// @param value 由 mutex 唯一保护的初始值。
     /// @return 包含该值的未加锁 mutex。
     /// @errors 无错误。
-    pub const fn new(value: T) -> Self {
+    pub(crate) const fn new(value: T) -> Self {
         Self {
             inner: spin::Mutex::new(value),
         }
@@ -79,7 +79,7 @@ impl<T: ?Sized> IrqMutex<T> {
     /// @return 可变访问受保护值的 guard；释放顺序固定为 unlock 后 restore SIE。
     /// @errors 不返回错误；递归获取同一 mutex 会永久自旋，调用者必须遵守锁序。
     #[inline(always)]
-    pub fn lock(&self) -> IrqMutexGuard<'_, T> {
+    pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {
         let irq = LocalIrqGuard::disable();
         let lock = self.inner.lock();
         IrqMutexGuard {
@@ -90,7 +90,7 @@ impl<T: ?Sized> IrqMutex<T> {
 }
 
 /// @description `IrqMutex` 的非睡眠访问 guard。
-pub struct IrqMutexGuard<'a, T: ?Sized> {
+pub(crate) struct IrqMutexGuard<'a, T: ?Sized> {
     lock: Option<spin::MutexGuard<'a, T>>,
     irq: Option<LocalIrqGuard>,
 }

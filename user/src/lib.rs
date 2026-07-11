@@ -36,6 +36,8 @@ _start:
 #[unsafe(no_mangle)]
 extern "C" fn __user_start(initial_stack: *const usize) -> ! {
     // 1. kernel 保证初始栈可读且按 RV64 word 对齐；argc 后紧跟 argv 指针。
+    // SAFETY: process-entry ABI guarantees a readable aligned initial stack containing argc,
+    // argc argv pointers, a null terminator, then envp.
     let argc = unsafe { initial_stack.read() };
     let argv = unsafe { initial_stack.add(1) }.cast::<*const u8>();
     // 2. argv 的 argc 个元素后有一个 NULL，其后即 envp。

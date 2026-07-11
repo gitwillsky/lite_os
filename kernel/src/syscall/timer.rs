@@ -6,9 +6,9 @@ use crate::{
 /// @description Linux/riscv64 `timespec` 的最小 64 位布局。
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TimeSpec {
-    pub tv_sec: i64,
-    pub tv_nsec: i64,
+pub(crate) struct TimeSpec {
+    pub(crate) tv_sec: i64,
+    pub(crate) tv_nsec: i64,
 }
 
 const CLOCK_REALTIME: i32 = 0;
@@ -19,7 +19,7 @@ const CLOCK_MONOTONIC: i32 = 1;
 /// @param req 用户态请求时间；空指针返回 `EFAULT`。
 /// @param rem 剩余时间输出地址；当前实现尚不支持中断剩余时间。
 /// @return 成功返回零，失败返回负 errno。
-pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
+pub(crate) fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     if req.is_null() {
         return -EFAULT;
     }
@@ -77,7 +77,7 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
 /// @param clock_id 0 为 CLOCK_REALTIME，1 为 CLOCK_MONOTONIC。
 /// @param result 用户态 timespec 输出地址。
 /// @return 成功返回 0，非法 clock ID 返回 -EINVAL，copyout fault 返回 -EFAULT。
-pub fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
+pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
     if result.is_null() {
         return -EFAULT;
     }

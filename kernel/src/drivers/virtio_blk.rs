@@ -13,9 +13,9 @@ const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
 const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
 
-pub const VIRTIO_BLK_S_OK: u8 = 0;
-pub const VIRTIO_BLK_S_IOERR: u8 = 1;
-pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
+pub(crate) const VIRTIO_BLK_S_OK: u8 = 0;
+pub(crate) const VIRTIO_BLK_S_IOERR: u8 = 1;
+pub(crate) const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -25,7 +25,7 @@ struct VirtIOBlkReq {
     sector: u64,
 }
 
-pub struct VirtIOBlockDevice {
+pub(crate) struct VirtIOBlockDevice {
     device: VirtIODevice,
     queue: Mutex<VirtQueue>,
     capacity: u64,
@@ -33,7 +33,7 @@ pub struct VirtIOBlockDevice {
 }
 
 impl VirtIOBlockDevice {
-    pub fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut virtio_device = VirtIODevice::new(base_addr, 0x1000).ok()?;
 
         if virtio_device.device_id() != 2 {
@@ -190,6 +190,8 @@ impl VirtIOBlockDevice {
             reserved: 0,
             sector: (block_id * (BLOCK_SIZE / 512)) as u64,
         };
+        // SAFETY: request is `repr(C)` and remains alive until synchronous queue completion;
+        // the immutable byte view covers exactly the request object.
         let req_bytes = unsafe {
             core::slice::from_raw_parts(
                 &req as *const _ as *const u8,
@@ -218,6 +220,8 @@ impl VirtIOBlockDevice {
             reserved: 0,
             sector: 0,
         };
+        // SAFETY: request is `repr(C)` and remains alive until synchronous queue completion;
+        // the immutable byte view covers exactly the request object.
         let req_bytes = unsafe {
             core::slice::from_raw_parts(
                 &req as *const _ as *const u8,
@@ -280,7 +284,7 @@ impl interrupt::InterruptHandler for VirtIOBlockIrqHandler {
 }
 
 impl VirtIOBlockDevice {
-    pub fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn interrupt::InterruptHandler> {
+    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn interrupt::InterruptHandler> {
         Arc::new(VirtIOBlockIrqHandler {
             device: self.clone(),
         })

@@ -8,50 +8,50 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
 
 // VirtIO Ring 描述符标志
-pub const VIRTQ_DESC_F_NEXT: u16 = 1;
-pub const VIRTQ_DESC_F_WRITE: u16 = 2;
+pub(crate) const VIRTQ_DESC_F_NEXT: u16 = 1;
+pub(crate) const VIRTQ_DESC_F_WRITE: u16 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct VirtqDesc {
-    pub addr: u64,
-    pub len: u32,
-    pub flags: u16,
-    pub next: u16,
+pub(crate) struct VirtqDesc {
+    pub(crate) addr: u64,
+    pub(crate) len: u32,
+    pub(crate) flags: u16,
+    pub(crate) next: u16,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct VirtqAvail {
-    pub flags: AtomicU16,
-    pub idx: AtomicU16,
-    pub ring: [u16; 0], // 实际大小由队列大小决定
+pub(crate) struct VirtqAvail {
+    pub(crate) flags: AtomicU16,
+    pub(crate) idx: AtomicU16,
+    pub(crate) ring: [u16; 0], // 实际大小由队列大小决定
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct VirtqUsedElem {
-    pub id: u32,
-    pub len: u32,
+pub(crate) struct VirtqUsedElem {
+    pub(crate) id: u32,
+    pub(crate) len: u32,
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct VirtqUsed {
-    pub flags: AtomicU16,
-    pub idx: AtomicU16,
-    pub ring: [VirtqUsedElem; 0], // 实际大小由队列大小决定
+pub(crate) struct VirtqUsed {
+    pub(crate) flags: AtomicU16,
+    pub(crate) idx: AtomicU16,
+    pub(crate) ring: [VirtqUsedElem; 0], // 实际大小由队列大小决定
 }
 
-pub struct VirtQueue {
-    pub size: u16,
-    pub desc: *mut VirtqDesc,
-    pub avail: *mut VirtqAvail,
-    pub used: *mut VirtqUsed,
-    pub free_head: u16,
-    pub num_free: u16,
-    pub last_used_idx: u16,
-    pub avail_idx: u16,
+pub(crate) struct VirtQueue {
+    pub(crate) size: u16,
+    pub(crate) desc: *mut VirtqDesc,
+    pub(crate) avail: *mut VirtqAvail,
+    pub(crate) used: *mut VirtqUsed,
+    pub(crate) free_head: u16,
+    pub(crate) num_free: u16,
+    pub(crate) last_used_idx: u16,
+    pub(crate) avail_idx: u16,
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
@@ -60,7 +60,7 @@ pub struct VirtQueue {
 }
 
 impl VirtQueue {
-    pub fn new(size: u16) -> Option<Self> {
+    pub(crate) fn new(size: u16) -> Option<Self> {
         if size == 0 || size & (size - 1) != 0 {
             error!(
                 "[VirtQueue] Invalid queue size: {} (must be power of 2)",
@@ -147,7 +147,7 @@ impl VirtQueue {
         })
     }
 
-    pub fn physical_address(&self) -> PhysicalAddress {
+    pub(crate) fn physical_address(&self) -> PhysicalAddress {
         self.mem_paddr
     }
 
@@ -189,7 +189,11 @@ impl VirtQueue {
         segments
     }
 
-    pub fn add_buffer(&mut self, inputs: &[&[u8]], outputs: &mut [&mut [u8]]) -> Option<u16> {
+    pub(crate) fn add_buffer(
+        &mut self,
+        inputs: &[&[u8]],
+        outputs: &mut [&mut [u8]],
+    ) -> Option<u16> {
         // 预计算分段后的总描述符数量
         let mut in_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
         let mut out_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
@@ -263,7 +267,7 @@ impl VirtQueue {
         Some(head)
     }
 
-    pub fn add_to_avail(&mut self, desc_idx: u16) {
+    pub(crate) fn add_to_avail(&mut self, desc_idx: u16) {
         // Update available ring following virtio-drivers pattern
         let avail_slot = self.avail_idx & (self.size - 1);
 
@@ -279,12 +283,14 @@ impl VirtQueue {
 
         // Increment avail index - this makes the descriptor available to device
         self.avail_idx = self.avail_idx.wrapping_add(1);
+        // SAFETY: `avail` points into the queue pages retained by `_frame_tracker`; producer
+        // access is serialized by `&mut self`, and Release publishes prior descriptor writes.
         unsafe {
             (*self.avail).idx.store(self.avail_idx, Ordering::Release);
         }
     }
 
-    pub fn used(&mut self) -> Result<Option<(u16, u32)>, ()> {
+    pub(crate) fn used(&mut self) -> Result<Option<(u16, u32)>, ()> {
         // SAFETY: used ring 完整位于 `_frame_tracker` 保持存活的共享页内；
         // Acquire 读 used.idx 后才读取对应 ring slot，slot 通过 power-of-two size 限制。
         unsafe {

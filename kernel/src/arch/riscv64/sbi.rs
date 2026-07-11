@@ -21,9 +21,11 @@ const FID_PROBE_EXTENSION: usize = 3;
 /// @param args 六个 XLEN 参数，依次写入 `a0..a5`。
 /// @return `(error, value)`，分别来自 `a0` 和 `a1`。
 #[inline(always)]
-pub fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> (isize, usize) {
+pub(crate) fn sbi_call(eid: usize, fid: usize, args: [usize; 6]) -> (isize, usize) {
     let error: isize;
     let value: usize;
+    // SAFETY: registers follow the SBI calling convention, `ecall` transfers to trusted
+    // M-mode firmware, and the assembly neither dereferences memory nor touches the stack.
     unsafe {
         core::arch::asm!(
             "ecall",
@@ -54,7 +56,7 @@ fn probe_extension(eid: usize) -> Result<bool, isize> {
 /// @description 验证 kernel 启动与 fail-stop 路径依赖的 SBI extension。
 ///
 /// @return 全部 extension 可用时返回；缺失或 probe 失败触发 kernel panic。
-pub fn verify_required_extensions() {
+pub(crate) fn verify_required_extensions() {
     for (eid, name) in [
         (EID_TIME, "TIME"),
         (EID_IPI, "IPI"),
@@ -78,7 +80,7 @@ pub fn verify_required_extensions() {
 /// @param start_address 目标 hart 的 S-mode 入口物理地址。
 /// @param opaque 原样传给目标 hart `a1` 的 DTB 地址。
 /// @return firmware 接受启动请求时返回 `Ok(())`，否则返回 SBI error。
-pub fn hart_start(hart_id: usize, start_address: usize, opaque: usize) -> Result<(), isize> {
+pub(crate) fn hart_start(hart_id: usize, start_address: usize, opaque: usize) -> Result<(), isize> {
     let (error, value) = sbi_call(
         EID_HSM,
         FID_HART_START,
@@ -91,7 +93,7 @@ pub fn hart_start(hart_id: usize, start_address: usize, opaque: usize) -> Result
 ///
 /// @param byte 待写出的字节。
 /// @return 成功返回 `Ok(())`；firmware 拒绝或不支持时返回 SBI error。
-pub fn console_putchar(byte: u8) -> Result<(), isize> {
+pub(crate) fn console_putchar(byte: u8) -> Result<(), isize> {
     let (error, value) = sbi_call(
         EID_DEBUG_CONSOLE,
         FID_CONSOLE_WRITE_BYTE,
@@ -104,7 +106,7 @@ pub fn console_putchar(byte: u8) -> Result<(), isize> {
 ///
 /// @param timer_value `time` CSR 同一计数域中的绝对值。
 /// @return 成功返回 `Ok(())`，失败返回 SBI error。
-pub fn set_timer(timer_value: u64) -> Result<(), isize> {
+pub(crate) fn set_timer(timer_value: u64) -> Result<(), isize> {
     let (error, value) = sbi_call(
         EID_TIME,
         FID_SET_TIMER,
@@ -118,7 +120,7 @@ pub fn set_timer(timer_value: u64) -> Result<(), isize> {
 /// @param hart_mask 从 `hart_mask_base` 开始的 hart 位图。
 /// @param hart_mask_base 位图 bit 0 对应的 hart ID。
 /// @return 成功返回 `Ok(())`，失败返回 SBI error。
-pub fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) -> Result<(), isize> {
+pub(crate) fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) -> Result<(), isize> {
     let (error, value) = sbi_call(
         EID_IPI,
         FID_SEND_IPI,
@@ -134,7 +136,7 @@ pub fn sbi_send_ipi(hart_mask: usize, hart_mask_base: usize) -> Result<(), isize
 /// @param start_address 刷新区间起始虚拟地址；与 `size` 同为零表示全局刷新。
 /// @param size 刷新区间字节数；与 `start_address` 同为零表示全局刷新。
 /// @return SBI 仅在所有目标 hart 完成 fence 后返回 `Ok(())`；失败返回 SBI error。
-pub fn remote_sfence_vma(
+pub(crate) fn remote_sfence_vma(
     hart_mask: usize,
     hart_mask_base: usize,
     start_address: usize,
@@ -153,7 +155,7 @@ pub fn remote_sfence_vma(
 /// @param reset_type SBI SRST reset type。
 /// @param reset_reason SBI SRST reset reason。
 /// @return 正常成功不会返回；firmware 返回时以 `Ok(())` 或 SBI error 表示结果。
-pub fn system_reset(reset_type: usize, reset_reason: usize) -> Result<(), isize> {
+pub(crate) fn system_reset(reset_type: usize, reset_reason: usize) -> Result<(), isize> {
     let (error, value) = sbi_call(
         EID_SYSTEM_RESET,
         FID_SYSTEM_RESET,

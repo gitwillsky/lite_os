@@ -8,12 +8,15 @@ use crate::{clint, constants::HART_MASK_BITS, hart::hart_id, trap_stack::remote_
 pub(crate) const REQUEST_FENCE_I: usize = 1 << 0;
 pub(crate) const REQUEST_SFENCE_VMA: usize = 1 << 1;
 
+// OWNER: RFENCE module owns one pending request slot per representable hart.
 pub(crate) static REQUESTS: [AtomicUsize; HART_MASK_BITS] =
     [const { AtomicUsize::new(0) }; HART_MASK_BITS];
 
+// OWNER: RFENCE module owns one acknowledgement slot per representable hart.
 pub(crate) static ACKNOWLEDGED: [AtomicUsize; HART_MASK_BITS] =
     [const { AtomicUsize::new(0) }; HART_MASK_BITS];
 
+// OWNER: RFENCE module owns serialization of broadcast request publication.
 static RFENCE_LOCK: Mutex<()> = Mutex::new(());
 
 fn dtb_hart_mask() -> usize {
@@ -79,6 +82,8 @@ impl Rfence {
     }
 
     fn execute_local(request: usize) {
+        // SAFETY: firmware runs in M-mode and executes only architectural fence instructions;
+        // request bits are internal constants selected under the RFENCE protocol.
         unsafe {
             if request & REQUEST_FENCE_I != 0 {
                 core::arch::asm!("fence.i", options(nostack));

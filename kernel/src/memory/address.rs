@@ -2,16 +2,16 @@ use super::config::{self};
 use core::fmt::Debug;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalAddress(usize);
+pub(crate) struct PhysicalAddress(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualAddress(usize);
+pub(crate) struct VirtualAddress(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PhysicalPageNumber(usize);
+pub(crate) struct PhysicalPageNumber(usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtualPageNumber(usize);
+pub(crate) struct VirtualPageNumber(usize);
 
 impl Debug for PhysicalAddress {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -98,15 +98,15 @@ impl From<usize> for VirtualPageNumber {
 }
 
 impl PhysicalAddress {
-    pub fn page_offset(&self) -> usize {
+    pub(crate) fn page_offset(&self) -> usize {
         self.0 & (config::PAGE_SIZE - 1)
     }
 
-    pub fn floor(&self) -> PhysicalPageNumber {
+    pub(crate) fn floor(&self) -> PhysicalPageNumber {
         PhysicalPageNumber(self.0 / config::PAGE_SIZE)
     }
 
-    pub fn ceil(&self) -> PhysicalPageNumber {
+    pub(crate) fn ceil(&self) -> PhysicalPageNumber {
         if self.0 == 0 {
             PhysicalPageNumber(0)
         } else {
@@ -114,11 +114,11 @@ impl PhysicalAddress {
         }
     }
 
-    pub fn is_aligned(&self) -> bool {
+    pub(crate) fn is_aligned(&self) -> bool {
         self.page_offset() == 0
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub(crate) fn as_usize(&self) -> usize {
         self.0
     }
 
@@ -138,19 +138,19 @@ impl PhysicalAddress {
 }
 
 impl VirtualAddress {
-    pub fn page_offset(&self) -> usize {
+    pub(crate) fn page_offset(&self) -> usize {
         self.0 & (config::PAGE_SIZE - 1)
     }
 
-    pub fn is_aligned(&self) -> bool {
+    pub(crate) fn is_aligned(&self) -> bool {
         self.page_offset() == 0
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub(crate) fn as_usize(&self) -> usize {
         self.0
     }
 
-    pub fn ceil(&self) -> VirtualPageNumber {
+    pub(crate) fn ceil(&self) -> VirtualPageNumber {
         if self.0 == 0 {
             VirtualPageNumber(0)
         } else {
@@ -158,7 +158,7 @@ impl VirtualAddress {
         }
     }
 
-    pub fn floor(&self) -> VirtualPageNumber {
+    pub(crate) fn floor(&self) -> VirtualPageNumber {
         VirtualPageNumber(self.0 / config::PAGE_SIZE)
     }
 }
@@ -207,22 +207,22 @@ impl PhysicalPageNumber {
         pa.as_mut_ptr()
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub(crate) fn as_usize(&self) -> usize {
         self.0
     }
 
-    pub fn add_one(&self) -> Self {
+    pub(crate) fn add_one(&self) -> Self {
         PhysicalPageNumber(self.0 + 1)
     }
 }
 
 impl VirtualPageNumber {
-    pub fn from_vpn(vpn: usize) -> Self {
+    pub(crate) fn from_vpn(vpn: usize) -> Self {
         VirtualPageNumber(vpn)
     }
 
     // 获取页号
-    pub fn indexes(&self) -> [usize; 3] {
+    pub(crate) fn indexes(&self) -> [usize; 3] {
         let mut vpn = self.0;
         let mut indexes = [0usize; 3];
         for i in (0..3).rev() {
@@ -232,11 +232,7 @@ impl VirtualPageNumber {
         indexes
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub(crate) fn as_usize(&self) -> usize {
         self.0
-    }
-
-    pub fn next(&self) -> Self {
-        VirtualPageNumber(self.0 + 1)
     }
 }

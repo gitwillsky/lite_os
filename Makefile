@@ -26,6 +26,15 @@ clean:
 
 build: build-user build-kernel build-bootloader create-fs
 
+verify:
+	cargo fmt --all -- --check
+	cargo check --workspace
+	$(MAKE) build-user
+	$(MAKE) build-kernel
+	$(MAKE) build-bootloader
+	python3 scripts/architecture_check.py
+	git diff --check
+
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'
 

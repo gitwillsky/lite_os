@@ -1,9 +1,7 @@
-use crate::trap::trap_return;
-
 /// @description 可被调度器切换的 kernel psABI callee-saved context。
 #[repr(C, align(8))]
 #[derive(Debug, Clone, Copy)]
-pub struct TaskContext {
+pub(crate) struct TaskContext {
     /// return address
     ra: usize,
     /// kernel stack pointer of app
@@ -25,7 +23,7 @@ const _: () = {
 };
 
 impl TaskContext {
-    pub fn zero_init() -> Self {
+    pub(crate) fn zero_init() -> Self {
         Self {
             ra: 0,
             kernel_sp: 0,
@@ -35,9 +33,9 @@ impl TaskContext {
         }
     }
 
-    pub fn goto_trap_return(kernel_sp: usize) -> Self {
+    pub(crate) fn goto_trap_return(kernel_sp: usize, trap_return: usize) -> Self {
         Self {
-            ra: trap_return as usize,
+            ra: trap_return,
             kernel_sp,
             s: [0; 12],
             fs: [0; 12],
@@ -46,7 +44,7 @@ impl TaskContext {
     }
 
     /// 设置返回地址
-    pub fn set_ra(&mut self, ra: usize) {
+    pub(crate) fn set_ra(&mut self, ra: usize) {
         self.ra = ra;
     }
 }

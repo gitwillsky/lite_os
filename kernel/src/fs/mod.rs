@@ -1,16 +1,16 @@
 use alloc::sync::Arc;
 
-pub mod ext2;
-pub mod file;
-pub mod inode;
-pub mod vfs;
+pub(crate) mod ext2;
+pub(crate) mod file;
+pub(crate) mod inode;
+pub(crate) mod vfs;
 
-pub use ext2::Ext2FileSystem;
-pub use file::{FileDescriptorTable, OpenFileDescription, OpenFileKind};
-pub use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use ext2::Ext2FileSystem;
+pub(crate) use file::{Console, FileDescriptorTable, OpenFileDescription, OpenFileKind};
+pub(crate) use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileSystemError {
+pub(crate) enum FileSystemError {
     NotFound,
     AlreadyExists,
     NotDirectory,
@@ -25,7 +25,7 @@ pub enum FileSystemError {
 }
 
 /// @description 为 VFS 提供根 inode 的文件系统实例。
-pub trait FileSystem: Send + Sync {
+pub(crate) trait FileSystem: Send + Sync {
     /// 加载该文件系统的根 inode。
     ///
     /// # Returns

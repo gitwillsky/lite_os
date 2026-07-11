@@ -4,7 +4,7 @@ use core::{
 };
 use spin::Once;
 
-pub trait Console: Sync {
+pub(crate) trait Console: Sync {
     fn put_char(&self, c: u8);
 
     #[inline]
@@ -15,22 +15,23 @@ pub trait Console: Sync {
     }
 }
 
+// OWNER: console module owns the unique firmware console selected from DTB.
 static CONSOLE: Once<&'static dyn Console> = Once::new();
 
-pub fn init_console(console: &'static dyn Console) {
+pub(crate) fn init_console(console: &'static dyn Console) {
     CONSOLE.call_once(|| console);
 
     log::set_logger(&Logger).unwrap();
 }
 
-pub fn set_log_level(env: Option<&str>) {
+pub(crate) fn set_log_level(env: Option<&str>) {
     use log::LevelFilter as Lv;
 
     log::set_max_level(env.and_then(|s| Lv::from_str(s).ok()).unwrap_or(Lv::Trace));
 }
 
 #[inline]
-pub fn _print(args: fmt::Arguments) {
+pub(crate) fn _print(args: fmt::Arguments) {
     Logger.write_fmt(args).unwrap();
 }
 

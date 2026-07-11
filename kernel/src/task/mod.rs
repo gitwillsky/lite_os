@@ -1,24 +1,29 @@
 use alloc::sync::Arc;
 
+use crate::fs::Console;
 use crate::task::{context::TaskContext, loader::load_program_from_fs, pid::ProcessId};
 
 mod context;
-pub mod loader;
+pub(crate) mod loader;
 mod pid;
-pub mod processor;
+pub(crate) mod processor;
 mod scheduler;
 mod task;
-pub mod task_manager;
+pub(crate) mod task_manager;
+mod trap_context;
 
-pub use processor::*;
+pub(crate) use processor::*;
 pub(crate) use task::RunState;
-pub use task::TaskControlBlock;
-pub use task_manager::*;
+pub(crate) use task::TaskControlBlock;
+pub(crate) use task_manager::*;
+pub(crate) use trap_context::TrapContext;
 
 unsafe extern "C" {
     /// Switch to the context of 'next_task_cx_ptr', saving the current context
     /// in `current_task_cx_ptr`
-    pub unsafe fn __switch(
+    // SAFETY: caller must keep both TaskContext allocations alive, provide exclusive access to
+    // the save target, and ensure the next context names a valid kernel stack and return PC.
+    pub(crate) unsafe fn __switch(
         current_task_cx_ptr: *mut TaskContext,
         next_task_cx_ptr: *const TaskContext,
     );
@@ -26,9 +31,21 @@ unsafe extern "C" {
 
 const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
-pub fn init() {
+pub(crate) fn init(
+    kernel_trap_handler: usize,
+    kernel_trap_return: usize,
+    console: Arc<dyn Console>,
+) {
+    processor::init_topology();
     let elf_data = load_program_from_fs(INIT_PROC_NAME).expect("failed to read /bin/init");
-    let init_proc = TaskControlBlock::new_with_pid(INIT_PROC_NAME, &elf_data, ProcessId::init());
+    let init_proc = TaskControlBlock::new_with_pid(
+        INIT_PROC_NAME,
+        &elf_data,
+        ProcessId::init(),
+        kernel_trap_handler,
+        kernel_trap_return,
+        console,
+    );
     match init_proc {
         Ok(init_proc) => {
             let init_task = Arc::new(init_proc);

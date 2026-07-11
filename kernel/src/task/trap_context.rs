@@ -3,27 +3,27 @@ use riscv::register::sstatus::{self, SPP, Sstatus};
 /// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
 #[derive(Clone)]
-pub struct TrapContext {
+pub(crate) struct TrapContext {
     /// 用户通用寄存器 x0..x31，包括 psABI 的 gp(x3) 与 tp(x4)。
-    pub x: [usize; 32],
+    pub(crate) x: [usize; 32],
     /// trap 发生时的 supervisor status。
-    pub sstatus: Sstatus,
+    pub(crate) sstatus: Sstatus,
     /// trap 返回的用户程序计数器。
-    pub sepc: usize,
+    pub(crate) sepc: usize,
     /// trampoline 进入内核时切换的 kernel satp。
-    pub kernel_satp: usize,
+    pub(crate) kernel_satp: usize,
     /// 当前任务的内核栈顶。
-    pub kernel_sp: usize,
+    pub(crate) kernel_sp: usize,
     /// S-mode Rust trap handler 入口。
-    pub trap_handler: usize,
+    pub(crate) trap_handler: usize,
     /// 当前执行该任务的 hart ID，用于在保存用户 tp 后恢复 kernel tp。
-    pub kernel_hart_id: usize,
+    pub(crate) kernel_hart_id: usize,
     /// kernel psABI global pointer，用于在保存用户 gp 后恢复 kernel gp。
-    pub kernel_gp: usize,
+    pub(crate) kernel_gp: usize,
     /// 用户浮点寄存器 f0..f31 的原始 64-bit 内容。
-    pub f: [u64; 32],
+    pub(crate) f: [u64; 32],
     /// 用户 floating-point control/status register。
-    pub fcsr: usize,
+    pub(crate) fcsr: usize,
 }
 
 const _: () = {
@@ -43,7 +43,7 @@ impl TrapContext {
     ///
     /// @param sp 满足用户 ABI 对齐要求的栈顶。
     /// @return 无返回值。
-    pub fn set_sp(&mut self, sp: usize) {
+    pub(crate) fn set_sp(&mut self, sp: usize) {
         self.x[2] = sp;
     }
 
@@ -55,7 +55,7 @@ impl TrapContext {
     /// @param kernel_sp 当前任务内核栈顶。
     /// @param trap_handler S-mode trap handler 地址。
     /// @return 通用寄存器、浮点寄存器和 fcsr 均为零的初始上下文。
-    pub fn app_init_context(
+    pub(crate) fn app_init_context(
         entry: usize,
         sp: usize,
         kernel_satp: usize,

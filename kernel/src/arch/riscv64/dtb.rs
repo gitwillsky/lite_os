@@ -6,61 +6,64 @@ use core::{
 use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
 use spin::Once;
 
+// OWNER: DTB module publishes the immutable board description for the kernel lifetime.
 static BOARD_INFO: Once<BoardInfo> = Once::new();
 
-pub fn init(dtb_addr: usize) {
+pub(crate) fn init(dtb_addr: usize) {
     BOARD_INFO.call_once(|| BoardInfo::parse(dtb_addr));
 }
 
-pub fn board_info() -> &'static BoardInfo {
+pub(crate) fn board_info() -> &'static BoardInfo {
     BOARD_INFO.wait()
 }
 
-pub struct StringInLine<const N: usize>(usize, [u8; N]);
+pub(crate) struct StringInLine<const N: usize>(usize, [u8; N]);
 
 /// VirtIO MMIO 设备信息
 #[derive(Debug, Clone, Copy)]
-pub struct VirtIODevice {
-    pub base_addr: usize,
-    pub size: usize,
-    pub irq: u32,
+pub(crate) struct VirtIODevice {
+    pub(crate) base_addr: usize,
+    pub(crate) size: usize,
+    pub(crate) irq: u32,
 }
 
 /// RTC 设备信息
 #[derive(Debug, Clone, Copy)]
-pub struct RTCDevice {
-    pub base_addr: usize,
-    pub size: usize,
-    pub irq: u32,
+pub(crate) struct RTCDevice {
+    pub(crate) base_addr: usize,
+    pub(crate) size: usize,
+    pub(crate) irq: u32,
 }
 
 /// PLIC 中断控制器信息
 #[derive(Debug, Clone, Copy)]
-pub struct PLICDevice {
-    pub base_addr: usize,
-    pub size: usize,
+pub(crate) struct PLICDevice {
+    pub(crate) base_addr: usize,
+    pub(crate) size: usize,
 }
 
-pub struct BoardInfo {
-    pub dtb: Range<usize>,
-    pub model: StringInLine<128>,
-    pub hart_count: usize,
-    pub hart_mask: usize,
-    pub max_hart_id: usize,
-    pub invalid_hart_id: Option<usize>,
-    pub time_base_freq: u64,
-    pub mem: Range<usize>,
-    pub uart: Range<usize>,
-    pub test: Range<usize>,
-    pub clint: Range<usize>,
-    pub virtio_devices: [Option<VirtIODevice>; 20],
-    pub virtio_count: usize,
-    pub rtc_device: Option<RTCDevice>,
-    pub plic_device: Option<PLICDevice>,
+pub(crate) struct BoardInfo {
+    pub(crate) dtb: Range<usize>,
+    pub(crate) model: StringInLine<128>,
+    pub(crate) hart_count: usize,
+    pub(crate) hart_mask: usize,
+    pub(crate) max_hart_id: usize,
+    pub(crate) invalid_hart_id: Option<usize>,
+    pub(crate) time_base_freq: u64,
+    pub(crate) mem: Range<usize>,
+    pub(crate) uart: Range<usize>,
+    pub(crate) test: Range<usize>,
+    pub(crate) clint: Range<usize>,
+    pub(crate) virtio_devices: [Option<VirtIODevice>; 20],
+    pub(crate) virtio_count: usize,
+    pub(crate) rtc_device: Option<RTCDevice>,
+    pub(crate) plic_device: Option<PLICDevice>,
 }
 
 impl<const N: usize> Display for StringInLine<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // SAFETY: DTB parser only appends bytes from validated UTF-8 node/property names and
+        // `self.0` is maintained as the initialized prefix length.
         write!(f, "{}", unsafe {
             core::str::from_utf8_unchecked(&self.1[..self.0])
         })
@@ -114,7 +117,7 @@ impl Display for BoardInfo {
 }
 
 impl BoardInfo {
-    pub fn parse(dtb_addr: usize) -> Self {
+    pub(crate) fn parse(dtb_addr: usize) -> Self {
         const CPUS: &str = "cpus";
         const MEM: &str = "memory";
         const SOC: &str = "soc";
@@ -155,6 +158,8 @@ impl BoardInfo {
         // 用于临时存储当前 PLIC 设备的信息
         let mut current_plic_reg: Option<Range<usize>> = None;
 
+        // SAFETY: firmware passes the physical DTB pointer unchanged in `a1`; early kernel
+        // identity mapping covers it, and the parser validates the header and structure bounds.
         let dtb = unsafe {
             Dtb::from_raw_parts_filtered(dtb_addr as *const u8, |node| {
                 matches!(

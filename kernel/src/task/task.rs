@@ -7,7 +7,7 @@ use alloc::{
 use spin::Mutex;
 
 use crate::{
-    fs::{FileDescriptorTable, OpenFileDescription},
+    fs::{Console, FileDescriptorTable, OpenFileDescription},
     memory::{
         KERNEL_SPACE, TRAP_CONTEXT,
         address::VirtualAddress,
@@ -15,8 +15,7 @@ use crate::{
         mm::{self, ElfLoadError, MemorySet, UserAccessError},
     },
     sync::IrqMutex,
-    task::{context::TaskContext, pid::ProcessId},
-    trap::{TrapContext, trap_handler},
+    task::{TrapContext, context::TaskContext, pid::ProcessId},
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -41,7 +40,7 @@ impl AddressSpace {
     /// @param user_address 用户源地址。
     /// @param destination kernel 目标缓冲区。
     /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
-    pub fn copy_from_user(
+    pub(crate) fn copy_from_user(
         &self,
         user_address: usize,
         destination: &mut [u8],
@@ -56,7 +55,11 @@ impl AddressSpace {
     /// @param user_address 用户目标地址。
     /// @param source kernel 源缓冲区。
     /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
-    pub fn copy_to_user(&self, user_address: usize, source: &[u8]) -> Result<(), UserAccessError> {
+    pub(crate) fn copy_to_user(
+        &self,
+        user_address: usize,
+        source: &[u8],
+    ) -> Result<(), UserAccessError> {
         self.memory_set.lock().copy_to_user(user_address, source)
     }
 
@@ -65,7 +68,7 @@ impl AddressSpace {
     /// @param user_address 用户字符串首地址。
     /// @param max_len 包含终止 NUL 的最大总字节数。
     /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
-    pub fn copy_user_c_string(
+    pub(crate) fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
@@ -82,16 +85,17 @@ struct ThreadContext {
     kernel_stack: KernelStack,
     trap_cx_va: Mutex<usize>,
     task_cx: Mutex<TaskContext>,
+    kernel_trap_handler: usize,
 }
 
 #[derive(Debug)]
 pub(crate) struct Sched {
     /// 本次运行开始的 monotonic 时间，只在 sched mutex 内访问。
-    pub last_runtime: u64,
+    pub(crate) last_runtime: u64,
     /// nice值 (-20到19, 影响动态优先级计算)
-    pub nice: i32,
+    pub(crate) nice: i32,
     /// 累计运行时间 (用于CFS调度算法)
-    pub vruntime: u64,
+    pub(crate) vruntime: u64,
 }
 
 /// @description 调度器唯一拥有和解释的 Thread 运行状态。
@@ -127,14 +131,14 @@ impl SchedulingState {
 
 impl Sched {
     /// 计算动态优先级 (基于nice值)
-    pub fn get_dynamic_priority(&self) -> i32 {
+    pub(crate) fn get_dynamic_priority(&self) -> i32 {
         // Linux-like priority calculation: priority = 20 + nice
         // 范围: 0-39 (nice: -20到19)
         (20 + self.nice).max(0).min(39)
     }
 
     /// 更新虚拟运行时间 (CFS算法核心)
-    pub fn update_vruntime(&mut self, runtime_us: u64) {
+    pub(crate) fn update_vruntime(&mut self, runtime_us: u64) {
         // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
         let weight = match self.get_dynamic_priority() {
             0..=9 => 4,   // 高优先级
@@ -155,7 +159,7 @@ struct Process {
 }
 
 /// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
-pub struct TaskControlBlock {
+pub(crate) struct TaskControlBlock {
     process: Process,
     thread: ThreadContext,
     pub(crate) scheduling: SchedulingEntity,
@@ -166,6 +170,9 @@ impl TaskControlBlock {
         name: &[u8],
         elf_data: &[u8],
         pid: ProcessId,
+        kernel_trap_handler: usize,
+        kernel_trap_return: usize,
+        console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
         let mut argv0 = Vec::new();
         argv0
@@ -184,7 +191,7 @@ impl TaskControlBlock {
                 memory_set: Mutex::new(memory_set),
             },
             cwd: Mutex::new("/".to_string()),
-            files: Mutex::new(FileDescriptorTable::with_console()),
+            files: Mutex::new(FileDescriptorTable::with_console(console)),
         };
         let tcb = Self {
             process,
@@ -192,7 +199,11 @@ impl TaskControlBlock {
                 tid,
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
+                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                    kernel_stack_top,
+                    kernel_trap_return,
+                )),
+                kernel_trap_handler,
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState {
@@ -215,13 +226,13 @@ impl TaskControlBlock {
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
-            trap_handler as usize,
+            kernel_trap_handler,
         ));
         Ok(tcb)
     }
 
     /// 获取当前线程TrapContext虚拟地址
-    pub fn trap_context_va(&self) -> usize {
+    pub(crate) fn trap_context_va(&self) -> usize {
         *self.thread.trap_cx_va.lock()
     }
 
@@ -229,12 +240,14 @@ impl TaskControlBlock {
     ///
     /// @param trap_context 待写入的完整上下文值。
     /// @return 无返回值；映射缺失表示 kernel 不变量损坏并 panic。
-    pub fn set_trap_context(&self, trap_context: TrapContext) {
+    pub(crate) fn set_trap_context(&self, trap_context: TrapContext) {
         let va = self.trap_context_va();
         let memory_set = self.process.address_space.memory_set.lock();
         let ppn = memory_set.trap_context_ppn(va);
         let offset = VirtualAddress::from(va).page_offset();
         assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
+        // frame retained by the address-space guard.
         let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
         assert!(
             ptr.is_aligned(),
@@ -247,12 +260,14 @@ impl TaskControlBlock {
     /// @description 复制当前 Thread trap context，不让底层映射引用逃逸地址空间锁。
     ///
     /// @return owned TrapContext clone；映射缺失表示 kernel 不变量损坏并 panic。
-    pub fn load_trap_context(&self) -> TrapContext {
+    pub(crate) fn load_trap_context(&self) -> TrapContext {
         let va = self.trap_context_va();
         let memory_set = self.process.address_space.memory_set.lock();
         let ppn = memory_set.trap_context_ppn(va);
         let offset = VirtualAddress::from(va).page_offset();
         assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
+        // frame retained by the address-space guard.
         let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
         assert!(
             ptr.is_aligned(),
@@ -262,7 +277,7 @@ impl TaskControlBlock {
         unsafe { (&*ptr).clone() }
     }
 
-    pub fn copy_from_user(
+    pub(crate) fn copy_from_user(
         &self,
         user_address: usize,
         destination: &mut [u8],
@@ -272,13 +287,17 @@ impl TaskControlBlock {
             .copy_from_user(user_address, destination)
     }
 
-    pub fn copy_to_user(&self, user_address: usize, source: &[u8]) -> Result<(), UserAccessError> {
+    pub(crate) fn copy_to_user(
+        &self,
+        user_address: usize,
+        source: &[u8],
+    ) -> Result<(), UserAccessError> {
         self.process
             .address_space
             .copy_to_user(user_address, source)
     }
 
-    pub fn copy_user_c_string(
+    pub(crate) fn copy_user_c_string(
         &self,
         user_address: usize,
         max_len: usize,
@@ -288,11 +307,11 @@ impl TaskControlBlock {
             .copy_user_c_string(user_address, max_len)
     }
 
-    pub fn user_token(&self) -> usize {
+    pub(crate) fn user_token(&self) -> usize {
         self.process.address_space.memory_set.lock().token()
     }
 
-    pub fn set_program_break(&self, new_break: usize) -> Result<usize, mm::MemoryError> {
+    pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, mm::MemoryError> {
         self.process
             .address_space
             .memory_set
@@ -303,22 +322,22 @@ impl TaskControlBlock {
     /// @description 取得当前 Thread 的 context-switch 保存区锁。
     ///
     /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
-    pub fn task_context(&self) -> &Mutex<TaskContext> {
+    pub(crate) fn task_context(&self) -> &Mutex<TaskContext> {
         &self.thread.task_cx
     }
 
     /// @description 复制当前 Process 的工作目录。
     ///
     /// @return owned cwd path。
-    pub fn cwd(&self) -> String {
+    pub(crate) fn cwd(&self) -> String {
         self.process.cwd.lock().clone()
     }
 
-    pub fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {
+    pub(crate) fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {
         self.process.files.lock().get(fd)
     }
 
-    pub fn fd_allocate(
+    pub(crate) fn fd_allocate(
         &self,
         ofd: alloc::sync::Arc<OpenFileDescription>,
         cloexec: bool,
@@ -326,23 +345,33 @@ impl TaskControlBlock {
         self.process.files.lock().allocate(ofd, 0, cloexec)
     }
 
-    pub fn fd_close(&self, fd: usize) -> Result<(), ()> {
+    pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
         self.process.files.lock().close(fd)
     }
 
-    pub fn fd_duplicate(&self, old: usize, minimum: usize, cloexec: bool) -> Result<usize, ()> {
+    pub(crate) fn fd_duplicate(
+        &self,
+        old: usize,
+        minimum: usize,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
         self.process.files.lock().duplicate(old, minimum, cloexec)
     }
 
-    pub fn fd_duplicate_to(&self, old: usize, new: usize, cloexec: bool) -> Result<usize, ()> {
+    pub(crate) fn fd_duplicate_to(
+        &self,
+        old: usize,
+        new: usize,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
         self.process.files.lock().duplicate_to(old, new, cloexec)
     }
 
-    pub fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
+    pub(crate) fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
         self.process.files.lock().descriptor_flags(fd)
     }
 
-    pub fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
+    pub(crate) fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
         self.process.files.lock().set_descriptor_flags(fd, flags)
     }
 
@@ -353,7 +382,7 @@ impl TaskControlBlock {
     /// @param envs 写入新用户栈的环境。
     /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
     /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
-    pub fn execve_replace(
+    pub(crate) fn execve_replace(
         &self,
         elf_data: &[u8],
         args: &[Vec<u8>],
@@ -377,7 +406,7 @@ impl TaskControlBlock {
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
             kernel_stack_top,
-            trap_handler as usize,
+            self.thread.kernel_trap_handler,
         ));
 
         // 地址空间由统一的 trap 返回路径激活；在这里切换会让后续内核代码运行在用户页表上。
@@ -387,14 +416,14 @@ impl TaskControlBlock {
     /// @description 返回当前 Process/thread group ID。
     ///
     /// @return TGID；Linux getpid 与 process-directed lookup 使用该值。
-    pub fn tgid(&self) -> usize {
+    pub(crate) fn tgid(&self) -> usize {
         self.process.tgid.0
     }
 
     /// @description 返回当前 Thread ID。
     ///
     /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。
-    pub fn tid(&self) -> usize {
+    pub(crate) fn tid(&self) -> usize {
         self.thread.tid
     }
 }

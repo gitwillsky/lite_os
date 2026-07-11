@@ -21,10 +21,12 @@ unsafe impl Sync for StackCell {}
 
 /// 每 hart 独占的 M-mode trap stack，不参与 cold-boot BSS 清零。
 #[unsafe(link_section = ".bss.uninit")]
+// OWNER: trap-stack module owns the firmware stack backing every representable hart.
 static ROOT_STACK: [StackCell; constants::HART_MASK_BITS] =
     [const { StackCell::new() }; constants::HART_MASK_BITS];
 
 /// HSM 使用原子状态和受状态保护的 payload，可安全地由 local/remote hart 共享。
+// OWNER: trap-stack module owns the HSM state cell for every representable hart.
 static HSM_CELLS: [hsm_cell::HsmCell<Supervisor>; constants::HART_MASK_BITS] =
     [const { hsm_cell::HsmCell::new() }; constants::HART_MASK_BITS];
 

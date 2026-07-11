@@ -20,6 +20,8 @@ pub const AT_REMOVEDIR: usize = 0x200;
 #[inline(always)]
 pub fn syscall(id: usize, args: [usize; 6]) -> isize {
     let ret: isize;
+    // SAFETY: register assignment follows the Linux RISC-V syscall ABI; ecall transfers to the
+    // kernel and declares all explicit inputs/output without touching memory or the stack.
     unsafe {
         asm!(
             "ecall",

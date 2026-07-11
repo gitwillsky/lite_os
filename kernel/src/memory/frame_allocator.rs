@@ -6,6 +6,7 @@ use spin::Once;
 use crate::sync::IrqMutex;
 
 // frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭本地 SIE。
+// OWNER: frame allocator module owns all allocatable physical-frame metadata.
 static FRAME_ALLOCATOR: Once<IrqMutex<StackFrameAllocator>> = Once::new();
 
 #[derive(Debug)]
@@ -14,9 +15,9 @@ enum FrameAllocError {
     Duplicate,
 }
 
-pub struct FrameTracker {
-    pub ppn: PhysicalPageNumber,
-    pub pages: usize, // Number of pages (1 for single page, >1 for contiguous allocation)
+pub(crate) struct FrameTracker {
+    pub(crate) ppn: PhysicalPageNumber,
+    pub(crate) pages: usize, // Number of pages (1 for single page, >1 for contiguous allocation)
 }
 
 impl FrameTracker {
@@ -82,7 +83,7 @@ struct StackFrameAllocator {
 }
 
 impl StackFrameAllocator {
-    pub fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
+    pub(crate) fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
         let end = end_addr.floor();
         Self {
@@ -94,7 +95,7 @@ impl StackFrameAllocator {
         }
     }
 
-    pub fn alloc(&mut self) -> Option<PhysicalPageNumber> {
+    pub(crate) fn alloc(&mut self) -> Option<PhysicalPageNumber> {
         if let Some(ppn) = self.recycled_head {
             self.recycled_head = Self::recycled_next(ppn);
             self.recycled_len -= 1;
@@ -116,7 +117,7 @@ impl StackFrameAllocator {
         }
     }
 
-    pub fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
+    pub(crate) fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
         if pages == 0 {
             return None;
         }
@@ -137,7 +138,7 @@ impl StackFrameAllocator {
         }
     }
 
-    pub fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
+    pub(crate) fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
         // 验证 PPN 在有效范围内
         if ppn < self.start_ppn || ppn >= self.end_ppn {
             return Err(FrameAllocError::OutOfRange);
@@ -175,7 +176,7 @@ impl StackFrameAllocator {
     }
 }
 
-pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
+pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     debug!(
         "frame_allocator::init: start_addr={:#x}, end_addr={:#x}",
         start_addr.as_usize(),
@@ -203,12 +204,12 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     FRAME_ALLOCATOR.call_once(|| IrqMutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
-pub fn alloc() -> Option<FrameTracker> {
+pub(crate) fn alloc() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc();
     res.map(|b| FrameTracker::new(b))
 }
 
-pub fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
+pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
     res.map(|b| FrameTracker::new_contiguous(b, pages))
 }
