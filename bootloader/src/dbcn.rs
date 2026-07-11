@@ -18,25 +18,27 @@ pub(crate) fn get() -> &'static DBCN {
 
 impl Console for DBCN {
     fn write(&self, bytes: Physical<&[u8]>) -> SbiRet {
-        let start = bytes.phys_addr_lo();
-        let end = start + bytes.num_bytes();
-        if self.0.contains(&start) && self.0.contains(&(end - 1)) {
+        let Some((start, end)) = self.valid_range(&bytes) else {
+            return SbiRet::invalid_param();
+        };
+        if start == end {
+            SbiRet::success(0)
+        } else {
             let buf = unsafe { core::slice::from_raw_parts(start as *const u8, bytes.num_bytes()) };
             SbiRet::success(uart16550::UART.lock().get().write(buf))
-        } else {
-            SbiRet::invalid_param()
         }
     }
 
     fn read(&self, bytes: Physical<&mut [u8]>) -> SbiRet {
-        let start = bytes.phys_addr_lo();
-        let end = start + bytes.num_bytes();
-        if self.0.contains(&start) && self.0.contains(&(end - 1)) {
+        let Some((start, end)) = self.valid_range(&bytes) else {
+            return SbiRet::invalid_param();
+        };
+        if start == end {
+            SbiRet::success(0)
+        } else {
             let buf =
                 unsafe { core::slice::from_raw_parts_mut(start as *mut u8, bytes.num_bytes()) };
             SbiRet::success(uart16550::UART.lock().get().read(buf))
-        } else {
-            SbiRet::invalid_param()
         }
     }
 
@@ -48,5 +50,19 @@ impl Console for DBCN {
                 return SbiRet::success(0);
             }
         }
+    }
+}
+
+impl DBCN {
+    fn valid_range<T>(&self, bytes: &Physical<T>) -> Option<(usize, usize)> {
+        if bytes.phys_addr_hi() != 0 {
+            return None;
+        }
+        let start = bytes.phys_addr_lo();
+        let end = start.checked_add(bytes.num_bytes())?;
+        if start < self.0.start || end > self.0.end {
+            return None;
+        }
+        Some((start, end))
     }
 }

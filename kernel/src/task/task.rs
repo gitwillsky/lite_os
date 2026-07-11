@@ -1,29 +1,29 @@
 use core::{
     error::Error,
-    sync::atomic::{self, AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize},
+    sync::atomic::{self, AtomicU64, AtomicUsize},
 };
 
 use alloc::{
     boxed::Box,
     collections::BTreeMap,
     string::{String, ToString},
-    sync::{Arc, Weak},
+    sync::Arc,
     vec::Vec,
 };
 use spin::Mutex;
 
 use crate::{
-    fs::{flock::file_lock_manager, inode::Inode},
+    fs::inode::Inode,
     memory::{
-        address::VirtualAddress, kernel_stack::KernelStack, mm::{self, MemorySet}, KERNEL_SPACE, MAX_THREADS_PER_PROCESS, PAGE_SIZE, TRAP_CONTEXT, TRAP_CONTEXT_BASE
+        KERNEL_SPACE, TRAP_CONTEXT,
+        address::VirtualAddress,
+        kernel_stack::KernelStack,
+        mm::{self, MemorySet},
     },
     signal::SignalState,
-    task::{
-        context::TaskContext,
-        pid::{alloc_pid, PidHandle},
-        task_manager::set_task_status,
-    },
-    trap::{trap_handler, TrapContext},
+    sync::IrqMutex,
+    task::{context::TaskContext, pid::PidHandle, task_manager::set_task_status},
+    trap::{TrapContext, trap_handler},
 };
 
 pub struct FileDescriptor {
@@ -31,10 +31,6 @@ pub struct FileDescriptor {
     pub offset: atomic::AtomicU64,
     pub flags: u32,
     pub mode: u32,
-    /// Whether this descriptor has seen successful writes and needs sync on drop
-    pub dirty_on_close: atomic::AtomicBool,
-    /// Path to the file (if known)
-    pub path: Option<String>,
 }
 
 impl core::fmt::Debug for FileDescriptor {
@@ -47,40 +43,7 @@ impl core::fmt::Debug for FileDescriptor {
     }
 }
 
-impl Drop for FileDescriptor {
-    fn drop(&mut self) {
-        // 仅当曾经发生过写入时才进行同步，避免批量关闭只读FD卡顿
-        if self.dirty_on_close.load(atomic::Ordering::Acquire) {
-            if let Err(e) = self.inode.sync() {
-                warn!("Failed to sync file on close: {:?}", e);
-            }
-        }
-    }
-}
-
 impl FileDescriptor {
-    pub fn new(inode: Arc<dyn Inode>, flags: u32) -> Self {
-        Self {
-            inode,
-            offset: atomic::AtomicU64::new(0),
-            flags,
-            mode: 0o644, // Default file mode
-            dirty_on_close: atomic::AtomicBool::new(false),
-            path: None,
-        }
-    }
-
-    pub fn with_path(inode: Arc<dyn Inode>, flags: u32, path: String) -> Self {
-        Self {
-            inode,
-            offset: atomic::AtomicU64::new(0),
-            flags,
-            mode: 0o644, // Default file mode
-            dirty_on_close: atomic::AtomicBool::new(false),
-            path: Some(path),
-        }
-    }
-
     pub fn read_at(&self, buf: &mut [u8]) -> Result<usize, crate::fs::FileSystemError> {
         // 对于FIFO等特殊文件，先释放offset借用以避免阻塞时的借用冲突
         let current_offset = self.offset.load(atomic::Ordering::Relaxed);
@@ -99,9 +62,6 @@ impl FileDescriptor {
         if let Ok(bytes_written) = result {
             self.offset
                 .fetch_add(bytes_written as u64, atomic::Ordering::Relaxed);
-            if bytes_written > 0 {
-                self.dirty_on_close.store(true, atomic::Ordering::Release);
-            }
         }
         result
     }
@@ -133,10 +93,6 @@ pub struct Memory {
 }
 
 impl Memory {
-    pub fn set_trap_context_va(&self, trap_context_va: usize) {
-        *self.trap_cx_va.lock() = trap_context_va;
-    }
-
     pub fn set_trap_context(&self, trap_context: TrapContext) {
         let va = *self.trap_cx_va.lock();
         let ppn = self.memory_set.lock().trap_context_ppn(va);
@@ -231,25 +187,18 @@ impl File {
         self.fd_table.clear();
     }
 
-    /// 关闭所有文件描述符并清理文件锁（进程退出时调用）
-    pub fn close_all_fds_and_cleanup_locks(&mut self, pid: usize) {
-        // 清理文件锁
-        file_lock_manager().remove_process_locks(pid);
-        self.fd_table.clear();
-    }
-
     /// 关闭标记了O_CLOEXEC的文件描述符（execve时调用）
     pub fn close_cloexec_fds(&mut self) {
         const O_CLOEXEC: u32 = 0o2000000;
         let mut fds_to_close = Vec::new();
-        
+
         // 收集需要关闭的文件描述符
         for (&fd, file_desc) in &self.fd_table {
             if (file_desc.flags & O_CLOEXEC) != 0 {
                 fds_to_close.push(fd);
             }
         }
-        
+
         // 关闭标记了O_CLOEXEC的文件描述符
         for fd in fds_to_close {
             self.fd_table.remove(&fd);
@@ -265,109 +214,16 @@ impl File {
             .cloned()
             .and_then(|shared_desc| self.alloc_fd(shared_desc))
     }
-
-    /// 复制文件描述符到指定的文件描述符号（用于 dup2 系统调用）
-    #[allow(unused)]
-    pub fn dup2_fd(&mut self, oldfd: usize, newfd: usize) -> Option<usize> {
-        // 如果 oldfd 和 newfd 相同，则直接返回 newfd（如果 oldfd 有效）
-        if oldfd == newfd {
-            return if self.fd_table.contains_key(&oldfd) {
-                Some(newfd)
-            } else {
-                None
-            };
-        }
-
-        // 获取 oldfd 的共享文件描述符（open file description）
-        let shared_desc = match self.fd_table.get(&oldfd).cloned() {
-            Some(desc) => desc,
-            None => return None,
-        };
-
-        // 如果 newfd 已存在，先关闭它
-        if self.fd_table.contains_key(&newfd) {
-            self.fd_table.remove(&newfd);
-        }
-
-        // 共享相同的 FileDescriptor（共享偏移与标志）
-        self.fd_table.insert(newfd, shared_desc);
-
-        // 更新 next_fd 以避免与新分配的 fd 冲突
-        if newfd >= self.next_fd {
-            self.next_fd = newfd + 1;
-        }
-
-        Some(newfd)
-    }
-
-    /// 复制文件描述符到指定的文件描述符号（用于 dup3 系统调用）
-    /// 与 dup2 不同，dup3 要求 oldfd != newfd，并且支持 O_CLOEXEC 标志
-    pub fn dup3_fd(&mut self, oldfd: usize, newfd: usize, flags: i32) -> Result<usize, i32> {
-        // dup3 要求 oldfd 和 newfd 不能相同，否则返回 EINVAL
-        if oldfd == newfd {
-            return Err(-22); // EINVAL
-        }
-
-        // 检查 oldfd 是否有效
-        let shared_desc = match self.fd_table.get(&oldfd).cloned() {
-            Some(desc) => desc,
-            None => return Err(-9), // EBADF - Bad file descriptor
-        };
-
-        // 验证 flags 参数：目前只支持 O_CLOEXEC
-        const O_CLOEXEC: i32 = 0o2000000;
-        if flags & !O_CLOEXEC != 0 {
-            return Err(-22); // EINVAL - Invalid flags
-        }
-
-        // 如果 newfd 已存在，先关闭它
-        if self.fd_table.contains_key(&newfd) {
-            self.fd_table.remove(&newfd);
-        }
-
-        // 创建新的文件描述符，共享相同的 inode 和 offset
-        // 注意：在完整的实现中，O_CLOEXEC 标志应该存储在 fd_table 中而不是 FileDescriptor 中
-        // 因为 close-on-exec 是文件描述符的属性，而不是打开文件描述的属性
-        // 目前我们将其存储在 flags 中作为临时解决方案
-        let new_desc = if flags & O_CLOEXEC != 0 {
-            // 为支持 O_CLOEXEC，我们需要创建一个新的 FileDescriptor
-            // 但共享相同的 inode 和 offset
-            use core::sync::atomic;
-            Arc::new(FileDescriptor {
-                inode: shared_desc.inode.clone(),
-                offset: atomic::AtomicU64::new(shared_desc.offset.load(atomic::Ordering::Relaxed)),
-                flags: shared_desc.flags | O_CLOEXEC as u32,
-                mode: shared_desc.mode,
-                dirty_on_close: atomic::AtomicBool::new(shared_desc.dirty_on_close.load(atomic::Ordering::Relaxed)),
-                path: shared_desc.path.clone(),
-            })
-        } else {
-            // 不设置 O_CLOEXEC，直接共享 FileDescriptor
-            shared_desc
-        };
-
-        // 插入新的文件描述符
-        self.fd_table.insert(newfd, new_desc);
-
-        // 更新 next_fd 以避免与新分配的 fd 冲突
-        if newfd >= self.next_fd {
-            self.next_fd = newfd + 1;
-        }
-
-        Ok(newfd)
-    }
 }
 
 #[derive(Debug)]
 pub struct Sched {
+    /// 本次运行开始的 monotonic 时间，只在 sched mutex 内访问。
+    pub last_runtime: u64,
     /// nice值 (-20到19, 影响动态优先级计算)
     pub nice: i32,
     /// 累计运行时间 (用于CFS调度算法)
     pub vruntime: u64,
-    /// 进程优先级 (0-139, 0最高优先级，139最低优先级)
-    pub priority: i32,
-    /// 动态时间片大小 (微秒)
-    pub time_slice: u64,
 }
 
 impl Sched {
@@ -389,27 +245,6 @@ impl Sched {
         };
         self.vruntime += runtime_us / weight;
     }
-
-    /// 计算时间片大小 (基于优先级)
-    pub fn calculate_time_slice(&self) -> u64 {
-        // 基础时间片为10ms，根据优先级调整
-        let base_slice = 10000; // 10ms in microseconds
-        let priority = self.get_dynamic_priority();
-
-        match priority {
-            0..=9 => base_slice * 2,       // 高优先级：20ms
-            10..=19 => base_slice * 3 / 2, // 中等优先级：15ms
-            20..=29 => base_slice,         // 默认优先级：10ms
-            _ => base_slice / 2,           // 低优先级：5ms
-        }
-    }
-
-    /// 设置nice值并更新优先级
-    pub fn set_nice(&mut self, nice: i32) {
-        self.nice = nice.max(-20).min(19);
-        self.priority = self.get_dynamic_priority();
-        self.time_slice = self.calculate_time_slice();
-    }
 }
 
 /// Task Control block structure
@@ -418,7 +253,8 @@ pub struct TaskControlBlock {
 
     pid: PidHandle,
     /// 进程状态
-    pub task_status: Mutex<TaskStatus>,
+    // timer softirq 与 task context 共同转换该状态；普通 spin lock 会在同 hart 再入时死锁。
+    pub task_status: IrqMutex<TaskStatus>,
 
     pub mm: Memory,
     pub file: Arc<Mutex<File>>,
@@ -426,73 +262,30 @@ pub struct TaskControlBlock {
     /// 信号状态
     pub signal_state: Mutex<SignalState>,
 
-    /// 应用数据仅有可能出现在应用地址空间低于 base_size 字节的区域中。
-    /// 借助它我们可以清楚的知道应用有多少数据驻留在内存中。
-    base_size: usize,
-    /// 父进程, 子进程有可能在父进程退出时还存活，因此需要弱引用
-    parent: Mutex<Option<Weak<TaskControlBlock>>>,
-    /// 子进程
-    pub children: Mutex<Vec<Arc<TaskControlBlock>>>,
-    /// 子进程退出时，父进程可以获取其退出码
-    exit_code: AtomicI32,
+    /// 任务退出状态
+    exit_code: Mutex<i32>,
     /// 当前工作目录
     pub cwd: Mutex<String>,
 
-    /// 上次运行时的时间戳
-    pub last_runtime: AtomicU64,
-    /// 总CPU运行时间（微秒）
-    pub total_cpu_time: AtomicU64,
-    /// 用户态CPU时间（微秒）
-    pub user_cpu_time: AtomicU64,
-    /// 系统态CPU时间（微秒）
-    pub kernel_cpu_time: AtomicU64,
+    /// 只作为下次 CPU 选择的亲和性 hint，不发布 task 状态。
     pub last_cpu: AtomicUsize,
-    /// 进程创建时间戳（微秒）
-    pub creation_time: AtomicU64,
-    /// 进入内核态的时间戳（用于区分用户态/内核态时间）
-    pub kernel_enter_time: AtomicU64,
-    /// 是否在内核态运行
-    pub in_kernel_mode: spin::Mutex<bool>,
 
-    /// 用户ID
-    pub uid: AtomicU32,
-    /// 组ID
-    pub gid: AtomicU32,
-    /// 有效用户ID (用于权限检查)
-    pub euid: AtomicU32,
-    /// 有效组ID (用于权限检查)
-    pub egid: AtomicU32,
-
-    /// stdin 非阻塞标志 (用于 fcntl 设置)
-    pub stdin_nonblock: AtomicBool,
+    /// 当前最小 credentials 状态；uid/euid 必须在同一临界区检查并更新。
+    credentials: Mutex<Credentials>,
 
     /// 睡眠唤醒时间（纳秒），0表示不在睡眠中
     pub wake_time_ns: AtomicU64,
 
     /// 被停止前的状态（用于SIGCONT恢复）
     pub prev_status_before_stop: Mutex<Option<TaskStatus>>,
+}
 
-    /// 进程启动时的命令行参数
-    pub args: Mutex<Option<Vec<String>>>,
-    /// 进程启动时的环境变量
-    pub envs: Mutex<Option<Vec<String>>>,
-
-    /// 线程组ID（等于进程主线程的PID）
-    pub tgid: AtomicUsize,
-    /// 当前线程所占用的 TrapContext 槽位索引
-    pub thread_slot: AtomicUsize,
-    /// 线程槽位位图（仅主线程拥有，其他线程共享引用）
-    pub thread_slots: alloc::sync::Arc<Mutex<[bool; MAX_THREADS_PER_PROCESS]>>,
-
-    /// 是否锁定未来的内存映射（MLockFuture标志）
-    mlock_future: AtomicBool,
+struct Credentials {
+    uid: u32,
+    euid: u32,
 }
 
 impl TaskControlBlock {
-    pub fn new(name: &str, elf_data: &[u8]) -> Result<Self, Box<dyn Error>> {
-        Self::new_with_pid(name, elf_data, alloc_pid())
-    }
-
     pub fn new_with_pid(
         name: &str,
         elf_data: &[u8],
@@ -502,12 +295,10 @@ impl TaskControlBlock {
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
-        let pid_raw = pid.raw();
-
         let tcb = Self {
             name: Mutex::new(name.to_string()),
             pid,
-            task_status: Mutex::new(TaskStatus::Ready),
+            task_status: IrqMutex::new(TaskStatus::Ready),
             mm: Memory {
                 memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
                 kernel_stack,
@@ -521,38 +312,17 @@ impl TaskControlBlock {
                 next_fd: 3,
             })),
             sched: Mutex::new(Sched {
+                last_runtime: 0,
                 nice: 0,
                 vruntime: 0,
-                priority: 20,
-                time_slice: 10000,
             }),
             signal_state: Mutex::new(SignalState::new()),
-            base_size: user_sp,
-            parent: Mutex::new(None),
-            children: Mutex::new(Vec::new()),
-            exit_code: AtomicI32::new(0),
+            exit_code: Mutex::new(0),
             cwd: Mutex::new("/".to_string()), // 新进程默认工作目录为根目录
-            last_runtime: AtomicU64::new(0),
-            total_cpu_time: AtomicU64::new(0),
-            user_cpu_time: AtomicU64::new(0),
-            kernel_cpu_time: AtomicU64::new(0),
             last_cpu: AtomicUsize::new(0),
-            creation_time: AtomicU64::new(crate::timer::get_time_us()),
-            kernel_enter_time: AtomicU64::new(0),
-            in_kernel_mode: spin::Mutex::new(false),
-            args: Mutex::new(None), // 初始化空的参数列表
-            envs: Mutex::new(None), // 初始化空的环境变量列表
-            uid: AtomicU32::new(0),
-            gid: AtomicU32::new(0),
-            euid: AtomicU32::new(0),
-            egid: AtomicU32::new(0),
-            stdin_nonblock: AtomicBool::new(false),
+            credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
             wake_time_ns: AtomicU64::new(0),
             prev_status_before_stop: Mutex::new(None),
-            tgid: AtomicUsize::new(pid_raw),
-            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
-            thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
-            mlock_future: AtomicBool::new(false),
         };
 
         // prepare TrapContext in user space
@@ -566,223 +336,13 @@ impl TaskControlBlock {
         Ok(tcb)
     }
 
-    pub fn exec(&self, name: &str, elf_data: &[u8]) -> Result<(), Box<dyn Error>> {
-        self.exec_with_args(name, elf_data, None, None)
-    }
-
-    /// Execute a new program with arguments and environment variables
-    pub fn exec_with_args(
-        &self,
-        name: &str,
-        elf_data: &[u8],
-        args: Option<&[String]>,
-        envs: Option<&[String]>,
-    ) -> Result<(), Box<dyn Error>> {
-        let (memory_set, user_stack_top, entrypoint) = MemorySet::from_elf(elf_data)?;
-
-        let kernel_stack_top = self.mm.kernel_stack.get_top();
-
-        *self.mm.memory_set.lock() = memory_set;
-        self.mm.set_trap_context_va(TRAP_CONTEXT);
-        self.mm.set_trap_context(TrapContext::app_init_context(
-            entrypoint,
-            user_stack_top,
-            KERNEL_SPACE.wait().lock().token(),
-            kernel_stack_top,
-            trap_handler as usize,
-        ));
-        *self.name.lock() = name.to_string();
-
-        // 重置信号状态（exec时应该重置信号处理器）
-        self.signal_state.lock().reset_for_exec();
-
-        // 保存命令行参数和环境变量
-        *self.args.lock() = args.map(|args| args.to_vec());
-        *self.envs.lock() = envs.map(|envs| envs.to_vec());
-
-        Ok(())
-    }
-
-    pub fn fork(self: &Arc<Self>) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
-        let memory_set = MemorySet::form_existed_user(&self.mm.memory_set.lock())?;
-        let trap_cx_va = TRAP_CONTEXT;
-
-        // alloc a pid and a kernel stack in kernel space
-        let pid = alloc_pid();
-        let kernel_stack = KernelStack::new();
-        let kernel_stack_top = kernel_stack.get_top();
-        let file = {
-            let file = self.file.lock();
-            Arc::new(Mutex::new(File {
-                fd_table: file.fd_table.clone(),
-                next_fd: file.next_fd,
-            }))
-        };
-        let sched = {
-            let sched = self.sched.lock();
-            Mutex::new(Sched {
-                nice: sched.nice,
-                vruntime: 0,
-                priority: sched.priority,
-                time_slice: sched.time_slice,
-            })
-        };
-
-        let tcb = Arc::new(Self {
-            name: Mutex::new(self.name.lock().clone()),
-            pid,
-            task_status: Mutex::new(TaskStatus::Ready),
-            base_size: self.base_size,
-            parent: Mutex::new(Some(Arc::downgrade(self))),
-            children: Mutex::new(Vec::new()),
-            exit_code: AtomicI32::new(0),
-            cwd: Mutex::new(self.cwd.lock().clone()),
-            last_runtime: AtomicU64::new(0),
-            total_cpu_time: AtomicU64::new(0),
-            user_cpu_time: AtomicU64::new(0),
-            kernel_cpu_time: AtomicU64::new(0),
-            last_cpu: AtomicUsize::new(0),
-            creation_time: AtomicU64::new(crate::timer::get_time_us()),
-            kernel_enter_time: AtomicU64::new(0),
-            in_kernel_mode: spin::Mutex::new(false),
-            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
-            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
-            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
-            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
-            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
-            wake_time_ns: AtomicU64::new(0),
-            prev_status_before_stop: Mutex::new(None),
-            args: Mutex::new(self.args.lock().clone()),
-            envs: Mutex::new(self.envs.lock().clone()),
-            mm: Memory {
-                memory_set: alloc::sync::Arc::new(Mutex::new(memory_set)),
-                kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
-                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
-            },
-            file,
-            sched,
-            signal_state: Mutex::new(self.signal_state.lock().clone_for_fork()),
-            tgid: AtomicUsize::new(self.tgid()),
-            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1),
-            thread_slots: alloc::sync::Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS])),
-            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
-        });
-
-        self.children.lock().push(tcb.clone());
-        tcb.mm.trap_context().kernel_sp = kernel_stack_top;
-        Ok(tcb)
-    }
-
-    /// 线程组ID（进程ID）
-    pub fn tgid(&self) -> usize {
-        self.tgid.load(atomic::Ordering::Relaxed)
-    }
-
     /// 获取当前线程TrapContext虚拟地址
     pub fn trap_context_va(&self) -> usize {
         *self.mm.trap_cx_va.lock()
     }
 
-    /// 在当前进程内创建线程
-    /// entry: 用户函数入口地址；user_sp: 线程用户栈顶；arg: 传入a0
-    pub fn spawn_thread(
-        self: &Arc<Self>,
-        entry: usize,
-        user_sp: usize,
-        arg: usize,
-    ) -> Result<Arc<Self>, Box<dyn Error>> {
-        // 分配线程槽位
-        let slot = {
-            let mut slots = self.thread_slots.lock();
-            // 主线程占用最高槽位（MAX-1），线程从低位开始分配
-            let mut found = None;
-            for i in 0..(MAX_THREADS_PER_PROCESS - 1) {
-                if !slots[i] {
-                    slots[i] = true;
-                    found = Some(i);
-                    break;
-                }
-            }
-            found.ok_or("No free thread slot")?
-        };
-
-        let pid = alloc_pid();
-        let kernel_stack = KernelStack::new();
-        let kernel_stack_top = kernel_stack.get_top();
-        let trap_cx_va = TRAP_CONTEXT_BASE + slot * PAGE_SIZE;
-
-        let tcb = Arc::new(Self {
-            name: Mutex::new(self.name.lock().clone()),
-            pid,
-            task_status: Mutex::new(TaskStatus::Ready),
-            base_size: self.base_size,
-            parent: Mutex::new(Some(Arc::downgrade(self))),
-            children: Mutex::new(Vec::new()),
-            exit_code: AtomicI32::new(0),
-            cwd: Mutex::new(self.cwd.lock().clone()),
-            last_runtime: AtomicU64::new(0),
-            total_cpu_time: AtomicU64::new(0),
-            user_cpu_time: AtomicU64::new(0),
-            kernel_cpu_time: AtomicU64::new(0),
-            last_cpu: AtomicUsize::new(0),
-            creation_time: AtomicU64::new(crate::timer::get_time_us()),
-            kernel_enter_time: AtomicU64::new(0),
-            in_kernel_mode: spin::Mutex::new(false),
-            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
-            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
-            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
-            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
-            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
-            wake_time_ns: AtomicU64::new(0),
-            prev_status_before_stop: Mutex::new(None),
-            args: Mutex::new(self.args.lock().clone()),
-            envs: Mutex::new(self.envs.lock().clone()),
-            mm: Memory {
-                memory_set: self.mm.memory_set.clone(),
-                kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
-                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(kernel_stack_top)),
-            },
-            file: self.file.clone(),
-            // 注意：不能在同一表达式里多次 self.sched.lock()，否则自旋锁可能因临时值生命周期导致重入死锁。
-            // 这里一次性获取父任务的调度信息，避免重复加锁。
-            sched: {
-                let parent_sched = self.sched.lock();
-                Mutex::new(Sched {
-                    nice: parent_sched.nice,
-                    vruntime: 0,
-                    priority: parent_sched.priority,
-                    time_slice: parent_sched.time_slice,
-                })
-            },
-            signal_state: Mutex::new(SignalState::new()),
-            tgid: AtomicUsize::new(self.tgid()),
-            thread_slot: AtomicUsize::new(slot),
-            thread_slots: self.thread_slots.clone(),
-            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
-        });
-
-        // 初始化线程TrapContext
-        tcb.mm.set_trap_context(TrapContext::app_init_context(
-            entry,
-            user_sp,
-            KERNEL_SPACE.wait().lock().token(),
-            kernel_stack_top,
-            trap_handler as usize,
-        ));
-        // a0 = arg
-        tcb.mm.trap_context().x[10] = arg;
-
-        Ok(tcb)
-    }
-
     /// execve_replace - Linux标准的execve实现
-    /// 
+    ///
     /// 完全替换当前进程的内存映像，按照POSIX标准：
     /// - 保留PID、PPID、会话ID、进程组ID
     /// - 关闭标记了O_CLOEXEC的文件描述符  
@@ -792,15 +352,17 @@ impl TaskControlBlock {
     pub fn execve_replace(
         self: &Arc<Self>,
         program_name: &str,
-        elf_data: &[u8], 
+        elf_data: &[u8],
         args: &[String],
         envs: &[String],
     ) -> Result<(), crate::memory::mm::MemoryError> {
         // 步骤1: 创建新的内存空间 - 在完全提交之前先准备好
         let (new_memory_set, user_sp, entry_point) = if args.is_empty() && envs.is_empty() {
-            MemorySet::from_elf(elf_data).map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+            MemorySet::from_elf(elf_data)
+                .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
         } else {
-            MemorySet::from_elf_with_args(elf_data, args, envs).map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
+            MemorySet::from_elf_with_args(elf_data, args, envs)
+                .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)?
         };
 
         // 步骤2: 关闭标记了O_CLOEXEC的文件描述符
@@ -819,29 +381,20 @@ impl TaskControlBlock {
         // 步骤4: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
         let kernel_stack_top = self.mm.kernel_stack.get_top();
-        
+
         // 更新内存管理器
         self.mm.memory_set.lock().recycle_data_pages(); // 清理旧的页面
         *self.mm.memory_set.lock() = new_memory_set;
         *self.mm.trap_cx_va.lock() = TRAP_CONTEXT;
-        
+
         // 重置堆指针
         // 新地址空间的堆必须保持未初始化，由 brk/sbrk 在固定用户堆区建立。
         // user_sp 可能已下移以容纳 argv/envp；把它当作堆基址会让分配器覆盖参数栈和返回地址。
         self.mm.heap_base.store(0, atomic::Ordering::Relaxed);
         self.mm.heap_top.store(0, atomic::Ordering::Relaxed);
 
-        // 步骤5: 更新任务状态
-        // 保留PID，但更新程序名称和参数
+        // 步骤5: 更新任务状态；参数与环境只存在于新初始栈中。
         *self.name.lock() = program_name.to_string();
-        *self.args.lock() = Some(args.to_vec());
-        *self.envs.lock() = Some(envs.to_vec());
-
-        // 重置运行时统计
-        self.total_cpu_time.store(0, atomic::Ordering::Relaxed);
-        self.user_cpu_time.store(0, atomic::Ordering::Relaxed);
-        self.kernel_cpu_time.store(0, atomic::Ordering::Relaxed);
-        self.creation_time.store(crate::timer::get_time_us(), atomic::Ordering::Relaxed);
 
         // 步骤6: 设置新程序的陷阱上下文
         let trap_cx = self.mm.trap_context();
@@ -857,209 +410,6 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    /// 实现 clone 系统调用：更精细地控制父子进程间的共享
-    ///
-    /// flags: 控制哪些资源在父子进程间共享
-    /// child_stack: 子进程的用户栈指针 (如果为None则共享栈)
-    /// entry_point: 子进程的入口点 (如果为None则从当前位置继续)
-    pub fn clone_with_flags(
-        self: &Arc<Self>,
-        flags: i32,
-        child_stack: Option<usize>,
-        entry_point: Option<usize>,
-    ) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
-        // Clone flags 常量定义
-        const CLONE_VM: i32 = 0x00000100;
-        const CLONE_FS: i32 = 0x00000200;
-        const CLONE_FILES: i32 = 0x00000400;
-        const CLONE_SIGHAND: i32 = 0x00000800;
-        const CLONE_THREAD: i32 = 0x00010000;
-        const CLONE_VFORK: i32 = 0x00004000;
-        const CLONE_PARENT: i32 = 0x00008000;
-
-        let is_thread = (flags & CLONE_THREAD) != 0;
-        let share_vm = (flags & CLONE_VM) != 0;
-        let share_files = (flags & CLONE_FILES) != 0;
-        let share_fs = (flags & CLONE_FS) != 0;
-        let share_sighand = (flags & CLONE_SIGHAND) != 0;
-        let same_parent = (flags & CLONE_PARENT) != 0;
-
-        // 如果是线程创建 (CLONE_VM | CLONE_FILES | CLONE_FS | CLONE_SIGHAND)
-        if is_thread || (share_vm && share_files && share_fs && share_sighand) {
-            // 创建线程：共享地址空间、文件描述符表、文件系统信息和信号处理
-            return self.clone_thread(child_stack, entry_point);
-        }
-
-        // 创建内存空间 - 基于现有的 fork 实现
-        let memory_set = if share_vm {
-            // 共享虚拟内存地址空间 - 但这需要特殊处理
-            // 暂时不支持，因为需要修改 Memory 结构来支持共享
-            return Err(crate::memory::mm::MemoryError::OutOfMemory);
-        } else {
-            // 复制虚拟内存地址空间 (类似 fork)
-            MemorySet::form_existed_user(&self.mm.memory_set.lock())?
-        };
-
-        let trap_cx_va = TRAP_CONTEXT;
-        let pid = alloc_pid();
-        let kernel_stack = KernelStack::new();
-        let kernel_stack_top = kernel_stack.get_top();
-
-        // 处理文件描述符表
-        let file = if share_files {
-            // 共享文件描述符表
-            self.file.clone()
-        } else {
-            // 复制文件描述符表 (类似 fork)
-            let parent_file = self.file.lock();
-            Arc::new(Mutex::new(File {
-                fd_table: parent_file.fd_table.clone(),
-                next_fd: parent_file.next_fd,
-            }))
-        };
-
-        // 处理调度信息
-        let sched = {
-            let parent_sched = self.sched.lock();
-            Mutex::new(Sched {
-                nice: parent_sched.nice,
-                vruntime: 0, // 新进程从0开始
-                priority: parent_sched.priority,
-                time_slice: parent_sched.time_slice,
-            })
-        };
-
-        // 处理父子关系
-        let parent_ref = if same_parent {
-            // 使用与调用进程相同的父进程
-            self.parent.lock().clone()
-        } else {
-            // 调用进程成为父进程
-            Some(Arc::downgrade(self))
-        };
-
-        let pid_value = pid.0; // Extract the value before moving
-        let new_task = Arc::new(Self {
-            name: Mutex::new(self.name.lock().clone()),
-            pid,
-            task_status: Mutex::new(TaskStatus::Ready),
-            base_size: self.base_size,
-            parent: Mutex::new(parent_ref),
-            children: Mutex::new(Vec::new()),
-            exit_code: AtomicI32::new(0),
-            cwd: if share_fs {
-                // 共享工作目录需要特殊处理，暂时复制
-                Mutex::new(self.cwd.lock().clone())
-            } else {
-                Mutex::new(self.cwd.lock().clone())
-            },
-            // 创建新的内存管理结构
-            mm: Memory {
-                memory_set: Arc::new(Mutex::new(memory_set)),
-                kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                heap_base: AtomicUsize::new(self.mm.heap_base.load(atomic::Ordering::Relaxed)),
-                heap_top: AtomicUsize::new(self.mm.heap_top.load(atomic::Ordering::Relaxed)),
-                task_cx: Mutex::new(TaskContext::zero_init()),
-            },
-            file,
-            wake_time_ns: AtomicU64::new(0),
-            prev_status_before_stop: Mutex::new(None),
-            args: Mutex::new(self.args.lock().clone()),
-            envs: Mutex::new(self.envs.lock().clone()),
-            sched,
-            last_runtime: AtomicU64::new(0),
-            total_cpu_time: AtomicU64::new(0),
-            user_cpu_time: AtomicU64::new(0),
-            kernel_cpu_time: AtomicU64::new(0),
-            last_cpu: AtomicUsize::new(0),
-            creation_time: AtomicU64::new(crate::timer::get_time_us()),
-            kernel_enter_time: AtomicU64::new(0),
-            in_kernel_mode: spin::Mutex::new(false),
-            uid: AtomicU32::new(self.uid.load(atomic::Ordering::Relaxed)),
-            gid: AtomicU32::new(self.gid.load(atomic::Ordering::Relaxed)),
-            euid: AtomicU32::new(self.euid.load(atomic::Ordering::Relaxed)),
-            egid: AtomicU32::new(self.egid.load(atomic::Ordering::Relaxed)),
-            stdin_nonblock: AtomicBool::new(self.stdin_nonblock.load(atomic::Ordering::Relaxed)),
-            signal_state: if share_sighand {
-                // 共享信号处理需要特殊处理，暂时复制
-                Mutex::new(SignalState::new())
-            } else {
-                Mutex::new(SignalState::new())
-            },
-            tgid: if is_thread {
-                // 线程使用相同的线程组ID
-                AtomicUsize::new(self.tgid())
-            } else {
-                // 新进程使用自己的PID作为线程组ID
-                AtomicUsize::new(pid_value)
-            },
-            thread_slot: AtomicUsize::new(MAX_THREADS_PER_PROCESS - 1), // 主线程槽位
-            thread_slots: if is_thread {
-                // 线程共享槽位管理需要特殊处理，暂时创建新的
-                Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS]))
-            } else {
-                // 新进程有自己的槽位管理
-                Arc::new(Mutex::new([false; MAX_THREADS_PER_PROCESS]))
-            },
-            mlock_future: AtomicBool::new(self.mlock_future.load(atomic::Ordering::Relaxed)),
-        });
-
-        // 设置陷阱上下文
-        let trap_cx = new_task.mm.trap_context();
-        let current_trap_cx = self.mm.trap_context();
-        *trap_cx = current_trap_cx.clone();
-
-        // 如果指定了新的栈指针，则设置它
-        if let Some(stack) = child_stack {
-            trap_cx.x[2] = stack; // sp register
-        }
-
-        // 如果指定了入口点，则设置它
-        if let Some(entry) = entry_point {
-            trap_cx.sepc = entry;
-        }
-
-        // 子进程的返回值为0
-        trap_cx.x[10] = 0; // a0 register
-
-        // 设置新的内核栈
-        trap_cx.kernel_sp = kernel_stack_top;
-
-        // 将新任务添加到父进程的子进程列表 (除非使用CLONE_PARENT)
-        if !same_parent {
-            self.children.lock().push(new_task.clone());
-        } else if let Some(parent_weak) = self.parent.lock().as_ref() {
-            if let Some(parent) = parent_weak.upgrade() {
-                parent.children.lock().push(new_task.clone());
-            }
-        }
-
-        Ok(new_task)
-    }
-
-    /// 创建线程的辅助方法
-    fn clone_thread(
-        self: &Arc<Self>,
-        child_stack: Option<usize>,
-        entry_point: Option<usize>,
-    ) -> Result<Arc<Self>, crate::memory::mm::MemoryError> {
-        // 基于现有的 spawn_thread 实现，但支持自定义栈和入口点
-        let entry = entry_point.unwrap_or_else(|| {
-            // 如果没有指定入口点，使用当前的程序计数器
-            self.mm.trap_context().sepc
-        });
-
-        let user_sp = child_stack.unwrap_or_else(|| {
-            // 如果没有指定栈，使用当前的栈指针
-            self.mm.trap_context().x[2]
-        });
-
-        // 使用现有的 spawn_thread，但传递0作为参数
-        self.spawn_thread(entry, user_sp, 0)
-            .map_err(|_| crate::memory::mm::MemoryError::OutOfMemory)
-    }
-
     pub fn name(&self) -> String {
         self.name.lock().clone()
     }
@@ -1068,124 +418,16 @@ impl TaskControlBlock {
         *self.task_status.lock() == TaskStatus::Zombie
     }
 
-    pub fn is_ready(&self) -> bool {
-        *self.task_status.lock() == TaskStatus::Ready
-    }
-
-    /// 获取用户ID
-    pub fn uid(&self) -> u32 {
-        self.uid.load(atomic::Ordering::Relaxed)
-    }
-
-    /// 获取组ID
-    pub fn gid(&self) -> u32 {
-        self.gid.load(atomic::Ordering::Relaxed)
-    }
-
-    /// 获取有效用户ID
-    pub fn euid(&self) -> u32 {
-        self.euid.load(atomic::Ordering::Relaxed)
-    }
-
-    /// 获取有效组ID
-    pub fn egid(&self) -> u32 {
-        self.egid.load(atomic::Ordering::Relaxed)
-    }
-
     /// 设置用户ID (需要root权限)
     pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
+        let mut credentials = self.credentials.lock();
         // 只有root用户可以设置任意UID
-        if self.euid.load(atomic::Ordering::Relaxed) != 0
-            && self.euid.load(atomic::Ordering::Relaxed) != uid
-        {
+        if credentials.euid != 0 && credentials.euid != uid {
             return Err(-1); // EPERM
         }
-        self.uid.store(uid, atomic::Ordering::Relaxed);
-        self.euid.store(uid, atomic::Ordering::Relaxed);
+        credentials.uid = uid;
+        credentials.euid = uid;
         Ok(())
-    }
-
-    /// 设置组ID (需要root权限)
-    pub fn set_gid(&self, gid: u32) -> Result<(), i32> {
-        // 只有root用户可以设置任意GID
-        if self.euid.load(atomic::Ordering::Relaxed) != 0
-            && self.egid.load(atomic::Ordering::Relaxed) != gid
-        {
-            return Err(-1); // EPERM
-        }
-        self.gid.store(gid, atomic::Ordering::Relaxed);
-        self.egid.store(gid, atomic::Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// 设置有效用户ID
-    pub fn set_euid(&self, euid: u32) -> Result<(), i32> {
-        // 只有root用户或设置为实际UID才允许
-        if self.euid.load(atomic::Ordering::Relaxed) != 0
-            && euid != self.uid.load(atomic::Ordering::Relaxed)
-        {
-            return Err(-1); // EPERM
-        }
-        self.euid.store(euid, atomic::Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// 设置有效组ID
-    pub fn set_egid(&self, egid: u32) -> Result<(), i32> {
-        // 只有root用户或设置为实际GID才允许
-        if self.euid.load(atomic::Ordering::Relaxed) != 0
-            && egid != self.gid.load(atomic::Ordering::Relaxed)
-        {
-            return Err(-1); // EPERM
-        }
-        self.egid.store(egid, atomic::Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// 检查是否为root用户
-    pub fn is_root(&self) -> bool {
-        self.euid.load(atomic::Ordering::Relaxed) == 0
-    }
-
-    /// 设置mlock_future标志
-    pub fn set_mlock_future(&self, value: bool) {
-        self.mlock_future.store(value, atomic::Ordering::Relaxed);
-    }
-
-    /// 获取mlock_future标志
-    pub fn get_mlock_future(&self) -> bool {
-        self.mlock_future.load(atomic::Ordering::Relaxed)
-    }
-
-    /// 检查对文件的访问权限
-    pub fn check_file_permission(
-        &self,
-        file_mode: u32,
-        file_uid: u32,
-        file_gid: u32,
-        requested: u32,
-    ) -> bool {
-        // root用户拥有所有权限
-        if self.euid.load(atomic::Ordering::Relaxed) == 0 {
-            return true;
-        }
-
-        let mut effective_mode = 0;
-
-        // 检查用户权限
-        if self.euid.load(atomic::Ordering::Relaxed) == file_uid {
-            effective_mode = (file_mode >> 6) & 0o7; // 用户权限位
-        }
-        // 检查组权限
-        else if self.egid.load(atomic::Ordering::Relaxed) == file_gid {
-            effective_mode = (file_mode >> 3) & 0o7; // 组权限位
-        }
-        // 其他用户权限
-        else {
-            effective_mode = file_mode & 0o7; // 其他用户权限位
-        }
-
-        (effective_mode & requested) == requested
     }
 
     pub fn pid(&self) -> usize {
@@ -1193,19 +435,11 @@ impl TaskControlBlock {
     }
 
     pub fn set_exit_code(&self, exit_code: i32) {
-        self.exit_code.store(exit_code, atomic::Ordering::Relaxed);
+        *self.exit_code.lock() = exit_code;
     }
 
     pub fn exit_code(&self) -> i32 {
-        self.exit_code.load(atomic::Ordering::Relaxed)
-    }
-
-    pub fn set_parent(&self, parent: Weak<TaskControlBlock>) {
-        *self.parent.lock() = Some(parent);
-    }
-
-    pub fn parent(&self) -> Option<Arc<TaskControlBlock>> {
-        self.parent.lock().as_ref().and_then(|w| w.upgrade())
+        *self.exit_code.lock()
     }
 
     pub fn wakeup(self: &Arc<Self>) {
@@ -1224,15 +458,11 @@ impl core::fmt::Debug for TaskControlBlock {
             TaskControlBlock {{
                 pid: {},
                 name: {},
-                parent: {:?},
-                children: {:?},
                 exit_code: {},
                 task_status: {:?}
             }}"#,
             self.pid(),
             self.name(),
-            self.parent().map(|parent| parent.name()),
-            self.children.lock().iter().collect::<Vec<_>>(),
             self.exit_code(),
             self.task_status.lock()
         )

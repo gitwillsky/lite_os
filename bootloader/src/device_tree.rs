@@ -10,6 +10,8 @@ pub(crate) struct BoardInfo {
     pub dtb: Range<usize>,
     pub model: StringInLine<128>,
     pub smp: usize,
+    pub hart_mask: usize,
+    pub invalid_hart_id: Option<usize>,
     pub mem: Range<usize>,
     pub uart: Range<usize>,
     pub test: Range<usize>,
@@ -38,6 +40,8 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
         dtb: opaque..opaque,
         model: StringInLine(0, [0; 128]),
         smp: 0,
+        hart_mask: 0,
+        invalid_hart_id: None,
         mem: 0..0,
         uart: 0..0,
         test: 0..0,
@@ -74,8 +78,10 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
             } else {
                 if current == Str::from(CPUS) && name.starts_with("cpu@") {
                     ans.smp += 1;
+                    WalkOperation::StepInto
+                } else {
+                    WalkOperation::StepOver
                 }
-                WalkOperation::StepOver
             }
         }
         DtbObj::Property(Property::Model(model)) if ctx.is_root() => {
@@ -97,6 +103,14 @@ pub(crate) fn parse(opaque: usize) -> BoardInfo {
             } else if node.starts_with(MEM) {
                 ans.mem = reg.next().unwrap();
                 WalkOperation::StepOut
+            } else if node.starts_with("cpu@") {
+                let hart_id = reg.next().unwrap().start;
+                if hart_id < crate::constants::MAX_HART_NUM {
+                    ans.hart_mask |= 1usize << hart_id;
+                } else {
+                    ans.invalid_hart_id = Some(hart_id);
+                }
+                WalkOperation::StepOver
             } else {
                 WalkOperation::StepOver
             }

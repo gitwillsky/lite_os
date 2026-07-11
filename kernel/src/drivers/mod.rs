@@ -1,17 +1,11 @@
-use crate::drivers::{
-    device_manager::get_device_statistics,
-    hal::device::{Device, DeviceError, DeviceState},
-};
+use crate::drivers::device_manager::get_device_statistics;
 
 pub mod block; // 块设备抽象层
 pub mod device_manager; // 设备管理器 - 统一设备管理
-pub mod framebuffer; // Framebuffer抽象层
 pub mod goldfish_rtc;
 pub mod hal; // 硬件抽象层 - 核心架构
 pub mod virtio_blk; // VirtIO块设备驱动
 pub mod virtio_console; // VirtIO控制台驱动
-pub mod virtio_gpu; // VirtIO GPU设备驱动
-pub mod virtio_input; // VirtIO 输入设备驱动
 pub mod virtio_queue; // VirtIO队列实现 // Goldfish RTC驱动
 
 // === 驱动子系统初始化 ===

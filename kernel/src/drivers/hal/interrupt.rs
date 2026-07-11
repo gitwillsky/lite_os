@@ -1,110 +1,26 @@
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::fmt;
-use core::sync::atomic::AtomicU32;
-use riscv::register;
-use spin::Mutex;
 
 pub type InterruptVector = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterruptError {
-    VectorNotFound,
     HandlerNotSet,
     InvalidVector,
-    ControllerError,
-    ResourceConflict,
-    HardwareError,
-    TimeoutError,
-    InvalidPriority,
-    CpuAffinityError,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum InterruptPriority {
-    Critical = 0,
-    High = 1,
-    Normal = 2,
-    Low = 3,
-    Idle = 4,
 }
 
 impl fmt::Display for InterruptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InterruptError::VectorNotFound => write!(f, "Interrupt vector not found"),
             InterruptError::HandlerNotSet => write!(f, "Interrupt handler not set"),
             InterruptError::InvalidVector => write!(f, "Invalid interrupt vector"),
-            InterruptError::ControllerError => write!(f, "Interrupt controller error"),
-            InterruptError::ResourceConflict => write!(f, "Interrupt resource conflict"),
-            InterruptError::HardwareError => write!(f, "Interrupt hardware error"),
-            InterruptError::TimeoutError => write!(f, "Interrupt timeout error"),
-            InterruptError::InvalidPriority => write!(f, "Invalid interrupt priority"),
-            InterruptError::CpuAffinityError => write!(f, "CPU affinity error"),
         }
     }
 }
 
 pub trait InterruptHandler: Send + Sync {
     fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
-    fn can_handle(&self, vector: InterruptVector) -> bool;
-    fn priority(&self) -> InterruptPriority {
-        InterruptPriority::Normal
-    }
-    fn is_shared(&self) -> bool {
-        false
-    }
-    fn cpu_affinity(&self) -> Option<usize> {
-        None
-    }
-    fn name(&self) -> &str {
-        "unnamed"
-    }
-    fn statistics(&self) -> InterruptStatistics {
-        InterruptStatistics::default()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct InterruptStatistics {
-    pub total_count: u64,
-    pub last_timestamp: u64,
-    pub min_latency: u64,
-    pub max_latency: u64,
-    pub avg_latency: u64,
-    pub error_count: u64,
-}
-
-pub struct WorkQueue {
-    name: alloc::string::String,
-    work_items: Mutex<alloc::collections::VecDeque<Box<dyn WorkItem>>>,
-    worker_thread: Option<usize>, // Thread ID
-    max_items: usize,
-}
-
-pub trait WorkItem: Send {
-    fn execute(&self) -> Result<(), InterruptError>;
-    fn priority(&self) -> InterruptPriority {
-        InterruptPriority::Normal
-    }
-    fn name(&self) -> &str;
-}
-
-pub struct BottomHalf {
-    id: u32,
-    priority: InterruptPriority,
-    handler: Box<dyn Fn() -> Result<(), InterruptError> + Send + Sync>,
-    statistics: Mutex<InterruptStatistics>,
-}
-
-// 软中断类型在 `crate::softirq` 内定义，这里不重复定义
-
-pub struct SoftIrqManager {
-    pending: AtomicU32,
-    handlers: [Option<Box<dyn Fn() -> Result<(), InterruptError> + Send + Sync>>; 8],
-    statistics: [Mutex<InterruptStatistics>; 8],
 }
 
 pub trait InterruptController: Send + Sync {
@@ -114,160 +30,18 @@ pub trait InterruptController: Send + Sync {
         handler: Arc<dyn InterruptHandler>,
     ) -> Result<(), InterruptError>;
 
-    fn unregister_handler(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
-
     fn enable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
-    fn disable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
 
-    fn set_priority(
-        &mut self,
-        vector: InterruptVector,
-        priority: InterruptPriority,
-    ) -> Result<(), InterruptError>;
+    fn set_priority(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
     fn set_affinity(
         &mut self,
         vector: InterruptVector,
         cpu_mask: usize,
     ) -> Result<(), InterruptError>;
 
-    fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError>;
-
-    fn pending_interrupts(&self) -> Vec<InterruptVector>;
-    fn acknowledge_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError>;
-
-    fn get_statistics(&self, vector: InterruptVector) -> Option<InterruptStatistics>;
-    fn supports_msi(&self) -> bool {
-        false
-    }
+    fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError>;
     fn supports_cpu_affinity(&self) -> bool {
         false
-    }
-    fn trigger_softirq(&self, _irq: crate::trap::softirq::SoftIrq) {}
-}
-
-pub struct SimpleInterruptHandler<F>
-where
-    F: Fn(InterruptVector) -> Result<(), InterruptError> + Send + Sync,
-{
-    handler_fn: F,
-    vector: InterruptVector,
-}
-
-impl<F> SimpleInterruptHandler<F>
-where
-    F: Fn(InterruptVector) -> Result<(), InterruptError> + Send + Sync,
-{
-    pub fn new(vector: InterruptVector, handler_fn: F) -> Self {
-        Self { handler_fn, vector }
-    }
-}
-
-impl<F> InterruptHandler for SimpleInterruptHandler<F>
-where
-    F: Fn(InterruptVector) -> Result<(), InterruptError> + Send + Sync,
-{
-    fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError> {
-        (self.handler_fn)(vector)
-    }
-
-    fn can_handle(&self, vector: InterruptVector) -> bool {
-        vector == self.vector
-    }
-}
-
-pub struct BasicInterruptController {
-    handlers: Mutex<BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>>,
-    enabled_interrupts: Mutex<alloc::collections::BTreeSet<InterruptVector>>,
-}
-
-impl BasicInterruptController {
-    pub fn new() -> Self {
-        Self {
-            handlers: Mutex::new(BTreeMap::new()),
-            enabled_interrupts: Mutex::new(alloc::collections::BTreeSet::new()),
-        }
-    }
-}
-
-impl InterruptController for BasicInterruptController {
-    fn register_handler(
-        &mut self,
-        vector: InterruptVector,
-        handler: Arc<dyn InterruptHandler>,
-    ) -> Result<(), InterruptError> {
-        let mut handlers = self.handlers.lock();
-        handlers.insert(vector, handler);
-        Ok(())
-    }
-
-    fn unregister_handler(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        let mut handlers = self.handlers.lock();
-        handlers.remove(&vector);
-
-        let mut enabled = self.enabled_interrupts.lock();
-        enabled.remove(&vector);
-
-        Ok(())
-    }
-
-    fn enable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        let handlers = self.handlers.lock();
-        if !handlers.contains_key(&vector) {
-            return Err(InterruptError::HandlerNotSet);
-        }
-
-        let mut enabled = self.enabled_interrupts.lock();
-        enabled.insert(vector);
-
-        Ok(())
-    }
-
-    fn disable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        let mut enabled = self.enabled_interrupts.lock();
-        enabled.remove(&vector);
-        Ok(())
-    }
-
-    fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError> {
-        let enabled = self.enabled_interrupts.lock();
-        if !enabled.contains(&vector) {
-            return Ok(());
-        }
-
-        let handlers = self.handlers.lock();
-        if let Some(handler) = handlers.get(&vector) {
-            handler.handle_interrupt(vector)
-        } else {
-            Err(InterruptError::HandlerNotSet)
-        }
-    }
-
-    fn pending_interrupts(&self) -> Vec<InterruptVector> {
-        Vec::new()
-    }
-
-    fn acknowledge_interrupt(&mut self, _vector: InterruptVector) -> Result<(), InterruptError> {
-        Ok(())
-    }
-
-    fn set_priority(
-        &mut self,
-        _vector: InterruptVector,
-        _priority: InterruptPriority,
-    ) -> Result<(), InterruptError> {
-        Err(InterruptError::InvalidPriority)
-    }
-
-    fn set_affinity(
-        &mut self,
-        _vector: InterruptVector,
-        _cpu_mask: usize,
-    ) -> Result<(), InterruptError> {
-        Err(InterruptError::CpuAffinityError)
-    }
-
-    fn get_statistics(&self, _vector: InterruptVector) -> Option<InterruptStatistics> {
-        None
     }
 }
 
@@ -275,10 +49,7 @@ pub struct PlicInterruptController {
     base_addr: usize,
     max_interrupts: u32,
     num_contexts: u32,
-    handlers: Mutex<BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>>,
-    enabled_interrupts: Mutex<BTreeMap<u32, u32>>, // context -> enabled_mask
-    priorities: Mutex<BTreeMap<InterruptVector, InterruptPriority>>,
-    statistics: Mutex<BTreeMap<InterruptVector, InterruptStatistics>>,
+    handlers: BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>,
 }
 
 impl PlicInterruptController {
@@ -295,10 +66,7 @@ impl PlicInterruptController {
             base_addr,
             max_interrupts,
             num_contexts,
-            handlers: Mutex::new(BTreeMap::new()),
-            enabled_interrupts: Mutex::new(BTreeMap::new()),
-            priorities: Mutex::new(BTreeMap::new()),
-            statistics: Mutex::new(BTreeMap::new()),
+            handlers: BTreeMap::new(),
         };
 
         controller.init_hardware()?;
@@ -403,63 +171,6 @@ impl PlicInterruptController {
             core::ptr::write_volatile(addr as *mut u32, vector);
         }
     }
-
-    pub fn handle_external_interrupt(&self, context: u32) -> Result<(), InterruptError> {
-        let vector = self.claim_interrupt(context);
-        if vector == 0 {
-            return Ok(());
-        }
-
-        let start_time = self.get_timestamp();
-
-        let result = {
-            let handlers = self.handlers.lock();
-            if let Some(handler) = handlers.get(&vector) {
-                handler.handle_interrupt(vector)
-            } else {
-                Err(InterruptError::HandlerNotSet)
-            }
-        };
-
-        let end_time = self.get_timestamp();
-        self.update_statistics(vector, start_time, end_time, result.is_ok());
-
-        self.complete_interrupt(context, vector);
-
-        result
-    }
-
-    fn get_timestamp(&self) -> u64 {
-        // This would read from a hardware timer in a real implementation
-        0
-    }
-
-    fn update_statistics(&self, vector: u32, start_time: u64, end_time: u64, success: bool) {
-        let mut stats = self.statistics.lock();
-        let stat = stats
-            .entry(vector)
-            .or_insert_with(InterruptStatistics::default);
-
-        stat.total_count += 1;
-        stat.last_timestamp = end_time;
-
-        if !success {
-            stat.error_count += 1;
-        }
-
-        if start_time <= end_time {
-            let latency = end_time - start_time;
-            if stat.min_latency == 0 || latency < stat.min_latency {
-                stat.min_latency = latency;
-            }
-            if latency > stat.max_latency {
-                stat.max_latency = latency;
-            }
-
-            stat.avg_latency =
-                ((stat.avg_latency * (stat.total_count - 1)) + latency) / stat.total_count;
-        }
-    }
 }
 
 impl InterruptController for PlicInterruptController {
@@ -472,46 +183,7 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
 
-        // 关键：在修改 handlers 表期间禁止本地中断，避免中断上下文中也尝试获取同一把锁导致死锁
-        let sie_prev = register::sstatus::read().sie();
-        unsafe {
-            register::sstatus::clear_sie();
-        }
-        {
-            let mut handlers = self.handlers.lock();
-            handlers.insert(vector, handler);
-        }
-        if sie_prev {
-            unsafe {
-                register::sstatus::set_sie();
-            }
-        }
-        Ok(())
-    }
-
-    fn unregister_handler(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
-            return Err(InterruptError::InvalidVector);
-        }
-        // 同理：在修改 handlers 表期间禁止本地中断
-        let sie_prev = register::sstatus::read().sie();
-        unsafe {
-            register::sstatus::clear_sie();
-        }
-        {
-            let mut handlers = self.handlers.lock();
-            handlers.remove(&vector);
-        }
-        if sie_prev {
-            unsafe {
-                register::sstatus::set_sie();
-            }
-        }
-
-        for context in 0..self.num_contexts {
-            self.enable_interrupt_for_context(vector, context, false);
-        }
-
+        self.handlers.insert(vector, handler);
         Ok(())
     }
 
@@ -520,8 +192,7 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
 
-        let handlers = self.handlers.lock();
-        if !handlers.contains_key(&vector) {
+        if !self.handlers.contains_key(&vector) {
             return Err(InterruptError::HandlerNotSet);
         }
 
@@ -532,39 +203,13 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn disable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
+    fn set_priority(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
         if vector == 0 || vector > self.max_interrupts {
             return Err(InterruptError::InvalidVector);
         }
 
-        for context in 0..self.num_contexts {
-            self.enable_interrupt_for_context(vector, context, false);
-        }
-
-        Ok(())
-    }
-
-    fn set_priority(
-        &mut self,
-        vector: InterruptVector,
-        priority: InterruptPriority,
-    ) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
-            return Err(InterruptError::InvalidVector);
-        }
-
-        let prio_val = match priority {
-            InterruptPriority::Critical => 7,
-            InterruptPriority::High => 6,
-            InterruptPriority::Normal => 4,
-            InterruptPriority::Low => 2,
-            InterruptPriority::Idle => 1,
-        };
-
-        self.set_interrupt_priority_raw(vector, prio_val);
-
-        let mut priorities = self.priorities.lock();
-        priorities.insert(vector, priority);
+        // LiteOS 当前只有启动所需 block IRQ，使用最低非零 priority 即可。
+        self.set_interrupt_priority_raw(vector, 1);
 
         Ok(())
     }
@@ -586,60 +231,28 @@ impl InterruptController for PlicInterruptController {
         Ok(())
     }
 
-    fn handle_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
-            return Err(InterruptError::InvalidVector);
-        }
-
-        let start_time = self.get_timestamp();
-
-        // 关键：在调用实际设备处理函数前释放 handlers 锁，避免与注册/启用中断路径竞争同一把锁导致卡住
-        let handler_opt = {
-            let handlers = self.handlers.lock();
-            handlers.get(&vector).cloned()
-        };
-
-        let result = if let Some(handler) = handler_opt {
-            handler.handle_interrupt(vector)
-        } else {
-            Err(InterruptError::HandlerNotSet)
-        };
-
-        let end_time = self.get_timestamp();
-        self.update_statistics(vector, start_time, end_time, result.is_ok());
-
-        result
-    }
-
-    fn pending_interrupts(&self) -> Vec<InterruptVector> {
-        let mut pending = Vec::new();
-
+    fn handle_pending_interrupts(&mut self) -> Result<(), InterruptError> {
+        let mut first_error = None;
         for context in 0..self.num_contexts {
-            let vector = self.claim_interrupt(context);
-            if vector != 0 {
-                pending.push(vector);
+            loop {
+                let vector = self.claim_interrupt(context);
+                if vector == 0 {
+                    break;
+                }
+                // 1. 只在查表期间持 handlers 锁；设备 handler 不得反向依赖该表。
+                let handler = self.handlers.get(&vector).cloned();
+                // 2. handler 在无 PLIC 内部锁时执行，当前实现只做设备 MMIO ack。
+                let result = handler
+                    .ok_or(InterruptError::HandlerNotSet)
+                    .and_then(|handler| handler.handle_interrupt(vector));
+                // 3. handler 完成后再通知 PLIC；提前 complete 会允许同一 IRQ 在状态未清除时重入。
                 self.complete_interrupt(context, vector);
+                if first_error.is_none() {
+                    first_error = result.err();
+                }
             }
         }
-
-        pending
-    }
-
-    fn acknowledge_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
-            return Err(InterruptError::InvalidVector);
-        }
-
-        for context in 0..self.num_contexts {
-            self.complete_interrupt(context, vector);
-        }
-
-        Ok(())
-    }
-
-    fn get_statistics(&self, vector: InterruptVector) -> Option<InterruptStatistics> {
-        let stats = self.statistics.lock();
-        stats.get(&vector).cloned()
+        first_error.map_or(Ok(()), Err)
     }
 
     fn supports_cpu_affinity(&self) -> bool {

@@ -15,17 +15,21 @@ fn panic_handler(info: &PanicInfo) -> ! {
             location.file(),
             location.line(),
             location.column(),
-            crate::arch::hart::hart_id()
+            crate::arch::hart::raw_hart_id()
         ));
     } else {
         crate::arch::console::panic_println_fmt(format_args!(
             "KERNEL PANIC: {}\n  CPU: {}",
             info.message(),
-            crate::arch::hart::hart_id()
+            crate::arch::hart::raw_hart_id()
         ));
     }
 
-    // 简单停机
+    // 1. SRST 是整个 SMP 系统的 fail-stop 路径；仅停住当前 hart 会让其他 hart
+    // 在全局不变量已经失效后继续修改共享状态。
+    let _ = crate::arch::sbi::system_reset(0, 1);
+
+    // 2. firmware 不支持或错误返回时，本 hart 保持中断关闭并永久停机。
     loop {
         riscv::asm::wfi();
     }

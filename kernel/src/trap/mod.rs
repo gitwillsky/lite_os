@@ -18,21 +18,20 @@ use crate::{
     memory::TRAMPOLINE,
     signal::{SIG_RETURN_ADDR, handle_signals, sig_return},
     syscall,
-    task::{self, exit_current_and_run_next, mark_kernel_entry, mark_kernel_exit},
+    task::{self, exit_current_and_run_next},
     timer,
-    watchdog::{self},
 };
 
 #[inline(always)]
 fn clear_ssip() {
-    let sip_val: usize;
-    unsafe {
-        asm!("csrr {}, sip", out(reg) sip_val);
-    }
-    let clear_ssip = sip_val & !(1 << 1);
-    unsafe {
-        asm!("csrw sip, {}", in(reg) clear_ssip);
-    }
+    unsafe { register::sip::clear_ssoft() }
+}
+
+#[inline(always)]
+fn handle_supervisor_soft_interrupt() {
+    clear_ssip();
+    // 普通 IPI 只负责唤醒；TLB 同步由 SBI RFENCE 在 M-mode 完成。
+    softirq::dispatch_current_cpu();
 }
 
 pub fn init() {
@@ -42,9 +41,6 @@ pub fn init() {
 #[unsafe(no_mangle)]
 pub fn trap_handler() {
     set_kernel_trap_entry();
-
-    // 标记进入内核态
-    mark_kernel_entry();
 
     let scause_val = register::scause::read();
     let interrupt_type = scause_val.cause();
@@ -63,11 +59,7 @@ pub fn trap_handler() {
                     device_manager::handle_external_interrupt();
                 }
                 Interrupt::SupervisorSoft => {
-                    // 清除SSIP位（位1），并本地执行 sfence.vma（响应跨核TLB刷新）
-                    clear_ssip();
-                    unsafe { core::arch::asm!("sfence.vma") }
-                    // 在软中断上下文分派当前核挂起的软中断
-                    softirq::dispatch_current_cpu();
+                    handle_supervisor_soft_interrupt();
                 }
                 _ => {
                     panic!("Unknown interrupt: {:?} (code: {})", interrupt, code);
@@ -92,16 +84,10 @@ pub fn trap_handler() {
                     exit_current_and_run_next(-2);
                 }
                 Exception::Breakpoint => {
-                    // ebreak 指令，如果是标准的 ebreak (opcode 00100000000000000000000001110011), 它是 32-bit (4 bytes) 的。
-                    // 如果是压缩指令集中的 c.ebreak (opcode 1001000000000010), 它是 16-bit (2 bytes) 的。
-                    // 一个简单（但不完全鲁棒）的判断方法是检查指令的低两位：如果指令的低两位是 11，它是一个 32-bit 或更长的指令。
-                    // 如果不是 11 (即 00, 01, 10)，它是一个 16-bit 压缩指令。
-                    // 所以，对于 ebreak 或非法指令，如果需要跳过它，sepc 应该增加 2 或 4。
-                    debug!("[trap_handler] Breakpoint exception");
-                    if let Some(current) = task::current_task() {
-                        let cx = current.mm.trap_context();
-                        cx.sepc += 4;
-                    }
+                    // 在尚未实现标准 SIGTRAP frame 前不能猜测 16/32-bit 指令长度并跳过断点。
+                    // 该 trap 完全由用户输入产生，只终止当前任务，不得 panic kernel。
+                    error!("[kernel] breakpoint in application, terminating current task");
+                    exit_current_and_run_next(-5);
                 }
                 Exception::UserEnvCall => {
                     if let Some(current) = task::current_task() {
@@ -179,42 +165,23 @@ pub fn trap_handler() {
                     exit_current_and_run_next(-5);
                 }
                 _ => {
-                    panic!("Trap exception: {:?} Not implemented", exception);
+                    error!(
+                        "[kernel] unsupported application exception {:?}, stval={:#x}",
+                        exception, stval
+                    );
+                    exit_current_and_run_next(-5);
                 }
             }
         } else {
-            panic!("Invalid exception code: {:?}", code);
+            error!(
+                "[kernel] invalid application exception code {:?}, stval={:#x}",
+                code, stval
+            );
+            exit_current_and_run_next(-5);
         }
     }
-
-    // 标记退出内核态
-    mark_kernel_exit();
 
     trap_return();
-}
-
-/// Helper function to check and handle pending signals
-/// Returns true if execution should continue, false if process should exit
-fn check_signals_and_maybe_exit() -> bool {
-    if let Some(task) = task::current_task() {
-        let (should_continue, exit_code) = handle_signals(&task, None);
-        if !should_continue {
-            if let Some(code) = exit_code {
-                exit_current_and_run_next(code);
-                // This function may return if there's no other task to run
-                // In that case, we should end execution anyway
-                return false;
-            } else {
-                // Process stopped, no trap context available for restoration
-                task::suspend_current_and_run_next();
-                // Process was suspended and then resumed, continue execution
-                return true;
-            }
-        }
-        should_continue
-    } else {
-        true
-    }
 }
 
 /// Helper function to check and handle pending signals with existing trap context
@@ -273,6 +240,15 @@ pub fn trap_return() -> ! {
     let current_task = crate::task::current_task().expect("No current task in trap_return");
     let user_satp = current_task.mm.memory_set.lock().token();
     let trap_context_va = current_task.trap_context_va();
+    let kernel_gp: usize;
+    unsafe {
+        asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack));
+    }
+    {
+        let trap_context = current_task.mm.trap_context();
+        trap_context.kernel_hart_id = crate::arch::hart::hart_id();
+        trap_context.kernel_gp = kernel_gp;
+    }
 
     unsafe extern "C" {
         fn __restore();
@@ -307,10 +283,8 @@ extern "C" fn rust_trap_from_kernel() {
                 match interrupt {
                     Interrupt::SupervisorTimer => {
                         timer::set_next_timer_interrupt();
-                        watchdog::check();
-                        // 在内核态可能没有 current_task，避免访问 TrapContext
-                        let _ = task::check_and_wakeup_sleeping_tasks(timer::get_time_ns());
-                        // 不做任务切换，仅返回，让普通调度循环运行
+                        // kernel/user timer 使用同一 per-hart softirq；hardirq 不扫描任务表或分配。
+                        softirq::raise(softirq::SoftIrq::Timer);
                     }
                     Interrupt::SupervisorExternal => {
                         // 在内核态也处理外部中断（如 VirtIO 块设备完成中断），
@@ -318,15 +292,14 @@ extern "C" fn rust_trap_from_kernel() {
                         device_manager::handle_external_interrupt();
                     }
                     Interrupt::SupervisorSoft => {
-                        // 清SSIP
-                        clear_ssip();
+                        handle_supervisor_soft_interrupt();
                     }
                     _ => {
-                        error!("[kernel] Unhandled kernel interrupt: {:?}", interrupt);
+                        panic!("Unhandled kernel interrupt: {:?}", interrupt);
                     }
                 }
             } else {
-                error!("[kernel] Invalid kernel interrupt code: {:?}", code);
+                panic!("Invalid kernel interrupt code: {:?}", code);
             }
         }
         Trap::Exception(code) => {

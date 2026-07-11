@@ -57,7 +57,7 @@ impl<T> LocalHsmCell<'_, T> {
                 hart_state::START_PENDING,
                 hart_state::STARTED,
                 Ordering::AcqRel,
-                Ordering::Relaxed,
+                Ordering::Acquire,
             ) {
                 Ok(_) => break Ok(unsafe { (*self.0.val.get()).take().unwrap() }),
                 Err(HART_STATE_START_PENDING_EXT) => spin_loop(),
@@ -77,13 +77,13 @@ impl<T> LocalHsmCell<'_, T> {
     pub fn suspend(&self) {
         self.0
             .status
-            .store(hart_state::SUSPENDED, Ordering::Relaxed)
+            .store(hart_state::SUSPENDED, Ordering::Release)
     }
 
     /// 关闭。
     #[inline]
     pub fn resume(&self) {
-        self.0.status.store(hart_state::STARTED, Ordering::Relaxed)
+        self.0.status.store(hart_state::STARTED, Ordering::Release)
     }
 }
 
@@ -97,8 +97,8 @@ impl<T> RemoteHsmCell<'_, T> {
             .compare_exchange(
                 hart_state::STOPPED,
                 HART_STATE_START_PENDING_EXT,
+                Ordering::AcqRel,
                 Ordering::Acquire,
-                Ordering::Relaxed,
             )
             .is_ok()
         {
@@ -115,7 +115,7 @@ impl<T> RemoteHsmCell<'_, T> {
     /// 取出当前状态。
     #[inline]
     pub fn sbi_get_status(&self) -> usize {
-        match self.0.status.load(Ordering::Relaxed) {
+        match self.0.status.load(Ordering::Acquire) {
             HART_STATE_START_PENDING_EXT => hart_state::START_PENDING,
             normal => normal,
         }
@@ -125,7 +125,7 @@ impl<T> RemoteHsmCell<'_, T> {
     #[inline]
     pub fn allow_ipi(&self) -> bool {
         matches!(
-            self.0.status.load(Ordering::Relaxed),
+            self.0.status.load(Ordering::Acquire),
             hart_state::STARTED | hart_state::SUSPENDED
         )
     }

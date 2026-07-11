@@ -11,7 +11,7 @@ mod task;
 pub mod task_manager;
 
 pub use processor::*;
-pub use task::{FileDescriptor, TaskControlBlock, TaskStatus};
+pub use task::{TaskControlBlock, TaskStatus};
 pub use task_manager::*;
 
 unsafe extern "C" {
@@ -31,9 +31,9 @@ pub fn init() {
     match init_proc {
         Ok(init_proc) => {
             let init_task = Arc::new(init_proc);
-            // 添加到统一任务管理器
+            // 添加到全局 PID 索引和唯一生效的 CFS runqueue。
             add_task(init_task);
-            debug!("init proc created and added to unified task manager");
+            debug!("init task created and queued");
         }
         Err(e) => {
             panic!("Failed to create init proc: {}", e);

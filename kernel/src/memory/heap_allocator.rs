@@ -6,6 +6,7 @@ use core::{
 use buddy_system_allocator::LockedHeap;
 
 use super::{config, slab_allocator::SLAB_ALLOCATOR};
+use crate::sync::LocalIrqGuard;
 
 #[cfg(target_pointer_width = "32")]
 type LockedHeapAllocator = LockedHeap<32>;
@@ -26,6 +27,8 @@ unsafe impl GlobalAlloc for HybridAllocator {
         if layout.size() == 0 {
             return layout.align() as *mut u8;
         }
+        // timer softirq 当前仍会分配；包围整个 allocator 路径可防止同 hart 中断重入内部 spin lock。
+        let _irq = LocalIrqGuard::disable();
         // Use SLAB allocator for small objects (<=2KB)
         if layout.size() <= 2048 {
             match SLAB_ALLOCATOR.alloc(layout) {
@@ -50,6 +53,8 @@ unsafe impl GlobalAlloc for HybridAllocator {
         if ptr.is_null() {
             return;
         }
+        // 与 alloc 使用同一 IRQ 约束；缺失时 interrupt dealloc/alloc 可重入 buddy 或 slab lock。
+        let _irq = LocalIrqGuard::disable();
 
         // Determine which allocator owns this pointer by address range
         if Self::is_buddy_ptr(ptr) {

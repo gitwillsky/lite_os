@@ -3,20 +3,16 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use riscv::register;
 use spin::Mutex;
 
-use crate::{arch::{dtb, sbi}, config, drivers::goldfish_rtc::GoldfishRTCDevice};
+use crate::{
+    arch::{dtb, sbi},
+    config,
+    drivers::goldfish_rtc::GoldfishRTCDevice,
+};
 
-static mut TICK_INTERVAL_VALUE: u64 = 0;
+static TICK_INTERVAL_VALUE: AtomicU64 = AtomicU64::new(0);
 
-const MSEC_PER_SEC: u64 = 1000;
 const USEC_PER_SEC: u64 = 1000_000;
 const NSEC_PER_SEC: u64 = 1000_000_000;
-
-// Unix 纪元时间常量 (1970-01-01 00:00:00 UTC)
-const UNIX_EPOCH_SECONDS: u64 = 0;
-
-// Goldfish RTC 寄存器偏移
-const RTC_TIME_LOW: usize = 0x00; // 纳秒时间低32位
-const RTC_TIME_HIGH: usize = 0x04; // 纳秒时间高32位
 
 // 系统启动时的时间偏移，从 Goldfish RTC 获取真实时间
 static BOOT_TIME_UNIX_SECONDS: AtomicU64 = AtomicU64::new(0);
@@ -80,7 +76,7 @@ fn read_goldfish_rtc_ns() -> Option<u64> {
 
 // 获取真实的 Unix 时间戳（秒）
 pub fn get_unix_timestamp() -> u64 {
-    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Relaxed);
+    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Acquire);
     if boot_time == 0 {
         // 如果还没有初始化，直接从 RTC 读取当前时间
         if let Some(rtc_ns) = read_goldfish_rtc_ns() {
@@ -94,28 +90,6 @@ pub fn get_unix_timestamp() -> u64 {
         // 使用启动时间偏移 + 系统运行时间
         boot_time + (get_time_ns() / NSEC_PER_SEC)
     }
-}
-
-// 获取真实的 Unix 时间戳（微秒）
-pub fn get_unix_timestamp_us() -> u64 {
-    let boot_time = BOOT_TIME_UNIX_SECONDS.load(Ordering::Relaxed);
-    if boot_time == 0 {
-        if let Some(rtc_ns) = read_goldfish_rtc_ns() {
-            rtc_ns / 1000
-        } else {
-            // RTC 不可用，返回基于系统运行时间的估计值
-            1704067200 * USEC_PER_SEC + get_time_us()
-        }
-    } else {
-        boot_time * USEC_PER_SEC + get_time_us()
-    }
-}
-
-pub fn get_time_msec() -> u64 {
-    let current_mtime = register::time::read64();
-    let time_base_freq = dtb::board_info().time_base_freq;
-    // 使用128位运算避免溢出，保持精度
-    ((current_mtime as u128 * MSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
 pub fn get_time_us() -> u64 {
@@ -136,23 +110,33 @@ pub fn get_time_ns() -> u64 {
 pub fn set_next_timer_interrupt() {
     let current_mtime = register::time::read64();
     // 避免在 debug 构建下触发算术溢出 panic：采用 wrapping 加法
-    let next_mtime = current_mtime.wrapping_add(unsafe { TICK_INTERVAL_VALUE });
+    let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
+    assert!(
+        interval != 0,
+        "timer interval used before per-hart initialization"
+    );
+    let next_mtime = current_mtime.wrapping_add(interval);
 
-    let _ = sbi::set_timer(next_mtime as usize);
+    sbi::set_timer(next_mtime).expect("SBI TIME set_timer failed");
 }
 
 pub fn enable_timer_interrupt() {
     let time_base_freq = dtb::board_info().time_base_freq;
 
+    // 1. DTB 的 timebase-frequency 是平台契约，零值不能被静默改写为伪造频率。
+    assert!(
+        time_base_freq != 0,
+        "DTB timebase-frequency must be non-zero"
+    );
+    let ticks_per_sec = config::TICKS_PER_SEC as u64;
+    assert!(ticks_per_sec != 0, "TICKS_PER_SEC must be non-zero");
+    let interval = time_base_freq / ticks_per_sec;
+    assert!(interval != 0, "timer tick rate exceeds timebase frequency");
+
+    // 2. Release 发布 interval，set_next_timer_interrupt 的 Acquire 保证不会读到未初始化值。
+    TICK_INTERVAL_VALUE.store(interval, Ordering::Release);
     unsafe {
-        // 防御性计算：确保分母与结果不为 0
-        let ticks_per_sec = core::cmp::max(1u64, config::TICKS_PER_SEC as u64);
-        let mut interval = time_base_freq / ticks_per_sec;
-        if interval == 0 {
-            interval = 1;
-        }
-        TICK_INTERVAL_VALUE = interval;
-        // 启用定时器中断
+        // 3. 每个 hart 独立启用 STIE，并在打开全局 SIE 前写入首个 deadline。
         register::sie::set_stimer();
     }
 
@@ -170,27 +154,18 @@ pub fn init_rtc() {
 
     // 从 Goldfish RTC 获取真实的启动时间
     if let Some(current_unix_ns) = read_goldfish_rtc_ns() {
-        let boot_time = current_unix_ns / NSEC_PER_SEC;
-        BOOT_TIME_UNIX_SECONDS.store(boot_time, Ordering::Relaxed);
+        // RTC 给出“现在”，而 BOOT_TIME 保存 epoch offset；若直接保存现在并在读取时
+        // 再加 uptime，会把启动前已经流逝的 uptime 重复计算一次。
+        let boot_time =
+            (current_unix_ns / NSEC_PER_SEC).saturating_sub(get_time_ns() / NSEC_PER_SEC);
+        BOOT_TIME_UNIX_SECONDS.store(boot_time, Ordering::Release);
         debug!(
             "Boot time set to Unix timestamp: {} (from Goldfish RTC)",
             boot_time
         );
     } else {
         warn!("Goldfish RTC not available, using default boot time");
-        BOOT_TIME_UNIX_SECONDS.store(1704067200, Ordering::Relaxed);
+        BOOT_TIME_UNIX_SECONDS.store(1704067200, Ordering::Release);
     }
     debug!("timer initialized with real-time clock");
-}
-
-// 设置 Unix 时间戳（纳秒）
-pub fn set_unix_timestamp_ns(timestamp_ns: u64) {
-    // 计算新的启动时间偏移
-    let current_uptime_ns = get_time_ns();
-    let new_boot_time =
-        (timestamp_ns / NSEC_PER_SEC).saturating_sub(current_uptime_ns / NSEC_PER_SEC);
-    BOOT_TIME_UNIX_SECONDS.store(new_boot_time, Ordering::Relaxed);
-
-    // 注意：Goldfish RTC 是只读的，不支持设置时间
-    // 只更新我们的软件时钟偏移量
 }

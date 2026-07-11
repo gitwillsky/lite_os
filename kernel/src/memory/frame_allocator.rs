@@ -1,10 +1,16 @@
 use core::fmt::Debug;
 
 use super::address::{PhysicalAddress, PhysicalPageNumber};
-use alloc::vec::Vec;
-use spin::{Mutex, Once};
+use spin::Once;
 
-static FRAME_ALLOCATOR: Once<Mutex<StackFrameAllocator>> = Once::new();
+use crate::sync::IrqMutex;
+
+// frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭本地 SIE。
+static FRAME_ALLOCATOR: Once<IrqMutex<StackFrameAllocator>> = Once::new();
+
+// QEMU `virt` 当前声明最多 128 MiB physical memory，即 32768 个 4 KiB frame。
+// 固定回收栈保证 frame lock 内永不进入 global allocator；Vec 扩容会形成 frame→slab→frame 死锁。
+const MAX_TRACKED_FRAMES: usize = (128 * 1024 * 1024) / 4096;
 
 #[derive(Debug)]
 pub enum FrameAllocError {
@@ -65,26 +71,31 @@ struct StackFrameAllocator {
     current_start_ppn: PhysicalPageNumber,
     end_ppn: PhysicalPageNumber,
 
-    recycled_ppns: Vec<PhysicalPageNumber>,
+    recycled_ppns: [usize; MAX_TRACKED_FRAMES],
+    recycled_len: usize,
 }
 
 impl StackFrameAllocator {
     pub fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
-        // 预留较大的回收列表容量，避免在持有分配器锁时发生小块内存扩容，
-        // 触发SLAB分配从而重入帧分配器导致死锁。
-        let mut recycled_ppns = Vec::with_capacity(8192);
-        recycled_ppns.clear();
+        let end = end_addr.floor();
+        assert!(
+            end.as_usize() - start.as_usize() <= MAX_TRACKED_FRAMES,
+            "physical frame range exceeds fixed recycler capacity"
+        );
         Self {
             start_ppn: start,
             current_start_ppn: start,
-            end_ppn: end_addr.floor(),
-            recycled_ppns,
+            end_ppn: end,
+            recycled_ppns: [0; MAX_TRACKED_FRAMES],
+            recycled_len: 0,
         }
     }
 
     pub fn alloc(&mut self) -> Option<PhysicalPageNumber> {
-        if let Some(ppn) = self.recycled_ppns.pop() {
+        if self.recycled_len != 0 {
+            self.recycled_len -= 1;
+            let ppn = PhysicalPageNumber::from(self.recycled_ppns[self.recycled_len]);
             // Never return PPN 0 from recycled pages
             if ppn.as_usize() == 0 {
                 panic!("Frame allocator recycled PPN 0, this should never happen");
@@ -137,21 +148,24 @@ impl StackFrameAllocator {
         }
 
         // 检查重复释放 - 这是一个原子操作在单线程环境下
-        if self.recycled_ppns.contains(&ppn) {
+        if self.recycled_ppns[..self.recycled_len].contains(&ppn.as_usize()) {
             return Err(FrameAllocError::Duplicate);
         }
 
-        // 安全地添加到回收列表
-        self.recycled_ppns.push(ppn);
+        assert!(
+            self.recycled_len < MAX_TRACKED_FRAMES,
+            "frame recycler capacity invariant violated"
+        );
+        self.recycled_ppns[self.recycled_len] = ppn.as_usize();
+        self.recycled_len += 1;
         Ok(())
     }
 
     /// 获取内存统计信息
     pub fn get_memory_stats(&self) -> (usize, usize, usize) {
         let total_pages = self.end_ppn.as_usize() - self.start_ppn.as_usize();
-        let allocated_pages = self.current_start_ppn.as_usize()
-            - self.start_ppn.as_usize()
-            - self.recycled_ppns.len();
+        let allocated_pages =
+            self.current_start_ppn.as_usize() - self.start_ppn.as_usize() - self.recycled_len;
         let free_pages = total_pages - allocated_pages;
 
         // 返回页数
@@ -196,7 +210,7 @@ pub fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
         );
     }
 
-    FRAME_ALLOCATOR.call_once(|| Mutex::new(StackFrameAllocator::new(start_addr, end_addr)));
+    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
 pub fn alloc() -> Option<FrameTracker> {

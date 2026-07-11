@@ -1,4 +1,4 @@
-use crate::syscall::{brk, sbrk};
+use crate::syscall::brk;
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::mem::size_of;
@@ -229,11 +229,12 @@ impl AdvancedHeapAllocator {
     /// 扩展堆
     fn expand_heap_internal(&self, min_size: usize) -> bool {
         let aligned_size = self.align_size(min_size, PAGE_SIZE);
-        let old_brk = sbrk(aligned_size as isize);
+        let old_end = self.heap_end.load(Ordering::Acquire);
+        let Some(new_end) = old_end.checked_add(aligned_size) else {
+            return false;
+        };
 
-        if old_brk > 0 {
-            let old_end = self.heap_end.load(Ordering::Acquire);
-            let new_end = old_end + aligned_size;
+        if brk(new_end) == new_end as isize {
             self.heap_end.store(new_end, Ordering::Release);
 
             // 将新分配的内存添加到空闲链表
@@ -263,8 +264,9 @@ impl AdvancedHeapAllocator {
             let shrink_size = self.find_shrinkable_memory();
             if shrink_size >= PAGE_SIZE * 4 {
                 // 至少收缩16KB
-                if sbrk(-(shrink_size as isize)) > 0 {
-                    self.heap_end.fetch_sub(shrink_size, Ordering::Release);
+                let new_end = heap_end - shrink_size;
+                if brk(new_end) == new_end as isize {
+                    self.heap_end.store(new_end, Ordering::Release);
                     self.stats.record_shrink(shrink_size);
                 }
             }

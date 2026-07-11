@@ -1,6 +1,5 @@
 //! 信号状态管理
 use super::core::{Signal, SignalAction, SignalSet};
-use core::sync::atomic::{AtomicU64, Ordering};
 
 /// 信号处理器配置
 #[derive(Debug, Clone, Copy)]
@@ -20,112 +19,11 @@ impl Default for SignalDisposition {
     }
 }
 
-/// 原子信号状态管理
-///
-/// 使用原子操作确保多核环境下的线程安全
-pub struct AtomicSignalState {
-    /// 待处理的信号（位图）
-    pending: AtomicU64,
-    /// 被阻塞的信号（位图）
-    blocked: AtomicU64,
-    /// 是否需要trap context处理
-    needs_trap_context: AtomicU64,
-}
-
-impl AtomicSignalState {
-    /// 创建新的信号状态
-    pub const fn new() -> Self {
-        Self {
-            pending: AtomicU64::new(0),
-            blocked: AtomicU64::new(0),
-            needs_trap_context: AtomicU64::new(0),
-        }
-    }
-
-    /// 添加待处理信号
-    pub fn add_pending_signal(&self, signal: Signal) {
-        let mask = 1u64 << (signal as u8 - 1);
-        self.pending.fetch_or(mask, Ordering::AcqRel);
-    }
-
-    /// 检查是否有可投递的信号
-    pub fn has_deliverable_signals(&self) -> bool {
-        let pending = self.pending.load(Ordering::Acquire);
-        let blocked = self.blocked.load(Ordering::Acquire);
-        (pending & !blocked) != 0
-    }
-
-    /// 获取并移除下一个可投递的信号
-    pub fn next_deliverable_signal(&self) -> Option<Signal> {
-        loop {
-            let pending = self.pending.load(Ordering::Acquire);
-            let blocked = self.blocked.load(Ordering::Acquire);
-            let deliverable = pending & !blocked;
-
-            if deliverable == 0 {
-                return None;
-            }
-
-            // 找到第一个可投递的信号
-            let first_bit = deliverable.trailing_zeros() as u8 + 1;
-            if let Some(signal) = Signal::from_u8(first_bit) {
-                let signal_mask = 1u64 << (signal as u8 - 1);
-
-                // 原子地移除这个信号
-                let old_pending = self.pending.fetch_and(!signal_mask, Ordering::AcqRel);
-
-                // 检查是否成功移除（可能被其他线程抢先）
-                if (old_pending & signal_mask) != 0 {
-                    return Some(signal);
-                }
-                // 如果被其他线程抢先，继续循环尝试
-            } else {
-                return None;
-            }
-        }
-    }
-
-    /// 阻塞信号
-    pub fn block_signals(&self, signals: SignalSet) {
-        self.blocked.fetch_or(signals.0, Ordering::AcqRel);
-    }
-
-    /// 解除阻塞信号
-    pub fn unblock_signals(&self, signals: SignalSet) {
-        self.blocked.fetch_and(!signals.0, Ordering::AcqRel);
-    }
-
-    /// 设置信号掩码
-    pub fn set_blocked(&self, signals: SignalSet) {
-        self.blocked.store(signals.0, Ordering::Release);
-    }
-
-    /// 获取当前阻塞的信号
-    pub fn get_blocked(&self) -> SignalSet {
-        SignalSet(self.blocked.load(Ordering::Acquire))
-    }
-
-    /// 设置需要trap context处理标志
-    pub fn set_needs_trap_context(&self, signal: Signal) {
-        let mask = 1u64 << (signal as u8 - 1);
-        self.needs_trap_context.fetch_or(mask, Ordering::AcqRel);
-    }
-
-    /// 清除trap context处理标志
-    pub fn clear_trap_context_flag(&self) {
-        self.needs_trap_context.store(0, Ordering::Release);
-    }
-
-    /// 检查是否需要trap context处理
-    pub fn needs_trap_context_handling(&self) -> bool {
-        self.needs_trap_context.load(Ordering::Acquire) != 0
-    }
-}
-
-/// 包含原子信号状态和信号处理器配置
+/// 由 `TaskControlBlock::signal_state` mutex 统一保护的信号状态。
 pub struct SignalState {
-    /// 原子信号状态
-    atomic_state: AtomicSignalState,
+    pending: u64,
+    blocked: u64,
+    needs_trap_context: u64,
     /// 信号处理器配置数组（索引0-30对应信号1-31）
     handlers: [SignalDisposition; 31],
 }
@@ -143,7 +41,9 @@ impl SignalState {
         }
 
         Self {
-            atomic_state: AtomicSignalState::new(),
+            pending: 0,
+            blocked: 0,
+            needs_trap_context: 0,
             handlers,
         }
     }
@@ -166,46 +66,51 @@ impl SignalState {
         }
     }
 
-    /// 委托给原子状态的方法
-    pub fn add_pending_signal(&self, signal: Signal) {
-        self.atomic_state.add_pending_signal(signal);
+    pub fn add_pending_signal(&mut self, signal: Signal) {
+        self.pending |= 1u64 << (signal as u8 - 1);
     }
 
     pub fn has_deliverable_signals(&self) -> bool {
-        self.atomic_state.has_deliverable_signals()
+        (self.pending & !self.blocked) != 0
     }
 
-    pub fn next_deliverable_signal(&self) -> Option<Signal> {
-        self.atomic_state.next_deliverable_signal()
+    pub fn next_deliverable_signal(&mut self) -> Option<Signal> {
+        let deliverable = self.pending & !self.blocked;
+        if deliverable == 0 {
+            return None;
+        }
+        let signal = Signal::from_u8(deliverable.trailing_zeros() as u8 + 1)?;
+        self.pending &= !(1u64 << (signal as u8 - 1));
+        Some(signal)
     }
 
-    pub fn block_signals(&self, signals: SignalSet) {
-        self.atomic_state.block_signals(signals);
+    pub fn block_signals(&mut self, signals: SignalSet) {
+        self.blocked |= signals.0;
     }
 
-    pub fn unblock_signals(&self, signals: SignalSet) {
-        self.atomic_state.unblock_signals(signals);
+    pub fn unblock_signals(&mut self, signals: SignalSet) {
+        self.blocked &= !signals.0;
     }
 
-    pub fn set_blocked(&self, signals: SignalSet) {
-        self.atomic_state.set_blocked(signals);
+    pub fn set_blocked(&mut self, signals: SignalSet) {
+        self.blocked = signals.0;
     }
 
     pub fn get_blocked(&self) -> SignalSet {
-        self.atomic_state.get_blocked()
+        SignalSet(self.blocked)
     }
 
-    pub fn clear_trap_context_flag(&self) {
-        self.atomic_state.clear_trap_context_flag();
+    pub fn clear_trap_context_flag(&mut self) {
+        self.needs_trap_context = 0;
     }
 
     pub fn needs_trap_context_handling(&self) -> bool {
-        self.atomic_state.needs_trap_context_handling()
+        self.needs_trap_context != 0
     }
 
     /// 标记下一次触发特殊返回路径需要使用 trap context（用于 sigreturn 检测）
-    pub fn mark_trap_context_needed(&self, signal: super::core::Signal) {
-        self.atomic_state.set_needs_trap_context(signal);
+    pub fn mark_trap_context_needed(&mut self, signal: super::core::Signal) {
+        self.needs_trap_context |= 1u64 << (signal as u8 - 1);
     }
 
     /// 为exec重置信号状态
@@ -222,7 +127,7 @@ impl SignalState {
         }
 
         // 清空待处理信号
-        self.atomic_state.pending.store(0, Ordering::Relaxed);
+        self.pending = 0;
 
         // 保持信号掩码（exec不重置掩码）
     }
@@ -241,26 +146,9 @@ impl SignalState {
         }
 
         // 清空所有状态
-        self.atomic_state.pending.store(0, Ordering::Relaxed);
-        self.atomic_state.blocked.store(0, Ordering::Relaxed);
-        self.atomic_state.needs_trap_context.store(0, Ordering::Relaxed);
-    }
-
-    /// 为fork创建信号状态副本
-    pub fn clone_for_fork(&self) -> Self {
-        // 创建新的原子状态，复制当前值
-        let new_atomic_state = AtomicSignalState {
-            pending: AtomicU64::new(self.atomic_state.pending.load(Ordering::Acquire)),
-            blocked: AtomicU64::new(self.atomic_state.blocked.load(Ordering::Acquire)),
-            needs_trap_context: AtomicU64::new(
-                self.atomic_state.needs_trap_context.load(Ordering::Acquire),
-            ),
-        };
-
-        Self {
-            atomic_state: new_atomic_state,
-            handlers: self.handlers,
-        }
+        self.pending = 0;
+        self.blocked = 0;
+        self.needs_trap_context = 0;
     }
 }
 

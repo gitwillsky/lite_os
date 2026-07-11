@@ -416,14 +416,6 @@ impl interrupt::InterruptHandler for VirtIOBlockIrqHandler {
         }
         Ok(())
     }
-
-    fn can_handle(&self, _vector: interrupt::InterruptVector) -> bool {
-        true
-    }
-
-    fn name(&self) -> &str {
-        "virtio-blk-irq"
-    }
 }
 
 impl VirtIOBlockDevice {

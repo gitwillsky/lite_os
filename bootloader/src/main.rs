@@ -13,6 +13,7 @@ mod hart;
 mod hart_csr_utils;
 mod hsm_cell;
 mod qemu_test;
+mod rfence;
 mod riscv_spec;
 mod trap_stack;
 mod trap_vec;
@@ -21,8 +22,7 @@ mod uart16550;
 use constants::KERNEL_ENTRY;
 use core::{
     arch::{asm, naked_asm},
-    mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 use device_tree::BoardInfo;
 use fast_trap::{FastContext, FastResult};
@@ -31,6 +31,30 @@ use riscv_spec::{mepc, mie, mstatus};
 use rustsbi::{RustSBI, SbiRet};
 use spin::Once;
 use trap_stack::{local_hsm, local_remote_hsm, remote_hsm};
+
+const GLOBAL_PENDING: usize = 0x474c_4250;
+const GLOBAL_INITIALIZING: usize = 0x474c_4249;
+const GLOBAL_READY: usize = 0x474c_4252;
+const DELEGATED_S_INTERRUPTS: usize = (1 << 1) | (1 << 5) | (1 << 9);
+const DELEGATED_U_EXCEPTIONS: usize = (1 << 0)
+    | (1 << 1)
+    | (1 << 2)
+    | (1 << 3)
+    | (1 << 4)
+    | (1 << 5)
+    | (1 << 6)
+    | (1 << 7)
+    | (1 << 8)
+    | (1 << 12)
+    | (1 << 13)
+    | (1 << 15);
+const COUNTER_TIME: usize = 1 << 1;
+
+// 非零初值保证状态位于 .data；其他 hart 读取 GLOBAL_READY(Acquire) 前不得访问正被清零的 BSS。
+static GLOBAL_STATE: AtomicUsize = AtomicUsize::new(GLOBAL_PENDING);
+static READY_HARTS: AtomicUsize = AtomicUsize::new(0);
+static BOARD_INFO: Once<BoardInfo> = Once::new();
+static SBI: Once<FixedRustSBI<'static>> = Once::new();
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -48,23 +72,17 @@ unsafe extern "C" fn _start() -> ! {
 }
 
 extern "C" fn rust_main(hart_id: usize, opaque: usize) {
-    static GENESIS: AtomicBool = AtomicBool::new(true);
-    static BOARD_INFO: Once<BoardInfo> = Once::new();
-    // 全局初始化过程
-    if GENESIS.swap(false, Ordering::Acquire) {
-        unsafe extern "C" {
-            unsafe static mut sbss: u64;
-            unsafe static mut ebss: u64;
-        }
-        unsafe {
-            let mut ptr = sbss as *mut u64;
-            let end = ebss as *mut u64;
-            while ptr < end {
-                ptr.write_volatile(0);
-                ptr = ptr.offset(1);
-            }
-        }
+    let is_cold_boot = GLOBAL_STATE
+        .compare_exchange(
+            GLOBAL_PENDING,
+            GLOBAL_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok();
 
+    if is_cold_boot {
+        clear_bss();
         // 解析设备树
         let board_info = BOARD_INFO.call_once(|| device_tree::parse(opaque));
         // 初始化外设
@@ -74,6 +92,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         clint::init(board_info.clint.start);
         qemu_test::init(board_info.test.start);
         dbcn::init(KERNEL_ENTRY..board_info.mem.end);
+        validate_board_info(board_info, hart_id);
 
         // print startup information
         print!(
@@ -82,6 +101,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
 [rustsbi] Implementation     : RustSBI-QEMU Version {ver_impl}
 [rustsbi] Platform Name      : {model}
 [rustsbi] Platform SMP       : {smp}
+[rustsbi] Platform HART Mask : {hart_mask:#x}
 [rustsbi] Platform Memory    : {mem_addr:#x?},{mem_size}MiB
 [rustsbi] Boot HART          : {hart_id}
 [rustsbi] Device Tree Region : {dtb:#x?}
@@ -92,6 +112,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             ver_impl = env!("CARGO_PKG_VERSION"),
             model = board_info.model,
             smp = board_info.smp,
+            hart_mask = board_info.hart_mask,
             mem_addr = board_info.mem,
             mem_size = (board_info.mem.end - board_info.mem.start) / (1024 * 1024),
             dtb = board_info.dtb,
@@ -99,44 +120,99 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         );
 
         // 初始化 SBI
-        unsafe {
-            SBI = MaybeUninit::new(FixedRustSBI {
-                clint: &clint::Clint,
-                hsm: Hsm,
-                reset: qemu_test::get(),
-                dbcn: dbcn::get(),
-            });
-        }
-        // 设置并打印 pmp
-        set_pmp(board_info);
-        hart_csr_utils::print_pmps();
-        // 设置陷入栈
-        trap_stack::prepare_for_trap();
-        // 设置内核入口
-        local_remote_hsm().start(Supervisor {
-            start_addr: KERNEL_ENTRY,
-            opaque,
+        SBI.call_once(|| FixedRustSBI {
+            rfence: rfence::Rfence,
+            clint: &clint::Clint,
+            hsm: Hsm,
+            reset: qemu_test::get(),
+            dbcn: dbcn::get(),
         });
-
-        start_all_cores(board_info, opaque);
+        // Release 发布 BSS 清零、BoardInfo、设备指针和 RustSBI；secondary 的 Acquire
+        // 在访问任一全局对象前消费这些写。
+        GLOBAL_STATE.store(GLOBAL_READY, Ordering::Release);
     } else {
-        // 设置 pmp
-        set_pmp(BOARD_INFO.wait());
-        // 设置陷入栈
-        trap_stack::prepare_for_trap();
+        while GLOBAL_STATE.load(Ordering::Acquire) != GLOBAL_READY {
+            core::hint::spin_loop();
+        }
     }
+
+    let board_info = BOARD_INFO.wait();
+    assert!(
+        board_info.hart_mask & (1usize << hart_id) != 0,
+        "hart {} is absent from DTB hart mask {:#x}",
+        hart_id,
+        board_info.hart_mask
+    );
+    set_pmp(board_info);
+    if is_cold_boot {
+        hart_csr_utils::print_pmps();
+    }
+    trap_stack::prepare_for_trap();
+
+    // Release 发布当前 hart 的 HSM cell/trap stack 初始化；cold-boot hart 在写入
+    // remote HSM start payload 前以 Acquire 等待完整 mask，避免 payload 被迟到的 init 覆盖。
+    READY_HARTS.fetch_or(1usize << hart_id, Ordering::Release);
+    if is_cold_boot {
+        while READY_HARTS.load(Ordering::Acquire) & board_info.hart_mask != board_info.hart_mask {
+            core::hint::spin_loop();
+        }
+        assert!(
+            local_remote_hsm().start(Supervisor {
+                start_addr: KERNEL_ENTRY,
+                opaque,
+            }),
+            "cold-boot hart HSM was not stopped"
+        );
+        start_all_cores(board_info, opaque);
+    }
+
     // 清理 clint
     clint::clear();
     // 准备启动调度
     unsafe {
-        asm!("csrw mideleg,    {}", in(reg) !0);
-        asm!("csrw medeleg,    {}", in(reg) !0);
-        asm!("csrw mcounteren, {}", in(reg) !0);
-        use riscv::register::{medeleg, mtvec};
-        medeleg::clear_supervisor_env_call();
-        medeleg::clear_machine_env_call();
+        // 只委托 S-mode 实际消费的中断与来自 U-mode 的异常；S-mode ecall 必须留在 M-mode 作为 SBI。
+        asm!("csrw mideleg,    {}", in(reg) DELEGATED_S_INTERRUPTS);
+        asm!("csrw medeleg,    {}", in(reg) DELEGATED_U_EXCEPTIONS);
+        // kernel 单调时钟只需要 `time` CSR，不向 S-mode 暴露未使用的硬件计数器。
+        asm!("csrw mcounteren, {}", in(reg) COUNTER_TIME);
+        use riscv::register::mtvec;
         mtvec::write(trap_vec::trap_vec as _, mtvec::TrapMode::Vectored);
     }
+}
+
+fn clear_bss() {
+    unsafe extern "C" {
+        unsafe static mut sbss: u64;
+        unsafe static mut ebss: u64;
+    }
+    unsafe {
+        let mut ptr = sbss as *mut u64;
+        let end = ebss as *mut u64;
+        while ptr < end {
+            ptr.write_volatile(0);
+            ptr = ptr.add(1);
+        }
+    }
+}
+
+fn validate_board_info(board_info: &BoardInfo, cold_boot_hart: usize) {
+    assert!(board_info.smp != 0, "DTB contains no enabled hart");
+    assert!(
+        board_info.invalid_hart_id.is_none(),
+        "DTB hart ID {} exceeds firmware limit {}",
+        board_info.invalid_hart_id.unwrap_or(usize::MAX),
+        constants::MAX_HART_NUM
+    );
+    assert_eq!(
+        board_info.hart_mask.count_ones() as usize,
+        board_info.smp,
+        "DTB CPU count and unique hart mask disagree"
+    );
+    assert!(
+        board_info.hart_mask & (1usize << cold_boot_hart) != 0,
+        "cold-boot hart {} is absent from DTB",
+        cold_boot_hart
+    );
 }
 
 /// 启动所有其他核心
@@ -144,15 +220,16 @@ fn start_all_cores(board_info: &BoardInfo, opaque: usize) {
     use crate::hart::hart_id;
 
     let current_hart = hart_id();
-    let total_cores = board_info.smp;
-
     println!(
         "[rustsbi] Starting {} cores (current: {})",
-        total_cores, current_hart
+        board_info.smp, current_hart
     );
 
-    // 启动除当前核心外的所有核心
-    for hart_id in 0..total_cores {
+    // 只按 DTB 的实际 hart mask 启动，不能把 CPU 数量误当作连续 hart ID 上界。
+    for hart_id in 0..constants::MAX_HART_NUM {
+        if board_info.hart_mask & (1usize << hart_id) == 0 {
+            continue;
+        }
         if hart_id != current_hart {
             match remote_hsm(hart_id) {
                 Some(remote) => {
@@ -163,14 +240,11 @@ fn start_all_cores(board_info: &BoardInfo, opaque: usize) {
                         clint::set_msip(hart_id);
                         println!("[rustsbi] Successfully started core {}", hart_id);
                     } else {
-                        println!(
-                            "[rustsbi] Failed to start core {} (already started)",
-                            hart_id
-                        );
+                        panic!("ready hart {} HSM was not stopped", hart_id);
                     }
                 }
                 None => {
-                    println!("[rustsbi] Invalid hart id: {}", hart_id);
+                    panic!("validated DTB hart {} has no HSM slot", hart_id);
                 }
             }
         }
@@ -210,7 +284,7 @@ extern "C" fn fast_handler(
     a7: usize,
 ) -> FastResult {
     use riscv::register::{
-        mcause::{self, Trap as T},
+        mcause::{self, Exception as E, Trap as T},
         mtval, satp, sstatus,
     };
 
@@ -229,7 +303,8 @@ extern "C" fn fast_handler(
         match local_hsm().start() {
             Ok(supervisor) => {
                 mstatus::update(|bits| {
-                    *bits &= !mstatus::MPP;
+                    // 清除前一执行环境的 MPRV/MIE 与 MPP，防止 S-mode 以内存访问特权继承 M-mode 状态。
+                    *bits &= !(mstatus::MPP | mstatus::MPRV | mstatus::MIE);
                     *bits |= mstatus::MPIE | mstatus::MPP_SUPERVISOR;
                 });
                 mie::write(mie::MSIE | mie::MTIE);
@@ -242,9 +317,10 @@ extern "C" fn fast_handler(
             }
             _ => match mcause::read().cause() {
                 // SBI call
-                T::Exception(_supervisor_env_call) => {
-                    use sbi_spec::{base, hsm, legacy};
-                    let mut ret = unsafe { (*core::ptr::addr_of_mut!(SBI)).assume_init_mut() }
+                T::Exception(E::SupervisorEnvCall) => {
+                    use sbi_spec::hsm;
+                    let ret = SBI
+                        .wait()
                         .handle_ecall(a7, a6, [ctx.a0(), a1, a2, a3, a4, a5]);
                     if ret.is_ok() {
                         match (a7, a6) {
@@ -255,35 +331,6 @@ extern "C" fn fast_handler(
                                 if matches!(ctx.a0() as u32, hsm::suspend_type::NON_RETENTIVE) =>
                             {
                                 break boot(ctx, a1, a2);
-                            }
-                            // legacy console 探测
-                            (base::EID_BASE, base::PROBE_EXTENSION)
-                                if matches!(
-                                    ctx.a0(),
-                                    legacy::LEGACY_CONSOLE_PUTCHAR | legacy::LEGACY_CONSOLE_GETCHAR
-                                ) =>
-                            {
-                                ret.value = 1;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match a7 {
-                            legacy::LEGACY_CONSOLE_PUTCHAR => {
-                                let uart = uart16550::UART.lock();
-                                uart.get().write(&[ctx.a0() as u8]);
-                                ret.error = 0;
-                                ret.value = a1;
-                            }
-                            legacy::LEGACY_CONSOLE_GETCHAR => {
-                                let mut c = 0u8;
-                                let uart = uart16550::UART.lock();
-                                if uart.get().read(core::slice::from_mut(&mut c)) == 1 {
-                                    ret.error = c as _;
-                                    ret.value = a1;
-                                } else {
-                                    ret.error = -1_isize as usize;
-                                }
                             }
                             _ => {}
                         }
@@ -317,11 +364,11 @@ extern "C" fn fast_handler(
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use rustsbi::{
-        spec::srst::{RESET_REASON_SYSTEM_FAILURE, RESET_TYPE_SHUTDOWN},
         Reset,
+        spec::srst::{RESET_REASON_SYSTEM_FAILURE, RESET_TYPE_SHUTDOWN},
     };
     // 输出的信息大概是“[rustsbi-panic] hart 0 panicked at ...”
-    println!("[rustsbi-panic] hart {} {info}", hart_id());
+    println!("[rustsbi-panic] hart {} {info}", hart::raw_hart_id());
     println!("[rustsbi-panic] system shutdown scheduled due to RustSBI panic");
     qemu_test::get().system_reset(RESET_TYPE_SHUTDOWN, RESET_REASON_SYSTEM_FAILURE);
     unreachable!()
@@ -356,10 +403,10 @@ impl console::Console for Console {
     }
 }
 
-static mut SBI: MaybeUninit<FixedRustSBI> = MaybeUninit::uninit();
-
 #[derive(RustSBI)]
 struct FixedRustSBI<'a> {
+    #[rustsbi(fence)]
+    rfence: rfence::Rfence,
     #[rustsbi(ipi, timer)]
     clint: &'a clint::Clint,
     hsm: Hsm,

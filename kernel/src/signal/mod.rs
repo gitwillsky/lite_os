@@ -5,16 +5,14 @@ mod state;
 
 use crate::{task::TaskControlBlock, trap::TrapContext};
 
-pub use core::{Signal, SignalAction, SignalError, SignalSet};
-pub use state::{SignalDisposition, SignalState};
+pub use core::{Signal, SignalError, SignalSet};
+pub use state::SignalState;
 
-pub use core::{SIG_BLOCK, SIG_DFL, SIG_IGN, SIG_SETMASK, SIG_UNBLOCK};
 pub const SIG_RETURN_ADDR: usize = 0;
 
-pub use multicore::{clear_task_on_core, find_process_core, update_task_on_core};
+pub use multicore::{clear_task_on_core, update_task_on_core};
 
 pub fn init() {
-    core::init();
     info!("Signal system initialized");
 }
 
@@ -52,8 +50,4 @@ pub fn sig_return(task: &TaskControlBlock, trap_cx: &mut TrapContext) -> Result<
 
 pub fn has_pending_signals(task: &TaskControlBlock) -> bool {
     task.signal_state.lock().has_deliverable_signals()
-}
-
-pub(crate) fn process_multicore_signals() -> usize {
-    multicore::process_core_messages()
 }

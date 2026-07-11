@@ -1,5 +1,6 @@
 use core::fmt::{self};
-use spin::Mutex;
+
+use crate::sync::IrqMutex;
 
 /// Log levels in order of severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -156,7 +157,8 @@ impl Logger {
     }
 }
 
-static LOGGER: Mutex<Logger> = Mutex::new(Logger::new());
+// logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 hart 中断重入时自死锁。
+static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 
 /// Set the global log level
 pub fn set_log_level(level: LogLevel) {

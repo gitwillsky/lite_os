@@ -1,277 +1,238 @@
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::Mutex;
-
+use crate::sync::{IrqMutex, LocalIrqGuard};
 use crate::{
-    arch::hart::{MAX_CORES, hart_id},
-    arch::sbi,
+    arch::{
+        hart::{MAX_CORES, hart_id},
+        sbi,
+    },
     task::{
-        TaskControlBlock, TaskStatus,
+        TaskControlBlock,
         context::TaskContext,
         scheduler::{Scheduler, cfs_scheduler::CFScheduler},
     },
 };
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc};
+use core::{
+    cell::UnsafeCell,
+    mem::MaybeUninit,
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
-/// idle返回函数 - 当从任务切换回idle时执行
-/// 这个函数永远不应该被调用，因为idle循环不会切换回来
-/// 但我们需要一个有效的返回地址以避免异常
+/// @description context switch 异常返回时的 fail-stop 目标。
+///
+/// @return 永不返回。
 #[unsafe(no_mangle)]
 pub extern "C" fn idle_return() -> ! {
-    // 如果执行到这里，说明出现了严重错误
-    panic!("idle_return should never be called!");
+    panic!("idle context returned unexpectedly");
 }
 
+/// @description 仅由所属 hart 可变访问的调度执行状态。
 pub struct Processor {
-    pub hart_id: usize,
+    hart_id: usize,
     pub current: Option<Arc<TaskControlBlock>>,
-    pub idle_context: TaskContext,
-    pub scheduler: Box<dyn Scheduler>,
-    pub task_count: AtomicUsize,
-    pub active: AtomicBool,
-    pub inbound: Mutex<VecDeque<Arc<TaskControlBlock>>>,
+    idle_context: TaskContext,
+    scheduler: Box<dyn Scheduler>,
 }
 
 impl Processor {
-    pub fn new(hart_id: usize) -> Self {
-        // 创建一个有效的idle上下文
-        // 重要：idle上下文的ra必须指向一个有效的返回地址
-        let mut idle_ctx = TaskContext::zero_init();
-        // 设置返回地址为idle_return函数
-        idle_ctx.set_ra(idle_return as usize);
-
+    fn new(hart_id: usize) -> Self {
+        let mut idle_context = TaskContext::zero_init();
+        idle_context.set_ra(idle_return as usize);
         Self {
             hart_id,
             current: None,
-            idle_context: idle_ctx,
+            idle_context,
             scheduler: Box::new(CFScheduler::new()),
-            task_count: AtomicUsize::new(0),
-            active: AtomicBool::new(false),
-            inbound: Mutex::new(VecDeque::new()),
         }
     }
 
+    /// @description 获取当前 hart idle context 的稳定地址。
+    ///
+    /// @return 指向本 hart `TaskContext` 的唯一可变指针。
     pub fn idle_context_ptr(&mut self) -> *mut TaskContext {
         &mut self.idle_context
     }
 
+    /// @description 把 ready task 加入当前 hart 的本地调度队列。
+    ///
+    /// @param task 当前 hart 独占转移进 scheduler 的任务引用。
+    /// @return 无返回值。
     pub fn add_task(&mut self, task: Arc<TaskControlBlock>) {
         self.scheduler.add_task(task);
-        self.task_count.fetch_add(1, Ordering::Relaxed);
+        // queued_tasks 只提供负载估计；scheduler membership 由 owner hart 和 inbound lock 保护。
+        per_hart(self.hart_id)
+            .queued_tasks
+            .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// @description 从当前 hart 的本地调度队列取一个任务。
+    ///
+    /// @return 队列为空时返回 `None`，否则返回唯一取出的任务引用。
     pub fn fetch_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        if let Some(task) = self.scheduler.fetch_task() {
-            self.task_count.fetch_sub(1, Ordering::Relaxed);
-            Some(task)
-        } else {
-            None
-        }
+        let task = self.scheduler.fetch_task()?;
+        per_hart(self.hart_id)
+            .queued_tasks
+            .fetch_sub(1, Ordering::Relaxed);
+        Some(task)
     }
 
-    pub fn task_count(&self) -> usize {
-        self.task_count.load(Ordering::Relaxed)
-    }
-
-    pub fn steal_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        let count = self.task_count.load(Ordering::Acquire);
-        if count > 1 {
-            // 尝试获取任务，但在状态检查前不修改计数器
-            if let Some(task) = self.scheduler.fetch_task() {
-                // 首先检查任务是否可窃取，避免借用冲突
-                let is_ready = {
-                    let status_guard = task.task_status.lock();
-                    *status_guard == TaskStatus::Ready
-                };
-
-                if !is_ready {
-                    // 任务状态不对，放回调度器
-                    self.scheduler.add_task(task.clone());
-                    return None;
-                }
-
-                // 验证任务不是僵尸状态（额外的安全检查）
-                if task.is_zombie() {
-                    warn!("Attempted to steal zombie task {}", task.pid());
-                    // 僵尸任务不应该回到调度器
-                    return None;
-                }
-
-                // 状态检查通过，现在才减少计数器
-                self.task_count.fetch_sub(1, Ordering::Release);
-
-                debug!(
-                    "CPU {} stole task {} (remaining tasks: {})",
-                    self.hart_id,
-                    task.pid(),
-                    self.task_count()
-                );
-
-                Some(task)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
+    /// @description 把远端 mailbox 中的任务转移到本 hart scheduler。
+    ///
+    /// @return 无返回值。
     pub fn drain_inbound_to_local(&mut self) {
-        let mut q = self.inbound.lock();
-        let mut tmp = VecDeque::new();
-        core::mem::swap(&mut *q, &mut tmp);
-        drop(q);
-        for t in tmp {
-            self.add_task(t);
+        let slot = per_hart(self.hart_id);
+        let mut inbound = slot.inbound.lock();
+        let mut local = VecDeque::new();
+        core::mem::swap(&mut *inbound, &mut local);
+        drop(inbound);
+        for task in local {
+            self.add_task(task);
+        }
+    }
+
+    /// @description 发布当前 processor 已进入 idle/scheduler 循环。
+    ///
+    /// @return 无返回值。
+    pub fn mark_active(&self) {
+        // Release 发布 local Processor 初始化；远端负载均衡读取 active(Acquire) 后
+        // 才能向 inbound 入队。缺失时会向尚未开始 drain 的 hart 投递任务。
+        per_hart(self.hart_id).active.store(true, Ordering::Release);
+    }
+}
+
+struct PerHartProcessor {
+    local: UnsafeCell<MaybeUninit<Processor>>,
+    initialized: AtomicBool,
+    active: AtomicBool,
+    queued_tasks: AtomicUsize,
+    // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
+    inbound: IrqMutex<VecDeque<Arc<TaskControlBlock>>>,
+}
+
+impl PerHartProcessor {
+    const fn new() -> Self {
+        Self {
+            local: UnsafeCell::new(MaybeUninit::uninit()),
+            initialized: AtomicBool::new(false),
+            active: AtomicBool::new(false),
+            queued_tasks: AtomicUsize::new(0),
+            inbound: IrqMutex::new(VecDeque::new()),
         }
     }
 }
 
-// Per-CPU 变量，每个核心完全独立
-static mut PER_CPU_PROCESSORS: [Option<Processor>; MAX_CORES] = [const { None }; MAX_CORES];
-static ACTIVE_CORES: AtomicUsize = AtomicUsize::new(0);
+// SAFETY: `local` 只能由索引等于当前 hart_id 的执行流访问；远端 hart 只能触及
+// active/queued_tasks 原子和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
+unsafe impl Sync for PerHartProcessor {}
+
+static PER_HART_PROCESSORS: [PerHartProcessor; MAX_CORES] = [
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+    const { PerHartProcessor::new() },
+];
+
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
-/// 无锁访问当前 CPU 的处理器
-pub fn current_processor() -> &'static mut Processor {
-    let hart = hart_id();
-
-    // hart_id()已经在arch/hart.rs中做了边界检查，但为了安全再次验证
-    if hart >= MAX_CORES {
-        panic!("Invalid hart ID {} >= MAX_CORES {}", hart, MAX_CORES);
-    }
-
-    unsafe {
-        if PER_CPU_PROCESSORS[hart].is_none() {
-            PER_CPU_PROCESSORS[hart] = Some(Processor::new(hart));
-        }
-        PER_CPU_PROCESSORS[hart].as_mut().unwrap()
-    }
+#[inline(always)]
+fn per_hart(hart: usize) -> &'static PerHartProcessor {
+    PER_HART_PROCESSORS
+        .get(hart)
+        .expect("processor hart index exceeds MAX_CORES")
 }
 
-pub fn add_task_to_cpu(cpu_id: usize, task: Arc<TaskControlBlock>) {
-    let me = hart_id();
+fn local_processor() -> &'static mut Processor {
+    let hart = hart_id();
+    let slot = per_hart(hart);
+    // initialized 只由本 hart 在关闭 SIE 时读写，不承担跨 hart 发布；缺失该分支会重复构造 Processor。
+    if !slot.initialized.load(Ordering::Relaxed) {
+        // SAFETY: 只有 hart `hart` 能到达自己的 slot.local，且 S-mode trap 不开启嵌套中断。
+        unsafe { (*slot.local.get()).write(Processor::new(hart)) };
+        slot.initialized.store(true, Ordering::Relaxed);
+    }
+    // SAFETY: 与上面的 per-hart 唯一所有权约束相同，initialized 证明对象已构造。
+    unsafe { (*slot.local.get()).assume_init_mut() }
+}
 
-    // 强化边界检查并提供调试信息
-    if cpu_id >= MAX_CORES {
-        error!("Invalid CPU ID {} >= MAX_CORES {} in add_task_to_cpu", cpu_id, MAX_CORES);
-        // 降级到当前CPU而不是panic，以提高系统鲁棒性
-        let fallback_cpu = me;
-        warn!("Falling back to current CPU {} for task {}", fallback_cpu, task.pid());
-        add_task_to_cpu(fallback_cpu, task);
+/// @description 在关闭本地 S-mode 中断期间访问当前 hart 独占的 processor。
+///
+/// @param f 不得保存或泄漏 `Processor` 引用的同步闭包。
+/// @return 闭包的返回值。
+/// @errors `tp` 越界属于内核不变量破坏。
+pub fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
+    let _irq = LocalIrqGuard::disable();
+    // 中断关闭保证同 hart 的 trap handler 不能在该 mutable borrow 存活时再次借用 local processor。
+    f(local_processor())
+}
+
+/// @description 将任务投递给指定 active hart。
+///
+/// @param cpu_id 目标 hart ID。
+/// @param task 待投递任务。
+/// @return 无返回值。
+/// @errors 目标越界、未 active 或 SBI IPI 失败均触发内核不变量失败，不做 CPU fallback。
+pub fn add_task_to_cpu(cpu_id: usize, task: Arc<TaskControlBlock>) {
+    assert!(
+        cpu_id < MAX_CORES,
+        "target CPU {} exceeds MAX_CORES",
+        cpu_id
+    );
+    let current = hart_id();
+    if cpu_id == current {
+        with_current_processor(|processor| processor.add_task(task));
         return;
     }
 
-    unsafe {
-        if PER_CPU_PROCESSORS[cpu_id].is_none() {
-            PER_CPU_PROCESSORS[cpu_id] = Some(Processor::new(cpu_id));
-        }
-        if let Some(p) = &mut PER_CPU_PROCESSORS[cpu_id] {
-            if cpu_id == me {
-                p.add_task(task);
-            } else {
-                {
-                    let mut q = p.inbound.lock();
-                    q.push_back(task);
-                }
-                core::sync::atomic::fence(Ordering::Release);
-                let _ = sbi::sbi_send_ipi(1usize << cpu_id, 0);
-            }
-        }
-    }
+    let target = per_hart(cpu_id);
+    assert!(
+        target.active.load(Ordering::Acquire),
+        "cannot enqueue task to inactive CPU {}",
+        cpu_id
+    );
+    target.inbound.lock().push_back(task);
+    sbi::sbi_send_ipi(1usize << cpu_id, 0).expect("SBI IPI failed for task mailbox");
 }
 
+/// @description 在 active hart 中选择负载最低者并投递任务。
+///
+/// @param task 待投递任务。
+/// @return 被选中的 hart ID。
 pub fn add_task_to_best_cpu(task: Arc<TaskControlBlock>) -> usize {
+    // Relaxed 只用于分散扫描起点，不承担任何状态发布。
     let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % MAX_CORES;
-    let mut best_cpu = hart_id();
-    let mut best_load = usize::MAX;
+    let current = hart_id();
+    // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
     let last = task.last_cpu.load(Ordering::Relaxed);
-    let mut last_active = false;
-    let mut last_load = usize::MAX;
-    unsafe {
-        for k in 0..MAX_CORES {
-            let i = (start + k) % MAX_CORES;
-            if let Some(p) = &PER_CPU_PROCESSORS[i] {
-                if p.active.load(Ordering::Relaxed) {
-                    let inbound_len = {
-                        let q = p.inbound.lock();
-                        q.len()
-                    };
-                    let load = p.task_count().saturating_add(inbound_len);
-                    if load < best_load {
-                        best_load = load;
-                        best_cpu = i;
-                    }
-                    if i == last {
-                        last_active = true;
-                        last_load = load;
-                    }
-                }
-            }
+    let mut best_cpu = current;
+    let mut best_load = usize::MAX;
+    let mut last_load = None;
+
+    for offset in 0..MAX_CORES {
+        let cpu = (start + offset) % MAX_CORES;
+        let slot = per_hart(cpu);
+        if !slot.active.load(Ordering::Acquire) {
+            continue;
+        }
+        let load = slot
+            .queued_tasks
+            .load(Ordering::Relaxed)
+            .saturating_add(slot.inbound.lock().len());
+        if load < best_load {
+            best_load = load;
+            best_cpu = cpu;
+        }
+        if cpu == last {
+            last_load = Some(load);
         }
     }
-    let chosen = if last_active && last_load <= best_load.saturating_add(1) {
-        last
-    } else {
-        best_cpu
+
+    let chosen = match last_load {
+        Some(load) if load <= best_load.saturating_add(1) => last,
+        _ => best_cpu,
     };
     add_task_to_cpu(chosen, task);
     chosen
-}
-
-pub fn try_global_steal() -> Option<Arc<TaskControlBlock>> {
-    let current_cpu = hart_id();
-
-    // 检查边界
-    if current_cpu >= MAX_CORES {
-        error!("Invalid CPU ID {} in try_global_steal", current_cpu);
-        return None;
-    }
-
-    // 实现工作窃取：从其他CPU偷取任务
-    // 使用轮询方式检查其他CPU，避免总是从同一个CPU窃取
-    let start_cpu = (current_cpu + 1) % MAX_CORES;
-
-    unsafe {
-        for i in 0..MAX_CORES {
-            let target_cpu = (start_cpu + i) % MAX_CORES;
-
-            // 跳过自己的CPU
-            if target_cpu == current_cpu {
-                continue;
-            }
-
-            // 检查目标CPU是否有处理器实例
-            if let Some(target_processor) = &mut PER_CPU_PROCESSORS[target_cpu] {
-                // 检查目标CPU是否活跃且有足够的任务
-                if target_processor.active.load(Ordering::Acquire) {
-                    let target_task_count = target_processor.task_count();
-
-                    // 只有当目标CPU有多个任务时才窃取（保持负载均衡）
-                    if target_task_count > 1 {
-                        if let Some(stolen_task) = target_processor.steal_task() {
-                            debug!(
-                                "CPU {} successfully stole task {} from CPU {}",
-                                current_cpu,
-                                stolen_task.pid(),
-                                target_cpu
-                            );
-                            return Some(stolen_task);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// 获取活跃核心数量
-pub fn active_core_count() -> usize {
-    ACTIVE_CORES.load(Ordering::Relaxed)
-}
-
-/// 标记核心为活跃状态
-pub fn mark_core_active() {
-    ACTIVE_CORES.fetch_add(1, Ordering::Relaxed);
 }

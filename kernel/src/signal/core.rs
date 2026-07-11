@@ -80,15 +80,11 @@ pub const SIG_SETMASK: i32 = 2; // 设置信号掩码
 const SIG_RETURN_ADDR: usize = 0; // 信号返回地址
 
 /// 信号处理引擎
-pub struct SignalCore {
-    multicore_enabled: bool,
-}
+pub struct SignalCore;
 
 impl SignalCore {
     const fn new() -> Self {
-        Self {
-            multicore_enabled: true,
-        }
+        Self
     }
 
     /// 发送信号到指定进程
@@ -116,13 +112,7 @@ impl SignalCore {
 
                 // 根据任务状态决定是否需要中断
                 match status {
-                    TaskStatus::Running => {
-                        if self.multicore_enabled {
-                            multicore::send_signal_to_process(pid, signal)
-                        } else {
-                            Ok(())
-                        }
-                    }
+                    TaskStatus::Running => multicore::notify_running_task(pid),
                     TaskStatus::Sleeping => {
                         if !signal.is_stop_signal() {
                             task.wakeup();
@@ -170,7 +160,7 @@ impl SignalCore {
         task: &TaskControlBlock,
         trap_cx: Option<&mut TrapContext>,
     ) -> (bool, Option<i32>) {
-        let signal_state = task.signal_state.lock();
+        let mut signal_state = task.signal_state.lock();
 
         // 获取下一个可处理的信号
         let signal = match signal_state.next_deliverable_signal() {
@@ -263,7 +253,7 @@ impl SignalCore {
         set: Option<&SignalSet>,
         oldset: Option<&mut SignalSet>,
     ) -> Result<(), SignalError> {
-        let signal_state = task.signal_state.lock();
+        let mut signal_state = task.signal_state.lock();
 
         if let Some(oldset) = oldset {
             *oldset = signal_state.get_blocked();
@@ -323,7 +313,7 @@ impl SignalCore {
     fn continue_task(&self, task: &TaskControlBlock) {
         // 清理信号状态，防止状态不一致
         {
-            let signal_state = task.signal_state.lock();
+            let mut signal_state = task.signal_state.lock();
             signal_state.clear_trap_context_flag();
         }
 
@@ -338,13 +328,6 @@ impl SignalCore {
 }
 
 static SIGNAL_CORE: SignalCore = SignalCore::new();
-
-/// 初始化信号系统
-pub fn init() {
-    if SIGNAL_CORE.multicore_enabled {
-        multicore::init();
-    }
-}
 
 /// 发送信号到指定进程
 pub fn send_signal(pid: usize, signal: Signal) -> Result<(), SignalError> {

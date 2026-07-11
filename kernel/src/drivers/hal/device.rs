@@ -10,6 +10,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use spin::Mutex;
 
+use crate::sync::IrqMutex;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceType {
     Block,
@@ -93,15 +95,8 @@ impl From<PowerError> for DeviceError {
 impl From<super::interrupt::InterruptError> for DeviceError {
     fn from(error: super::interrupt::InterruptError) -> Self {
         match error {
-            super::interrupt::InterruptError::VectorNotFound => DeviceError::HardwareError,
             super::interrupt::InterruptError::HandlerNotSet => DeviceError::ConfigurationError,
             super::interrupt::InterruptError::InvalidVector => DeviceError::ConfigurationError,
-            super::interrupt::InterruptError::ControllerError => DeviceError::HardwareError,
-            super::interrupt::InterruptError::ResourceConflict => DeviceError::OperationFailed,
-            super::interrupt::InterruptError::HardwareError => DeviceError::HardwareError,
-            super::interrupt::InterruptError::TimeoutError => DeviceError::TimeoutError,
-            super::interrupt::InterruptError::InvalidPriority => DeviceError::ConfigurationError,
-            super::interrupt::InterruptError::CpuAffinityError => DeviceError::ConfigurationError,
         }
     }
 }
@@ -434,7 +429,7 @@ pub struct DeviceManager {
     devices: Mutex<BTreeMap<u32, Arc<Mutex<Box<dyn Device>>>>>,
     drivers: Mutex<Vec<Arc<dyn DeviceDriver>>>,
     resource_manager: Mutex<Box<dyn ResourceManager>>,
-    interrupt_controller: Option<Arc<Mutex<dyn InterruptController>>>,
+    interrupt_controller: Option<Arc<IrqMutex<Box<dyn InterruptController>>>>,
     next_device_id: Mutex<u32>,
     device_tree: Mutex<BTreeMap<u32, Vec<u32>>>, // parent -> children mapping
 }
@@ -453,13 +448,13 @@ impl DeviceManager {
 
     pub fn with_interrupt_controller(
         mut self,
-        controller: Arc<Mutex<dyn InterruptController>>,
+        controller: Arc<IrqMutex<Box<dyn InterruptController>>>,
     ) -> Self {
         self.interrupt_controller = Some(controller);
         self
     }
 
-    pub fn get_interrupt_controller(&self) -> Option<Arc<Mutex<dyn InterruptController>>> {
+    pub fn get_interrupt_controller(&self) -> Option<Arc<IrqMutex<Box<dyn InterruptController>>>> {
         self.interrupt_controller.as_ref().cloned()
     }
 
@@ -648,13 +643,5 @@ impl DeviceManager {
         }
 
         stats
-    }
-
-    pub fn handle_device_interrupt(&self, vector: InterruptVector) -> Result<(), DeviceError> {
-        if let Some(ref interrupt_controller) = self.interrupt_controller {
-            let controller = interrupt_controller.lock();
-            controller.handle_interrupt(vector)?;
-        }
-        Ok(())
     }
 }

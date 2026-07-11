@@ -27,8 +27,8 @@ impl KernelStack {
             )
             .expect("Failed to allocate kernel stack memory");
 
-        // 本地刷新TLB，确保新映射立即可见
-        unsafe { core::arch::asm!("sfence.vma") }
+        super::mm::MemorySet::flush_tlb_all_cpus()
+            .expect("SBI RFENCE failed after kernel stack mapping");
 
         Self { handle }
     }
@@ -60,17 +60,15 @@ impl Drop for KernelStack {
             .lock()
             .remove_area_with_start_vpn(VirtualAddress::from(mapped_bottom).into());
 
-        // 本地刷新TLB，避免保留对已移除栈页的陈旧映射
-        unsafe { core::arch::asm!("sfence.vma") }
+        super::mm::MemorySet::flush_tlb_all_cpus()
+            .expect("SBI RFENCE failed after kernel stack unmapping");
     }
 }
 
 /// 获取应用内核栈的地址范围，返回 (bottom, top)
 fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    // 关键修复：内核栈必须位于 TrapContext 预留窗口（[TRAP_CONTEXT_BASE, TRAMPOLINE)）之下，
-    // 之前以 TRAMPOLINE 为锚点导致在 128KB 栈尺寸时与 64*PAGE 的 TrapContext 窗口产生重叠（底部跨过 BASE 1 页）。
-    // 现在改为以 TRAP_CONTEXT_BASE 为锚点，向低地址递减分配，并保留 1 页守护页间隔。
-    let top = super::TRAP_CONTEXT_BASE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
+    // 内核栈位于单一 TrapContext 页之下，并在相邻栈之间保留一页守护间隔。
+    let top = super::TRAP_CONTEXT - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
     let bottom = top - KERNEL_STACK_SIZE;
     (bottom, top)
 }

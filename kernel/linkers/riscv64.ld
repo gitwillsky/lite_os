@@ -37,6 +37,7 @@ SECTIONS {
     /* .data 段： 包含已初始化的全局变量和静态变量*/
     sdata = .;
     .data : {
+        PROVIDE(__global_pointer$ = . + 0x800);
         *(.data .data.*)
         *(.sdata .sdata.*)
     }

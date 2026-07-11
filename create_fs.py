@@ -81,7 +81,7 @@ def create_ext2_filesystem(filename, size_mb=128):
     return copy_files_to_ext2(filename, debugfs)
 
 def collect_binaries():
-    """收集需要放入镜像的文件列表，返回 (bin_entries, root_entries)。"""
+    """仅收集最小用户态启动骨架允许进入镜像的 ELF。"""
 
     # 查找并复制用户程序ELF文件（原始ELF文件，不是.bin）
     user_elfs = []
@@ -96,21 +96,14 @@ def collect_binaries():
             '.' not in basename):
             user_elfs.append(elf_file)
 
-    # 定义哪些命令应该放在 /bin/ 目录下
-    bin_commands = ['ls', 'cat', 'mkdir', 'rm', 'pwd', 'echo', 'shell', 'exit', 'init', 'wasm_runtime', 'top', 'vim', 'kill', 'litewm', 'webwm']
+    bin_commands = {'init'}
     bin_entries = []   # (src, '/bin/name')
-    root_entries = []  # (src, '/name')
-    test_entries = []  # (src, '/tests/name')
     if user_elfs:
-        print(f"找到用户程序ELF文件: {[os.path.basename(f) for f in user_elfs]}")
         for elf_file in user_elfs:
             basename = os.path.basename(elf_file)
-            if basename.startswith('tests_'):
-                test_entries.append((elf_file, f"/tests/{basename[6:]}"))
-            elif basename in bin_commands:
+            if basename in bin_commands:
                 bin_entries.append((elf_file, f"/bin/{basename}"))
-            else:
-                root_entries.append((elf_file, f"/{basename}"))
+        print(f"允许写入镜像的用户程序: {[os.path.basename(src) for src, _ in bin_entries]}")
     else:
         print("⚠ 未找到用户程序ELF文件")
 
@@ -139,50 +132,18 @@ def collect_binaries():
     #         dest_name = os.path.basename(wasm_file)
     #         root_entries.append((wasm_file, f"/{dest_name}"))
 
-    # 额外：收集字体文件，放入 /fonts/
-    font_sources = []
-    # 项目根目录下的 .ttf/.otf
-    for pattern in ("*.ttf", "*.otf"):
-        for font in glob.glob(pattern):
-            if os.path.isfile(font):
-                font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
-    # fonts/ 子目录下的 .ttf/.otf
-    if os.path.isdir("fonts"):
-        for pattern in ("*.ttf", "*.otf"):
-            for font in glob.glob(os.path.join("fonts", pattern)):
-                if os.path.isfile(font):
-                    font_sources.append((font, f"/fonts/{os.path.basename(font)}"))
-
-    # 追加桌面资源到 /usr/share/desktop
-    desktop_assets = []
-    if os.path.isdir('assets/desktop'):
-        for root, dirs, files in os.walk('assets/desktop'):
-            for f in files:
-                if f.startswith('._'):
-                    continue
-                src = os.path.join(root, f)
-                rel = os.path.relpath(src, 'assets/desktop')
-                desktop_assets.append((src, f"/usr/share/desktop/{rel}"))
-
-    return bin_entries, root_entries + font_sources + desktop_assets, test_entries
+    return bin_entries
 
 def copy_files_to_ext2(image_path, debugfs_bin):
     """通过 debugfs 将文件写入 ext2 镜像。"""
-    bin_entries, root_entries, test_entries = collect_binaries()
+    bin_entries = collect_binaries()
 
     # 构建 debugfs 命令脚本
     commands = []
     commands.append("mkdir /bin")
-    commands.append("mkdir /fonts")
-    commands.append("mkdir /tests")
-    for src, dst in bin_entries + root_entries + test_entries:
+    for src, dst in bin_entries:
         # debugfs 的 write 语法: write <native_file> <dest_file>
         commands.append(f"write {src} {dst}")
-
-    # 确保资源目录存在
-    commands.insert(0, "mkdir /usr")
-    commands.insert(1, "mkdir /usr/share")
-    commands.insert(2, "mkdir /usr/share/desktop")
 
     # 写入临时脚本并执行
     with tempfile.NamedTemporaryFile('w', delete=False) as tf:

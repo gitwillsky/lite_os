@@ -2,8 +2,8 @@
 #![no_main]
 #![feature(alloc_error_handler)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::memory::KERNEL_SPACE;
+use core::sync::atomic::{AtomicBool, Ordering};
 use riscv::register;
 
 extern crate alloc;
@@ -18,17 +18,16 @@ mod log;
 
 mod drivers;
 mod fs;
-mod ipc;
 mod lang_item;
 
 mod id;
 mod memory;
 mod signal;
+mod sync;
 mod syscall;
 mod task;
 mod timer;
 mod trap;
-mod watchdog;
 
 /// 标记全局内核设施已完成初始化。
 ///
@@ -37,45 +36,52 @@ mod watchdog;
 static INIT_READY: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
-extern "C" fn kmain(hart_id: usize, dtb_addr: usize) -> ! {
+extern "C" fn kmain(hart_id: usize, dtb_addr: usize, is_boot_hart: usize) -> ! {
     // 每个 hart 都必须启用浮点状态，否则用户态或内核态浮点指令会触发非法指令异常。
     unsafe {
         register::sstatus::set_fs(register::sstatus::FS::Dirty);
     }
+    assert_eq!(
+        hart_id,
+        arch::hart::hart_id(),
+        "SBI hart ID and kernel tp disagree"
+    );
 
-    if hart_id == 0 {
+    trap::init();
+
+    if is_boot_hart != 0 {
         log::init(config::DEFAULT_LOG_LEVEL);
         log::disable_module("kernel::task::loader");
         arch::dtb::init(dtb_addr);
-        trap::init();
+        arch::sbi::verify_required_extensions();
         memory::init();
         timer::init_rtc();
-        timer::enable_timer_interrupt();
-        unsafe {
-            register::sie::set_ssoft();
-            register::sie::set_sext();
-            register::sstatus::set_sie();
-        }
-        watchdog::init();
         fs::vfs::init();
         drivers::init();
         signal::init();
         task::init();
+        // Release 发布页表、设备、文件系统、信号和首个任务；缺失时 secondary
+        // 可能在这些全局对象仍处于构造中时进入调度循环。
         INIT_READY.store(true, Ordering::Release);
     } else {
-        arch::dtb::init(dtb_addr);
-        trap::init();
-        KERNEL_SPACE.wait().lock().active();
+        // Acquire 消费 boot hart 在 INIT_READY 之前完成的全部全局初始化写入。
         while !INIT_READY.load(Ordering::Acquire) {
             core::hint::spin_loop();
         }
-        timer::enable_timer_interrupt();
-        unsafe {
-            register::sie::set_ssoft();
-            register::sie::set_sext();
-            register::sstatus::set_sie();
-        }
+        KERNEL_SPACE.wait().lock().active();
     }
+
+    timer::enable_timer_interrupt();
+    unsafe {
+        register::sie::set_ssoft();
+        register::sie::set_sext();
+        register::sstatus::set_sie();
+    }
+    arch::hart::mark_online();
+    // 每个 hart 上线时同步一次共享 kernel 页表。除建立一致性外，这也保证 firmware
+    // RFENCE 的同步完成路径在进入长期调度前已实际经过，而不是保留未连接的实现。
+    memory::mm::MemorySet::flush_tlb_all_cpus()
+        .expect("SBI RFENCE failed during per-hart activation");
 
     task::run_tasks();
 }

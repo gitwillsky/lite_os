@@ -1,7 +1,6 @@
-
 fn print_str(s: &str) {
     for byte in s.bytes() {
-        let _ = super::sbi::console_putchar(byte as usize);
+        let _ = super::sbi::console_putchar(byte);
     }
 }
 
@@ -19,7 +18,8 @@ macro_rules! println {
     };
 }
 
-static CONSOLE: spin::Mutex<ConsoleWriter> = spin::Mutex::new(ConsoleWriter);
+// print 宏可在中断上下文使用；IRQ-safe lock 防止 task 输出被打断后同 hart 再入。
+static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> = crate::sync::IrqMutex::new(ConsoleWriter);
 
 pub fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;
@@ -43,7 +43,7 @@ impl core::fmt::Write for ConsoleWriter {
 }
 
 //=============================================================================
-// Panic 直写通道：无锁、直接轮询写 UART（SBI console_putchar）
+// Panic 直写通道：无锁、通过 SBI DBCN 单字节接口输出。
 // 注意：仅在 panic 路径中调用，避免与正常日志互相打乱
 //=============================================================================
 
@@ -62,7 +62,7 @@ impl core::fmt::Write for PanicConsoleWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         // 直接轮询输出，避免拿锁
         for b in s.bytes() {
-            let _ = super::sbi::console_putchar(b as usize);
+            let _ = super::sbi::console_putchar(b);
         }
         Ok(())
     }

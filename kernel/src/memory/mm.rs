@@ -290,12 +290,20 @@ impl MemorySet {
         }
     }
 
-    /// 跨核刷新：广播 IPI（SSIP）请求各核执行本地 sfence.vma
-    pub fn flush_tlb_all_cpus() {
-        // 本核先刷新
+    /// @description 同步刷新所有 online hart 的 S-stage TLB。
+    ///
+    /// @return 所有目标 hart 完成 `SFENCE.VMA` 后返回 `Ok(())`；SBI RFENCE 失败时返回错误码。
+    pub fn flush_tlb_all_cpus() -> Result<(), isize> {
+        // 1. 本 hart 先完成 fence；当前页表写在后续 SBI ecall 之前保持程序顺序。
         unsafe { asm!("sfence.vma") }
-        // 其他核通过 IPI 触发 SSIP，在软中断入口执行 sfence.vma
-        crate::arch::sbi::sbi_send_ipi(usize::MAX, 0).ok();
+        // 2. Acquire online mask 只选择已发布可接收远端请求的 hart。
+        let current = crate::arch::hart::hart_id();
+        let targets = crate::arch::hart::online_hart_mask() & !(1usize << current);
+        if targets == 0 {
+            return Ok(());
+        }
+        // 3. SBI RFENCE 是同步接口；返回即证明目标 hart 已完成 fence。
+        crate::arch::sbi::remote_sfence_vma(targets, 0, 0, 0)
     }
 
     pub fn get_page_table(&self) -> &PageTable {
@@ -318,7 +326,7 @@ impl MemorySet {
 
         let page_count = (length + config::PAGE_SIZE - 1) / config::PAGE_SIZE;
         // 用户空间仅使用低半区：bit38=0 的 canonical 范围
-        // 直接使用低半区的最高 VPN 作为上界，避免误用高半区常量的低位（例如 TRAP_CONTEXT_BASE 的低 39 位）
+        // 直接使用低半区的最高 VPN 作为上界，避免误用高半区常量的低位。
         let upper_vpn_usize =
             ((1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE) - 1;
         if page_count == 0 || page_count > upper_vpn_usize {
@@ -634,7 +642,7 @@ impl MemorySet {
 
         memory_set.push(
             MapArea::new(
-                config::TRAP_CONTEXT_BASE.into(),
+                config::TRAP_CONTEXT.into(),
                 config::TRAMPOLINE.into(),
                 MapType::Framed,
                 MapPermission::R | MapPermission::W,
@@ -644,12 +652,8 @@ impl MemorySet {
 
         let entry_point = elf.header.pt2.entry_point() as usize;
 
-        // Build argument stack if arguments are provided
-        let actual_stack_top = if !args.is_empty() || !envs.is_empty() {
-            memory_set.build_arg_stack(user_stack_top, args, envs)?
-        } else {
-            user_stack_top
-        };
+        // 参数栈是唯一的 argv/envp 传递路径；即使两者为空，也必须写入 argc 与两个终止指针。
+        let actual_stack_top = memory_set.build_arg_stack(user_stack_top, args, envs)?;
 
         // Apply dynamic relocations if dynamic linking is enabled
         if enable_dynamic_linking && memory_set.dynamic_linker.is_some() {

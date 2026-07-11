@@ -2994,17 +2994,6 @@ impl Inode for Ext2Inode {
         self.disk.lock().i_ctime as u64
     }
 
-    fn poll_mask(&self) -> u32 {
-        match self.inode_type() {
-            InodeType::Directory | InodeType::File | InodeType::SymLink | InodeType::Device => {
-                0x0001 | 0x0004 // POLLIN | POLLOUT
-            }
-            InodeType::Fifo => {
-                // TODO: 结合管道等待队列返回精确掩码
-                0x0001 | 0x0004
-            }
-        }
-    }
 }
 
 impl FileSystem for Ext2FileSystem {
