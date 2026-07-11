@@ -38,10 +38,10 @@
 | DTB board facts | immutable BoardInfo publication |
 | hart possible/online/active、startup stack | HartTopology |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
-| task run state、generation、wait membership | SchedulingState |
+| task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd、fd table | Process |
 | PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
-| `(TGID,uaddr)` futex waiter membership | TaskManager futex queue；SchedulingState 保存唯一 token |
+| deadline/futex wait registration 及其 `(TGID,uaddr)`/deadline index | TaskManager 唯一 IndexedWaitQueue；SchedulingState 保存唯一 ID |
 | signal disposition | Arc<Process> signal-actions table |
 | signal mask、pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | OFD offset/status flags | OpenFileDescription |

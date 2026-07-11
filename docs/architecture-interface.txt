@@ -197,9 +197,11 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) fn mark_online ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn max_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn online_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn possible_hart_mask () -> usize
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raw_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn state (hart_id : usize) -> Option < & 'static HartState >
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn states () -> & 'static [HartState]
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn take_timer_softirq () -> bool
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn topology_ready () -> bool
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn validate_boot_hart (board_info : & crate :: arch :: dtb :: BoardInfo , boot_hart : usize)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn hart_id (& self) -> usize
@@ -207,7 +209,6 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn is_active (&
 kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn is_online (& self) -> bool
 kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn mark_active (& self)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn mark_online (& self)
-kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn softirq_pending (& self) -> & AtomicU32
 kernel/src/arch/riscv64/hart.rs :: pub (crate) static HART_TABLE_ADDRESS : AtomicUsize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) static HART_TABLE_LENGTH : AtomicUsize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) struct HartState
@@ -621,6 +622,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const ENOTEMPTY : isize = 39
 kernel/src/syscall/errno.rs :: pub (crate) const ERANGE : isize = 34
 kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
 kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
+kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup3 (old : usize , new : usize , flags : u32) -> isize
@@ -663,6 +665,7 @@ kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_sec : i64
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_gettime (clock_id : i32 , result : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_nanosleep (req : * const TimeSpec , rem : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
+kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_return (kernel_sp : usize , trap_return : usize) -> Self
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn zero_init () -> Self
@@ -676,7 +679,7 @@ kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8])
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs }
-kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , RunState , SignalDelivery , TaskControlBlock , WaitMembership , }
+kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , RunState , SignalDelivery , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
@@ -690,8 +693,10 @@ kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
 kernel/src/task/model.rs :: enum SignalDelivery :: None
 kernel/src/task/model.rs :: enum SignalDelivery :: Terminate (i32)
 kernel/src/task/model.rs :: enum WaitMembership :: Child
-kernel/src/task/model.rs :: enum WaitMembership :: Deadline ((u64 , u64))
-kernel/src/task/model.rs :: enum WaitMembership :: Futex ((usize , usize , u64))
+kernel/src/task/model.rs :: enum WaitMembership :: Deadline (u64)
+kernel/src/task/model.rs :: enum WaitMembership :: Futex (u64)
+kernel/src/task/model.rs :: enum WaitResult :: TimedOut
+kernel/src/task/model.rs :: enum WaitResult :: Woken
 kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: flags : usize
 kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: handler : usize
 kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: mask : u64
@@ -704,10 +709,12 @@ kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: state : IrqMutex < S
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: next_generation : u64
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: run_state : RunState
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
+kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
 kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) enum RunState
 kernel/src/task/model.rs :: pub (crate) enum SignalDelivery
 kernel/src/task/model.rs :: pub (crate) enum WaitMembership
+kernel/src/task/model.rs :: pub (crate) enum WaitResult
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
@@ -778,8 +785,8 @@ kernel/src/task/processor.rs :: pub (super) fn finish_blocking_transition (task 
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
 kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock >) -> bool
-kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_key : (u64 , u64)) -> bool
-kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , key : (usize , usize , u64)) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64
@@ -793,6 +800,7 @@ kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Again
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Fault
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Invalid
+kernel/src/task/task_manager.rs :: enum FutexWaitError :: TimedOut
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager.rs :: enum WaitChildError :: InvalidSelector
@@ -804,9 +812,10 @@ kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
 kernel/src/task/task_manager.rs :: pub (crate) enum WaitChildError
 kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
+kernel/src/task/task_manager.rs :: pub (crate) fn dispatch_pending_timer_work ()
 kernel/src/task/task_manager.rs :: pub (crate) fn exit_current_and_run_next (exit_code : i32) -> !
 kernel/src/task/task_manager.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
-kernel/src/task/task_manager.rs :: pub (crate) fn futex_wait (address : usize , expected : u32) -> Result < () , FutexWaitError >
+kernel/src/task/task_manager.rs :: pub (crate) fn futex_wait (address : usize , expected : u32 , deadline : Option < u64 > ,) -> Result < () , FutexWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn futex_wake (tgid : usize , address : usize , count : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) -> isize
 kernel/src/task/task_manager.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
@@ -842,8 +851,3 @@ kernel/src/timer.rs :: pub (crate) fn set_next_timer_interrupt ()
 kernel/src/trap/mod.rs :: pub (crate) fn init ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_handler ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_return () -> !
-kernel/src/trap/softirq.rs :: enum SoftIrq :: Timer = 0
-kernel/src/trap/softirq.rs :: pub (crate) enum SoftIrq
-kernel/src/trap/softirq.rs :: pub (crate) fn dispatch_current_cpu ()
-kernel/src/trap/softirq.rs :: pub (crate) fn raise (irq : SoftIrq)
-kernel/src/trap/softirq.rs :: pub (crate) impl SoftIrq :: fn as_index (& self) -> usize

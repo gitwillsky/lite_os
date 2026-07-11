@@ -28,12 +28,19 @@ pub(crate) enum RunState {
     Exited,
 }
 
-/// @description blocked task 的唯一等待队列 membership token。
+/// @description blocked task 的唯一 wait registration membership ID。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum WaitMembership {
-    Deadline((u64, u64)),
+    Deadline(u64),
     Child,
-    Futex((usize, usize, u64)),
+    Futex(u64),
+}
+
+/// @description blocked task 恢复时由唯一 wait registration 发布的结果。
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum WaitResult {
+    Woken,
+    TimedOut,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -228,6 +235,7 @@ pub(crate) struct SchedulingState {
     pub(crate) run_state: RunState,
     pub(crate) next_generation: u64,
     pub(crate) wait: Option<WaitMembership>,
+    pub(crate) wait_result: Option<WaitResult>,
 }
 
 impl SchedulingState {
@@ -332,6 +340,7 @@ impl TaskControlBlock {
                     run_state: RunState::New,
                     next_generation: 0,
                     wait: None,
+                    wait_result: None,
                 }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,
@@ -419,6 +428,7 @@ impl TaskControlBlock {
                     run_state: RunState::New,
                     next_generation: 0,
                     wait: None,
+                    wait_result: None,
                 }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,
@@ -492,6 +502,7 @@ impl TaskControlBlock {
                     run_state: RunState::New,
                     next_generation: 0,
                     wait: None,
+                    wait_result: None,
                 }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,

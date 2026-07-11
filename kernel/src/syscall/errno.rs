@@ -42,3 +42,5 @@ pub(crate) const ENOTEMPTY: isize = 39;
 pub(crate) const ENOSYS: isize = 38;
 /// 符号链接解析超出支持范围。
 pub(crate) const ELOOP: isize = 40;
+/// 等待在 deadline 前未完成。
+pub(crate) const ETIMEDOUT: isize = 110;

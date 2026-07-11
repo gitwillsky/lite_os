@@ -213,13 +213,13 @@ def main() -> int:
             (
                 "dynamic hart topology initialized: count=1, mask=0x1",
                 "all DTB harts online: count=1, mask=0x1",
-                "LiteOS musl pthread ok",
+                "LiteOS musl pthread sync ok",
             ),
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"musl verification failed: {error}", file=sys.stderr)
         return 1
-    print("musl 1.2.6 pthread verification passed")
+    print("musl 1.2.6 pthread sync verification passed")
     return 0
 
 

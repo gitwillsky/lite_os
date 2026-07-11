@@ -5,7 +5,7 @@ use crate::{
         sbi,
     },
     task::{
-        RunState, TaskControlBlock, WaitMembership,
+        RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
@@ -375,10 +375,14 @@ pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
 /// @description 消费一个明确 deadline wait membership，并完成无丢失唤醒转换。
 ///
 /// @param task wait queue 移出的 task owner。
-/// @param wait_key 必须与 SchedulingState 中记录的 key 相同。
+/// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
 /// @return 本次调用真正消费 membership 时返回 true；重复/stale wake 返回 false。
-pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_key: (u64, u64)) -> bool {
-    wake_waiting_task(task, WaitMembership::Deadline(wait_key))
+pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_id: u64) -> bool {
+    wake_waiting_task(
+        task,
+        WaitMembership::Deadline(wait_id),
+        Some(WaitResult::TimedOut),
+    )
 }
 
 /// @description 消费 child-exit wait membership，并完成无丢失唤醒转换。
@@ -386,14 +390,22 @@ pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_key: (u64, u6
 /// @param task Process graph 移出的唯一 waiter owner。
 /// @return membership 有效时返回 true；stale wake 返回 false。
 pub(super) fn wake_child_task(task: Arc<TaskControlBlock>) -> bool {
-    wake_waiting_task(task, WaitMembership::Child)
+    wake_waiting_task(task, WaitMembership::Child, None)
 }
 
-pub(super) fn wake_futex_task(task: Arc<TaskControlBlock>, key: (usize, usize, u64)) -> bool {
-    wake_waiting_task(task, WaitMembership::Futex(key))
+pub(super) fn wake_futex_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
+    wake_waiting_task(task, WaitMembership::Futex(wait_id), Some(result))
 }
 
-fn wake_waiting_task(task: Arc<TaskControlBlock>, expected: WaitMembership) -> bool {
+fn wake_waiting_task(
+    task: Arc<TaskControlBlock>,
+    expected: WaitMembership,
+    result: Option<WaitResult>,
+) -> bool {
     let target_cpu = select_cpu(&task);
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
@@ -401,6 +413,8 @@ fn wake_waiting_task(task: Arc<TaskControlBlock>, expected: WaitMembership) -> b
             return false;
         }
         scheduling.wait = None;
+        assert!(scheduling.wait_result.is_none());
+        scheduling.wait_result = result;
         match scheduling.run_state {
             RunState::Blocking { cpu } => {
                 scheduling.run_state = RunState::WakePending { cpu };

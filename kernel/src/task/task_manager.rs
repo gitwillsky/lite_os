@@ -1,16 +1,19 @@
 use core::sync::atomic::Ordering;
 
-use alloc::{collections::BTreeMap, sync::Arc};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use lazy_static::lazy_static;
 
 use crate::{
-    arch::hart::hart_id,
+    arch::hart::{self, hart_id},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
-        Processor, RunState, TaskControlBlock, WaitMembership,
+        Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         pid::{INIT_PID, ProcessId},
-        processor::enqueue_new_task,
+        processor::{enqueue_new_task, request_reschedule},
         scheduler::cfs_scheduler::RunQueueEntry,
         with_current_processor,
     },
@@ -120,85 +123,120 @@ impl TaskManager {
     }
 }
 
-struct DeadlineWaitQueue {
-    next_sequence: u64,
-    entries: BTreeMap<(u64, u64), Arc<TaskControlBlock>>,
+#[derive(Clone, Copy)]
+enum IndexedWaitKind {
+    Deadline,
+    Futex { tgid: usize, address: usize },
 }
 
-struct FutexWaitQueue {
-    next_sequence: u64,
-    entries: BTreeMap<(usize, usize, u64), Arc<TaskControlBlock>>,
+struct IndexedWaitEntry {
+    task: Arc<TaskControlBlock>,
+    kind: IndexedWaitKind,
+    deadline: Option<u64>,
 }
 
-impl FutexWaitQueue {
+struct IndexedWaitQueue {
+    next_id: u64,
+    entries: BTreeMap<u64, IndexedWaitEntry>,
+    futex_index: BTreeSet<(usize, usize, u64)>,
+    deadline_index: BTreeSet<(u64, u64)>,
+}
+
+impl IndexedWaitQueue {
     fn new() -> Self {
         Self {
-            next_sequence: 0,
+            next_id: 0,
             entries: BTreeMap::new(),
+            futex_index: BTreeSet::new(),
+            deadline_index: BTreeSet::new(),
         }
     }
 
-    fn insert(
+    fn allocate_id(&mut self) -> u64 {
+        self.next_id = self.next_id.wrapping_add(1);
+        assert_ne!(self.next_id, 0, "indexed wait ID wrapped");
+        self.next_id
+    }
+
+    fn insert_deadline(&mut self, deadline: u64, task: Arc<TaskControlBlock>) -> u64 {
+        let id = self.allocate_id();
+        assert!(self.deadline_index.insert((deadline, id)));
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Deadline,
+                        deadline: Some(deadline),
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
+    fn insert_futex(
         &mut self,
         tgid: usize,
         address: usize,
+        deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
-    ) -> (usize, usize, u64) {
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-        assert_ne!(self.next_sequence, 0, "futex wait sequence wrapped");
-        let key = (tgid, address, self.next_sequence);
-        assert!(self.entries.insert(key, task).is_none());
-        key
-    }
-
-    fn take(
-        &mut self,
-        tgid: usize,
-        address: usize,
-    ) -> Option<((usize, usize, u64), Arc<TaskControlBlock>)> {
-        let key = *self
-            .entries
-            .range((tgid, address, 0)..=(tgid, address, u64::MAX))
-            .next()?
-            .0;
-        self.entries.remove(&key).map(|task| (key, task))
-    }
-}
-
-impl DeadlineWaitQueue {
-    fn new() -> Self {
-        Self {
-            next_sequence: 0,
-            entries: BTreeMap::new(),
+    ) -> u64 {
+        let id = self.allocate_id();
+        assert!(self.futex_index.insert((tgid, address, id)));
+        if let Some(deadline) = deadline {
+            assert!(self.deadline_index.insert((deadline, id)));
         }
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::Futex { tgid, address },
+                        deadline,
+                    },
+                )
+                .is_none()
+        );
+        id
     }
 
-    fn insert(&mut self, deadline: u64, task: Arc<TaskControlBlock>) -> (u64, u64) {
-        self.next_sequence = self.next_sequence.wrapping_add(1);
-        assert_ne!(self.next_sequence, 0, "deadline wait sequence wrapped");
-        let key = (deadline, self.next_sequence);
-        assert!(self.entries.insert(key, task).is_none());
-        key
+    fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
+        let entry = self.entries.remove(&id)?;
+        if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
+            assert!(self.futex_index.remove(&(tgid, address, id)));
+        }
+        if let Some(deadline) = entry.deadline {
+            assert!(self.deadline_index.remove(&(deadline, id)));
+        }
+        Some(entry)
     }
 
-    fn pop_expired(&mut self, now: u64) -> Option<((u64, u64), Arc<TaskControlBlock>)> {
-        let key = *self.entries.first_key_value()?.0;
-        if key.0 > now {
+    fn take_futex(&mut self, tgid: usize, address: usize) -> Option<(u64, Arc<TaskControlBlock>)> {
+        let (_, _, id) = *self
+            .futex_index
+            .range((tgid, address, 0)..=(tgid, address, u64::MAX))
+            .next()?;
+        self.remove(id).map(|entry| (id, entry.task))
+    }
+
+    fn pop_expired(&mut self, now: u64) -> Option<(u64, Arc<TaskControlBlock>, IndexedWaitKind)> {
+        let (deadline, id) = *self.deadline_index.first()?;
+        if deadline > now {
             return None;
         }
-        self.entries.remove(&key).map(|task| (key, task))
+        self.remove(id).map(|entry| (id, entry.task, entry.kind))
     }
 }
 
 lazy_static! {
     // OWNER: task manager owns PID allocation, parent relation, live task/exit record and child waiter.
     static ref TASK_MANAGER: TaskManager = TaskManager::new();
-    // OWNER: task manager owns the deadline index for sleeping tasks.
-    static ref DEADLINE_WAIT_QUEUE: IrqMutex<DeadlineWaitQueue> =
-        IrqMutex::new(DeadlineWaitQueue::new());
-    // OWNER: task manager owns address-space-keyed futex waiter membership.
-    static ref FUTEX_WAIT_QUEUE: IrqMutex<FutexWaitQueue> =
-        IrqMutex::new(FutexWaitQueue::new());
+    // OWNER: task manager owns one wait registration plus optional futex/deadline indexes.
+    static ref INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue> =
+        IrqMutex::new(IndexedWaitQueue::new());
 }
 
 /// @description 发布 kernel 创建的唯一 init task。
@@ -418,30 +456,40 @@ pub(crate) fn reap_child(pid: usize) {
     graph.nodes.remove(&pid);
 }
 
+/// @description futex WAIT 在 task layer 的精确结果分类。
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FutexWaitError {
     Again,
     Fault,
     Invalid,
+    TimedOut,
 }
 
 /// @description 按 `(tgid,uaddr)` 等待用户 u32 改变，队列锁覆盖比较与 membership 发布。
 ///
 /// @param address 4-byte aligned 用户地址。
 /// @param expected 入队前必须匹配的当前值。
-/// @return 被 wake 后返回成功；值不等、fault 或对齐错误返回明确分类。
-pub(crate) fn futex_wait(address: usize, expected: u32) -> Result<(), FutexWaitError> {
+/// @param deadline 可选的绝对 monotonic 纳秒 deadline。
+/// @return 被 wake 后返回成功；值不等、fault、对齐错误或超时返回明确分类。
+pub(crate) fn futex_wait(
+    address: usize,
+    expected: u32,
+    deadline: Option<u64>,
+) -> Result<(), FutexWaitError> {
     if address == 0 || address & 3 != 0 {
         return Err(FutexWaitError::Invalid);
     }
     let task = current_task().expect("futex wait requires current task");
     let cpu = hart_id();
-    let mut queue = FUTEX_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     let mut bytes = [0u8; 4];
     task.copy_from_user(address, &mut bytes)
         .map_err(|_| FutexWaitError::Fault)?;
     if u32::from_ne_bytes(bytes) != expected {
         return Err(FutexWaitError::Again);
+    }
+    if deadline.is_some_and(|value| value <= get_time_ns()) {
+        return Err(FutexWaitError::TimedOut);
     }
 
     let end_time = get_time_us();
@@ -458,13 +506,24 @@ pub(crate) fn futex_wait(address: usize, expected: u32) -> Result<(), FutexWaitE
         let mut scheduling = task.scheduling.state.lock();
         assert_eq!(scheduling.run_state, RunState::Running { cpu });
         assert!(scheduling.wait.is_none());
-        let key = queue.insert(task.tgid(), address, current);
-        scheduling.wait = Some(WaitMembership::Futex(key));
+        assert!(scheduling.wait_result.is_none());
+        let wait_id = queue.insert_futex(task.tgid(), address, deadline, current);
+        scheduling.wait = Some(WaitMembership::Futex(wait_id));
         scheduling.run_state = RunState::Blocking { cpu };
     });
     drop(queue);
-    schedule_with_task_context(task);
-    Ok(())
+    schedule_with_task_context(task.clone());
+    let result = task
+        .scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("futex waiter resumed without a wake result");
+    match result {
+        WaitResult::Woken => Ok(()),
+        WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
+    }
 }
 
 /// @description 唤醒同一地址空间 key 上最多 `count` 个 futex waiter。
@@ -478,22 +537,22 @@ pub(crate) fn futex_wake(tgid: usize, address: usize, count: usize) -> usize {
         return 0;
     }
     let mut waiters = alloc::vec::Vec::new();
-    let mut queue = FUTEX_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     for _ in 0..count {
-        let Some(waiter) = queue.take(tgid, address) else {
+        let Some(waiter) = queue.take_futex(tgid, address) else {
             break;
         };
         waiters.push(waiter);
     }
     drop(queue);
     let count = waiters.len();
-    for (key, task) in waiters {
-        crate::task::processor::wake_futex_task(task, key);
+    for (wait_id, task) in waiters {
+        crate::task::processor::wake_futex_task(task, wait_id, WaitResult::Woken);
     }
     count
 }
 
-/// @description 从显式 deadline wait queue 消费所有到期 task。
+/// @description 从统一 wait registry 消费所有到期 task。
 ///
 /// @param current_time_ns 当前 monotonic 时间。
 /// @return 唤醒数量。
@@ -501,18 +560,37 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
     const WAKE_BATCH: usize = 32;
     let mut count = 0;
     for _ in 0..WAKE_BATCH {
-        let expired = DEADLINE_WAIT_QUEUE.lock().pop_expired(current_time_ns);
-        let Some((key, task)) = expired else {
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let expired = queue.pop_expired(current_time_ns);
+        drop(queue);
+        let Some((wait_id, task, kind)) = expired else {
             return count;
         };
-        if crate::task::processor::wake_deadline_task(task, key) {
+        let woke = match kind {
+            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(task, wait_id),
+            IndexedWaitKind::Futex { .. } => {
+                crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
+            }
+        };
+        if woke {
             count += 1;
         }
     }
     count
 }
 
-/// @description 在明确 deadline wait queue 上阻塞当前 task。
+/// @description 在 user-return 或 scheduler idle deferred context 消费 timer softirq。
+///
+/// @return 无返回值；无 pending work 时为空操作。
+pub(crate) fn dispatch_pending_timer_work() {
+    if !hart::take_timer_softirq() {
+        return;
+    }
+    wake_expired_tasks(get_time_ns());
+    request_reschedule();
+}
+
+/// @description 在统一 wait registry 上阻塞当前 task。
 ///
 /// @param nanoseconds 相对 monotonic 睡眠时长。
 /// @return deadline 到期返回 0；提前唤醒返回 -EINTR，overflow 返回 -EINVAL。
@@ -542,8 +620,9 @@ pub(crate) fn run_tasks() -> ! {
     with_current_processor(|processor| processor.mark_active());
 
     loop {
-        // 1. 关中断覆盖 drain/select/WFI，避免 IPI 恰好落在空队列检查与 WFI 之间而丢失 idle wake。
+        // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
+        dispatch_pending_timer_work();
         with_current_processor(|processor| processor.drain_inbound_to_local());
         let task = with_current_processor(Processor::select_task);
 
@@ -553,9 +632,17 @@ pub(crate) fn run_tasks() -> ! {
             continue;
         }
 
+        // 2. SIE=0 时执行 WFI，已在 sie 中单独使能的 timer/IPI 仍会让 hart 退出等待。
+        // 3. 醒来后才短暂打开 SIE 投递 pending trap；若在 WFI 前开中断，trap 可能先于
+        //    WFI 返回并造成 lost wakeup。
+        // idle context 不继承 user trap 的 SIE=0：醒来后显式投递一次 pending interrupt。
         use riscv::asm::wfi;
         wfi();
         drop(idle_irq);
+        // SAFETY: 当前 hart 没有 running task，所有 scheduler guard 已释放；只为投递本地 pending trap 修改 SIE。
+        unsafe { riscv::register::sstatus::set_sie() }
+        // SAFETY: 与上面的 idle-only enable 配对，恢复 kernel continuation 的 non-nested 契约。
+        unsafe { riscv::register::sstatus::clear_sie() }
     }
 }
 
@@ -628,7 +715,7 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
         ptr
     }; // 锁在此处自动释放
 
-    // TaskManager 以及 ready runqueue/sleep index 中的 owner 保证 raw context 在切换期间存活。
+    // TaskManager 以及 ready runqueue/indexed wait registry 中的 owner 保证 raw context 在切换期间存活。
     // 此处必须先释放 task-stack Arc；否则 task 若不再恢复，该 Arc 会永久埋在自身 stack。
     drop(task);
     // SAFETY: both contexts are retained by per-hart/task ownership, all guards are released,
@@ -638,7 +725,7 @@ fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     }
 }
 
-/// @description 将当前 task 加入 deadline wait queue 并切回 idle。
+/// @description 将当前 task 加入 indexed wait registry 并切回 idle。
 ///
 /// @param deadline 绝对 monotonic 纳秒 deadline。
 /// @return task 被唤醒并重新调度后返回。
@@ -652,6 +739,7 @@ fn block_current_until(deadline: u64) {
     sched.update_vruntime(runtime);
     drop(sched);
 
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     with_current_processor(|processor| {
         let current = processor
             .current
@@ -671,13 +759,22 @@ fn block_current_until(deadline: u64) {
             scheduling.wait.is_none(),
             "task already owns a wait membership"
         );
+        assert!(scheduling.wait_result.is_none());
         // state lock 覆盖 queue insertion；waker 看到 wait key 时 entry 必然已经存在。
-        let key = DEADLINE_WAIT_QUEUE.lock().insert(deadline, current);
-        scheduling.wait = Some(WaitMembership::Deadline(key));
+        let wait_id = queue.insert_deadline(deadline, current);
+        scheduling.wait = Some(WaitMembership::Deadline(wait_id));
         scheduling.run_state = RunState::Blocking { cpu };
     });
-
-    schedule_with_task_context(task);
+    drop(queue);
+    schedule_with_task_context(task.clone());
+    let result = task
+        .scheduling
+        .state
+        .lock()
+        .wait_result
+        .take()
+        .expect("deadline waiter resumed without a wake result");
+    assert_eq!(result, WaitResult::TimedOut);
 }
 
 /// 退出当前任务并运行下一个任务

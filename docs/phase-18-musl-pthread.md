@@ -1,5 +1,7 @@
 # Phase 18：固定 musl pthread create/join
 
+> 本文保留 Phase 18 历史边界；mutex/condition/timedwait 后续结论见 [Phase 19](phase-19-musl-pthread-sync.md)。
+
 ## 实际调用链
 
 固定 consumer 继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/musl-smoke.c` 在原静态启动、heap、clock 与输出路径上增加一个 joinable Thread：

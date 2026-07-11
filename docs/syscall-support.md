@@ -26,7 +26,7 @@
 | Not Planned | 当前收敛基线不计划接入；当前 `-ENOSYS`。 |
 | Removed | 曾有错号、私有或语义不完整实现，已整链删除；当前 `-ENOSYS`。 |
 
-`Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex timeout、signal interruption 或完整 pthread runtime 已成立。
+`Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、signal interruption 或完整 pthread runtime 已成立。
 
 ## 2. 当前暴露的 39 个入口
 
@@ -47,7 +47,7 @@
 | 93 | `exit` | `int status` | 不返回 | POSIX `_exit`；musl `_Exit` fallback | **Complete**。当前调用 thread 是 Process 的唯一 thread；释放 TCB 后只保留可由 parent 消费的最小 exit record。 | `kernel/src/syscall/process.rs` |
 | 94 | `exit_group` | `int status` | 不返回 | Linux extension；musl `_Exit` 首选 | **Partial**。与 thread exit 共用清理路径；当前不主动终止仍在其他 CPU 的 sibling，调用方必须先 join/clear-tid。 | `kernel/src/syscall/process.rs` |
 | 96 | `set_tid_address` | clear-child-tid pointer | calling TID | Linux thread runtime；musl pthread | **Complete**。零清除 registration；thread exit 写零并 futex-wake 一个 waiter。 | `kernel/src/syscall/process.rs` |
-| 98 | `futex` | uaddr、op、val、timeout、uaddr2、val3 | 0/wake count；`EAGAIN/EFAULT/EINVAL/ENOSYS` | Linux thread synchronization；musl pthread | **Partial**。实现 address-space-keyed WAIT/WAKE 与 PRIVATE flag，无 lost wakeup；timeout、requeue、PI、bitset 和 signal interruption未实现。 | `kernel/src/syscall/futex.rs`, `kernel/src/task/task_manager.rs` |
+| 98 | `futex` | uaddr、op、val、relative timeout、uaddr2、val3 | 0/wake count；`EAGAIN/EFAULT/EINVAL/ETIMEDOUT/ENOSYS` | Linux thread synchronization；musl pthread | **Partial**。实现 address-space-keyed WAIT/WAKE、PRIVATE flag 和 WAIT monotonic relative timeout；统一 wait registration 使 wake/timeout 只能消费一次。无 requeue、PI、bitset 和 signal interruption。 | `kernel/src/syscall/futex.rs`, `kernel/src/task/task_manager.rs` |
 | 99 | `set_robust_list` | head、len | 0；`EINVAL` | Linux robust mutex；musl pthread | **Complete**（当前 Thread 模型）。RV64 24-byte head；exit 有界遍历，原子设置 OWNER_DIED并 wake，非法用户链停止清理。 | `kernel/src/syscall/process.rs`, `kernel/src/task/model.rs` |
 | 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。有 monotonic deadline wait；无 signal interruption/restart 闭环，`rem` 只在早醒分支生效；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 113 | `clock_gettime` | `clockid_t, struct timespec *`；RV64 `i64,i64` | `0`；`EINVAL/EFAULT` | POSIX `clock_gettime`；musl vDSO fallback | **Partial**。只支持 `CLOCK_REALTIME(0)` 和 `CLOCK_MONOTONIC(1)`；其他 Linux clock ID 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
@@ -87,9 +87,9 @@
 
 ## 4. musl 结论
 
-当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、内建主线程区、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit 与 `pthread_create/join`。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 39 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer：真实路径覆盖 crt/libc 初始化、内建主线程区、guard stack、TLS clone、parent/clear-child TID、private futex、thread exit、`pthread_create/join`、mutex/condition 双向同步与 condition timedwait。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
-1. futex timeout/requeue/PI、完整 clone/exit_group 语义；
+1. futex requeue/PI/bitset/signal interruption、完整 clone/exit_group 语义；
 2. signal interruption/restart、altstack、process-directed delivery；
 3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
 4. file/shared mapping 与 destructive `MAP_FIXED`。

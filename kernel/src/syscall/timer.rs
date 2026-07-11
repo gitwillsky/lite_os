@@ -103,7 +103,7 @@ pub(crate) fn sys_clock_gettime(clock_id: i32, result: *mut TimeSpec) -> isize {
     }
 }
 
-fn decode_timespec(bytes: &[u8; core::mem::size_of::<TimeSpec>()]) -> TimeSpec {
+pub(super) fn decode_timespec(bytes: &[u8; core::mem::size_of::<TimeSpec>()]) -> TimeSpec {
     TimeSpec {
         tv_sec: i64::from_ne_bytes(bytes[..8].try_into().expect("timespec sec width")),
         tv_nsec: i64::from_ne_bytes(bytes[8..].try_into().expect("timespec nsec width")),

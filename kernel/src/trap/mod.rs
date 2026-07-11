@@ -1,5 +1,3 @@
-mod softirq;
-
 use core::{arch::asm, panic};
 
 use riscv::{
@@ -13,6 +11,7 @@ use riscv::{
 use syscall_abi::SYSCALL_EXECVE;
 
 use crate::{
+    arch::hart,
     drivers,
     memory::TRAMPOLINE,
     syscall,
@@ -21,17 +20,9 @@ use crate::{
 };
 
 #[inline(always)]
-fn clear_ssip() {
-    // SAFETY: trap code runs in S-mode and clears only the current hart's supervisor software
-    // interrupt-pending bit after consuming the event.
-    unsafe { register::sip::clear_ssoft() }
-}
-
-#[inline(always)]
 fn handle_supervisor_soft_interrupt() {
-    clear_ssip();
     // 普通 IPI 只负责唤醒；TLB 同步由 SBI RFENCE 在 M-mode 完成。
-    softirq::dispatch_current_cpu();
+    task::dispatch_pending_timer_work();
 }
 
 pub(crate) fn init() {
@@ -53,7 +44,7 @@ pub(crate) fn trap_handler() {
                 Interrupt::SupervisorTimer => {
                     // 仅做最小工作：重置下一次中断 + 通过 per-CPU softirq 登记并触发SSIP
                     timer::set_next_timer_interrupt();
-                    softirq::raise(softirq::SoftIrq::Timer);
+                    hart::raise_timer_softirq();
                 }
                 Interrupt::SupervisorExternal => {
                     drivers::handle_external_interrupt();
@@ -264,7 +255,7 @@ extern "C" fn rust_trap_from_kernel() {
                     Interrupt::SupervisorTimer => {
                         timer::set_next_timer_interrupt();
                         // kernel/user timer 使用同一 per-hart softirq；hardirq 不扫描任务表或分配。
-                        softirq::raise(softirq::SoftIrq::Timer);
+                        hart::raise_timer_softirq();
                     }
                     Interrupt::SupervisorExternal => {
                         // 内核态 VirtIO 同步 I/O 可以被 external IRQ 打断；
