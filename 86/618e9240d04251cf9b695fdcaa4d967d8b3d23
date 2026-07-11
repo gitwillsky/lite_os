@@ -1,0 +1,65 @@
+Cargo.lock
+  s_6a57e1b54cfb49::t_722c4f3ba25da2 60,187-190,209
+Cargo.toml
+  s_6a57e1b54cfb49::t_a97d0aefa4f42c 2
+kernel/Cargo.toml
+  s_6a57e1b54cfb49::t_c1784d496d5d48 19
+kernel/src/arch/riscv64/hart.rs
+  s_6a57e1b54cfb49::t_01de925bc80521 1,4,12
+kernel/src/arch/riscv64/start.rs
+  s_6a57e1b54cfb49::t_cf610fd21c6705 1-10,18-30,32-34,44-45,58-62
+kernel/src/arch/riscv64/trap.S
+  s_6a57e1b54cfb49::t_c014b6f53e3a46 78,81-82
+kernel/src/drivers/device_manager.rs
+  s_6a57e1b54cfb49::t_ad80f85a977eed 7,33,96,141,219,252,301,327
+kernel/src/drivers/goldfish_rtc.rs
+  s_6a57e1b54cfb49::t_03d48dd379e38d 7
+kernel/src/lang_item.rs
+  s_6a57e1b54cfb49::t_8f3b38a4fdda2c 12,21
+kernel/src/main.rs
+  s_6a57e1b54cfb49::t_f6fe6341a56627 5,10-11,13,33-38,41-44,49,64,66,69-71,79-80
+kernel/src/memory/mm.rs
+  s_6a57e1b54cfb49::t_2acaaf4f7c3343 376
+kernel/src/memory/mod.rs
+  s_6a57e1b54cfb49::t_4cef2a267d906e 5,46,67
+kernel/src/syscall/mod.rs
+  s_6a57e1b54cfb49::t_a0e71da3880b09 12-15,19-47,49-64,69-129
+kernel/src/syscall/process.rs
+  s_6a57e1b54cfb49::t_50d502c4edfae1 80-86,682-683
+kernel/src/task/task.rs
+  s_6a57e1b54cfb49::t_2504701c6050fb 829-832,856
+kernel/src/timer.rs
+  s_6a57e1b54cfb49::t_f2234db5a6e5f1 6,29,116,123,130,145
+kernel/src/trap/context.rs
+  s_6a57e1b54cfb49::t_22b81cf1611ee7 29-32
+kernel/src/trap/mod.rs
+  s_6a57e1b54cfb49::t_e0c9e348046127 108-112,114,116-122
+syscall-abi/Cargo.toml
+  s_6a57e1b54cfb49::t_55533dbcc7cd44 1-8
+syscall-abi/src/lib.rs
+  s_6a57e1b54cfb49::t_7ec7e0c86cd0c9 1-85
+user/Cargo.toml
+  s_6a57e1b54cfb49::t_0cd84306055622 10
+user/src/gfx.rs
+  s_6a57e1b54cfb49::t_69a03f9b80eb35 505,511,516,618-621
+user/src/syscall.rs
+  s_6a57e1b54cfb49::t_970ed803299c9a 4,153,473
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "86618e9240d04251cf9b695fdcaa4d967d8b3d23",
+  "prompts": {},
+  "sessions": {
+    "s_6a57e1b54cfb49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f41-92d6-79f0-8a09-79fd024045b3",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
