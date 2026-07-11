@@ -1,0 +1,27 @@
+kernel/src/signal/core.rs
+  s_d637a88cd4b00d::t_44c376f18d8c8e 6,101,104,115-116,122,177,285-294,299-307,318
+kernel/src/task/scheduler/cfs_scheduler.rs
+  s_d637a88cd4b00d::t_b0bfd28b33f1ce 5,7-9,12-24,30-35,38-42,45-48,53-55,59,61-63,67,69,75,77-81
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_383cade60ffe41 194-208,226
+kernel/src/trap/softirq.rs
+  s_d637a88cd4b00d::t_8e8020b322adcf 68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b46ca26c2129f04799e77ec60063d2d32f469d8",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
