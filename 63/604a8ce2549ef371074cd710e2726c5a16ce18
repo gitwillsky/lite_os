@@ -1,0 +1,41 @@
+README.md
+  s_d637a88cd4b00d::t_e793ee24efca55 16
+docs/architecture.md
+  s_d637a88cd4b00d::t_897ec3b70e2bc1 190,194
+docs/phase-28-persistence-reset.md
+  s_d637a88cd4b00d::t_93d343c1622057 1-18
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_bb06f683efa6e8 108-115
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_bfe0488bbbe8f5 28
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_dc184c0f488074 7,13,66,91
+kernel/src/syscall/reboot.rs
+  s_d637a88cd4b00d::t_f16e792728b394 1-45
+kernel/src/system.rs
+  s_d637a88cd4b00d::t_54767cea3377a2 1-30
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_1138cbe13aa172 311,321,324,334-349
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_ccdd13c603162d 26,42
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_673db42cf93854 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "63604a8ce2549ef371074cd710e2726c5a16ce18",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
