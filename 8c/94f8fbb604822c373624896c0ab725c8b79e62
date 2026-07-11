@@ -1,0 +1,43 @@
+README.md
+  s_d637a88cd4b00d::t_6d4f4dfe7365e6 15,18,99,105,119
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_558bc804727c5c 580
+docs/architecture.md
+  s_d637a88cd4b00d::t_ac47bd893a7581 106,182,184,217,227
+docs/phase-17-musl-static.md
+  s_d637a88cd4b00d::t_695eb8f631430a 36-37
+docs/phase-18-musl-pthread.md
+  s_d637a88cd4b00d::t_309fa255a354bd 1-24
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_3647b27a74fd9c 63,65-66,90,95
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_a838acb737665f 160-163,277-288,848,993,1025-1026,1028-1049
+kernel/src/memory/page_table.rs
+  s_d637a88cd4b00d::t_41c3732c0215d8 183-194
+kernel/src/syscall/memory.rs
+  s_d637a88cd4b00d::t_14c1980d2811d6 16,65,117
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_b942e19d66621f 99,108-111
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_737a33d4296af0 2,216,222
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_e27ab85bae80c4 1,7-12,15-17,19-20,30-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8c94f8fbb604822c373624896c0ab725c8b79e62",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
