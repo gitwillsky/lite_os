@@ -1,0 +1,31 @@
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_454792b219177f 1-26
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_5de726cbb899fc 14,22
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_58f009fa73e436 41-48
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_1cf234a6648dee 2,19,24,55
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_7e25816ad332dd 15,108
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_1b065173907dd1 8,13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ef6b48f6074e58f5803a52de334fc0eb28c51530",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
