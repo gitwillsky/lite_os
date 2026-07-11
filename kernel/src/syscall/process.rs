@@ -38,6 +38,14 @@ pub fn sys_get_pid() -> isize {
         .tgid() as isize
 }
 
+/// @description 返回当前进程的父进程标识。
+///
+/// @return 当前唯一的 init process 由 kernel 创建，因此父 PID 为零。
+pub fn sys_get_ppid() -> isize {
+    // 当前没有 clone/fork 入口，不存在第二个 Process；缺少这个边界会伪造尚未存在的 parent graph。
+    0
+}
+
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
 ///
 /// @return 当前任务的 TID。
@@ -79,20 +87,6 @@ pub fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *const u
         Ok(()) => 0,
         Err(crate::memory::mm::MemoryError::OutOfMemory) => -errno::ENOMEM,
         Err(_) => -errno::EINVAL,
-    }
-}
-
-/// @description 设置当前任务的真实与有效用户 ID。
-///
-/// @param uid 新的用户 ID。
-/// @return 成功返回零，权限不足返回负 errno。
-pub fn sys_setuid(uid: u32) -> isize {
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    match task.set_uid(uid) {
-        Ok(()) => 0,
-        Err(error) => error as isize,
     }
 }
 

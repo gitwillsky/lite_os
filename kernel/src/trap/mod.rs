@@ -12,6 +12,7 @@ use riscv::{
         stvec::{self, TrapMode},
     },
 };
+use syscall_abi::SYSCALL_EXECVE;
 
 use crate::{
     drivers::platform,
@@ -104,7 +105,7 @@ pub fn trap_handler() {
 
                         // 2. execve 成功时，新 TrapContext 已包含新程序入口；覆盖它会让 PC 回到旧映像。
                         let mut cx = current.load_trap_context();
-                        if syscall_id != 221 || result != 0 {
+                        if syscall_id != SYSCALL_EXECVE || result != 0 {
                             cx.x[10] = result as usize;
                         }
 

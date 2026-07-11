@@ -1,5 +1,5 @@
 use crate::{
-    syscall::errno::{EFAULT, EINVAL},
+    syscall::errno::{EFAULT, EINTR, EINVAL},
     task::current_task,
 };
 
@@ -16,12 +16,12 @@ const CLOCK_MONOTONIC: i32 = 1;
 
 /// @description 按相对单调时间挂起当前任务。
 ///
-/// @param req 用户态请求时间；空指针返回 `EINVAL`。
+/// @param req 用户态请求时间；空指针返回 `EFAULT`。
 /// @param rem 剩余时间输出地址；当前实现尚不支持中断剩余时间。
 /// @return 成功返回零，失败返回负 errno。
 pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     if req.is_null() {
-        return -EINVAL;
+        return -EFAULT;
     }
 
     let Some(task) = current_task() else {
@@ -52,7 +52,7 @@ pub fn sys_nanosleep(req: *const TimeSpec, rem: *mut TimeSpec) -> isize {
     } else {
         crate::task::nanosleep(total_ns)
     };
-    if result == -4 && !rem.is_null() {
+    if result == -EINTR && !rem.is_null() {
         let elapsed = crate::timer::get_time_ns().saturating_sub(start);
         let remaining = total_ns.saturating_sub(elapsed);
         let remaining_spec = TimeSpec {

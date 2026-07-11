@@ -145,18 +145,12 @@ impl Sched {
     }
 }
 
-struct Credentials {
-    uid: u32,
-    euid: u32,
-}
-
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
     name: Mutex<String>,
     tgid: ProcessId,
     address_space: AddressSpace,
     cwd: Mutex<String>,
-    credentials: Mutex<Credentials>,
 }
 
 /// @description 当前单进程单线程模型的 Process、Thread 与 SchedulingEntity 组合边界。
@@ -184,7 +178,6 @@ impl TaskControlBlock {
                 memory_set: Mutex::new(memory_set),
             },
             cwd: Mutex::new("/".to_string()),
-            credentials: Mutex::new(Credentials { uid: 0, euid: 0 }),
         };
         let tcb = Self {
             process,
@@ -368,18 +361,6 @@ impl TaskControlBlock {
 
     pub fn name(&self) -> String {
         self.process.name.lock().clone()
-    }
-
-    /// 设置用户ID (需要root权限)
-    pub fn set_uid(&self, uid: u32) -> Result<(), i32> {
-        let mut credentials = self.process.credentials.lock();
-        // 只有root用户可以设置任意UID
-        if credentials.euid != 0 && credentials.euid != uid {
-            return Err(-1); // EPERM
-        }
-        credentials.uid = uid;
-        credentials.euid = uid;
-        Ok(())
     }
 
     /// @description 返回当前 Process/thread group ID。
