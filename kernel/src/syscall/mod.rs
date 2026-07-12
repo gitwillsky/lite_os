@@ -4,13 +4,15 @@ mod futex;
 mod memory;
 mod poll;
 mod process;
+mod random;
 mod reboot;
 mod signal;
 mod timer;
 mod tty;
 
 use crate::syscall::{
-    fs::*, futex::*, memory::*, poll::*, process::*, reboot::*, signal::*, timer::*, tty::*,
+    fs::*, futex::*, memory::*, poll::*, process::*, random::*, reboot::*, signal::*, timer::*,
+    tty::*,
 };
 use syscall_abi::*;
 
@@ -122,6 +124,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[5],
         ),
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2]),
+        SYSCALL_GETRANDOM => sys_getrandom(args[0], args[1], args[2]),
         SYSCALL_WAIT4 => sys_wait4(
             args[0] as isize,
             args[1] as *mut i32,

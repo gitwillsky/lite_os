@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""构建固定上游 BusyBox 静态 ET_EXEC，并校验唯一受控配置与 ELF 边界。"""
+"""构建固定上游 BusyBox 动态 PIE，并校验唯一受控配置与 ELF 边界。"""
 
 from __future__ import annotations
 
@@ -35,17 +35,13 @@ from verify_musl import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "target" / "busybox-static"
+WORK = ROOT / "target" / "busybox-runtime"
 CONFIG_FRAGMENT = ROOT / "user" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
-BINARY_RECIPE_VERSION = 3
-# Linux v7.1 UAPI include/uapi/linux/vt.h：只公布 BusyBox 当前消费的稳定 request number。
-# 缺少它时 bare-metal GCC 会裁掉上游 serial-console probe，init 随后错误打开 /dev/tty5。
-LINUX_UAPI_REVISION = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
-LINUX_UAPI_CPPFLAGS = ("-DVT_OPENQRY=0x5600",)
+BINARY_RECIPE_VERSION = 5
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -202,62 +198,26 @@ def configure(source: Path, build: Path, env: dict[str, str]) -> None:
         raise RuntimeError(f"BusyBox rejected required config: {', '.join(drift)}")
 
 
-def generate_specs(
-    compiler: Path,
-    musl: MuslCachePaths,
-    env: dict[str, str],
-    bare_metal_crt_fallback: bool,
-) -> str:
-    """生成绑定当前不可变 musl generation 的 GCC specs。"""
-    result = subprocess.run(
-        [
-            "sh",
-            str(musl.source / "tools" / "musl-gcc.specs.sh"),
-            str(musl.install / "include"),
-            str(musl.install / "lib"),
-            "/lib/ld-musl-riscv64.so.1",
-        ],
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"failed to generate musl GCC specs\n{result.stdout}")
-    specs_text = result.stdout
-    if bare_metal_crt_fallback:
-        # bare-metal GCC 只提供等价的静态 crtbegin/crtend；缺少此适配会在最终链接时误报库探测失败。
-        specs_text = specs_text.replace("crtbeginS.o%s", "crtbegin.o%s")
-        specs_text = specs_text.replace("crtendS.o%s", "crtend.o%s")
-        # 同一工具链默认追加 newlib 的 libgloss；musl 静态链接必须只有唯一 libc provider。
-        specs_text = specs_text.replace(
-            "%rename cpp_options old_cpp_options",
-            "%rename cpp_options old_cpp_options\n%rename lib old_lib",
-            1,
-        )
-        specs_text = specs_text.replace("\n*esp_link:", "\n*lib:\n-lc\n\n*esp_link:", 1)
-    return specs_text
-
-
 def binary_payload(
     compiler: Path,
     musl: MuslCachePaths,
-    bare_metal_crt_fallback: bool,
 ) -> dict[str, object]:
     return {
-        "kind": "busybox-static-binary",
+        "kind": "busybox-dynamic-pie",
         "recipe_version": BINARY_RECIPE_VERSION,
         "source_fingerprint": fingerprint(source_payload()),
         "config_sha256": sha256(CONFIG_FRAGMENT),
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "compiler": compiler_identity(compiler),
         "architecture": "riscv",
-        "linux_uapi": {
-            "revision": LINUX_UAPI_REVISION,
-            "cppflags": list(LINUX_UAPI_CPPFLAGS),
+        "drivers": {
+            "compiler_sha256": sha256(ROOT / "scripts/musl_clang.py"),
+            "linker_sha256": sha256(ROOT / "scripts/musl_ld.py"),
         },
-        "bare_metal_crt_fallback": bare_metal_crt_fallback,
+        "strip": {
+            "path": "/opt/homebrew/opt/llvm/bin/llvm-strip",
+            "sha256": sha256(Path("/opt/homebrew/opt/llvm/bin/llvm-strip")),
+        },
         "environment": {
             "LC_ALL": "C",
             "CPATH": None,
@@ -268,19 +228,11 @@ def binary_payload(
     }
 
 
-def uses_bare_metal_crt(compiler: Path) -> bool:
-    return (
-        run([str(compiler), "-print-file-name=crtbeginS.o"], ROOT).strip()
-        == "crtbeginS.o"
-    )
-
-
 def binary_cache_entry(
     compiler: Path,
     musl: MuslCachePaths,
-    bare_metal_crt_fallback: bool,
 ) -> tuple[dict[str, object], str, Path]:
-    payload = binary_payload(compiler, musl, bare_metal_crt_fallback)
+    payload = binary_payload(compiler, musl)
     binary_fingerprint = fingerprint(payload)
     binary = WORK / "binaries" / binary_fingerprint / "busybox"
     return payload, binary_fingerprint, binary
@@ -289,10 +241,8 @@ def binary_cache_entry(
 def cached_busybox_binary(compiler: Path) -> Path:
     """返回 fingerprint 与 manifest 均匹配的当前 BusyBox ELF。"""
     musl = cached_musl_paths(compiler)
-    payload, _, binary = binary_cache_entry(
-        compiler, musl, uses_bare_metal_crt(compiler)
-    )
-    if not manifest_matches(binary.parent, payload, ("busybox",)):
+    payload, _, binary = binary_cache_entry(compiler, musl)
+    if not manifest_matches(binary.parent, payload, ("busybox", "busybox_unstripped")):
         raise RuntimeError("BusyBox binary cache is missing; run verify_busybox.py first")
     return binary.resolve()
 
@@ -303,14 +253,11 @@ def build_busybox(
     jobs_override: int | None,
     rebuild: bool = False,
 ) -> Path:
-    """按 source/config/musl/compiler fingerprint 构建或复用静态 BusyBox。"""
+    """按 source/config/musl/toolchain fingerprint 构建或复用动态 BusyBox。"""
     musl = cached_musl_paths(compiler)
     env = build_environment()
-    bare_metal_crt_fallback = uses_bare_metal_crt(compiler)
-    payload, binary_fingerprint, binary = binary_cache_entry(
-        compiler, musl, bare_metal_crt_fallback
-    )
-    if not rebuild and manifest_matches(binary.parent, payload, ("busybox",)):
+    payload, binary_fingerprint, binary = binary_cache_entry(compiler, musl)
+    if not rebuild and manifest_matches(binary.parent, payload, ("busybox", "busybox_unstripped")):
         print(f"BusyBox binary cache hit: {binary_fingerprint[:12]}")
         return binary.resolve()
 
@@ -322,10 +269,12 @@ def build_busybox(
         # 2. configure/build 全部发生在私有输出树，并发 reader 不会观察中间状态。
         # 3. 仅复制最终 ELF 到 generation，manifest 完整后才原子发布。
         configure(source, build, env)
-        specs = build / "musl-gcc.specs"
-        specs.write_text(generate_specs(compiler, musl, env, bare_metal_crt_fallback))
-
-        prefix = str(compiler)[: -len("gcc")]
+        env.update({
+            "LITEOS_MUSL_CLANG": str(musl.compiler),
+            "LITEOS_MUSL_LLD": str(musl.linker),
+            "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+            "LITEOS_MUSL_SYSROOT": str(musl.install),
+        })
         run(
             [
                 *make_command(jobs_override),
@@ -333,9 +282,10 @@ def build_busybox(
                 str(source),
                 f"O={build}",
                 "ARCH=riscv",
-                f"CROSS_COMPILE={prefix}",
-                f"CC={compiler} -specs={specs}",
-                f"EXTRA_CFLAGS={' '.join(LINUX_UAPI_CPPFLAGS)}",
+                f"CC={sys.executable} {ROOT / 'scripts/musl_clang.py'}",
+                f"LD={sys.executable} {ROOT / 'scripts/musl_ld.py'}",
+                f"AR={musl.archiver}",
+                "STRIP=/opt/homebrew/opt/llvm/bin/llvm-strip",
             ],
             ROOT,
             env,
@@ -344,6 +294,7 @@ def build_busybox(
         if not built_binary.is_file():
             raise RuntimeError("BusyBox build did not produce busybox")
         shutil.copy2(built_binary, generation / "busybox")
+        shutil.copy2(build / "busybox_unstripped", generation / "busybox_unstripped")
         write_manifest(generation, payload)
         publish_generation(generation, binary.parent)
         published = True
@@ -356,7 +307,7 @@ def build_busybox(
 
 
 def verify_elf(binary: Path, compiler: Path) -> None:
-    """要求静态 RISC-V ET_EXEC、非 W+X LOAD 与不可执行用户栈。"""
+    """要求动态 RISC-V PIE、标准 musl interpreter、RELRO、W^X 与 NX stack。"""
     prefix = str(compiler)[: -len("gcc")]
     readelf = Path(f"{prefix}readelf")
     if not readelf.is_file():
@@ -365,17 +316,22 @@ def verify_elf(binary: Path, compiler: Path) -> None:
     if not readelf.is_file():
         raise RuntimeError("RISC-V readelf or llvm-readelf is required")
     output = run(
-        [str(readelf), "--file-header", "--program-headers", "--wide", str(binary)], ROOT
+        [str(readelf), "--file-header", "--program-headers", "--dynamic", "--wide", str(binary)], ROOT
     )
-    for marker in ("ELF64", "RISC-V", "EXEC"):
+    for marker in ("ELF64", "RISC-V", "DYN ("):
         if marker not in output:
             raise RuntimeError(f"BusyBox ELF lacks {marker!r}")
     headers = [line.split() for line in output.splitlines()]
-    if any(columns and columns[0] in {"INTERP", "DYNAMIC"} for columns in headers):
-        raise RuntimeError("BusyBox must remain a static ET_EXEC")
+    if output.count("Requesting program interpreter:") != 1 or "/lib/ld-musl-riscv64.so.1" not in output:
+        raise RuntimeError("BusyBox must use the standard RISC-V musl interpreter")
+    for marker in ("DYNAMIC", "GNU_RELRO", "Shared library: [libc.so]", "NOW PIE"):
+        if marker not in output:
+            raise RuntimeError(f"BusyBox dynamic ELF lacks {marker!r}")
+    if "TEXTREL" in output:
+        raise RuntimeError("BusyBox dynamic ELF contains text relocations")
     loads = [columns for columns in headers if columns and columns[0] == "LOAD"]
     if not loads or not any(int(columns[1], 16) == 0 for columns in loads):
-        raise RuntimeError("BusyBox PHDR table is not covered by an offset-zero LOAD")
+        raise RuntimeError("BusyBox PIE PHDR table is not covered by an offset-zero LOAD")
     for columns in headers:
         if len(columns) < 8 or columns[0] not in {"LOAD", "GNU_STACK"}:
             continue
@@ -399,8 +355,69 @@ def find_debugfs() -> Path:
     raise RuntimeError("debugfs from e2fsprogs is required")
 
 
-def create_image(binary: Path, image: Path) -> Path:
-    """构造单一 BusyBox inode、hardlink applets 与固定 inittab 的 ext2 rootfs。"""
+def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
+    payload = {
+        "kind": "dynamic-loader-probe",
+        "recipe_version": 1,
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
+        "main_sha256": sha256(ROOT / "user/dynamic-smoke.c"),
+        "library_sha256": sha256(ROOT / "user/dynamic-smoke-lib.c"),
+    }
+    entry = WORK / "dynamic-probes" / fingerprint(payload)
+    if manifest_matches(entry, payload, ("dynamic-smoke", "libliteos-smoke.so")):
+        return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
+    generation = generation_directory(WORK / "dynamic-probe-generations", fingerprint(payload))
+    env = build_environment()
+    env.update({
+        "LITEOS_MUSL_CLANG": str(musl.compiler),
+        "LITEOS_MUSL_LLD": str(musl.linker),
+        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_SYSROOT": str(musl.install),
+    })
+    published = False
+    try:
+        run(
+            [
+                str(musl.compiler),
+                "--target=riscv64-linux-musl",
+                f"--ld-path={musl.linker}",
+                "-nostdlib",
+                "-shared",
+                "-fPIC",
+                "-Wl,-z,relro,-z,now,-z,noexecstack",
+                str(ROOT / "user/dynamic-smoke-lib.c"),
+                "-o",
+                str(generation / "libliteos-smoke.so"),
+            ],
+            ROOT,
+            env,
+        )
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/musl_clang.py"),
+                str(ROOT / "user/dynamic-smoke.c"),
+                "-fPIE",
+                "-pie",
+                "-ldl",
+                "-o",
+                str(generation / "dynamic-smoke"),
+            ],
+            ROOT,
+            env,
+        )
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+        published = True
+    finally:
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
+
+
+def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
+    """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
     run(
         [
             sys.executable,
@@ -413,9 +430,19 @@ def create_image(binary: Path, image: Path) -> Path:
         ],
         ROOT,
     )
+    dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     commands = [
         "mkdir /etc",
+        "mkdir /lib",
+        "mkdir /usr",
+        "mkdir /usr/lib",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
+        f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
+        "set_inode_field /usr/lib/libc.so mode 0100755",
+        f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
+        f"write {dynamic_probe} /bin/dynamic-smoke",
+        "set_inode_field /bin/dynamic-smoke mode 0100755",
+        "symlink /lib/ld-musl-riscv64.so.1 /usr/lib/libc.so",
     ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
@@ -443,6 +470,9 @@ def create_image(binary: Path, image: Path) -> Path:
     metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
     if f"Links: {len(expected)}" not in metadata:
         raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    loader = run([str(find_debugfs()), "-R", "stat /lib/ld-musl-riscv64.so.1", str(image)], ROOT)
+    if "Type: symlink" not in loader or "Size: 16" not in loader:
+        raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
     return image
 
 
@@ -473,7 +503,7 @@ def main() -> int:
             source = obtain_source()
             binary = build_busybox(source, compiler, jobs_override, args.rebuild)
             verify_elf(binary, compiler)
-            image = create_image(binary, args.image.resolve())
+            image = create_image(binary, cached_musl_paths(compiler), args.image.resolve())
         if args.build_only:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
@@ -496,6 +526,7 @@ def main() -> int:
                 "LITEOS_FIND_42",
                 "LITEOS_MATH_42",
                 "LITEOS_TOOLS_42",
+                "LITEOS_DLOPEN_42",
                 "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
@@ -538,6 +569,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOOLS_42",
+                    b"/bin/dynamic-smoke\n",
+                ),
+                (
+                    "LITEOS_DLOPEN_42",
                     b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n",
                 ),
                 (

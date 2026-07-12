@@ -6,8 +6,8 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, Terminal, vfs},
     memory::{
-        ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
-        TRAP_CONTEXT, UserAccessError, VirtualAddress,
+        ElfLoadError, ExecutableImage, KERNEL_SPACE, KernelStack, MapPermission, MemoryError,
+        MemorySet, TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
     task::{TrapContext, context::TaskContext, pid::ProcessId},
@@ -226,11 +226,24 @@ impl AddressSpace {
             .map_anonymous(address, length, permission, fixed_noreplace)
     }
 
-    fn unmap_anonymous(&self, address: usize, length: usize) -> Result<(), MemoryError> {
-        self.memory_set.lock().unmap_anonymous(address, length)
+    fn map_private_file(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        data: &[u8],
+    ) -> Result<usize, MemoryError> {
+        self.memory_set
+            .lock()
+            .map_private_file(address, length, permission, fixed_noreplace, data)
     }
 
-    fn protect_anonymous(
+    fn unmap_user_mapping(&self, address: usize, length: usize) -> Result<(), MemoryError> {
+        self.memory_set.lock().unmap_user_mapping(address, length)
+    }
+
+    fn protect_user_mapping(
         &self,
         address: usize,
         length: usize,
@@ -238,7 +251,7 @@ impl AddressSpace {
     ) -> Result<(), MemoryError> {
         self.memory_set
             .lock()
-            .protect_anonymous(address, length, permission)
+            .protect_user_mapping(address, length, permission)
     }
 
     /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
@@ -397,7 +410,7 @@ pub(crate) struct TaskControlBlock {
 impl TaskControlBlock {
     pub(super) fn new_with_pid(
         name: &[u8],
-        elf_data: &[u8],
+        image: &ExecutableImage,
         pid: ProcessId,
         kernel_trap_handler: usize,
         kernel_trap_return: usize,
@@ -409,7 +422,7 @@ impl TaskControlBlock {
             .map_err(|_| ElfLoadError::OutOfMemory)?;
         argv0.extend_from_slice(name);
         let initial_args = [argv0];
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data, &initial_args, &[])?;
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(image, &initial_args, &[])?;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
@@ -1144,11 +1157,34 @@ impl TaskControlBlock {
             .map_anonymous(address, length, permission, fixed_noreplace)
     }
 
-    pub(crate) fn unmap_anonymous(&self, address: usize, length: usize) -> Result<(), MemoryError> {
-        self.process.address_space.unmap_anonymous(address, length)
+    pub(crate) fn map_private_file(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        data: &[u8],
+    ) -> Result<usize, MemoryError> {
+        self.process.address_space.map_private_file(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            data,
+        )
     }
 
-    pub(crate) fn protect_anonymous(
+    pub(crate) fn unmap_user_mapping(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), MemoryError> {
+        self.process
+            .address_space
+            .unmap_user_mapping(address, length)
+    }
+
+    pub(crate) fn protect_user_mapping(
         &self,
         address: usize,
         length: usize,
@@ -1156,7 +1192,7 @@ impl TaskControlBlock {
     ) -> Result<(), MemoryError> {
         self.process
             .address_space
-            .protect_anonymous(address, length, permission)
+            .protect_user_mapping(address, length, permission)
     }
 
     /// @description 取得当前 Thread 的 context-switch 保存区锁。
@@ -1252,19 +1288,19 @@ impl TaskControlBlock {
 
     /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
     ///
-    /// @param elf_data 已完整读入 kernel 的 ELF bytes。
+    /// @param image 已完整读入 kernel 的主 ELF 与可选解释器映像。
     /// @param args 写入新用户栈的参数。
     /// @param envs 写入新用户栈的环境。
     /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
     /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
     pub(crate) fn execve_replace(
         &self,
-        elf_data: &[u8],
+        image: &ExecutableImage,
         args: &[Vec<u8>],
         envs: &[Vec<u8>],
     ) -> Result<(), ElfLoadError> {
         // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
-        let (new_memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data, args, envs)?;
+        let (new_memory_set, user_sp, entry_point) = MemorySet::from_elf(image, args, envs)?;
 
         // 步骤2: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间

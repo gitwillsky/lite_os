@@ -5,6 +5,7 @@ mod platform;
 mod uart;
 mod virtio_blk;
 mod virtio_queue;
+mod virtio_rng;
 
 pub(crate) use goldfish_rtc::GoldfishRTCDevice;
 use hal::{
@@ -13,6 +14,9 @@ use hal::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
 };
 use virtio_blk::VirtIOBlockDevice;
+use virtio_rng::VirtIORngDevice;
+
+pub(crate) use virtio_rng::fill_entropy;
 
 /// 初始化整个驱动子系统
 ///

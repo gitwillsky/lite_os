@@ -30,7 +30,7 @@ def inspect(tool: str, image: Path) -> str:
     if not image.is_file():
         raise RuntimeError(f"missing linked image: {image}")
     return subprocess.run(
-        [tool, "--file-header", "--program-headers", str(image)],
+        [tool, "--file-header", "--program-headers", "--dynamic", str(image)],
         check=True,
         cwd=ROOT,
         stdout=subprocess.PIPE,
@@ -69,7 +69,16 @@ def main() -> int:
                 "RISC-V",
                 "EXEC",
             ),
-            busybox: ("ELF64", "RISC-V", "EXEC", "GNU_STACK"),
+            busybox: (
+                "ELF64",
+                "RISC-V",
+                "DYN (",
+                "INTERP",
+                "DYNAMIC",
+                "GNU_RELRO",
+                "GNU_STACK",
+                "/lib/ld-musl-riscv64.so.1",
+            ),
         }
         for image, markers in images.items():
             label = str(image.relative_to(ROOT)) if image.is_relative_to(ROOT) else str(image)

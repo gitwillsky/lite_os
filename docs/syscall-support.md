@@ -70,11 +70,12 @@
 | 174-177 | `getuid/geteuid/getgid/getegid` | 无参数 | 0 | POSIX identity；BusyBox prompt | **Complete**（固定 root identity 基线）。当前没有 credential mutation ABI，real/effective UID/GID 均为 root 0。 | `kernel/src/syscall/process.rs` |
 | 178 | `gettid` | 无参数 | TID | Linux extension；musl pthread internals | **Complete**。单线程模型中 TID == TGID，但值来自 ThreadContext owner。 | `kernel/src/syscall/process.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
-| 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator | **Partial**。支持 anonymous private VMA 删除、洞忽略和左右拆分；触及 ELF/stack/heap 等非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES` | POSIX `munmap`；musl allocator/loader | **Partial**。支持 anonymous/file private VMA 删除、洞忽略和左右拆分；系统 VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
 | 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/pthread | **Partial**。支持 fork-shaped process clone，且忽略 flags 未启用的尾部参数；支持 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone，并按 Linux 语义忽略历史 `CLONE_DETACHED`。多线程 fork 返回 `EAGAIN`，无 vfork/namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
-| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；标准 errno | POSIX `execve`；musl direct wrapper | **Partial**。static ET_EXEC/initial stack/rollback 完整；多线程 Process 返回 `EAGAIN`，避免 sibling stale context。缺失 symlink/script/PIE/dynamic、credentials 与 signal reset。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
-| 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。只支持 eager `MAP_PRIVATE|MAP_ANONYMOUS`，含 `PROT_NONE`，可附加 `MAP_FIXED_NOREPLACE`；fd 必须为 -1、offset 为 0。无 destructive `MAP_FIXED`、file/shared/lazy mapping，强制 W^X。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
-| 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。完整 anonymous private 区间可拆分、在同一 frame 上切换 `PROT_NONE`/leaf PTE 并合并等价 VMA；缺页整体失败。强制 W^X，非 anonymous VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；标准 errno | POSIX `execve`；musl direct wrapper | **Partial**。static ET_EXEC 与动态 PIE/PT_INTERP、symlink traversal、initial auxv、rollback、CLOEXEC/signal reset 完整；多线程 Process 返回 `EAGAIN`，尚无 script interpreter/credentials。 | `kernel/src/syscall/process.rs`, `kernel/src/memory/mm.rs` |
+| 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM` | POSIX `mmap`；musl allocator/loader | **Partial**。支持 eager anonymous/file `MAP_PRIVATE`、`MAP_FIXED`、`MAP_FIXED_NOREPLACE`、PROT_NONE 与 W^X；无 MAP_SHARED、page-cache coherence、SIGBUS EOF 与 lazy paging。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Partial**。anonymous/file/ELF private VMA 可拆分并切换 leaf 权限，支持 RELRO，强制 W^X；缺页整体失败。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm.rs` |
+| 278 | `getrandom` | buffer、length、`GRND_NONBLOCK/GRND_RANDOM` | 字节数；`EFAULT/EINVAL/EIO` | Linux entropy API；musl | **Complete**（virtio-rng 基线）。唯一 entropy source 为 virtio-rng；设备失败不回退 RTC/timer。 | `kernel/src/syscall/random.rs`, `kernel/src/drivers/virtio_rng.rs` |
 | 260 | `wait4` | pid、status、options、rusage | child PID/0；标准 errno，含 `EINTR` | POSIX waitpid backend；musl direct wrapper | **Partial**。单线程 Process 支持正 PID/`-1`、blocking/`WNOHANG`、signal interruption、copyout-before-reap；handler 含 `SA_RESTART` 时透明重放，否则返回 `EINTR` 且不消费 child record。多线程调用返回 `EAGAIN`。rusage 必须为空，无 process-group/stopped/continued/signal status。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
 
 文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单线程 Process 模型。
@@ -89,17 +90,16 @@
 | 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
 | 261 | `prlimit64` | Not Planned | 当前 init 启动不需 resource limits，不返回伪 infinity 表。 |
-| 278 | `getrandom` | Missing | 无经证明 entropy source/CRNG，不以 RTC/timer 冒充随机。 |
 
 更详细的参数、userspace 结构体、flags、errno、POSIX 和 musl 路径审计见 [Phase 11 记录](phase-11-syscall-abi.md)。其 `execve` 行是 Phase 12 修复前的历史状态；当前结论以本文为准。
 
 ## 4. musl 结论
 
-当前 58 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF 与 multi-source ppoll。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C、CAD policy、文本处理/压缩工具与跨冷启动 ext2 持久化。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 59 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY 与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；
-3. `AT_RANDOM/getrandom`、HWCAP 和 dynamic interpreter/relocation；
-4. file/shared mapping 与 destructive `MAP_FIXED`。
+3. `AT_HWCAP`、vDSO 与 script interpreter；
+4. MAP_SHARED、page-cache coherence、SIGBUS EOF 与 lazy paging。
 
 因此不能将固定 smoke 通过、编号一致或具有 Linux 格式 auxv 提升为通用 musl 兼容声明。

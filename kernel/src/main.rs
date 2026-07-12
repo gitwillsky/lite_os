@@ -23,6 +23,7 @@ mod lang_item;
 mod id;
 mod ipc;
 mod memory;
+mod random;
 mod sync;
 mod syscall;
 mod system;

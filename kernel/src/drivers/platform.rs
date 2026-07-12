@@ -4,6 +4,7 @@ use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::register_block_device;
 use crate::drivers::{
     InterruptController, InterruptHandler, MmioBus, PlicInterruptController, VirtIOBlockDevice,
+    VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
 
@@ -83,6 +84,7 @@ fn init_virtio_devices(board_info: &BoardInfo) {
 
             match device_id {
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
+                4 => init_virtio_rng_device(base_addr),
                 _ => info!(
                     "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
                     device_id, base_addr
@@ -90,6 +92,12 @@ fn init_virtio_devices(board_info: &BoardInfo) {
             }
         }
     }
+}
+
+fn init_virtio_rng_device(base_addr: usize) {
+    let device = VirtIORngDevice::new(base_addr).expect("DTB virtio-rng must initialize");
+    super::virtio_rng::register(device).expect("only one virtio-rng device is supported");
+    info!("[Platform] VirtIO RNG registered at {:#x}", base_addr);
 }
 
 #[inline]

@@ -87,8 +87,14 @@ impl MemoryError {
 pub(crate) enum ElfLoadError {
     /// 物理页或页表页分配失败。
     OutOfMemory,
-    /// ELF header、segment、地址、权限或初始栈不满足当前静态 RV64 契约。
+    /// ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。
     InvalidElf,
+}
+
+/// @description exec transaction 的主 ELF 与可选 PT_INTERP file image。
+pub(crate) struct ExecutableImage {
+    pub(crate) main: Vec<u8>,
+    pub(crate) interpreter: Option<Vec<u8>>,
 }
 
 impl From<MemoryError> for ElfLoadError {
@@ -109,7 +115,7 @@ impl core::fmt::Display for ElfLoadError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::OutOfMemory => write!(f, "out of memory while loading ELF"),
-            Self::InvalidElf => write!(f, "invalid or unsupported static RV64 ELF"),
+            Self::InvalidElf => write!(f, "invalid or unsupported RV64 ELF image"),
         }
     }
 }
@@ -142,6 +148,8 @@ enum VmaKind {
         limit: usize,
     },
     Anonymous,
+    Elf,
+    File,
 }
 
 #[derive(Debug)]
@@ -190,6 +198,18 @@ impl MapArea {
     ) -> Self {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
         area.kind = VmaKind::Anonymous;
+        area
+    }
+
+    fn elf(start_va: VirtualAddress, end_va: VirtualAddress, permissions: MapPermission) -> Self {
+        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
+        area.kind = VmaKind::Elf;
+        area
+    }
+
+    fn file(start_va: VirtualAddress, end_va: VirtualAddress, permissions: MapPermission) -> Self {
+        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
+        area.kind = VmaKind::File;
         area
     }
 
@@ -342,17 +362,21 @@ impl MapArea {
         Ok(())
     }
 
-    fn partition_anonymous(
+    fn partition_protectable(
         mut self,
         start: VirtualPageNumber,
         end: VirtualPageNumber,
     ) -> (Option<Self>, Self, Option<Self>) {
-        debug_assert_eq!(self.kind, VmaKind::Anonymous);
+        debug_assert!(matches!(
+            self.kind,
+            VmaKind::Anonymous | VmaKind::Elf | VmaKind::File
+        ));
         debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
         let original_start = self.vpn_range.start;
         let original_end = self.vpn_range.end;
         let right_frames = self.data_frames.split_off(&end);
         let middle_frames = self.data_frames.split_off(&start);
+        let kind = self.kind;
         let build = |range: Range<VirtualPageNumber>, data_frames| Self {
             vpn_range: range,
             data_page_offset: 0,
@@ -360,7 +384,7 @@ impl MapArea {
             map_type: MapType::Framed,
             map_permission: self.map_permission,
             global: false,
-            kind: VmaKind::Anonymous,
+            kind,
         };
         let left = (original_start < start).then(|| build(original_start..start, self.data_frames));
         let middle = build(start..end, middle_frames);
@@ -898,7 +922,59 @@ impl MemorySet {
         Ok(start_address)
     }
 
-    fn overlapping_anonymous_keys(
+    /// @description 建立 eager file-backed private 映射；VMA 独占映射后的私有页帧。
+    pub(crate) fn map_private_file(
+        &mut self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        data: &[u8],
+    ) -> Result<usize, MemoryError> {
+        if length == 0
+            || data.len() > length
+            || !permission.contains(MapPermission::U)
+            || permission.contains(MapPermission::W | MapPermission::X)
+            || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
+        {
+            return Err(MemoryError::InvalidRange);
+        }
+        let page_count = length
+            .checked_add(config::PAGE_SIZE - 1)
+            .ok_or(MemoryError::InvalidRange)?
+            / config::PAGE_SIZE;
+        let hinted_start = VirtualAddress::from(address).floor();
+        let hinted_end = hinted_start
+            .as_usize()
+            .checked_add(page_count)
+            .map(VirtualPageNumber::from_vpn)
+            .ok_or(MemoryError::InvalidRange)?;
+        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let hint_is_valid =
+            address != 0 && hinted_start.as_usize() < user_end && hinted_end.as_usize() <= user_end;
+        let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
+            hinted_start..hinted_end
+        } else if fixed_noreplace {
+            return Err(if hint_is_valid {
+                MemoryError::AddressInUse
+            } else {
+                MemoryError::InvalidRange
+            });
+        } else {
+            self.find_free_user_range(VirtualAddress::from(Self::MMAP_BASE).floor(), page_count)
+                .ok_or(MemoryError::OutOfMemory)?
+        };
+        let start = usize::from(VirtualAddress::from(range.start));
+        let end = usize::from(VirtualAddress::from(range.end));
+        self.push(
+            MapArea::file(start.into(), end.into(), permission),
+            Some(data),
+        )?;
+        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after file mmap page-table update");
+        Ok(start)
+    }
+
+    fn overlapping_mmap_keys(
         &self,
         start: VirtualPageNumber,
         end: VirtualPageNumber,
@@ -906,7 +982,7 @@ impl MemorySet {
         let mut keys = Vec::new();
         for (key, area) in &self.areas {
             if start < area.vpn_range.end && area.vpn_range.start < end {
-                if area.kind != VmaKind::Anonymous {
+                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::File) {
                     return Err(MemoryError::PermissionDenied);
                 }
                 keys.push(*key);
@@ -935,23 +1011,23 @@ impl MemorySet {
         }
     }
 
-    /// @description 解除 anonymous private 页；未映射洞按 Linux `munmap` 语义忽略。
+    /// @description 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
     ///
     /// @param address page-aligned 起始地址。
     /// @param length 非零字节长度，向上取整到整页。
     /// @return 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
-    pub(crate) fn unmap_anonymous(
+    pub(crate) fn unmap_user_mapping(
         &mut self,
         address: usize,
         length: usize,
     ) -> Result<(), MemoryError> {
         let range = Self::checked_page_range(address, length)?;
-        let keys = self.overlapping_anonymous_keys(range.start, range.end)?;
+        let keys = self.overlapping_mmap_keys(range.start, range.end)?;
         for key in keys {
             let area = self.areas.remove(&key).unwrap();
             let cut_start = range.start.max(area.vpn_range.start);
             let cut_end = range.end.min(area.vpn_range.end);
-            let (left, mut middle, right) = area.partition_anonymous(cut_start, cut_end);
+            let (left, mut middle, right) = area.partition_protectable(cut_start, cut_end);
             middle.unmap(&mut self.page_table);
             if let Some(left) = left {
                 self.areas.insert(left.vpn_range.start, left);
@@ -986,13 +1062,13 @@ impl MemorySet {
         Ok(VirtualAddress::from(address).floor()..VirtualAddress::from(end).floor())
     }
 
-    /// @description 修改完整 anonymous private 区间权限，并按边界拆分后合并等价 VMA。
+    /// @description 修改完整 anonymous 或 ELF private 区间权限，并按边界拆分 VMA。
     ///
     /// @param address page-aligned 起始地址。
     /// @param length 非零字节长度，向上取整到整页。
     /// @param permission 新用户权限；允许 PROT_NONE，禁止 W+X。
-    /// @return 成功返回空值；缺页或非 anonymous 区间在修改前整体失败。
-    pub(crate) fn protect_anonymous(
+    /// @return 成功返回空值；缺页或触及其他系统 VMA 时在修改前整体失败。
+    pub(crate) fn protect_user_mapping(
         &mut self,
         address: usize,
         length: usize,
@@ -1004,7 +1080,15 @@ impl MemorySet {
             return Err(MemoryError::InvalidRange);
         }
         let range = Self::checked_page_range(address, length)?;
-        let keys = self.overlapping_anonymous_keys(range.start, range.end)?;
+        let mut keys = Vec::new();
+        for (key, area) in &self.areas {
+            if range.start < area.vpn_range.end && area.vpn_range.start < range.end {
+                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File) {
+                    return Err(MemoryError::PermissionDenied);
+                }
+                keys.push(*key);
+            }
+        }
         let mut covered = range.start;
         for key in &keys {
             let area = &self.areas[key];
@@ -1020,7 +1104,7 @@ impl MemorySet {
             let area = self.areas.remove(&key).unwrap();
             let change_start = range.start.max(area.vpn_range.start);
             let change_end = range.end.min(area.vpn_range.end);
-            let (left, mut middle, right) = area.partition_anonymous(change_start, change_end);
+            let (left, mut middle, right) = area.partition_protectable(change_start, change_end);
             let pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
             let old_has_leaf = MapArea::has_leaf_permission(middle.map_permission);
             let new_has_leaf = MapArea::has_leaf_permission(permission);
@@ -1107,65 +1191,47 @@ impl MemorySet {
             .ppn()
     }
 
-    /// @description 从静态 RV64 ELF 构造完整用户地址空间和 Linux 初始栈。
-    ///
-    /// @param elf_data 完整 ELF file bytes。
-    /// @param args 不含 NUL 的 argv 字节串。
-    /// @param envs 不含 NUL 的 envp 字节串。
-    /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
-    /// @errors 只区分资源耗尽与非法/不支持的 ELF，且失败时不修改现有地址空间。
-    pub(crate) fn from_elf(
+    fn map_elf_image(
+        &mut self,
         elf_data: &[u8],
-        args: &[Vec<u8>],
-        envs: &[Vec<u8>],
-    ) -> Result<(Self, usize, usize), ElfLoadError> {
+        load_bias: usize,
+        allowed_type: xmas_elf::header::Type,
+        allow_interpreter: bool,
+    ) -> Result<LoadedElf, ElfLoadError> {
         const ELF64_PHDR_SIZE: usize = 56;
-
-        let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
-        memory_set.map_trampoline().map_err(ElfLoadError::from)?;
-
         let elf = xmas_elf::ElfFile::new(elf_data).map_err(|_| ElfLoadError::InvalidElf)?;
-        let elf_header = elf.header;
-        if elf_header.pt1.class() != xmas_elf::header::Class::SixtyFour
-            || elf_header.pt1.data() != xmas_elf::header::Data::LittleEndian
-            || elf_header.pt1.version() != xmas_elf::header::Version::Current
-            || elf_header.pt2.machine().as_machine() != xmas_elf::header::Machine::RISC_V
-            || elf_header.pt2.version() != 1
-            || usize::from(elf_header.pt2.header_size()) != 64
-            || elf_header.pt2.type_().as_type() != xmas_elf::header::Type::Executable
+        let header = elf.header;
+        if header.pt1.class() != xmas_elf::header::Class::SixtyFour
+            || header.pt1.data() != xmas_elf::header::Data::LittleEndian
+            || header.pt1.version() != xmas_elf::header::Version::Current
+            || header.pt2.machine().as_machine() != xmas_elf::header::Machine::RISC_V
+            || header.pt2.version() != 1
+            || usize::from(header.pt2.header_size()) != 64
+            || header.pt2.type_().as_type() != allowed_type
         {
             return Err(ElfLoadError::InvalidElf);
         }
-        let elf_flags = match elf_header.pt2 {
-            xmas_elf::header::HeaderPt2::Header64(header) => header.flags,
+        let flags = match header.pt2 {
+            xmas_elf::header::HeaderPt2::Header64(value) => value.flags,
             xmas_elf::header::HeaderPt2::Header32(_) => return Err(ElfLoadError::InvalidElf),
         };
-        // 只接受 RVC 与 soft/single/double-float ABI；RV32E、quad-float、TSO 或未知 flag 都缺少对应执行环境。
-        if elf_flags & !0x7 != 0 || elf_flags & 0x6 == 0x6 {
+        if flags & !0x7 != 0 || flags & 0x6 == 0x6 {
             return Err(ElfLoadError::InvalidElf);
         }
-
         let ph_offset =
-            usize::try_from(elf_header.pt2.ph_offset()).map_err(|_| ElfLoadError::InvalidElf)?;
-        let ph_entry_size = usize::from(elf_header.pt2.ph_entry_size());
-        let ph_count = usize::from(elf_header.pt2.ph_count());
-        if ph_count == 0 || ph_offset < 64 || ph_entry_size != ELF64_PHDR_SIZE {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let ph_size = ph_entry_size
-            .checked_mul(ph_count)
-            .ok_or(ElfLoadError::InvalidElf)?;
+            usize::try_from(header.pt2.ph_offset()).map_err(|_| ElfLoadError::InvalidElf)?;
+        let phent = usize::from(header.pt2.ph_entry_size());
+        let phnum = usize::from(header.pt2.ph_count());
         let ph_end = ph_offset
-            .checked_add(ph_size)
-            .filter(|end| *end <= elf_data.len())
+            .checked_add(phent.checked_mul(phnum).ok_or(ElfLoadError::InvalidElf)?)
+            .filter(|end| {
+                phnum != 0 && ph_offset >= 64 && phent == ELF64_PHDR_SIZE && *end <= elf_data.len()
+            })
             .ok_or(ElfLoadError::InvalidElf)?;
-
-        let mut max_mapped_vpn = VirtualPageNumber::from(0);
-        let mut load_segments = 0usize;
-        let mut phdr_address = None;
-
-        // 1. 每个 LOAD 先完成 checked bounds、alignment 与 W^X 验证，再将它作为唯一映射 owner 提交。
-        for index in 0..elf_header.pt2.ph_count() {
+        let mut max_end = 0usize;
+        let mut phdr = None;
+        let mut loads = 0usize;
+        for index in 0..header.pt2.ph_count() {
             let ph = elf
                 .program_header(index)
                 .map_err(|_| ElfLoadError::InvalidElf)?;
@@ -1174,8 +1240,11 @@ impl MemorySet {
                     if ph.file_size() > ph.mem_size() {
                         return Err(ElfLoadError::InvalidElf);
                     }
-                    let start =
+                    let virtual_start =
                         usize::try_from(ph.virtual_addr()).map_err(|_| ElfLoadError::InvalidElf)?;
+                    let start = load_bias
+                        .checked_add(virtual_start)
+                        .ok_or(ElfLoadError::InvalidElf)?;
                     let mem_size =
                         usize::try_from(ph.mem_size()).map_err(|_| ElfLoadError::InvalidElf)?;
                     let end = start
@@ -1187,6 +1256,7 @@ impl MemorySet {
                         usize::try_from(ph.file_size()).map_err(|_| ElfLoadError::InvalidElf)?;
                     let file_end = file_start
                         .checked_add(file_size)
+                        .filter(|end| *end <= elf_data.len())
                         .ok_or(ElfLoadError::InvalidElf)?;
                     if mem_size == 0 {
                         if file_size != 0 {
@@ -1198,62 +1268,111 @@ impl MemorySet {
                         usize::try_from(ph.align()).map_err(|_| ElfLoadError::InvalidElf)?;
                     if alignment > 1
                         && (!alignment.is_power_of_two()
-                            || start % alignment != file_start % alignment)
+                            || virtual_start % alignment != file_start % alignment)
                     {
                         return Err(ElfLoadError::InvalidElf);
                     }
                     let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
-                    if start == 0 || start >= end || end > user_end || file_end > elf_data.len() {
+                    if start == 0 || start >= end || end > user_end {
                         return Err(ElfLoadError::InvalidElf);
                     }
-
-                    let mut map_perm = MapPermission::U;
-                    let ph_flags = ph.flags();
-                    if ph_flags.is_execute() {
-                        map_perm |= MapPermission::X;
+                    let mut permission = MapPermission::U;
+                    if ph.flags().is_read() {
+                        permission |= MapPermission::R;
                     }
-                    if ph_flags.is_read() {
-                        map_perm |= MapPermission::R;
+                    if ph.flags().is_write() {
+                        permission |= MapPermission::W;
                     }
-                    if ph_flags.is_write() {
-                        map_perm |= MapPermission::W;
+                    if ph.flags().is_execute() {
+                        permission |= MapPermission::X;
                     }
-                    if map_perm.contains(MapPermission::W | MapPermission::X) {
+                    if permission.contains(MapPermission::W | MapPermission::X) {
                         return Err(ElfLoadError::InvalidElf);
                     }
-
-                    let map_area =
-                        MapArea::new(start.into(), end.into(), MapType::Framed, map_perm);
-                    max_mapped_vpn = max_mapped_vpn
-                        .as_usize()
-                        .max(map_area.vpn_range.end.as_usize())
-                        .into();
-                    memory_set
-                        .push(map_area, Some(&elf_data[file_start..file_end]))
-                        .map_err(ElfLoadError::from)?;
-                    load_segments += 1;
-
+                    self.push(
+                        MapArea::elf(start.into(), end.into(), permission),
+                        Some(&elf_data[file_start..file_end]),
+                    )
+                    .map_err(ElfLoadError::from)?;
+                    max_end = max_end.max(end);
+                    loads += 1;
                     if file_start <= ph_offset && ph_end <= file_end {
-                        phdr_address = start.checked_add(ph_offset - file_start);
+                        phdr = start.checked_add(ph_offset - file_start);
                     }
                 }
-                xmas_elf::program::Type::Dynamic
-                | xmas_elf::program::Type::Interp
-                | xmas_elf::program::Type::Tls => return Err(ElfLoadError::InvalidElf),
-                // PT_GNU_STACK(0x6474e551) 要求 X 时必须拒绝；忽略该 flag 会让程序在 NX 栈上以不同契约启动。
+                xmas_elf::program::Type::Interp if allow_interpreter => {}
+                xmas_elf::program::Type::Dynamic | xmas_elf::program::Type::Tls => {}
+                xmas_elf::program::Type::Interp => return Err(ElfLoadError::InvalidElf),
                 xmas_elf::program::Type::OsSpecific(0x6474_e551) if ph.flags().is_execute() => {
                     return Err(ElfLoadError::InvalidElf);
                 }
                 _ => {}
             }
         }
-        if load_segments == 0 {
+        if loads == 0 {
             return Err(ElfLoadError::InvalidElf);
         }
-        let phdr_address = phdr_address.ok_or(ElfLoadError::InvalidElf)?;
+        let entry = load_bias
+            .checked_add(
+                usize::try_from(header.pt2.entry_point()).map_err(|_| ElfLoadError::InvalidElf)?,
+            )
+            .ok_or(ElfLoadError::InvalidElf)?;
+        let entry_pte = self
+            .translate(VirtualAddress::from(entry).floor())
+            .ok_or(ElfLoadError::InvalidElf)?;
+        if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
+            return Err(ElfLoadError::InvalidElf);
+        }
+        Ok(LoadedElf {
+            entry,
+            phdr,
+            phent,
+            phnum,
+            max_end,
+        })
+    }
 
-        let max_end_va: VirtualAddress = max_mapped_vpn.into();
-        let heap_base = usize::from(max_end_va);
+    /// @description 从 RV64 ET_EXEC 或动态 PIE+PT_INTERP 构造用户地址空间和 Linux 初始栈。
+    ///
+    /// @param elf_data 完整 ELF file bytes。
+    /// @param args 不含 NUL 的 argv 字节串。
+    /// @param envs 不含 NUL 的 envp 字节串。
+    /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
+    /// @errors 只区分资源耗尽与非法/不支持的 ELF，且失败时不修改现有地址空间。
+    pub(crate) fn from_elf(
+        image: &ExecutableImage,
+        args: &[Vec<u8>],
+        envs: &[Vec<u8>],
+    ) -> Result<(Self, usize, usize), ElfLoadError> {
+        let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
+        memory_set.map_trampoline().map_err(ElfLoadError::from)?;
+        const MAIN_PIE_BASE: usize = 0x1_0000;
+        const INTERPRETER_BASE: usize = 0x2000_0000;
+        let main_type = xmas_elf::ElfFile::new(&image.main)
+            .map_err(|_| ElfLoadError::InvalidElf)?
+            .header
+            .pt2
+            .type_()
+            .as_type();
+        let main_bias = match main_type {
+            xmas_elf::header::Type::Executable if image.interpreter.is_none() => 0,
+            xmas_elf::header::Type::SharedObject if image.interpreter.is_some() => MAIN_PIE_BASE,
+            _ => return Err(ElfLoadError::InvalidElf),
+        };
+        let main = memory_set.map_elf_image(&image.main, main_bias, main_type, true)?;
+        let (entry_point, interpreter_base) = if let Some(interpreter) = &image.interpreter {
+            let loaded = memory_set.map_elf_image(
+                interpreter,
+                INTERPRETER_BASE,
+                xmas_elf::header::Type::SharedObject,
+                false,
+            )?;
+            (loaded.entry, INTERPRETER_BASE)
+        } else {
+            (main.entry, 0)
+        };
+        let phdr_address = main.phdr.ok_or(ElfLoadError::InvalidElf)?;
+        let heap_base = VirtualAddress::from(main.max_end).ceil().as_usize() * config::PAGE_SIZE;
         let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
         let user_stack_top = user_end
             .checked_sub(config::PAGE_SIZE)
@@ -1295,14 +1414,6 @@ impl MemorySet {
             )
             .map_err(ElfLoadError::from)?;
 
-        let entry_point =
-            usize::try_from(elf.header.pt2.entry_point()).map_err(|_| ElfLoadError::InvalidElf)?;
-        let entry_pte = memory_set
-            .translate(VirtualAddress::from(entry_point).floor())
-            .ok_or(ElfLoadError::InvalidElf)?;
-        if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
-            return Err(ElfLoadError::InvalidElf);
-        }
         let phdr_pte = memory_set
             .translate(VirtualAddress::from(phdr_address).floor())
             .ok_or(ElfLoadError::InvalidElf)?;
@@ -1313,9 +1424,10 @@ impl MemorySet {
         // 3. 初始栈是 argv/envp/auxv 的唯一用户契约，不通过寄存器传递私有参数。
         let aux = ElfAuxInfo {
             phdr: phdr_address,
-            phent: ph_entry_size,
-            phnum: ph_count,
-            entry: entry_point,
+            phent: main.phent,
+            phnum: main.phnum,
+            entry: main.entry,
+            base: interpreter_base,
         };
         let actual_stack_top = memory_set.build_initial_stack(user_stack_top, args, envs, aux)?;
         Ok((memory_set, actual_stack_top, entry_point))
@@ -1333,8 +1445,12 @@ impl MemorySet {
         const AT_PHENT: usize = 4;
         const AT_PHNUM: usize = 5;
         const AT_PAGESZ: usize = 6;
+        const AT_BASE: usize = 7;
         const AT_ENTRY: usize = 9;
-        const AUX_WORDS: usize = 12;
+        const AT_RANDOM: usize = 25;
+        const AT_EXECFN: usize = 31;
+        const AUX_WORDS: usize = 18;
+        const RANDOM_BYTES: usize = 16;
 
         let total_string_size = args
             .iter()
@@ -1345,6 +1461,7 @@ impl MemorySet {
                     .checked_add(1)
                     .and_then(|size| total.checked_add(size))
             })
+            .and_then(|size| size.checked_add(RANDOM_BYTES))
             .ok_or(ElfLoadError::InvalidElf)?;
         let pointer_count = 1usize
             .checked_add(args.len())
@@ -1397,6 +1514,12 @@ impl MemorySet {
                 .and_then(|address| address.checked_add(1))
                 .ok_or(ElfLoadError::InvalidElf)?;
         }
+        let random_ptr = string_ptr;
+        let mut random = [0u8; RANDOM_BYTES];
+        crate::random::fill(&mut random).map_err(|_| ElfLoadError::InvalidElf)?;
+        self.copy_to_user(random_ptr, &random)
+            .map_err(|_| ElfLoadError::InvalidElf)?;
+        let execfn = argv_ptrs.first().copied().unwrap_or(0);
 
         let mut writer = stack_ptr;
         self.write_usize_to_user_stack(writer, args.len())?;
@@ -1419,7 +1542,10 @@ impl MemorySet {
             (AT_PHENT, aux.phent),
             (AT_PHNUM, aux.phnum),
             (AT_PAGESZ, config::PAGE_SIZE),
+            (AT_BASE, aux.base),
             (AT_ENTRY, aux.entry),
+            (AT_RANDOM, random_ptr),
+            (AT_EXECFN, execfn),
             (AT_NULL, 0),
         ] {
             self.write_usize_to_user_stack(writer, kind)?;
@@ -1463,4 +1589,14 @@ struct ElfAuxInfo {
     phent: usize,
     phnum: usize,
     entry: usize,
+    base: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LoadedElf {
+    entry: usize,
+    phdr: Option<usize>,
+    phent: usize,
+    phnum: usize,
+    max_end: usize,
 }

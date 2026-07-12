@@ -64,6 +64,17 @@ impl VirtualFileSystem {
         path: &[u8],
         allow_final_symlink: bool,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.resolve_from_with_limit(start, path, allow_final_symlink, 0)
+    }
+
+    fn resolve_from_with_limit(
+        &self,
+        start: Arc<dyn Inode>,
+        path: &[u8],
+        allow_final_symlink: bool,
+        followed_links: usize,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        const MAX_SYMLINKS: usize = 40;
         let root = self.root_inode()?;
         let root_identity = (root.filesystem_id(), root.metadata()?.inode);
         let mut inode = if path.first() == Some(&b'/') {
@@ -89,13 +100,40 @@ impl VirtualFileSystem {
                     }
                 }
                 name => {
+                    let parent = inode.clone();
                     inode = self.enter_mount(inode.find_child(name)?)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
                     if inode.inode_type() == InodeType::SymLink
                         && !(allow_final_symlink && is_untrailed_final)
                     {
-                        return Err(FileSystemError::SymbolicLink);
+                        if followed_links >= MAX_SYMLINKS {
+                            return Err(FileSystemError::SymbolicLink);
+                        }
+                        let target = inode.read_link()?;
+                        if target.is_empty() {
+                            return Err(FileSystemError::NotFound);
+                        }
+                        let remaining = path
+                            .split(|byte| *byte == b'/')
+                            .filter(|part| !matches!(*part, b"" | b"."))
+                            .skip(index + 1);
+                        let mut expanded = target;
+                        for part in remaining {
+                            if expanded.last() != Some(&b'/') {
+                                expanded.push(b'/');
+                            }
+                            expanded.extend_from_slice(part);
+                        }
+                        if path.last() == Some(&b'/') && expanded.last() != Some(&b'/') {
+                            expanded.push(b'/');
+                        }
+                        return self.resolve_from_with_limit(
+                            parent,
+                            &expanded,
+                            allow_final_symlink,
+                            followed_links + 1,
+                        );
                     }
                 }
             }

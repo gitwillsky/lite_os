@@ -7,7 +7,7 @@ use crate::{
     task::{
         ProcessGroupError, ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError,
         clone_current_thread, create_session, current_task, exit_current_and_run_next,
-        fork_current_process, load_program_from_inode, parent_pid, process_group, reap_child,
+        fork_current_process, load_executable_from_inode, parent_pid, process_group, reap_child,
         session_id, set_process_group, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
@@ -241,7 +241,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
     record.pid as isize
 }
 
-/// @description 用新的静态 RV64 ELF 映像、参数和环境替换当前进程。
+/// @description 用新的 RV64 ET_EXEC 或动态 PIE 映像、参数和环境替换当前进程。
 ///
 /// @param path NUL 结尾的可执行文件路径字节。
 /// @param argv NUL 结尾的参数指针数组。
@@ -289,11 +289,11 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Ok(inode) => inode,
         Err(error) => return program_load_errno(ProgramLoadError::FileSystem(error)),
     };
-    let elf = match load_program_from_inode(inode) {
-        Ok(elf) => elf,
+    let image = match load_executable_from_inode(inode) {
+        Ok(image) => image,
         Err(error) => return program_load_errno(error),
     };
-    match task.execve_replace(&elf, &argv, &envp) {
+    match task.execve_replace(&image, &argv, &envp) {
         Ok(()) => 0,
         Err(ElfLoadError::OutOfMemory) => -errno::ENOMEM,
         Err(ElfLoadError::InvalidElf) => -errno::ENOEXEC,
@@ -374,6 +374,7 @@ fn copy_user_string_array(
 fn program_load_errno(error: ProgramLoadError) -> isize {
     let errno = match error {
         ProgramLoadError::OutOfMemory => errno::ENOMEM,
+        ProgramLoadError::InvalidElf => errno::ENOEXEC,
         ProgramLoadError::NotRegularFile | ProgramLoadError::NotExecutable => errno::EACCES,
         ProgramLoadError::FileSystem(FileSystemError::NotFound) => errno::ENOENT,
         ProgramLoadError::FileSystem(FileSystemError::NotDirectory) => errno::ENOTDIR,

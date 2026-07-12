@@ -1928,6 +1928,34 @@ impl Inode for Ext2Inode {
         Ok(done)
     }
 
+    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+        let inode = *self.disk.lock();
+        if Self::kind_from_mode(inode.i_mode) != InodeType::SymLink {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        let size = usize::try_from(Self::disk_size(&inode))
+            .map_err(|_| FileSystemError::InvalidFileSystem)?;
+        let mut target = Vec::new();
+        target
+            .try_reserve_exact(size)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        target.resize(size, 0);
+        if size <= core::mem::size_of::<[u32; 15]>() {
+            // SAFETY: inode 是本地 Copy；packed field 通过 addr_of! 取得原始字节地址，
+            // 仅复制已由 i_size 约束且不超过 60-byte inline payload 的范围。
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    core::ptr::addr_of!(inode.i_block).cast::<u8>(),
+                    target.as_mut_ptr(),
+                    size,
+                );
+            }
+        } else if self.read_at(0, &mut target)? != size {
+            return Err(FileSystemError::IoError);
+        }
+        Ok(target)
+    }
+
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);

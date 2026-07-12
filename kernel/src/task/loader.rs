@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::fs::{FileSystemError, Inode, InodeType, vfs};
+use crate::memory::ExecutableImage;
 
 /// @description 从启动文件系统读取可执行文件时的可观察失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +14,61 @@ pub(crate) enum ProgramLoadError {
     NotRegularFile,
     /// 普通文件没有任何 execute mode bit。
     NotExecutable,
+    /// ELF program-header table 或 PT_INTERP pathname 非法。
+    InvalidElf,
+}
+
+/// @description 读取主程序并按唯一 PT_INTERP 读取动态解释器。
+pub(crate) fn load_executable_from_fs(path: &[u8]) -> Result<ExecutableImage, ProgramLoadError> {
+    let main = load_program_from_fs(path)?;
+    load_interpreter(main)
+}
+
+/// @description 从已解析 inode 读取主程序并构造完整 executable image。
+pub(crate) fn load_executable_from_inode(
+    inode: Arc<dyn Inode>,
+) -> Result<ExecutableImage, ProgramLoadError> {
+    let main = load_program_from_inode(inode)?;
+    load_interpreter(main)
+}
+
+fn load_interpreter(main: Vec<u8>) -> Result<ExecutableImage, ProgramLoadError> {
+    let elf = xmas_elf::ElfFile::new(&main).map_err(|_| ProgramLoadError::InvalidElf)?;
+    let mut interpreter_path = None;
+    for index in 0..elf.header.pt2.ph_count() {
+        let header = elf
+            .program_header(index)
+            .map_err(|_| ProgramLoadError::InvalidElf)?;
+        if header
+            .get_type()
+            .map_err(|_| ProgramLoadError::InvalidElf)?
+            != xmas_elf::program::Type::Interp
+        {
+            continue;
+        }
+        if interpreter_path.is_some() {
+            return Err(ProgramLoadError::InvalidElf);
+        }
+        let start = usize::try_from(header.offset()).map_err(|_| ProgramLoadError::InvalidElf)?;
+        let size = usize::try_from(header.file_size()).map_err(|_| ProgramLoadError::InvalidElf)?;
+        let bytes = main
+            .get(
+                start
+                    ..start
+                        .checked_add(size)
+                        .ok_or(ProgramLoadError::InvalidElf)?,
+            )
+            .ok_or(ProgramLoadError::InvalidElf)?;
+        let path = bytes
+            .strip_suffix(&[0])
+            .ok_or(ProgramLoadError::InvalidElf)?;
+        if path.first() != Some(&b'/') || path.is_empty() || path.contains(&0) {
+            return Err(ProgramLoadError::InvalidElf);
+        }
+        interpreter_path = Some(path);
+    }
+    let interpreter = interpreter_path.map(load_program_from_fs).transpose()?;
+    Ok(ExecutableImage { main, interpreter })
 }
 
 /// @description 按 Linux 字节路径从唯一根 VFS 完整读入程序映像。

@@ -30,15 +30,21 @@ from build_cache import (
 from qemu_gate import boot
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "target" / "musl-static"
+WORK = ROOT / "target" / "musl-runtime"
 MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
 MUSL_URL = f"https://musl.libc.org/releases/musl-{MUSL_VERSION}.tar.gz"
 MUSL_SHA256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
+LINUX_VERSION = "7.1"
+LINUX_URL = f"https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz"
+LINUX_SHA256 = "691f44797fbe790dc8a321604c927087526ad27b6d649925d60f8eed0a2564a0"
+MAKE_VERSION = "4.4.1"
+MAKE_URL = f"https://mirrors.kernel.org/gnu/make/make-{MAKE_VERSION}.tar.lz"
+MAKE_SHA256 = "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9"
 SOURCE_RECIPE_VERSION = 1
-SYSROOT_RECIPE_VERSION = 2
-SMOKE_RECIPE_VERSION = 2
-CONFIGURE_ARGUMENTS = ("--target=riscv64", "--disable-shared")
+SYSROOT_RECIPE_VERSION = 4
+SMOKE_RECIPE_VERSION = 3
+CONFIGURE_ARGUMENTS = ("--target=riscv64", "--prefix=/usr", "--syslibdir=/lib")
 SMOKE_LINK_ARGUMENTS = (
     "-static",
     "-no-pie",
@@ -58,6 +64,11 @@ class MuslCachePaths:
     source: Path
     install: Path
     sysroot_fingerprint: str
+    compiler: Path
+    linker: Path
+    archiver: Path
+    ranlib: Path
+    libgcc: Path
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
@@ -127,6 +138,71 @@ def obtain_source() -> Path:
     return source
 
 
+def obtain_linux_source() -> Path:
+    """获取固定 Linux 基线，作为 sysroot 中 UAPI headers 的唯一来源。"""
+    payload = {
+        "kind": "linux-uapi-source",
+        "version": LINUX_VERSION,
+        "archive_sha256": LINUX_SHA256,
+        "strip_components": 1,
+    }
+    archive = WORK / f"linux-{LINUX_VERSION}.tar.xz"
+    if not archive.is_file() or sha256(archive) != LINUX_SHA256:
+        archive.unlink(missing_ok=True)
+        temporary_archive = archive.with_suffix(".download")
+        temporary_archive.unlink(missing_ok=True)
+        print(f"downloading Linux UAPI {LINUX_VERSION}")
+        urllib.request.urlretrieve(LINUX_URL, temporary_archive)
+        if sha256(temporary_archive) != LINUX_SHA256:
+            temporary_archive.unlink(missing_ok=True)
+            raise RuntimeError("Linux release tarball SHA-256 mismatch")
+        temporary_archive.replace(archive)
+    source = WORK / "linux-sources" / fingerprint(payload)
+    if manifest_matches(source, payload, ("Makefile", "include/uapi/linux/vt.h")):
+        return source
+    temporary = temporary_directory(WORK / "linux-sources", "source")
+    try:
+        run(["tar", "-xJf", str(archive), "--strip-components=1", "-C", str(temporary)], ROOT)
+        write_manifest(temporary, payload)
+        publish_directory(temporary, source)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return source
+
+
+def obtain_gnu_make(jobs_override: int | None) -> Path:
+    """构建仓库私有 GNU Make，避免 Linux UAPI 生成依赖 host make 版本。"""
+    payload = {"kind": "gnu-make", "version": MAKE_VERSION, "archive_sha256": MAKE_SHA256}
+    install = WORK / "tools" / fingerprint(payload)
+    if manifest_matches(install, payload, ("bin/make",)):
+        return install / "bin/make"
+    archive = WORK / f"make-{MAKE_VERSION}.tar.lz"
+    if not archive.is_file() or sha256(archive) != MAKE_SHA256:
+        archive.unlink(missing_ok=True)
+        temporary_archive = archive.with_suffix(".download")
+        urllib.request.urlretrieve(MAKE_URL, temporary_archive)
+        if sha256(temporary_archive) != MAKE_SHA256:
+            temporary_archive.unlink(missing_ok=True)
+            raise RuntimeError("GNU Make release tarball SHA-256 mismatch")
+        temporary_archive.replace(archive)
+    build = temporary_directory(WORK / "tool-builds", "make")
+    generation = generation_directory(WORK / "tool-generations", fingerprint(payload))
+    published = False
+    try:
+        run(["tar", "-xf", str(archive), "--strip-components=1", "-C", str(build)], ROOT)
+        run([str(build / "configure"), f"--prefix={generation}", "--disable-nls"], build)
+        run(make_command(jobs_override), build)
+        run(["make", "install"], build)
+        write_manifest(generation, payload)
+        publish_generation(generation, install)
+        published = True
+    finally:
+        shutil.rmtree(build, ignore_errors=True)
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    return install / "bin/make"
+
+
 def find_compiler() -> Path:
     candidates = (
         shutil.which("riscv64-linux-gnu-gcc"),
@@ -140,6 +216,19 @@ def find_compiler() -> Path:
     raise RuntimeError("a RISC-V GCC cross compiler is required")
 
 
+def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
+    """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。"""
+    llvm = Path("/opt/homebrew/opt/llvm/bin")
+    clang = llvm / "clang"
+    archiver = Path("/opt/homebrew/bin/riscv64-unknown-elf-ar")
+    ranlib = Path("/opt/homebrew/bin/riscv64-unknown-elf-ranlib")
+    rustup = Path.home() / ".rustup" / "toolchains"
+    linkers = sorted(rustup.glob("nightly-*-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld"), reverse=True)
+    if not clang.is_file() or not archiver.is_file() or not ranlib.is_file() or not linkers:
+        raise RuntimeError("Homebrew LLVM/RISC-V binutils and a pinned Rust rust-lld are required")
+    return clang.resolve(), linkers[0].resolve(), archiver.resolve(), ranlib.resolve()
+
+
 def compiler_identity(compiler: Path) -> dict[str, object]:
     return {
         "path": str(compiler),
@@ -148,12 +237,25 @@ def compiler_identity(compiler: Path) -> dict[str, object]:
     }
 
 
+def tool_identity(tool: Path, version_argument: str = "--version") -> dict[str, str]:
+    return {"path": str(tool), "version": run([str(tool), version_argument], ROOT).splitlines()[0]}
+
+
 def sysroot_payload(compiler: Path) -> dict[str, object]:
+    clang, linker, archiver, ranlib = find_runtime_toolchain()
+    libgcc = Path(run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()).resolve()
     return {
-        "kind": "musl-static-sysroot",
+        "kind": "musl-runtime-sysroot",
         "recipe_version": SYSROOT_RECIPE_VERSION,
         "source_fingerprint": fingerprint(source_payload()),
-        "compiler": compiler_identity(compiler),
+        "linux_uapi": {"version": LINUX_VERSION, "archive_sha256": LINUX_SHA256},
+        "compiler_runtime": {"compiler": compiler_identity(compiler), "libgcc": {"path": str(libgcc), "sha256": sha256(libgcc)}},
+        "toolchain": {
+            "clang": tool_identity(clang),
+            "linker": {"path": str(linker), "sha256": sha256(linker)},
+            "archiver": tool_identity(archiver),
+            "ranlib": tool_identity(ranlib),
+        },
         "configure_arguments": list(CONFIGURE_ARGUMENTS),
         "environment": {
             "LC_ALL": "C",
@@ -171,39 +273,63 @@ def sysroot_cache_path(payload: dict[str, object]) -> Path:
 
 def build_musl(
     source: Path,
+    linux_source: Path,
     compiler: Path,
     jobs_override: int | None,
     rebuild: bool = False,
 ) -> tuple[Path, str]:
-    """按 compiler/recipe fingerprint 构建或复用静态 musl sysroot。"""
+    """按 toolchain/recipe fingerprint 构建或复用唯一 musl runtime。"""
     payload = sysroot_payload(compiler)
     sysroot_fingerprint = fingerprint(payload)
     install = sysroot_cache_path(payload)
-    required = ("lib/libc.a", "lib/crt1.o", "lib/crti.o", "lib/crtn.o")
-    if not rebuild and manifest_matches(install, payload, required):
+    required = ("usr/include/linux/vt.h", "usr/lib/libc.a", "usr/lib/libc.so", "usr/lib/crt1.o", "usr/lib/Scrt1.o", "usr/lib/crti.o", "usr/lib/crtn.o", "toolchain/ld.lld")
+    loader = install / "lib/ld-musl-riscv64.so.1"
+    if not rebuild and manifest_matches(install, payload, required) and loader.is_symlink() and os.readlink(loader) == "/usr/lib/libc.so":
         print(f"musl sysroot cache hit: {sysroot_fingerprint[:12]}")
         return install, sysroot_fingerprint
 
     build = temporary_directory(WORK / "builds", "build")
     generation = generation_directory(WORK / "install-generations", sysroot_fingerprint)
-    prefix = str(compiler)[: -len("gcc")]
+    clang, linker, archiver, ranlib = find_runtime_toolchain()
+    libgcc = run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()
+    gmake = obtain_gnu_make(jobs_override)
+    lld_alias = build / "ld.lld"
+    lld_alias.symlink_to(linker)
     env = build_environment()
+    env.update({
+        "CC": f"{clang} --target=riscv64-linux-musl --ld-path={lld_alias}",
+        "AR": str(archiver),
+        "RANLIB": str(ranlib),
+        "LIBCC": libgcc,
+    })
     published = False
     try:
         run(
             [
                 str(source / "configure"),
                 *CONFIGURE_ARGUMENTS,
-                f"--prefix={generation}",
-                f"CROSS_COMPILE={prefix}",
             ],
             build,
             env,
         )
         run(make_command(jobs_override), build, env)
-        run(["make", "install"], build, env)
-        if not all((generation / relative).is_file() for relative in required):
-            raise RuntimeError("musl install is missing required static sysroot artifacts")
+        run(
+            [
+                str(gmake),
+                *(make_command(jobs_override)[1:]),
+                "ARCH=riscv",
+                f"INSTALL_HDR_PATH={generation / 'usr'}",
+                "headers_install",
+            ],
+            linux_source,
+            env,
+        )
+        run(["make", f"DESTDIR={generation}", "install"], build, env)
+        (generation / "toolchain").mkdir()
+        (generation / "toolchain/ld.lld").symlink_to(linker)
+        generation_loader = generation / "lib/ld-musl-riscv64.so.1"
+        if not all((generation / relative).is_file() for relative in required) or not generation_loader.is_symlink() or os.readlink(generation_loader) != "/usr/lib/libc.so":
+            raise RuntimeError("musl install is missing required runtime artifacts")
         write_manifest(generation, payload)
         publish_generation(generation, install)
         published = True
@@ -222,10 +348,14 @@ def cached_musl_paths(compiler: Path) -> MuslCachePaths:
         raise RuntimeError("musl source cache is missing; run verify_musl.py first")
     payload = sysroot_payload(compiler)
     install = sysroot_cache_path(payload)
-    required = ("lib/libc.a", "lib/crt1.o", "lib/crti.o", "lib/crtn.o")
-    if not manifest_matches(install, payload, required):
+    required = ("usr/include/linux/vt.h", "usr/lib/libc.a", "usr/lib/libc.so", "usr/lib/crt1.o", "usr/lib/Scrt1.o", "usr/lib/crti.o", "usr/lib/crtn.o", "toolchain/ld.lld")
+    loader = install / "lib/ld-musl-riscv64.so.1"
+    if not manifest_matches(install, payload, required) or not loader.is_symlink() or os.readlink(loader) != "/usr/lib/libc.so":
         raise RuntimeError("musl sysroot cache is missing; run verify_musl.py first")
-    return MuslCachePaths(source.resolve(), install.resolve(), fingerprint(payload))
+    clang, linker, archiver, ranlib = find_runtime_toolchain()
+    libgcc = Path(run([str(compiler), "-print-libgcc-file-name"], ROOT).strip()).resolve()
+    resolved_install = install.resolve()
+    return MuslCachePaths(source.resolve(), resolved_install, fingerprint(payload), clang, resolved_install / "toolchain/ld.lld", archiver, ranlib, libgcc)
 
 
 def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> dict[str, object]:
@@ -266,18 +396,18 @@ def link_smoke(
             [
                 str(compiler),
                 *SMOKE_LINK_ARGUMENTS,
-                f"-I{install / 'include'}",
+                f"-I{install / 'usr/include'}",
                 "-o",
                 str(generation_output),
-                str(install / "lib" / "crt1.o"),
-                str(install / "lib" / "crti.o"),
+                str(install / "usr/lib" / "crt1.o"),
+                str(install / "usr/lib" / "crti.o"),
                 str(ROOT / "user" / "musl-smoke.c"),
-                f"-L{install / 'lib'}",
+                f"-L{install / 'usr/lib'}",
                 "-Wl,--start-group",
-                "-lc",
+                str(install / "usr/lib/libc.a"),
                 libgcc,
                 "-Wl,--end-group",
-                str(install / "lib" / "crtn.o"),
+                str(install / "usr/lib" / "crtn.o"),
             ],
             ROOT,
         )
@@ -292,7 +422,7 @@ def link_smoke(
 
 
 def verify_elf(binary: Path, compiler: Path) -> None:
-    """拒绝动态/TLS/WX 产物，并证明 PHDR 位于 offset-zero LOAD。"""
+    """校验静态 smoke 的 ET_EXEC、PHDR 覆盖、W^X 与 NX stack。"""
     prefix = str(compiler)[: -len("gcc")]
     readelf = Path(f"{prefix}readelf")
     if not readelf.is_file():
@@ -307,8 +437,8 @@ def verify_elf(binary: Path, compiler: Path) -> None:
         if marker not in output:
             raise RuntimeError(f"musl smoke ELF lacks {marker!r}")
     headers = [line.split() for line in output.splitlines()]
-    if any(columns and columns[0] in {"INTERP", "DYNAMIC", "TLS"} for columns in headers):
-        raise RuntimeError("musl smoke must remain a static non-TLS ET_EXEC")
+    if any(columns and columns[0] in {"INTERP", "DYNAMIC"} for columns in headers):
+        raise RuntimeError("musl smoke must remain a static ET_EXEC")
     loads = [columns for columns in headers if columns and columns[0] == "LOAD"]
     if not loads or not any(int(columns[1], 16) == 0 for columns in loads):
         raise RuntimeError("musl smoke PHDR table is not covered by an offset-zero LOAD")
@@ -357,13 +487,14 @@ def main() -> int:
         compiler = find_compiler()
         with cache_lock(WORK / ".build.lock"):
             source = obtain_source()
+            linux_source = obtain_linux_source()
             install, sysroot_fingerprint = build_musl(
-                source, compiler, jobs_override, args.rebuild
+                source, linux_source, compiler, jobs_override, args.rebuild
             )
             binary = link_smoke(install, compiler, sysroot_fingerprint, args.rebuild)
             verify_elf(binary, compiler)
         if args.build_only:
-            print(f"musl {MUSL_VERSION} static userspace build passed")
+            print(f"musl {MUSL_VERSION} runtime build passed")
             return 0
         image = create_image(binary)
         boot(

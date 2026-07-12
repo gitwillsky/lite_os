@@ -12,7 +12,7 @@ mod scheduler;
 mod task_manager;
 mod trap_context;
 
-pub(crate) use loader::{ProgramLoadError, load_program_from_fs, load_program_from_inode};
+pub(crate) use loader::{ProgramLoadError, load_executable_from_fs, load_executable_from_inode};
 pub(crate) use model::{
     LinuxSigAction, PendingSignal, RunState, SignalDelivery, TaskControlBlock, WaitMembership,
     WaitResult,
@@ -42,10 +42,10 @@ pub(crate) fn init(
     console: Arc<dyn Console>,
 ) {
     processor::init_topology();
-    let elf_data = load_program_from_fs(INIT_PROC_NAME).expect("failed to read /bin/init");
+    let image = load_executable_from_fs(INIT_PROC_NAME).expect("failed to read /bin/init");
     let init_proc = TaskControlBlock::new_with_pid(
         INIT_PROC_NAME,
-        &elf_data,
+        &image,
         ProcessId::init(),
         kernel_trap_handler,
         kernel_trap_return,

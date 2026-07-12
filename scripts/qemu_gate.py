@@ -75,6 +75,10 @@ def boot(
         f"file={image},if=none,format=raw,id=x0",
         "-device",
         "virtio-blk-device,drive=x0",
+        "-object",
+        "rng-random,filename=/dev/urandom,id=rng0",
+        "-device",
+        "virtio-rng-device,rng=rng0",
     ]
     process = subprocess.Popen(
         command,

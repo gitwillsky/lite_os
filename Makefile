@@ -21,10 +21,12 @@ run: build
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
 	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
 	-drive file=fs.img,if=none,format=raw,id=x0 \
-	-device virtio-blk-device,drive=x0
+	-device virtio-blk-device,drive=x0 \
+	-object rng-random,filename=/dev/urandom,id=rng0 \
+	-device virtio-rng-device,rng=rng0
 
 run-gdb: build
-	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -S -s
+	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -S -s
 
 clean:
 	cargo clean
@@ -32,10 +34,10 @@ clean:
 	rm -f fs.img
 
 clean-musl:
-	rm -rf target/musl-static
+	rm -rf target/musl-runtime
 
 clean-busybox:
-	rm -rf target/busybox-static
+	rm -rf target/busybox-runtime
 
 build: build-kernel build-bootloader build-rootfs
 

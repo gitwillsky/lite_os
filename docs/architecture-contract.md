@@ -16,19 +16,20 @@
 | `arch` | `config`, `memory`, `sync` | architecture mechanism 不得消费上层领域状态 |
 | `config` | 无 | 只保存无运行时依赖的常量 |
 | `sync` | `arch` | 只依赖本地中断机制 |
-| `memory` | `arch`, `config`, `id`, `sync` | 不感知 task、filesystem 或 driver policy |
+| `memory` | `arch`, `config`, `id`, `random`, `sync` | 不感知 task、filesystem 或具体 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
 | `ipc` | `sync` | 只拥有 Pipe data/lifecycle，不感知 fd、task 或 syscall |
 | `fs` | `drivers`, `ipc`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
 | `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
-| `syscall` | `fs`, `ipc`, `memory`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `syscall` | `fs`, `ipc`, `memory`, `random`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch` | 只拥有 whole-system reset/shutdown/CAD policy |
 | `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
 | `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
-| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
+| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `random`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 
@@ -54,6 +55,7 @@
 | root mount、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
 | inode/on-disk allocation state | filesystem adapter mutation domain |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
+| entropy device 与请求串行化 | VirtIORngDevice；random facade 不缓存或派生第二份状态 |
 | UART MMIO 与固定容量 RX ring | UART driver；hardirq 只填 ring，console waiter 只由 deferred softirq 消费 |
 | interrupt registration/affinity | interrupt controller |
 | syscall number | syscall-abi |
@@ -76,7 +78,7 @@
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
-- `user/` 顶层只允许 `busybox.config`、`inittab` 与 `musl-smoke.c`；围栏禁止其他文件/目录、Rust user crate/source/linker、`build-user` 和旧 init artifact。
+- `user/` 顶层只允许固定 BusyBox config/inittab、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
 
 ## 5. Change contract
 

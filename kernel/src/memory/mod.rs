@@ -15,7 +15,9 @@ pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
 pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous};
 pub(crate) use kernel_stack::KernelStack;
-pub(crate) use mm::{ElfLoadError, MapPermission, MemoryError, MemorySet, UserAccessError};
+pub(crate) use mm::{
+    ElfLoadError, ExecutableImage, MapPermission, MemoryError, MemorySet, UserAccessError,
+};
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {

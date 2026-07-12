@@ -305,6 +305,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn init ()
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
 kernel/src/drivers/platform.rs :: pub (super) fn handle_external_interrupt ()
 kernel/src/drivers/platform.rs :: pub (super) fn init ()
 kernel/src/drivers/uart.rs :: pub (super) fn enable_receive_interrupt ()
@@ -349,6 +350,10 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqAvail
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqDesc
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsed
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsedElem
+kernel/src/drivers/virtio_rng.rs :: pub (crate) fn fill_entropy (bytes : & mut [u8]) -> Result < () , () >
+kernel/src/drivers/virtio_rng.rs :: pub (super) fn register (device : Arc < VirtIORngDevice >) -> Result < () , () >
+kernel/src/drivers/virtio_rng.rs :: pub (super) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_rng.rs :: pub (super) struct VirtIORngDevice
 kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Arc < Self >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/ext2.rs :: pub (crate) impl Ext2FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
@@ -461,6 +466,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn list (& self) -> Result < Vec < DirectoryEntry > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_at (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
@@ -607,7 +613,7 @@ kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn get_top 
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn new () -> Self
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn try_new () -> Result < Self , MemoryError >
 kernel/src/memory/kernel_stack.rs :: pub (crate) struct KernelStack
-kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " ELF header、segment、地址、权限或初始栈不满足当前静态 RV64 契约。"] InvalidElf
+kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。"] InvalidElf
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " 物理页或页表页分配失败。"] OutOfMemory
 kernel/src/memory/mm.rs :: enum MapType :: Framed
 kernel/src/memory/mm.rs :: enum MapType :: Identical
@@ -620,6 +626,8 @@ kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 在调用方指定
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址为空、非用户 canonical 地址、未映射或权限不匹配。"] Fault
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址加长度发生整数溢出。"] Overflow
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 无法为 kernel-owned copy 缓冲区分配内存。"] OutOfMemory
+kernel/src/memory/mm.rs :: pub (crate) ExecutableImage :: interpreter : Option < Vec < u8 > >
+kernel/src/memory/mm.rs :: pub (crate) ExecutableImage :: main : Vec < u8 >
 kernel/src/memory/mm.rs :: pub (crate) enum ElfLoadError
 kernel/src/memory/mm.rs :: pub (crate) enum MapType
 kernel/src/memory/mm.rs :: pub (crate) enum MemoryError
@@ -638,12 +646,13 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& se
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_to_user (& mut self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < Vec < u8 > , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , isize >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (elf_data : & [u8] , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < (Self , usize , usize) , ElfLoadError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_private_file (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_trampoline (& mut self) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn new () -> Self
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn protect_anonymous (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn protect_user_mapping (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn push (& mut self , mut map_area : MapArea , data : Option < & [u8] > ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_thread_trap_context (& mut self , address : usize)
@@ -652,8 +661,9 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> us
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& self) -> Result < Self , MemoryError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_anonymous (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_user_mapping (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& self , address : usize , length : usize ,) -> Result < () , UserAccessError >
+kernel/src/memory/mm.rs :: pub (crate) struct ExecutableImage
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
@@ -666,7 +676,7 @@ kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , Virtu
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameTracker , alloc_contiguous }
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , MapPermission , MemoryError , MemorySet , UserAccessError }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , ExecutableImage , MapPermission , MemoryError , MemorySet , UserAccessError , }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable
@@ -689,6 +699,7 @@ kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn new (pp
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn ppn (& self) -> PhysicalPageNumber
 kernel/src/memory/page_table.rs :: pub (crate) struct PageTable
 kernel/src/memory/page_table.rs :: pub (crate) struct PageTableEntry
+kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: const fn new (value : T) -> Self
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn lock (& self) -> IrqMutexGuard < '_ , T >
 kernel/src/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn disable () -> Self
@@ -709,6 +720,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const EISDIR : isize = 21
 kernel/src/syscall/errno.rs :: pub (crate) const ELOOP : isize = 40
 kernel/src/syscall/errno.rs :: pub (crate) const EMFILE : isize = 24
 kernel/src/syscall/errno.rs :: pub (crate) const ENAMETOOLONG : isize = 36
+kernel/src/syscall/errno.rs :: pub (crate) const ENODEV : isize = 19
 kernel/src/syscall/errno.rs :: pub (crate) const ENOENT : isize = 2
 kernel/src/syscall/errno.rs :: pub (crate) const ENOEXEC : isize = 8
 kernel/src/syscall/errno.rs :: pub (crate) const ENOMEM : isize = 12
@@ -775,6 +787,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_set_tid_address (address : u
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setpgid (pid : usize , pgid : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
+kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigprocmask (how : usize , set : usize , old_set : usize , signal_set_size : usize ,) -> isize
@@ -798,16 +811,19 @@ kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_retur
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn zero_init () -> Self
 kernel/src/task/context.rs :: pub (crate) struct TaskContext
+kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF program-header table 或 PT_INTERP pathname 非法。"] InvalidElf
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS 路径解析或块读取失败。"] FileSystem (FileSystemError)
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 无法为完整 file image 分配 kernel 缓冲区。"] OutOfMemory
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 普通文件没有任何 execute mode bit。"] NotExecutable
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 最终 inode 不是普通文件。"] NotRegularFile
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
+kernel/src/task/loader.rs :: pub (crate) fn load_executable_from_fs (path : & [u8]) -> Result < ExecutableImage , ProgramLoadError >
+kernel/src/task/loader.rs :: pub (crate) fn load_executable_from_inode (inode : Arc < dyn Inode > ,) -> Result < ExecutableImage , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8]) -> Result < Vec < u8 > , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) fn load_program_from_inode (inode : Arc < dyn Inode >) -> Result < Vec < u8 > , ProgramLoadError >
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
-kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_program_from_fs , load_program_from_inode }
+kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_executable_from_fs , load_executable_from_inode }
 kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , PendingSignal , RunState , SignalDelivery , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
@@ -865,7 +881,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signa
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , elf_data : & [u8] , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : alloc :: sync :: Arc < OpenFileDescription > , cloexec : bool ,) -> Result < usize , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate_pair (& self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
@@ -876,8 +892,9 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& se
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_anonymous (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
@@ -892,7 +909,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn terminal (& 
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tgid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_anonymous (& self , address : usize , length : usize) -> Result < () , MemoryError >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < dyn Inode >
 kernel/src/task/model.rs :: pub (crate) struct LinuxSigAction
@@ -906,7 +923,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn close_all_files (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (name : & [u8] , elf_data : & [u8] , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (name : & [u8] , image : & ExecutableImage , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn queue_signal (& self , signal : usize , info : PendingSignal) -> Result < () , () >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >

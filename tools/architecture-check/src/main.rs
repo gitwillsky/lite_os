@@ -28,6 +28,7 @@ const KERNEL_MODULES: &[&str] = &[
     "log",
     "main",
     "memory",
+    "random",
     "sync",
     "syscall",
     "system",
@@ -130,14 +131,20 @@ fn repository_root() -> PathBuf {
 }
 
 fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
-    let allowed_user_files = BTreeSet::from(["busybox.config", "inittab", "musl-smoke.c"]);
+    let allowed_user_files = BTreeSet::from([
+        "busybox.config",
+        "dynamic-smoke-lib.c",
+        "dynamic-smoke.c",
+        "inittab",
+        "musl-smoke.c",
+    ]);
     match fs::read_dir(root.join("user")) {
         Ok(entries) => {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !allowed_user_files.contains(name.as_str()) {
                     errors.push(format!(
-                        "user/{name}: only fixed BusyBox config/inittab and the musl consumer are allowed"
+                        "user/{name}: only fixed BusyBox config/inittab and musl/dynamic-loader consumers are allowed"
                     ));
                 }
             }

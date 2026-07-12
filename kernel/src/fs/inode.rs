@@ -95,6 +95,12 @@ pub(crate) trait Inode: Send + Sync {
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
 
+    /// @description 读取 symbolic-link 的原始 target bytes，不追加 NUL。
+    /// @return symbolic-link 返回完整 target；其他 inode 默认返回 InvalidOperation。
+    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+
     fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
 
     fn append(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;

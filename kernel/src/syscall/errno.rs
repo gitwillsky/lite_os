@@ -29,6 +29,8 @@ pub(crate) const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub(crate) const EFAULT: isize = 14;
 pub(crate) const EEXIST: isize = 17;
+/// fd backend 不支持所请求的设备映射操作。
+pub(crate) const ENODEV: isize = 19;
 /// 路径分量不是目录。
 pub(crate) const ENOTDIR: isize = 20;
 pub(crate) const EISDIR: isize = 21;
