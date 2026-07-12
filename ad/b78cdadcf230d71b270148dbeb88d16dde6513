@@ -1,0 +1,27 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_475a641d3a4063 69-82,99
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_78333ea918ec54 1071,1073-1074
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_2e528526bbae7e 24-27,1212
+kernel/src/task/task_manager/procfs.rs
+  s_d637a88cd4b00d::t_9732585b99949d 1-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "adb78cdadcf230d71b270148dbeb88d16dde6513",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
