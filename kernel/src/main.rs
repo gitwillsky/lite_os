@@ -99,6 +99,13 @@ fn mount_root_filesystem() {
         .mount_at(b"/dev", fs::DevFileSystem::instance())
         .expect("failed to mount devfs at /dev");
     info!("devfs mounted at /dev");
+    fs::vfs()
+        .mount_at(
+            b"/proc",
+            fs::ProcFileSystem::new(Arc::new(task::KernelProcSource)),
+        )
+        .expect("failed to mount procfs at /proc");
+    info!("procfs mounted at /proc");
 }
 
 struct PlatformConsole;

@@ -13,7 +13,7 @@ mod page_table;
 
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
-pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous};
+pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
     ElfLoadError, ExecutableImage, MapPermission, MemoryError, MemorySet, UserAccessError,

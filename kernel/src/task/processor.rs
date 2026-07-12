@@ -14,7 +14,7 @@ use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 /// @description context switch 异常返回时的 fail-stop 目标。
@@ -157,6 +157,8 @@ struct PerHartProcessor {
     queued_entries: AtomicUsize,
     // 与 inbound mutex 内容器同步增减；Relaxed 读取只作为近似负载 hint。
     inbound_entries: AtomicUsize,
+    // OWNER: processor slot 累计本 hart 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
+    busy_us: AtomicU64,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
     inbound: IrqMutex<VecDeque<RunQueueEntry>>,
 }
@@ -172,9 +174,25 @@ impl PerHartProcessor {
             initialized: AtomicBool::new(false),
             queued_entries: AtomicUsize::new(0),
             inbound_entries: AtomicUsize::new(0),
+            busy_us: AtomicU64::new(0),
             inbound: IrqMutex::new(VecDeque::new()),
         }
     }
+}
+
+pub(super) fn account_current_hart_runtime(runtime_us: u64) {
+    per_hart(hart_id())
+        .busy_us
+        .fetch_add(runtime_us, Ordering::Relaxed);
+}
+
+pub(crate) fn cpu_runtime_snapshot() -> Vec<(usize, u64)> {
+    PROCESSOR_TOPOLOGY
+        .wait()
+        .slots
+        .iter()
+        .map(|slot| (slot.hart_id, slot.processor.busy_us.load(Ordering::Relaxed)))
+        .collect()
 }
 
 // SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 hart 只能触及

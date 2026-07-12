@@ -186,6 +186,12 @@ impl StackFrameAllocator {
         let next = unsafe { ppn.as_page_ptr().cast::<usize>().read() };
         (next != 0).then(|| PhysicalPageNumber::from(next))
     }
+
+    fn capacity_and_free_pages(&self) -> (usize, usize) {
+        let capacity = self.end_ppn.as_usize() - self.start_ppn.as_usize();
+        let never_allocated = self.end_ppn.as_usize() - self.current_start_ppn.as_usize();
+        (capacity, never_allocated + self.recycled_len)
+    }
 }
 
 pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
@@ -224,4 +230,11 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
 pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
     res.map(|b| FrameTracker::new_contiguous(b, pages))
+}
+
+/// @description 返回 frame allocator 管辖范围的总页数与当前空闲页数。
+///
+/// @return `(capacity_pages, free_pages)`；两者均来自唯一 allocator 状态。
+pub(crate) fn statistics() -> (usize, usize) {
+    FRAME_ALLOCATOR.wait().lock().capacity_and_free_pages()
 }

@@ -60,7 +60,7 @@ kernel 只有一个 `_start`。动态 hart table 尚未发布时，唯一 cold-b
 5. RTC/monotonic timer；
 6. root namespace VFS；
 7. PLIC 与 VirtIO block discovery；
-8. composition root 将 primary block adapter 装配为 ext2 root，再把唯一 device filesystem 挂载到 `/dev`；
+8. composition root 将 primary block adapter 装配为 ext2 root，再把 device filesystem 与 procfs adapter 分别挂载到 `/dev`、`/proc`；
 9. 动态 `ProcessorTopology`，然后构造 PID 1 `/bin/init` 并入队。
 
 `HartTopology` 持有每个 DTB hart 的 startup stack、softirq pending 和 online/active 状态；task module 的 `ProcessorTopology` 按同一 DTB 集合独立拥有 processor slot，避免 arch 反向依赖 scheduler。boot hart 用同一个 `_start` 地址、DTB 地址作为 opaque，通过 SBI HSM 逐个启动 mask 中的 secondary。`INIT_READY.store(Release)` 一次性发布全局对象；secondary 用 Acquire 消费后激活共享 kernel page table。boot hart 只有在动态 online mask 等于 DTB mask 后才继续；每个 hart 完成同步 RFENCE 后进入 `run_tasks()`。
@@ -137,7 +137,7 @@ Signal disposition 属于共享 Process；mask、coalesced standard-signal pendi
 - `VirtualFileSystem` 拥有唯一 persistent root 和 boot-time mount table；repeated root/mountpoint 发布拒绝。
 - pathname 是 NUL 之前的 raw bytes，逐 component 查找；`.`/`..` 通过已验证 inode 关系与 mount enter/leave 解析并钳制在根目录，不做错误词法化简。
 - 不跟随 symlink；遇到 symlink 明确拒绝。
-- persistent root 是同步读写 ext2 revision 1；内存 device filesystem 作为第二个真实 adapter 挂载到预建的 `/dev` mountpoint，提供 `null/zero/tty/console`。inode API 统一承载 metadata、目录与 mutation，打开后的 character device、pipe 与 regular inode 共用 OFD/fd table。
+- persistent root 是同步读写 ext2 revision 1；内存 device filesystem 挂载到预建的 `/dev` mountpoint，提供 `null/zero/tty/console`；只读 procfs 挂载到预建的 `/proc`，按 Linux 文本格式投影 `/proc/stat`、`meminfo`、`loadavg`、`uptime` 与 live `/proc/<pid>/stat`。procfs 只消费 `ProcSource` 快照，不拥有或复制 process、VMA、frame、scheduler 与 per-hart runtime 状态。inode API 统一承载 metadata、目录与 mutation，打开后的 character device、pipe 与 regular inode 共用 OFD/fd table。
 - ext2 对块号/目录项/间接块做边界验证，I/O 错误不冒充 sparse zero。
 - ext2 支持 `filetype`、`sparse_super` 与 `large_file`：分配/释放同步更新位图、group descriptor、primary/backup superblock 和 512-byte `i_blocks`；未知 incompat/RO-compat、journal/recovery 或旧式无 file-type 目录项会拒绝挂载。
 - 文件系统只有一个 mutation lock，append、目录变更和 allocator 元数据使用单一串行化顺序；unlink 后仍被 OFD 引用的 inode 延迟到最后 close 回收。

@@ -82,6 +82,7 @@ BUSYBOX_LINKS = (
     "tail",
     "tee",
     "touch",
+    "top",
     "tr",
     "true",
     "uniq",
@@ -526,6 +527,7 @@ def main() -> int:
                 "LITEOS_FIND_42",
                 "LITEOS_MATH_42",
                 "LITEOS_TOOLS_42",
+                "LITEOS_TOP_42",
                 "LITEOS_DLOPEN_42",
                 "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
@@ -569,6 +571,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOOLS_42",
+                    b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_TOP_42",
                     b"/bin/dynamic-smoke\n",
                 ),
                 (

@@ -4,6 +4,7 @@ mod devfs;
 mod ext2;
 mod file;
 mod inode;
+mod procfs;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
@@ -14,6 +15,9 @@ pub(crate) use file::{
     TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use procfs::{
+    ProcCpuSnapshot, ProcFileSystem, ProcProcessSnapshot, ProcSnapshot, ProcSource,
+};
 pub(crate) use vfs::{init as init_vfs, vfs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

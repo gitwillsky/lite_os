@@ -6,7 +6,7 @@ import shutil
 import argparse
 import sys
 
-BOOT_DIRECTORIES = ("/bin", "/dev")
+BOOT_DIRECTORIES = ("/bin", "/dev", "/proc")
 
 def find_tool(candidates):
     for path in candidates:

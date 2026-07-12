@@ -10,7 +10,10 @@ use crate::{
         MemorySet, TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
-    task::{TrapContext, context::TaskContext, pid::ProcessId},
+    task::{
+        TrapContext, context::TaskContext, pid::ProcessId, processor::account_current_hart_runtime,
+    },
+    timer::get_time_us,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -60,6 +63,16 @@ pub(crate) enum SignalDelivery {
 }
 
 const UNBLOCKABLE_SIGNAL_MASK: u64 = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
+
+fn process_name(path: &[u8]) -> Vec<u8> {
+    path.rsplit(|byte| *byte == b'/')
+        .find(|component| !component.is_empty())
+        .unwrap_or(path)
+        .iter()
+        .copied()
+        .take(15)
+        .collect()
+}
 
 fn normalize_signal_mask(mask: u64) -> u64 {
     mask & !UNBLOCKABLE_SIGNAL_MASK
@@ -199,6 +212,9 @@ struct AddressSpace {
 }
 
 impl AddressSpace {
+    fn page_statistics(&self) -> (usize, usize) {
+        self.memory_set.lock().user_page_statistics()
+    }
     fn write_clone_tid_values(
         &self,
         addresses: [Option<usize>; 2],
@@ -334,6 +350,8 @@ pub(crate) struct Sched {
     pub(crate) nice: i32,
     /// 累计运行时间 (用于CFS调度算法)
     pub(crate) vruntime: u64,
+    /// Thread 实际占用 CPU 的累计微秒数；procfs 只读取，不复制该状态。
+    pub(crate) total_runtime_us: u64,
 }
 
 /// @description 调度器唯一拥有和解释的 Thread 运行状态。
@@ -378,6 +396,8 @@ impl Sched {
 
     /// 更新虚拟运行时间 (CFS算法核心)
     pub(crate) fn update_vruntime(&mut self, runtime_us: u64) {
+        self.total_runtime_us = self.total_runtime_us.saturating_add(runtime_us);
+        account_current_hart_runtime(runtime_us);
         // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
         let weight = match self.get_dynamic_priority() {
             0..=9 => 4,   // 高优先级
@@ -392,6 +412,9 @@ impl Sched {
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
     tgid: ProcessId,
+    // OWNER: Process 独占 Linux comm 与创建时刻；fork 复制，exec 原子替换 comm。
+    comm: Mutex<Vec<u8>>,
+    start_time_us: u64,
     address_space: AddressSpace,
     // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
     cwd: Mutex<Arc<dyn Inode>>,
@@ -430,6 +453,8 @@ impl TaskControlBlock {
         let terminal = Terminal::new(console);
         let process = Arc::new(Process {
             tgid: pid,
+            comm: Mutex::new(process_name(name)),
+            start_time_us: get_time_us(),
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
             },
@@ -468,6 +493,7 @@ impl TaskControlBlock {
                     last_runtime: 0,
                     nice: 0,
                     vruntime: 0,
+                    total_runtime_us: 0,
                 }),
                 last_cpu: AtomicUsize::new(0),
             },
@@ -518,6 +544,8 @@ impl TaskControlBlock {
         let child = Self {
             process: Arc::new(Process {
                 tgid: pid,
+                comm: Mutex::new(self.process.comm.lock().clone()),
+                start_time_us: get_time_us(),
                 address_space: AddressSpace {
                     memory_set: Mutex::new(memory_set),
                 },
@@ -554,6 +582,7 @@ impl TaskControlBlock {
                     last_runtime: 0,
                     nice: policy.nice,
                     vruntime: policy.vruntime,
+                    total_runtime_us: 0,
                 }),
                 last_cpu: AtomicUsize::new(
                     self.scheduling
@@ -630,6 +659,7 @@ impl TaskControlBlock {
                     last_runtime: 0,
                     nice: policy.nice,
                     vruntime: policy.vruntime,
+                    total_runtime_us: 0,
                 }),
                 last_cpu: AtomicUsize::new(
                     self.scheduling
@@ -1301,6 +1331,7 @@ impl TaskControlBlock {
     ) -> Result<(), ElfLoadError> {
         // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
         let (new_memory_set, user_sp, entry_point) = MemorySet::from_elf(image, args, envs)?;
+        let new_comm = args.first().map_or_else(Vec::new, |arg| process_name(arg));
 
         // 步骤2: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间
@@ -1308,6 +1339,7 @@ impl TaskControlBlock {
 
         // 单次赋值提交新地址空间；旧 MemorySet 在 guard 内被完整替换，不暴露 stale PTE 窗口。
         *self.process.address_space.memory_set.lock() = new_memory_set;
+        *self.process.comm.lock() = new_comm;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
         self.process.files.lock().close_cloexec();
         *self.process.signal_actions.lock() = [LinuxSigAction::default(); 65];
@@ -1330,6 +1362,16 @@ impl TaskControlBlock {
     /// @return TGID；Linux getpid 与 process-directed lookup 使用该值。
     pub(crate) fn tgid(&self) -> usize {
         self.process.tgid.0
+    }
+
+    pub(super) fn process_statistics(&self) -> (Vec<u8>, u64, usize, usize) {
+        let (virtual_pages, resident_pages) = self.process.address_space.page_statistics();
+        (
+            self.process.comm.lock().clone(),
+            self.process.start_time_us,
+            virtual_pages,
+            resident_pages,
+        )
     }
 
     /// @description 返回当前 Thread ID。

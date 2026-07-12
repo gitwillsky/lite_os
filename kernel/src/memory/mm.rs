@@ -498,6 +498,21 @@ impl MemorySet {
         self.page_table.token()
     }
 
+    /// @description 统计当前用户 VMA 的虚拟页数与已驻留物理页数。
+    ///
+    /// @return `(virtual_pages, resident_pages)`；不计 kernel-only trap context。
+    pub(crate) fn user_page_statistics(&self) -> (usize, usize) {
+        self.areas
+            .values()
+            .filter(|area| area.map_permission.contains(MapPermission::U))
+            .fold((0, 0), |(virtual_pages, resident_pages), area| {
+                (
+                    virtual_pages + area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize(),
+                    resident_pages + area.data_frames.len(),
+                )
+            })
+    }
+
     /// @description 为 fork eager 深拷贝完整用户地址空间，保留 VMA 元数据但不共享物理页。
     ///
     /// @return 成功返回独立页表与 frame owner；OOM 时释放全部已复制 VMA。

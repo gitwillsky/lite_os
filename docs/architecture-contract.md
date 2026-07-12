@@ -52,6 +52,9 @@
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
+| process comm/创建时刻、thread runtime 与 run state | Process、SchedulingEntity；procfs 只读取快照 |
+| per-hart busy runtime | ProcessorTopology 对应 hart slot；procfs 不另建 CPU counter |
+| 1/5/15 minute load average | TaskManager 的单一 fixed-point EWMA state |
 | root mount、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
 | inode/on-disk allocation state | filesystem adapter mutation domain |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
@@ -68,7 +71,7 @@
 - kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
-- ext2 只提供 persistent root；`/dev` 是 rootfs boot-layout mountpoint，运行时 device filesystem 只经 VFS mount table 发布，禁止 syscall pathname 特判或伪 regular-file 设备。
+- ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照；禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - thread-directed signal 先发布 pending bit，再从 wait 的唯一 owner 注销 membership；blocking path 必须在 owner lock 内复查 deliverable signal，禁止 signal-before-enqueue lost wakeup。
