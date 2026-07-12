@@ -1,0 +1,25 @@
+kernel/Cargo.toml
+  s_d637a88cd4b00d::t_27b30ba00dbb59 19
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_8fcb13b02186ef 73-76,79-80
+kernel/src/syscall/socket.rs
+  s_d637a88cd4b00d::t_0afdcf1e64ce65 66,74-75,279,309-324,335-342,344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e2f4b4ca8de6100f0f0c047add3128d5d6017970",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
