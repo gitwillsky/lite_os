@@ -1,0 +1,141 @@
+Cargo.lock
+  s_d637a88cd4b00d::t_d1eae9874b97b0 20-25,41-52,59-98,111-129,134,139,163-168,229-242,261-266,282-301
+Makefile
+  s_d637a88cd4b00d::t_5d00af00d4bf87 26-28,31
+README.md
+  s_d637a88cd4b00d::t_f2ba83e062b582 14,16,18,44
+bootloader/src/main.rs
+  s_d637a88cd4b00d::t_8378ac9f5f50c9 126,187-190
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_7e8a902d22aa93 21-24,26,33,47,54-56,85
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_6b907fdad88e5f 194,205,261,310,313-328,341-343,443,480,611,636-643,662,672,967-1097,1118,1124,1135,1137,1207,1258-1259,1261-1266,1272,1275,1279,1571,1581-1584
+docs/architecture.md
+  s_d637a88cd4b00d::t_22858b90b4444f 192,196,213,224,228,237
+docs/phase-46-unix-epoll.md
+  s_d637a88cd4b00d::t_6c597e0d18854e 7
+docs/phase-49-ipv4-udp.md
+  s_d637a88cd4b00d::t_699e14f41ba0f3 1-21
+docs/standards-baseline.md
+  s_d637a88cd4b00d::t_5e1656313e5b7d 18-19
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_7e41f0e6dbc608 15,31,39,50,64,84,109,115
+kernel/Cargo.toml
+  s_d637a88cd4b00d::t_21e6fdf75f0a4c 19
+kernel/src/arch/riscv64/hart.rs
+  s_d637a88cd4b00d::t_8459f06d30b00c 16-17,249-256
+kernel/src/arch/riscv64/start.rs
+  s_d637a88cd4b00d::t_b540f099a9ff01 84
+kernel/src/drivers/hal/interrupt.rs
+  s_d637a88cd4b00d::t_d726e3a681ba78 11,19
+kernel/src/drivers/mod.rs
+  s_d637a88cd4b00d::t_f70a6e753dd1d3 4,8,19
+kernel/src/drivers/network.rs
+  s_d637a88cd4b00d::t_f8f998d6075cbd 1-77
+kernel/src/drivers/platform.rs
+  s_d637a88cd4b00d::t_8d6d2bf7298188 7,86,98-114
+kernel/src/drivers/virtio_net.rs
+  s_d637a88cd4b00d::t_d0a7fa2e27b60c 1-235
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_dbeb2db015a5de 874,1201-1202,1209,1375
+kernel/src/fs/ext2/directory.rs
+  s_d637a88cd4b00d::t_4805d85f8cdd39 15,39-42
+kernel/src/fs/file.rs
+  s_d637a88cd4b00d::t_9c63431c70c9b0 10,52,250
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_5e0087952478ff 25-26
+kernel/src/fs/page_cache.rs
+  s_d637a88cd4b00d::t_519598b3dc5cfa 256
+kernel/src/fs/procfs.rs
+  s_d637a88cd4b00d::t_5eeddc8466f323 42-53,65,82-84,98-100,108,134-135,143-145,237,252-255,270,291-297,459-508
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_9127883844b735 27,64,67-68
+kernel/src/memory/executable.rs
+  s_d637a88cd4b00d::t_3ab235e86caa6b 156
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_3219c25acdeac5 636
+kernel/src/memory/mm/mmap.rs
+  s_d637a88cd4b00d::t_097dff8bfcdbdd 159
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_6ec56f1eec3e77 55-56,71,175-176,184-185,195-196,204-205,215-216,224-225,235-236,244-245,256-257,277,286
+kernel/src/socket.rs
+  s_d637a88cd4b00d::t_5cfb0551a7860b 1-351
+kernel/src/socket/device.rs
+  s_d637a88cd4b00d::t_aa3b716cc4f8fa 1-100
+kernel/src/socket/inet.rs
+  s_d637a88cd4b00d::t_2bb907feaeee0c 1-591
+kernel/src/socket/inet/timing.rs
+  s_d637a88cd4b00d::t_c0e610eb8d4cb4 1-19
+kernel/src/socket/unix.rs
+  s_d637a88cd4b00d::t_9624094b9c6e0a 9,11,13
+kernel/src/sync/mod.rs
+  s_d637a88cd4b00d::t_c3d159c4be36b9 22
+kernel/src/syscall/credentials.rs
+  s_d637a88cd4b00d::t_e845fd2350fc96 89-92
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_dfcc130e9b5fcc 62-65,69-72
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_eb24b2a40d2cbf 329-331
+kernel/src/syscall/fs/io.rs
+  s_d637a88cd4b00d::t_37381b9ef73d18 128,131,259,262,270
+kernel/src/syscall/ioctl.rs
+  s_d637a88cd4b00d::t_554145b5dad885 1-26
+kernel/src/syscall/memory.rs
+  s_d637a88cd4b00d::t_3dd39f7c58b397 99,118,177
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_3f9a30120e0a29 6,20-21,164-165,184-185
+kernel/src/syscall/socket.rs
+  s_d637a88cd4b00d::t_03f92f165a28df 5-10,15-21,23,28-57,64,66-70,94-98,101,104,113-114,121-136,141,156,163-185,187-191,196,214,218,230,284-307,333-337,367-371,379-383,394,397,416,418,421-435,446,459-460,463,468,471-475,477-479,505-525,527-533,536-538,541-543
+kernel/src/syscall/socket/interface.rs
+  s_d637a88cd4b00d::t_c1d1c024e4a584 1-210
+kernel/src/syscall/socket/message.rs
+  s_d637a88cd4b00d::t_bfef64252bc86f 1-287
+kernel/src/syscall/socket/options.rs
+  s_d637a88cd4b00d::t_f6667b5b52db8e 1-89
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_f7db9ade2c09b1 16,43-134
+kernel/src/syscall/tty.rs
+  s_d637a88cd4b00d::t_05f24eee74992e 2,5-6,52-57
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_a166ebc48d690d 45
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_5a424190a93bf0 10,17,23,33,77-79,126
+kernel/src/task/task_manager/deferred.rs
+  s_d637a88cd4b00d::t_2fa67754803333 1-132
+kernel/src/task/task_manager/process_exit.rs
+  s_d637a88cd4b00d::t_bb4ba3fc340c8d 181-183
+kernel/src/task/task_manager/procfs.rs
+  s_d637a88cd4b00d::t_7aa878e10cab56 4,123-132,144
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_0b2d11a7b678b0 196,268-269
+rust-toolchain.toml
+  s_d637a88cd4b00d::t_0dad6a3f987ec8 3-4
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_d622ac72fcb685 132-135,249-252
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_6b389f5fed1d92 76,84-85,91
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_332a4f05c40e19 71-72,91-92
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_a1fcaa93d3406f 35
+user/busybox.config
+  s_d637a88cd4b00d::t_7656fda3c88542 62-72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1843a37327fe471c3c0c50b3eed6265f0b9fe161",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
