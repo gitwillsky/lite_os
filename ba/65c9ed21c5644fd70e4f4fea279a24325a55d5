@@ -1,0 +1,79 @@
+README.md
+  s_d637a88cd4b00d::t_42e5fa9787d9d2 13,16,81
+create_fs.py
+  s_d637a88cd4b00d::t_f41a8594d26367 20,45-46,49
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_f1f36e096e3ec4 63,79,91
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_3eca3973832dd3 361-374,487-488,496,502,513,516,577,587,838,858,876,878-879,881,886-890,894
+docs/architecture.md
+  s_d637a88cd4b00d::t_4b9015fb2f9c50 140,142,144,149,196,225,235-237
+docs/phase-43-linked-journaled-namespace.md
+  s_d637a88cd4b00d::t_191ace15c4a27a 1-19
+docs/standards-baseline.md
+  s_d637a88cd4b00d::t_83be497c4b2537 12
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_a4568de9bb3838 15,31,39,42,55,104
+kernel/src/fs/devfs.rs
+  s_d637a88cd4b00d::t_1063432837329e 108-111
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_a5f361a8bb81fe 13,15-17,27-28,34,203-205,315,666,673-679,689-701,756-764,824-827,836-840,1329-1340,1442,1449-1450,1941-1944,1951,1954-1956,1960-1962,1981,1990-1992,2051,2088-2089,2093-2101,2107,2132-2133,2146,2161,2231-2232,2271,2277,2279-2280,2282-2288
+kernel/src/fs/ext2/directory.rs
+  s_d637a88cd4b00d::t_81d2355f1655e2 1-163
+kernel/src/fs/ext2/journal.rs
+  s_d637a88cd4b00d::t_ffb25080cacd37 1-406
+kernel/src/fs/ext2/orphan.rs
+  s_d637a88cd4b00d::t_3bbf6a8ab40311 1-95
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_ab7d2dbe579b32 91-96,141-158
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_c0a324d372d739 66-68
+kernel/src/fs/procfs.rs
+  s_d637a88cd4b00d::t_a686aac4a62889 173-176
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_2cc9ac56aadba9 456-492,517
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_e5fb93934eb6cb 32-33,47-48
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_2457ef6adee05c 4,6-7,11,13-14
+kernel/src/syscall/fs/access.rs
+  s_d637a88cd4b00d::t_e918b86e6f76b0 1-45
+kernel/src/syscall/fs/links.rs
+  s_d637a88cd4b00d::t_fc903feb96153d 1-105
+kernel/src/syscall/fs/namespace.rs
+  s_d637a88cd4b00d::t_91c95502df1663 1-100
+kernel/src/syscall/fs/pathname.rs
+  s_d637a88cd4b00d::t_1b4e798318fade 20-22,32-42
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_eea144721c8a51 46-56
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_f37b7956affb14 399-401
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_4b79ec269a4777 194-291
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_ac0882d7a0ad2d 28,73,569-570,646-653,859,899-961
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_45c9f7f6a0c4e4 12-14
+user/busybox.config
+  s_d637a88cd4b00d::t_a803d48a3d11eb 26
+user/dynamic-smoke.c
+  s_d637a88cd4b00d::t_96c4c3126af45e 6,15-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ba65c9ed21c5644fd70e4f4fea279a24325a55d5",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
