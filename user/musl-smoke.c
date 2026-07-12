@@ -63,6 +63,12 @@ static void *restart_futex_main(void *argument)
 	return argument;
 }
 
+static void *group_exit_worker(void *argument)
+{
+	(void)argument;
+	for (;;) sched_yield();
+}
+
 int main(int argc, char **argv, char **envp)
 {
 	static const char create_failed[] = "LiteOS musl pthread create failed\n";
@@ -78,6 +84,7 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_wait_failed[] = "LiteOS musl restart wait failed\n";
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
 	static const char sigwait_failed[] = "LiteOS musl sigwait failed\n";
+	static const char group_exit_failed[] = "LiteOS musl group exit failed\n";
 	static const char tty_failed[] = "LiteOS musl tty session failed\n";
 	static const char pipe_failed[] = "LiteOS musl pipe readv failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
@@ -339,6 +346,31 @@ int main(int argc, char **argv, char **envp)
 	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 31) {
 		write(STDOUT_FILENO, sigwait_failed, sizeof sigwait_failed - 1);
 		return 11;
+	}
+	child = fork();
+	if (child == 0) {
+		if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
+		_exit(42);
+	}
+	if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
+	    || signal_info.si_code != CLD_EXITED || signal_info.si_pid != child
+	    || signal_info.si_status != 42 || waitpid(child, &child_status, 0) != child
+	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 42) {
+		write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
+		return 12;
+	}
+	child = fork();
+	if (child == 0) {
+		if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
+		if (kill(getpid(), SIGTERM) != 0) _exit(41);
+		_exit(43);
+	}
+	if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
+	    || signal_info.si_code != CLD_KILLED || signal_info.si_pid != child
+	    || signal_info.si_status != SIGTERM || waitpid(child, &child_status, 0) != child
+	    || !WIFSIGNALED(child_status) || WTERMSIG(child_status) != SIGTERM) {
+		write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
+		return 12;
 	}
 	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 11;
 	return 0;

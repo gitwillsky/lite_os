@@ -20,10 +20,15 @@ use crate::{
     timer::{get_time_ns, get_time_us},
 };
 
+mod process_exit;
 mod procfs;
 mod signal;
 mod wait_child;
 
+pub(crate) use process_exit::{
+    exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
+    exit_current_thread,
+};
 pub(crate) use procfs::KernelProcSource;
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
@@ -32,9 +37,24 @@ pub(crate) use signal::{
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessExitStatus {
+    Exited(u8),
+    Signaled(u8),
+}
+
+impl ProcessExitStatus {
+    fn wait_status(self) -> i32 {
+        match self {
+            Self::Exited(code) => i32::from(code) << 8,
+            Self::Signaled(signal) => i32::from(signal) & 0x7f,
+        }
+    }
+}
+
 enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
-    Exited(i32),
+    Exited(ProcessExitStatus),
 }
 
 struct ProcessNode {
@@ -42,6 +62,7 @@ struct ProcessNode {
     session: usize,
     process_group: usize,
     state: ProcessState,
+    group_exit: Option<ProcessExitStatus>,
     job_control: JobControlState,
     child_events: ChildEvents,
     waiter: Option<Arc<TaskControlBlock>>,
@@ -117,6 +138,7 @@ impl TaskManager {
                 session: INIT_PID,
                 process_group: INIT_PID,
                 state: ProcessState::Live(threads),
+                group_exit: None,
                 job_control: JobControlState::Running,
                 child_events: ChildEvents::default(),
                 waiter: None,
@@ -155,6 +177,7 @@ impl TaskManager {
                 session,
                 process_group,
                 state: ProcessState::Live(threads),
+                group_exit: None,
                 job_control: JobControlState::Running,
                 child_events: ChildEvents::default(),
                 waiter: None,
@@ -170,10 +193,10 @@ impl TaskManager {
             .nodes
             .get_mut(&tgid)
             .expect("thread group missing from process graph");
+        let stopping = node.group_exit.is_none() && node.job_control != JobControlState::Running;
         let ProcessState::Live(threads) = &mut node.state else {
             panic!("cannot publish thread into exited process");
         };
-        let stopping = node.job_control != JobControlState::Running;
         assert!(threads.insert(thread.tid(), thread.clone()).is_none());
         if stopping {
             crate::task::processor::request_task_stop(&thread);
@@ -1406,145 +1429,6 @@ fn block_current_until(deadline: u64) -> WaitResult {
         .wait_result
         .take()
         .expect("deadline waiter resumed without a wake result")
-}
-
-/// 退出当前任务并运行下一个任务
-pub(crate) fn exit_current_and_run_next(exit_code: i32) -> ! {
-    let task = take_current_task().expect("No current task to exit");
-
-    {
-        let mut scheduling = task.scheduling.state.lock();
-        assert!(
-            matches!(scheduling.run_state, RunState::Running { .. }),
-            "only current running task can exit"
-        );
-        assert!(
-            scheduling.wait.is_none(),
-            "running task cannot retain wait membership"
-        );
-        scheduling.run_state = RunState::Exited;
-    };
-    task.cleanup_robust_list();
-    let (
-        removed,
-        last_thread,
-        parent_waiter,
-        init_waiter,
-        parent_signal_pid,
-        release_terminal_session,
-    ) = {
-        let mut graph = TASK_MANAGER.graph.lock();
-        let exiting_pid = task.tgid();
-        let (removed, last_thread, parent, session_leader) = {
-            let node = graph
-                .nodes
-                .get_mut(&exiting_pid)
-                .expect("exiting task missing from process graph");
-            let ProcessState::Live(threads) = &mut node.state else {
-                panic!("process exited twice");
-            };
-            let removed = threads
-                .remove(&task.tid())
-                .expect("exiting thread missing from process graph");
-            let last_thread = threads.is_empty();
-            let parent = node.parent;
-            let session_leader = node.session == exiting_pid;
-            if last_thread {
-                assert!(node.waiter.is_none());
-                node.state = ProcessState::Exited(exit_code);
-            }
-            (removed, last_thread, parent, session_leader)
-        };
-        assert!(Arc::ptr_eq(&removed, &task));
-
-        if !last_thread {
-            (removed, false, None, None, None, false)
-        } else {
-            // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
-            if exiting_pid != INIT_PID {
-                for child in graph.nodes.values_mut() {
-                    if child.parent == Some(exiting_pid) {
-                        child.parent = Some(INIT_PID);
-                    }
-                }
-            }
-            // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
-            let parent_waiter = parent.and_then(|pid| {
-                graph
-                    .nodes
-                    .get_mut(&pid)
-                    .and_then(|parent| parent.waiter.take())
-            });
-            let parent_signal_pid = parent.filter(|pid| {
-                graph
-                    .nodes
-                    .get(pid)
-                    .is_some_and(|node| matches!(node.state, ProcessState::Live(_)))
-            });
-            let adopted_exited = exiting_pid != INIT_PID
-                && graph.nodes.values().any(|child| {
-                    child.parent == Some(INIT_PID) && matches!(child.state, ProcessState::Exited(_))
-                });
-            let init_waiter = adopted_exited
-                .then(|| {
-                    graph
-                        .nodes
-                        .get_mut(&INIT_PID)
-                        .and_then(|init| init.waiter.take())
-                })
-                .flatten();
-            (
-                removed,
-                true,
-                parent_waiter,
-                init_waiter,
-                parent_signal_pid,
-                session_leader,
-            )
-        }
-    };
-    // 1. process graph 先注销 Thread owner，再发布 clear-child-tid completion。
-    // 2. 若顺序相反，pthread_join 可在 graph 仍计数已退出 sibling 时返回，使紧随的
-    //    single-thread-only fork/exec 错误观察到 EAGAIN。
-    if let Some(address) = task.take_clear_child_tid()
-        && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
-    {
-        futex_wake(task.tgid(), address, 1);
-    }
-    if last_thread {
-        task.close_all_files();
-    }
-    drop(removed);
-    if !last_thread {
-        task.remove_thread_trap_context();
-    }
-    for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
-        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
-    }
-    if let Some(parent) = parent_signal_pid {
-        send_kernel_process_signal(
-            parent,
-            17,
-            PendingSignal::child_exited(task.tgid(), exit_code),
-        );
-    }
-    if release_terminal_session {
-        task.terminal().release_session(task.tgid());
-    }
-
-    let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
-    let task_cx_ptr = {
-        let mut task_cx = task.task_context().lock();
-        &mut *task_cx as *mut TaskContext
-    };
-
-    // 1. owning Arc 必须先移交 per-hart slot，task stack 上不能留下永不恢复的 owner。
-    crate::task::processor::defer_task_reap(task);
-    // 2. 切回 idle stack；switch_to_task 的返回点负责 drain slot 并安全 Drop kernel stack。
-    // SAFETY: deferred owner keeps the exiting task stack/context alive through the switch;
-    // idle context is hart-local and remains valid for the kernel lifetime.
-    unsafe { crate::task::__switch(task_cx_ptr, idle_task_cx_ptr) };
-    panic!("exited task context resumed")
 }
 
 /// 切换到指定任务

@@ -11,7 +11,7 @@ pub(crate) struct SignalAction {
 pub(crate) enum SignalDelivery {
     None,
     Stop(usize),
-    Terminate(i32),
+    Terminate(usize),
 }
 
 const UNBLOCKABLE_SIGNAL_MASK: u64 = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
@@ -71,6 +71,19 @@ impl PendingSignal {
             code: 1,
             pid: pid as i32,
             status,
+        }
+    }
+
+    /// @description 构造由 signal 终止 child 的 `CLD_KILLED` 来源。
+    ///
+    /// @param pid 退出 child 的 thread group ID。
+    /// @param signal 终止 child 的 signal number。
+    /// @return SIGCHLD 的来源。
+    pub(crate) fn child_killed(pid: usize, signal: usize) -> Self {
+        Self {
+            code: 2,
+            pid: pid as i32,
+            status: signal as i32,
         }
     }
 

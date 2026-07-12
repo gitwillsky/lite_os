@@ -53,10 +53,10 @@ fn find_waitable_child(
             continue;
         }
         has_child = true;
-        if let ProcessState::Exited(code) = node.state {
+        if let ProcessState::Exited(status) = node.state {
             return Ok(Some(ChildExit {
                 pid: *pid,
-                status: (code & 0xff) << 8,
+                status: status.wait_status(),
                 kind: ChildStatusKind::Exited,
             }));
         }

@@ -19,7 +19,7 @@ use core::{
 
 mod job_control;
 pub(super) use job_control::{
-    begin_preempt_running_task, continue_stopped_task, request_task_stop,
+    begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
 };
 
 /// @description context switch 异常返回时的 fail-stop 目标。

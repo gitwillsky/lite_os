@@ -800,7 +800,7 @@ impl TaskControlBlock {
             if action.handler == 0 {
                 self.thread.suspend_restore_mask.lock().take();
                 self.thread.syscall_restart.lock().take();
-                return Ok(SignalDelivery::Terminate(128 + signal as i32));
+                return Ok(SignalDelivery::Terminate(signal));
             }
 
             let old_mask = self

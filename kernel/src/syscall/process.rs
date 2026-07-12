@@ -7,9 +7,9 @@ use crate::{
     task::{
         EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, TaskControlBlock,
         ThreadCloneError, WaitChildError, clone_current_thread, consume_child_status,
-        create_session, current_task, exit_current_and_run_next, fork_current_process,
-        load_executable, parent_pid, process_group, session_id, set_process_group,
-        suspend_current_and_run_next, thread_count, wait_child,
+        create_session, current_task, exit_current_group, exit_current_thread,
+        fork_current_process, load_executable, parent_pid, process_group, session_id,
+        set_process_group, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
 
@@ -18,12 +18,20 @@ use super::INTERNAL_RESTART_SYS;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_ARG_STRING_BYTES: usize = 32 * 4096;
 
-/// @description 终止当前任务并切换到调度器。
+/// @description 按 Linux `exit` 语义终止 calling Thread。
 ///
 /// @param exit_code 用户态退出状态。
 /// @return 此函数不返回。
 pub(crate) fn sys_exit(exit_code: i32) -> ! {
-    exit_current_and_run_next(exit_code)
+    exit_current_thread(exit_code)
+}
+
+/// @description 按 Linux `exit_group` 语义终止 calling Thread 所属 Process。
+///
+/// @param exit_code 用户态退出状态，kernel 只保留低 8 bit。
+/// @return 此函数不返回。
+pub(crate) fn sys_exit_group(exit_code: i32) -> ! {
+    exit_current_group(exit_code)
 }
 
 /// @description 主动让出处理器。

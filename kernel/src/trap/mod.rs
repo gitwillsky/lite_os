@@ -15,7 +15,7 @@ use crate::{
     drivers,
     memory::TRAMPOLINE,
     syscall::{self, SyscallOutcome},
-    task::{self, SignalDelivery, exit_current_and_run_next, stop_current_process},
+    task::{self, SignalDelivery, exit_current_group_by_signal, stop_current_process},
     timer,
 };
 
@@ -75,13 +75,13 @@ pub(crate) fn trap_handler() {
                     } else {
                         error!("[kernel] IllegalInstruction with no current task");
                     }
-                    exit_current_and_run_next(-2);
+                    exit_current_group_by_signal(4);
                 }
                 Exception::Breakpoint => {
                     // 在尚未实现标准 SIGTRAP frame 前不能猜测 16/32-bit 指令长度并跳过断点。
                     // 该 trap 完全由用户输入产生，只终止当前任务，不得 panic kernel。
                     error!("[kernel] breakpoint in application, terminating current task");
-                    exit_current_and_run_next(-5);
+                    exit_current_group_by_signal(5);
                 }
                 Exception::UserEnvCall => {
                     if let Some(current) = task::current_task() {
@@ -120,14 +120,14 @@ pub(crate) fn trap_handler() {
                 }
                 Exception::InstructionPageFault => {
                     error!("Instruction Page Fault, VA:{:#x}", stval);
-                    exit_current_and_run_next(-5);
+                    exit_current_group_by_signal(11);
                 }
                 Exception::StorePageFault => {
                     if !task::current_task()
                         .is_some_and(|current| current.handle_cow_fault(stval).unwrap_or(false))
                     {
                         error!("Store Page Fault, VA:{:#x}", stval);
-                        exit_current_and_run_next(-5);
+                        exit_current_group_by_signal(11);
                     }
                 }
                 Exception::LoadFault | Exception::LoadPageFault | Exception::StoreFault => {
@@ -147,14 +147,14 @@ pub(crate) fn trap_handler() {
                             scause_val, stval,
                         );
                     }
-                    exit_current_and_run_next(-5);
+                    exit_current_group_by_signal(11);
                 }
                 _ => {
                     error!(
                         "[kernel] unsupported application exception {:?}, stval={:#x}",
                         exception, stval
                     );
-                    exit_current_and_run_next(-5);
+                    exit_current_group_by_signal(4);
                 }
             }
         } else {
@@ -162,7 +162,7 @@ pub(crate) fn trap_handler() {
                 "[kernel] invalid application exception code {:?}, stval={:#x}",
                 code, stval
             );
-            exit_current_and_run_next(-5);
+            exit_current_group_by_signal(4);
         }
     }
 
@@ -208,6 +208,7 @@ pub(crate) fn trap_return() -> ! {
 
     // 简化的原子获取方案：最小化锁持有时间
     loop {
+        task::exit_current_if_group_exiting();
         let delivery_task = crate::task::current_task().expect("No current task in trap_return");
         match delivery_task.prepare_signal_delivery() {
             Ok(SignalDelivery::None) => break,
@@ -215,13 +216,13 @@ pub(crate) fn trap_return() -> ! {
                 drop(delivery_task);
                 stop_current_process(signal);
             }
-            Ok(SignalDelivery::Terminate(status)) => {
+            Ok(SignalDelivery::Terminate(signal)) => {
                 drop(delivery_task);
-                exit_current_and_run_next(status);
+                exit_current_group_by_signal(signal);
             }
             Err(_) => {
                 drop(delivery_task);
-                exit_current_and_run_next(139);
+                exit_current_group_by_signal(11);
             }
         }
     }

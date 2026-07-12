@@ -657,11 +657,11 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BG_CONTINUED_42",
-                    b"echo LITEOS_FG_START_$((6*7)); fg; echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                    b"echo LITEOS_FG_START_$((6*7)); fg\n",
                 ),
                 (
                     "LITEOS_FG_START_42",
-                    b"\x03",
+                    b"\x03echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

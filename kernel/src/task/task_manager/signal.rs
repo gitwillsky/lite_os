@@ -437,7 +437,7 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
 }
 
 /// @description 从当前唯一 wait owner 取消目标 task 的 interruptible wait。
-fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
+pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
     let indexed = {
         let mut queue = INDEXED_WAIT_QUEUE.lock();
         task.with_deliverable_signal(|| {

@@ -32,6 +32,28 @@ fn request_reschedule_on(cpu: usize) {
     }
 }
 
+/// @description 请求正在运行或过渡中的目标 Thread 尽快进入 kernel 调度点。
+///
+/// @param task Process graph 持有的目标 Thread。
+/// @return 无返回值；非 CPU-owned 状态已会自然进入 trap return，不发送冗余 IPI。
+pub(in crate::task) fn request_task_reschedule(task: &Arc<TaskControlBlock>) {
+    let cpu = match task.scheduling.state.lock().run_state {
+        RunState::Running { cpu }
+        | RunState::Preempting { cpu }
+        | RunState::Blocking { cpu }
+        | RunState::WakePending { cpu }
+        | RunState::StopPending { cpu, .. } => Some(cpu),
+        RunState::New
+        | RunState::Ready { .. }
+        | RunState::Blocked
+        | RunState::Stopped { .. }
+        | RunState::Exited => None,
+    };
+    if let Some(cpu) = cpu {
+        request_reschedule_on(cpu);
+    }
+}
+
 /// @description 将一个 live Thread 的 scheduler membership 转为 group-stop pending/stopped。
 ///
 /// @param task Process graph 持有的目标 Thread。
