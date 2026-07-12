@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
+#include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -11,6 +12,37 @@
 
 int main(void)
 {
+    static const char payload[] = "link-abi";
+    struct stat source_stat;
+    struct stat hard_stat;
+    struct stat symlink_stat;
+    char link_target[32];
+    unlink("/abi-source");
+    unlink("/abi-hard");
+    unlink("/abi-empty");
+    unlink("/abi-symlink");
+    unlink("/abi-symlink-hard");
+    unlink("/abi-follow-hard");
+    int source = open("/abi-source", O_CREAT | O_EXCL | O_RDWR, 0644);
+    if (source < 0
+        || write(source, payload, sizeof(payload)) != sizeof(payload)
+        || linkat(AT_FDCWD, "/abi-source", AT_FDCWD, "/abi-hard", 0) != 0
+        || linkat(source, "", AT_FDCWD, "/abi-empty", AT_EMPTY_PATH) != 0
+        || symlinkat("abi-source", AT_FDCWD, "/abi-symlink") != 0
+        || linkat(AT_FDCWD, "/abi-symlink", AT_FDCWD, "/abi-symlink-hard", 0) != 0
+        || linkat(AT_FDCWD, "/abi-symlink", AT_FDCWD, "/abi-follow-hard", AT_SYMLINK_FOLLOW) != 0
+        || fstat(source, &source_stat) != 0
+        || stat("/abi-hard", &hard_stat) != 0
+        || lstat("/abi-symlink-hard", &symlink_stat) != 0
+        || source_stat.st_ino != hard_stat.st_ino
+        || source_stat.st_nlink != 4
+        || !S_ISLNK(symlink_stat.st_mode)
+        || symlink_stat.st_nlink != 2
+        || readlink("/abi-symlink-hard", link_target, sizeof(link_target)) != 10
+        || memcmp(link_target, "abi-source", 10) != 0
+        || close(source) != 0) {
+        return 6;
+    }
     struct timeval direct_time;
     struct timespec realtime;
     int timezone[2] = { -1, -1 };

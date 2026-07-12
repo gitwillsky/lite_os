@@ -10,7 +10,11 @@ use spin::Mutex;
 use super::{DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType};
 use crate::drivers::block::{BLOCK_SIZE, BlockDevice};
 
+mod directory;
 mod filesystem;
+mod journal;
+mod orphan;
+use journal::{Journal, MutationGuard};
 
 // Utility function to align value up to the next multiple of align_to
 fn align_up(value: usize, align_to: usize) -> usize {
@@ -20,13 +24,14 @@ fn align_up(value: usize, align_to: usize) -> usize {
 const EXT2_SUPER_MAGIC: u16 = 0xEF53;
 // Supported incompatible features
 const EXT2_FEATURE_INCOMPAT_FILETYPE: u32 = 0x0002; // Directory entry file type field present
-const EXT2_FEATURE_INCOMPAT_SUPPORTED: u32 = EXT2_FEATURE_INCOMPAT_FILETYPE;
+const EXT2_FEATURE_INCOMPAT_SUPPORTED: u32 =
+    EXT2_FEATURE_INCOMPAT_FILETYPE | EXT2_FEATURE_INCOMPAT_RECOVER;
 const EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
 const EXT2_FEATURE_RO_COMPAT_LARGE_FILE: u32 = 0x0002;
 const EXT2_FEATURE_RO_COMPAT_SUPPORTED: u32 =
     EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | EXT2_FEATURE_RO_COMPAT_LARGE_FILE;
 const EXT2_FEATURE_COMPAT_HAS_JOURNAL: u32 = 0x0004;
-const EXT2_FEATURE_COMPAT_SUPPORTED: u32 = 0;
+const EXT2_FEATURE_COMPAT_SUPPORTED: u32 = EXT2_FEATURE_COMPAT_HAS_JOURNAL;
 const EXT2_FEATURE_INCOMPAT_RECOVER: u32 = 0x0004;
 
 #[repr(C, packed)]
@@ -195,6 +200,9 @@ pub(crate) struct Ext2FileSystem {
     first_data_block: u32,
     groups: Mutex<Vec<Ext2GroupDesc>>,
     mutation: Mutex<()>,
+    // OWNER: ext2 journal 同时拥有唯一 active transaction write-set 与 recovery sequence；
+    // 缺失该 owner 会让 home metadata 与 commit record 形成两套不可恢复的写入状态。
+    journal: Mutex<Option<Journal>>,
     inode_cache: Mutex<BTreeMap<u32, Weak<Ext2Inode>>>,
     self_ref: spin::Mutex<Weak<Ext2FileSystem>>,
 }
@@ -304,9 +312,7 @@ impl Ext2FileSystem {
                 return Err(FileSystemError::InvalidFileSystem);
             }
 
-            if sb.s_feature_compat & EXT2_FEATURE_COMPAT_HAS_JOURNAL != 0
-                || sb.s_feature_incompat & EXT2_FEATURE_INCOMPAT_RECOVER != 0
-            {
+            if sb.s_feature_compat & EXT2_FEATURE_COMPAT_HAS_JOURNAL == 0 {
                 return Err(FileSystemError::InvalidFileSystem);
             }
             let unsupported_compat = sb.s_feature_compat & !EXT2_FEATURE_COMPAT_SUPPORTED;
@@ -657,12 +663,20 @@ impl Ext2FileSystem {
             first_data_block,
             groups: Mutex::new(groups),
             mutation: Mutex::new(()),
+            journal: Mutex::new(None),
             inode_cache: Mutex::new(BTreeMap::new()),
             self_ref: spin::Mutex::new(Weak::new()),
         });
         // set self_ref
         *fs.self_ref.lock() = Arc::downgrade(&fs);
 
+        let mut journal = Journal::load(&fs)?;
+        journal.recover(&fs)?;
+        fs.superblock.lock().s_feature_incompat |= EXT2_FEATURE_INCOMPAT_RECOVER;
+        fs.write_primary_superblock()?;
+        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
+        *fs.journal.lock() = Some(journal);
+        fs.recover_orphans()?;
         fs.check_filesystem_consistency()?;
 
         Ok(fs)
@@ -672,6 +686,19 @@ impl Ext2FileSystem {
         if fs_block_id >= self.superblock.lock().s_blocks_count {
             return Err(FileSystemError::InvalidFileSystem);
         }
+        if let Some(bytes) = self
+            .journal
+            .lock()
+            .as_ref()
+            .and_then(|journal| journal.staged(fs_block_id))
+        {
+            buf.copy_from_slice(&bytes);
+            return Ok(());
+        }
+        self.read_fs_block_home(fs_block_id, buf)
+    }
+
+    fn read_fs_block_home(&self, fs_block_id: u32, buf: &mut [u8]) -> Result<(), FileSystemError> {
         Self::read_fs_block_from(&self.device, self.block_size, fs_block_id, buf)
     }
 
@@ -726,6 +753,15 @@ impl Ext2FileSystem {
     }
 
     fn write_fs_block(&self, fs_block_id: u32, buf: &[u8]) -> Result<(), FileSystemError> {
+        let mut journal = self.journal.lock();
+        if let Some(journal) = journal.as_mut() {
+            return journal.stage(fs_block_id, buf, self.block_size);
+        }
+        drop(journal);
+        self.write_fs_block_home(fs_block_id, buf)
+    }
+
+    fn write_fs_block_home(&self, fs_block_id: u32, buf: &[u8]) -> Result<(), FileSystemError> {
         if fs_block_id >= self.superblock.lock().s_blocks_count {
             return Err(FileSystemError::InvalidFileSystem);
         }
@@ -785,20 +821,10 @@ impl Ext2FileSystem {
     }
 
     fn write_primary_superblock(&self) -> Result<(), FileSystemError> {
-        let device_block_size = self.device.block_size();
-        let first = 1024 / device_block_size;
-        let offset = 1024 % device_block_size;
-        let bytes = mem::size_of::<Ext2SuperBlock>();
-        let count = ceil_div(offset + bytes, device_block_size);
-        let mut buf = vec![0; count * device_block_size];
-        for index in 0..count {
-            self.device
-                .read_block(
-                    first + index,
-                    &mut buf[index * device_block_size..(index + 1) * device_block_size],
-                )
-                .map_err(|_| FileSystemError::IoError)?;
-        }
+        let block = if self.block_size == 1024 { 1 } else { 0 };
+        let offset = if self.block_size == 1024 { 0 } else { 1024 };
+        let mut buf = vec![0; self.block_size];
+        self.read_fs_block(block, &mut buf)?;
         let superblock = *self.superblock.lock();
         // SAFETY: the buffer spans the complete on-disk superblock.
         unsafe {
@@ -807,15 +833,11 @@ impl Ext2FileSystem {
                 superblock,
             )
         };
-        for index in 0..count {
-            self.device
-                .write_block(
-                    first + index,
-                    &buf[index * device_block_size..(index + 1) * device_block_size],
-                )
-                .map_err(|_| FileSystemError::IoError)?;
-        }
-        Ok(())
+        self.write_fs_block(block, &buf)
+    }
+
+    fn begin_mutation(&self) -> Result<MutationGuard<'_>, FileSystemError> {
+        MutationGuard::begin(self)
     }
 
     fn write_group_descriptor(&self, group: usize) -> Result<(), FileSystemError> {
@@ -1304,6 +1326,18 @@ impl Ext2Inode {
             return Err(FileSystemError::IsDirectory);
         }
         let old_size = self.size();
+        if self.inode_type() == InodeType::SymLink && old_size <= mem::size_of::<[u32; 15]>() as u64
+        {
+            if size != 0 {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            let mut inode = self.disk.lock();
+            inode.i_block = [0; 15];
+            Self::set_disk_size(&mut inode, 0);
+            inode.i_mtime = Self::now();
+            inode.i_ctime = inode.i_mtime;
+            return self.fs.write_inode_disk(self.inode_num, &inode);
+        }
         if size < old_size {
             let keep = ceil_div(size as usize, self.fs.block_size);
             let mut inode = self.disk.lock();
@@ -1405,14 +1439,15 @@ impl Ext2Inode {
     }
 
     fn update_atime(&self) -> Result<(), FileSystemError> {
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         let mut inode = self.disk.lock();
         let now = Self::now();
         if inode.i_atime != now {
             inode.i_atime = now;
             self.fs.write_inode_disk(self.inode_num, &inode)?;
         }
-        Ok(())
+        drop(inode);
+        mutation.commit()
     }
 
     fn add_dir_entry_locked(
@@ -1785,69 +1820,6 @@ impl Ext2Inode {
             }
         }
     }
-
-    fn dir_iterate_blocks<F: FnMut(Ext2DirEntry2Header, &[u8]) -> bool>(
-        &self,
-        mut f: F,
-    ) -> Result<(), FileSystemError> {
-        let ino = self.disk.lock();
-        let size = ino.i_size_lo as usize;
-        drop(ino);
-        if size % self.fs.block_size != 0 {
-            return Err(FileSystemError::InvalidFileSystem);
-        }
-        let mut offset = 0usize;
-        while offset < size {
-            let blk_index = (offset / self.fs.block_size) as u32;
-            let blk_off = offset % self.fs.block_size;
-            let blk = self
-                .map_block(blk_index)
-                .map_err(|_| FileSystemError::InvalidFileSystem)?;
-            let mut buf = vec![0u8; self.fs.block_size];
-            self.fs.read_fs_block(blk, &mut buf)?;
-
-            let mut pos = blk_off;
-            while pos < self.fs.block_size {
-                // Ensure we have enough space for directory entry header
-                if pos + mem::size_of::<Ext2DirEntry2Header>() > self.fs.block_size {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-
-                // SAFETY: 读取前已确认剩余字节覆盖完整目录项头；
-                // ext2 目录项只保证磁盘布局，因此使用非对齐读并按值复制。
-                let hdr = unsafe {
-                    ptr::read_unaligned(buf[pos..].as_ptr() as *const Ext2DirEntry2Header)
-                };
-
-                // Validate record length
-                let rec_len = hdr.rec_len as usize;
-                let name_len = hdr.name_len as usize;
-                let min_rec_len = align_up(mem::size_of::<Ext2DirEntry2Header>() + name_len, 4);
-                let Some(entry_end) = pos.checked_add(rec_len) else {
-                    return Err(FileSystemError::InvalidFileSystem);
-                };
-                if rec_len < min_rec_len || rec_len % 4 != 0 || entry_end > self.fs.block_size {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-
-                let name_start = pos + mem::size_of::<Ext2DirEntry2Header>();
-                if name_len > 255 || name_start + name_len > entry_end {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-
-                let name_bytes = &buf[name_start..name_start + name_len];
-
-                // Call the callback
-                if !f(hdr, name_bytes) {
-                    return Ok(());
-                }
-
-                pos += rec_len;
-            }
-            offset = (blk_index as usize + 1) * self.fs.block_size;
-        }
-        Ok(())
-    }
 }
 
 impl Inode for Ext2Inode {
@@ -1966,24 +1938,28 @@ impl Inode for Ext2Inode {
         if buf.is_empty() {
             return Ok(0);
         }
-        let _mutation = self.fs.mutation.lock();
-        self.write_at_locked(offset, buf)
+        let mutation = self.fs.begin_mutation()?;
+        let written = self.write_at_locked(offset, buf)?;
+        mutation.commit()?;
+        Ok(written)
     }
 
     fn append(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         let offset = self.size();
         let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        self.write_at_locked(offset_usize, buf)
-            .map(|written| (offset, written))
+        let written = self.write_at_locked(offset_usize, buf)?;
+        mutation.commit()?;
+        Ok((offset, written))
     }
 
     fn truncate(&self, size: u64) -> Result<(), FileSystemError> {
-        let _mutation = self.fs.mutation.lock();
-        self.truncate_locked(size)
+        let mutation = self.fs.begin_mutation()?;
+        self.truncate_locked(size)?;
+        mutation.commit()
     }
 
     fn sync(&self) -> Result<(), FileSystemError> {
@@ -2002,7 +1978,7 @@ impl Inode for Ext2Inode {
             .map(u32::try_from)
             .transpose()
             .map_err(|_| FileSystemError::InvalidOperation)?;
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         let mut inode = self.disk.lock();
         if let Some(value) = atime {
             inode.i_atime = value;
@@ -2011,7 +1987,9 @@ impl Inode for Ext2Inode {
             inode.i_mtime = value;
         }
         inode.i_ctime = Self::now();
-        self.fs.write_inode_disk(self.inode_num, &inode)
+        self.fs.write_inode_disk(self.inode_num, &inode)?;
+        drop(inode);
+        mutation.commit()
     }
 
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
@@ -2070,7 +2048,7 @@ impl Inode for Ext2Inode {
         if !matches!(kind, InodeType::File | InodeType::Directory) {
             return Err(FileSystemError::InvalidOperation);
         }
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         match self.find_child(name) {
             Ok(_) => return Err(FileSystemError::AlreadyExists),
             Err(FileSystemError::NotFound) => {}
@@ -2107,7 +2085,18 @@ impl Inode for Ext2Inode {
         parent.i_mtime = now;
         parent.i_ctime = now;
         self.fs.write_inode_disk(self.inode_num, &parent)?;
+        drop(parent);
+        mutation.commit()?;
         Ok(child as Arc<dyn Inode>)
+    }
+
+    fn symlink(&self, name: &[u8], target: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.create_symlink(name, target)
+            .map(|inode| inode as Arc<dyn Inode>)
+    }
+
+    fn link(&self, name: &[u8], target: Arc<dyn Inode>) -> Result<(), FileSystemError> {
+        self.create_hard_link(name, target)
     }
 
     fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError> {
@@ -2115,7 +2104,7 @@ impl Inode for Ext2Inode {
             return Err(FileSystemError::NotDirectory);
         }
         Self::validate_name(name)?;
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         let child = self.find_child(name)?;
         let metadata = child.metadata()?;
         if metadata.kind == InodeType::Directory {
@@ -2140,10 +2129,8 @@ impl Inode for Ext2Inode {
             disk.i_ctime = Self::now();
             self.fs.write_inode_disk(child.inode_num, &disk)?;
         } else if metadata.kind != InodeType::Directory && Arc::strong_count(&child) > 2 {
-            disk.i_links_count = 0;
-            disk.i_dtime = Self::now();
-            disk.i_ctime = disk.i_dtime;
-            self.fs.write_inode_disk(child.inode_num, &disk)?;
+            drop(disk);
+            self.fs.defer_reclaim_locked(&child)?;
         } else {
             drop(disk);
             child.reclaim_locked(metadata.kind == InodeType::Directory)?;
@@ -2156,8 +2143,7 @@ impl Inode for Ext2Inode {
         parent.i_ctime = parent.i_mtime;
         self.fs.write_inode_disk(self.inode_num, &parent)?;
         drop(parent);
-        drop(_mutation);
-        Ok(())
+        mutation.commit()
     }
 
     fn rename(
@@ -2172,7 +2158,7 @@ impl Inode for Ext2Inode {
         }
         Self::validate_name(old_name)?;
         Self::validate_name(new_name)?;
-        let _mutation = self.fs.mutation.lock();
+        let mutation = self.fs.begin_mutation()?;
         let new_parent = Ext2Inode::load(self.fs.clone(), new_parent_inode as u32)?;
         if new_parent.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -2242,10 +2228,8 @@ impl Inode for Ext2Inode {
                 self.fs.write_inode_disk(existing.inode_num, &disk)?;
             } else if existing_meta.kind != InodeType::Directory && Arc::strong_count(&existing) > 2
             {
-                disk.i_links_count = 0;
-                disk.i_dtime = Self::now();
-                disk.i_ctime = disk.i_dtime;
-                self.fs.write_inode_disk(existing.inode_num, &disk)?;
+                drop(disk);
+                self.fs.defer_reclaim_locked(&existing)?;
             } else {
                 drop(disk);
                 existing.reclaim_locked(existing_meta.kind == InodeType::Directory)?;
@@ -2284,20 +2268,24 @@ impl Inode for Ext2Inode {
             new_disk.i_ctime = now;
             self.fs.write_inode_disk(new_parent.inode_num, &new_disk)?;
         }
-        drop(_mutation);
-        Ok(())
+        mutation.commit()
     }
 }
 
 impl Drop for Ext2Inode {
     fn drop(&mut self) {
-        let reclaim = {
+        let orphan_next = {
             let disk = self.disk.lock();
-            disk.i_links_count == 0 && disk.i_dtime != 0 && disk.i_mode & 0xF000 == 0x8000
+            (disk.i_links_count == 0 && matches!(disk.i_mode & 0xF000, 0x8000 | 0xA000))
+                .then_some(disk.i_dtime)
         };
-        if reclaim {
-            let _mutation = self.fs.mutation.lock();
-            if let Err(error) = self.reclaim_locked(false) {
+        if let Some(orphan_next) = orphan_next {
+            let result = self.fs.begin_mutation().and_then(|mutation| {
+                self.fs.remove_orphan_locked(self.inode_num, orphan_next)?;
+                self.reclaim_locked(false)?;
+                mutation.commit()
+            });
+            if let Err(error) = result {
                 error!(
                     "[EXT2] failed to reclaim unlinked inode {}: {:?}",
                     self.inode_num, error

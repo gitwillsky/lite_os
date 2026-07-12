@@ -170,6 +170,10 @@ impl Inode for ProcInode {
         false
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         let contents = self.file_contents()?;
         let offset = usize::try_from(offset).map_err(|_| FileSystemError::InvalidOperation)?;

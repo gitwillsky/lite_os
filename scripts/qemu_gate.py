@@ -191,3 +191,101 @@ def boot(
     raise RuntimeError(
         f"QEMU -smp {smp} boot gate failed; missing={missing!r}\n--- output tail ---\n{tail}"
     )
+
+
+def power_cut(
+    image: Path,
+    smp: int,
+    command: bytes,
+    active_marker: str,
+    delay_seconds: float,
+    timeout_seconds: int = 30,
+) -> None:
+    """在 guest 持续执行 mutation 时 SIGKILL QEMU，模拟没有 clean shutdown 的掉电。
+
+    Args:
+        image: 直接承受 guest 写入的私有 root image。
+        smp: QEMU 暴露的 hart 数。
+        command: shell 激活后执行且必须持续 mutation 的命令。
+        active_marker: guest 确认 mutation loop 已开始的输出。
+        delay_seconds: 观察到 active marker 后到 SIGKILL 的确定性延迟。
+        timeout_seconds: 等待 console 与 active marker 的最大秒数。
+
+    Returns:
+        QEMU 被 SIGKILL 且 image 保留未 clean-shutdown 状态时返回。
+
+    Raises:
+        RuntimeError: QEMU 不可用、提前退出、超时或命中 kernel fatal path。
+    """
+    qemu = shutil.which("qemu-system-riscv64")
+    if not qemu:
+        raise RuntimeError("qemu-system-riscv64 is required")
+    process = subprocess.Popen(
+        [
+            qemu,
+            "-machine",
+            "virt",
+            "-nographic",
+            "-smp",
+            str(smp),
+            "-rtc",
+            "base=utc",
+            "-bios",
+            "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+            "-kernel",
+            "target/riscv64gc-unknown-none-elf/debug/kernel",
+            "-drive",
+            f"file={image},if=none,format=raw,id=x0",
+            "-device",
+            "virtio-blk-device,drive=x0",
+            "-object",
+            "rng-random,filename=/dev/urandom,id=rng0",
+            "-device",
+            "virtio-rng-device,rng=rng0",
+        ],
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    output = bytearray()
+    activated = False
+    command_sent = False
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], 0.25)
+            if not ready:
+                if process.poll() is not None:
+                    break
+                continue
+            chunk = os.read(process.stdout.fileno(), 16 * 1024)
+            if not chunk:
+                break
+            output.extend(chunk)
+            text = ANSI.sub("", output.decode(errors="replace"))
+            if "panicked at" in text or "[ERROR]" in text:
+                raise RuntimeError("power-cut guest reached a kernel fatal path")
+            if not activated and "Please press Enter to activate this console." in text:
+                time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
+                send_interaction(process.stdin, b"\n")
+                activated = True
+            if activated and not command_sent and "Enter 'help' for a list of built-in commands." in text:
+                time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
+                send_interaction(process.stdin, command)
+                command_sent = True
+            if command_sent and active_marker in text:
+                time.sleep(delay_seconds)
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=3)
+                return
+    finally:
+        terminate(process)
+    text = ANSI.sub("", output.decode(errors="replace"))
+    tail = "\n".join(text.splitlines()[-40:])
+    raise RuntimeError(f"power-cut gate missed {active_marker!r}\n--- output tail ---\n{tail}")

@@ -17,7 +17,7 @@ def find_tool(candidates):
     return None
 
 def create_ext2_filesystem(filename, init_elf, size_mb=128):
-    """创建 4K 块大小的 ext2 文件系统并用 debugfs 写入文件（兼容 macOS）。"""
+    """创建带标准 JBD2 journal inode 的 4K ext2 revision 1 文件系统。"""
 
     if not os.path.isfile(init_elf):
         print(f"✗ 未找到用户程序 ELF: {init_elf}")
@@ -42,10 +42,11 @@ def create_ext2_filesystem(filename, init_elf, size_mb=128):
 
     try:
         subprocess.run([mke2fs, '-t', 'ext2', '-b', '4096', '-I', '256',
-                        '-O', '^ext_attr,^resize_inode,^dir_index,filetype,sparse_super,large_file',
+                        '-O', '^ext_attr,^resize_inode,^dir_index,filetype,sparse_super,large_file,has_journal',
+                        '-J', 'size=4',
                         '-L', 'LITEOS', filename],
                        check=True, capture_output=True)
-        print("✓ ext2 文件系统创建成功 (4K 块)")
+        print("✓ ext2 文件系统创建成功 (4K block, 4 MiB JBD2 journal)")
     except subprocess.CalledProcessError as e:
         print(f"✗ mke2fs 失败: {e}\n{e.stderr.decode(errors='ignore')}")
         return False

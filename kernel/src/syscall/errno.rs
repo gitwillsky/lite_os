@@ -29,6 +29,8 @@ pub(crate) const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub(crate) const EFAULT: isize = 14;
 pub(crate) const EEXIST: isize = 17;
+/// old/new pathname 不属于同一 mounted filesystem。
+pub(crate) const EXDEV: isize = 18;
 /// fd backend 不支持所请求的设备映射操作。
 pub(crate) const ENODEV: isize = 19;
 /// 路径分量不是目录。
@@ -42,6 +44,8 @@ pub(crate) const ENOTTY: isize = 25;
 pub(crate) const ENOSPC: isize = 28;
 /// 目标 filesystem 不允许 mutation。
 pub(crate) const EROFS: isize = 30;
+/// inode hard-link count 已达到 on-disk 表达上限。
+pub(crate) const EMLINK: isize = 31;
 /// pipe 没有 reader。
 pub(crate) const EPIPE: isize = 32;
 pub(crate) const ESPIPE: isize = 29;

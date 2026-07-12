@@ -105,6 +105,10 @@ impl Inode for DevInode {
         false
     }
 
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
     fn device_kind(&self) -> Option<DeviceKind> {
         match self.node {
             DevNode::Root => None,

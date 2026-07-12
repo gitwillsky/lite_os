@@ -358,6 +358,20 @@ kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Ar
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/ext2.rs :: pub (crate) impl Ext2FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/ext2.rs :: pub (crate) struct Ext2FileSystem
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn create_hard_link (& self , name : & [u8] , target : Arc < dyn Inode > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn create_symlink (& self , name : & [u8] , target : & [u8] ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn dir_iterate_blocks < F : FnMut (Ext2DirEntry2Header , & [u8]) -> bool > (& self , mut visit : F ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext2FileSystem >) -> Result < Self , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext2FileSystem) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u32 , bytes : & [u8] , block_size : usize ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn staged (& self , block : u32) -> Option < Vec < u8 > >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext2FileSystem) -> Result < Self , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) struct Journal
+kernel/src/fs/ext2/journal.rs :: pub (super) struct MutationGuard < 'a >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn defer_reclaim_locked (& self , inode : & Arc < Ext2Inode > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn recover_orphans (& self) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/file.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
 kernel/src/fs/file.rs :: enum CharacterDevice :: Zero
@@ -470,6 +484,8 @@ kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
+kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
+kernel/src/fs/inode.rs :: trait Inode :: fn link (& self , _name : & [u8] , _target : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn list (& self) -> Result < Vec < DirectoryEntry > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_at (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
@@ -477,11 +493,13 @@ kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec <
 kernel/src/fs/inode.rs :: trait Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
+kernel/src/fs/inode.rs :: trait Inode :: fn symlink (& self , _name : & [u8] , _target : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn truncate (& self , size : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_at (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
+kernel/src/fs/mod.rs :: enum FileSystemError :: CrossDevice
 kernel/src/fs/mod.rs :: enum FileSystemError :: DirectoryNotEmpty
 kernel/src/fs/mod.rs :: enum FileSystemError :: InvalidFileSystem
 kernel/src/fs/mod.rs :: enum FileSystemError :: InvalidOperation
@@ -492,8 +510,10 @@ kernel/src/fs/mod.rs :: enum FileSystemError :: NoSpace
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotDirectory
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotFound
 kernel/src/fs/mod.rs :: enum FileSystemError :: OutOfMemory
+kernel/src/fs/mod.rs :: enum FileSystemError :: PermissionDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: ReadOnly
 kernel/src/fs/mod.rs :: enum FileSystemError :: SymbolicLink
+kernel/src/fs/mod.rs :: enum FileSystemError :: TooManyLinks
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: block_size : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: blocks : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: blocks_available : u64
@@ -554,6 +574,7 @@ kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , inode : Arc < dyn Inode >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , kind : InodeType , mode : u32 ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < dyn Inode > , new_start : Option < Arc < dyn Inode > > , new_path : & [u8] ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_at (& self , path : & [u8] , source : & 'static [u8] , filesystem : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & 'static [u8] , fs : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_table (& self) -> Result < Vec < u8 > , FileSystemError >
@@ -563,6 +584,7 @@ kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at_no_follow (& self , start : Option < Arc < dyn Inode > > , path : & [u8] ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : Option < Arc < dyn Inode > > , old_path : & [u8] , new_start : Option < Arc < dyn Inode > > , new_path : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn statistics (& self , inode : Arc < dyn Inode > ,) -> Result < FileSystemStatistics , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , target : & [u8] ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , directory : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
@@ -813,6 +835,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const EIO : isize = 5
 kernel/src/syscall/errno.rs :: pub (crate) const EISDIR : isize = 21
 kernel/src/syscall/errno.rs :: pub (crate) const ELOOP : isize = 40
 kernel/src/syscall/errno.rs :: pub (crate) const EMFILE : isize = 24
+kernel/src/syscall/errno.rs :: pub (crate) const EMLINK : isize = 31
 kernel/src/syscall/errno.rs :: pub (crate) const ENAMETOOLONG : isize = 36
 kernel/src/syscall/errno.rs :: pub (crate) const ENODEV : isize = 19
 kernel/src/syscall/errno.rs :: pub (crate) const ENOENT : isize = 2
@@ -832,6 +855,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const EROFS : isize = 30
 kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
 kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
 kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
+kernel/src/syscall/errno.rs :: pub (crate) const EXDEV : isize = 18
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_chdir (name : * const u8) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
@@ -843,24 +867,31 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_ftruncate (fd : usize , size : u6
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_get_cwd (pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_getdents64 (fd : usize , pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_lseek (fd : usize , offset : i64 , whence : u32) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_mkdirat (fd : isize , name : * const u8 , mode : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_newfstatat (fd : isize , name : * const u8 , pointer : * mut u8 , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_openat (fd : isize , name : * const u8 , flags : u32 , mode : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_pipe2 (descriptors : usize , flags : u32) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * const u8 , nfd : isize , nn : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
+kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
 kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_read , sys_readv , sys_write , sys_writev }
+kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
+kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_renameat2 , sys_unlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
+kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_linkat (old_dirfd : isize , old_path : * const u8 , new_dirfd : isize , new_path : * const u8 , flags : usize ,) -> isize
+kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_symlinkat (target : * const u8 , new_dirfd : isize , new_path : * const u8) -> isize
+kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mkdirat (dirfd : isize , name : * const u8 , mode : u32) -> isize
+kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_renameat2 (old_dirfd : isize , old_name : * const u8 , new_dirfd : isize , new_name : * const u8 , flags : u32 ,) -> isize
+kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_unlinkat (dirfd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8] ,) -> Result < Option < Arc < dyn Inode > > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn ferr (error : FileSystemError) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn path (task : & TaskControlBlock , pointer : * const u8) -> Result < Vec < u8 > , isize >
+kernel/src/syscall/fs/pathname.rs :: pub (super) fn path_allow_empty (task : & TaskControlBlock , pointer : * const u8 ,) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize , name : * const u8 , buffer : * mut u8 , size : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_statfs (name : * const u8 , address : usize) -> isize

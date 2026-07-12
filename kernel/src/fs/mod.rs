@@ -63,6 +63,9 @@ pub(crate) enum FileSystemError {
     SymbolicLink,
     OutOfMemory,
     NoSpace,
+    CrossDevice,
+    PermissionDenied,
+    TooManyLinks,
 }
 
 /// @description 为 VFS 提供根 inode 的文件系统实例。

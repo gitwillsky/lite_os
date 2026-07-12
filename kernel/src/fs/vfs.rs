@@ -453,6 +453,43 @@ impl VirtualFileSystem {
         parent.create(&name, kind, mode)
     }
 
+    /// @description 在 new path 创建 raw-target symbolic link。
+    /// @param start 相对 new path 的起始目录；None 表示 root。
+    /// @param path 新链接 pathname。
+    /// @param target 不经解析的 symbolic-link target bytes。
+    /// @return 新 symbolic-link inode。
+    /// @errors pathname、重复名称、空间、只读或底层 I/O 错误。
+    pub(crate) fn symlink_at(
+        &self,
+        start: Option<Arc<dyn Inode>>,
+        path: &[u8],
+        target: &[u8],
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let start = start.unwrap_or(self.root_inode()?);
+        let (parent, name) = self.parent_from(start, path)?;
+        parent.symlink(&name, target)
+    }
+
+    /// @description 为已解析目标创建同 filesystem 的硬链接目录项。
+    /// @param target 不得为目录，且 final symlink 是否跟随已由 syscall/VFS caller 决定。
+    /// @param new_start 相对 new path 的起始目录；None 表示 root。
+    /// @param new_path 新硬链接 pathname。
+    /// @return 成功或明确的跨 filesystem、类型及目录项错误。
+    /// @errors 目标与 parent 分属不同 filesystem 时返回 CrossDevice。
+    pub(crate) fn link_at(
+        &self,
+        target: Arc<dyn Inode>,
+        new_start: Option<Arc<dyn Inode>>,
+        new_path: &[u8],
+    ) -> Result<(), FileSystemError> {
+        let new_start = new_start.unwrap_or(self.root_inode()?);
+        let (parent, name) = self.parent_from(new_start, new_path)?;
+        if parent.filesystem_id() != target.filesystem_id() {
+            return Err(FileSystemError::CrossDevice);
+        }
+        parent.link(&name, target)
+    }
+
     pub(crate) fn unlink_at(
         &self,
         start: Option<Arc<dyn Inode>>,
@@ -477,7 +514,7 @@ impl VirtualFileSystem {
         let (old_parent, old_name) = self.parent_from(old_start, old_path)?;
         let (new_parent, new_name) = self.parent_from(new_start, new_path)?;
         if old_parent.filesystem_id() != new_parent.filesystem_id() {
-            return Err(FileSystemError::InvalidOperation);
+            return Err(FileSystemError::CrossDevice);
         }
         old_parent.rename(
             &old_name,

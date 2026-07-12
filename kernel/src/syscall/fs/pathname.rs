@@ -17,6 +17,9 @@ pub(super) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::IsDirectory => errno::EISDIR,
         FileSystemError::DirectoryNotEmpty => errno::ENOTEMPTY,
         FileSystemError::NoSpace => errno::ENOSPC,
+        FileSystemError::CrossDevice => errno::EXDEV,
+        FileSystemError::PermissionDenied => errno::EPERM,
+        FileSystemError::TooManyLinks => errno::EMLINK,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::ReadOnly => errno::EROFS,
         FileSystemError::SymbolicLink => errno::ELOOP,
@@ -26,6 +29,17 @@ pub(super) fn ferr(error: FileSystemError) -> isize {
 }
 
 pub(super) fn path(task: &TaskControlBlock, pointer: *const u8) -> Result<Vec<u8>, isize> {
+    let path = path_allow_empty(task, pointer)?;
+    if path.is_empty() {
+        return Err(-errno::ENOENT);
+    }
+    Ok(path)
+}
+
+pub(super) fn path_allow_empty(
+    task: &TaskControlBlock,
+    pointer: *const u8,
+) -> Result<Vec<u8>, isize> {
     if pointer.is_null() {
         return Err(-errno::EFAULT);
     }
@@ -36,9 +50,6 @@ pub(super) fn path(task: &TaskControlBlock, pointer: *const u8) -> Result<Vec<u8
             UserAccessError::OutOfMemory => -errno::ENOMEM,
             UserAccessError::Fault | UserAccessError::Overflow => -errno::EFAULT,
         })?;
-    if path.is_empty() {
-        return Err(-errno::ENOENT);
-    }
     Ok(path)
 }
 

@@ -1,11 +1,17 @@
 use alloc::vec::Vec;
 use core::mem;
 
+mod access;
 mod io;
+mod links;
+mod namespace;
 mod pathname;
 mod readlink;
 pub(crate) mod statistics;
+pub(crate) use access::sys_faccessat;
 pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
+pub(crate) use links::{sys_linkat, sys_symlinkat};
+pub(crate) use namespace::{sys_mkdirat, sys_renameat2, sys_unlinkat};
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
 
@@ -25,7 +31,6 @@ use crate::{
 
 use super::tty::guard_terminal_access;
 const AT_FDCWD: isize = -100;
-const AT_REMOVEDIR: usize = 0x200;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
@@ -189,74 +194,6 @@ pub(crate) fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
     value as isize
 }
 
-pub(crate) fn sys_mkdirat(fd: isize, name: *const u8, mode: u32) -> isize {
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let p = match path(&task, name) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let b = match base(&task, fd, &p) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    vfs()
-        .create_at(b, &p, InodeType::Directory, mode)
-        .map_or_else(ferr, |_| 0)
-}
-pub(crate) fn sys_unlinkat(fd: isize, name: *const u8, flags: usize) -> isize {
-    if flags & !AT_REMOVEDIR != 0 {
-        return -errno::EINVAL;
-    }
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let p = match path(&task, name) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let b = match base(&task, fd, &p) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    vfs()
-        .unlink_at(b, &p, flags & AT_REMOVEDIR != 0)
-        .map_or_else(ferr, |_| 0)
-}
-pub(crate) fn sys_renameat2(
-    ofd: isize,
-    on: *const u8,
-    nfd: isize,
-    nn: *const u8,
-    flags: u32,
-) -> isize {
-    if flags & !1 != 0 {
-        return -errno::EINVAL;
-    }
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let op = match path(&task, on) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let np = match path(&task, nn) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let ob = match base(&task, ofd, &op) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let nb = match base(&task, nfd, &np) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    vfs()
-        .rename_at(ob, &op, nb, &np, flags & 1 != 0)
-        .map_or_else(ferr, |_| 0)
-}
 pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;

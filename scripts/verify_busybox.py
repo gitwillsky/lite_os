@@ -25,7 +25,7 @@ from build_cache import (
     temporary_directory,
     write_manifest,
 )
-from qemu_gate import boot
+from qemu_gate import boot, power_cut
 from verify_musl import (
     MuslCachePaths,
     cached_musl_paths,
@@ -70,6 +70,7 @@ BUSYBOX_LINKS = (
     "gzip",
     "head",
     "kill",
+    "ln",
     "ls",
     "mkdir",
     "mv",
@@ -565,6 +566,8 @@ def main() -> int:
                 "LITEOS_TOOLS_42",
                 "LITEOS_OBSERVABILITY_42",
                 "LITEOS_FILESYSTEM_CAPACITY_42",
+                "LITEOS_LINKS_43",
+                "LITEOS_NAMESPACE_CONCURRENCY_43",
                 "LITEOS_SYSTEM_IDENTITY_42",
                 "LITEOS_WALLCLOCK_42",
                 "LITEOS_EXEC_RECLAIM_42",
@@ -640,6 +643,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
+                    b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n",
+                ),
+                (
+                    "LITEOS_LINKS_43",
+                    b"/bin/rm -rf /race; /bin/mkdir /race; workers=''; i=0; while [ $i -lt 8 ]; do (/bin/mkdir /race/d$i; j=0; while [ $j -lt 4 ]; do echo payload >/race/d$i/source$j && /bin/cp /race/d$i/source$j /race/d$i/copy$j && /bin/ln /race/d$i/copy$j /race/d$i/hard$j && /bin/ln -s hard$j /race/d$i/sym$j && /bin/mv /race/d$i/copy$j /race/d$i/moved$j && [ \"$(/bin/cat /race/d$i/sym$j)\" = payload ] && /bin/rm /race/d$i/sym$j /race/d$i/hard$j /race/d$i/moved$j /race/d$i/source$j || exit 1; j=$((j+1)); done; /bin/rmdir /race/d$i; echo done >>/race/completed) & workers=\"$workers $!\"; i=$((i+1)); done; ok=1; for worker in $workers; do wait $worker || ok=0; done; count=$(/bin/wc -l </race/completed); [ \"$ok:$count\" = 1:8 ] && echo LITEOS_NAMESPACE_CONCURRENCY_$((6*7+1))\n",
+                ),
+                (
+                    "LITEOS_NAMESPACE_CONCURRENCY_43",
                     b"[ \"$(/bin/uname -s)\" = LiteOS ] && [ \"$(/bin/uname -n)\" = liteos ] && [ \"$(/bin/uname -m)\" = riscv64 ] && [ \"$(/bin/uname -o)\" = LiteOS ] && [ \"$(/bin/arch)\" = riscv64 ] && echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n",
                 ),
                 (
@@ -845,6 +856,7 @@ def main() -> int:
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             persistent_writes=True,
+            timeout_seconds=90,
         )
         boot(
             runtime_image,
@@ -884,6 +896,69 @@ def main() -> int:
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             persistent_writes=True,
         )
+        crash_image = Path(runtime_directory.name) / "crash.img"
+        shutil.copyfile(image, crash_image)
+        power_cut(
+            crash_image,
+            4,
+            b"/bin/rm -rf /crash; /bin/mkdir /crash; exec 3>/crash/open-unlinked; /bin/rm /crash/open-unlinked; echo LITEOS_ORPHAN_ACTIVE_43; while :; do echo payload >&3; done\n",
+            "LITEOS_ORPHAN_ACTIVE_43",
+            0.02,
+        )
+        crash_command = (
+            b"/bin/rm -rf /crash; /bin/mkdir /crash; echo LITEOS_CRASH_LOOP_ACTIVE_43; "
+            b"i=0; while :; do /bin/mkdir /crash/d; echo payload >/crash/d/source; "
+            b"/bin/cp /crash/d/source /crash/d/copy; /bin/ln /crash/d/copy /crash/d/hard; "
+            b"/bin/ln -s hard /crash/d/sym; /bin/mv /crash/d/copy /crash/d/moved; "
+            b"/bin/rm -rf /crash/d; i=$((i+1)); done\n"
+        )
+        for delay in (0.0, 0.005, 0.02, 0.05):
+            power_cut(
+                crash_image,
+                4,
+                crash_command,
+                "LITEOS_CRASH_LOOP_ACTIVE_43",
+                delay,
+            )
+        boot(
+            crash_image,
+            1,
+            ("LITEOS_JOURNAL_RECOVERY_43",),
+            interactions=(
+                ("Please press Enter to activate this console.", b"\n"),
+                (
+                    "Enter 'help' for a list of built-in commands.",
+                    b"/bin/rm -rf /crash; /bin/mkdir /crash; echo recovered >/crash/state; sync; [ \"$(/bin/cat /crash/state)\" = recovered ] && echo LITEOS_JOURNAL_RECOVERY_$((6*7+1))\n",
+                ),
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            persistent_writes=True,
+        )
+        e2fsck = next(
+            (
+                Path(candidate)
+                for candidate in (
+                    shutil.which("e2fsck"),
+                    "/opt/homebrew/opt/e2fsprogs/sbin/e2fsck",
+                    "/usr/local/opt/e2fsprogs/sbin/e2fsck",
+                    "/usr/sbin/e2fsck",
+                )
+                if candidate and Path(candidate).is_file()
+            ),
+            None,
+        )
+        if e2fsck is None:
+            raise RuntimeError("e2fsck from e2fsprogs is required")
+        check = subprocess.run(
+            [str(e2fsck), "-fn", str(crash_image)],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if check.returncode != 0:
+            raise RuntimeError(f"post-recovery e2fsck failed:\n{check.stdout}")
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1

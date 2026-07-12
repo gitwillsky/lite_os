@@ -60,7 +60,7 @@
 | immutable system/build identity | system module；uname 只编码，不复制 hostname/release/machine state |
 | realtime offset 与固定 UTC timezone policy | timer module；clock_gettime/gettimeofday 共用同一 realtime owner |
 | root mount、source/filesystem association、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
-| inode/on-disk allocation 与 statfs capacity state | filesystem adapter mutation domain；ext2 统计与 allocator mutation 共锁 |
+| inode/on-disk allocation、statfs capacity、JBD2 active transaction/recovery sequence 与 orphan chain | filesystem adapter mutation domain；ext2 统计、allocator、journal 与 orphan lifecycle 共用唯一 mutation 顺序 |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
 | entropy device 与请求串行化 | VirtIORngDevice；random facade 不缓存或派生第二份状态 |
 | UART MMIO 与固定容量 RX ring | UART driver；hardirq 只填 ring，console waiter 只由 deferred softirq 消费 |
@@ -76,11 +76,10 @@
 
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/fs/ext2.rs` | 2308 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
+| `kernel/src/fs/ext2.rs` | 2296 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
 | `kernel/src/task/model.rs` | 1099 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
-| `kernel/src/syscall/fs.rs` | 645 | `syscall::fs` | pathname、fd control 与 metadata ABI family 尚集中 | 沿 namespace 与 metadata ABI family 拆分后下调额度 |
 
 ## 5. Interface and capability contract
 
@@ -89,6 +88,7 @@
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
+- VFS 只决定 pathname、mount 与 cross-filesystem policy；ext2 的 create/link/unlink/rename、allocator、JBD2 write-set/commit/checkpoint 与 orphan recovery 必须在同一 mutation domain。禁止 syscall/VFS 复制 link count、journal 状态或用写序调整冒充跨块原子性。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - `uname` 只投影 system module 的 immutable identity；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。

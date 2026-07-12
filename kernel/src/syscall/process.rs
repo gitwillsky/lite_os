@@ -396,6 +396,9 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
             | FileSystemError::DirectoryNotEmpty
             | FileSystemError::InvalidPath
             | FileSystemError::InvalidOperation
+            | FileSystemError::CrossDevice
+            | FileSystemError::PermissionDenied
+            | FileSystemError::TooManyLinks
             | FileSystemError::IoError
             | FileSystemError::InvalidFileSystem,
         ) => errno::EIO,

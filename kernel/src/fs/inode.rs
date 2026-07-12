@@ -88,6 +88,12 @@ pub(crate) trait Inode: Send + Sync {
 
     fn is_executable(&self) -> bool;
 
+    /// @description 返回 inode 所属 filesystem adapter 是否拒绝持久 mutation。
+    /// @return ext2 root 为 false；只读 devfs/procfs 为 true。
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     /// @description 标识由 devfs 打开的 character device；普通 filesystem inode 返回 None。
     fn device_kind(&self) -> Option<DeviceKind> {
         None
@@ -131,6 +137,24 @@ pub(crate) trait Inode: Send + Sync {
         kind: InodeType,
         mode: u32,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
+
+    /// @description 在当前目录创建保存 raw target bytes 的 symbolic link。
+    /// @param name 新目录项名称。
+    /// @param target 不含结尾 NUL 的 symbolic-link target。
+    /// @return 新 symbolic-link inode。
+    /// @errors 名称、空间、只读或底层 I/O 错误。
+    fn symlink(&self, _name: &[u8], _target: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Err(FileSystemError::ReadOnly)
+    }
+
+    /// @description 在当前目录为同一 filesystem 的非目录 inode 创建硬链接。
+    /// @param name 新目录项名称。
+    /// @param target VFS 已解析且保持存活的目标 inode。
+    /// @return 成功或明确的目录项/link-count 错误。
+    /// @errors 跨 filesystem、目录目标、link-count 溢出、只读或底层 I/O 错误。
+    fn link(&self, _name: &[u8], _target: Arc<dyn Inode>) -> Result<(), FileSystemError> {
+        Err(FileSystemError::ReadOnly)
+    }
 
     fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError>;
 
