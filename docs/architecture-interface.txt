@@ -868,6 +868,7 @@ kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: Exited
 kernel/src/task/model.rs :: enum RunState :: New
+kernel/src/task/model.rs :: enum RunState :: Preempting { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: Ready { cpu : usize , generation : u64 }
 kernel/src/task/model.rs :: enum RunState :: Running { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
@@ -986,10 +987,12 @@ kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn drain_inbound_t
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn idle_context_ptr (& mut self) -> * mut TaskContext
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn mark_active (& self)
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn select_task (& mut self) -> Option < Arc < TaskControlBlock > >
+kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn take_current (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) struct Processor
 kernel/src/task/processor.rs :: pub (super) fn account_current_hart_runtime (runtime_us : u64)
+kernel/src/task/processor.rs :: pub (super) fn begin_preempt_running_task (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < TaskControlBlock >)
-kernel/src/task/processor.rs :: pub (super) fn finish_blocking_transition (task : & Arc < TaskControlBlock >)
+kernel/src/task/processor.rs :: pub (super) fn finish_deschedule_transition (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
 kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool

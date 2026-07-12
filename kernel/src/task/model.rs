@@ -21,12 +21,12 @@ pub(crate) enum RunState {
     New,
     Ready { cpu: usize, generation: u64 },
     Running { cpu: usize },
+    Preempting { cpu: usize },
     Blocking { cpu: usize },
     Blocked,
     WakePending { cpu: usize },
     Exited,
 }
-
 /// @description blocked task 的唯一 wait registration membership ID。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum WaitMembership {

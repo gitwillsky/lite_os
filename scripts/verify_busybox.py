@@ -604,8 +604,15 @@ def main() -> int:
                 "all DTB harts online: count=8, mask=0xff",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PERSIST_42",
+                "LITEOS_SCHED_8_HARTS_42",
             ),
-            interactions=(("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),),
+            interactions=(
+                ("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),
+                (
+                    "LITEOS_PERSIST_42",
+                    b"pids=''; i=0; while [ $i -lt 8 ]; do (while :; do :; done) & pids=\"$pids $!\"; i=$((i+1)); done; sleep 1; mask=0; for p in $pids; do read line < /proc/$p/stat; set -- $line; cpu=${39}; mask=$((mask | (1 << cpu))); done; n=0; while [ $mask -ne 0 ]; do n=$((n + (mask & 1))); mask=$((mask >> 1)); done; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
+                ),
+            ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:

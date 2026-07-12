@@ -14,8 +14,7 @@ use crate::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         pid::{INIT_PID, ProcessId},
-        processor::{enqueue_new_task, request_reschedule},
-        scheduler::cfs_scheduler::RunQueueEntry,
+        processor::{begin_preempt_running_task, enqueue_new_task, request_reschedule},
         with_current_processor,
     },
     timer::{get_time_ns, get_time_us},
@@ -1004,8 +1003,7 @@ pub(crate) fn wait_child(
         // graph lock 覆盖“再次检查 child”到 waiter 发布；exit 必须取得同一锁，因此不会丢唤醒。
         with_current_processor(|processor| {
             let current = processor
-                .current
-                .take()
+                .take_current()
                 .expect("child wait requires current task");
             assert!(Arc::ptr_eq(&current, &task));
             let mut scheduling = task.scheduling.state.lock();
@@ -1108,8 +1106,7 @@ pub(crate) fn futex_wait(
     drop(sched);
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("futex wait requires current task");
         assert!(Arc::ptr_eq(&current, &task));
         let mut scheduling = task.scheduling.state.lock();
@@ -1239,8 +1236,7 @@ pub(crate) fn wait_for_console(input_ready: impl FnOnce() -> bool) -> WaitResult
     drop(sched);
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("console wait requires current task");
         assert!(Arc::ptr_eq(&current, &task));
         let mut scheduling = task.scheduling.state.lock();
@@ -1356,8 +1352,7 @@ pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> WaitR
     drop(sched);
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("pipe wait requires current task");
         assert!(Arc::ptr_eq(&current, &task));
         let mut scheduling = task.scheduling.state.lock();
@@ -1410,8 +1405,7 @@ pub(crate) fn wait_for_poll(
     drop(sched);
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("ppoll wait requires current task");
         assert!(Arc::ptr_eq(&current, &task));
         let mut scheduling = task.scheduling.state.lock();
@@ -1469,8 +1463,7 @@ pub(crate) fn wait_for_signal(
         drop(sched);
         with_current_processor(|processor| {
             let current = processor
-                .current
-                .take()
+                .take_current()
                 .expect("signal wait requires current task");
             assert!(Arc::ptr_eq(&current, &task));
             let mut scheduling = task.scheduling.state.lock();
@@ -1516,8 +1509,7 @@ pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
     drop(sched);
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("signal delivery wait requires current task");
         assert!(Arc::ptr_eq(&current, &task));
         let mut scheduling = task.scheduling.state.lock();
@@ -1565,7 +1557,7 @@ pub(crate) fn nanosleep(nanoseconds: u64) -> isize {
 
 /// 获取并移除当前任务
 pub(crate) fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    with_current_processor(|processor| processor.current.take())
+    with_current_processor(Processor::take_current)
 }
 
 /// 获取当前任务的引用
@@ -1608,8 +1600,6 @@ pub(crate) fn suspend_current_and_run_next() {
     let Some(task) = current_task() else {
         return;
     };
-    let cpu = hart_id();
-
     // 更新 CFS 使用的运行时间。
     let end_time = get_time_us();
     let mut sched = task.scheduling.policy.lock();
@@ -1619,36 +1609,7 @@ pub(crate) fn suspend_current_and_run_next() {
         sched.update_vruntime(runtime);
     }
     drop(sched);
-    let vruntime = task.scheduling.policy.lock().vruntime;
-
-    with_current_processor(|processor| {
-        let current = processor
-            .current
-            .take()
-            .expect("yield requires current task");
-        assert!(
-            Arc::ptr_eq(&current, &task),
-            "processor current changed during yield"
-        );
-        let entry = {
-            let mut scheduling = task.scheduling.state.lock();
-            match scheduling.run_state {
-                RunState::Running { cpu: owner } => {
-                    assert_eq!(owner, cpu, "running task owned by another CPU");
-                    let generation = scheduling.transition_to_ready(cpu);
-                    Some(RunQueueEntry {
-                        task: current,
-                        generation,
-                        vruntime,
-                    })
-                }
-                state => panic!("cannot suspend task in state {state:?}"),
-            }
-        };
-        if let Some(entry) = entry {
-            processor.add_ready_entry(entry);
-        }
-    });
+    begin_preempt_running_task(&task);
 
     schedule_with_task_context(task);
 }
@@ -1702,8 +1663,7 @@ fn block_current_until(deadline: u64) -> WaitResult {
     }
     with_current_processor(|processor| {
         let current = processor
-            .current
-            .take()
+            .take_current()
             .expect("block requires current task");
         assert!(
             Arc::ptr_eq(&current, &task),
@@ -1919,7 +1879,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     unsafe {
         crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
     }
-    crate::task::processor::finish_blocking_transition(&task);
+    crate::task::processor::finish_deschedule_transition(&task);
     // 退出 task 把自身 Arc 留在 per-hart slot；这里只在已经恢复的 idle stack 上析构。
     crate::task::processor::reap_deferred_task();
 }

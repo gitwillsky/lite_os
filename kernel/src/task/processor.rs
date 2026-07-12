@@ -92,6 +92,9 @@ impl Processor {
                     scheduling.run_state = RunState::Running { cpu: self.hart_id };
                     drop(scheduling);
                     self.current = Some(entry.task.clone());
+                    per_hart(self.hart_id)
+                        .running_entries
+                        .fetch_add(1, Ordering::Relaxed);
                     return Some(entry.task);
                 }
                 _ => {
@@ -99,6 +102,18 @@ impl Processor {
                 }
             }
         }
+    }
+
+    /// @description 撤销当前 hart 的 running ownership 与负载发布。
+    ///
+    /// @return 当前 Task；空 current 表示调用路径破坏调度状态并返回 None。
+    pub(crate) fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
+        let current = self.current.take()?;
+        let previous = per_hart(self.hart_id)
+            .running_entries
+            .fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(previous, 1, "running load counter lost current ownership");
+        Some(current)
     }
 
     /// @description 把远端 mailbox 中的任务转移到本 hart scheduler。
@@ -157,6 +172,8 @@ struct PerHartProcessor {
     queued_entries: AtomicUsize,
     // 与 inbound mutex 内容器同步增减；Relaxed 读取只作为近似负载 hint。
     inbound_entries: AtomicUsize,
+    // OWNER: processor slot 发布本 hart 当前 Running membership；缺失会让选核把 busy hart 当成 idle。
+    running_entries: AtomicUsize,
     // OWNER: processor slot 累计本 hart 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
     busy_us: AtomicU64,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
@@ -174,6 +191,7 @@ impl PerHartProcessor {
             initialized: AtomicBool::new(false),
             queued_entries: AtomicUsize::new(0),
             inbound_entries: AtomicUsize::new(0),
+            running_entries: AtomicUsize::new(0),
             busy_us: AtomicU64::new(0),
             inbound: IrqMutex::new(VecDeque::new()),
         }
@@ -346,7 +364,8 @@ fn select_cpu(task: &TaskControlBlock) -> usize {
         let load = slot
             .queued_entries
             .load(Ordering::Relaxed)
-            .saturating_add(slot.inbound_entries.load(Ordering::Relaxed));
+            .saturating_add(slot.inbound_entries.load(Ordering::Relaxed))
+            .saturating_add(slot.running_entries.load(Ordering::Relaxed));
         if load < best_load {
             best_load = load;
             best_cpu = cpu;
@@ -357,9 +376,28 @@ fn select_cpu(task: &TaskControlBlock) -> usize {
     }
 
     match last_load {
-        Some(load) if load <= best_load.saturating_add(1) => last,
+        // 仅在同为最小负载时保留缓存亲和性；允许多一个 runnable 会把两个 CPU-bound task 永久压在同一 hart。
+        Some(load) if load == best_load => last,
         _ => best_cpu,
     }
+}
+
+/// @description 撤销 Running membership 并进入尚不可调度的抢占交接状态。
+///
+/// @param task 当前 hart 唯一 running Task。
+/// @return 无返回值；Ready 发布必须等源 hart 回到 idle stack 后完成。
+pub(super) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) {
+    let source_cpu = hart_id();
+    let current =
+        with_current_processor(Processor::take_current).expect("preemption requires current task");
+    assert!(Arc::ptr_eq(&current, task));
+    let mut scheduling = task.scheduling.state.lock();
+    assert_eq!(
+        scheduling.run_state,
+        RunState::Running { cpu: source_cpu },
+        "preemption source lost running ownership"
+    );
+    scheduling.run_state = RunState::Preempting { cpu: source_cpu };
 }
 
 fn ready_entry(task: Arc<TaskControlBlock>, generation: u64) -> RunQueueEntry {
@@ -502,13 +540,13 @@ fn wake_waiting_task(
     true
 }
 
-/// @description 在 idle stack 上完成 Blocking/WakePending 的切出握手。
+/// @description 在 idle stack 上完成 Blocking/WakePending/Preempting 的切出握手。
 ///
 /// @param task 刚从该 CPU 切回 idle 的 task。
-/// @return 无返回值；WakePending 会直接加入本 CPU local runqueue。
-pub(super) fn finish_blocking_transition(task: &Arc<TaskControlBlock>) {
+/// @return 无返回值；Ready 只在 task context 已停止执行后发布。
+pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) {
     let cpu = hart_id();
-    let generation = {
+    let ready = {
         let mut scheduling = task.scheduling.state.lock();
         match scheduling.run_state {
             RunState::Blocking { cpu: owner } => {
@@ -518,14 +556,17 @@ pub(super) fn finish_blocking_transition(task: &Arc<TaskControlBlock>) {
             }
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending task returned on another CPU");
-                Some(scheduling.transition_to_ready(cpu))
+                Some((cpu, scheduling.transition_to_ready(cpu)))
+            }
+            RunState::Preempting { cpu: owner } => {
+                assert_eq!(owner, cpu, "preempting task returned on another CPU");
+                let target_cpu = select_cpu(task);
+                Some((target_cpu, scheduling.transition_to_ready(target_cpu)))
             }
             _ => None,
         }
     };
-    if let Some(generation) = generation {
-        with_current_processor(|processor| {
-            processor.add_ready_entry(ready_entry(task.clone(), generation))
-        });
+    if let Some((target_cpu, generation)) = ready {
+        deliver_ready_entry(target_cpu, ready_entry(task.clone(), generation));
     }
 }

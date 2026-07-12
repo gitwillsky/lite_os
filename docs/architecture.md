@@ -130,7 +130,7 @@ Signal disposition 属于共享 Process；mask、coalesced standard-signal pendi
 - Blocking -> WakePending -> Ready 协议解决 wake-before-switch；repeated/stale wake 不重复入队。
 - idle 在 SIE=0 下完成 deferred work -> drain -> select -> WFI，醒来后才短暂投递 pending trap，消除 interrupt-before-WFI lost wakeup，无工作时不忙轮询。
 
-该调度器只是固定权重的最小公平排序，不声称 Linux CFS 的完整 weight、bandwidth、affinity、RT 或层级语义。当前也没有可用于证明 migration/work stealing 的多 task workload。
+该调度器只是固定权重的最小公平排序，不声称 Linux CFS 的完整 weight、bandwidth、affinity、RT 或层级语义。每个 hart 的负载由 running、local queued 与 inbound mailbox 三部分组成；抢占先进入不可调度的 `Preempting`，源 hart 切回 idle stack 后才重新选取最小负载 hart并发布 Ready，仅在 last hart 同为最小负载时保留缓存亲和性。迁移只通过 generation + mailbox seam 完成，不允许远端访问 local runqueue 或在源 task context 停止前执行目标 context；8-hart BusyBox gate 用八个持续 runnable process 验证全部 DTB hart 被使用。
 
 ## 10. VFS 与文件系统
 

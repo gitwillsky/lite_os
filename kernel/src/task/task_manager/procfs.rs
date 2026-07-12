@@ -63,6 +63,7 @@ fn process_snapshot() -> ProcSnapshot {
                 RunState::New
                     | RunState::Ready { .. }
                     | RunState::Running { .. }
+                    | RunState::Preempting { .. }
                     | RunState::WakePending { .. }
             ) {
                 runnable_tasks += 1;
@@ -143,6 +144,7 @@ pub(super) fn update_load_average(now_us: u64) {
                 RunState::New
                     | RunState::Ready { .. }
                     | RunState::Running { .. }
+                    | RunState::Preempting { .. }
                     | RunState::WakePending { .. }
             )
         })
