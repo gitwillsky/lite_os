@@ -29,6 +29,7 @@ from build_cache import (
     write_manifest,
 )
 from qemu_gate import boot, power_cut
+from openssl_cache import OpenSslPaths, build_openssl
 from verify_musl import (
     MuslCachePaths,
     cached_musl_paths,
@@ -83,6 +84,7 @@ BUSYBOX_LINKS = (
     "mv",
     "nc",
     "netstat",
+    "ping",
     "printf",
     "ps",
     "pwd",
@@ -129,6 +131,79 @@ def start_http_gate() -> tuple[subprocess.Popen[bytes], int]:
         if server.returncode == 0:
             raise RuntimeError("HTTP gate server exited without serving")
     raise RuntimeError("no free HTTP gate port in 18080..18180")
+
+
+def start_https_gate(directory: Path) -> tuple[subprocess.Popen[bytes], int, Path]:
+    """创建临时 CA/server identity，并启动只供 QEMU gate 消费的 HTTPS origin。"""
+    ca_key = directory / "ca.key"
+    ca_cert = directory / "ca.pem"
+    server_key = directory / "server.key"
+    server_csr = directory / "server.csr"
+    server_cert = directory / "server.pem"
+    extensions = directory / "server.ext"
+    extensions.write_text(
+        "basicConstraints=CA:FALSE\n"
+        "keyUsage=digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectAltName=DNS:liteos-gate.test\n"
+    )
+    run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes",
+            "-days", "1", "-subj", "/CN=LiteOS Gate CA", "-keyout", str(ca_key),
+            "-out", str(ca_cert),
+        ],
+        ROOT,
+    )
+    run(
+        [
+            "openssl", "req", "-newkey", "rsa:2048", "-sha256", "-nodes",
+            "-subj", "/CN=liteos-gate.test", "-keyout", str(server_key),
+            "-out", str(server_csr),
+        ],
+        ROOT,
+    )
+    run(
+        [
+            "openssl", "x509", "-req", "-in", str(server_csr), "-CA", str(ca_cert),
+            "-CAkey", str(ca_key), "-CAcreateserial", "-days", "1", "-sha256",
+            "-extfile", str(extensions), "-out", str(server_cert),
+        ],
+        ROOT,
+    )
+    for port in range(18443, 18544):
+        server = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "scripts/https_gate.py"),
+                "--cert", str(server_cert),
+                "--key", str(server_key),
+                "--port", str(port),
+            ],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            server.wait(timeout=0.05)
+        except subprocess.TimeoutExpired:
+            return server, port, ca_cert
+    raise RuntimeError("no free HTTPS gate port in 18443..18543")
+
+
+def install_runtime_tls_identity(image: Path, public_bundle: Path, gate_ca: Path, directory: Path) -> None:
+    """只在 disposable runtime image 注入 gate CA/hostname，不污染发布 rootfs trust policy。"""
+    bundle = directory / "gate-cert.pem"
+    bundle.write_bytes(public_bundle.read_bytes() + b"\n" + gate_ca.read_bytes())
+    hosts = directory / "hosts"
+    hosts.write_text("10.0.2.2 liteos-gate.test\n")
+    commands = directory / "tls.debugfs"
+    commands.write_text(
+        "rm /etc/ssl/cert.pem\n"
+        f"write {bundle} /etc/ssl/cert.pem\n"
+        f"write {hosts} /etc/hosts\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
 
 def source_payload() -> dict[str, object]:
@@ -457,7 +532,12 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
 
 
-def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
+def create_image(
+    binary: Path,
+    musl: MuslCachePaths,
+    openssl: OpenSslPaths,
+    image: Path,
+) -> Path:
     """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
     run(
         [
@@ -475,6 +555,7 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
+        "mkdir /etc/ssl",
         "mkdir /lib",
         "mkdir /run",
         "mkdir /usr",
@@ -486,6 +567,9 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
+        f"write {openssl.ca_bundle} /etc/ssl/cert.pem",
+        f"write {openssl.binary} /bin/openssl",
+        "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
         f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
@@ -549,6 +633,12 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     )
     if "Type: regular" not in network_service or "Mode:  0755" not in network_service:
         raise RuntimeError("BusyBox rootfs lacks the supervised network service")
+    openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
+    if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
+        raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
+    ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
+    if "Type: regular" not in ca_bundle:
+        raise RuntimeError("BusyBox rootfs lacks the Mozilla CA trust bundle")
     return image
 
 
@@ -573,6 +663,7 @@ def main() -> int:
     args = parser.parse_args()
     runtime_directory: tempfile.TemporaryDirectory[str] | None = None
     http_server: subprocess.Popen[bytes] | None = None
+    https_server: subprocess.Popen[bytes] | None = None
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         jobs_override = build_jobs_override()
@@ -582,15 +673,16 @@ def main() -> int:
             binary = build_busybox(source, compiler, jobs_override, args.rebuild)
             verify_elf(binary, compiler)
             musl = cached_musl_paths(compiler)
+            openssl = build_openssl(musl, jobs_override, args.rebuild)
         if args.build_only:
-            image = create_image(binary, musl, args.image.resolve())
+            image = create_image(binary, musl, openssl, args.image.resolve())
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            4,
+            5,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -598,11 +690,15 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
+                openssl.binary,
+                openssl.ca_bundle,
                 ROOT / "user/inittab",
                 ROOT / "user/network-service",
                 ROOT / "user/udhcpc.script",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
+                ROOT / "scripts/https_gate.py",
+                ROOT / "scripts/openssl_cache.py",
                 ROOT / "scripts/qemu_gate.py",
             ),
         )
@@ -610,11 +706,14 @@ def main() -> int:
         if runtime_gate_hit(stamp, payload, (image,)):
             print(f"BusyBox {BUSYBOX_VERSION} init+ash verification cache hit")
             return 0
-        image = create_image(binary, musl, image)
+        image = create_image(binary, musl, openssl, image)
         runtime_directory = tempfile.TemporaryDirectory(prefix="liteos-busybox-gate-")
-        runtime_image = Path(runtime_directory.name) / "fs.img"
+        runtime_path = Path(runtime_directory.name)
+        runtime_image = runtime_path / "fs.img"
         shutil.copyfile(image, runtime_image)
         http_server, http_port = start_http_gate()
+        https_server, https_port, gate_ca = start_https_gate(runtime_path)
+        install_runtime_tls_identity(runtime_image, openssl.ca_bundle, gate_ca, runtime_path)
         boot(
             runtime_image,
             1,
@@ -624,9 +723,13 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
                 "LITEOS_DHCP_51",
+                "LITEOS_DHCP_SINGLE_51",
                 "LITEOS_DHCP_RESPAWN_51",
+                "LITEOS_PING_52",
                 "LITEOS_DNS_51",
                 "LITEOS_HTTP_51",
+                "LITEOS_TLS_REJECT_52",
+                "LITEOS_HTTPS_52",
                 "LITEOS_LS_42",
                 "LITEOS_NULL_42",
                 "LITEOS_ZERO_4",
@@ -683,14 +786,22 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    b"while [ ! -s /etc/resolv.conf ]; do /bin/sleep 1; done; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); /bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15' && /bin/route | /bin/grep -q '^default .*10.0.2.2' && [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_$((7*7+2))\n",
+                    b"while [ ! -s /etc/resolv.conf ]; do /bin/sleep 1; done; /bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15' && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_$((7*7+2))\n",
                 ),
                 (
                     "LITEOS_DHCP_51",
-                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; while new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); [ -z \"$new\" ] || [ \"$new\" = \"$old\" ]; do /bin/sleep 1; done; /bin/sleep 2; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route | /bin/grep -q '^default .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
+                    b"count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_SINGLE_$((7*7+2))\n",
+                ),
+                (
+                    "LITEOS_DHCP_SINGLE_51",
+                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; while new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); [ -z \"$new\" ] || [ \"$new\" = \"$old\" ]; do /bin/sleep 1; done; /bin/sleep 2; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
                 ),
                 (
                     "LITEOS_DHCP_RESPAWN_51",
+                    b"/bin/ping -c 1 -W 3 10.0.2.2 | /bin/grep -q '1 packets received' && echo LITEOS_PING_$((7*7+3))\n",
+                ),
+                (
+                    "LITEOS_PING_52",
                     b"/bin/dynamic-smoke resolve example.com\n",
                 ),
                 (
@@ -699,6 +810,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_HTTP_51",
+                    f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode(),
+                ),
+                (
+                    "LITEOS_TLS_REJECT_52",
+                    f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode(),
+                ),
+                (
+                    "LITEOS_HTTPS_52",
                     b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
                 ),
                 (
@@ -1085,6 +1204,13 @@ def main() -> int:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1
     finally:
+        if https_server is not None:
+            https_server.terminate()
+            try:
+                https_server.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                https_server.kill()
+                https_server.wait(timeout=3)
         if http_server is not None:
             http_server.terminate()
             try:

@@ -158,6 +158,9 @@ impl Socket {
             (SocketDomain::Inet, SocketType::Stream, 0 | 6) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Stream, notify)?)
             }
+            (SocketDomain::Inet, SocketType::Raw, 1) => {
+                SocketBackend::Inet(InetSocket::new(SocketType::Raw, notify)?)
+            }
             (SocketDomain::Packet, SocketType::Datagram, _) => {
                 SocketBackend::Packet(PacketSocket::new(protocol, notify)?)
             }
@@ -414,6 +417,24 @@ impl Socket {
     pub(crate) fn bind_to_device(&self, name: &[u8]) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.bind_to_device(name),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// @description 设置 AF_INET raw endpoint 的 IPv4 hop limit。
+    /// @param value 已按 Linux `IP_TTL` 约束验证的 1..=255 值。
+    /// @return raw ICMP endpoint 成功提交返回 unit。
+    /// @errors 非 AF_INET endpoint 或失效 endpoint 返回错误。
+    pub(crate) fn set_ipv4_hop_limit(&self, value: u8) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_hop_limit(value),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    pub(crate) fn set_tcp_no_delay(&self, enabled: bool) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_no_delay(enabled),
             _ => Err(SocketError::OperationNotSupported),
         }
     }

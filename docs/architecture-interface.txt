@@ -1038,8 +1038,10 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive (& self , output :
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive_message (& self , output : & mut [u8] , peek : bool ,) -> Result < ReceivedMessage , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn send_to (& self , input : & [u8] , target : Option < SocketAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_broadcast (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_ipv4_hop_limit (& self , value : u8) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_ipv4_packet_info (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_tcp_no_delay (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> SocketType
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn take_error (& self) -> Option < SocketError >
@@ -1090,22 +1092,37 @@ kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn listen (& self , 
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn new (socket_type : super :: SocketType , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn packet_info (& self) -> bool
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn peer_address (& self) -> Result < InetAddress , SocketError >
-kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn poll_state (& self) -> SocketPollState
-kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn readiness_generation (& self) -> u64
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn receive (& self , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn send_to (& self , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn set_packet_info (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn take_error (& self) -> Option < SocketError >
-kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
 kernel/src/socket/inet.rs :: pub (super) struct InetSocket
 kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn bind_to_device (& self , name : & [u8]) -> Result < () , SocketError >
 kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn set_broadcast (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn set_no_delay (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: bound_to_device : bool
 kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: broadcast : bool
+kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: no_delay : bool
 kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: reuse_address : bool
 kernel/src/socket/inet/options.rs :: pub (super) struct InetSocketOptions
+kernel/src/socket/inet/raw.rs :: pub (in crate :: socket) impl InetSocket :: fn set_hop_limit (& self , value : u8) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) RawEndpointState :: endpoint : Weak < InetSocket >
+kernel/src/socket/inet/raw.rs :: pub (super) fn address (handle : SocketHandle) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn bind (handle : SocketHandle , address : InetAddress) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn bind_to_device (handle : SocketHandle , name : & [u8]) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn drop_endpoint (handle : SocketHandle)
+kernel/src/socket/inet/raw.rs :: pub (super) fn new (notify : (Arc < PipeEnd > , Arc < PipeEnd >)) -> Result < Arc < InetSocket > , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn poll_state (handle : SocketHandle) -> SocketPollState
+kernel/src/socket/inet/raw.rs :: pub (super) fn readiness_notifications (network : & NetworkStack , before : ReadinessSnapshot ,) -> Vec < Arc < InetSocket > >
+kernel/src/socket/inet/raw.rs :: pub (super) fn readiness_snapshot (network : & NetworkStack) -> ReadinessSnapshot
+kernel/src/socket/inet/raw.rs :: pub (super) fn receive (handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress) , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn set_broadcast (handle : SocketHandle , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn set_hop_limit (handle : SocketHandle , value : u8) -> Result < () , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) struct RawEndpointState
+kernel/src/socket/inet/raw.rs :: pub (super) type ReadinessSnapshot  = Vec < (SocketHandle , Weak < InetSocket > , bool , bool) >
 kernel/src/socket/inet/tcp.rs :: pub (super) TcpEndpointState :: endpoint : Weak < InetSocket >
 kernel/src/socket/inet/tcp.rs :: pub (super) TcpEndpointState :: options : InetSocketOptions
 kernel/src/socket/inet/tcp.rs :: pub (super) fn accept (socket : & InetSocket , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < InetSocket > , SocketError >
@@ -1117,6 +1134,7 @@ kernel/src/socket/inet/tcp.rs :: pub (super) fn create_endpoint (network : & mut
 kernel/src/socket/inet/tcp.rs :: pub (super) fn drop_endpoint (id : usize)
 kernel/src/socket/inet/tcp.rs :: pub (super) fn listen (socket : & InetSocket , backlog : usize) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn peer_address (socket : & InetSocket) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn set_no_delay (socket : & InetSocket , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) struct TcpEndpointState
 kernel/src/socket/inet/tcp.rs :: pub (super) use io :: { maintain , poll_state , receive , send , shutdown , take_error }
 kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn maintain (network : & mut NetworkStack)
@@ -1138,6 +1156,11 @@ kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandl
 kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool)
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn poll_state (& self) -> SocketPollState
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn readiness_generation (& self) -> u64
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
+kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn consume_notify (& self)
+kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn notify (& self)
 kernel/src/socket/packet.rs :: pub (super) fn deliver (frame : & [u8]) -> Vec < Arc < PacketSocket > >
 kernel/src/socket/packet.rs :: pub (super) fn init ()
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
@@ -1296,6 +1319,7 @@ kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - er
 kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
+kernel/src/syscall/poll.rs :: pub (crate) fn sys_pselect6 (count : usize , read_set : usize , write_set : usize , except_set : usize , timeout : usize , signal_argument : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys (ofd : & Arc < OpenFileDescription >) -> Vec < PollWaitKey >
 kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys_for_interest (ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Vec < PollWaitKey >
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
@@ -1315,6 +1339,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
+kernel/src/syscall/riscv_hwprobe.rs :: pub (crate) fn sys_riscv_hwprobe (pairs : usize , pair_count : usize , cpusetsize : usize , cpus : usize , flags : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_kill (pid : i32 , signal : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigprocmask (how : usize , set : usize , old_set : usize , signal_set_size : usize ,) -> isize
@@ -1361,7 +1386,9 @@ kernel/src/system.rs :: enum ResetKind :: ColdReboot
 kernel/src/system.rs :: enum ResetKind :: Shutdown
 kernel/src/system.rs :: pub (crate) enum ResetKind
 kernel/src/system.rs :: pub (crate) fn identity () -> [& 'static str ; 6]
+kernel/src/system.rs :: pub (crate) fn online_hart_mask () -> usize
 kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , isize >
+kernel/src/system.rs :: pub (crate) fn riscv_hwprobe_value (key : i64) -> Option < u64 >
 kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_return (kernel_sp : usize , trap_return : usize) -> Self
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)

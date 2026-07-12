@@ -104,10 +104,36 @@ pub(super) fn create_endpoint(
     Ok(id)
 }
 
+pub(super) fn set_no_delay(socket: &InetSocket, enabled: bool) -> Result<(), SocketError> {
+    let id = endpoint_id(socket);
+    let mut network = stack()?.lock();
+    let handles = network
+        .tcp_endpoints
+        .get(&id)
+        .ok_or(SocketError::NotConnected)?
+        .handles
+        .clone();
+    for handle in handles {
+        network
+            .sockets
+            .get_mut::<tcp::Socket<'static>>(handle)
+            .set_nagle_enabled(!enabled);
+    }
+    network
+        .tcp_endpoints
+        .get_mut(&id)
+        .expect("TCP endpoint disappeared while stack lock is held")
+        .options
+        .no_delay = enabled;
+    Ok(())
+}
+
 fn endpoint_id(socket: &InetSocket) -> usize {
     match socket.endpoint {
         InetEndpoint::Tcp(id) => id,
-        InetEndpoint::Udp(_) => unreachable!("TCP operation reached UDP endpoint"),
+        InetEndpoint::Udp(_) | InetEndpoint::Raw(_) => {
+            unreachable!("TCP operation reached non-TCP endpoint")
+        }
     }
 }
 
@@ -398,6 +424,10 @@ pub(super) fn accept(
         State::CloseWait
     );
     let options = network.tcp_endpoints[&listener_id].options;
+    network
+        .sockets
+        .get_mut::<tcp::Socket<'static>>(handle)
+        .set_nagle_enabled(!options.no_delay);
     network.tcp_endpoints.insert(
         id,
         TcpEndpointState {

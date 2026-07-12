@@ -1,7 +1,6 @@
 use alloc::{
     collections::BTreeMap,
     sync::{Arc, Weak},
-    vec,
     vec::Vec,
 };
 use core::net::Ipv4Addr;
@@ -16,25 +15,29 @@ use spin::{Mutex, Once};
 
 use crate::{
     drivers::network::{NetworkStatistics, network_device},
-    ipc::{Pipe, PipeDirection, PipeEnd, PipeRead},
+    ipc::PipeEnd,
     timer::get_time_us,
 };
 
 use self::device::EthernetDevice;
 use self::options::InetSocketOptions;
 use self::tcp::TcpEndpointState;
-use super::{InetAddress, SocketError, SocketPollState, packet::PacketSocket};
+use super::{InetAddress, SocketError, packet::PacketSocket};
 
 #[path = "device.rs"]
 mod device;
 #[path = "inet/options.rs"]
 mod options;
+#[path = "inet/raw.rs"]
+mod raw_endpoint;
 #[path = "inet/tcp.rs"]
 mod tcp;
 #[path = "inet/timing.rs"]
 mod timing;
 #[path = "inet/udp.rs"]
 mod udp_endpoint;
+#[path = "inet/wait.rs"]
+mod wait;
 pub(crate) use timing::network_work_due;
 
 const EPHEMERAL_START: u16 = 49_152;
@@ -73,6 +76,7 @@ struct NetworkStack {
     device: EthernetDevice,
     sockets: SocketSet<'static>,
     endpoints: BTreeMap<SocketHandle, EndpointState>,
+    raw_endpoints: BTreeMap<SocketHandle, raw_endpoint::RawEndpointState>,
     tcp_endpoints: BTreeMap<usize, TcpEndpointState>,
     orphaned_tcp: Vec<SocketHandle>,
     interface_state: InterfaceState,
@@ -124,6 +128,7 @@ impl NetworkStack {
             .iter()
             .map(|(&id, state)| (id, state.endpoint.clone(), state.poll_state(self)))
             .collect();
+        let raw_before = raw_endpoint::readiness_snapshot(self);
         let timestamp = now();
         // 1. 定时维护只执行一次，确保单轮协议推进的固定成本。
         self.interface.poll_maintenance(timestamp);
@@ -163,6 +168,7 @@ impl NetworkStack {
                 }
             }
         }
+        notifications.extend(raw_endpoint::readiness_notifications(self, raw_before));
         PollOutcome {
             notifications,
             packet_notifications: self.device.take_packet_notifications(),
@@ -211,6 +217,7 @@ pub(crate) fn init() {
             device,
             sockets: SocketSet::new(Vec::new()),
             endpoints: BTreeMap::new(),
+            raw_endpoints: BTreeMap::new(),
             tcp_endpoints: BTreeMap::new(),
             orphaned_tcp: Vec::new(),
             interface_state: InterfaceState {
@@ -249,6 +256,7 @@ pub(crate) fn dispatch_network_work() -> bool {
 enum InetEndpoint {
     Udp(SocketHandle),
     Tcp(usize),
+    Raw(SocketHandle),
 }
 
 /// @description AF_INET UDP/TCP endpoint facade；协议状态和地址均保存在唯一 NetworkStack。
@@ -283,6 +291,9 @@ impl InetSocket {
                 .endpoint = Arc::downgrade(&endpoint);
             return Ok(endpoint);
         }
+        if socket_type == super::SocketType::Raw {
+            return raw_endpoint::new(notify);
+        }
         let mut network = stack()?.lock();
         let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
         let endpoint = Arc::new(Self {
@@ -301,13 +312,16 @@ impl InetSocket {
     fn udp_handle(&self) -> Result<SocketHandle, SocketError> {
         match self.endpoint {
             InetEndpoint::Udp(handle) => Ok(handle),
-            InetEndpoint::Tcp(_) => Err(SocketError::WrongType),
+            InetEndpoint::Tcp(_) | InetEndpoint::Raw(_) => Err(SocketError::WrongType),
         }
     }
 
     pub(super) fn bind(&self, address: InetAddress) -> Result<(), SocketError> {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::bind(self, address);
+        }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return raw_endpoint::bind(handle, address);
         }
         let handle = self.udp_handle()?;
         udp_endpoint::bind(handle, address)
@@ -317,6 +331,9 @@ impl InetSocket {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::connect(self, peer);
         }
+        if matches!(self.endpoint, InetEndpoint::Raw(_)) {
+            return Err(SocketError::OperationNotSupported);
+        }
         let handle = self.udp_handle()?;
         udp_endpoint::connect(handle, peer)
     }
@@ -325,6 +342,9 @@ impl InetSocket {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::address(self);
         }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return raw_endpoint::address(handle);
+        }
         let handle = self.udp_handle()?;
         udp_endpoint::address(handle)
     }
@@ -332,6 +352,9 @@ impl InetSocket {
     pub(super) fn peer_address(&self) -> Result<InetAddress, SocketError> {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::peer_address(self);
+        }
+        if matches!(self.endpoint, InetEndpoint::Raw(_)) {
+            return Err(SocketError::NotConnected);
         }
         let handle = self.udp_handle()?;
         udp_endpoint::peer_address(handle)
@@ -348,6 +371,9 @@ impl InetSocket {
             }
             return tcp::send(self, input);
         }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return raw_endpoint::send(handle, input, target);
+        }
         let handle = self.udp_handle()?;
         udp_endpoint::send(handle, input, target)
     }
@@ -359,6 +385,10 @@ impl InetSocket {
     ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
             return tcp::receive(self, output, peek);
+        }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            let (count, full_length, source) = raw_endpoint::receive(handle, output, peek)?;
+            return Ok((count, full_length, source, None));
         }
         let handle = self.udp_handle()?;
         udp_endpoint::receive(self, handle, output, peek)
@@ -375,26 +405,6 @@ impl InetSocket {
             return false;
         };
         udp_endpoint::packet_info(handle)
-    }
-
-    pub(super) fn poll_state(&self) -> SocketPollState {
-        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            return tcp::poll_state(self);
-        }
-        let Ok(handle) = self.udp_handle() else {
-            return SocketPollState::error();
-        };
-        udp_endpoint::poll_state(handle)
-    }
-
-    pub(super) fn readiness_generation(&self) -> u64 {
-        self.notify_read
-            .pipe()
-            .readiness_generation(PipeDirection::Read)
-    }
-
-    pub(super) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
-        vec![(self.notify_read.pipe(), PipeDirection::Read)]
     }
 
     /// @description 把 TCP endpoint 转换为 passive listener。
@@ -459,23 +469,16 @@ impl InetSocket {
             Err(SocketError::OperationNotSupported)
         }
     }
-
-    fn notify(&self) {
-        if !self.notify_read.pipe().readable() {
-            let _ = self.notify_write.write(&[1]);
-        }
-    }
-
-    fn consume_notify(&self) {
-        let mut byte = [0];
-        if matches!(self.notify_read.read(&mut byte), PipeRead::Bytes(_)) {}
-    }
 }
 
 impl Drop for InetSocket {
     fn drop(&mut self) {
         if let InetEndpoint::Tcp(id) = self.endpoint {
             tcp::drop_endpoint(id);
+            return;
+        }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            raw_endpoint::drop_endpoint(handle);
             return;
         }
         let InetEndpoint::Udp(handle) = self.endpoint else {

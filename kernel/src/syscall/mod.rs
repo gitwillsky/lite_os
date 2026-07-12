@@ -9,6 +9,7 @@ mod poll;
 mod process;
 mod random;
 mod reboot;
+mod riscv_hwprobe;
 mod signal;
 mod socket;
 mod system_identity;
@@ -20,6 +21,7 @@ use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
     reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
+use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
@@ -95,6 +97,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_READV => sys_readv(args[0], args[1], args[2]),
         SYSCALL_WRITEV => sys_writev(args[0], args[1], args[2]),
         SYSCALL_PPOLL => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
+        SYSCALL_PSELECT6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
         SYSCALL_READLINKAT => sys_readlinkat(
             args[0] as isize,
             args[1] as *const u8,
@@ -213,6 +216,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[3] as *mut u8,
         ),
         SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
+        SYSCALL_RISCV_HWPROBE => sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4]),
         _ => {
             debug!("syscall: unsupported syscall_id: {}", syscall_id);
             -errno::ENOSYS

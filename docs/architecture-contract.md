@@ -52,7 +52,7 @@
 | OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
-| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP socket set、peer、IP_PKTINFO、socket option、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
+| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP/raw ICMP socket set、peer、IP_PKTINFO、socket option、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
 | AF_PACKET binding、protocol 与有界 receive queue | socket::PacketRegistry；RX frame 在 smoltcp ingress 前只镜像一次，packet endpoint 与 L3 NetworkStack 不复制彼此状态 |
 | VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
@@ -98,7 +98,7 @@
 - VFS 只决定 pathname、mount 与 cross-filesystem policy；ext2 的 create/link/unlink/rename、allocator、JBD2 write-set/commit/checkpoint 与 orphan recovery 必须在同一 mutation domain。禁止 syscall/VFS 复制 link count、journal 状态或用写序调整冒充跨块原子性。
 - VFS permission evaluator 只消费 Process 发布的 immutable identity snapshot，唯一决定 traversal、inode rwx、parent mutation、sticky directory、protected hardlink 与 setgid-directory inheritance；syscall 和 filesystem adapter 不得复制权限 policy。ext2 只持久化 VFS 已决定的 mode/UID/GID/ctime。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
-- `uname` 只投影 system module 的 immutable identity；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、release、timezone 或第二份 wallclock offset。
+- `uname` 只投影 system module 的 immutable identity；`riscv_hwprobe` 只通过 system façade 投影 DTB/HartTopology 的平台事实；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、ISA、hart mask、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。

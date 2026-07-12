@@ -29,7 +29,7 @@ def main() -> int:
         str(clang),
         "--target=riscv64-linux-musl",
         f"--ld-path={linker}",
-        "-nostdinc",
+        "-nostdlibinc",
         "-isystem",
         str(sysroot / "usr/include"),
     ]

@@ -23,6 +23,31 @@ pub(crate) fn identity() -> [&'static str; 6] {
     ]
 }
 
+/// @description 投影所有 online hart 共同成立的保守 RISC-V hwprobe value。
+/// @param key Linux `RISCV_HWPROBE_KEY_*`。
+/// @return 已知 key/value；未知 key 返回 None，由 syscall 编码 key=-1。
+pub(crate) fn riscv_hwprobe_value(key: i64) -> Option<u64> {
+    const IMA: u64 = 1;
+    const FD_AND_C: u64 = (1 << 0) | (1 << 1);
+    const SV39_USER_ADDRESS_MAX: u64 = (1u64 << 38) - 1;
+    match key {
+        0..=2 => Some(0),
+        3 => Some(IMA),
+        4 => Some(FD_AND_C),
+        5 | 6 | 9 | 11..=16 => Some(0),
+        7 => Some(SV39_USER_ADDRESS_MAX),
+        8 => Some(crate::arch::dtb::board_info().time_base_freq),
+        10 => Some(4),
+        _ => None,
+    }
+}
+
+/// @description 投影 HartTopology 的 online mask，供 RISC-V userspace ABI 校验 CPU selector。
+/// @return 当前已 online 的 DTB hart mask。
+pub(crate) fn online_hart_mask() -> usize {
+    crate::arch::hart::online_hart_mask()
+}
+
 /// @description 通过唯一 SBI SRST seam 关闭或冷重启整个 SMP system。
 ///
 /// @param kind 已由 syscall UAPI 层验证的 reset 类型。

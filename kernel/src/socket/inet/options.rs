@@ -10,6 +10,8 @@ pub(super) struct InetSocketOptions {
     /// 单 interface scope 只需记录 bind/unbind；复制名称会制造第二份 interface identity。
     /// 缺失该状态会让 SO_BINDTODEVICE 成为虚假成功，并允许后续多 NIC 路由绕过 binding。
     pub(super) bound_to_device: bool,
+    /// TCP_NODELAY 关闭 Nagle；缺失会让 TLS/interactive stream 的标准 latency policy 被虚假接受。
+    pub(super) no_delay: bool,
 }
 
 impl InetSocket {
@@ -36,6 +38,7 @@ impl InetSocket {
                     .options
                     .reuse_address = enabled
             }
+            InetEndpoint::Raw(_) => return Err(SocketError::OperationNotSupported),
         }
         Ok(())
     }
@@ -45,6 +48,9 @@ impl InetSocket {
     /// @return UDP endpoint 存在时返回 unit。
     /// @errors TCP 返回 OperationNotSupported；endpoint 消失返回 NotConnected。
     pub(in crate::socket) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return super::raw_endpoint::set_broadcast(handle, enabled);
+        }
         let handle = self.udp_handle()?;
         stack()?
             .lock()
@@ -64,6 +70,9 @@ impl InetSocket {
         if !name.is_empty() && name != b"eth0" {
             return Err(SocketError::NoDevice);
         }
+        if let InetEndpoint::Raw(handle) = self.endpoint {
+            return super::raw_endpoint::bind_to_device(handle, name);
+        }
         let mut network = stack()?.lock();
         let options = match self.endpoint {
             InetEndpoint::Udp(handle) => {
@@ -80,8 +89,13 @@ impl InetSocket {
                     .ok_or(SocketError::NotConnected)?
                     .options
             }
+            InetEndpoint::Raw(_) => unreachable!(),
         };
         options.bound_to_device = !name.is_empty();
         Ok(())
+    }
+
+    pub(in crate::socket) fn set_no_delay(&self, enabled: bool) -> Result<(), SocketError> {
+        super::tcp::set_no_delay(self, enabled)
     }
 }

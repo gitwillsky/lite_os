@@ -14,7 +14,7 @@
 ## Linux ABI 边界
 
 - 支持 20-byte `sockaddr_ll`、bind/sendto/recvfrom/read/MSG_PEEK/MSG_TRUNC/poll/epoll 与 source address 回写；创建 AF_PACKET 要求 effective UID 0，当前单 user namespace 中等价于 Linux `CAP_NET_RAW` policy。
-- 当前 packet protocol 精确限定 ETH_P_IP；`PACKET_AUXDATA` 返回 `ENOPROTOOPT`，BusyBox 按其标准 fallback 继续。raw IP/ICMP、ARP EtherType、SOCK_RAW、packet fanout/ring、promiscuous membership 与多 interface 尚未开放。
+- 当前 packet protocol 精确限定 ETH_P_IP；`PACKET_AUXDATA` 返回 `ENOPROTOOPT`，BusyBox 按其标准 fallback 继续。本阶段留下的 raw IP/ICMP 缺口已由 Phase 52 对 IPPROTO_ICMP 关闭；其他 raw protocol、ARP EtherType、packet fanout/ring、promiscuous membership 与多 interface 仍未开放。
 - DNS 与 HTTP 完全在 userspace：musl 通过 AF_INET UDP/TCP resolver 读取 resolv.conf，BusyBox wget 通过既有 TCP stream 发送 HTTP/1.x。
 
 ## 运行验收事实

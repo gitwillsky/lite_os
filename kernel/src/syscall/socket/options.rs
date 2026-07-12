@@ -2,6 +2,9 @@ use super::{SocketType, current_task, errno, socket_error, socket_ofd};
 
 const IPPROTO_IP: usize = 0;
 const IP_PKTINFO: usize = 8;
+const IP_TTL: usize = 2;
+const IPPROTO_TCP: usize = 6;
+const TCP_NODELAY: usize = 1;
 const SOL_SOCKET: usize = 1;
 const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
@@ -32,18 +35,31 @@ pub(crate) fn sys_setsockopt(
     match (level, option) {
         (IPPROTO_IP, IP_PKTINFO) => read_enabled(value, length)
             .and_then(|enabled| socket.set_ipv4_packet_info(enabled).map_err(socket_error)),
+        (IPPROTO_IP, IP_TTL) => read_i32(value, length).and_then(|value| {
+            u8::try_from(value)
+                .ok()
+                .filter(|value| *value != 0)
+                .ok_or(-errno::EINVAL)
+                .and_then(|value| socket.set_ipv4_hop_limit(value).map_err(socket_error))
+        }),
         (SOL_SOCKET, SO_REUSEADDR) => read_enabled(value, length)
             .and_then(|enabled| socket.set_reuse_address(enabled).map_err(socket_error)),
         (SOL_SOCKET, SO_BROADCAST) => read_enabled(value, length)
             .and_then(|enabled| socket.set_broadcast(enabled).map_err(socket_error)),
         (SOL_SOCKET, SO_BINDTODEVICE) => read_interface_name(value, length)
             .and_then(|name| socket.bind_to_device(name).map_err(socket_error)),
+        (IPPROTO_TCP, TCP_NODELAY) => read_enabled(value, length)
+            .and_then(|enabled| socket.set_tcp_no_delay(enabled).map_err(socket_error)),
         _ => Err(-errno::ENOPROTOOPT),
     }
     .map_or_else(|error| error, |()| 0)
 }
 
 fn read_enabled(value: usize, length: usize) -> Result<bool, isize> {
+    read_i32(value, length).map(|value| value != 0)
+}
+
+fn read_i32(value: usize, length: usize) -> Result<i32, isize> {
     if length < 4 {
         return Err(-errno::EINVAL);
     }
@@ -56,7 +72,7 @@ fn read_enabled(value: usize, length: usize) -> Result<bool, isize> {
     {
         return Err(-errno::EFAULT);
     }
-    Ok(i32::from_ne_bytes(bytes) != 0)
+    Ok(i32::from_ne_bytes(bytes))
 }
 
 fn read_interface_name(value: usize, length: usize) -> Result<&'static [u8], isize> {
