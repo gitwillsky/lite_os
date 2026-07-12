@@ -1,0 +1,83 @@
+Makefile
+  s_d637a88cd4b00d::t_4dc5e63458a67c 24-26,29,37,40
+README.md
+  s_d637a88cd4b00d::t_36d069f97c5998 7,10,14-16,18,104,114,116
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_3346faf2461e2c 19,25-26,32,58,81
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_75f23aa9e321ba 73,75-78,98,102-103
+kernel/src/drivers/mod.rs
+  s_d637a88cd4b00d::t_650dffebb87320 8,17-19
+kernel/src/drivers/platform.rs
+  s_d637a88cd4b00d::t_caa57aad67a403 7,87,97-102
+kernel/src/drivers/virtio_rng.rs
+  s_d637a88cd4b00d::t_4614138d2e9c10 1-83
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_a4fec7b605a625 1931-1958
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_8f369b4bbc0ac7 98-103
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_f80e0518a0bb92 67-77,103,110-136
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_fe0866802780e6 26
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_c0d6c2f1244129 90,94-99,118,151-152,204-215,365,370-373,379,387,925-977,985,1014,1019,1025,1030,1065,1070-1071,1083-1091,1107,1194-1195,1197-1200,1203-1210,1214-1215,1218,1222-1224,1226-1229,1231-1234,1243,1245-1247,1259,1271,1276,1279-1281,1283-1284,1286-1287,1289,1292-1298,1300,1303-1305,1312,1315-1333,1335-1375,1427-1430,1448,1450-1453,1464,1517-1522,1545,1547-1548,1592-1601
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_af9ccebbe86c15 18-20
+kernel/src/random.rs
+  s_d637a88cd4b00d::t_088370930ff550 1-4
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_c45a2cf5278c2f 32-33
+kernel/src/syscall/memory.rs
+  s_d637a88cd4b00d::t_1a57fb8a133f4d 1-2,4,15,82-84,92-138,150,167
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_34d3b83a5d4ae1 7,14-15,127
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_0201204ed8a325 10,244,292-293,296,377
+kernel/src/syscall/random.rs
+  s_d637a88cd4b00d::t_68f31e1eb4ffc7 1-45
+kernel/src/task/loader.rs
+  s_d637a88cd4b00d::t_491dfaa60593eb 4,17-71
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_5796c5dfe7fe88 15,45,48
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_183b86763ce37b 9-10,229-243,246,254,413,425,1160-1184,1187,1195,1291,1298,1303
+scripts/musl_clang.py
+  s_d637a88cd4b00d::t_feecab84d5c420 1-89
+scripts/musl_ld.py
+  s_d637a88cd4b00d::t_7353fbbf45764c 1-38
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_1a69986284c3d2 78-81
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_625776c898cc31 2,38,44,206,213-219,235,244-245,256,259-260,272-277,285-288,297,310,319,321,325-331,334,358-420,433,436-438,440-445,473-475,506,529,572-575
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_690cce90137d05 33,38-43,45-47,67-71,141-205,219-231,240-243,245-246,248,251-258,276,281,285-287,293-297,299-304,316-332,351-353,355-358,399,402-403,405,407,410,425,440-441,490,492,497
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_4260e043bf3cd9 60
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_7c66191ba28410 31,134-140,147
+user/busybox.config
+  s_d637a88cd4b00d::t_c0200270d050d1 3-5
+user/dynamic-smoke-lib.c
+  s_d637a88cd4b00d::t_992f2af5833be4 1-4
+user/dynamic-smoke.c
+  s_d637a88cd4b00d::t_fd6b55d52ac4fd 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f413bebd3883e15e33346f8f849845bb6dfc1e83",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
