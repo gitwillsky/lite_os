@@ -1,0 +1,35 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_3487dde9907f48 121
+docs/architecture.md
+  s_d637a88cd4b00d::t_0988b22b65afb6 192
+docs/phase-51-dhcp-dns-http.md
+  s_d637a88cd4b00d::t_2c211ac332586e 11,22
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_130875f5877b68 477,479,485-486,547-551,593,602,627,686,690-693
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_11b44eb62c1b73 250,259
+user/inittab
+  s_d637a88cd4b00d::t_b4b4a7835a54fa 1
+user/network-service
+  s_d637a88cd4b00d::t_5caa1e1d302f6e 1-9
+user/udhcpc.script
+  s_d637a88cd4b00d::t_177811952871ac 6,8,14,20-21,23,26,28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2989ced1917160f51d812e1ac8de53a58d462ce7",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
