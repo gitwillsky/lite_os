@@ -1,4 +1,5 @@
 mod cow;
+mod signal_state;
 use core::sync::atomic::AtomicUsize;
 
 use alloc::{sync::Arc, vec::Vec};
@@ -17,6 +18,9 @@ use crate::{
     },
     timer::get_time_us,
 };
+
+pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
+use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RunState {
@@ -49,23 +53,6 @@ pub(crate) enum WaitResult {
     Interrupted,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-/// @description Linux RV64 signal disposition 的 kernel 表示。
-pub(crate) struct LinuxSigAction {
-    pub(crate) handler: usize,
-    pub(crate) flags: usize,
-    pub(crate) mask: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// @description trap return 完成 pending signal 选择后的唯一控制结果。
-pub(crate) enum SignalDelivery {
-    None,
-    Terminate(i32),
-}
-
-const UNBLOCKABLE_SIGNAL_MASK: u64 = (1u64 << (9 - 1)) | (1u64 << (19 - 1));
-
 fn process_name(path: &[u8]) -> Vec<u8> {
     path.rsplit(|byte| *byte == b'/')
         .find(|component| !component.is_empty())
@@ -76,101 +63,9 @@ fn process_name(path: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-fn normalize_signal_mask(mask: u64) -> u64 {
-    mask & !UNBLOCKABLE_SIGNAL_MASK
-}
-
-fn signal_is_ignored(signal: usize, action: LinuxSigAction) -> bool {
-    action.handler == 1 || signal == 17 && action.handler == 0
-}
-
-/// @description coalesced standard signal 随 pending bit 保存的最小 Linux siginfo 来源。
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct PendingSignal {
-    code: i32,
-    pid: i32,
-    status: i32,
-}
-
-impl PendingSignal {
-    /// @description 构造 thread-directed signal 的 `SI_TKILL` 来源。
-    ///
-    /// @param pid 发送者 thread group ID。
-    /// @return 可用于 signal frame 或 `rt_sigtimedwait` 的来源。
-    pub(crate) fn thread_directed(pid: usize) -> Self {
-        Self {
-            code: -6,
-            pid: pid as i32,
-            status: 0,
-        }
-    }
-
-    /// @description 构造正常退出 child 的 `CLD_EXITED` 来源。
-    ///
-    /// @param pid 退出 child 的 thread group ID。
-    /// @param status child exit status。
-    /// @return SIGCHLD 的来源。
-    pub(crate) fn child_exited(pid: usize, status: i32) -> Self {
-        Self {
-            code: 1,
-            pid: pid as i32,
-            status,
-        }
-    }
-
-    /// @description 构造由 kernel TTY line discipline 产生的 `SI_KERNEL` signal 来源。
-    ///
-    /// @return pid/uid/status 为零的 kernel 来源。
-    pub(crate) fn kernel() -> Self {
-        Self {
-            code: 128,
-            pid: 0,
-            status: 0,
-        }
-    }
-
-    /// @description 编码 Linux RV64 128-byte `siginfo_t` 公共头与 kill/SIGCHLD union 字段。
-    ///
-    /// @param signal Linux signal number。
-    /// @return 完整零初始化的 ABI 字节。
-    pub(crate) fn encode(self, signal: usize) -> [u8; 128] {
-        let mut bytes = [0u8; 128];
-        bytes[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
-        bytes[8..12].copy_from_slice(&self.code.to_ne_bytes());
-        bytes[16..20].copy_from_slice(&self.pid.to_ne_bytes());
-        bytes[24..28].copy_from_slice(&self.status.to_ne_bytes());
-        bytes
-    }
-}
-
-#[derive(Debug)]
-struct PendingSignals {
-    bits: u64,
-    info: [PendingSignal; 65],
-}
-
-impl PendingSignals {
-    fn new() -> Self {
-        Self {
-            bits: 0,
-            info: [PendingSignal::default(); 65],
-        }
-    }
-
-    fn take(&mut self, mask: u64) -> Option<(usize, PendingSignal)> {
-        let available = self.bits & mask;
-        if available == 0 {
-            return None;
-        }
-        let signal = available.trailing_zeros() as usize + 1;
-        self.bits &= !(1u64 << (signal - 1));
-        Some((signal, self.info[signal]))
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LinuxStack {
+struct SignalStack {
     sp: usize,
     flags: i32,
     padding: u32,
@@ -179,33 +74,33 @@ struct LinuxStack {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LinuxSigContext {
+struct SignalMachineContext {
     regs: [usize; 32],
     fp: [u8; 528],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LinuxUContext {
+struct SignalUserContext {
     flags: usize,
     link: usize,
-    stack: LinuxStack,
+    stack: SignalStack,
     signal_mask: u64,
     unused: [u8; 120],
-    context: LinuxSigContext,
+    context: SignalMachineContext,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LinuxRtSignalFrame {
+struct RtSignalFrame {
     info: [u8; 128],
-    context: LinuxUContext,
+    context: SignalUserContext,
 }
 
 const _: () = {
-    assert!(core::mem::size_of::<LinuxSigContext>() == 784);
-    assert!(core::mem::size_of::<LinuxUContext>() == 952);
-    assert!(core::mem::size_of::<LinuxRtSignalFrame>() == 1080);
+    assert!(core::mem::size_of::<SignalMachineContext>() == 784);
+    assert!(core::mem::size_of::<SignalUserContext>() == 952);
+    assert!(core::mem::size_of::<RtSignalFrame>() == 1080);
 };
 
 #[derive(Debug)]
@@ -422,7 +317,8 @@ struct Process {
     cwd: Mutex<Arc<dyn Inode>>,
     files: Mutex<FileDescriptorTable>,
     terminal: Arc<Terminal>,
-    signal_actions: Mutex<[LinuxSigAction; 65]>,
+    // OWNER: disposition 与 process-directed pending 必须同锁；拆开会造成 SIG_IGN/queue 竞态和锁序反转。
+    signal_state: Mutex<ProcessSignalState>,
 }
 
 /// @description 当前单线程 Process、Thread 与 SchedulingEntity 的组合边界。
@@ -456,7 +352,7 @@ impl TaskControlBlock {
             cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
             terminal,
-            signal_actions: Mutex::new([LinuxSigAction::default(); 65]),
+            signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         });
         let tcb = Self {
             process,
@@ -524,7 +420,7 @@ impl TaskControlBlock {
             .lock()
             .try_clone()
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let signal_actions = *self.process.signal_actions.lock();
+        let signal_actions = self.process.signal_state.lock().actions;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let policy = self.scheduling.policy.lock();
@@ -546,7 +442,7 @@ impl TaskControlBlock {
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
                 terminal: self.process.terminal.clone(),
-                signal_actions: Mutex::new(signal_actions),
+                signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
             }),
             thread: ThreadContext {
                 tid,
@@ -681,16 +577,16 @@ impl TaskControlBlock {
     pub(crate) fn signal_action(
         &self,
         signal: usize,
-        replacement: Option<LinuxSigAction>,
-    ) -> Result<LinuxSigAction, ()> {
+        replacement: Option<SignalAction>,
+    ) -> Result<SignalAction, ()> {
         if signal == 0 || signal > 64 || matches!(signal, 9 | 19) && replacement.is_some() {
             return Err(());
         }
-        let mut actions = self.process.signal_actions.lock();
-        let old = actions[signal];
+        let mut state = self.process.signal_state.lock();
+        let old = state.actions[signal];
         if let Some(mut action) = replacement {
             action.mask = normalize_signal_mask(action.mask);
-            actions[signal] = action;
+            state.actions[signal] = action;
         }
         Ok(old)
     }
@@ -748,11 +644,11 @@ impl TaskControlBlock {
     /// @param candidates 临时 mask 下未屏蔽的 signal set。
     /// @return 会进入 handler 或默认终止路径的 signal set。
     pub(crate) fn caught_signal_set(&self, candidates: u64) -> u64 {
-        let actions = self.process.signal_actions.lock();
+        let state = self.process.signal_state.lock();
         let mut result = 0;
         for signal in 1..=64 {
             let bit = 1u64 << (signal - 1);
-            if candidates & bit != 0 && !signal_is_ignored(signal, actions[signal]) {
+            if candidates & bit != 0 && !signal_is_ignored(signal, state.actions[signal]) {
                 result |= bit;
             }
         }
@@ -768,17 +664,46 @@ impl TaskControlBlock {
         if signal == 0 || signal > 64 {
             return Err(());
         }
-        let action = self.process.signal_actions.lock()[signal];
+        let state = self.process.signal_state.lock();
+        let action = state.actions[signal];
         if action.handler == 1 {
             return Ok(());
         }
-        let bit = 1u64 << (signal - 1);
         let mut pending = self.thread.pending_signals.lock();
-        if pending.bits & bit == 0 {
-            pending.info[signal] = info;
-            pending.bits |= bit;
-        }
+        pending.queue(signal, info);
         Ok(())
+    }
+
+    /// @description 将 standard signal 合并进当前 Process 的 shared pending state。
+    ///
+    /// @param signal Linux signal number。
+    /// @param info 首次发布时保存的 siginfo 来源。
+    /// @return queued/已 coalesce 返回 true，显式 SIG_IGN 丢弃返回 false。
+    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
+    pub(super) fn queue_process_signal(
+        &self,
+        signal: usize,
+        info: PendingSignal,
+    ) -> Result<bool, ()> {
+        if signal == 0 || signal > 64 {
+            return Err(());
+        }
+        let mut state = self.process.signal_state.lock();
+        if state.actions[signal].handler == 1 {
+            return Ok(false);
+        }
+        state.pending.queue(signal, info);
+        Ok(true)
+    }
+
+    /// @description 判断当前 Thread 是否可接收指定 process-directed signal。
+    ///
+    /// @param signal 已校验的 Linux signal number。
+    /// @return 未屏蔽且 disposition 不忽略时返回 true。
+    pub(super) fn accepts_process_signal(&self, signal: usize) -> bool {
+        let mask = self.thread.signal_mask.lock();
+        let state = self.process.signal_state.lock();
+        *mask & (1u64 << (signal - 1)) == 0 && !signal_is_ignored(signal, state.actions[signal])
     }
 
     /// @description 原子检查给定 signal set 是否含 pending signal，并在成立时执行短操作。
@@ -791,8 +716,9 @@ impl TaskControlBlock {
         mask: u64,
         action: impl FnOnce() -> T,
     ) -> Option<T> {
+        let state = self.process.signal_state.lock();
         let pending = self.thread.pending_signals.lock();
-        (pending.bits & mask != 0).then(action)
+        ((pending.bits | state.pending.bits) & mask != 0).then(action)
     }
 
     /// @description 消费 signal set 中编号最小的 coalesced standard signal。
@@ -800,7 +726,9 @@ impl TaskControlBlock {
     /// @param mask 待消费的 signal set。
     /// @return signal number 与其首个 siginfo 来源；没有匹配时返回 None。
     pub(super) fn take_pending_signal(&self, mask: u64) -> Option<(usize, PendingSignal)> {
-        self.thread.pending_signals.lock().take(mask)
+        let mut state = self.process.signal_state.lock();
+        let mut pending = self.thread.pending_signals.lock();
+        pending.take(mask).or_else(|| state.pending.take(mask))
     }
 
     /// @description 查询当前 Thread 是否有未屏蔽 pending signal。
@@ -816,13 +744,13 @@ impl TaskControlBlock {
     /// @return signal 仍可交付时返回 action 结果，否则返回 None。
     pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
         let mask = self.thread.signal_mask.lock();
+        let state = self.process.signal_state.lock();
         let pending = self.thread.pending_signals.lock();
-        let available = pending.bits & !*mask;
-        let actions = self.process.signal_actions.lock();
+        let available = (pending.bits | state.pending.bits) & !*mask;
         (1..=64)
             .any(|signal| {
                 available & (1u64 << (signal - 1)) != 0
-                    && !signal_is_ignored(signal, actions[signal])
+                    && !signal_is_ignored(signal, state.actions[signal])
             })
             .then(action)
     }
@@ -855,13 +783,18 @@ impl TaskControlBlock {
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
             let selection_mask = *self.thread.signal_mask.lock();
-            let Some((signal, signal_info)) =
-                self.thread.pending_signals.lock().take(!selection_mask)
-            else {
+            let selected = {
+                let mut state = self.process.signal_state.lock();
+                let mut pending = self.thread.pending_signals.lock();
+                pending
+                    .take(!selection_mask)
+                    .or_else(|| state.pending.take(!selection_mask))
+                    .map(|(signal, info)| (signal, info, state.actions[signal]))
+            };
+            let Some((signal, signal_info, action)) = selected else {
                 self.thread.syscall_restart.lock().take();
                 return Ok(SignalDelivery::None);
             };
-            let action = self.process.signal_actions.lock()[signal];
             if signal_is_ignored(signal, action) {
                 continue;
             }
@@ -895,7 +828,7 @@ impl TaskControlBlock {
                 context.x[17] = restart.syscall_id;
                 context.sepc = restart.ecall_pc;
             }
-            let frame_size = core::mem::size_of::<LinuxRtSignalFrame>();
+            let frame_size = core::mem::size_of::<RtSignalFrame>();
             let frame_address = context.x[2]
                 .checked_sub(frame_size)
                 .ok_or(UserAccessError::Fault)?
@@ -908,12 +841,12 @@ impl TaskControlBlock {
                 fp[index * 8..index * 8 + 8].copy_from_slice(&value.to_ne_bytes());
             }
             fp[256..260].copy_from_slice(&(context.fcsr as u32).to_ne_bytes());
-            let frame = LinuxRtSignalFrame {
+            let frame = RtSignalFrame {
                 info: signal_info.encode(signal),
-                context: LinuxUContext {
+                context: SignalUserContext {
                     flags: 0,
                     link: 0,
-                    stack: LinuxStack {
+                    stack: SignalStack {
                         sp: 0,
                         flags: 2,
                         padding: 0,
@@ -921,7 +854,7 @@ impl TaskControlBlock {
                     },
                     signal_mask: old_mask,
                     unused: [0; 120],
-                    context: LinuxSigContext {
+                    context: SignalMachineContext {
                         regs: registers,
                         fp,
                     },
@@ -930,7 +863,7 @@ impl TaskControlBlock {
             // SAFETY: repr(C) frame contains no references or padding with uninitialized data.
             let bytes = unsafe {
                 core::slice::from_raw_parts(
-                    (&frame as *const LinuxRtSignalFrame).cast::<u8>(),
+                    (&frame as *const RtSignalFrame).cast::<u8>(),
                     frame_size,
                 )
             };
@@ -941,7 +874,7 @@ impl TaskControlBlock {
             }
             *self.thread.signal_mask.lock() = normalize_signal_mask(new_mask);
             if action.flags & SA_RESETHAND != 0 {
-                self.process.signal_actions.lock()[signal] = LinuxSigAction::default();
+                self.process.signal_state.lock().actions[signal] = SignalAction::default();
             }
             context.x[1] = crate::memory::signal_trampoline_entry();
             context.x[2] = frame_address;
@@ -960,12 +893,11 @@ impl TaskControlBlock {
     /// @errors frame 不可读或包含未支持 extension 时返回 `UserAccessError`。
     pub(crate) fn restore_signal_frame(&self) -> Result<usize, UserAccessError> {
         let frame_address = self.load_trap_context().x[2];
-        let mut bytes = [0u8; core::mem::size_of::<LinuxRtSignalFrame>()];
+        let mut bytes = [0u8; core::mem::size_of::<RtSignalFrame>()];
         self.copy_from_user(frame_address, &mut bytes)?;
         // SAFETY: byte array has the exact size/alignment-independent representation; read_unaligned
         // produces an owned frame before any field is inspected.
-        let frame =
-            unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<LinuxRtSignalFrame>()) };
+        let frame = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<RtSignalFrame>()) };
         // Linux 将 extra-extension 的 reserved word 与 END header 覆盖在 FP union 尾部。
         // 这里尚不支持 vector/CFI extension；若不校验这 12 bytes，损坏或伪造的扩展链会被
         // 静默接受，并把一个并非本实现能够完整恢复的上下文当作有效 frame。
@@ -1334,7 +1266,10 @@ impl TaskControlBlock {
         *self.process.comm.lock() = new_comm;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
         self.process.files.lock().close_cloexec();
-        *self.process.signal_actions.lock() = [LinuxSigAction::default(); 65];
+        self.process
+            .signal_state
+            .lock()
+            .reset_dispositions_for_exec();
 
         // 步骤3: 设置新程序的陷阱上下文。参数与环境只存在于新初始栈中。
         self.set_trap_context(TrapContext::app_init_context(

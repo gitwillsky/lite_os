@@ -31,7 +31,7 @@ const IOV_MAX: usize = 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LinuxIoVec {
+struct UserIoVec {
     base: usize,
     length: usize,
 }
@@ -446,7 +446,7 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
     }
     let mut total_length = 0usize;
     for index in 0..count {
-        let offset = match index.checked_mul(mem::size_of::<LinuxIoVec>()) {
+        let offset = match index.checked_mul(mem::size_of::<UserIoVec>()) {
             Some(offset) => offset,
             None => return -errno::EFAULT,
         };
@@ -454,11 +454,11 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
             Some(address) => address,
             None => return -errno::EFAULT,
         };
-        let mut bytes = [0u8; mem::size_of::<LinuxIoVec>()];
+        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
         if task.copy_from_user(address, &mut bytes).is_err() {
             return -errno::EFAULT;
         }
-        let vector = LinuxIoVec {
+        let vector = UserIoVec {
             base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
             length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
         };
@@ -562,16 +562,16 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
     let mut total_length = 0usize;
     for index in 0..count {
         let Some(address) = index
-            .checked_mul(mem::size_of::<LinuxIoVec>())
+            .checked_mul(mem::size_of::<UserIoVec>())
             .and_then(|offset| iovector.checked_add(offset))
         else {
             return -errno::EFAULT;
         };
-        let mut bytes = [0u8; mem::size_of::<LinuxIoVec>()];
+        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
         if task.copy_from_user(address, &mut bytes).is_err() {
             return -errno::EFAULT;
         }
-        let vector = LinuxIoVec {
+        let vector = UserIoVec {
             base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
             length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
         };
@@ -771,7 +771,7 @@ pub(crate) fn sys_sync() -> isize {
 }
 
 #[repr(C)]
-struct LinuxStat {
+struct UserStat {
     st_dev: u64,
     st_ino: u64,
     st_mode: u32,
@@ -793,11 +793,11 @@ struct LinuxStat {
     unused: [u32; 2],
 }
 
-const _: () = assert!(mem::size_of::<LinuxStat>() == 128);
+const _: () = assert!(mem::size_of::<UserStat>() == 128);
 
 fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMetadata>) -> isize {
     let stat = if let Some(metadata) = metadata {
-        LinuxStat {
+        UserStat {
             st_dev: metadata.filesystem,
             st_ino: metadata.inode,
             st_mode: metadata.mode,
@@ -819,7 +819,7 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMe
             unused: [0; 2],
         }
     } else {
-        LinuxStat {
+        UserStat {
             st_dev: 0,
             st_ino: 0,
             st_mode: 0o020666,
@@ -841,11 +841,11 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMe
             unused: [0; 2],
         }
     };
-    // SAFETY: `LinuxStat` 是固定的 Linux/asm-generic C ABI POD，且切片不逃逸本函数。
+    // SAFETY: `UserStat` 是固定的 Linux/asm-generic C ABI POD，且切片不逃逸本函数。
     let bytes = unsafe {
         core::slice::from_raw_parts(
-            (&stat as *const LinuxStat).cast::<u8>(),
-            mem::size_of::<LinuxStat>(),
+            (&stat as *const UserStat).cast::<u8>(),
+            mem::size_of::<UserStat>(),
         )
     };
     task.copy_to_user(pointer as usize, bytes)

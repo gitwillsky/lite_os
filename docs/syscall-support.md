@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 60 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 61 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 60 个入口
+## 2. 当前暴露的 61 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -56,13 +56,14 @@
 | 96 | `set_tid_address` | clear-child-tid pointer | calling TID | Linux thread runtime；musl pthread | **Complete**。零清除 registration；thread exit 写零并 futex-wake 一个 waiter。 | `kernel/src/syscall/process.rs` |
 | 98 | `futex` | uaddr、op、val、relative timeout、uaddr2、val3 | 0/wake count；`EAGAIN/EFAULT/EINTR/EINVAL/ETIMEDOUT/ENOSYS` | Linux thread synchronization；musl pthread | **Partial**。实现 address-space-keyed WAIT/WAKE、PRIVATE flag、WAIT monotonic relative timeout 和 thread-directed signal interruption；无 timeout 的 WAIT 在 handler 含 `SA_RESTART` 时重放，带 relative timeout 的 WAIT 保持 `EINTR`，避免错误重置 timeout。统一 wait registration 使 wake/timeout/signal 只能消费一次。无 requeue、PI 和 bitset。 | `kernel/src/syscall/futex.rs`, `kernel/src/task/task_manager.rs` |
 | 99 | `set_robust_list` | head、len | 0；`EINVAL` | Linux robust mutex；musl pthread | **Complete**（当前 Thread 模型）。RV64 24-byte head；exit 有界遍历，原子设置 OWNER_DIED并 wake，非法用户链停止清理。 | `kernel/src/syscall/process.rs`, `kernel/src/task/model.rs` |
-| 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。monotonic deadline 到期返回 0；未屏蔽 thread-directed signal 取消 wait、返回 `EINTR` 并 copyout 剩余时间，即使 handler 含 `SA_RESTART` 也不自动重启。无其他 signal source；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
+| 101 | `nanosleep` | `const struct timespec *req, struct timespec *rem`；RV64 `i64,i64` | `0`；`EFAULT/EINVAL/EINTR` | POSIX `nanosleep`；musl wrapper | **Partial**。monotonic deadline 到期返回 0；未屏蔽 thread/process-directed signal 取消 wait、返回 `EINTR` 并 copyout 剩余时间，即使 handler 含 `SA_RESTART` 也不自动重启；时长超过 `u64` ns 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 113 | `clock_gettime` | `clockid_t, struct timespec *`；RV64 `i64,i64` | `0`；`EINVAL/EFAULT` | POSIX `clock_gettime`；musl vDSO fallback | **Partial**。只支持 `CLOCK_REALTIME(0)` 和 `CLOCK_MONOTONIC(1)`；其他 Linux clock ID 返回 `EINVAL`。 | `kernel/src/syscall/timer.rs` |
 | 124 | `sched_yield` | 无参数 | `0` | POSIX `sched_yield`；musl direct wrapper | **Complete**。当前 task 回到唯一 CFS-like runqueue。 | `kernel/src/syscall/process.rs` |
-| 131 | `tgkill` | tgid、tid、signal | 0；`ESRCH/EINVAL` | Linux thread-directed signal；musl pthread | **Partial**。支持存在性 probe、standard signal pending 与 deadline/futex/child wait interruption；未屏蔽、非忽略 signal 在 trap return delivery。无 permission check/process-directed selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
+| 129 | `kill` | signed pid selector、signal | 0；`ESRCH/EINVAL` | POSIX kill；BusyBox kill/job control | **Partial**。支持 TGID、caller PGID、`-1` 排除 init/caller、negative PGID、signal-zero probe、SI_USER shared pending、matching sigwait 或 eligible-thread wake；固定 root identity 无 permission failure。单线程 Process 的 handler/terminate/ignore 成立，尚无 SIGSTOP/SIGCONT scheduler lifecycle、PID 1 unkillable policy或多线程 fatal group-exit。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager/signal.rs`, `kernel/src/task/model/signal_state.rs` |
+| 131 | `tgkill` | tgid、tid、signal | 0；`ESRCH/EINVAL` | Linux thread-directed signal；musl pthread | **Partial**。支持存在性 probe、SI_TKILL thread pending 与 deadline/futex/child wait interruption；未屏蔽、非忽略 signal 在 trap return delivery。固定 root identity 无 permission failure，尚无 SIGSTOP/SIGCONT scheduler lifecycle。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager/signal.rs` |
 | 133 | `rt_sigsuspend` | 8-byte sigset | 固定 `EINTR` | POSIX sigsuspend；BusyBox wait | **Complete**（当前 signal set）。临时 mask 与 Signal membership 原子封闭 lost wakeup；pending bit 不被 waiter 消费，trap frame 恢复调用前 mask。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 134/135 | `rt_sigaction` / `rt_sigprocmask` | RV64 24-byte action、8-byte sigset | 0；`EFAULT/EINVAL` | POSIX signal API；musl wrappers | **Partial**。Process disposition、per-Thread mask、SIGKILL/SIGSTOP 不可屏蔽；handler 的 `SA_RESTART` 可重放 blocking `wait4` 与无 timeout 的 futex WAIT。无 altstack、queued realtime value 与其他 syscall 的完整 restart coverage。 | `kernel/src/syscall/signal.rs` |
-| 137 | `rt_sigtimedwait` | 8-byte sigset、可选 128-byte siginfo、可选 relative timespec | signal number；`EAGAIN/EINTR/EFAULT/EINVAL` | POSIX sigwaitinfo/sigtimedwait；BusyBox init | **Partial**。从 Thread 唯一 pending owner 消费 coalesced standard signal，支持无限等待、零/有限 monotonic timeout、`SI_TKILL` 与 `SIGCHLD/CLD_EXITED` siginfo；registration 共用 indexed wait/deadline registry。无 realtime queued value、process-directed selection 和完整多线程 SIGCHLD target selection。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager.rs` |
+| 137 | `rt_sigtimedwait` | 8-byte sigset、可选 128-byte siginfo、可选 relative timespec | signal number；`EAGAIN/EINTR/EFAULT/EINVAL` | POSIX sigwaitinfo/sigtimedwait；BusyBox init | **Partial**。依次消费 Thread pending 与 Process shared pending 中的 coalesced standard signal，支持无限等待、零/有限 monotonic timeout，以及 `SI_TKILL`、`SI_USER`、`SIGCHLD/CLD_EXITED` siginfo；registration 共用 indexed wait/deadline registry。无 realtime queued value。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/task_manager/signal.rs` |
 | 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 142 | `reboot` | magic1、magic2、command、argument | CAD command 返回 0；reset 成功不返回；`EINVAL/EIO` | BusyBox init shutdown policy | **Partial**。校验 Linux magic，`CAD_OFF/CAD_ON` 更新唯一 system policy，`RESTART/HALT/POWER_OFF` 映射 SBI SRST cold reboot/shutdown。platform 无 restart-reason channel，因此拒绝 `RESTART2`；无 kexec/suspend。 | `kernel/src/syscall/reboot.rs`, `kernel/src/system.rs` |
 | 154-157 | `setpgid/getpgid/getsid/setsid` | PID/PGID 或无参数 | 0/ID；`ESRCH/EPERM` | POSIX session/job control；BusyBox init/ash | **Partial**。process graph 唯一拥有 SID/PGID；fork 继承，setsid 创建新 session/group，setpgid 校验 direct-child、session leader 与同 session group。尚无 exec-generation 的 setpgid `EACCES`、credentials/namespace 与 stopped/continued lifecycle。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager.rs` |
@@ -87,7 +88,6 @@
 
 | 编号 | Linux 名称 | 状态 | 处理结论 |
 |---:|---|---|---|
-| 129 | `kill` | Missing | 尚无 process-directed selection、permission 与 job-control group 语义。 |
 | 130 | `tkill` | Not Planned | 使用 thread-group-aware `tgkill`，不恢复过时入口。 |
 | 146 | `setuid` | Removed | 已删除只有 real/effective UID 的伪 credential state。 |
 | 261 | `prlimit64` | Not Planned | 当前 init 启动不需 resource limits，不返回伪 infinity 表。 |
@@ -96,10 +96,10 @@
 
 ## 4. musl 结论
 
-当前 60 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec 与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
+当前 61 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec、process-group kill 与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
-2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；
+2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 stop/continue lifecycle；
 3. `AT_HWCAP` 与 vDSO；
 4. MAP_SHARED、page-cache coherence、SIGBUS EOF 与 lazy paging。
 

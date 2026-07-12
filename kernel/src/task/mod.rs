@@ -14,7 +14,7 @@ mod trap_context;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use model::{
-    LinuxSigAction, PendingSignal, RunState, SignalDelivery, TaskControlBlock, WaitMembership,
+    PendingSignal, RunState, SignalAction, SignalDelivery, TaskControlBlock, WaitMembership,
     WaitResult,
 };
 pub(crate) use processor::*;

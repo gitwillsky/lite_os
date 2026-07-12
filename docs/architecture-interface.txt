@@ -865,6 +865,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
+kernel/src/syscall/signal.rs :: pub (crate) fn sys_kill (pid : i32 , signal : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigprocmask (how : usize , set : usize , old_set : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigreturn () -> isize
@@ -903,7 +904,7 @@ kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn execfn (& s
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
-kernel/src/task/mod.rs :: pub (crate) use model :: { LinuxSigAction , PendingSignal , RunState , SignalDelivery , TaskControlBlock , WaitMembership , WaitResult , }
+kernel/src/task/mod.rs :: pub (crate) use model :: { PendingSignal , RunState , SignalAction , SignalDelivery , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
@@ -915,8 +916,6 @@ kernel/src/task/model.rs :: enum RunState :: Preempting { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: Ready { cpu : usize , generation : u64 }
 kernel/src/task/model.rs :: enum RunState :: Running { cpu : usize }
 kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize }
-kernel/src/task/model.rs :: enum SignalDelivery :: None
-kernel/src/task/model.rs :: enum SignalDelivery :: Terminate (i32)
 kernel/src/task/model.rs :: enum WaitMembership :: Child
 kernel/src/task/model.rs :: enum WaitMembership :: Console (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Deadline (u64)
@@ -927,9 +926,6 @@ kernel/src/task/model.rs :: enum WaitMembership :: Signal (u64)
 kernel/src/task/model.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model.rs :: enum WaitResult :: TimedOut
 kernel/src/task/model.rs :: enum WaitResult :: Woken
-kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: flags : usize
-kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: handler : usize
-kernel/src/task/model.rs :: pub (crate) LinuxSigAction :: mask : u64
 kernel/src/task/model.rs :: pub (crate) Sched :: last_runtime : u64
 kernel/src/task/model.rs :: pub (crate) Sched :: nice : i32
 kernel/src/task/model.rs :: pub (crate) Sched :: total_runtime_us : u64
@@ -943,16 +939,11 @@ kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait : Option < WaitM
 kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
 kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) enum RunState
-kernel/src/task/model.rs :: pub (crate) enum SignalDelivery
 kernel/src/task/model.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model.rs :: pub (crate) enum WaitResult
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl AddressSpace :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model.rs :: pub (crate) impl PendingSignal :: fn child_exited (pid : usize , status : i32) -> Self
-kernel/src/task/model.rs :: pub (crate) impl PendingSignal :: fn encode (self , signal : usize) -> [u8 ; 128]
-kernel/src/task/model.rs :: pub (crate) impl PendingSignal :: fn kernel () -> Self
-kernel/src/task/model.rs :: pub (crate) impl PendingSignal :: fn thread_directed (pid : usize) -> Self
 kernel/src/task/model.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
 kernel/src/task/model.rs :: pub (crate) impl Sched :: fn update_vruntime (& mut self , runtime_us : u64)
 kernel/src/task/model.rs :: pub (crate) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> u64
@@ -983,7 +974,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , inode : Arc < dyn Inode >)
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < LinuxSigAction > ,) -> Result < LinuxSigAction , () >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn terminal (& self) -> Arc < Terminal >
@@ -993,12 +984,12 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < dyn Inode >
-kernel/src/task/model.rs :: pub (crate) struct LinuxSigAction
-kernel/src/task/model.rs :: pub (crate) struct PendingSignal
 kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) struct SchedulingState
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
+kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn close_all_files (& self)
@@ -1006,6 +997,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn process_statistics (& self) -> (Vec < u8 > , u64 , usize , usize)
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn queue_process_signal (& self , signal : usize , info : PendingSignal ,) -> Result < bool , () >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn queue_signal (& self , signal : usize , info : PendingSignal) -> Result < () , () >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
@@ -1014,6 +1006,31 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliver
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_pending_signal < T > (& self , mask : u64 , action : impl FnOnce () -> T ,) -> Option < T >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
 kernel/src/task/model/cow.rs :: pub (crate) impl TaskControlBlock :: fn handle_cow_fault (& self , address : usize) -> Result < bool , MemoryError >
+kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: None
+kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: Terminate (i32)
+kernel/src/task/model/signal_state.rs :: pub (crate) SignalAction :: flags : usize
+kernel/src/task/model/signal_state.rs :: pub (crate) SignalAction :: handler : usize
+kernel/src/task/model/signal_state.rs :: pub (crate) SignalAction :: mask : u64
+kernel/src/task/model/signal_state.rs :: pub (crate) enum SignalDelivery
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn child_exited (pid : usize , status : i32) -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn encode (self , signal : usize) -> [u8 ; 128]
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn kernel () -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn process_directed (pid : usize) -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn thread_directed (pid : usize) -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) struct PendingSignal
+kernel/src/task/model/signal_state.rs :: pub (crate) struct SignalAction
+kernel/src/task/model/signal_state.rs :: pub (super) PendingSignals :: bits : u64
+kernel/src/task/model/signal_state.rs :: pub (super) ProcessSignalState :: actions : [SignalAction ; 65]
+kernel/src/task/model/signal_state.rs :: pub (super) ProcessSignalState :: pending : PendingSignals
+kernel/src/task/model/signal_state.rs :: pub (super) fn normalize_signal_mask (mask : u64) -> u64
+kernel/src/task/model/signal_state.rs :: pub (super) fn signal_is_ignored (signal : usize , action : SignalAction) -> bool
+kernel/src/task/model/signal_state.rs :: pub (super) impl PendingSignals :: fn new () -> Self
+kernel/src/task/model/signal_state.rs :: pub (super) impl PendingSignals :: fn queue (& mut self , signal : usize , info : PendingSignal)
+kernel/src/task/model/signal_state.rs :: pub (super) impl PendingSignals :: fn take (& mut self , mask : u64) -> Option < (usize , PendingSignal) >
+kernel/src/task/model/signal_state.rs :: pub (super) impl ProcessSignalState :: fn new (actions : [SignalAction ; 65]) -> Self
+kernel/src/task/model/signal_state.rs :: pub (super) impl ProcessSignalState :: fn reset_dispositions_for_exec (& mut self)
+kernel/src/task/model/signal_state.rs :: pub (super) struct PendingSignals
+kernel/src/task/model/signal_state.rs :: pub (super) struct ProcessSignalState
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
 kernel/src/task/pid.rs :: pub (super) ProcessId :: <tuple> : usize
@@ -1097,8 +1114,6 @@ kernel/src/task/task_manager.rs :: pub (crate) fn parent_pid (pid : usize) -> us
 kernel/src/task/task_manager.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn reap_child (pid : usize)
 kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
-kernel/src/task/task_manager.rs :: pub (crate) fn send_process_group_signal (pgid : usize , signal : usize) -> usize
-kernel/src/task/task_manager.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize) -> Result < () , () >
 kernel/src/task/task_manager.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
@@ -1116,9 +1131,17 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_ti
 kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) struct ChildExit
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: KernelProcSource
+kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
 kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
+kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: InvalidSignal
+kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: NotFound
+kernel/src/task/task_manager/signal.rs :: pub (crate) enum SignalSendError
+kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_process_signal (pid : i32 , signal : usize) -> Result < () , SignalSendError >
+kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize) -> Result < () , () >
+kernel/src/task/task_manager/signal.rs :: pub (super) fn send_kernel_process_signal (tgid : usize , signal : usize , info : PendingSignal) -> bool
+kernel/src/task/task_manager/signal.rs :: pub (super) fn send_process_group_signal (pgid : usize , signal : usize) -> usize
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: fcsr : usize
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_gp : usize

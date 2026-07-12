@@ -65,6 +65,7 @@ BUSYBOX_LINKS = (
     "gunzip",
     "gzip",
     "head",
+    "kill",
     "ls",
     "mkdir",
     "mv",
@@ -74,6 +75,7 @@ BUSYBOX_LINKS = (
     "rmdir",
     "sed",
     "seq",
+    "setsid",
     "sha256sum",
     "sh",
     "sleep",
@@ -518,6 +520,7 @@ def main() -> int:
         help="忽略当前 fingerprint 的 BusyBox ELF 命中并重新构建",
     )
     args = parser.parse_args()
+    runtime_directory: tempfile.TemporaryDirectory[str] | None = None
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         jobs_override = build_jobs_override()
@@ -530,8 +533,11 @@ def main() -> int:
         if args.build_only:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
+        runtime_directory = tempfile.TemporaryDirectory(prefix="liteos-busybox-gate-")
+        runtime_image = Path(runtime_directory.name) / "fs.img"
+        shutil.copyfile(image, runtime_image)
         boot(
-            image,
+            runtime_image,
             1,
             (
                 "dynamic hart topology initialized: count=1, mask=0x1",
@@ -553,6 +559,7 @@ def main() -> int:
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
                 "LITEOS_SCRIPT_EXEC_42",
+                "LITEOS_KILL_GROUP_42",
                 "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
@@ -563,7 +570,11 @@ def main() -> int:
             interactions=(
                 (
                     "Please press Enter to activate this console.",
-                    b"\necho LITEOS_BUSYBOX_SHELL_$((6*7))\n",
+                    b"\n",
+                ),
+                (
+                    "Enter 'help' for a list of built-in commands.",
+                    b"echo LITEOS_BUSYBOX_SHELL_$((6*7))\n",
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
@@ -611,6 +622,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_SCRIPT_EXEC_42",
+                    b"/bin/rm -f /kill.pid; /bin/setsid /bin/sh -c 'echo $$ >/kill.pid; trap \"echo LITEOS_KILL_GROUP_$((6*7)); exit 0\" TERM; echo LITEOS_KILL_\"READY\"; while :; do /bin/sleep 1; done' &\n",
+                ),
+                (
+                    "LITEOS_KILL_READY",
+                    b"read kill_pid < /kill.pid; /bin/kill -0 $kill_pid && /bin/kill -TERM -$kill_pid\n",
+                ),
+                (
+                    "LITEOS_KILL_GROUP_42",
                     b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n",
                 ),
                 (
@@ -627,9 +646,10 @@ def main() -> int:
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            persistent_writes=True,
         )
         boot(
-            image,
+            runtime_image,
             8,
             (
                 "dynamic hart topology initialized: count=8, mask=0xff",
@@ -641,7 +661,11 @@ def main() -> int:
                 "LITEOS_STREAMING_EXEC_42",
             ),
             interactions=(
-                ("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),
+                ("Please press Enter to activate this console.", b"\n"),
+                (
+                    "Enter 'help' for a list of built-in commands.",
+                    b"/bin/cat /persist\n",
+                ),
                 (
                     "LITEOS_PERSIST_42",
                     b"x=parent; (x=child; [ \"$x\" = child ]) & wait; [ \"$x\" = parent ] && echo LITEOS_COW_ISOLATION_$((6*7))\n",
@@ -652,7 +676,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_SCHED_STARTED",
-                    b"mask=0; for round in 1 2 3 4 5; do sleep 1; for p in $pids; do read line < /proc/$p/stat; set -- $line; cpu=${39}; mask=$((mask | (1 << cpu))); done; done; n=0; bits=$mask; while [ $bits -ne 0 ]; do n=$((n + (bits & 1))); bits=$((bits >> 1)); done; echo LITEOS_SCHED_CPUS_$n; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
+                    b"/bin/sleep 2; n=$(/bin/awk '$1 ~ /^cpu[0-9]+$/ && $2 > 0 {n++} END {print n+0}' /proc/stat); echo LITEOS_SCHED_CPUS_$n; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
                 ),
                 (
                     "LITEOS_SCHED_8_HARTS_42",
@@ -660,10 +684,14 @@ def main() -> int:
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            persistent_writes=True,
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1
+    finally:
+        if runtime_directory is not None:
+            runtime_directory.cleanup()
     print(f"BusyBox {BUSYBOX_VERSION} init+ash verification passed")
     return 0
 

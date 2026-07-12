@@ -9,11 +9,35 @@ import select
 import shutil
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 ROOT = Path(__file__).resolve().parent.parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
+SERIAL_WRITE_CHUNK = 1
+SERIAL_WRITE_INTERVAL_SECONDS = 0.002
+SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
+
+
+def send_interaction(stream: BinaryIO, data: bytes) -> None:
+    """按 UART 可消费速率注入交互，避免 host pipe 瞬时写满 16550 RX FIFO。
+
+    Args:
+        stream: QEMU stdin 的唯一 binary pipe。
+        data: 当前 marker 对应的完整终端输入。
+
+    Returns:
+        None；全部字节已按序 flush 后返回。
+    """
+    # QEMU stdio pipe 没有 guest UART 的硬件流控；一次写入长命令会让字符在 IRQ drain 前溢出，
+    # ash 随后收到残缺引号并停在 continuation prompt，令 gate 误报 kernel 功能失败。
+    for offset in range(0, len(data), SERIAL_WRITE_CHUNK):
+        stream.write(data[offset : offset + SERIAL_WRITE_CHUNK])
+        stream.flush()
+        if offset + SERIAL_WRITE_CHUNK < len(data):
+            time.sleep(SERIAL_WRITE_INTERVAL_SECONDS)
 
 
 def terminate(process: subprocess.Popen[bytes]) -> None:
@@ -53,11 +77,37 @@ def boot(
     timeout_seconds: int = 30,
     interactions: tuple[tuple[str, bytes], ...] = (),
     forbidden_markers: tuple[str, ...] = (),
+    persistent_writes: bool = False,
 ) -> None:
-    """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。"""
+    """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
+
+    Args:
+        image: 作为唯一 root block device 的 ext2 镜像。
+        smp: QEMU 向 DTB 暴露的 hart 数。
+        markers: 成功前必须全部出现的输出标记。
+        timeout_seconds: 单次冷启动的 monotonic deadline 秒数。
+        interactions: 按输出 marker 排序触发的终端输入。
+        forbidden_markers: 任一出现即立即失败的输出标记。
+        persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
+
+    Returns:
+        None；全部 marker 出现时返回。
+
+    Raises:
+        RuntimeError: QEMU 缺失、异常退出、超时或命中禁止标记。
+    """
     qemu = shutil.which("qemu-system-riscv64")
     if not qemu:
         raise RuntimeError("qemu-system-riscv64 is required")
+    private_directory: tempfile.TemporaryDirectory[str] | None = None
+    if not persistent_writes:
+        # QEMU snapshot 仍会申请 backing image 锁；私有副本才能与开发实例确定性隔离。
+        # 缺失该分支时并行 `make run` 会让 gate 在进入 kernel 前因 fs.img 写锁失败。
+        private_directory = tempfile.TemporaryDirectory(prefix="liteos-qemu-gate-")
+        private_image = Path(private_directory.name) / image.name
+        shutil.copyfile(image, private_image)
+        image = private_image
+    drive = f"file={image},if=none,format=raw,id=x0"
     command = [
         qemu,
         "-machine",
@@ -72,7 +122,7 @@ def boot(
         "-kernel",
         "target/riscv64gc-unknown-none-elf/debug/kernel",
         "-drive",
-        f"file={image},if=none,format=raw,id=x0",
+        drive,
         "-device",
         "virtio-blk-device,drive=x0",
         "-object",
@@ -109,8 +159,10 @@ def boot(
                 while pending_interactions and pending_interactions[0][0] in text:
                     _, data = pending_interactions.pop(0)
                     assert process.stdin is not None
-                    process.stdin.write(data)
-                    process.stdin.flush()
+                    # marker 通常先于 ash 的下一条 prompt；立即注入会让 prompt 切断命令前缀。
+                    # 固定 settle 属于 serial transport 协议，不依赖某一条 gate 命令的长度或内容。
+                    time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
+                    send_interaction(process.stdin, data)
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
                         raise RuntimeError(f"QEMU -smp {smp} reached a fatal/error path")
@@ -119,6 +171,8 @@ def boot(
                 break
     finally:
         terminate(process)
+        if private_directory is not None:
+            private_directory.cleanup()
 
     text = ANSI.sub("", output.decode(errors="replace"))
     missing = [marker for marker in markers if marker not in text]

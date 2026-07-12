@@ -1,8 +1,8 @@
 use crate::{
     syscall::errno,
     task::{
-        LinuxSigAction, SignalWaitError, current_task, send_thread_signal, wait_for_signal,
-        wait_for_signal_delivery,
+        SignalAction, SignalSendError, SignalWaitError, current_task, send_process_signal,
+        send_thread_signal, wait_for_signal, wait_for_signal_delivery,
     },
 };
 
@@ -14,6 +14,22 @@ struct UserSigAction {
     handler: usize,
     flags: usize,
     mask: u64,
+}
+
+/// @description 实现 Linux process/process-group signal selector 与 signal-zero probe。
+///
+/// @param pid `>0` 为 TGID，`0` 为 caller PGID，`-1` 为除 init/caller 外全部，`<-1` 为 PGID。
+/// @param signal Linux signal number；零只做 existence 与 fixed-root permission probe。
+/// @return 至少一个 live Process 匹配返回零；否则返回标准负 errno。
+pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
+    if signal > 64 {
+        return -errno::EINVAL;
+    }
+    match send_process_signal(pid, signal) {
+        Ok(()) => 0,
+        Err(SignalSendError::InvalidSignal) => -errno::EINVAL,
+        Err(SignalSendError::NotFound) => -errno::ESRCH,
+    }
 }
 
 /// @description 实现 Linux RV64 `rt_sigaction` 的 disposition 查询与替换。
@@ -42,7 +58,7 @@ pub(crate) fn sys_rt_sigaction(
         }
         // SAFETY: bytes has the exact ABI size; read_unaligned yields an owned value.
         let action = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<UserSigAction>()) };
-        Some(LinuxSigAction {
+        Some(SignalAction {
             handler: action.handler,
             flags: action.flags,
             mask: action.mask,
