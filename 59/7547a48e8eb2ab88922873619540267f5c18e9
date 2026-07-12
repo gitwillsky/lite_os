@@ -1,0 +1,27 @@
+Makefile
+  s_d637a88cd4b00d::t_33ddf1aed30993 1-2,34-36
+README.md
+  s_d637a88cd4b00d::t_3a98ae2a578a12 104-105
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_a88884d5d6962d 17,145,156-158
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_91574339431668 7-9,14,16-17,19,29-52,79-172,174,191-205,222-273,278-337,340-370,372-399,458-462,465,467-473,490
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "597547a48e8eb2ab88922873619540267f5c18e9",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
