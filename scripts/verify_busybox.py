@@ -448,7 +448,22 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
     script_path: Path | None = None
+    executable_script_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile("w", delete=False) as executable_script:
+            executable_script.write(
+                "#!/bin/sh -e\n"
+                "[ \"$0\" = /bin/liteos-script ]\n"
+                "[ \"$1:$2\" = 'alpha beta:omega' ]\n"
+                "echo LITEOS_SCRIPT_EXEC_$((6*7))\n"
+            )
+            executable_script_path = Path(executable_script.name)
+        commands.extend(
+            (
+                f"write {executable_script_path} /bin/liteos-script",
+                "set_inode_field /bin/liteos-script mode 0100755",
+            )
+        )
         with tempfile.NamedTemporaryFile("w", delete=False) as script:
             script.write("\n".join(commands) + "\n")
             script_path = Path(script.name)
@@ -456,6 +471,8 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     finally:
         if script_path is not None:
             script_path.unlink(missing_ok=True)
+        if executable_script_path is not None:
+            executable_script_path.unlink(missing_ok=True)
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
     for line in listing.splitlines():
@@ -471,6 +488,11 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
     if f"Links: {len(expected)}" not in metadata:
         raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    executable_script = run(
+        [str(find_debugfs()), "-R", "stat /bin/liteos-script", str(image)], ROOT
+    )
+    if "Type: regular" not in executable_script or "Mode:  0755" not in executable_script:
+        raise RuntimeError("BusyBox rootfs lacks executable shebang script")
     loader = run([str(find_debugfs()), "-R", "stat /lib/ld-musl-riscv64.so.1", str(image)], ROOT)
     if "Type: symlink" not in loader or "Size: 16" not in loader:
         raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
@@ -530,6 +552,7 @@ def main() -> int:
                 "LITEOS_TOP_42",
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
+                "LITEOS_SCRIPT_EXEC_42",
                 "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
@@ -584,6 +607,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DLOPEN_42",
+                    b"/bin/liteos-script 'alpha beta' omega\n",
+                ),
+                (
+                    "LITEOS_SCRIPT_EXEC_42",
                     b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n",
                 ),
                 (

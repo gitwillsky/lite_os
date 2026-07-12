@@ -263,7 +263,7 @@ impl VirtualFileSystem {
     ///
     /// # Errors
     ///
-    /// 路径非绝对路径、根文件系统未挂载、分量不存在、遇到符号链接，
+    /// 路径非绝对路径、根文件系统未挂载、分量不存在、symlink loop，
     /// 或者带尾随 `/` 的结果不是目录时返回错误。
     pub(crate) fn open(&self, path: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
         if path.first() != Some(&b'/') {
@@ -284,9 +284,9 @@ impl VirtualFileSystem {
     /// @description 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
     ///
     /// @param start 相对路径的起始目录；None 表示 root。
-    /// @param path raw pathname；中间 symbolic link 仍因当前无 symlink traversal 返回错误。
+    /// @param path raw pathname；中间 symbolic link 正常跟随，只保留未尾随的最终 link。
     /// @return 普通路径返回目标 inode，末项 symbolic link 返回 link inode 本身。
-    /// @errors 路径不存在、越过不支持的中间 symbolic link 或底层文件系统失败时返回错误。
+    /// @errors 路径不存在、symlink loop 或底层文件系统失败时返回错误。
     pub(crate) fn open_at_no_follow(
         &self,
         start: Option<Arc<dyn Inode>>,

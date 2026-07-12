@@ -1,14 +1,15 @@
 use alloc::vec::Vec;
 
 use crate::{
-    fs::{FileSystemError, vfs},
+    fs::FileSystemError,
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        ProcessGroupError, ProgramLoadError, TaskControlBlock, ThreadCloneError, WaitChildError,
-        clone_current_thread, create_session, current_task, exit_current_and_run_next,
-        fork_current_process, load_executable_from_inode, parent_pid, process_group, reap_child,
-        session_id, set_process_group, suspend_current_and_run_next, thread_count, wait_child,
+        EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, TaskControlBlock,
+        ThreadCloneError, WaitChildError, clone_current_thread, create_session, current_task,
+        exit_current_and_run_next, fork_current_process, load_executable, parent_pid,
+        process_group, reap_child, session_id, set_process_group, suspend_current_and_run_next,
+        thread_count, wait_child,
     },
 };
 
@@ -16,7 +17,6 @@ use super::INTERNAL_RESTART_SYS;
 
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_ARG_STRING_BYTES: usize = 32 * 4096;
-const MAX_ARG_BYTES: usize = 128 * 1024;
 
 /// @description 终止当前任务并切换到调度器。
 ///
@@ -261,39 +261,20 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Err(error) => return error,
     };
     let mut argument_bytes = 0;
-    let mut argv = match copy_user_string_array(&task, argv, &mut argument_bytes) {
+    let argv = match copy_user_string_array(&task, argv, &mut argument_bytes) {
         Ok(argv) => argv,
         Err(error) => return error,
     };
-    // Linux 将 NULL/空 argv 规范化为一个空 argv[0]；缺少此分支会向新映像暴露 argc=0 的异常启动契约。
-    if argv.is_empty() {
-        let Some(bytes) = argument_bytes
-            .checked_add(core::mem::size_of::<usize>() + 1)
-            .filter(|bytes| *bytes <= MAX_ARG_BYTES)
-        else {
-            return -errno::E2BIG;
-        };
-        argument_bytes = bytes;
-        if argv.try_reserve(1).is_err() {
-            return -errno::ENOMEM;
-        }
-        argv.push(Vec::new());
-    }
     let envp = match copy_user_string_array(&task, envp, &mut argument_bytes) {
         Ok(envp) => envp,
         Err(error) => return error,
     };
 
-    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
-    let inode = match vfs().open_at(start, &path) {
-        Ok(inode) => inode,
-        Err(error) => return program_load_errno(ProgramLoadError::FileSystem(error)),
-    };
-    let image = match load_executable_from_inode(inode) {
-        Ok(image) => image,
+    let loaded = match load_executable(task.working_directory(), path, argv, argument_bytes) {
+        Ok(loaded) => loaded,
         Err(error) => return program_load_errno(error),
     };
-    match task.execve_replace(&image, &argv, &envp) {
+    match task.execve_replace(&loaded, &envp) {
         Ok(()) => 0,
         Err(ElfLoadError::OutOfMemory) => -errno::ENOMEM,
         Err(ElfLoadError::InvalidElf) => -errno::ENOEXEC,
@@ -324,6 +305,10 @@ fn copy_user_string_array(
     total_bytes: &mut usize,
 ) -> Result<Vec<Vec<u8>>, isize> {
     if array.is_null() {
+        *total_bytes = total_bytes
+            .checked_add(core::mem::size_of::<usize>())
+            .filter(|bytes| *bytes <= EXEC_ARGUMENT_BYTES_LIMIT)
+            .ok_or(-errno::E2BIG)?;
         return Ok(Vec::new());
     }
 
@@ -332,7 +317,7 @@ fn copy_user_string_array(
         *total_bytes = total_bytes
             .checked_add(core::mem::size_of::<usize>())
             .ok_or(-errno::E2BIG)?;
-        if *total_bytes > MAX_ARG_BYTES {
+        if *total_bytes > EXEC_ARGUMENT_BYTES_LIMIT {
             return Err(-errno::E2BIG);
         }
         let pointer_offset = index
@@ -363,7 +348,7 @@ fn copy_user_string_array(
             .checked_add(value.len())
             .and_then(|bytes| bytes.checked_add(1))
             .ok_or(-errno::E2BIG)?;
-        if *total_bytes > MAX_ARG_BYTES {
+        if *total_bytes > EXEC_ARGUMENT_BYTES_LIMIT {
             return Err(-errno::E2BIG);
         }
         values.try_reserve(1).map_err(|_| -errno::ENOMEM)?;
@@ -375,7 +360,9 @@ fn copy_user_string_array(
 fn program_load_errno(error: ProgramLoadError) -> isize {
     let errno = match error {
         ProgramLoadError::OutOfMemory => errno::ENOMEM,
-        ProgramLoadError::InvalidElf => errno::ENOEXEC,
+        ProgramLoadError::InvalidExecutable => errno::ENOEXEC,
+        ProgramLoadError::InterpreterLoop => errno::ELOOP,
+        ProgramLoadError::ArgumentListTooLong => errno::E2BIG,
         ProgramLoadError::NotRegularFile | ProgramLoadError::NotExecutable => errno::EACCES,
         ProgramLoadError::FileSystem(FileSystemError::NotFound) => errno::ENOENT,
         ProgramLoadError::FileSystem(FileSystemError::NotDirectory) => errno::ENOTDIR,

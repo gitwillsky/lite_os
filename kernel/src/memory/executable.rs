@@ -105,6 +105,9 @@ fn parse_elf(
     const MAX_INTERPRETER_PATH: usize = 4096;
 
     let mut header = [0u8; HEADER_SIZE];
+    if source.len() < HEADER_SIZE {
+        return Err(ExecutableParseError::InvalidElf);
+    }
     source
         .read_exact_at(0, &mut header)
         .map_err(|_| ExecutableParseError::Io)?;

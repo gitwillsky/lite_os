@@ -7,12 +7,13 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, Terminal, vfs},
     memory::{
-        ElfLoadError, ExecutableImage, KERNEL_SPACE, KernelStack, MapPermission, MemoryError,
-        MemorySet, TRAP_CONTEXT, UserAccessError, VirtualAddress,
+        ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
+        TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
     task::{
-        TrapContext, context::TaskContext, pid::ProcessId, processor::account_current_hart_runtime,
+        TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId,
+        processor::account_current_hart_runtime,
     },
     timer::get_time_us,
 };
@@ -433,20 +434,13 @@ pub(crate) struct TaskControlBlock {
 
 impl TaskControlBlock {
     pub(super) fn new_with_pid(
-        name: &[u8],
-        image: &ExecutableImage,
+        loaded: &LoadedExecutable,
         pid: ProcessId,
         kernel_trap_handler: usize,
         kernel_trap_return: usize,
         console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
-        let mut argv0 = Vec::new();
-        argv0
-            .try_reserve_exact(name.len())
-            .map_err(|_| ElfLoadError::OutOfMemory)?;
-        argv0.extend_from_slice(name);
-        let initial_args = [argv0];
-        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(image, &initial_args, &[])?;
+        let (memory_set, user_sp, entry_point) = loaded.build_address_space(&[])?;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
@@ -454,7 +448,7 @@ impl TaskControlBlock {
         let terminal = Terminal::new(console);
         let process = Arc::new(Process {
             tgid: pid,
-            comm: Mutex::new(process_name(name)),
+            comm: Mutex::new(process_name(loaded.execfn())),
             start_time_us: get_time_us(),
             address_space: AddressSpace {
                 memory_set: Mutex::new(memory_set),
@@ -1318,20 +1312,18 @@ impl TaskControlBlock {
 
     /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
     ///
-    /// @param image 已完整读入 kernel 的主 ELF 与可选解释器映像。
-    /// @param args 写入新用户栈的参数。
+    /// @param loaded 已完成 pathname/script/ELF resolution 的 immutable exec input。
     /// @param envs 写入新用户栈的环境。
     /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
     /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
     pub(crate) fn execve_replace(
         &self,
-        image: &ExecutableImage,
-        args: &[Vec<u8>],
+        loaded: &LoadedExecutable,
         envs: &[Vec<u8>],
     ) -> Result<(), ElfLoadError> {
         // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
-        let (new_memory_set, user_sp, entry_point) = MemorySet::from_elf(image, args, envs)?;
-        let new_comm = args.first().map_or_else(Vec::new, |arg| process_name(arg));
+        let (new_memory_set, user_sp, entry_point) = loaded.build_address_space(envs)?;
+        let new_comm = process_name(loaded.execfn());
 
         // 步骤2: 替换内存管理结构
         // 这是关键步骤 - 完全替换当前进程的地址空间

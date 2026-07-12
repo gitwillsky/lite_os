@@ -1,5 +1,6 @@
 mod cow;
 mod executable_load;
+mod initial_stack;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
 
@@ -17,6 +18,7 @@ use crate::memory::{
 use super::config;
 use super::executable::{ElfKind, ExecutableImage};
 use super::{address::VirtualPageNumber, page_table::PageTable};
+use initial_stack::ElfAuxInfo;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum MemoryError {
@@ -1209,12 +1211,14 @@ impl MemorySet {
     /// @param image 已校验的有界 ELF metadata 与唯一 executable source，不持有完整文件副本。
     /// @param args 不含 NUL 的 argv 字节串。
     /// @param envs 不含 NUL 的 envp 字节串。
+    /// @param execfn 用户传给 execve 的原始 pathname，独立于可被 script rewrite 的 argv[0]。
     /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
     /// @errors 区分资源耗尽、非法/不支持的 ELF 与 source I/O；失败时不修改现有地址空间。
     pub(crate) fn from_elf(
         image: &ExecutableImage,
         args: &[Vec<u8>],
         envs: &[Vec<u8>],
+        execfn: &[u8],
     ) -> Result<(Self, usize, usize), ElfLoadError> {
         let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
         memory_set.map_trampoline().map_err(ElfLoadError::from)?;
@@ -1287,174 +1291,17 @@ impl MemorySet {
         }
 
         // 3. 初始栈是 argv/envp/auxv 的唯一用户契约，不通过寄存器传递私有参数。
-        let aux = ElfAuxInfo {
-            phdr: phdr_address,
-            phent: main.phent,
-            phnum: main.phnum,
-            entry: main.entry,
-            base: interpreter_base,
-        };
-        let actual_stack_top = memory_set.build_initial_stack(user_stack_top, args, envs, aux)?;
+        let aux = ElfAuxInfo::new(
+            phdr_address,
+            main.phent,
+            main.phnum,
+            main.entry,
+            interpreter_base,
+        );
+        let actual_stack_top =
+            memory_set.build_initial_stack(user_stack_top, args, envs, execfn, aux)?;
         Ok((memory_set, actual_stack_top, entry_point))
     }
-
-    fn build_initial_stack(
-        &mut self,
-        stack_top: usize,
-        args: &[Vec<u8>],
-        envs: &[Vec<u8>],
-        aux: ElfAuxInfo,
-    ) -> Result<usize, ElfLoadError> {
-        const AT_NULL: usize = 0;
-        const AT_PHDR: usize = 3;
-        const AT_PHENT: usize = 4;
-        const AT_PHNUM: usize = 5;
-        const AT_PAGESZ: usize = 6;
-        const AT_BASE: usize = 7;
-        const AT_ENTRY: usize = 9;
-        const AT_RANDOM: usize = 25;
-        const AT_EXECFN: usize = 31;
-        const AUX_WORDS: usize = 18;
-        const RANDOM_BYTES: usize = 16;
-
-        let total_string_size = args
-            .iter()
-            .chain(envs)
-            .try_fold(0usize, |total, value| {
-                value
-                    .len()
-                    .checked_add(1)
-                    .and_then(|size| total.checked_add(size))
-            })
-            .and_then(|size| size.checked_add(RANDOM_BYTES))
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let pointer_count = 1usize
-            .checked_add(args.len())
-            .and_then(|count| count.checked_add(1))
-            .and_then(|count| count.checked_add(envs.len()))
-            .and_then(|count| count.checked_add(1))
-            .and_then(|count| count.checked_add(AUX_WORDS))
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let pointer_space = pointer_count
-            .checked_mul(core::mem::size_of::<usize>())
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let unaligned_size = pointer_space
-            .checked_add(total_string_size)
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let stack_size = unaligned_size
-            .checked_add(15)
-            .ok_or(ElfLoadError::InvalidElf)?;
-        if stack_size > config::USER_STACK_SIZE {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let stack_ptr = stack_top
-            .checked_sub(stack_size)
-            .ok_or(ElfLoadError::InvalidElf)?
-            & !15usize;
-        let mut string_ptr = stack_ptr
-            .checked_add(pointer_space)
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let mut argv_ptrs = Vec::new();
-        argv_ptrs
-            .try_reserve_exact(args.len())
-            .map_err(|_| ElfLoadError::OutOfMemory)?;
-        let mut envp_ptrs = Vec::new();
-        envp_ptrs
-            .try_reserve_exact(envs.len())
-            .map_err(|_| ElfLoadError::OutOfMemory)?;
-
-        for arg in args {
-            argv_ptrs.push(string_ptr);
-            self.write_c_string_to_user_stack(string_ptr, arg)?;
-            string_ptr = string_ptr
-                .checked_add(arg.len())
-                .and_then(|address| address.checked_add(1))
-                .ok_or(ElfLoadError::InvalidElf)?;
-        }
-        for env in envs {
-            envp_ptrs.push(string_ptr);
-            self.write_c_string_to_user_stack(string_ptr, env)?;
-            string_ptr = string_ptr
-                .checked_add(env.len())
-                .and_then(|address| address.checked_add(1))
-                .ok_or(ElfLoadError::InvalidElf)?;
-        }
-        let random_ptr = string_ptr;
-        let mut random = [0u8; RANDOM_BYTES];
-        crate::random::fill(&mut random).map_err(|_| ElfLoadError::InvalidElf)?;
-        self.copy_to_user(random_ptr, &random)
-            .map_err(|_| ElfLoadError::InvalidElf)?;
-        let execfn = argv_ptrs.first().copied().unwrap_or(0);
-
-        let mut writer = stack_ptr;
-        self.write_usize_to_user_stack(writer, args.len())?;
-        writer += core::mem::size_of::<usize>();
-        for pointer in argv_ptrs {
-            self.write_usize_to_user_stack(writer, pointer)?;
-            writer += core::mem::size_of::<usize>();
-        }
-        self.write_usize_to_user_stack(writer, 0)?;
-        writer += core::mem::size_of::<usize>();
-        for pointer in envp_ptrs {
-            self.write_usize_to_user_stack(writer, pointer)?;
-            writer += core::mem::size_of::<usize>();
-        }
-        self.write_usize_to_user_stack(writer, 0)?;
-        writer += core::mem::size_of::<usize>();
-
-        for (kind, value) in [
-            (AT_PHDR, aux.phdr),
-            (AT_PHENT, aux.phent),
-            (AT_PHNUM, aux.phnum),
-            (AT_PAGESZ, config::PAGE_SIZE),
-            (AT_BASE, aux.base),
-            (AT_ENTRY, aux.entry),
-            (AT_RANDOM, random_ptr),
-            (AT_EXECFN, execfn),
-            (AT_NULL, 0),
-        ] {
-            self.write_usize_to_user_stack(writer, kind)?;
-            writer += core::mem::size_of::<usize>();
-            self.write_usize_to_user_stack(writer, value)?;
-            writer += core::mem::size_of::<usize>();
-        }
-
-        debug_assert_eq!(writer, stack_ptr + pointer_space);
-        debug_assert_eq!(stack_ptr & 15, 0);
-        Ok(stack_ptr)
-    }
-
-    fn write_c_string_to_user_stack(
-        &mut self,
-        address: usize,
-        value: &[u8],
-    ) -> Result<(), ElfLoadError> {
-        self.copy_to_user(address, value)
-            .map_err(|_| ElfLoadError::InvalidElf)?;
-        let nul_address = address
-            .checked_add(value.len())
-            .ok_or(ElfLoadError::InvalidElf)?;
-        self.copy_to_user(nul_address, &[0])
-            .map_err(|_| ElfLoadError::InvalidElf)
-    }
-
-    fn write_usize_to_user_stack(
-        &mut self,
-        address: usize,
-        value: usize,
-    ) -> Result<(), ElfLoadError> {
-        self.copy_to_user(address, &value.to_le_bytes())
-            .map_err(|_| ElfLoadError::InvalidElf)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ElfAuxInfo {
-    phdr: usize,
-    phent: usize,
-    phnum: usize,
-    entry: usize,
-    base: usize,
 }
 
 #[derive(Debug, Clone, Copy)]

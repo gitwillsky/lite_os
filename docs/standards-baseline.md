@@ -54,6 +54,8 @@ musl 的固定 [`arch/riscv64/syscall_arch.h`](https://git.musl-libc.org/cgit/mu
 
 Linux UAPI 是 LiteOS 对外 Linux/riscv64 ABI 的最高权威。POSIX 或 musl 与它看似冲突时，先确认比较的是否分别是裸 syscall、libc wrapper 和标准函数语义这三个不同层次。
 
+script exec 额外固定同 revision 的 [`fs/binfmt_script.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_script.c) 与 [`include/uapi/linux/binfmts.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/binfmts.h)：前者定义 shebang space/tab、optional argument 与 argv rewrite，后者固定 256-byte `BINPRM_BUF_SIZE`；`fs/exec.c` 的 interpreter loop 定义最多 5 次 rewrite 后返回 `ELOOP`。
+
 ## 3. RISC-V ELF psABI
 
 固定 revision 的 [`riscv-cc.adoc`](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/e03d44ae2f0e1144f9498c2896b5ae25b0449398/riscv-cc.adoc) 明确：

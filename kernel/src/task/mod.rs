@@ -1,6 +1,6 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
-use crate::fs::Console;
+use crate::fs::{Console, vfs};
 use crate::task::{context::TaskContext, pid::ProcessId};
 
 mod context;
@@ -12,7 +12,7 @@ mod scheduler;
 mod task_manager;
 mod trap_context;
 
-pub(crate) use loader::{ProgramLoadError, load_executable_from_fs, load_executable_from_inode};
+pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use model::{
     LinuxSigAction, PendingSignal, RunState, SignalDelivery, TaskControlBlock, WaitMembership,
     WaitResult,
@@ -42,10 +42,26 @@ pub(crate) fn init(
     console: Arc<dyn Console>,
 ) {
     processor::init_topology();
-    let image = load_executable_from_fs(INIT_PROC_NAME).expect("failed to read /bin/init");
+    let mut path = Vec::new();
+    path.try_reserve_exact(INIT_PROC_NAME.len())
+        .expect("failed to allocate init pathname");
+    path.extend_from_slice(INIT_PROC_NAME);
+    let mut argv0 = Vec::new();
+    argv0
+        .try_reserve_exact(INIT_PROC_NAME.len())
+        .expect("failed to allocate init argv[0]");
+    argv0.extend_from_slice(INIT_PROC_NAME);
+    let argument_bytes = 3 * core::mem::size_of::<usize>() + argv0.len() + 1;
+    let mut arguments = Vec::new();
+    arguments
+        .try_reserve_exact(1)
+        .expect("failed to allocate init argv");
+    arguments.push(argv0);
+    let root = vfs().open(b"/").expect("mounted root must resolve");
+    let loaded =
+        load_executable(root, path, arguments, argument_bytes).expect("failed to load /bin/init");
     let init_proc = TaskControlBlock::new_with_pid(
-        INIT_PROC_NAME,
-        &image,
+        &loaded,
         ProcessId::init(),
         kernel_trap_handler,
         kernel_trap_return,
