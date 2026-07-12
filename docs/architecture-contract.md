@@ -18,7 +18,7 @@
 | `sync` | `arch` | 只依赖本地中断机制 |
 | `memory` | `arch`, `config`, `id`, `random`, `sync` | 不感知 task、filesystem 或具体 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
-| `ipc` | `sync` | 只拥有 Pipe data/lifecycle，不感知 fd、task 或 syscall |
+| `ipc` | `sync` | 拥有 Pipe 与 AF_UNIX endpoint/namespace，不感知 fd、task 或 syscall |
 | `fs` | `drivers`, `ipc`, `memory`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`memory` 仅允许 shared-page seam |
 | `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
@@ -44,12 +44,14 @@
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
-| deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；一次 ppoll 只有一个 membership，可挂多个 source index |
+| deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 Poll membership 与 source indexes |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
 | OFD backend、backing mount identity、offset/status flags | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义 |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
+| AF_UNIX abstract namespace、endpoint state、listen/datagram queue | ipc::UnixSocket；OFD 只持 endpoint Arc，fork/dup 共享 |
+| epoll interest、ET history、ONESHOT state | fs::Epoll；readiness 与 ppoll 共用同一 seam |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | process comm/创建时刻、thread runtime 与 run state | Process、SchedulingEntity；procfs 只读取快照 |

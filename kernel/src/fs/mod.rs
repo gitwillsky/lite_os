@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 mod devfs;
+mod epoll;
 mod ext2;
 mod file;
 mod inode;
@@ -10,10 +11,11 @@ mod procfs;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
+pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
     CharacterDevice, Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND,
-    O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
+    O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
     TerminalAccess, TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};

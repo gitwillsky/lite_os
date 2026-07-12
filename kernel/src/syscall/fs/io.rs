@@ -1,4 +1,5 @@
 use super::*;
+use crate::task::wait_for_poll;
 
 const IOV_MAX: usize = 1024;
 
@@ -111,6 +112,37 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
             }
         }
     }
+    if let OpenFileKind::Socket(socket) = &ofd.kind {
+        if length == 0 {
+            return 0;
+        }
+        let mut chunk = [0u8; 512];
+        let count = length.min(chunk.len());
+        loop {
+            match socket.read(&mut chunk[..count]) {
+                Ok(read) => {
+                    return task
+                        .copy_to_user(pointer as usize, &chunk[..read])
+                        .map_or(-errno::EFAULT, |()| read as isize);
+                }
+                Err(crate::ipc::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    return -errno::EAGAIN;
+                }
+                Err(crate::ipc::SocketError::Again) => {
+                    let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
+                    match wait_for_poll(keys, None, || ofd.poll_events(1) != 0) {
+                        WaitResult::Woken => {}
+                        WaitResult::Interrupted => return -errno::EINTR,
+                        WaitResult::TimedOut => unreachable!(),
+                    }
+                }
+                Err(error) => return crate::syscall::socket::socket_error(error),
+            }
+        }
+    }
+    if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
+        return -errno::EINVAL;
+    }
     let OpenFileKind::Inode(inode) = &ofd.kind else {
         unreachable!("character device handled above")
     };
@@ -209,6 +241,44 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         }
         return total as isize;
     }
+    if let OpenFileKind::Socket(socket) = &ofd.kind {
+        if length == 0 {
+            return 0;
+        }
+        let mut chunk = [0u8; PIPE_BUF];
+        let count = length.min(chunk.len());
+        if task
+            .copy_from_user(pointer as usize, &mut chunk[..count])
+            .is_err()
+        {
+            return -errno::EFAULT;
+        }
+        loop {
+            match socket.write(&chunk[..count]) {
+                Ok(written) => return written as isize,
+                Err(crate::ipc::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    return -errno::EAGAIN;
+                }
+                Err(crate::ipc::SocketError::Again) => {
+                    let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
+                    match wait_for_poll(keys, None, || ofd.poll_events(4) != 0) {
+                        WaitResult::Woken => {}
+                        WaitResult::Interrupted => return -errno::EINTR,
+                        WaitResult::TimedOut => unreachable!(),
+                    }
+                }
+                Err(crate::ipc::SocketError::BrokenPipe) => {
+                    send_thread_signal(task.tgid(), task.tid(), 13)
+                        .expect("socket writer must exist");
+                    return -errno::EPIPE;
+                }
+                Err(error) => return crate::syscall::socket::socket_error(error),
+            }
+        }
+    }
+    if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
+        return -errno::EINVAL;
+    }
     if let OpenFileKind::Character(CharacterDevice::Terminal {
         terminal,
         kind: DeviceKind::Tty,
@@ -234,6 +304,9 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         }
         let wrote = match &ofd.kind {
             OpenFileKind::Pipe(_) => unreachable!("pipe handled before offset-backed write"),
+            OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => {
+                unreachable!("anonymous descriptor handled above")
+            }
             OpenFileKind::Character(device) => match device {
                 CharacterDevice::Null | CharacterDevice::Zero => count,
                 CharacterDevice::Terminal {

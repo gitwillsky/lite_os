@@ -1,4 +1,5 @@
 mod credentials;
+mod epoll;
 mod errno;
 mod fs;
 mod futex;
@@ -8,14 +9,15 @@ mod process;
 mod random;
 mod reboot;
 mod signal;
+mod socket;
 mod system_identity;
 mod system_info;
 mod timer;
 mod tty;
 
 use crate::syscall::{
-    credentials::*, fs::*, futex::*, memory::*, poll::*, process::*, random::*, reboot::*,
-    signal::*, system_identity::*, system_info::*, timer::*, tty::*,
+    credentials::*, epoll::*, fs::*, futex::*, memory::*, poll::*, process::*, random::*,
+    reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*, tty::*,
 };
 use syscall_abi::*;
 
@@ -37,6 +39,16 @@ pub(crate) enum SyscallOutcome {
 /// @return 普通返回值/负 errno，或只允许 trap layer 消费的重启控制结果。
 pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
     let result = match syscall_id {
+        SYSCALL_EPOLL_CREATE1 => sys_epoll_create1(args[0]),
+        SYSCALL_EPOLL_CTL => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
+        SYSCALL_EPOLL_PWAIT => sys_epoll_pwait(
+            args[0],
+            args[1],
+            args[2],
+            args[3] as isize,
+            args[4],
+            args[5],
+        ),
         SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
@@ -156,6 +168,19 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_GETGID => sys_get_id(false, false),
         SYSCALL_GETEGID => sys_get_id(false, true),
         SYSCALL_GETTID => sys_get_tid(),
+        SYSCALL_SOCKET => sys_socket(args[0], args[1], args[2]),
+        SYSCALL_SOCKETPAIR => sys_socketpair(args[0], args[1], args[2], args[3]),
+        SYSCALL_BIND => sys_bind(args[0], args[1], args[2]),
+        SYSCALL_LISTEN => sys_listen(args[0], args[1] as isize),
+        SYSCALL_ACCEPT => sys_accept(args[0], args[1], args[2]),
+        SYSCALL_CONNECT => sys_connect(args[0], args[1], args[2]),
+        SYSCALL_GETSOCKNAME => sys_getsockname(args[0], args[1], args[2]),
+        SYSCALL_GETPEERNAME => sys_getpeername(args[0], args[1], args[2]),
+        SYSCALL_SENDTO => sys_sendto(args[0], args[1], args[2], args[3], args[4], args[5]),
+        SYSCALL_RECVFROM => sys_recvfrom(args[0], args[1], args[2], args[3], args[4], args[5]),
+        SYSCALL_SETSOCKOPT => sys_setsockopt(args[0], args[1], args[2], args[3], args[4]),
+        SYSCALL_GETSOCKOPT => sys_getsockopt(args[0], args[1], args[2], args[3], args[4]),
+        SYSCALL_SHUTDOWN => sys_shutdown(args[0], args[1]),
         SYSCALL_SYSINFO => sys_sysinfo(args[0]),
         SYSCALL_BRK => sys_brk(args[0]),
         SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
@@ -182,6 +207,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[2],
             args[3] as *mut u8,
         ),
+        SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
         _ => {
             debug!("syscall: unsupported syscall_id: {}", syscall_id);
             -errno::ENOSYS

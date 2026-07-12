@@ -11,10 +11,6 @@ use crate::{
 
 use super::timer::{TimeSpec, decode_timespec};
 
-const POLLIN: i16 = 0x001;
-const POLLOUT: i16 = 0x004;
-const POLLERR: i16 = 0x008;
-const POLLHUP: i16 = 0x010;
 const POLLNVAL: i16 = 0x020;
 
 struct PollDescriptor {
@@ -32,54 +28,43 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
     let Some(ofd) = &descriptor.ofd else {
         return POLLNVAL;
     };
+    ofd.poll_events(descriptor.events)
+}
+
+pub(super) fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> {
+    let mut keys = Vec::new();
     match &ofd.kind {
-        OpenFileKind::Inode(_) => descriptor.events & (POLLIN | POLLOUT),
-        OpenFileKind::Character(device) => match device {
-            CharacterDevice::Null | CharacterDevice::Zero => descriptor.events & (POLLIN | POLLOUT),
-            CharacterDevice::Terminal { terminal, .. } => {
-                let mut result = descriptor.events & POLLOUT;
-                if descriptor.events & POLLIN != 0 && terminal.wait_ready() {
-                    result |= POLLIN;
-                }
-                result
-            }
-        },
-        OpenFileKind::Pipe(endpoint) => {
-            let state = endpoint.pipe().poll_state(endpoint.direction());
-            let mut result = 0;
-            if descriptor.events & POLLIN != 0 && state.readable {
-                result |= POLLIN;
-            }
-            if descriptor.events & POLLOUT != 0 && state.writable {
-                result |= POLLOUT;
-            }
-            if state.error {
-                result |= POLLERR;
-            }
-            if state.hangup {
-                result |= POLLHUP;
-            }
-            result
+        OpenFileKind::Character(CharacterDevice::Terminal { .. }) => {
+            keys.push(PollWaitKey::Console)
         }
+        OpenFileKind::Pipe(endpoint) => {
+            keys.push(PollWaitKey::pipe(&endpoint.pipe(), endpoint.direction()))
+        }
+        OpenFileKind::Socket(socket) => {
+            keys.extend(
+                socket
+                    .wait_pipes()
+                    .into_iter()
+                    .map(|(pipe, direction)| PollWaitKey::pipe(&pipe, direction)),
+            );
+        }
+        OpenFileKind::Epoll(epoll) => {
+            if let Ok(entries) = epoll.snapshot() {
+                for interest in entries {
+                    keys.extend(ofd_wait_keys(&interest.ofd));
+                }
+            }
+        }
+        _ => {}
     }
+    keys
 }
 
 fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Vec<PollWaitKey> {
     let mut keys = Vec::new();
     for descriptor in descriptors {
-        let Some(ofd) = &descriptor.ofd else {
-            continue;
-        };
-        match &ofd.kind {
-            OpenFileKind::Character(CharacterDevice::Terminal { .. })
-                if descriptor.events & POLLIN != 0 =>
-            {
-                keys.push(PollWaitKey::Console);
-            }
-            OpenFileKind::Pipe(endpoint) => {
-                keys.push(PollWaitKey::pipe(&endpoint.pipe(), endpoint.direction()));
-            }
-            _ => {}
+        if let Some(ofd) = &descriptor.ofd {
+            keys.extend(ofd_wait_keys(ofd));
         }
     }
     keys

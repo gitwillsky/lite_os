@@ -4,12 +4,14 @@ pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead};
 use alloc::{sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
+use super::Epoll;
 use super::{DeviceKind, FileSystemError, FileSystemStatistics, Inode, vfs};
-use crate::ipc::PipeEnd;
+use crate::ipc::{PipeEnd, UnixSocket};
 
 pub(crate) const O_ACCMODE: u32 = 3;
 pub(crate) const O_RDONLY: u32 = 0;
 pub(crate) const O_WRONLY: u32 = 1;
+pub(crate) const O_RDWR: u32 = 2;
 pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
@@ -46,6 +48,8 @@ impl CharacterDevice {
 pub(crate) enum OpenFileKind {
     Character(CharacterDevice),
     Pipe(Arc<PipeEnd>),
+    Socket(Arc<UnixSocket>),
+    Epoll(Arc<Epoll>),
     Inode(Arc<dyn Inode>),
 }
 
@@ -76,6 +80,70 @@ pub(crate) struct OpenFileDescription {
 }
 
 impl OpenFileDescription {
+    /// @description 从唯一 OFD backend 投影 poll/epoll readiness，不注册 waiter。
+    pub(crate) fn poll_events(&self, events: i16) -> i16 {
+        const INPUT: i16 = 0x001;
+        const OUTPUT: i16 = 0x004;
+        const ERROR: i16 = 0x008;
+        const HANGUP: i16 = 0x010;
+        let mut result = 0;
+        match &self.kind {
+            OpenFileKind::Inode(_) => result = events & (INPUT | OUTPUT),
+            OpenFileKind::Character(device) => match device {
+                CharacterDevice::Null | CharacterDevice::Zero => result = events & (INPUT | OUTPUT),
+                CharacterDevice::Terminal { terminal, .. } => {
+                    result = events & OUTPUT;
+                    if events & INPUT != 0 && terminal.wait_ready() {
+                        result |= INPUT;
+                    }
+                }
+            },
+            OpenFileKind::Pipe(endpoint) => {
+                let state = endpoint.pipe().poll_state(endpoint.direction());
+                if events & INPUT != 0 && state.readable {
+                    result |= INPUT;
+                }
+                if events & OUTPUT != 0 && state.writable {
+                    result |= OUTPUT;
+                }
+                if state.error {
+                    result |= ERROR;
+                }
+                if state.hangup {
+                    result |= HANGUP;
+                }
+            }
+            OpenFileKind::Socket(socket) => {
+                let state = socket.poll_state();
+                if events & INPUT != 0 && state.readable {
+                    result |= INPUT;
+                }
+                if events & OUTPUT != 0 && state.writable {
+                    result |= OUTPUT;
+                }
+                if state.error {
+                    result |= ERROR;
+                }
+                if state.hangup {
+                    result |= HANGUP;
+                }
+            }
+            OpenFileKind::Epoll(epoll) => {
+                if events & INPUT != 0
+                    && epoll.snapshot().is_ok_and(|entries| {
+                        entries.iter().any(|interest| {
+                            !interest.disabled
+                                && interest.ofd.poll_events(interest.event.events as i16) != 0
+                        })
+                    })
+                {
+                    result |= INPUT;
+                }
+            }
+        }
+        result
+    }
+
     /// @description 构造继承给 init 的 console OFD，并保留 devfs backing inode。
     ///
     /// @param terminal 共享 TTY owner。
@@ -142,11 +210,29 @@ impl OpenFileDescription {
         })
     }
 
+    pub(crate) fn socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<Self> {
+        Arc::new(Self {
+            kind: OpenFileKind::Socket(socket),
+            offset: Mutex::new(0),
+            flags: Mutex::new(flags),
+            character_inode: None,
+        })
+    }
+
+    pub(crate) fn epoll(epoll: Arc<Epoll>) -> Arc<Self> {
+        Arc::new(Self {
+            kind: OpenFileKind::Epoll(epoll),
+            offset: Mutex::new(0),
+            flags: Mutex::new(O_RDWR),
+            character_inode: None,
+        })
+    }
+
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(inode) => Some(inode.clone()),
             OpenFileKind::Character(_) => None,
-            OpenFileKind::Pipe(_) => None,
+            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => None,
         }
     }
 
@@ -162,7 +248,7 @@ impl OpenFileDescription {
                     .clone()
                     .ok_or(FileSystemError::InvalidFileSystem)?,
             ),
-            OpenFileKind::Pipe(_) => Ok(FileSystemStatistics {
+            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) => Ok(FileSystemStatistics {
                 type_name: "pipefs",
                 magic: 0x5049_5045,
                 block_size: 4096,
@@ -176,6 +262,7 @@ impl OpenFileDescription {
                 fragment_size: 4096,
                 flags: 0x20,
             }),
+            OpenFileKind::Epoll(_) => Err(FileSystemError::InvalidFileSystem),
         }
     }
 }
@@ -314,7 +401,8 @@ impl FileDescriptorTable {
 
     pub(crate) fn close(&mut self, fd: usize) -> Result<(), ()> {
         let entry = self.entries.get_mut(fd).ok_or(())?;
-        entry.take().ok_or(())?;
+        let closed = entry.take().ok_or(())?.ofd;
+        self.remove_epoll_interest_if_last(&closed);
         Ok(())
     }
 
@@ -350,7 +438,10 @@ impl FileDescriptorTable {
         if self.entries.len() <= new {
             self.entries.resize(new + 1, None);
         }
-        self.entries[new] = Some(FileDescriptor { ofd, cloexec });
+        let replaced = self.entries[new].replace(FileDescriptor { ofd, cloexec });
+        if let Some(replaced) = replaced {
+            self.remove_epoll_interest_if_last(&replaced.ofd);
+        }
         Ok(new)
     }
 
@@ -380,10 +471,36 @@ impl FileDescriptorTable {
     }
 
     pub(crate) fn close_cloexec(&mut self) {
+        let mut closed = Vec::new();
         for entry in &mut self.entries {
             if entry.as_ref().is_some_and(|entry| entry.cloexec) {
-                *entry = None;
+                closed.push(entry.take().unwrap().ofd);
             }
+        }
+        for ofd in closed {
+            self.remove_epoll_interest_if_last(&ofd);
+        }
+    }
+
+    fn remove_epoll_interest_if_last(&self, closed: &Arc<OpenFileDescription>) {
+        if self
+            .entries
+            .iter()
+            .flatten()
+            .any(|entry| Arc::ptr_eq(&entry.ofd, closed))
+        {
+            return;
+        }
+        for epoll in self
+            .entries
+            .iter()
+            .flatten()
+            .filter_map(|entry| match &entry.ofd.kind {
+                OpenFileKind::Epoll(epoll) => Some(epoll),
+                _ => None,
+            })
+        {
+            epoll.remove_ofd(closed);
         }
     }
 }

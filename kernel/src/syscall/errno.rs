@@ -58,6 +58,16 @@ pub(crate) const ENOTEMPTY: isize = 39;
 pub(crate) const ENOSYS: isize = 38;
 /// 符号链接解析超出支持范围。
 pub(crate) const ELOOP: isize = 40;
+pub(crate) const ENOTSOCK: isize = 88;
+pub(crate) const EOPNOTSUPP: isize = 95;
+pub(crate) const EAFNOSUPPORT: isize = 97;
+pub(crate) const EADDRINUSE: isize = 98;
+pub(crate) const ENOTCONN: isize = 107;
+pub(crate) const EISCONN: isize = 106;
+pub(crate) const ECONNREFUSED: isize = 111;
+pub(crate) const EPROTONOSUPPORT: isize = 93;
+pub(crate) const ESOCKTNOSUPPORT: isize = 94;
+pub(crate) const ENOPROTOOPT: isize = 92;
 /// 结果无法由目标文件系统或 ABI 字段表示。
 pub(crate) const EOVERFLOW: isize = 75;
 /// 等待在 deadline 前未完成。

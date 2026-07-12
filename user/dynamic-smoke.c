@@ -4,10 +4,14 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
@@ -66,6 +70,71 @@ static int shared_crash_loop(void)
         ++*value;
         if (msync(value, 4096, MS_SYNC) != 0) return 3;
     }
+}
+
+static int verify_unix_epoll(void)
+{
+    int pair[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0) return 60;
+    int epoll = epoll_create1(EPOLL_CLOEXEC);
+    struct epoll_event interest = { .events = EPOLLIN | EPOLLET | EPOLLONESHOT, .data.u64 = 46 };
+    struct epoll_event event;
+    if (epoll < 0 || epoll_ctl(epoll, EPOLL_CTL_ADD, pair[1], &interest) != 0
+        || write(pair[0], "edge", 4) != 4 || epoll_wait(epoll, &event, 1, 1000) != 1
+        || event.data.u64 != 46 || !(event.events & EPOLLIN)
+        || epoll_wait(epoll, &event, 1, 0) != 0
+        || epoll_ctl(epoll, EPOLL_CTL_MOD, pair[1], &interest) != 0
+        || epoll_wait(epoll, &event, 1, 0) != 1) return 61;
+    char bytes[8] = { 0 };
+    if (read(pair[1], bytes, sizeof(bytes)) != 4 || memcmp(bytes, "edge", 4) != 0) return 62;
+    int nonblocking[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, nonblocking) != 0
+        || fcntl(nonblocking[1], F_SETFL, O_NONBLOCK) != 0
+        || read(nonblocking[1], bytes, 1) != -1 || errno != EAGAIN) return 68;
+    close(nonblocking[0]); close(nonblocking[1]);
+
+    int datagram[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, datagram) != 0
+        || send(datagram[0], "packet", 6, 0) != 6
+        || recv(datagram[1], bytes, sizeof(bytes), 0) != 6
+        || memcmp(bytes, "packet", 6) != 0) return 63;
+
+    int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    memcpy(address.sun_path + 1, "liteos-phase-46", 15);
+    socklen_t address_length = offsetof(struct sockaddr_un, sun_path) + 16;
+    if (listener < 0 || bind(listener, (struct sockaddr *)&address, address_length) != 0
+        || listen(listener, 4) != 0) return 64;
+    pid_t child = fork();
+    if (child == 0) {
+        int client = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (client < 0 || connect(client, (struct sockaddr *)&address, address_length) != 0
+            || write(client, "request", 7) != 7
+            || read(client, bytes, sizeof(bytes)) != 5
+            || memcmp(bytes, "reply", 5) != 0) _exit(1);
+        _exit(0);
+    }
+    interest.events = EPOLLIN;
+    interest.data.u64 = 47;
+    if (epoll_ctl(epoll, EPOLL_CTL_ADD, listener, &interest) != 0
+        || epoll_wait(epoll, &event, 1, 1000) != 1 || event.data.u64 != 47) return 65;
+    int accepted = accept4(listener, NULL, NULL, SOCK_CLOEXEC);
+    if (accepted < 0 || epoll_ctl(epoll, EPOLL_CTL_ADD, accepted, &interest) != 0
+        || epoll_wait(epoll, &event, 1, 1000) != 1
+        || read(accepted, bytes, sizeof(bytes)) != 7 || memcmp(bytes, "request", 7) != 0
+        || write(accepted, "reply", 5) != 5) return 66;
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return 67;
+    close(accepted); close(listener); close(datagram[0]); close(datagram[1]);
+    close(pair[0]); close(pair[1]);
+    int stale[2], replacement[2];
+    interest.data.u64 = 48;
+    if (pipe(stale) != 0 || epoll_ctl(epoll, EPOLL_CTL_ADD, stale[0], &interest) != 0
+        || close(stale[0]) != 0 || pipe(replacement) != 0
+        || write(replacement[1], "x", 1) != 1 || epoll_wait(epoll, &event, 1, 0) != 0) return 69;
+    close(stale[1]); close(replacement[0]); close(replacement[1]); close(epoll);
+    puts("LITEOS_UNIX_EPOLL_46");
+    return 0;
 }
 
 static int verify_credentials(const char *program)
@@ -197,6 +266,8 @@ int main(int argc, char **argv)
     if (credential_result != 0) return credential_result;
     int shared_result = verify_shared_mapping();
     if (shared_result != 0) return shared_result;
+    int socket_result = verify_unix_epoll();
+    if (socket_result != 0) return socket_result;
     puts("LITEOS_DLOPEN_42");
     return 0;
 }

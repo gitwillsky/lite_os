@@ -3,6 +3,9 @@
 //! LiteOS 用户态与内核共享的系统调用编号。
 
 pub const SYSCALL_GETCWD: usize = 17;
+pub const SYSCALL_EPOLL_CREATE1: usize = 20;
+pub const SYSCALL_EPOLL_CTL: usize = 21;
+pub const SYSCALL_EPOLL_PWAIT: usize = 22;
 pub const SYSCALL_DUP: usize = 23;
 pub const SYSCALL_DUP3: usize = 24;
 pub const SYSCALL_FCNTL: usize = 25;
@@ -73,6 +76,19 @@ pub const SYSCALL_GETEUID: usize = 175;
 pub const SYSCALL_GETGID: usize = 176;
 pub const SYSCALL_GETEGID: usize = 177;
 pub const SYSCALL_GETTID: usize = 178;
+pub const SYSCALL_SOCKET: usize = 198;
+pub const SYSCALL_SOCKETPAIR: usize = 199;
+pub const SYSCALL_BIND: usize = 200;
+pub const SYSCALL_LISTEN: usize = 201;
+pub const SYSCALL_ACCEPT: usize = 202;
+pub const SYSCALL_CONNECT: usize = 203;
+pub const SYSCALL_GETSOCKNAME: usize = 204;
+pub const SYSCALL_GETPEERNAME: usize = 205;
+pub const SYSCALL_SENDTO: usize = 206;
+pub const SYSCALL_RECVFROM: usize = 207;
+pub const SYSCALL_SETSOCKOPT: usize = 208;
+pub const SYSCALL_GETSOCKOPT: usize = 209;
+pub const SYSCALL_SHUTDOWN: usize = 210;
 pub const SYSCALL_SYSINFO: usize = 179;
 pub const SYSCALL_BRK: usize = 214;
 pub const SYSCALL_MUNMAP: usize = 215;
@@ -83,4 +99,5 @@ pub const SYSCALL_GETRANDOM: usize = 278;
 pub const SYSCALL_MPROTECT: usize = 226;
 pub const SYSCALL_MSYNC: usize = 227;
 pub const SYSCALL_WAIT4: usize = 260;
+pub const SYSCALL_ACCEPT4: usize = 242;
 pub const SYSCALL_RENAMEAT2: usize = 276;

@@ -683,7 +683,7 @@ def main() -> int:
                     b"/bin/dynamic-smoke\n",
                 ),
                 (
-                    "LITEOS_SHARED_MMAP_45",
+                    "LITEOS_UNIX_EPOLL_46",
                     b"",
                 ),
                 (

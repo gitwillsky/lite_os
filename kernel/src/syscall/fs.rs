@@ -162,7 +162,12 @@ struct UserStat {
 
 const _: () = assert!(mem::size_of::<UserStat>() == 128);
 
-fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMetadata>) -> isize {
+fn copy_stat(
+    task: &TaskControlBlock,
+    pointer: *mut u8,
+    metadata: Option<InodeMetadata>,
+    anonymous_mode: u32,
+) -> isize {
     let stat = if let Some(metadata) = metadata {
         UserStat {
             st_dev: metadata.filesystem,
@@ -189,7 +194,7 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMe
         UserStat {
             st_dev: 0,
             st_ino: 0,
-            st_mode: 0o020666,
+            st_mode: anonymous_mode,
             st_nlink: 1,
             st_uid: 0,
             st_gid: 0,
@@ -255,14 +260,16 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     };
     match ofd.inode_ref() {
         Some(inode) => match inode.metadata() {
-            Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
+            Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0),
             Err(error) => ferr(error),
         },
         None => match &ofd.kind {
             OpenFileKind::Character(device) => {
-                copy_stat(&task, pointer, Some(character_metadata(device.kind())))
+                copy_stat(&task, pointer, Some(character_metadata(device.kind())), 0)
             }
-            OpenFileKind::Pipe(_) => copy_stat(&task, pointer, None),
+            OpenFileKind::Pipe(_) => copy_stat(&task, pointer, None, 0o010666),
+            OpenFileKind::Socket(_) => copy_stat(&task, pointer, None, 0o140777),
+            OpenFileKind::Epoll(_) => copy_stat(&task, pointer, None, 0o100600),
             OpenFileKind::Inode(_) => unreachable!("inode_ref lost inode OFD"),
         },
     }
@@ -385,7 +392,7 @@ pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags
         vfs().open_at(start, &path, &task.access_identity(true))
     };
     match inode.and_then(|inode| inode.metadata()) {
-        Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
+        Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0),
         Err(error) => ferr(error),
     }
 }
@@ -478,7 +485,7 @@ pub(crate) fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
             .map_or(-errno::EBADF, |v| *v.flags.lock() as isize),
         4 => t.fd_get(fd).map_or(-errno::EBADF, |ofd| {
             let mut flags = ofd.flags.lock();
-            *flags = (*flags & !O_APPEND) | (arg as u32 & O_APPEND);
+            *flags = (*flags & !(O_APPEND | O_NONBLOCK)) | (arg as u32 & (O_APPEND | O_NONBLOCK));
             0
         }),
         1030 if arg < MAX_FILE_DESCRIPTORS => {

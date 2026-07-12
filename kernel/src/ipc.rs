@@ -1,6 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
+#[path = "ipc/unix_socket.rs"]
+mod unix_socket;
+pub(crate) use unix_socket::{SocketError, SocketType, UnixAddress, UnixSocket};
+
 pub(crate) const PIPE_BUF: usize = 4096;
 const PIPE_CAPACITY: usize = 64 * 1024;
 
