@@ -1,5 +1,9 @@
+#define _GNU_SOURCE
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
@@ -7,11 +11,54 @@
 #include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-int main(void)
+static int verify_credentials(const char *program)
 {
+    uid_t ruid, euid, suid;
+    gid_t rgid, egid, sgid;
+    gid_t groups[] = { 1000, 2000 };
+    unlink("/credential-owner");
+    unlink("/credential-root");
+    if (getresuid(&ruid, &euid, &suid) != 0 || ruid != 0 || euid != 0 || suid != 0
+        || getresgid(&rgid, &egid, &sgid) != 0 || rgid != 0 || egid != 0 || sgid != 0
+        || setgroups(2, groups) != 0 || getgroups(0, NULL) != 2
+        || umask(0027) != 0022) return 10;
+    int owner = open("/credential-owner", O_CREAT | O_EXCL | O_RDWR, 0666);
+    int root = open("/credential-root", O_CREAT | O_EXCL | O_RDWR, 0600);
+    struct stat metadata;
+    if (owner < 0 || root < 0 || fstat(owner, &metadata) != 0
+        || (metadata.st_mode & 0777) != 0640 || fchmodat(AT_FDCWD, "/credential-owner", 0660, 0) != 0
+        || fchownat(AT_FDCWD, "/credential-owner", 1000, 1000, 0) != 0
+        || chmod(program, 04755) != 0 || close(owner) != 0 || close(root) != 0) return 11;
+    pid_t child = fork();
+    if (child == 0) {
+        if (setresgid(1000, 1000, 1000) != 0 || setresuid(1000, 1000, 1000) != 0) _exit(21);
+        if (getresuid(&ruid, &euid, &suid) != 0 || ruid != 1000 || euid != 1000 || suid != 1000) _exit(26);
+        if (stat("/credential-root", &metadata) != 0 || metadata.st_uid != 0 || (metadata.st_mode & 0777) != 0600) _exit(27);
+        if (open("/credential-owner", O_RDWR) < 0) _exit(22);
+        errno = 0;
+        if (open("/credential-root", O_RDONLY) != -1 || errno != EACCES) _exit(23);
+        errno = 0;
+        if (kill(getppid(), 0) != -1 || errno != EPERM) _exit(24);
+        execl(program, program, "setid-probe", (char *)0);
+        _exit(25);
+    }
+    int status;
+    if (child <= 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status)) return 12;
+    if (WEXITSTATUS(status) != 0) return 40 + WEXITSTATUS(status);
+    puts("LITEOS_CREDENTIALS_44");
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "setid-probe") == 0) {
+        uid_t real, effective, saved;
+        return getresuid(&real, &effective, &saved) != 0 || real != 1000 || effective != 0 || saved != 0;
+    }
     static const char payload[] = "link-abi";
     struct stat source_stat;
     struct stat hard_stat;
@@ -92,6 +139,8 @@ int main(void)
     if (value == NULL || value() != 42 || dlclose(handle) != 0) {
         return 2;
     }
+    int credential_result = verify_credentials(argv[0]);
+    if (credential_result != 0) return credential_result;
     puts("LITEOS_DLOPEN_42");
     return 0;
 }

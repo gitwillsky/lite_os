@@ -61,6 +61,7 @@ impl Ext2Inode {
         &self,
         name: &[u8],
         target: &[u8],
+        metadata: super::super::CreateMetadata,
     ) -> Result<Arc<Self>, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -79,13 +80,15 @@ impl Ext2Inode {
         let number = self.fs.allocate_inode(group, false)?;
         let now = Self::now();
         let mut disk = Ext2InodeDisk {
-            i_mode: 0xA000 | 0o777,
+            i_mode: 0xA000 | metadata.mode as u16 & 0o7777,
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_links_count: 1,
             ..Default::default()
         };
+        disk.set_uid(metadata.uid);
+        disk.set_gid(metadata.gid);
         if target.len() <= mem::size_of::<[u32; 15]>() {
             disk.i_size_lo = target.len() as u32;
             // SAFETY: target 不超过 i_block 的 60-byte inline storage，且源/目标不重叠。

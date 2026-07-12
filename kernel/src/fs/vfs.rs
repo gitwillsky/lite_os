@@ -1,7 +1,13 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use super::{FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
+use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
+
+#[path = "vfs/mount_table.rs"]
+mod mount_table;
+#[path = "vfs/mutation.rs"]
+mod mutation;
+use mount_table::write_mount_record;
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
@@ -73,8 +79,9 @@ impl VirtualFileSystem {
         start: Arc<dyn Inode>,
         path: &[u8],
         allow_final_symlink: bool,
+        identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.resolve_from_with_limit(start, path, allow_final_symlink, 0)
+        self.resolve_from_with_limit(start, path, allow_final_symlink, identity, 0)
     }
 
     fn resolve_from_with_limit(
@@ -82,6 +89,7 @@ impl VirtualFileSystem {
         start: Arc<dyn Inode>,
         path: &[u8],
         allow_final_symlink: bool,
+        identity: &AccessIdentity,
         followed_links: usize,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         const MAX_SYMLINKS: usize = 40;
@@ -101,6 +109,7 @@ impl VirtualFileSystem {
             .filter(|component| !matches!(*component, b"" | b"."))
             .enumerate()
         {
+            identity.require(inode.metadata()?, 1)?;
             match component {
                 b".." => {
                     if let Some(parent) = self.leave_mount(&inode) {
@@ -142,11 +151,15 @@ impl VirtualFileSystem {
                             parent,
                             &expanded,
                             allow_final_symlink,
+                            identity,
                             followed_links + 1,
                         );
                     }
                 }
             }
+        }
+        if component_count == 0 && inode.inode_type() == InodeType::Directory {
+            identity.require(inode.metadata()?, 1)?;
         }
         if path.len() > 1
             && path.last() == Some(&b'/')
@@ -161,6 +174,7 @@ impl VirtualFileSystem {
         &self,
         start: Arc<dyn Inode>,
         path: &[u8],
+        identity: &AccessIdentity,
     ) -> Result<(Arc<dyn Inode>, Vec<u8>), FileSystemError> {
         let trimmed = path.strip_suffix(b"/").unwrap_or(path);
         let split = trimmed.iter().rposition(|byte| *byte == b'/');
@@ -172,7 +186,10 @@ impl VirtualFileSystem {
         if name.is_empty() {
             return Err(FileSystemError::InvalidPath);
         }
-        Ok((self.resolve_from(start, parent_path, false)?, name.to_vec()))
+        Ok((
+            self.resolve_from(start, parent_path, false, identity)?,
+            name.to_vec(),
+        ))
     }
 
     /// 创建尚未挂载根文件系统的 VFS。
@@ -353,16 +370,17 @@ impl VirtualFileSystem {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
-        self.resolve_from(self.root_inode()?, path, false)
+        self.resolve_from(self.root_inode()?, path, false, &AccessIdentity::root())
     }
 
     pub(crate) fn open_at(
         &self,
         start: Option<Arc<dyn Inode>>,
         path: &[u8],
+        identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let start = start.unwrap_or(self.root_inode()?);
-        self.resolve_from(start, path, false)
+        self.resolve_from(start, path, false, identity)
     }
 
     /// @description 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
@@ -375,9 +393,10 @@ impl VirtualFileSystem {
         &self,
         start: Option<Arc<dyn Inode>>,
         path: &[u8],
+        identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let start = start.unwrap_or(self.root_inode()?);
-        self.resolve_from(start, path, true)
+        self.resolve_from(start, path, true, identity)
     }
 
     /// @description 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。
@@ -440,89 +459,6 @@ impl VirtualFileSystem {
         }
         Ok(path)
     }
-
-    pub(crate) fn create_at(
-        &self,
-        start: Option<Arc<dyn Inode>>,
-        path: &[u8],
-        kind: InodeType,
-        mode: u32,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
-        let (parent, name) = self.parent_from(start, path)?;
-        parent.create(&name, kind, mode)
-    }
-
-    /// @description 在 new path 创建 raw-target symbolic link。
-    /// @param start 相对 new path 的起始目录；None 表示 root。
-    /// @param path 新链接 pathname。
-    /// @param target 不经解析的 symbolic-link target bytes。
-    /// @return 新 symbolic-link inode。
-    /// @errors pathname、重复名称、空间、只读或底层 I/O 错误。
-    pub(crate) fn symlink_at(
-        &self,
-        start: Option<Arc<dyn Inode>>,
-        path: &[u8],
-        target: &[u8],
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
-        let (parent, name) = self.parent_from(start, path)?;
-        parent.symlink(&name, target)
-    }
-
-    /// @description 为已解析目标创建同 filesystem 的硬链接目录项。
-    /// @param target 不得为目录，且 final symlink 是否跟随已由 syscall/VFS caller 决定。
-    /// @param new_start 相对 new path 的起始目录；None 表示 root。
-    /// @param new_path 新硬链接 pathname。
-    /// @return 成功或明确的跨 filesystem、类型及目录项错误。
-    /// @errors 目标与 parent 分属不同 filesystem 时返回 CrossDevice。
-    pub(crate) fn link_at(
-        &self,
-        target: Arc<dyn Inode>,
-        new_start: Option<Arc<dyn Inode>>,
-        new_path: &[u8],
-    ) -> Result<(), FileSystemError> {
-        let new_start = new_start.unwrap_or(self.root_inode()?);
-        let (parent, name) = self.parent_from(new_start, new_path)?;
-        if parent.filesystem_id() != target.filesystem_id() {
-            return Err(FileSystemError::CrossDevice);
-        }
-        parent.link(&name, target)
-    }
-
-    pub(crate) fn unlink_at(
-        &self,
-        start: Option<Arc<dyn Inode>>,
-        path: &[u8],
-        directory: bool,
-    ) -> Result<(), FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
-        let (parent, name) = self.parent_from(start, path)?;
-        parent.unlink(&name, directory)
-    }
-
-    pub(crate) fn rename_at(
-        &self,
-        old_start: Option<Arc<dyn Inode>>,
-        old_path: &[u8],
-        new_start: Option<Arc<dyn Inode>>,
-        new_path: &[u8],
-        no_replace: bool,
-    ) -> Result<(), FileSystemError> {
-        let old_start = old_start.unwrap_or(self.root_inode()?);
-        let new_start = new_start.unwrap_or(self.root_inode()?);
-        let (old_parent, old_name) = self.parent_from(old_start, old_path)?;
-        let (new_parent, new_name) = self.parent_from(new_start, new_path)?;
-        if old_parent.filesystem_id() != new_parent.filesystem_id() {
-            return Err(FileSystemError::CrossDevice);
-        }
-        old_parent.rename(
-            &old_name,
-            new_parent.metadata()?.inode,
-            &new_name,
-            no_replace,
-        )
-    }
 }
 
 use spin::Once;
@@ -536,47 +472,4 @@ pub(crate) fn init() {
 
 pub(crate) fn vfs() -> &'static VirtualFileSystem {
     VFS_MANAGER.wait()
-}
-
-fn write_mount_record(
-    output: &mut Vec<u8>,
-    source: &[u8],
-    target: &[u8],
-    statistics: &FileSystemStatistics,
-) -> Result<(), FileSystemError> {
-    let escaped_fields = source
-        .len()
-        .checked_add(target.len())
-        .and_then(|length| length.checked_mul(4))
-        .ok_or(FileSystemError::OutOfMemory)?;
-    let required = escaped_fields
-        .checked_add(statistics.type_name.len())
-        .and_then(|length| length.checked_add(16))
-        .ok_or(FileSystemError::OutOfMemory)?;
-    output
-        .try_reserve(required)
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    write_mount_field(output, source);
-    output.push(b' ');
-    write_mount_field(output, target);
-    output.push(b' ');
-    output.extend_from_slice(statistics.type_name.as_bytes());
-    output.extend_from_slice(if statistics.flags & 1 != 0 {
-        b" ro 0 0\n"
-    } else {
-        b" rw 0 0\n"
-    });
-    Ok(())
-}
-
-fn write_mount_field(output: &mut Vec<u8>, field: &[u8]) {
-    for byte in field {
-        match byte {
-            b' ' => output.extend_from_slice(b"\\040"),
-            b'\t' => output.extend_from_slice(b"\\011"),
-            b'\n' => output.extend_from_slice(b"\\012"),
-            b'\\' => output.extend_from_slice(b"\\134"),
-            byte => output.push(*byte),
-        }
-    }
 }

@@ -14,7 +14,7 @@
 
 已有 config 中的 `touch` 首次进入真实 gate 后暴露 `utimensat(88)` 缺失。实现沿 VFS 唯一 pathname/dirfd resolver 到 Inode mutation seam，支持 null times、两个 RV64 timespec、`UTIME_NOW/UTIME_OMIT` 与 `AT_SYMLINK_NOFOLLOW`。ext2 在 filesystem mutation lock 内一次写入 atime/mtime/ctime；devfs 通过同一 Inode seam 返回 `EROFS`。
 
-ext2 revision 1 inode 只保存 32-bit epoch seconds：显式值或 realtime 超界返回 `EOVERFLOW`，不截断；纳秒输入完成语法校验但磁盘精度明确为秒。当前固定 root identity 不做 permission check，`AT_EMPTY_PATH` 仍拒绝。
+ext2 revision 1 inode 只保存 32-bit epoch seconds：显式值或 realtime 超界返回 `EOVERFLOW`，不截断；纳秒输入完成语法校验但磁盘精度明确为秒。Phase 44 已补 owner/write permission；`AT_EMPTY_PATH` 仍拒绝。
 
 ## 真实 gate
 

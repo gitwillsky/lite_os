@@ -4,6 +4,7 @@ mod devfs;
 mod ext2;
 mod file;
 mod inode;
+mod permission;
 mod procfs;
 mod vfs;
 
@@ -15,6 +16,7 @@ pub(crate) use file::{
     TerminalAccess, TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileSystem, ProcProcessSnapshot, ProcSnapshot, ProcSource,
 };
@@ -65,6 +67,7 @@ pub(crate) enum FileSystemError {
     NoSpace,
     CrossDevice,
     PermissionDenied,
+    AccessDenied,
     TooManyLinks,
 }
 

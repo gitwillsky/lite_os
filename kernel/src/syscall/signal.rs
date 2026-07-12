@@ -29,6 +29,7 @@ pub(crate) fn sys_kill(pid: i32, signal: usize) -> isize {
         Ok(()) => 0,
         Err(SignalSendError::InvalidSignal) => -errno::EINVAL,
         Err(SignalSendError::NotFound) => -errno::ESRCH,
+        Err(SignalSendError::Permission) => -errno::EPERM,
     }
 }
 
@@ -135,9 +136,9 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
         return -errno::EINVAL;
     }
     if signal == 0 {
-        return send_thread_signal(tgid, tid, 0).map_or(-errno::ESRCH, |()| 0);
+        return send_thread_signal(tgid, tid, 0).map_or_else(signal_send_errno, |()| 0);
     }
-    send_thread_signal(tgid, tid, signal).map_or(-errno::ESRCH, |()| 0)
+    send_thread_signal(tgid, tid, signal).map_or_else(signal_send_errno, |()| 0)
 }
 
 /// @description 实现 Linux `tkill` 的全局 TID selector，并复用 thread-signal routing。
@@ -149,7 +150,15 @@ pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
     if signal > 64 {
         return -errno::EINVAL;
     }
-    send_tid_signal(tid, signal).map_or(-errno::ESRCH, |()| 0)
+    send_tid_signal(tid, signal).map_or_else(signal_send_errno, |()| 0)
+}
+
+fn signal_send_errno(error: SignalSendError) -> isize {
+    match error {
+        SignalSendError::InvalidSignal => -errno::EINVAL,
+        SignalSendError::NotFound => -errno::ESRCH,
+        SignalSendError::Permission => -errno::EPERM,
+    }
 }
 
 /// @description 原子安装临时 mask 并等待一个将由 trap-return handler 消费的 signal。

@@ -59,13 +59,6 @@ pub(crate) fn sys_get_ppid() -> isize {
     parent_pid(task.tgid()) as isize
 }
 
-/// @description 返回当前无 credential-mutation ABI 基线的固定 root UID/GID identity。
-///
-/// @return real/effective UID/GID 均为零。
-pub(crate) fn sys_get_root_identity() -> isize {
-    0
-}
-
 /// @description 返回当前线程标识；单线程模型中与 PID 相同。
 ///
 /// @return 当前任务的 TID。
@@ -291,7 +284,13 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Err(error) => return error,
     };
 
-    let loaded = match load_executable(task.working_directory(), path, argv, argument_bytes) {
+    let loaded = match load_executable(
+        task.working_directory(),
+        path,
+        argv,
+        argument_bytes,
+        &task.access_identity(true),
+    ) {
         Ok(loaded) => loaded,
         Err(error) => return program_load_errno(error),
     };
@@ -398,6 +397,7 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
             | FileSystemError::InvalidOperation
             | FileSystemError::CrossDevice
             | FileSystemError::PermissionDenied
+            | FileSystemError::AccessDenied
             | FileSystemError::TooManyLinks
             | FileSystemError::IoError
             | FileSystemError::InvalidFileSystem,

@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::fs::{Console, vfs};
+use crate::fs::{AccessIdentity, Console, vfs};
 use crate::task::{context::TaskContext, pid::ProcessId};
 
 mod context;
@@ -58,8 +58,14 @@ pub(crate) fn init(
         .expect("failed to allocate init argv");
     arguments.push(argv0);
     let root = vfs().open(b"/").expect("mounted root must resolve");
-    let loaded =
-        load_executable(root, path, arguments, argument_bytes).expect("failed to load /bin/init");
+    let loaded = load_executable(
+        root,
+        path,
+        arguments,
+        argument_bytes,
+        &AccessIdentity::root(),
+    )
+    .expect("failed to load /bin/init");
     let init_proc = TaskControlBlock::new_with_pid(
         &loaded,
         ProcessId::init(),

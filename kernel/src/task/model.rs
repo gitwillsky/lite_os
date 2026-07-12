@@ -1,4 +1,5 @@
 mod cow;
+mod credentials;
 mod process_exec;
 mod signal_state;
 use core::sync::atomic::AtomicUsize;
@@ -20,6 +21,8 @@ use crate::{
     timer::get_time_us,
 };
 
+use credentials::Credentials;
+use process_exec::process_name;
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
 
@@ -84,16 +87,6 @@ pub(crate) enum WaitResult {
     Woken,
     TimedOut,
     Interrupted,
-}
-
-fn process_name(path: &[u8]) -> Vec<u8> {
-    path.rsplit(|byte| *byte == b'/')
-        .find(|component| !component.is_empty())
-        .unwrap_or(path)
-        .iter()
-        .copied()
-        .take(15)
-        .collect()
 }
 
 #[derive(Debug)]
@@ -309,6 +302,8 @@ struct Process {
     // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
     cwd: Mutex<Arc<dyn Inode>>,
     files: Mutex<FileDescriptorTable>,
+    // OWNER: Process 的单锁凭据集供 thread 共享；拆分字段会让 setres* 暴露中间身份。
+    credentials: Mutex<Credentials>,
     terminal: Arc<Terminal>,
     // OWNER: disposition 与 process-directed pending 必须同锁；拆开会造成 SIG_IGN/queue 竞态和锁序反转。
     signal_state: Mutex<ProcessSignalState>,
@@ -344,6 +339,7 @@ impl TaskControlBlock {
             },
             cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
+            credentials: Mutex::new(Credentials::root()),
             terminal,
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         });
@@ -414,6 +410,7 @@ impl TaskControlBlock {
             .try_clone()
             .map_err(|_| MemoryError::OutOfMemory)?;
         let signal_actions = self.process.signal_state.lock().actions;
+        let credentials = self.process.credentials.lock().clone();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let policy = self.scheduling.policy.lock();
@@ -434,6 +431,7 @@ impl TaskControlBlock {
                 },
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
+                credentials: Mutex::new(credentials),
                 terminal: self.process.terminal.clone(),
                 signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
             }),

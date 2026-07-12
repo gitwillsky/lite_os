@@ -2,132 +2,40 @@ use alloc::vec::Vec;
 use core::mem;
 
 mod access;
+mod attributes;
 mod io;
 mod links;
 mod namespace;
+mod open;
 mod pathname;
 mod readlink;
 pub(crate) mod statistics;
 pub(crate) use access::sys_faccessat;
+pub(crate) use attributes::{sys_fchmodat, sys_fchownat};
 pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_renameat2, sys_unlinkat};
+pub(crate) use open::{sys_chdir, sys_openat};
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
 
 use crate::{
     fs::{
-        CharacterDevice, DeviceKind, FileSystemError, InodeMetadata, InodeType,
-        MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY,
-        OpenFileDescription, OpenFileKind, TerminalAccess, TerminalRead, vfs,
+        CharacterDevice, DeviceKind, InodeMetadata, InodeType, MAX_FILE_DESCRIPTORS, O_ACCMODE,
+        O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind,
+        TerminalAccess, TerminalRead, vfs,
     },
     ipc::{PIPE_BUF, PipeDirection, PipeRead, PipeWrite},
     syscall::errno,
     task::{
         TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, drain_terminal_input,
-        send_thread_signal, session_id, wait_for_pipe,
+        send_thread_signal, wait_for_pipe,
     },
 };
 
 use super::tty::guard_terminal_access;
 const AT_FDCWD: isize = -100;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-const O_CREAT: u32 = 0x40;
-const O_EXCL: u32 = 0x80;
-const O_TRUNC: u32 = 0x200;
-const O_DIRECTORY: u32 = 0x10000;
-
-/// @description 将当前 Process 工作目录切换到 Linux pathname 指定的目录。
-///
-/// @param name NUL 结尾的 raw pathname；相对路径从当前 cwd inode 解析。
-/// @return 成功返回零；用户指针、路径、类型、I/O 或内存错误返回负 errno。
-pub(crate) fn sys_chdir(name: *const u8) -> isize {
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let path = match path(&task, name) {
-        Ok(path) => path,
-        Err(error) => return error,
-    };
-    let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
-    let inode = match vfs().open_at(start, &path) {
-        Ok(inode) => inode,
-        Err(error) => return ferr(error),
-    };
-    if inode.inode_type() != InodeType::Directory {
-        return -errno::ENOTDIR;
-    }
-    task.set_working_directory(inode);
-    0
-}
-
-pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> isize {
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let path = match path(&task, name) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    if flags & O_ACCMODE == O_ACCMODE {
-        return -errno::EINVAL;
-    }
-    let start = match base(&task, fd, &path) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-    let inode = match vfs().open_at(start.clone(), &path) {
-        Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -errno::EEXIST,
-        Ok(v) => v,
-        Err(FileSystemError::NotFound) if flags & O_CREAT != 0 => {
-            if path.last() == Some(&b'/') {
-                return -errno::ENOTDIR;
-            }
-            match vfs().create_at(start, &path, InodeType::File, mode) {
-                Ok(v) => v,
-                Err(e) => return ferr(e),
-            }
-        }
-        Err(e) => return ferr(e),
-    };
-    if flags & O_DIRECTORY != 0 && inode.inode_type() != InodeType::Directory {
-        return -errno::ENOTDIR;
-    }
-    if inode.inode_type() == InodeType::Directory && flags & O_ACCMODE != O_RDONLY {
-        return -errno::EISDIR;
-    }
-    if !matches!(
-        inode.inode_type(),
-        InodeType::File | InodeType::Directory | InodeType::CharacterDevice
-    ) || inode.inode_type() == InodeType::CharacterDevice && inode.device_kind().is_none()
-    {
-        return -errno::ENXIO;
-    }
-    let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
-    let ofd = if let Some(device) = inode.device_kind() {
-        let terminal = task.terminal();
-        if device == DeviceKind::Tty {
-            let Ok(session) = session_id(0) else {
-                return -errno::ENXIO;
-            };
-            if terminal.controlling_session() != Some(session) {
-                return -errno::ENXIO;
-            }
-        }
-        OpenFileDescription::character(device, terminal, ofd_flags, inode)
-    } else {
-        if flags & O_TRUNC != 0
-            && flags & O_ACCMODE != O_RDONLY
-            && let Err(error) = inode.truncate(0)
-        {
-            return ferr(error);
-        }
-        OpenFileDescription::inode(inode, ofd_flags)
-    };
-    task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
-        .map_or(-errno::EMFILE, |v| v as isize)
-}
-
 pub(crate) fn sys_close(fd: usize) -> isize {
     current_task().map_or(-errno::ESRCH, |t| {
         t.fd_close(fd).map_or(-errno::EBADF, |_| 0)
@@ -390,9 +298,9 @@ pub(crate) fn sys_utimensat(
         Err(error) => return error,
     };
     let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        vfs().open_at_no_follow(start, &path)
+        vfs().open_at_no_follow(start, &path, &task.access_identity(true))
     } else {
-        vfs().open_at(start, &path)
+        vfs().open_at(start, &path, &task.access_identity(true))
     };
     let inode = match inode {
         Ok(inode) => inode,
@@ -400,6 +308,7 @@ pub(crate) fn sys_utimensat(
     };
 
     let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+    let mut owner_only = false;
     let values = if times.is_null() {
         [Some(now), Some(now)]
     } else {
@@ -418,7 +327,10 @@ pub(crate) fn sys_utimensat(
             values[index] = match value.tv_nsec {
                 UTIME_NOW => Some(now),
                 UTIME_OMIT => None,
-                0..=999_999_999 if value.tv_sec >= 0 => Some(value.tv_sec as u64),
+                0..=999_999_999 if value.tv_sec >= 0 => {
+                    owner_only = true;
+                    Some(value.tv_sec as u64)
+                }
                 _ => return -errno::EINVAL,
             };
         }
@@ -430,6 +342,21 @@ pub(crate) fn sys_utimensat(
         .any(|value| *value > u32::MAX as u64)
     {
         return -errno::EOVERFLOW;
+    }
+    if values.iter().any(Option::is_some) {
+        let metadata = match inode.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => return ferr(error),
+        };
+        let identity = task.access_identity(true);
+        if identity.uid() != 0 && identity.uid() != metadata.uid {
+            if owner_only {
+                return -errno::EPERM;
+            }
+            if let Err(error) = identity.require(metadata, 2) {
+                return ferr(error);
+            }
+        }
     }
     inode
         .set_times(values[0], values[1])
@@ -452,9 +379,9 @@ pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags
         Err(error) => return error,
     };
     let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-        vfs().open_at_no_follow(start, &path)
+        vfs().open_at_no_follow(start, &path, &task.access_identity(true))
     } else {
-        vfs().open_at(start, &path)
+        vfs().open_at(start, &path, &task.access_identity(true))
     };
     match inode.and_then(|inode| inode.metadata()) {
         Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),

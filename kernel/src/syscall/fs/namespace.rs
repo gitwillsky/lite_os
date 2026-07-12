@@ -23,7 +23,13 @@ pub(crate) fn sys_mkdirat(dirfd: isize, name: *const u8, mode: u32) -> isize {
         Err(error) => return error,
     };
     vfs()
-        .create_at(start, &path, InodeType::Directory, mode)
+        .create_at(
+            start,
+            &path,
+            InodeType::Directory,
+            task.creation_mode(mode),
+            &task.access_identity(true),
+        )
         .map_or_else(ferr, |_| 0)
 }
 
@@ -48,7 +54,12 @@ pub(crate) fn sys_unlinkat(dirfd: isize, name: *const u8, flags: usize) -> isize
         Err(error) => return error,
     };
     vfs()
-        .unlink_at(start, &path, flags & AT_REMOVEDIR != 0)
+        .unlink_at(
+            start,
+            &path,
+            flags & AT_REMOVEDIR != 0,
+            &task.access_identity(true),
+        )
         .map_or_else(ferr, |_| 0)
 }
 
@@ -95,6 +106,7 @@ pub(crate) fn sys_renameat2(
             new_start,
             &new_path,
             flags & RENAME_NOREPLACE != 0,
+            &task.access_identity(true),
         )
         .map_or_else(ferr, |_| 0)
 }

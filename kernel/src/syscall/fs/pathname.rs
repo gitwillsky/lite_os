@@ -19,6 +19,7 @@ pub(super) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::NoSpace => errno::ENOSPC,
         FileSystemError::CrossDevice => errno::EXDEV,
         FileSystemError::PermissionDenied => errno::EPERM,
+        FileSystemError::AccessDenied => errno::EACCES,
         FileSystemError::TooManyLinks => errno::EMLINK,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::ReadOnly => errno::EROFS,

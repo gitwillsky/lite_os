@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use super::FileSystemError;
+use super::{CreateMetadata, FileSystemError};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,15 +135,34 @@ pub(crate) trait Inode: Send + Sync {
         &self,
         name: &[u8],
         kind: InodeType,
-        mode: u32,
+        metadata: CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
+
+    /// @description 原子持久化 chmod/chown 产生的 mode/owner/ctime 更新。
+    /// @param mode Some 时替换 permission 与 special bits，保留 inode type。
+    /// @param uid Some 时替换 owner UID。
+    /// @param gid Some 时替换 owner GID。
+    /// @return 成功或只读、范围、I/O 错误。
+    fn set_owner_mode(
+        &self,
+        _mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+    ) -> Result<(), FileSystemError> {
+        Err(FileSystemError::ReadOnly)
+    }
 
     /// @description 在当前目录创建保存 raw target bytes 的 symbolic link。
     /// @param name 新目录项名称。
     /// @param target 不含结尾 NUL 的 symbolic-link target。
     /// @return 新 symbolic-link inode。
     /// @errors 名称、空间、只读或底层 I/O 错误。
-    fn symlink(&self, _name: &[u8], _target: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+    fn symlink(
+        &self,
+        _name: &[u8],
+        _target: &[u8],
+        _metadata: CreateMetadata,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
 

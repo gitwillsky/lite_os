@@ -28,7 +28,7 @@ pub(crate) fn sys_readlinkat(fd: isize, name: *const u8, buffer: *mut u8, size: 
         Ok(start) => start,
         Err(error) => return error,
     };
-    let inode = match vfs().open_at_no_follow(start, &path) {
+    let inode = match vfs().open_at_no_follow(start, &path, &task.access_identity(true)) {
         Ok(inode) => inode,
         Err(error) => return ferr(error),
     };

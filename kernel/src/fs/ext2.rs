@@ -13,6 +13,7 @@ use crate::drivers::block::{BLOCK_SIZE, BlockDevice};
 mod directory;
 mod filesystem;
 mod journal;
+mod metadata;
 mod orphan;
 use journal::{Journal, MutationGuard};
 
@@ -1835,8 +1836,8 @@ impl Inode for Ext2Inode {
             kind: Self::kind_from_mode(inode.i_mode),
             mode: inode.i_mode as u32,
             links: inode.i_links_count as u32,
-            uid: inode.i_uid as u32,
-            gid: inode.i_gid as u32,
+            uid: inode.uid(),
+            gid: inode.gid(),
             size: Self::disk_size(&inode),
             blocks: inode.i_blocks_lo as u64,
             block_size: self.fs.block_size as u32,
@@ -1967,29 +1968,7 @@ impl Inode for Ext2Inode {
     }
 
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
-        if atime.is_none() && mtime.is_none() {
-            return Ok(());
-        }
-        let atime = atime
-            .map(u32::try_from)
-            .transpose()
-            .map_err(|_| FileSystemError::InvalidOperation)?;
-        let mtime = mtime
-            .map(u32::try_from)
-            .transpose()
-            .map_err(|_| FileSystemError::InvalidOperation)?;
-        let mutation = self.fs.begin_mutation()?;
-        let mut inode = self.disk.lock();
-        if let Some(value) = atime {
-            inode.i_atime = value;
-        }
-        if let Some(value) = mtime {
-            inode.i_mtime = value;
-        }
-        inode.i_ctime = Self::now();
-        self.fs.write_inode_disk(self.inode_num, &inode)?;
-        drop(inode);
-        mutation.commit()
+        self.update_times(atime, mtime)
     }
 
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
@@ -2039,7 +2018,7 @@ impl Inode for Ext2Inode {
         &self,
         name: &[u8],
         kind: InodeType,
-        mode: u32,
+        metadata: super::CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -2059,18 +2038,20 @@ impl Inode for Ext2Inode {
             .fs
             .allocate_inode(group, kind == InodeType::Directory)?;
         let now = Self::now();
-        let disk = Ext2InodeDisk {
+        let mut disk = Ext2InodeDisk {
             i_mode: (if kind == InodeType::Directory {
                 0x4000
             } else {
                 0x8000
-            }) | (mode as u16 & 0o7777),
+            }) | (metadata.mode as u16 & 0o7777),
             i_atime: now,
             i_ctime: now,
             i_mtime: now,
             i_links_count: if kind == InodeType::Directory { 2 } else { 1 },
             ..Default::default()
         };
+        disk.set_uid(metadata.uid);
+        disk.set_gid(metadata.gid);
         self.fs.write_inode_disk(number, &disk)?;
         let child = Ext2Inode::load(self.fs.clone(), number)?;
         if kind == InodeType::Directory {
@@ -2090,8 +2071,22 @@ impl Inode for Ext2Inode {
         Ok(child as Arc<dyn Inode>)
     }
 
-    fn symlink(&self, name: &[u8], target: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.create_symlink(name, target)
+    fn set_owner_mode(
+        &self,
+        mode: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), FileSystemError> {
+        self.update_owner_mode(mode, uid, gid)
+    }
+
+    fn symlink(
+        &self,
+        name: &[u8],
+        target: &[u8],
+        metadata: super::CreateMetadata,
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        self.create_symlink(name, target, metadata)
             .map(|inode| inode as Arc<dyn Inode>)
     }
 

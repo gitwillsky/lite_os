@@ -20,6 +20,7 @@ pub(super) struct ChildEvents {
 pub(crate) enum SignalSendError {
     InvalidSignal,
     NotFound,
+    Permission,
 }
 
 #[derive(Clone, Copy)]
@@ -54,7 +55,11 @@ enum JobEvent {
 /// @param signal Linux signal number；零仅执行存在性检查。
 /// @return 目标存在且 signal 合法时返回 `Ok(())`。
 /// @errors Process/Thread 不存在或 signal 非法时返回 `Err(())`。
-pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Result<(), ()> {
+pub(crate) fn send_thread_signal(
+    tgid: usize,
+    tid: usize,
+    signal: usize,
+) -> Result<(), SignalSendError> {
     send_selected_thread_signal(Some(tgid), tid, signal)
 }
 
@@ -64,7 +69,7 @@ pub(crate) fn send_thread_signal(tgid: usize, tid: usize, signal: usize) -> Resu
 /// @param signal Linux signal number；零只做 existence probe。
 /// @return 目标存在且 signal 合法时返回 `Ok(())`。
 /// @errors TID 不存在或 signal 非法时返回 `Err(())`。
-pub(crate) fn send_tid_signal(tid: usize, signal: usize) -> Result<(), ()> {
+pub(crate) fn send_tid_signal(tid: usize, signal: usize) -> Result<(), SignalSendError> {
     send_selected_thread_signal(None, tid, signal)
 }
 
@@ -72,7 +77,7 @@ fn send_selected_thread_signal(
     expected_tgid: Option<usize>,
     tid: usize,
     signal: usize,
-) -> Result<(), ()> {
+) -> Result<(), SignalSendError> {
     let (target, queued, notification) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let tgid = match expected_tgid {
@@ -84,13 +89,25 @@ fn send_selected_thread_signal(
                     ProcessState::Live(threads) if threads.contains_key(&tid) => Some(tgid),
                     _ => None,
                 })
-                .ok_or(())?,
+                .ok_or(SignalSendError::NotFound)?,
         };
         let Some(ProcessState::Live(threads)) = graph.nodes.get(&tgid).map(|node| &node.state)
         else {
-            return Err(());
+            return Err(SignalSendError::NotFound);
         };
-        let target = threads.get(&tid).cloned().ok_or(())?;
+        let target = threads
+            .get(&tid)
+            .cloned()
+            .ok_or(SignalSendError::NotFound)?;
+        let sender_task = current_task().ok_or(SignalSendError::NotFound)?;
+        let same_session = signal == 18
+            && graph
+                .nodes
+                .get(&sender_task.tgid())
+                .is_some_and(|sender| sender.session == graph.nodes.get(&tgid).unwrap().session);
+        if !sender_task.may_signal(&target) && !same_session {
+            return Err(SignalSendError::Permission);
+        }
         if signal == 0 {
             return Ok(());
         }
@@ -99,11 +116,13 @@ fn send_selected_thread_signal(
         let queued = if target.ignores_generated_signal_as_init(signal) {
             false
         } else {
-            target.queue_signal(
-                all_threads.iter(),
-                signal,
-                PendingSignal::thread_directed(sender),
-            )?;
+            target
+                .queue_signal(
+                    all_threads.iter(),
+                    signal,
+                    PendingSignal::thread_directed(sender),
+                )
+                .map_err(|()| SignalSendError::InvalidSignal)?;
             true
         };
         let notification = if signal == 18 {
@@ -150,7 +169,7 @@ pub(crate) fn send_process_signal(pid: i32, signal: usize) -> Result<(), SignalS
         }
     };
     let info = PendingSignal::process_directed(caller);
-    send_selected_processes(selector, signal, info).map(|_| ())
+    send_selected_processes(selector, signal, info, current_task()).map(|_| ())
 }
 
 /// @description 向一个 process group 的每个 live Process 投递一次 kernel-generated signal。
@@ -159,27 +178,38 @@ pub(super) fn send_process_group_signal(pgid: usize, signal: usize) -> usize {
         ProcessSelector::Group(pgid),
         signal,
         PendingSignal::kernel(),
+        None,
     )
     .unwrap_or(0)
 }
 
 /// @description 向一个指定 Process 发布 kernel-owned siginfo，例如 SIGCHLD。
 pub(super) fn send_kernel_process_signal(tgid: usize, signal: usize, info: PendingSignal) -> bool {
-    send_selected_processes(ProcessSelector::Process(tgid), signal, info).is_ok()
+    send_selected_processes(ProcessSelector::Process(tgid), signal, info, None).is_ok()
 }
 
 fn send_selected_processes(
     selector: ProcessSelector,
     signal: usize,
     info: PendingSignal,
+    sender: Option<Arc<TaskControlBlock>>,
 ) -> Result<usize, SignalSendError> {
     if signal > 64 {
         return Err(SignalSendError::InvalidSignal);
     }
     let mut cursor = 0usize;
     let mut delivered = 0usize;
+    let mut denied = false;
     while let Some(tgid) = next_process(selector, cursor) {
         cursor = tgid;
+        match process_signal_permitted(sender.as_ref(), tgid, signal) {
+            Some(true) => {}
+            Some(false) => {
+                denied = true;
+                continue;
+            }
+            None => continue,
+        }
         delivered += 1;
         if signal == 0 {
             continue;
@@ -193,9 +223,37 @@ fn send_selected_processes(
             interrupt_waiting_task(&target);
         }
     }
-    (delivered != 0)
-        .then_some(delivered)
-        .ok_or(SignalSendError::NotFound)
+    if delivered != 0 {
+        Ok(delivered)
+    } else if denied {
+        Err(SignalSendError::Permission)
+    } else {
+        Err(SignalSendError::NotFound)
+    }
+}
+
+fn process_signal_permitted(
+    sender: Option<&Arc<TaskControlBlock>>,
+    tgid: usize,
+    signal: usize,
+) -> Option<bool> {
+    let Some(sender) = sender else {
+        return Some(true);
+    };
+    let graph = TASK_MANAGER.graph.lock();
+    let target_node = graph.nodes.get(&tgid)?;
+    let target = (match &target_node.state {
+        ProcessState::Live(threads) => threads.values().next(),
+        _ => None,
+    })?;
+    Some(
+        sender.may_signal(target)
+            || signal == 18
+                && graph
+                    .nodes
+                    .get(&sender.tgid())
+                    .is_some_and(|node| node.session == target_node.session),
+    )
 }
 
 fn next_process(selector: ProcessSelector, after: usize) -> Option<usize> {

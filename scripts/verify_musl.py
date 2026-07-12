@@ -226,7 +226,9 @@ def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
     tools = tuple(Path(tool) for tool in (clang, archiver, ranlib))
     if not all(tool.is_file() for tool in tools) or not linkers:
         raise RuntimeError("Clang, LLVM archive tools, and the pinned Rust rust-lld are required")
-    return tools[0].resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].resolve()
+    # llvm-ranlib may be a symlink to llvm-ar; resolving it changes argv[0] and makes LLVM parse
+    # the archive pathname as an ar operation string instead of selecting ranlib mode.
+    return tools[0].resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].absolute()
 
 
 def compiler_identity(compiler: Path) -> dict[str, object]:

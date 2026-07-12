@@ -42,7 +42,7 @@
 | hart possible/online/active、startup stack | HartTopology |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address space、cwd inode、fd table | Process；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
+| process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
 | deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；一次 ppoll 只有一个 membership，可挂多个 source index |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
@@ -76,10 +76,10 @@
 
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/fs/ext2.rs` | 2296 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
+| `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1099 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/task/model.rs` | 1097 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 
 ## 5. Interface and capability contract
 
@@ -89,6 +89,7 @@
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
 - VFS 只决定 pathname、mount 与 cross-filesystem policy；ext2 的 create/link/unlink/rename、allocator、JBD2 write-set/commit/checkpoint 与 orphan recovery 必须在同一 mutation domain。禁止 syscall/VFS 复制 link count、journal 状态或用写序调整冒充跨块原子性。
+- VFS permission evaluator 只消费 Process 发布的 immutable identity snapshot，唯一决定 traversal、inode rwx、parent mutation、sticky directory、protected hardlink 与 setgid-directory inheritance；syscall 和 filesystem adapter 不得复制权限 policy。ext2 只持久化 VFS 已决定的 mode/UID/GID/ctime。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - `uname` 只投影 system module 的 immutable identity；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。

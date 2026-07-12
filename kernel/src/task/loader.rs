@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{FileSystemError, Inode, InodeType, vfs},
+    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, vfs},
     memory::{
         ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, MemorySet,
         parse_interpreter_elf, parse_main_elf,
@@ -16,6 +16,7 @@ pub(crate) struct LoadedExecutable {
     image: ExecutableImage,
     arguments: Vec<Vec<u8>>,
     execfn: Vec<u8>,
+    credentials: InodeMetadata,
 }
 
 impl LoadedExecutable {
@@ -36,6 +37,10 @@ impl LoadedExecutable {
     /// @return 不含 NUL 的 immutable pathname bytes。
     pub(super) fn execfn(&self) -> &[u8] {
         &self.execfn
+    }
+
+    pub(super) fn credential_metadata(&self) -> InodeMetadata {
+        self.credentials
     }
 }
 
@@ -102,6 +107,7 @@ pub(crate) fn load_executable(
     path: Vec<u8>,
     mut arguments: Vec<Vec<u8>>,
     mut argument_bytes: usize,
+    identity: &AccessIdentity,
 ) -> Result<LoadedExecutable, ProgramLoadError> {
     const MAX_SCRIPT_REWRITES: usize = 5;
 
@@ -110,7 +116,11 @@ pub(crate) fn load_executable(
     let mut current_path = path;
     for rewrite_count in 0..=MAX_SCRIPT_REWRITES {
         let inode = vfs()
-            .open_at(Some(working_directory.clone()), &current_path)
+            .open_at(Some(working_directory.clone()), &current_path, identity)
+            .map_err(ProgramLoadError::FileSystem)?;
+        let metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
+        identity
+            .require(metadata, 1)
             .map_err(ProgramLoadError::FileSystem)?;
         let executable_source = source(inode)?;
         if let Some(header) = parse_script_header(executable_source.as_ref())? {
@@ -127,7 +137,10 @@ pub(crate) fn load_executable(
         let interpreter = interpreter_path
             .map(|path| {
                 let inode = vfs()
-                    .open_at(Some(working_directory.clone()), &path)
+                    .open_at(Some(working_directory.clone()), &path, identity)
+                    .map_err(ProgramLoadError::FileSystem)?;
+                identity
+                    .require(inode.metadata().map_err(ProgramLoadError::FileSystem)?, 1)
                     .map_err(ProgramLoadError::FileSystem)?;
                 parse_interpreter_elf(source(inode)?).map_err(parse_error)
             })
@@ -136,6 +149,7 @@ pub(crate) fn load_executable(
             image: ExecutableImage::new(main, interpreter),
             arguments,
             execfn,
+            credentials: metadata,
         });
     }
     unreachable!("script rewrite loop exits through success or explicit limit")

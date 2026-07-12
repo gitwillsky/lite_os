@@ -20,7 +20,7 @@ pub(crate) fn sys_statfs(name: *const u8, address: usize) -> isize {
         Err(error) => return error,
     };
     let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
-    let inode = match vfs().open_at(start, &path) {
+    let inode = match vfs().open_at(start, &path, &task.access_identity(true)) {
         Ok(inode) => inode,
         Err(error) => return ferr(error),
     };

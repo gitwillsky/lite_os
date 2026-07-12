@@ -32,7 +32,7 @@ pub(crate) fn sys_symlinkat(target: *const u8, new_dirfd: isize, new_path: *cons
         Err(error) => return error,
     };
     vfs()
-        .symlink_at(new_start, &new_path, &target)
+        .symlink_at(new_start, &new_path, &target, &task.access_identity(true))
         .map_or_else(ferr, |_| 0)
 }
 
@@ -65,6 +65,9 @@ pub(crate) fn sys_linkat(
         if flags & AT_EMPTY_PATH == 0 {
             return -errno::ENOENT;
         }
+        if task.access_identity(true).uid() != 0 {
+            return -errno::EPERM;
+        }
         match usize::try_from(old_dirfd)
             .ok()
             .and_then(|fd| task.fd_get(fd))
@@ -79,9 +82,9 @@ pub(crate) fn sys_linkat(
             Err(error) => return error,
         };
         let result = if flags & AT_SYMLINK_FOLLOW != 0 {
-            vfs().open_at(old_start, &old_path)
+            vfs().open_at(old_start, &old_path, &task.access_identity(true))
         } else {
-            vfs().open_at_no_follow(old_start, &old_path)
+            vfs().open_at_no_follow(old_start, &old_path, &task.access_identity(true))
         };
         match result {
             Ok(inode) => inode,
@@ -100,6 +103,6 @@ pub(crate) fn sys_linkat(
         Err(error) => return error,
     };
     vfs()
-        .link_at(target, new_start, &new_path)
+        .link_at(target, new_start, &new_path, &task.access_identity(true))
         .map_or_else(ferr, |()| 0)
 }

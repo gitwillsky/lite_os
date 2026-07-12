@@ -69,6 +69,9 @@ BUSYBOX_LINKS = (
     "gunzip",
     "gzip",
     "head",
+    "id",
+    "chmod",
+    "chown",
     "kill",
     "ln",
     "ls",
@@ -568,12 +571,14 @@ def main() -> int:
                 "LITEOS_FILESYSTEM_CAPACITY_42",
                 "LITEOS_LINKS_43",
                 "LITEOS_NAMESPACE_CONCURRENCY_43",
+                "LITEOS_BUSYBOX_CREDENTIALS_44",
                 "LITEOS_SYSTEM_IDENTITY_42",
                 "LITEOS_WALLCLOCK_42",
                 "LITEOS_EXEC_RECLAIM_42",
                 "LITEOS_TOP_42",
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
+                "LITEOS_CREDENTIALS_44",
                 "LITEOS_SCRIPT_EXEC_42",
                 "LITEOS_KILL_GROUP_42",
                 "LITEOS_ARCHIVE_42",
@@ -651,6 +656,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_NAMESPACE_CONCURRENCY_43",
+                    b"[ \"$(/bin/id -u):$(/bin/id -g)\" = 0:0 ] && /bin/touch /busybox-credential && /bin/chmod 640 /busybox-credential && /bin/chown 1000:1000 /busybox-credential && set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_BUSYBOX_CREDENTIALS_$((6*7+2))\n",
+                ),
+                (
+                    "LITEOS_BUSYBOX_CREDENTIALS_44",
                     b"[ \"$(/bin/uname -s)\" = LiteOS ] && [ \"$(/bin/uname -n)\" = liteos ] && [ \"$(/bin/uname -m)\" = riscv64 ] && [ \"$(/bin/uname -o)\" = LiteOS ] && [ \"$(/bin/arch)\" = riscv64 ] && echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n",
                 ),
                 (
@@ -679,6 +688,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_SCRIPT_EXEC_42",
+                    b"",
+                ),
+                (
+                    "/ # ",
                     b"/bin/rm -f /kill.pid; /bin/setsid /bin/sh -c 'echo $$ >/kill.pid; trap \"echo LITEOS_KILL_GROUP_$((6*7)); exit 0\" TERM; echo LITEOS_KILL_\"READY\"; while :; do /bin/sleep 1; done' &\n",
                 ),
                 (
@@ -866,6 +879,7 @@ def main() -> int:
                 "all DTB harts online: count=8, mask=0xff",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PERSIST_42",
+                "LITEOS_CREDENTIAL_PERSIST_44",
                 "LITEOS_COW_ISOLATION_42",
                 "LITEOS_SCHED_8_HARTS_42",
                 "LITEOS_STREAMING_EXEC_42",
@@ -878,6 +892,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_PERSIST_42",
+                    b"set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_CREDENTIAL_PERSIST_$((6*7+2))\n",
+                ),
+                (
+                    "LITEOS_CREDENTIAL_PERSIST_44",
                     b"x=parent; (x=child; [ \"$x\" = child ]) & wait; [ \"$x\" = parent ] && echo LITEOS_COW_ISOLATION_$((6*7))\n",
                 ),
                 (
@@ -907,7 +925,7 @@ def main() -> int:
         )
         crash_command = (
             b"/bin/rm -rf /crash; /bin/mkdir /crash; echo LITEOS_CRASH_LOOP_ACTIVE_43; "
-            b"i=0; while :; do /bin/mkdir /crash/d; echo payload >/crash/d/source; "
+            b"i=0; while :; do /bin/mkdir /crash/d; echo payload >/crash/d/source; /bin/chmod 0640 /crash/d/source; /bin/chown 1000:1000 /crash/d/source; "
             b"/bin/cp /crash/d/source /crash/d/copy; /bin/ln /crash/d/copy /crash/d/hard; "
             b"/bin/ln -s hard /crash/d/sym; /bin/mv /crash/d/copy /crash/d/moved; "
             b"/bin/rm -rf /crash/d; i=$((i+1)); done\n"

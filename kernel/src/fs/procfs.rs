@@ -268,7 +268,7 @@ impl Inode for ProcInode {
         &self,
         _name: &[u8],
         _kind: InodeType,
-        _mode: u32,
+        _metadata: super::CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }

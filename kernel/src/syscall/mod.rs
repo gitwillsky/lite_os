@@ -1,3 +1,4 @@
+mod credentials;
 mod errno;
 mod fs;
 mod futex;
@@ -13,8 +14,8 @@ mod timer;
 mod tty;
 
 use crate::syscall::{
-    fs::*, futex::*, memory::*, poll::*, process::*, random::*, reboot::*, signal::*,
-    system_identity::*, system_info::*, timer::*, tty::*,
+    credentials::*, fs::*, futex::*, memory::*, poll::*, process::*, random::*, reboot::*,
+    signal::*, system_identity::*, system_info::*, timer::*, tty::*,
 };
 use syscall_abi::*;
 
@@ -54,6 +55,14 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[4],
         ),
         SYSCALL_FACCESSAT => sys_faccessat(args[0] as isize, args[1] as *const u8, args[2]),
+        SYSCALL_FCHMODAT => sys_fchmodat(args[0] as isize, args[1] as *const u8, args[2] as u32),
+        SYSCALL_FCHOWNAT => sys_fchownat(
+            args[0] as isize,
+            args[1] as *const u8,
+            args[2] as u32,
+            args[3] as u32,
+            args[4] as u32,
+        ),
         SYSCALL_STATFS => fs::statistics::sys_statfs(args[0] as *const u8, args[1]),
         SYSCALL_FSTATFS => fs::statistics::sys_fstatfs(args[0], args[1]),
         SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
@@ -121,17 +130,31 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
         SYSCALL_REBOOT => sys_reboot(args[0], args[1], args[2], args[3]),
+        SYSCALL_SETGID => sys_set_id(false, args[0] as u32),
+        SYSCALL_SETUID => sys_set_id(true, args[0] as u32),
+        SYSCALL_SETRESUID => {
+            sys_set_res_ids(true, [args[0] as u32, args[1] as u32, args[2] as u32])
+        }
+        SYSCALL_GETRESUID => sys_get_res_ids(true, [args[0], args[1], args[2]]),
+        SYSCALL_SETRESGID => {
+            sys_set_res_ids(false, [args[0] as u32, args[1] as u32, args[2] as u32])
+        }
+        SYSCALL_GETRESGID => sys_get_res_ids(false, [args[0], args[1], args[2]]),
         SYSCALL_SETPGID => sys_setpgid(args[0], args[1]),
         SYSCALL_GETPGID => sys_getpgid(args[0]),
         SYSCALL_GETSID => sys_getsid(args[0]),
         SYSCALL_SETSID => sys_setsid(),
+        SYSCALL_GETGROUPS => sys_getgroups(args[0], args[1]),
+        SYSCALL_SETGROUPS => sys_setgroups(args[0], args[1]),
         SYSCALL_UNAME => sys_uname(args[0]),
         SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0], args[1]),
+        SYSCALL_UMASK => sys_umask(args[0] as u32),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
-        SYSCALL_GETUID | SYSCALL_GETEUID | SYSCALL_GETGID | SYSCALL_GETEGID => {
-            sys_get_root_identity()
-        }
+        SYSCALL_GETUID => sys_get_id(true, false),
+        SYSCALL_GETEUID => sys_get_id(true, true),
+        SYSCALL_GETGID => sys_get_id(false, false),
+        SYSCALL_GETEGID => sys_get_id(false, true),
         SYSCALL_GETTID => sys_get_tid(),
         SYSCALL_SYSINFO => sys_sysinfo(args[0]),
         SYSCALL_BRK => sys_brk(args[0]),
