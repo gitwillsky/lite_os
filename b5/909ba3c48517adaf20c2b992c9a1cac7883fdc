@@ -1,0 +1,43 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_9ca71d5131713b 46,77,79,93-94,96
+docs/architecture.md
+  s_d637a88cd4b00d::t_161e8af283014e 120,172,189,233-234
+docs/phase-38-process-lifecycle.md
+  s_d637a88cd4b00d::t_b50026133f4df7 1-42
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_23b98faa026dd2 54-55,62,70,78
+kernel/src/fs/file/terminal.rs
+  s_d637a88cd4b00d::t_a82c70d7996e45 349-353,357,359
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_cea349176542e7 2,661-674
+kernel/src/task/model/process_exec.rs
+  s_d637a88cd4b00d::t_258bbde09a1f1b 1-44
+kernel/src/task/model/signal_state.rs
+  s_d637a88cd4b00d::t_a4d7eb85a1007f 368-372,374-378
+kernel/src/task/task_manager/process_exit.rs
+  s_d637a88cd4b00d::t_9599843a708286 133-134,138-145,171,207-237,244-245,251-264
+kernel/src/task/task_manager/signal.rs
+  s_d637a88cd4b00d::t_89a26d6a623eae 76,99-108,117,120-123,241-247
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_0844a24e95f779 172-176
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_affb843a3c5fe0 579-582,683-686,691-694,699-702,711,715-718,723-726,731-734,739-742,747-750,753-812
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5909ba3c48517adaf20c2b992c9a1cac7883fdc",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
