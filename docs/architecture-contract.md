@@ -74,7 +74,7 @@
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1885 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
-| `kernel/src/memory/mm.rs` | 1617 | `memory::MemorySet` | VMA owner 同时承载 ELF 装载、映射变更与 user-copy | 提取保持 MemorySet 单一 owner 的 ELF builder 后下调额度 |
+| `kernel/src/memory/mm.rs` | 1616 | `memory::MemorySet` | VMA owner 同时承载 ELF 装载、映射变更与 user-copy | 提取保持 MemorySet 单一 owner 的 ELF builder 后下调额度 |
 | `kernel/src/task/model.rs` | 1400 | `task::Process/Thread` | process、thread、signal frame 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 | `kernel/src/syscall/fs.rs` | 1168 | `syscall::fs` | Linux 文件 ABI translation 与 user-copy 聚集但不拥有 VFS 状态 | 按 fd I/O、namespace 与 metadata ABI family 拆分后下调额度 |
 | `kernel/src/fs/file.rs` | 648 | `fs::file` | OFD、fd table、terminal line discipline 共享 close/readiness 语义 | terminal 成为独立深 module 后下调额度 |

@@ -872,9 +872,9 @@ fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
     })
 }
 
-/// @description eager fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
+/// @description COW fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
 ///
-/// @return parent 成功获得 child PID；地址空间复制 OOM 时 graph 不发布 child。
+/// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
 pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError> {
     let parent = current_task().expect("fork requires current task");
     let pid = TASK_MANAGER.allocate_pid();

@@ -1,7 +1,8 @@
+mod cow;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
@@ -156,7 +157,7 @@ enum VmaKind {
 pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_page_offset: usize,
-    data_frames: BTreeMap<VirtualPageNumber, FrameTracker>,
+    data_frames: BTreeMap<VirtualPageNumber, Arc<FrameTracker>>,
     map_type: MapType,
     map_permission: MapPermission,
     /// 是否标记为全局页（G位）。仅用于内核空间映射。
@@ -251,7 +252,9 @@ impl MapArea {
         for (index, frame) in self.data_frames.values_mut().enumerate() {
             let page_offset = if index == 0 { self.data_page_offset } else { 0 };
             let count = (config::PAGE_SIZE - page_offset).min(data.len() - copied);
-            frame.bytes_mut()[page_offset..page_offset + count]
+            Arc::get_mut(frame)
+                .expect("new mapping frame must be uniquely owned")
+                .bytes_mut()[page_offset..page_offset + count]
                 .copy_from_slice(&data[copied..copied + count]);
             copied += count;
             if copied == data.len() {
@@ -308,7 +311,7 @@ impl MapArea {
             return Err(MemoryError::InvalidRange);
         }
         if let Some(frame) = frame {
-            let replaced = self.data_frames.insert(vpn, frame);
+            let replaced = self.data_frames.insert(vpn, Arc::new(frame));
             debug_assert!(replaced.is_none());
         }
         Ok(())
@@ -417,12 +420,15 @@ impl MapArea {
             return Err(error);
         }
         for (vpn, source) in &self.data_frames {
-            cloned
-                .data_frames
-                .get_mut(vpn)
-                .expect("cloned framed VMA must own every source VPN")
-                .bytes_mut()
-                .copy_from_slice(source.bytes());
+            Arc::get_mut(
+                cloned
+                    .data_frames
+                    .get_mut(vpn)
+                    .expect("cloned framed VMA must own every source VPN"),
+            )
+            .expect("eager-cloned system frame must be unique")
+            .bytes_mut()
+            .copy_from_slice(source.bytes());
         }
         Ok(cloned)
     }
@@ -511,19 +517,6 @@ impl MemorySet {
                     resident_pages + area.data_frames.len(),
                 )
             })
-    }
-
-    /// @description 为 fork eager 深拷贝完整用户地址空间，保留 VMA 元数据但不共享物理页。
-    ///
-    /// @return 成功返回独立页表与 frame owner；OOM 时释放全部已复制 VMA。
-    pub(crate) fn try_clone_for_fork(&self) -> Result<Self, MemoryError> {
-        let mut cloned = Self::try_new()?;
-        cloned.map_trampoline()?;
-        for (key, area) in &self.areas {
-            let cloned_area = area.try_clone_into(&mut cloned.page_table)?;
-            assert!(cloned.areas.insert(*key, cloned_area).is_none());
-        }
-        Ok(cloned)
     }
 
     pub(crate) fn map_trampoline(&mut self) -> Result<(), MemoryError> {
@@ -679,8 +672,8 @@ impl MemorySet {
         user_address: usize,
         source: &[u8],
     ) -> Result<(), UserAccessError> {
-        // 1. 先验证完整范围，避免尾页 fault 时用户缓冲区被部分修改。
-        let end = self.validate_user_range(user_address, source.len(), PTEFlags::W)?;
+        // 1. 先解析完整范围的 COW，再验证 PTE，避免 kernel copyout 绕过用户 store fault 修改共享页。
+        let end = self.prepare_user_write(user_address, source.len())?;
         // 2. 验证成功后逐页复制；&mut self 阻止并发 unmap/permission change。
         let mut current = user_address;
         let mut copied = 0usize;
@@ -703,17 +696,15 @@ impl MemorySet {
     }
 
     /// @description 验证完整用户范围当前可写，不修改用户数据。
-    ///
     /// @param address 用户范围首地址。
     /// @param length 字节长度。
     /// @return 全部页面具有 U|W 返回成功，否则返回 fault/overflow。
     pub(crate) fn validate_user_write(
-        &self,
+        &mut self,
         address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.validate_user_range(address, length, PTEFlags::W)
-            .map(|_| ())
+        self.prepare_user_write(address, length).map(|_| ())
     }
 
     pub(crate) fn compare_exchange_user_u32(
@@ -1120,11 +1111,19 @@ impl MemorySet {
             let change_start = range.start.max(area.vpn_range.start);
             let change_end = range.end.min(area.vpn_range.end);
             let (left, mut middle, right) = area.partition_protectable(change_start, change_end);
-            let pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
             let old_has_leaf = MapArea::has_leaf_permission(middle.map_permission);
             let new_has_leaf = MapArea::has_leaf_permission(permission);
             for vpn in change_start.as_usize()..change_end.as_usize() {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
+                let mut pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
+                if permission.contains(MapPermission::W)
+                    && middle
+                        .data_frames
+                        .get(&vpn)
+                        .is_some_and(|frame| Arc::strong_count(frame) > 1)
+                {
+                    pte_flags.remove(PTEFlags::W);
+                }
                 match (old_has_leaf, new_has_leaf) {
                     (true, true) => self
                         .page_table

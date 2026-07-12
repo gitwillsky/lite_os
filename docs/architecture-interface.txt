@@ -695,13 +695,15 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (&
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& self) -> Result < Self , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_user_mapping (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> (usize , usize)
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& self , address : usize , length : usize ,) -> Result < () , UserAccessError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& mut self , address : usize , length : usize ,) -> Result < () , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) struct ExecutableImage
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
+kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
+kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
+kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_write (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
 kernel/src/memory/mod.rs :: pub (crate) fn init ()
 kernel/src/memory/mod.rs :: pub (crate) fn init_allocator ()
@@ -970,6 +972,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_pending
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliverable_signal < T > (& self , action : impl FnOnce () -> T) -> Option < T >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_pending_signal < T > (& self , mask : u64 , action : impl FnOnce () -> T ,) -> Option < T >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
+kernel/src/task/model/cow.rs :: pub (crate) impl TaskControlBlock :: fn handle_cow_fault (& self , address : usize) -> Result < bool , MemoryError >
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
 kernel/src/task/pid.rs :: pub (super) ProcessId :: <tuple> : usize

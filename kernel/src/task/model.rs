@@ -1,3 +1,4 @@
+mod cow;
 use core::sync::atomic::AtomicUsize;
 
 use alloc::{sync::Arc, vec::Vec};
@@ -510,13 +511,12 @@ impl TaskControlBlock {
         Ok(tcb)
     }
 
-    /// @description eager 复制当前单线程 Process，构造 fork child 的独立执行实体。
-    ///
+    /// @description 以 COW 用户页构造 fork child，Process 级非内存资源仍独立复制。
     /// @param pid TaskManager 已唯一分配、尚未发布的 child TGID/TID。
     /// @return 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
     pub(super) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {
         let tid = pid.0;
-        // 1. 先复制所有可能失败的 process-owned 资源，发布前不修改 parent。
+        // 1. 先构造 COW 地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
         let memory_set = self
             .process
             .address_space

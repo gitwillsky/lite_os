@@ -604,13 +604,27 @@ def main() -> int:
                 "all DTB harts online: count=8, mask=0xff",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PERSIST_42",
+                "LITEOS_COW_ISOLATION_42",
                 "LITEOS_SCHED_8_HARTS_42",
+                "LITEOS_COW_PRESSURE_42",
             ),
             interactions=(
                 ("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),
                 (
                     "LITEOS_PERSIST_42",
-                    b"pids=''; i=0; while [ $i -lt 8 ]; do (while :; do :; done) & pids=\"$pids $!\"; i=$((i+1)); done; sleep 1; mask=0; for p in $pids; do read line < /proc/$p/stat; set -- $line; cpu=${39}; mask=$((mask | (1 << cpu))); done; n=0; while [ $mask -ne 0 ]; do n=$((n + (mask & 1))); mask=$((mask >> 1)); done; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
+                    b"x=parent; (x=child; [ \"$x\" = child ]) & wait; [ \"$x\" = parent ] && echo LITEOS_COW_ISOLATION_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_COW_ISOLATION_42",
+                    b"pids=''; i=0; while [ $i -lt 8 ]; do (while :; do :; done) & pids=\"$pids $!\"; i=$((i+1)); done; echo LITEOS_SCHED_\"STARTED\"\n",
+                ),
+                (
+                    "LITEOS_SCHED_STARTED",
+                    b"mask=0; for round in 1 2 3 4 5; do sleep 1; for p in $pids; do read line < /proc/$p/stat; set -- $line; cpu=${39}; mask=$((mask | (1 << cpu))); done; done; n=0; bits=$mask; while [ $bits -ne 0 ]; do n=$((n + (bits & 1))); bits=$((bits >> 1)); done; echo LITEOS_SCHED_CPUS_$n; [ \"$n\" -eq 8 ] && echo LITEOS_SCHED_8_HARTS_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_SCHED_8_HARTS_42",
+                    b"i=0; while [ $i -lt 16 ]; do /bin/true || break; i=$((i+1)); done; [ \"$i\" -eq 16 ] && echo LITEOS_COW_PRESSURE_$((6*7))\n",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

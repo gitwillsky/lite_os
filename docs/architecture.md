@@ -103,7 +103,7 @@ kernel 只有一个 `_start`。动态 hart table 尚未发布时，唯一 cold-b
 - 页表修改用本地 `sfence.vma` + 同步 SBI RFENCE 刷新所有 online hart。
 - anonymous private `mmap` eager 分配清零页，file private mmap 从 inode 建立私有帧；`munmap/mprotect` 拆分 VMA，destructive `MAP_FIXED` 只替换 mmap-owned 区间。提交前验证完整区间，映射 OOM 回滚页表和 frame owner。
 
-当前实现 anonymous/file private eager mapping，支持 `PROT_NONE`、地址 hint、`MAP_FIXED` 与 `MAP_FIXED_NOREPLACE`。`PROT_NONE` VMA 继续持有 frame，但 leaf PTE 保持 invalid。尚无 MAP_SHARED、page-cache coherence、文件 EOF SIGBUS、COW 或 lazy fault。
+当前实现 anonymous/file private eager mapping，支持 `PROT_NONE`、地址 hint、`MAP_FIXED` 与 `MAP_FIXED_NOREPLACE`。`PROT_NONE` VMA 继续持有 frame，但 leaf PTE 保持 invalid。fork 共享用户 frame，父子可写 PTE 统一降为只读；store fault 或 kernel copyout 在 `MemorySet` seam 按页复制，supervisor trap-context frame 仍独立拥有。最后一个 `Arc<FrameTracker>` 释放物理页，不存在旁路引用计数表或 eager-copy 双轨。尚无 MAP_SHARED、page-cache coherence、文件 EOF SIGBUS 或 lazy allocation。
 
 ## 8. Process、Thread 与生命周期
 

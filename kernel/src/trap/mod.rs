@@ -122,10 +122,15 @@ pub(crate) fn trap_handler() {
                     error!("Instruction Page Fault, VA:{:#x}", stval);
                     exit_current_and_run_next(-5);
                 }
-                Exception::LoadFault
-                | Exception::LoadPageFault
-                | Exception::StoreFault
-                | Exception::StorePageFault => {
+                Exception::StorePageFault => {
+                    if !task::current_task()
+                        .is_some_and(|current| current.handle_cow_fault(stval).unwrap_or(false))
+                    {
+                        error!("Store Page Fault, VA:{:#x}", stval);
+                        exit_current_and_run_next(-5);
+                    }
+                }
+                Exception::LoadFault | Exception::LoadPageFault | Exception::StoreFault => {
                     if let Some(current) = task::current_task() {
                         let sepc_val = current.load_trap_context().sepc;
                         let sstatus_val = riscv::register::sstatus::read();
