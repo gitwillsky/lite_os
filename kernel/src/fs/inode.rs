@@ -103,6 +103,18 @@ pub(crate) trait Inode: Send + Sync {
 
     fn sync(&self) -> Result<(), FileSystemError>;
 
+    /// @description 原子更新 inode 的 atime/mtime，并由 filesystem 更新 ctime。
+    /// @param atime Some 为新的 epoch seconds，None 保留现值。
+    /// @param mtime Some 为新的 epoch seconds，None 保留现值。
+    /// @return 成功或底层只读、I/O 错误；不支持 mutation 的 inode 默认返回 ReadOnly。
+    fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+        if atime.is_none() && mtime.is_none() {
+            Ok(())
+        } else {
+            Err(FileSystemError::ReadOnly)
+        }
+    }
+
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError>;
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError>;

@@ -462,6 +462,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn list (& self) -> Result < Vec < Dire
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_at (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
 kernel/src/fs/inode.rs :: trait Inode :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn truncate (& self , size : u64) -> Result < () , FileSystemError >
@@ -717,6 +718,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const ENOTDIR : isize = 20
 kernel/src/syscall/errno.rs :: pub (crate) const ENOTEMPTY : isize = 39
 kernel/src/syscall/errno.rs :: pub (crate) const ENOTTY : isize = 25
 kernel/src/syscall/errno.rs :: pub (crate) const ENXIO : isize = 6
+kernel/src/syscall/errno.rs :: pub (crate) const EOVERFLOW : isize = 75
 kernel/src/syscall/errno.rs :: pub (crate) const EPERM : isize = 1
 kernel/src/syscall/errno.rs :: pub (crate) const EPIPE : isize = 32
 kernel/src/syscall/errno.rs :: pub (crate) const ERANGE : isize = 34
@@ -744,6 +746,7 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_readv (fd : usize , iovector : us
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * const u8 , nfd : isize , nn : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/futex.rs :: pub (crate) fn sys_futex (address : usize , operation : usize , value : u32 , timeout : usize) -> isize

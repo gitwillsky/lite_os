@@ -18,6 +18,7 @@ use crate::{
 
 const AT_FDCWD: isize = -100;
 const AT_REMOVEDIR: usize = 0x200;
+const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
@@ -944,8 +945,84 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     }
 }
 
+/// @description 按 Linux utimensat ABI 更新 pathname inode 的访问与修改时间。
+///
+/// @param fd 相对路径的目录 fd，或 AT_FDCWD；绝对路径忽略该值。
+/// @param name NUL 结尾 pathname。
+/// @param times 两个 RV64 timespec；空指针表示二者均取当前 realtime。
+/// @param flags 仅接受 AT_SYMLINK_NOFOLLOW。
+/// @return 成功返回零；路径、时间、flag、用户地址、只读或 I/O 错误返回负 errno。
+pub(crate) fn sys_utimensat(
+    fd: isize,
+    name: *const u8,
+    times: *const super::timer::TimeSpec,
+    flags: u32,
+) -> isize {
+    const UTIME_NOW: i64 = 0x3fff_ffff;
+    const UTIME_OMIT: i64 = 0x3fff_fffe;
+
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
+        return -errno::EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match path(&task, name) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let start = match base(&task, fd, &path) {
+        Ok(start) => start,
+        Err(error) => return error,
+    };
+    let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        vfs().open_at_no_follow(start, &path)
+    } else {
+        vfs().open_at(start, &path)
+    };
+    let inode = match inode {
+        Ok(inode) => inode,
+        Err(error) => return ferr(error),
+    };
+
+    let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+    let values = if times.is_null() {
+        [Some(now), Some(now)]
+    } else {
+        let mut bytes = [0u8; 2 * mem::size_of::<super::timer::TimeSpec>()];
+        if task.copy_from_user(times as usize, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let mut values = [None; 2];
+        for (index, chunk) in bytes
+            .chunks_exact(mem::size_of::<super::timer::TimeSpec>())
+            .enumerate()
+        {
+            let mut encoded = [0u8; mem::size_of::<super::timer::TimeSpec>()];
+            encoded.copy_from_slice(chunk);
+            let value = super::timer::decode_timespec(&encoded);
+            values[index] = match value.tv_nsec {
+                UTIME_NOW => Some(now),
+                UTIME_OMIT => None,
+                0..=999_999_999 if value.tv_sec >= 0 => Some(value.tv_sec as u64),
+                _ => return -errno::EINVAL,
+            };
+        }
+        values
+    };
+    if values
+        .iter()
+        .flatten()
+        .any(|value| *value > u32::MAX as u64)
+    {
+        return -errno::EOVERFLOW;
+    }
+    inode
+        .set_times(values[0], values[1])
+        .map_or_else(ferr, |()| 0)
+}
+
 pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
-    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
     if flags & !AT_SYMLINK_NOFOLLOW != 0 {
         return -errno::EINVAL;
     }

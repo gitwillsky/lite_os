@@ -46,37 +46,29 @@ BINARY_RECIPE_VERSION = 3
 # 缺少它时 bare-metal GCC 会裁掉上游 serial-console probe，init 随后错误打开 /dev/tty5。
 LINUX_UAPI_REVISION = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
 LINUX_UAPI_CPPFLAGS = ("-DVT_OPENQRY=0x5600",)
-FORBIDDEN_SYSCALL_LOG_IDS = (
-    29,
-    59,
-    65,
-    73,
-    81,
-    133,
-    137,
-    142,
-    154,
-    155,
-    156,
-    157,
-    174,
-    175,
-    176,
-    177,
-)
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
-) + tuple(f"unsupported syscall_id: {number}" for number in FORBIDDEN_SYSCALL_LOG_IDS)
+    "unsupported syscall_id:",
+)
 BUSYBOX_LINKS = (
     "ash",
+    "awk",
+    "basename",
     "busybox",
     "cat",
     "cp",
+    "cut",
     "dd",
+    "dirname",
     "echo",
+    "expr",
     "false",
+    "find",
     "grep",
+    "gunzip",
+    "gzip",
+    "head",
     "ls",
     "mkdir",
     "mv",
@@ -84,11 +76,21 @@ BUSYBOX_LINKS = (
     "pwd",
     "rm",
     "rmdir",
+    "sed",
+    "seq",
+    "sha256sum",
     "sh",
+    "sleep",
+    "sort",
     "sync",
+    "tail",
+    "tee",
     "touch",
+    "tr",
     "true",
+    "uniq",
     "wc",
+    "zcat",
 )
 
 
@@ -489,6 +491,12 @@ def main() -> int:
                 "LITEOS_TTYDEV_42",
                 "LITEOS_CONSOLEDEV_42",
                 "LITEOS_DEVCWD_42",
+                "LITEOS_TEXT_42",
+                "LITEOS_FILTERS_42",
+                "LITEOS_FIND_42",
+                "LITEOS_MATH_42",
+                "LITEOS_TOOLS_42",
+                "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
                 "LITEOS_BG_42",
@@ -510,6 +518,30 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DEVCWD_42",
+                    b"/bin/printf 'pear\\napple\\napple\\n' > /words; set -- $(/bin/sort /words | /bin/uniq | /bin/wc -l); [ \"$1\" = 2 ] && echo LITEOS_TEXT_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_TEXT_42",
+                    b"/bin/printf 'a:1\\nb:2\\nc:3\\n' | /bin/tee /data >/dev/null; a=$(/bin/sed -n '2p' /data | /bin/cut -d: -f2 | /bin/tr 2 7); b=$(/bin/awk -F: '{s+=$2} END {print s}' /data); c=$(/bin/head -n1 /data); d=$(/bin/tail -n1 /data); [ \"$a:$b:$c:$d\" = '7:6:a:1:c:3' ] && echo LITEOS_FILTERS_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_FILTERS_42",
+                    b"/bin/mkdir /tools; /bin/touch /tools/a; n=$(/bin/find /tools -name a | /bin/wc -l); base=$(/bin/basename /a/b); dir=$(/bin/dirname /a/b); [ \"$n:$base:$dir\" = '1:b:/a' ] && echo LITEOS_FIND_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_FIND_42",
+                    b"e=$(/bin/expr 6 \\* 7); last=$(/bin/seq 41 42 | /bin/tail -n1); [ \"$e:$last\" = '42:42' ] && echo LITEOS_MATH_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_MATH_42",
+                    b"/bin/sleep 0; echo LITEOS_TOOLS_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_TOOLS_42",
+                    b"/bin/echo payload > /plain; /bin/gzip -c /plain > /plain.gz; a=$(/bin/zcat /plain.gz); b=$(/bin/gunzip -c /plain.gz); h=$(/bin/sha256sum /plain | /bin/cut -d' ' -f1); [ \"$a:$b:$h\" = 'payload:payload:d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b' ] && echo LITEOS_ARCHIVE_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_ARCHIVE_42",
                     b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n",
                 ),
                 (

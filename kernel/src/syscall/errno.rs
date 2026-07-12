@@ -52,5 +52,7 @@ pub(crate) const ENOTEMPTY: isize = 39;
 pub(crate) const ENOSYS: isize = 38;
 /// 符号链接解析超出支持范围。
 pub(crate) const ELOOP: isize = 40;
+/// 结果无法由目标文件系统或 ABI 字段表示。
+pub(crate) const EOVERFLOW: isize = 75;
 /// 等待在 deadline 前未完成。
 pub(crate) const ETIMEDOUT: isize = 110;

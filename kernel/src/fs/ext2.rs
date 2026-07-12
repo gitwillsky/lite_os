@@ -1960,6 +1960,30 @@ impl Inode for Ext2Inode {
         self.fs.device.flush().map_err(|_| FileSystemError::IoError)
     }
 
+    fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+        if atime.is_none() && mtime.is_none() {
+            return Ok(());
+        }
+        let atime = atime
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| FileSystemError::InvalidOperation)?;
+        let mtime = mtime
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| FileSystemError::InvalidOperation)?;
+        let _mutation = self.fs.mutation.lock();
+        let mut inode = self.disk.lock();
+        if let Some(value) = atime {
+            inode.i_atime = value;
+        }
+        if let Some(value) = mtime {
+            inode.i_mtime = value;
+        }
+        inode.i_ctime = Self::now();
+        self.fs.write_inode_disk(self.inode_num, &inode)
+    }
+
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);

@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 57 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 58 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发、deprecated 入口或 feature-flag 双轨。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 57 个入口
+## 2. 当前暴露的 58 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -48,6 +48,7 @@
 | 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat；BusyBox ls/lstat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 支持 flags 0 与 `AT_SYMLINK_NOFOLLOW`，后者保留末项 symlink inode。尚无 `AT_EMPTY_PATH`、symlink traversal、credentials 与 mount semantics。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/vfs.rs` |
 | 81 | `sync` | 无参数 | 按 Linux ABI 固定返回 0，单个 writeback error 不从该入口报告 | POSIX sync；BusyBox sync applet | **Complete**（当前单 root filesystem）。经 VFS 唯一 root seam 等待已提交写并在 VirtIO 声明 FLUSH feature 时发送 device flush；后续冷启动读回验证持久化结果。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/vfs.rs` |
 | 82 | `fsync` | fd | 0；`EBADF/EINVAL/EIO` | POSIX fsync | **Complete**。inode-backed fd 等待所有同步写完成，并在 VirtIO 声明 FLUSH feature 时发送 flush request；pipe/character fd 返回 `EINVAL`。 | `kernel/src/syscall/fs.rs` |
+| 88 | `utimensat` | dirfd、pathname、可选两元素 RV64 timespec、`AT_SYMLINK_NOFOLLOW` | 0；`EBADF/EFAULT/EINVAL/ENOENT/ENOTDIR/EROFS/EOVERFLOW/EIO` | POSIX futimens/utimensat；BusyBox touch | **Partial**。支持 absolute/relative pathname、目录 fd、`UTIME_NOW/UTIME_OMIT`、null times、末项 no-follow，并原子持久化 ext2 atime/mtime/ctime；固定 root identity 不做 permission check。ext2 revision 1 只表达 32-bit epoch seconds，超界返回 `EOVERFLOW`；无 `AT_EMPTY_PATH`、纳秒磁盘字段和 credentials。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/ext2.rs` |
 | 276 | `renameat2` | old/new dirfd/path、flags | 0；标准 rename errno | Linux renameat2 | **Partial**。支持跨目录移动、原子串行化替换和 `RENAME_NOREPLACE`；无其他 rename flags、mount/symlink 语义。 | `kernel/src/syscall/fs.rs` |
 | 93 | `exit` | `int status` | 不返回 | POSIX `_exit`；musl `_Exit` fallback | **Complete**。当前调用 thread 是 Process 的唯一 thread；释放 TCB 后只保留可由 parent 消费的最小 exit record。 | `kernel/src/syscall/process.rs` |
 | 94 | `exit_group` | `int status` | 不返回 | Linux extension；musl `_Exit` 首选 | **Partial**。与 thread exit 共用清理路径；当前不主动终止仍在其他 CPU 的 sibling，调用方必须先 join/clear-tid。 | `kernel/src/syscall/process.rs` |
@@ -94,7 +95,7 @@
 
 ## 4. musl 结论
 
-当前 57 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF 与 multi-source ppoll。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C、CAD policy 与跨冷启动 ext2 持久化。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
+当前 58 个入口和静态 initial stack 已支撑固定 musl v1.2.6 pthread consumer，并覆盖 Pipe writev/readv/EOF 与 multi-source ppoll。BusyBox gate 额外覆盖外部 applet pipeline、文件重定向、后台 subshell+wait、UART foreground Ctrl-C、CAD policy、文本处理/压缩工具与跨冷启动 ext2 持久化。这不表示常规 musl 程序可运行；其扩展仍被下列缺口阻断：
 
 1. futex requeue/PI/bitset、完整 clone/exit_group 语义；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack、queued realtime signal 和 process-directed delivery；
