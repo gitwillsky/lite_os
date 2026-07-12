@@ -1,0 +1,31 @@
+kernel/src/syscall/system_info.rs
+  s_d637a88cd4b00d::t_0f6ebcffd16b53 1-60
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_744be1dd0e19be 41
+kernel/src/task/task_manager/procfs.rs
+  s_d637a88cd4b00d::t_3832db2b79ff8a 12-25,137-151
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_ca3cdf4722d227 64,74,94,562,627-630
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_09940963e4bfdd 58
+user/busybox.config
+  s_d637a88cd4b00d::t_eae5080c5454c9 47-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6a943cfc4554a8187b11a67eb535c15d93559ea8",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
