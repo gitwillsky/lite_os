@@ -81,7 +81,7 @@ unsafe extern "C" fn _start() -> ! {
 /// @return `_start` 的物理入口地址。
 /// @errors 无错误。
 pub(crate) fn entry_address() -> usize {
-    _start as usize
+    _start as *const () as usize
 }
 
 /// @description 由唯一 cold-boot hart 清零 BSS。

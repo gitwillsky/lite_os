@@ -123,7 +123,7 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
             mem_addr = board_info.mem,
             mem_size = (board_info.mem.end - board_info.mem.start) / (1024 * 1024),
             dtb = board_info.dtb,
-            firmware = _start as usize,
+            firmware = _start as *const () as usize,
         );
 
         // 初始化 SBI
@@ -184,7 +184,10 @@ extern "C" fn rust_main(hart_id: usize, opaque: usize) {
         // kernel 单调时钟只需要 `time` CSR，不向 S-mode 暴露未使用的硬件计数器。
         asm!("csrw mcounteren, {}", in(reg) COUNTER_TIME);
         use riscv::register::mtvec;
-        mtvec::write(trap_vec::trap_vec as _, mtvec::TrapMode::Vectored);
+        mtvec::write(
+            trap_vec::trap_vec as *const () as usize,
+            mtvec::TrapMode::Vectored,
+        );
     }
 }
 

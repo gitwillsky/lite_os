@@ -1,9 +1,11 @@
 pub(crate) mod block;
 mod goldfish_rtc;
 mod hal;
+pub(crate) mod network;
 mod platform;
 mod uart;
 mod virtio_blk;
+mod virtio_net;
 mod virtio_queue;
 mod virtio_rng;
 
@@ -14,6 +16,7 @@ use hal::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
 };
 use virtio_blk::VirtIOBlockDevice;
+use virtio_net::VirtIONetworkDevice;
 use virtio_rng::VirtIORngDevice;
 
 pub(crate) use virtio_rng::fill_entropy;

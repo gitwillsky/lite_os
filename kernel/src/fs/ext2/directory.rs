@@ -12,7 +12,7 @@ impl Ext2Inode {
         mut visit: F,
     ) -> Result<(), FileSystemError> {
         let size = self.disk.lock().i_size_lo as usize;
-        if size % self.fs.block_size != 0 {
+        if !size.is_multiple_of(self.fs.block_size) {
             return Err(FileSystemError::InvalidFileSystem);
         }
         for block_index in 0..size / self.fs.block_size {
@@ -36,7 +36,10 @@ impl Ext2Inode {
                 let end = offset
                     .checked_add(record_length)
                     .ok_or(FileSystemError::InvalidFileSystem)?;
-                if record_length < minimum || record_length % 4 != 0 || end > self.fs.block_size {
+                if record_length < minimum
+                    || !record_length.is_multiple_of(4)
+                    || end > self.fs.block_size
+                {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
                 let name_start = offset + mem::size_of::<Ext2DirEntry2Header>();

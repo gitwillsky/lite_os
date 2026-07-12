@@ -52,7 +52,8 @@ unsafe extern "C" {
 }
 
 pub(crate) fn signal_trampoline_entry() -> usize {
-    SIGNAL_TRAMPOLINE + (__signal_trampoline as usize - strampoline as usize)
+    SIGNAL_TRAMPOLINE
+        + (__signal_trampoline as *const () as usize - strampoline as *const () as usize)
 }
 
 // OWNER: memory module owns the canonical kernel address space after initialization.
@@ -67,7 +68,7 @@ pub(crate) fn init_allocator() {
 }
 
 pub(crate) fn init() {
-    let kernel_end_addr: PhysicalAddress = (ekernel as usize).into();
+    let kernel_end_addr: PhysicalAddress = (ekernel as *const () as usize).into();
     let memory_end_addr: PhysicalAddress = dtb::board_info().mem.end.into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
@@ -171,8 +172,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     }
 
     // kernel text section
-    let stext_addr = stext as usize;
-    let etext_addr = etext as usize;
+    let stext_addr = stext as *const () as usize;
+    let etext_addr = etext as *const () as usize;
     debug!(
         "[init_kernel_space] .text section: {:#x} - {:#x}",
         stext_addr, etext_addr
@@ -180,8 +181,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     memory_set
         .push(
             MapArea::new(
-                (stext as usize).into(),
-                (etext as usize).into(),
+                (stext as *const () as usize).into(),
+                (etext as *const () as usize).into(),
                 mm::MapType::Identical,
                 MapPermission::R | MapPermission::X,
             )
@@ -191,8 +192,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         .expect("Failed to map kernel .text section");
 
     // kernel read only data
-    let srodata_addr = srodata as usize;
-    let erodata_addr = erodata as usize;
+    let srodata_addr = srodata as *const () as usize;
+    let erodata_addr = erodata as *const () as usize;
     debug!(
         "[init_kernel_space] .rodata section: {:#x} - {:#x}",
         srodata_addr, erodata_addr
@@ -200,8 +201,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     memory_set
         .push(
             MapArea::new(
-                (srodata as usize).into(),
-                (erodata as usize).into(),
+                (srodata as *const () as usize).into(),
+                (erodata as *const () as usize).into(),
                 mm::MapType::Identical,
                 MapPermission::R,
             )
@@ -211,8 +212,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         .expect("Failed to map kernel .rodata section");
 
     // kernel data
-    let sdata_addr = sdata as usize;
-    let edata_addr = edata as usize;
+    let sdata_addr = sdata as *const () as usize;
+    let edata_addr = edata as *const () as usize;
     debug!(
         "[init_kernel_space] .data section: {:#x} - {:#x}",
         sdata_addr, edata_addr
@@ -220,8 +221,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     memory_set
         .push(
             MapArea::new(
-                (sdata as usize).into(),
-                (edata as usize).into(),
+                (sdata as *const () as usize).into(),
+                (edata as *const () as usize).into(),
                 mm::MapType::Identical,
                 MapPermission::R | MapPermission::W,
             )
@@ -231,8 +232,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         .expect("Failed to map kernel .data section");
 
     // kernel bss section
-    let sbss_addr = sbss as usize;
-    let ebss_addr = ebss as usize;
+    let sbss_addr = sbss as *const () as usize;
+    let ebss_addr = ebss as *const () as usize;
     debug!(
         "[init_kernel_space] .bss section: {:#x} - {:#x}",
         sbss_addr, ebss_addr
@@ -240,8 +241,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
     memory_set
         .push(
             MapArea::new(
-                (sbss as usize).into(),
-                (ebss as usize).into(),
+                (sbss as *const () as usize).into(),
+                (ebss as *const () as usize).into(),
                 mm::MapType::Identical,
                 MapPermission::R | MapPermission::W,
             )
@@ -252,8 +253,8 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     // boot hart 独占的 early stack，底部保留一页 guard。
     // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题。
-    let boot_stack_bottom_addr = boot_stack_bottom as usize;
-    let boot_stack_top_addr = boot_stack_top as usize;
+    let boot_stack_bottom_addr = boot_stack_bottom as *const () as usize;
+    let boot_stack_top_addr = boot_stack_top as *const () as usize;
     let mapped_bottom = boot_stack_bottom_addr + PAGE_SIZE;
     debug!(
         "[init_kernel_space] boot stack: {:#x} - {:#x} (guard @ {:#x})",
@@ -273,7 +274,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
 
     // 后续可演进为受控的 physmap/kmap 方案，再逐步去除依赖。
     {
-        let ekernel_addr = ekernel as usize;
+        let ekernel_addr = ekernel as *const () as usize;
         debug!(
             "[init_kernel_space] kernel physmap (RW, NX): {:#x} - {:#x}",
             ekernel_addr,
@@ -282,7 +283,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         memory_set
             .push(
                 MapArea::new(
-                    (ekernel as usize).into(),
+                    (ekernel as *const () as usize).into(),
                     memory_end_addr.as_usize().into(),
                     mm::MapType::Identical,
                     MapPermission::R | MapPermission::W,

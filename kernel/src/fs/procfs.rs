@@ -39,6 +39,18 @@ pub(crate) struct ProcCpuSnapshot {
     pub(crate) busy_us: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ProcNetworkSnapshot {
+    pub(crate) address: Option<[u8; 4]>,
+    pub(crate) prefix_length: u8,
+    pub(crate) gateway: Option<[u8; 4]>,
+    pub(crate) up: bool,
+    pub(crate) received_bytes: u64,
+    pub(crate) received_packets: u64,
+    pub(crate) transmitted_bytes: u64,
+    pub(crate) transmitted_packets: u64,
+}
+
 pub(crate) struct ProcSnapshot {
     pub(crate) uptime_us: u64,
     pub(crate) total_pages: usize,
@@ -50,6 +62,7 @@ pub(crate) struct ProcSnapshot {
     pub(crate) load_milli: [u64; 3],
     pub(crate) cpus: Vec<ProcCpuSnapshot>,
     pub(crate) processes: Vec<ProcProcessSnapshot>,
+    pub(crate) network: Option<ProcNetworkSnapshot>,
 }
 
 /// @description procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
@@ -66,6 +79,9 @@ enum ProcNode {
     LoadAvg,
     Uptime,
     Mounts,
+    NetDir,
+    NetDev,
+    NetRoute,
     ProcessDir(usize),
     ProcessStat(usize),
 }
@@ -79,6 +95,9 @@ impl ProcNode {
             Self::LoadAvg => 4,
             Self::Uptime => 5,
             Self::Mounts => 6,
+            Self::NetDir => 7,
+            Self::NetDev => 8,
+            Self::NetRoute => 9,
             Self::ProcessDir(pid) => 0x1_0000 + (pid as u64) * 2,
             Self::ProcessStat(pid) => 0x1_0001 + (pid as u64) * 2,
         }
@@ -86,7 +105,7 @@ impl ProcNode {
 
     fn kind(self) -> InodeType {
         match self {
-            Self::Root | Self::ProcessDir(_) => InodeType::Directory,
+            Self::Root | Self::NetDir | Self::ProcessDir(_) => InodeType::Directory,
             _ => InodeType::File,
         }
     }
@@ -112,6 +131,8 @@ impl ProcInode {
             ProcNode::MemInfo => format_meminfo(&snapshot),
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot),
+            ProcNode::NetDev => format_network_devices(snapshot.network),
+            ProcNode::NetRoute => format_network_routes(snapshot.network),
             ProcNode::Mounts => unreachable!("mount table handled before task snapshot"),
             ProcNode::ProcessStat(pid) => snapshot
                 .processes
@@ -119,7 +140,9 @@ impl ProcInode {
                 .find(|process| process.pid == pid)
                 .map(format_process_stat)
                 .ok_or(FileSystemError::NotFound)?,
-            ProcNode::Root | ProcNode::ProcessDir(_) => return Err(FileSystemError::IsDirectory),
+            ProcNode::Root | ProcNode::NetDir | ProcNode::ProcessDir(_) => {
+                return Err(FileSystemError::IsDirectory);
+            }
         };
         Ok(text.into_bytes())
     }
@@ -211,6 +234,7 @@ impl Inode for ProcInode {
                     directory_entry(4, InodeType::File, b"loadavg"),
                     directory_entry(5, InodeType::File, b"uptime"),
                     directory_entry(6, InodeType::File, b"mounts"),
+                    directory_entry(7, InodeType::Directory, b"net"),
                 ]);
                 entries.extend(self.source.snapshot().processes.into_iter().map(|process| {
                     directory_entry(
@@ -225,6 +249,10 @@ impl Inode for ProcInode {
                 InodeType::File,
                 b"stat",
             )),
+            ProcNode::NetDir => entries.extend([
+                directory_entry(8, InodeType::File, b"dev"),
+                directory_entry(9, InodeType::File, b"route"),
+            ]),
             _ => return Err(FileSystemError::NotDirectory),
         }
         Ok(entries)
@@ -239,6 +267,7 @@ impl Inode for ProcInode {
                 b"loadavg" => ProcNode::LoadAvg,
                 b"uptime" => ProcNode::Uptime,
                 b"mounts" => ProcNode::Mounts,
+                b"net" => ProcNode::NetDir,
                 _ => {
                     let pid = parse_pid(name).ok_or(FileSystemError::NotFound)?;
                     if !self
@@ -257,6 +286,13 @@ impl Inode for ProcInode {
                 b"." => ProcNode::ProcessDir(pid),
                 b".." => ProcNode::Root,
                 b"stat" => ProcNode::ProcessStat(pid),
+                _ => return Err(FileSystemError::NotFound),
+            },
+            ProcNode::NetDir => match name {
+                b"." => ProcNode::NetDir,
+                b".." => ProcNode::Root,
+                b"dev" => ProcNode::NetDev,
+                b"route" => ProcNode::NetRoute,
                 _ => return Err(FileSystemError::NotFound),
             },
             _ => return Err(FileSystemError::NotDirectory),
@@ -418,6 +454,56 @@ fn format_uptime(snapshot: &ProcSnapshot) -> String {
         idle_us / 1_000_000,
         idle_us / 10_000 % 100
     )
+}
+
+fn format_network_devices(network: Option<ProcNetworkSnapshot>) -> String {
+    let mut output = String::from(
+        "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n",
+    );
+    if let Some(network) = network {
+        let _ = writeln!(
+            output,
+            "  eth0: {:8} {:7}    0    0    0     0          0         0 {:8} {:7}    0    0    0     0       0          0",
+            network.received_bytes,
+            network.received_packets,
+            network.transmitted_bytes,
+            network.transmitted_packets,
+        );
+    }
+    output
+}
+
+fn format_network_routes(network: Option<ProcNetworkSnapshot>) -> String {
+    let mut output = String::from(
+        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
+    );
+    let Some(network) = network else {
+        return output;
+    };
+    let mask = if network.prefix_length == 0 {
+        0
+    } else {
+        u32::MAX << (32 - network.prefix_length)
+    };
+    if let Some(address) = network.address {
+        let destination = u32::from_be_bytes(address) & mask;
+        let _ = writeln!(
+            output,
+            "eth0\t{:08X}\t00000000\t{:04X}\t0\t0\t0\t{:08X}\t0\t0\t0",
+            destination.swap_bytes(),
+            if network.up { 1 } else { 0 },
+            mask.swap_bytes(),
+        );
+    }
+    if let Some(gateway) = network.gateway {
+        let _ = writeln!(
+            output,
+            "eth0\t00000000\t{:08X}\t{:04X}\t0\t0\t0\t00000000\t0\t0\t0",
+            u32::from_be_bytes(gateway).swap_bytes(),
+            if network.up { 3 } else { 2 },
+        );
+    }
+    output
 }
 
 fn format_process_stat(process: &ProcProcessSnapshot) -> String {

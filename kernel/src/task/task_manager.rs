@@ -7,19 +7,20 @@ use alloc::{
 use lazy_static::lazy_static;
 
 use crate::{
-    arch::hart::{self, hart_id},
+    arch::hart::hart_id,
     ipc::{Pipe, PipeDirection, PipeEnd, PipeNotifier},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         pid::{INIT_PID, ProcessId},
-        processor::{begin_preempt_running_task, enqueue_new_task, request_reschedule},
+        processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
     },
     timer::{get_time_ns, get_time_us},
 };
 
+mod deferred;
 mod process_exit;
 mod process_group;
 mod procfs;
@@ -29,6 +30,7 @@ mod wait_child;
 mod wait_key;
 mod wait_registry;
 
+pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_timer};
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
@@ -72,6 +74,9 @@ struct ProcessGraph {
     next_pid: usize,
     processes_created: u64,
     nodes: BTreeMap<usize, ProcessNode>,
+    // OWNER: process graph owns ITIMER_REAL together with TGID lifecycle. A detached timer map
+    // without exit cleanup would deliver SIGALRM to a reused PID after the original Process exits.
+    real_timers: BTreeMap<usize, deferred::RealTimer>,
 }
 
 /// @description parent relation、live task 或最小 exit record 的唯一 process graph owner。
@@ -118,6 +123,7 @@ impl TaskManager {
                 next_pid: INIT_PID + 1,
                 processes_created: 1,
                 nodes: BTreeMap::new(),
+                real_timers: BTreeMap::new(),
             }),
             load_average: IrqMutex::new(LoadAverage {
                 last_update_us: 0,
@@ -469,25 +475,6 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
         }
     }
     count
-}
-
-/// @description 在 user-return 或 scheduler idle context 消费全部 deferred work。
-///
-/// @return 无返回值；无 pending work 时为空操作。
-pub(crate) fn dispatch_pending_deferred_work() {
-    let work = hart::take_softirqs();
-    if work == 0 {
-        return;
-    }
-    if work & hart::TIMER_SOFTIRQ != 0 {
-        wake_expired_tasks(get_time_ns());
-        procfs::update_load_average(get_time_us());
-    }
-    if work & hart::CONSOLE_SOFTIRQ != 0 {
-        process_terminal_input();
-        wake_console_waiters();
-    }
-    request_reschedule();
 }
 
 /// @description 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。

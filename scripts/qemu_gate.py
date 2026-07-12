@@ -129,6 +129,10 @@ def boot(
         "rng-random,filename=/dev/urandom,id=rng0",
         "-device",
         "virtio-rng-device,rng=rng0",
+        "-netdev",
+        "user,id=net0",
+        "-device",
+        "virtio-net-device,netdev=net0",
     ]
     process = subprocess.Popen(
         command,
@@ -242,6 +246,10 @@ def power_cut(
             "rng-random,filename=/dev/urandom,id=rng0",
             "-device",
             "virtio-rng-device,rng=rng0",
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "virtio-net-device,netdev=net0",
         ],
         cwd=ROOT,
         stdin=subprocess.PIPE,

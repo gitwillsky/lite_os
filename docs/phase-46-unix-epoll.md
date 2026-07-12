@@ -4,7 +4,7 @@ Phase 46 以 Linux v7.1 与 musl 1.2.6 为固定语义源，在现有 OFD 和 In
 
 ## Owner 与 seam
 
-- `ipc::UnixSocket` 唯一拥有 abstract AF_UNIX namespace、stream connection、listen queue 与 datagram message boundary；Pipe 作为内部全双工 transport，复用背压、EOF、SIGPIPE 与 wake 证明。
+- `socket::UnixSocket` 唯一拥有 abstract AF_UNIX namespace、stream connection、listen queue 与 datagram message boundary；Pipe 作为内部全双工 transport，复用背压、EOF、SIGPIPE 与 wake 证明。Phase 49 将其从 IPC module 迁入统一 socket facade，owner 语义不变。
 - `fs::OpenFileDescription` 统一承载 inode、character、Pipe、Socket 与 Epoll。dup/fork 共享 OFD，exec/close 释放 descriptor；最后一个外部 descriptor close 清除 epoll interest，避免 fd reuse ABA。
 - `fs::Epoll` 唯一拥有 `(fd, OFD)` interest、ET generation、MOD revision 与 ONESHOT disable state；`ppoll` 与 epoll 调用同一个 OFD readiness seam 并注册到同一 Poll wait membership。
 - syscall 只解析 RV64 sockaddr/epoll_event、执行 user-copy 与 errno translation。

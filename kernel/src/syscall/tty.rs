@@ -1,9 +1,9 @@
 use crate::{
-    fs::{CharacterDevice, OpenFileKind, Terminal, TerminalAccess},
+    fs::{Terminal, TerminalAccess},
     syscall::errno,
     task::{
-        ProcessGroupError, TerminalAccessError, check_terminal_access, claim_controlling_terminal,
-        current_task, set_terminal_foreground_group, terminal_foreground_group,
+        ProcessGroupError, TaskControlBlock, TerminalAccessError, check_terminal_access,
+        claim_controlling_terminal, set_terminal_foreground_group, terminal_foreground_group,
     },
 };
 
@@ -49,14 +49,12 @@ pub(super) fn guard_terminal_access(
 /// @param request Linux generic TTY ioctl request。
 /// @param argument request-specific value 或用户指针。
 /// @return 成功返回零；fd、用户地址、session/group 或 request 错误返回负 errno。
-pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
-    let task = current_task().expect("ioctl requires current task");
-    let Some(ofd) = task.fd_get(fd) else {
-        return -errno::EBADF;
-    };
-    let OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) = &ofd.kind else {
-        return -errno::ENOTTY;
-    };
+pub(super) fn tty_ioctl(
+    task: &TaskControlBlock,
+    terminal: &Terminal,
+    request: usize,
+    argument: usize,
+) -> isize {
     match request {
         TCGETS => task
             .copy_to_user(argument, &terminal.termios())

@@ -153,7 +153,7 @@ fn parse_elf(
         .try_reserve(program_header_count)
         .map_err(|_| ExecutableParseError::OutOfMemory)?;
     let mut interpreter = None;
-    for ph in table.chunks_exact(PH_SIZE) {
+    for ph in table.as_chunks::<PH_SIZE>().0 {
         let ph_type = read_u32(ph, 0)?;
         let ph_flags = read_u32(ph, 4)?;
         let file_offset = usize_u64(ph, 8)?;

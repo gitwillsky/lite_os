@@ -871,7 +871,7 @@ impl Ext2FileSystem {
             if value == 0 {
                 return false;
             }
-            while value % base == 0 {
+            while value.is_multiple_of(base) {
                 value /= base;
             }
             value == 1
@@ -1198,15 +1198,15 @@ impl Ext2Inode {
         let mut raw = vec![0; self.fs.block_size];
         self.fs.read_fs_block(block, &mut raw)?;
         let mut pointers = Vec::with_capacity(self.fs.block_size / 4);
-        for chunk in raw.chunks_exact(4) {
-            pointers.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        for chunk in raw.as_chunks::<4>().0 {
+            pointers.push(u32::from_le_bytes(*chunk));
         }
         Ok(pointers)
     }
 
     fn write_pointer_block(&self, block: u32, pointers: &[u32]) -> Result<(), FileSystemError> {
         let mut raw = vec![0; self.fs.block_size];
-        for (chunk, pointer) in raw.chunks_exact_mut(4).zip(pointers) {
+        for (chunk, pointer) in raw.as_chunks_mut::<4>().0.iter_mut().zip(pointers) {
             chunk.copy_from_slice(&pointer.to_le_bytes());
         }
         self.fs.write_fs_block(block, &raw)
@@ -1372,7 +1372,7 @@ impl Ext2Inode {
                 .i_blocks_lo
                 .checked_sub(freed)
                 .ok_or(FileSystemError::InvalidFileSystem)?;
-            if size % self.fs.block_size as u64 != 0 && keep != 0 {
+            if !size.is_multiple_of(self.fs.block_size as u64) && keep != 0 {
                 drop(inode);
                 let block = self.map_block_sparse((keep - 1) as u32)?;
                 if block != 0 {

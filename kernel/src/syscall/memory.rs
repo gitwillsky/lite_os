@@ -96,7 +96,7 @@ pub(crate) fn sys_mmap(
     let task = current_task().expect("mmap requires a current task");
     let fixed = flags & MAP_FIXED != 0;
     if fixed {
-        if address == 0 || address % crate::memory::PAGE_SIZE != 0 {
+        if address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE) {
             return -errno::EINVAL;
         }
         if let Err(error) = task.unmap_user_mapping(address, length) {
@@ -115,7 +115,7 @@ pub(crate) fn sys_mmap(
             .map_anonymous(address, length, permission, exact_address)
             .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
     }
-    if fd < 0 || offset % crate::memory::PAGE_SIZE != 0 {
+    if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
         return -errno::EINVAL;
     }
     let Some(ofd) = task.fd_get(fd as usize) else {
@@ -174,7 +174,7 @@ pub(crate) fn sys_msync(address: usize, length: usize, flags: usize) -> isize {
 
     if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
         || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0
-        || address % crate::memory::PAGE_SIZE != 0
+        || !address.is_multiple_of(crate::memory::PAGE_SIZE)
     {
         return -errno::EINVAL;
     }

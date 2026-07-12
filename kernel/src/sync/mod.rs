@@ -19,7 +19,7 @@ static READINESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// @return 非零 generation；仅用于事件 identity，不承载数据发布同步。
 pub(crate) fn next_readiness_generation() -> u64 {
     READINESS_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .expect("readiness generation exhausted")

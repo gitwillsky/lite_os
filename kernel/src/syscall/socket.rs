@@ -2,24 +2,72 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
-    ipc::{SocketError, SocketType, UnixAddress, UnixSocket},
-    task::{WaitResult, create_pipe_endpoints, current_task, wait_for_poll},
+    socket::{
+        InetAddress, Socket, SocketAddress, SocketDomain, SocketError, SocketType, UnixAddress,
+        UnixConnectResources, configure_address, configure_gateway, configure_netmask,
+        configure_up, interface_snapshot,
+    },
+    task::{TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, wait_for_poll},
 };
 
 use super::{errno, poll::ofd_wait_keys};
 
+mod interface;
+mod message;
+mod options;
+pub(super) use interface::socket_ioctl;
+pub(crate) use message::{sys_recvmsg, sys_sendmsg};
+pub(crate) use options::{sys_getsockopt, sys_setsockopt};
+
 const AF_UNIX: usize = 1;
+const AF_INET: usize = 2;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
 const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
 const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
+const MSG_PEEK: usize = 0x2;
+const MSG_TRUNC: usize = 0x20;
+const MSG_DONTWAIT: usize = 0x40;
+const MSG_NOSIGNAL: usize = 0x4000;
+const IFNAMSIZ: usize = 16;
+const IFREQ_SIZE: usize = 40;
+const SIOCADDRT: usize = 0x890b;
+const SIOCDELRT: usize = 0x890c;
+const SIOCGIFNAME: usize = 0x8910;
+const SIOCGIFCONF: usize = 0x8912;
+const SIOCGIFFLAGS: usize = 0x8913;
+const SIOCSIFFLAGS: usize = 0x8914;
+const SIOCGIFADDR: usize = 0x8915;
+const SIOCSIFADDR: usize = 0x8916;
+const SIOCGIFBRDADDR: usize = 0x8919;
+const SIOCSIFBRDADDR: usize = 0x891a;
+const SIOCGIFNETMASK: usize = 0x891b;
+const SIOCSIFNETMASK: usize = 0x891c;
+const SIOCGIFMTU: usize = 0x8921;
+const SIOCSIFMTU: usize = 0x8922;
+const SIOCGIFHWADDR: usize = 0x8927;
+const SIOCGIFINDEX: usize = 0x8933;
+const IFF_UP: u16 = 0x1;
+const IFF_BROADCAST: u16 = 0x2;
+const IFF_RUNNING: u16 = 0x40;
+const IFF_MULTICAST: u16 = 0x1000;
+const ARPHRD_ETHER: u16 = 1;
+const ETHERNET_MTU: i32 = 1500;
+const INTERFACE_INDEX: i32 = 1;
+const INTERFACE_NAME: &[u8] = b"eth0";
 
 pub(super) fn socket_error(error: SocketError) -> isize {
     -match error {
         SocketError::Invalid | SocketError::WrongType => errno::EINVAL,
         SocketError::NoMemory => errno::ENOMEM,
         SocketError::AddressInUse => errno::EADDRINUSE,
+        SocketError::AddressNotAvailable => errno::EADDRNOTAVAIL,
         SocketError::NotFound | SocketError::ConnectionRefused => errno::ECONNREFUSED,
+        SocketError::NetworkUnreachable => errno::ENETUNREACH,
+        SocketError::DestinationRequired => errno::EDESTADDRREQ,
+        SocketError::MessageTooLarge => errno::EMSGSIZE,
+        SocketError::ProtocolNotSupported => errno::EPROTONOSUPPORT,
+        SocketError::OperationNotSupported => errno::EOPNOTSUPP,
         SocketError::NotConnected => errno::ENOTCONN,
         SocketError::AlreadyConnected => errno::EISCONN,
         SocketError::Again => errno::EAGAIN,
@@ -43,13 +91,17 @@ fn decode_type(raw: usize) -> Result<(SocketType, u32, bool), isize> {
     ))
 }
 
-fn new_socket(kind: SocketType) -> Result<Arc<UnixSocket>, isize> {
+fn new_socket(
+    domain: SocketDomain,
+    kind: SocketType,
+    protocol: usize,
+) -> Result<Arc<Socket>, isize> {
     create_pipe_endpoints()
-        .map(|notify| UnixSocket::new(kind, notify))
         .map_err(|_| -errno::ENOMEM)
+        .and_then(|notify| Socket::new(domain, kind, protocol, notify).map_err(socket_error))
 }
 
-fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<UnixSocket>), isize> {
+fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<Socket>), isize> {
     let task = current_task().expect("socket syscall requires current task");
     let ofd = task.fd_get(fd).ok_or(-errno::EBADF)?;
     let OpenFileKind::Socket(socket) = &ofd.kind else {
@@ -58,27 +110,35 @@ fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<UnixSocket>), 
     Ok((ofd.clone(), socket.clone()))
 }
 
-fn read_address(pointer: usize, length: usize) -> Result<UnixAddress, isize> {
-    if pointer == 0 || !(3..=110).contains(&length) {
+fn read_address(pointer: usize, length: usize) -> Result<SocketAddress, isize> {
+    if pointer == 0 || !(2..=110).contains(&length) {
         return Err(-errno::EINVAL);
     }
     let task = current_task().unwrap();
     let mut bytes = [0u8; 110];
     task.copy_from_user(pointer, &mut bytes[..length])
         .map_err(|_| -errno::EFAULT)?;
-    if u16::from_ne_bytes(bytes[..2].try_into().unwrap()) as usize != AF_UNIX {
-        return Err(-errno::EAFNOSUPPORT);
+    match u16::from_ne_bytes(bytes[..2].try_into().unwrap()) as usize {
+        AF_UNIX if length >= 3 => {
+            let path = if bytes[2] == 0 {
+                &bytes[2..length]
+            } else {
+                return Err(-errno::EOPNOTSUPP);
+            };
+            UnixAddress::new(path)
+                .map(SocketAddress::Unix)
+                .map_err(socket_error)
+        }
+        AF_INET if length >= 16 => Ok(SocketAddress::Inet(InetAddress {
+            address: core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[4..8]).unwrap()),
+            port: u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+        })),
+        _ => Err(-errno::EAFNOSUPPORT),
     }
-    let path = if bytes[2] == 0 {
-        &bytes[2..length]
-    } else {
-        return Err(-errno::EOPNOTSUPP);
-    };
-    UnixAddress::new(path).map_err(socket_error)
 }
 
 fn write_address(
-    address: Option<UnixAddress>,
+    address: Option<SocketAddress>,
     pointer: usize,
     length_pointer: usize,
 ) -> Result<(), isize> {
@@ -93,33 +153,47 @@ fn write_address(
     task.copy_from_user(length_pointer, &mut length_bytes)
         .map_err(|_| -errno::EFAULT)?;
     let capacity = u32::from_ne_bytes(length_bytes) as usize;
-    let mut encoded = [0u8; 110];
-    encoded[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
-    let actual = if let Some(address) = address {
-        let count = address.bytes().len().min(108);
-        encoded[2..2 + count].copy_from_slice(&address.bytes()[..count]);
-        2 + count + usize::from(address.bytes().first() != Some(&0))
-    } else {
-        2
-    };
+    let (encoded, actual) = encode_address(address);
     task.copy_to_user(pointer, &encoded[..actual.min(capacity)])
         .map_err(|_| -errno::EFAULT)?;
     task.copy_to_user(length_pointer, &(actual as u32).to_ne_bytes())
         .map_err(|_| -errno::EFAULT)
 }
 
+fn encode_address(address: Option<SocketAddress>) -> ([u8; 110], usize) {
+    let mut encoded = [0u8; 110];
+    let actual = match address {
+        Some(SocketAddress::Unix(address)) => {
+            encoded[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
+            let count = address.bytes().len().min(108);
+            encoded[2..2 + count].copy_from_slice(&address.bytes()[..count]);
+            2 + count + usize::from(address.bytes().first() != Some(&0))
+        }
+        Some(SocketAddress::Inet(address)) => {
+            encoded[..2].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+            encoded[2..4].copy_from_slice(&address.port.to_be_bytes());
+            encoded[4..8].copy_from_slice(&address.address.octets());
+            16
+        }
+        None => {
+            encoded[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
+            2
+        }
+    };
+    (encoded, actual)
+}
+
 pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
-    if domain != AF_UNIX {
-        return -errno::EAFNOSUPPORT;
-    }
-    if protocol != 0 {
-        return -errno::EPROTONOSUPPORT;
-    }
+    let domain = match domain {
+        AF_UNIX => SocketDomain::Unix,
+        AF_INET => SocketDomain::Inet,
+        _ => return -errno::EAFNOSUPPORT,
+    };
     let (kind, flags, cloexec) = match decode_type(kind) {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let socket = match new_socket(kind) {
+    let socket = match new_socket(domain, kind, protocol) {
         Ok(socket) => socket,
         Err(error) => return error,
     };
@@ -137,11 +211,11 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         Ok(value) => value,
         Err(error) => return error,
     };
-    let first = match new_socket(kind) {
+    let first = match new_socket(SocketDomain::Unix, kind, protocol) {
         Ok(socket) => socket,
         Err(error) => return error,
     };
-    let second = match new_socket(kind) {
+    let second = match new_socket(SocketDomain::Unix, kind, protocol) {
         Ok(socket) => socket,
         Err(error) => return error,
     };
@@ -153,7 +227,7 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         Ok(pair) => pair,
         Err(_) => return -errno::ENOMEM,
     };
-    if let Err(error) = UnixSocket::pair(&first, &second, first_to_second, second_to_first) {
+    if let Err(error) = Socket::pair(&first, &second, first_to_second, second_to_first) {
         return socket_error(error);
     }
     let task = current_task().unwrap();
@@ -207,28 +281,30 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let listener = match UnixSocket::lookup(&address) {
-        Ok(value) => value,
-        Err(error) => return socket_error(error),
-    };
-    if client.socket_type() == SocketType::Datagram {
-        return client
-            .connect_datagram(&listener)
-            .map_or_else(socket_error, |()| 0);
-    }
-    let server = match new_socket(SocketType::Stream) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let first = match create_pipe_endpoints() {
-        Ok(value) => value,
-        Err(_) => return -errno::ENOMEM,
-    };
-    let second = match create_pipe_endpoints() {
-        Ok(value) => value,
-        Err(_) => return -errno::ENOMEM,
-    };
-    UnixSocket::connect_stream(&client, &listener, server, first, second)
+    let resources =
+        if client.domain() == SocketDomain::Unix && client.socket_type() == SocketType::Stream {
+            let server_notify = match create_pipe_endpoints() {
+                Ok(value) => value,
+                Err(_) => return -errno::ENOMEM,
+            };
+            let client_to_server = match create_pipe_endpoints() {
+                Ok(value) => value,
+                Err(_) => return -errno::ENOMEM,
+            };
+            let server_to_client = match create_pipe_endpoints() {
+                Ok(value) => value,
+                Err(_) => return -errno::ENOMEM,
+            };
+            Some(UnixConnectResources {
+                server_notify,
+                client_to_server,
+                server_to_client,
+            })
+        } else {
+            None
+        };
+    client
+        .connect(address, resources)
         .map_or_else(socket_error, |()| 0)
 }
 
@@ -254,7 +330,11 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
                     Ok(fd) => fd,
                     Err(_) => return -errno::EMFILE,
                 };
-                if let Err(error) = write_address(socket.peer_address(), address, length) {
+                if let Err(error) = socket
+                    .peer_address()
+                    .map_err(socket_error)
+                    .and_then(|peer| write_address(peer, address, length))
+                {
                     let _ = current_task().unwrap().fd_close(fd);
                     return error;
                 }
@@ -284,7 +364,11 @@ pub(crate) fn sys_getsockname(fd: usize, address: usize, length: usize) -> isize
         Ok(value) => value,
         Err(error) => return error,
     };
-    write_address(socket.address(), address, length).map_or_else(|error| error, |()| 0)
+    socket
+        .address()
+        .map_err(socket_error)
+        .and_then(|value| write_address(value, address, length))
+        .map_or_else(|error| error, |()| 0)
 }
 
 pub(crate) fn sys_getpeername(fd: usize, address: usize, length: usize) -> isize {
@@ -292,10 +376,11 @@ pub(crate) fn sys_getpeername(fd: usize, address: usize, length: usize) -> isize
         Ok(value) => value,
         Err(error) => return error,
     };
-    if !socket.poll_state().writable {
-        return -errno::ENOTCONN;
-    }
-    write_address(socket.peer_address(), address, length).map_or_else(|error| error, |()| 0)
+    socket
+        .peer_address()
+        .map_err(socket_error)
+        .and_then(|value| write_address(value, address, length))
+        .map_or_else(|error| error, |()| 0)
 }
 
 pub(crate) fn sys_sendto(
@@ -306,10 +391,10 @@ pub(crate) fn sys_sendto(
     address: usize,
     address_length: usize,
 ) -> isize {
-    if flags != 0 {
+    if flags & !(MSG_DONTWAIT | MSG_NOSIGNAL) != 0 {
         return -errno::EOPNOTSUPP;
     }
-    let (_, socket) = match socket_ofd(fd) {
+    let (ofd, socket) = match socket_ofd(fd) {
         Ok(value) => value,
         Err(error) => return error,
     };
@@ -328,18 +413,26 @@ pub(crate) fn sys_sendto(
     let target = if address == 0 {
         None
     } else {
-        let decoded = match read_address(address, address_length) {
-            Ok(value) => value,
-            Err(error) => return error,
-        };
-        match UnixSocket::lookup(&decoded) {
+        match read_address(address, address_length) {
             Ok(value) => Some(value),
-            Err(error) => return socket_error(error),
+            Err(error) => return error,
         }
     };
-    socket
-        .send_to(&input, target.as_ref())
-        .map_or_else(socket_error, |count| count as isize)
+    let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
+    loop {
+        match socket.send_to(&input, target.clone()) {
+            Ok(count) => return count as isize,
+            Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
+            Err(SocketError::Again) => {
+                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(4) != 0) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return -errno::EINTR,
+                    WaitResult::TimedOut => unreachable!(),
+                }
+            }
+            Err(error) => return socket_error(error),
+        }
+    }
 }
 
 pub(crate) fn sys_recvfrom(
@@ -350,7 +443,7 @@ pub(crate) fn sys_recvfrom(
     address: usize,
     address_length: usize,
 ) -> isize {
-    if flags != 0 {
+    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT) != 0 {
         return -errno::EOPNOTSUPP;
     }
     let (ofd, socket) = match socket_ofd(fd) {
@@ -363,21 +456,27 @@ pub(crate) fn sys_recvfrom(
     }
     output.resize(length, 0);
     loop {
-        match socket.receive(&mut output) {
-            Ok((count, source)) => {
+        match socket.receive_message(&mut output, flags & MSG_PEEK != 0) {
+            Ok(received) => {
                 if current_task()
                     .unwrap()
-                    .copy_to_user(buffer, &output[..count])
+                    .copy_to_user(buffer, &output[..received.count])
                     .is_err()
                 {
                     return -errno::EFAULT;
                 }
-                if let Err(error) = write_address(source, address, address_length) {
+                if let Err(error) = write_address(received.source, address, address_length) {
                     return error;
                 }
-                return count as isize;
+                return if flags & MSG_TRUNC != 0 {
+                    received.full_length as isize
+                } else {
+                    received.count as isize
+                };
             }
-            Err(SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+            Err(SocketError::Again)
+                if flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0 =>
+            {
                 return -errno::EAGAIN;
             }
             Err(SocketError::Again) => {
@@ -403,57 +502,43 @@ pub(crate) fn sys_shutdown(fd: usize, how: usize) -> isize {
     socket.shutdown(how).map_or_else(socket_error, |()| 0)
 }
 
-pub(crate) fn sys_setsockopt(
-    fd: usize,
-    level: usize,
-    option: usize,
-    _value: usize,
-    length: usize,
-) -> isize {
-    if socket_ofd(fd).is_err() {
-        return -errno::ENOTSOCK;
-    }
-    if level == 1 && matches!(option, 2 | 7 | 8) && length == 4 {
-        0
-    } else {
-        -errno::ENOPROTOOPT
-    }
+fn encode_interface_name(request: &mut [u8; IFREQ_SIZE]) {
+    request[..INTERFACE_NAME.len()].copy_from_slice(INTERFACE_NAME);
 }
 
-pub(crate) fn sys_getsockopt(
-    fd: usize,
-    level: usize,
-    option: usize,
-    value: usize,
-    length: usize,
-) -> isize {
-    let (_, socket) = match socket_ofd(fd) {
-        Ok(value) => value,
-        Err(error) => return error,
+fn interface_name_matches(request: &[u8; IFREQ_SIZE]) -> bool {
+    let end = request[..IFNAMSIZ]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(IFNAMSIZ);
+    &request[..end] == INTERFACE_NAME
+}
+
+fn encode_inet_sockaddr(request: &mut [u8; IFREQ_SIZE], address: core::net::Ipv4Addr) {
+    request[16..32].fill(0);
+    request[16..18].copy_from_slice(&(AF_INET as u16).to_ne_bytes());
+    request[20..24].copy_from_slice(&address.octets());
+}
+
+fn decode_inet_sockaddr(request: &[u8; IFREQ_SIZE]) -> Result<core::net::Ipv4Addr, isize> {
+    if u16::from_ne_bytes(request[16..18].try_into().unwrap()) as usize != AF_INET {
+        return Err(-errno::EAFNOSUPPORT);
+    }
+    Ok(core::net::Ipv4Addr::from(
+        <[u8; 4]>::try_from(&request[20..24]).unwrap(),
+    ))
+}
+
+fn netmask(prefix_length: u8) -> core::net::Ipv4Addr {
+    let bits = if prefix_length == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix_length)
     };
-    if level != 1 || value == 0 || length == 0 {
-        return -errno::ENOPROTOOPT;
-    }
-    let result: i32 = match option {
-        3 => match socket.socket_type() {
-            SocketType::Stream => 1,
-            SocketType::Datagram => 2,
-        },
-        4 => 0,
-        _ => return -errno::ENOPROTOOPT,
-    };
-    let task = current_task().unwrap();
-    let mut size = [0u8; 4];
-    if task.copy_from_user(length, &mut size).is_err() {
-        return -errno::EFAULT;
-    }
-    let count = (u32::from_ne_bytes(size) as usize).min(4);
-    if task
-        .copy_to_user(value, &result.to_ne_bytes()[..count])
-        .is_err()
-        || task.copy_to_user(length, &4u32.to_ne_bytes()).is_err()
-    {
-        return -errno::EFAULT;
-    }
-    0
+    core::net::Ipv4Addr::from(bits)
+}
+
+fn broadcast(address: core::net::Ipv4Addr, prefix_length: u8) -> core::net::Ipv4Addr {
+    let mask = u32::from(netmask(prefix_length));
+    core::net::Ipv4Addr::from(u32::from(address) | !mask)
 }

@@ -6,15 +6,11 @@ use alloc::{
 };
 use spin::{Mutex, Once};
 
-use super::{Pipe, PipeDirection, PipeEnd, PipeRead, PipeWrite};
+use crate::ipc::{Pipe, PipeDirection, PipeEnd, PipeRead, PipeWrite};
+
+use super::{SocketError, SocketPollState, SocketType};
 
 const UNIX_PATH_MAX: usize = 108;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SocketType {
-    Stream,
-    Datagram,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct UnixAddress(Vec<u8>);
@@ -35,28 +31,6 @@ impl UnixAddress {
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.0
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SocketError {
-    Invalid,
-    NoMemory,
-    AddressInUse,
-    NotFound,
-    NotConnected,
-    AlreadyConnected,
-    ConnectionRefused,
-    Again,
-    BrokenPipe,
-    WrongType,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct SocketPollState {
-    pub(crate) readable: bool,
-    pub(crate) writable: bool,
-    pub(crate) hangup: bool,
-    pub(crate) error: bool,
 }
 
 struct Datagram {
@@ -262,10 +236,6 @@ impl UnixSocket {
         let accepted = pending.pop_front().ok_or(SocketError::Again)?;
         self.consume_notify();
         Ok(accepted)
-    }
-
-    pub(crate) fn read(&self, output: &mut [u8]) -> Result<usize, SocketError> {
-        self.receive(output).map(|(count, _)| count)
     }
 
     pub(crate) fn receive(

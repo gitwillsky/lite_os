@@ -13,6 +13,8 @@ const UNPUBLISHED_TABLE: usize = usize::MAX;
 pub(crate) const TIMER_SOFTIRQ: u32 = 1;
 /// UART RX hardirq 发布的 deferred console wake bit。
 pub(crate) const CONSOLE_SOFTIRQ: u32 = 1 << 1;
+/// VirtIO-net RX hardirq 发布的 deferred protocol work bit。
+pub(crate) const NETWORK_SOFTIRQ: u32 = 1 << 2;
 
 // OWNER: hart module owns the immutable DTB-derived topology and per-hart states.
 static HART_TOPOLOGY: Once<HartTopology> = Once::new();
@@ -242,6 +244,14 @@ pub(crate) fn raise_timer_softirq() {
 /// @errors 当前 hart 不在 DTB topology 时 fail-stop。
 pub(crate) fn raise_console_softirq() {
     raise_softirq(CONSOLE_SOFTIRQ);
+}
+
+/// @description 发布当前 hart 的 deferred network RX work。
+///
+/// @return 无返回值。
+/// @errors 当前 hart 不在 DTB topology 时 fail-stop。
+pub(crate) fn raise_network_softirq() {
+    raise_softirq(NETWORK_SOFTIRQ);
 }
 
 /// @description 原子消费当前 hart 的全部 deferred work pending bits。

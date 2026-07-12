@@ -178,6 +178,9 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
             (removed, process_status, parent, session_leader)
         };
         assert!(Arc::ptr_eq(&removed, &task));
+        if process_status.is_some() {
+            graph.real_timers.remove(&exiting_pid);
+        }
 
         match process_status {
             None => (removed, None, None, None, None, Vec::new(), Vec::new()),

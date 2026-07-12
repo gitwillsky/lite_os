@@ -24,6 +24,7 @@ mod id;
 mod ipc;
 mod memory;
 mod random;
+mod socket;
 mod sync;
 mod syscall;
 mod system;
@@ -60,10 +61,11 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     timer::init_rtc();
     fs::init_vfs();
     drivers::init();
+    socket::init();
     mount_root_filesystem();
     task::init(
-        trap::trap_handler as usize,
-        trap::trap_return as usize,
+        trap::trap_handler as *const () as usize,
+        trap::trap_return as *const () as usize,
         Arc::new(PlatformConsole),
     );
 

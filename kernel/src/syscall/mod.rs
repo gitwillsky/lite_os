@@ -3,6 +3,7 @@ mod epoll;
 mod errno;
 mod fs;
 mod futex;
+mod ioctl;
 mod memory;
 mod poll;
 mod process;
@@ -16,8 +17,8 @@ mod timer;
 mod tty;
 
 use crate::syscall::{
-    credentials::*, epoll::*, fs::*, futex::*, memory::*, poll::*, process::*, random::*,
-    reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*, tty::*,
+    credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
+    reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
 use syscall_abi::*;
 
@@ -160,6 +161,8 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_SETGROUPS => sys_setgroups(args[0], args[1]),
         SYSCALL_UNAME => sys_uname(args[0]),
         SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0], args[1]),
+        SYSCALL_GETITIMER => sys_getitimer(args[0], args[1]),
+        SYSCALL_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
         SYSCALL_UMASK => sys_umask(args[0] as u32),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
@@ -178,6 +181,8 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_GETPEERNAME => sys_getpeername(args[0], args[1], args[2]),
         SYSCALL_SENDTO => sys_sendto(args[0], args[1], args[2], args[3], args[4], args[5]),
         SYSCALL_RECVFROM => sys_recvfrom(args[0], args[1], args[2], args[3], args[4], args[5]),
+        SYSCALL_SENDMSG => sys_sendmsg(args[0], args[1], args[2]),
+        SYSCALL_RECVMSG => sys_recvmsg(args[0], args[1], args[2]),
         SYSCALL_SETSOCKOPT => sys_setsockopt(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_GETSOCKOPT => sys_getsockopt(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_SHUTDOWN => sys_shutdown(args[0], args[1]),

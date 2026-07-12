@@ -7,7 +7,7 @@ use spin::Mutex;
 
 use super::Epoll;
 use super::{DeviceKind, FileSystemError, FileSystemStatistics, Inode, vfs};
-use crate::ipc::{PipeEnd, UnixSocket};
+use crate::{ipc::PipeEnd, socket::Socket};
 
 pub(crate) const O_ACCMODE: u32 = 3;
 pub(crate) const O_RDONLY: u32 = 0;
@@ -49,7 +49,7 @@ impl CharacterDevice {
 pub(crate) enum OpenFileKind {
     Character(CharacterDevice),
     Pipe(Arc<PipeEnd>),
-    Socket(Arc<UnixSocket>),
+    Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
     Inode(Arc<dyn Inode>),
 }
@@ -247,7 +247,7 @@ impl OpenFileDescription {
         })
     }
 
-    pub(crate) fn socket(socket: Arc<UnixSocket>, flags: u32) -> Arc<Self> {
+    pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Arc<Self> {
         Arc::new(Self {
             kind: OpenFileKind::Socket(socket),
             offset: Mutex::new(0),

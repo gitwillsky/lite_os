@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
-    fs::{ProcCpuSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource},
+    fs::{ProcCpuSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource},
     memory::frame_statistics,
     task::{RunState, processor::cpu_runtime_snapshot},
     timer::get_time_us,
@@ -120,6 +120,16 @@ fn process_snapshot() -> ProcSnapshot {
         .into_iter()
         .map(|(hart_id, busy_us)| ProcCpuSnapshot { hart_id, busy_us })
         .collect();
+    let network = crate::socket::network_snapshot().map(|snapshot| ProcNetworkSnapshot {
+        address: snapshot.address.map(|address| address.octets()),
+        prefix_length: snapshot.prefix_length,
+        gateway: snapshot.gateway.map(|address| address.octets()),
+        up: snapshot.up,
+        received_bytes: snapshot.statistics.received_bytes,
+        received_packets: snapshot.statistics.received_packets,
+        transmitted_bytes: snapshot.statistics.transmitted_bytes,
+        transmitted_packets: snapshot.statistics.transmitted_packets,
+    });
     ProcSnapshot {
         uptime_us,
         total_pages,
@@ -131,6 +141,7 @@ fn process_snapshot() -> ProcSnapshot {
         load_milli,
         cpus,
         processes,
+        network,
     }
 }
 

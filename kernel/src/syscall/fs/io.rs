@@ -125,10 +125,10 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
                         .copy_to_user(pointer as usize, &chunk[..read])
                         .map_or(-errno::EFAULT, |()| read as isize);
                 }
-                Err(crate::ipc::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                Err(crate::socket::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
                     return -errno::EAGAIN;
                 }
-                Err(crate::ipc::SocketError::Again) => {
+                Err(crate::socket::SocketError::Again) => {
                     let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
                     match wait_for_poll(keys, None, || ofd.poll_events(1) != 0) {
                         WaitResult::Woken => {}
@@ -256,10 +256,10 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         loop {
             match socket.write(&chunk[..count]) {
                 Ok(written) => return written as isize,
-                Err(crate::ipc::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                Err(crate::socket::SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
                     return -errno::EAGAIN;
                 }
-                Err(crate::ipc::SocketError::Again) => {
+                Err(crate::socket::SocketError::Again) => {
                     let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
                     match wait_for_poll(keys, None, || ofd.poll_events(4) != 0) {
                         WaitResult::Woken => {}
@@ -267,7 +267,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
                         WaitResult::TimedOut => unreachable!(),
                     }
                 }
-                Err(crate::ipc::SocketError::BrokenPipe) => {
+                Err(crate::socket::SocketError::BrokenPipe) => {
                     send_thread_signal(task.tgid(), task.tid(), 13)
                         .expect("socket writer must exist");
                     return -errno::EPIPE;

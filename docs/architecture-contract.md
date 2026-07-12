@@ -18,18 +18,19 @@
 | `sync` | `arch` | 只依赖本地中断机制 |
 | `memory` | `arch`, `config`, `id`, `random`, `sync` | 不感知 task、filesystem 或具体 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
-| `ipc` | `sync` | 拥有 Pipe 与 AF_UNIX endpoint/namespace，不感知 fd、task 或 syscall |
-| `fs` | `drivers`, `ipc`, `memory`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`memory` 仅允许 shared-page seam |
-| `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
+| `ipc` | `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall |
+| `socket` | `drivers`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam |
+| `fs` | `drivers`, `ipc`, `memory`, `socket`, `sync`, `timer` | `drivers` 仅允许 `block` seam；socket 仅允许统一 OFD backend facade；`memory` 仅允许 shared-page seam |
+| `task` | `arch`, `fs`, `ipc`, `memory`, `socket`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry；只在 deferred context 推进 network stack |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
-| `syscall` | `fs`, `ipc`, `memory`, `random`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
+| `syscall` | `fs`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch` | 只拥有 whole-system reset/shutdown/CAD policy |
 | `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
 | `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
-| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `random`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
+| `main` | `arch`, `config`, `drivers`, `fs`, `id`, `ipc`, `lang_item`, `log`, `memory`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
 
@@ -43,14 +44,16 @@
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
-| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
+| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、waiter 与 ITIMER_REAL | TaskManager process graph；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
 | deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
 | OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
-| AF_UNIX abstract namespace、endpoint state、listen/datagram queue | ipc::UnixSocket；OFD 只持 endpoint Arc，fork/dup 共享 |
+| AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
+| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP socket set、peer、IP_PKTINFO 与 ephemeral port | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照 |
+| VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
@@ -79,7 +82,7 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 1058 | `task::TaskManager` | process graph 与 wait orchestration 仍集中维护跨锁不变量；wait key/index storage 已下沉 | 按 process graph 与 wait lifecycle 的真实 seam 继续分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1045 | `task::TaskManager` | process graph 与 wait orchestration 仍集中维护跨锁不变量；wait key/index 与 deferred work storage 已下沉 | 按 process graph 与 wait lifecycle 的真实 seam 继续分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1112 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
 | `kernel/src/task/model.rs` | 1027 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 

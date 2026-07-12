@@ -13,6 +13,7 @@ pub(crate) struct TimeSpec {
 
 const CLOCK_REALTIME: i32 = 0;
 const CLOCK_MONOTONIC: i32 = 1;
+const ITIMER_REAL: usize = 0;
 
 /// @description 按 Linux RV64 legacy timeval ABI 返回 realtime 与固定 UTC timezone。
 ///
@@ -34,6 +35,98 @@ pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
     // 2. 当前没有 settimeofday ABI，唯一 timezone policy 为 UTC 且不使用 DST。
     // 缺少该显式策略会迫使 syscall 伪造一份可变 timezone state。
     if timezone != 0 && task.copy_to_user(timezone, &[0u8; 8]).is_err() {
+        return -EFAULT;
+    }
+    0
+}
+
+fn decode_timeval(bytes: &[u8]) -> Result<u64, isize> {
+    let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let microseconds = i64::from_ne_bytes(bytes[8..16].try_into().unwrap());
+    if seconds < 0 || !(0..1_000_000).contains(&microseconds) {
+        return Err(-EINVAL);
+    }
+    (seconds as u64)
+        .checked_mul(1_000_000)
+        .and_then(|value| value.checked_add(microseconds as u64))
+        .ok_or(-EINVAL)
+}
+
+fn encode_itimerval(interval_us: u64, value_us: u64) -> [u8; 32] {
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&(interval_us / 1_000_000).to_ne_bytes());
+    bytes[8..16].copy_from_slice(&(interval_us % 1_000_000).to_ne_bytes());
+    bytes[16..24].copy_from_slice(&(value_us / 1_000_000).to_ne_bytes());
+    bytes[24..].copy_from_slice(&(value_us % 1_000_000).to_ne_bytes());
+    bytes
+}
+
+/// @description 查询当前 Process 的 Linux ITIMER_REAL。
+///
+/// @param which 仅接受 `ITIMER_REAL`。
+/// @param output 32-byte `itimerval` userspace pointer。
+/// @return 成功返回零；selector 或 user-copy 错误返回负 errno。
+pub(crate) fn sys_getitimer(which: usize, output: usize) -> isize {
+    if which != ITIMER_REAL {
+        return -EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -EFAULT;
+    };
+    if output == 0 {
+        return -EFAULT;
+    }
+    let (value_us, interval_us) =
+        match crate::task::real_timer(task.tgid(), crate::timer::get_time_us()) {
+            Ok(value) => value,
+            Err(()) => return -EINVAL,
+        };
+    task.copy_to_user(output, &encode_itimerval(interval_us, value_us))
+        .map_or(-EFAULT, |()| 0)
+}
+
+/// @description 原子替换当前 Process 的 Linux ITIMER_REAL，并由 timer softirq 发布 SIGALRM。
+///
+/// @param which 仅接受 `ITIMER_REAL`。
+/// @param replacement 32-byte `itimerval` userspace pointer；value 为零时解除定时。
+/// @param previous 可选旧值输出 pointer。
+/// @return 成功返回零；timeval、selector 或 user-copy 错误返回负 errno。
+pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -> isize {
+    if which != ITIMER_REAL {
+        return -EINVAL;
+    }
+    let Some(task) = current_task() else {
+        return -EFAULT;
+    };
+    if replacement == 0 {
+        return -EFAULT;
+    }
+    let mut bytes = [0u8; 32];
+    if task.copy_from_user(replacement, &mut bytes).is_err() {
+        return -EFAULT;
+    }
+    let interval_us = match decode_timeval(&bytes[..16]) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let value_us = match decode_timeval(&bytes[16..]) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let old = match crate::task::set_real_timer(
+        task.tgid(),
+        value_us,
+        interval_us,
+        crate::timer::get_time_us(),
+    ) {
+        Ok(value) => value,
+        Err(()) => return -EINVAL,
+    };
+    if previous != 0
+        && task
+            .copy_to_user(previous, &encode_itimerval(old.1, old.0))
+            .is_err()
+    {
         return -EFAULT;
     }
     0

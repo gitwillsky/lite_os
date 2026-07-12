@@ -253,7 +253,7 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
     let mut pages = file.pages.lock();
     pages.retain(|index, _| *index < first_removed);
-    if size % PAGE_SIZE as u64 != 0
+    if !size.is_multiple_of(PAGE_SIZE as u64)
         && let Some(page) = pages.get(&(size / PAGE_SIZE as u64))
     {
         page.frame.zero_from(size as usize % PAGE_SIZE);

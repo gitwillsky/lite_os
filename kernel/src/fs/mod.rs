@@ -22,7 +22,8 @@ pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeTy
 pub(crate) use page_cache::{append, mapping, read, sync_all, sync_inode, truncate, write};
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
-    ProcCpuSnapshot, ProcFileSystem, ProcProcessSnapshot, ProcSnapshot, ProcSource,
+    ProcCpuSnapshot, ProcFileSystem, ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot,
+    ProcSource,
 };
 pub(crate) use vfs::{init as init_vfs, vfs};
 

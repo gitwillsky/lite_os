@@ -8,6 +8,7 @@ pub(in crate::drivers) type InterruptVector = u32;
 pub(in crate::drivers) enum InterruptError {
     HandlerNotSet,
     InvalidVector,
+    DeviceFailure,
 }
 
 impl fmt::Display for InterruptError {
@@ -15,6 +16,7 @@ impl fmt::Display for InterruptError {
         match self {
             InterruptError::HandlerNotSet => write!(f, "Interrupt handler not set"),
             InterruptError::InvalidVector => write!(f, "Invalid interrupt vector"),
+            InterruptError::DeviceFailure => write!(f, "Device interrupt handling failed"),
         }
     }
 }

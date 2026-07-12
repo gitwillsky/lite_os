@@ -156,7 +156,7 @@ impl MemorySet {
         file_offset: u64,
     ) -> Result<usize, MemoryError> {
         if length == 0
-            || file_offset % config::PAGE_SIZE as u64 != 0
+            || !file_offset.is_multiple_of(config::PAGE_SIZE as u64)
             || !permission.contains(MapPermission::U)
             || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))

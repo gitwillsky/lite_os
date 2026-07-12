@@ -193,7 +193,7 @@ fn set_kernel_trap_entry() {
     unsafe extern "C" {
         fn __kernel_trap();
     }
-    val.set_address(__kernel_trap as usize);
+    val.set_address(__kernel_trap as *const () as usize);
     val.set_trap_mode(TrapMode::Direct);
     // SAFETY: `__kernel_trap` is an aligned linked trap entry and this updates only local stvec.
     unsafe {
@@ -265,7 +265,8 @@ pub(crate) fn trap_return() -> ! {
         fn __restore();
         fn __alltraps();
     }
-    let restore_va = __restore as usize - __alltraps as usize + TRAMPOLINE;
+    let restore_va =
+        __restore as *const () as usize - __alltraps as *const () as usize + TRAMPOLINE;
 
     // 设置用户陷阱入口
     set_user_trap_entry();

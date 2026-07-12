@@ -326,7 +326,9 @@ pub(crate) fn sys_utimensat(
         }
         let mut values = [None; 2];
         for (index, chunk) in bytes
-            .chunks_exact(mem::size_of::<super::timer::TimeSpec>())
+            .as_chunks::<{ mem::size_of::<super::timer::TimeSpec>() }>()
+            .0
+            .iter()
             .enumerate()
         {
             let mut encoded = [0u8; mem::size_of::<super::timer::TimeSpec>()];

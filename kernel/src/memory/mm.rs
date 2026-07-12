@@ -633,7 +633,7 @@ impl MemorySet {
 
     pub(crate) fn map_trampoline(&mut self) -> Result<(), MemoryError> {
         let trampoline_va = VirtualAddress::from(config::TRAMPOLINE);
-        let strampoline_pa = PhysicalAddress::from(strampoline as usize);
+        let strampoline_pa = PhysicalAddress::from(strampoline as *const () as usize);
 
         self.page_table.map(
             trampoline_va.into(),

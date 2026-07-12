@@ -4,7 +4,7 @@ use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::register_block_device;
 use crate::drivers::{
     InterruptController, InterruptHandler, MmioBus, PlicInterruptController, VirtIOBlockDevice,
-    VirtIORngDevice,
+    VirtIONetworkDevice, VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
 
@@ -83,6 +83,7 @@ fn init_virtio_devices(board_info: &BoardInfo) {
             );
 
             match device_id {
+                1 => init_virtio_net_device(board_info, virtio_dev.irq, base_addr),
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
                 4 => init_virtio_rng_device(base_addr),
                 _ => info!(
@@ -92,6 +93,23 @@ fn init_virtio_devices(board_info: &BoardInfo) {
             }
         }
     }
+}
+
+fn init_virtio_net_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+    let device = VirtIONetworkDevice::new(base_addr).expect("DTB virtio-net must initialize");
+    super::network::register_network_device(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-net device is supported"));
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "net"),
+        "virtio-net requires a registered IRQ"
+    );
+    info!(
+        "[Platform] VirtIO network registered at {:#x}, mac={:02x?}",
+        base_addr,
+        crate::drivers::network::network_device()
+            .expect("network binding disappeared")
+            .mac_address()
+    );
 }
 
 fn init_virtio_rng_device(base_addr: usize) {

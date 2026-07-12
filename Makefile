@@ -23,10 +23,12 @@ run: build
 	-drive file=fs.img,if=none,format=raw,id=x0 \
 	-device virtio-blk-device,drive=x0 \
 	-object rng-random,filename=/dev/urandom,id=rng0 \
-	-device virtio-rng-device,rng=rng0
+	-device virtio-rng-device,rng=rng0 \
+	-netdev user,id=net0 \
+	-device virtio-net-device,netdev=net0
 
 run-gdb: build
-	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -S -s
+	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
 	cargo clean

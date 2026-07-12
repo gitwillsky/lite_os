@@ -86,8 +86,10 @@ pub(crate) fn sys_setgroups(size: usize, list: usize) -> isize {
         return -errno::EFAULT;
     }
     let groups = encoded
-        .chunks_exact(4)
-        .map(|value| u32::from_ne_bytes(value.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|value| u32::from_ne_bytes(*value))
         .collect();
     task.set_supplementary_groups(groups)
         .map_or(-errno::EPERM, |()| 0)

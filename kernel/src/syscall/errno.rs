@@ -59,9 +59,17 @@ pub(crate) const ENOSYS: isize = 38;
 /// 符号链接解析超出支持范围。
 pub(crate) const ELOOP: isize = 40;
 pub(crate) const ENOTSOCK: isize = 88;
+/// datagram socket 未连接且调用者没有提供目标地址。
+pub(crate) const EDESTADDRREQ: isize = 89;
+/// datagram 超过协议可表达的最大 payload。
+pub(crate) const EMSGSIZE: isize = 90;
 pub(crate) const EOPNOTSUPP: isize = 95;
 pub(crate) const EAFNOSUPPORT: isize = 97;
 pub(crate) const EADDRINUSE: isize = 98;
+/// 请求的本地或远端地址在当前 interface 上不可用。
+pub(crate) const EADDRNOTAVAIL: isize = 99;
+/// 当前 interface/route 无法到达目标网络。
+pub(crate) const ENETUNREACH: isize = 101;
 pub(crate) const ENOTCONN: isize = 107;
 pub(crate) const EISCONN: isize = 106;
 pub(crate) const ECONNREFUSED: isize = 111;

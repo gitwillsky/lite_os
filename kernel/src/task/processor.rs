@@ -42,7 +42,7 @@ pub(crate) struct Processor {
 impl Processor {
     fn new(hart_id: usize) -> Self {
         let mut idle_context = TaskContext::zero_init();
-        idle_context.set_ra(idle_return as usize);
+        idle_context.set_ra(idle_return as *const () as usize);
         Self {
             hart_id,
             current: None,
