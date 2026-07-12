@@ -14,7 +14,7 @@
 - `AF_INET/SOCK_DGRAM` 支持 bind/connect、read/write、sendto/recvfrom、sendmsg/recvmsg、blocking/nonblocking、ppoll/epoll 与标准 sockaddr_in。
 - message ABI 支持 RV64 `msghdr/iovec/cmsghdr`、`MSG_PEEK/DONTWAIT/TRUNC/NOSIGNAL` 与 IPv4 `IP_PKTINFO`；sendto/recvfrom 和 sendmsg/recvmsg 共用同一 endpoint 与等待路径。
 - standard socket ioctl 配置唯一 `eth0` 的 address/netmask/up/default route，并查询 name/index/flags/broadcast/MTU/MAC；`/proc/net/dev` 与 `/proc/net/route` 投影同一配置和真实 driver counter。
-- 当前精确缺口为 TCP、IPv6、raw/ICMP userspace socket、DHCP、multicast、多 interface/network namespace，以及 reuse/broadcast option 的完整 policy；未开放的协议不以 smoltcp feature 或空成功分支冒充支持。
+- 本阶段完成时的 TCP 缺口已由 Phase 50 在同一 NetworkStack/Socket/OFD seam 上关闭；其余缺口仍为 IPv6、raw/ICMP userspace socket、DHCP/DNS、multicast、多 interface/network namespace，以及 reuse/broadcast option 的完整 policy。未开放的协议不以 smoltcp feature 或空成功分支冒充支持。
 
 ## 运行验收事实
 

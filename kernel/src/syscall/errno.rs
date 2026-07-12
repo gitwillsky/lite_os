@@ -70,8 +70,14 @@ pub(crate) const EADDRINUSE: isize = 98;
 pub(crate) const EADDRNOTAVAIL: isize = 99;
 /// 当前 interface/route 无法到达目标网络。
 pub(crate) const ENETUNREACH: isize = 101;
+/// nonblocking connect 已经在进行。
+pub(crate) const EALREADY: isize = 114;
+/// nonblocking connect 已启动但尚未完成。
+pub(crate) const EINPROGRESS: isize = 115;
 pub(crate) const ENOTCONN: isize = 107;
 pub(crate) const EISCONN: isize = 106;
+/// 已建立连接被 peer reset。
+pub(crate) const ECONNRESET: isize = 104;
 pub(crate) const ECONNREFUSED: isize = 111;
 pub(crate) const EPROTONOSUPPORT: isize = 93;
 pub(crate) const ESOCKTNOSUPPORT: isize = 94;

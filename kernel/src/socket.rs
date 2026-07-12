@@ -57,7 +57,13 @@ pub(crate) enum SocketError {
     NotFound,
     NotConnected,
     AlreadyConnected,
+    /// active connect 已启动，调用方应进入 writable/error wait。
+    InProgress,
+    /// 同一 endpoint 已有尚未完成的 active connect。
+    AlreadyInProgress,
     ConnectionRefused,
+    /// established stream 被 peer reset。
+    ConnectionReset,
     NetworkUnreachable,
     DestinationRequired,
     MessageTooLarge,
@@ -68,7 +74,7 @@ pub(crate) enum SocketError {
     WrongType,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SocketPollState {
     pub(crate) readable: bool,
     pub(crate) writable: bool,
@@ -123,10 +129,10 @@ impl Socket {
         let backend = match (domain, socket_type, protocol) {
             (SocketDomain::Unix, _, 0) => SocketBackend::Unix(UnixSocket::new(socket_type, notify)),
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
-                SocketBackend::Inet(InetSocket::new(notify)?)
+                SocketBackend::Inet(InetSocket::new(SocketType::Datagram, notify)?)
             }
-            (SocketDomain::Inet, SocketType::Stream, _) => {
-                return Err(SocketError::ProtocolNotSupported);
+            (SocketDomain::Inet, SocketType::Stream, 0 | 6) => {
+                SocketBackend::Inet(InetSocket::new(SocketType::Stream, notify)?)
             }
             _ => return Err(SocketError::ProtocolNotSupported),
         };
@@ -164,7 +170,7 @@ impl Socket {
     pub(crate) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.listen(backlog),
-            SocketBackend::Inet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Inet(socket) => socket.listen(backlog),
         }
     }
 
@@ -208,10 +214,44 @@ impl Socket {
         UnixSocket::pair(first, second, first_to_second, second_to_first)
     }
 
-    pub(crate) fn accept(&self) -> Result<Arc<Self>, SocketError> {
+    /// @description 从 listener 接受连接，并为 AF_INET accepted endpoint 注入独立 wait source。
+    /// @param notify AF_INET notification Pipe；AF_UNIX 使用 connect 时已建立的 transport。
+    /// @return 新 Socket facade。
+    /// @errors 暂无连接、状态无效或资源不足时返回错误。
+    pub(crate) fn accept_with_notify(
+        &self,
+        notify: Option<(Arc<PipeEnd>, Arc<PipeEnd>)>,
+    ) -> Result<Arc<Self>, SocketError> {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.accept().map(Self::from_unix),
-            SocketBackend::Inet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Inet(socket) => {
+                let socket = socket.accept(notify.ok_or(SocketError::NoMemory)?)?;
+                Ok(Arc::new(Self {
+                    domain: SocketDomain::Inet,
+                    socket_type: SocketType::Stream,
+                    backend: SocketBackend::Inet(socket),
+                }))
+            }
+        }
+    }
+
+    /// @description 解析可能异步完成的 domain connect 结果。
+    /// @return 已完成连接返回 unit。
+    /// @errors 返回进行中、拒绝或未连接错误。
+    pub(crate) fn connection_result(&self) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.connection_result(),
+            SocketBackend::Unix(_) => Ok(()),
+        }
+    }
+
+    /// @description 原子读取并清除 domain pending error。
+    /// @return pending error；没有时为 None。
+    /// @errors 无错误。
+    pub(crate) fn take_error(&self) -> Option<SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.take_error(),
+            SocketBackend::Unix(_) => None,
         }
     }
 
@@ -279,10 +319,7 @@ impl Socket {
 
     pub(crate) fn set_ipv4_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
         match &self.backend {
-            SocketBackend::Inet(socket) => {
-                socket.set_packet_info(enabled);
-                Ok(())
-            }
+            SocketBackend::Inet(socket) => socket.set_packet_info(enabled),
             SocketBackend::Unix(_) => Err(SocketError::OperationNotSupported),
         }
     }
@@ -341,7 +378,7 @@ impl Socket {
     pub(crate) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.shutdown(how),
-            SocketBackend::Inet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Inet(socket) => socket.shutdown(how),
         }
     }
 }

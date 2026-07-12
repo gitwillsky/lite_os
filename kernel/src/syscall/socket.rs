@@ -63,6 +63,7 @@ pub(super) fn socket_error(error: SocketError) -> isize {
         SocketError::AddressInUse => errno::EADDRINUSE,
         SocketError::AddressNotAvailable => errno::EADDRNOTAVAIL,
         SocketError::NotFound | SocketError::ConnectionRefused => errno::ECONNREFUSED,
+        SocketError::ConnectionReset => errno::ECONNRESET,
         SocketError::NetworkUnreachable => errno::ENETUNREACH,
         SocketError::DestinationRequired => errno::EDESTADDRREQ,
         SocketError::MessageTooLarge => errno::EMSGSIZE,
@@ -70,6 +71,8 @@ pub(super) fn socket_error(error: SocketError) -> isize {
         SocketError::OperationNotSupported => errno::EOPNOTSUPP,
         SocketError::NotConnected => errno::ENOTCONN,
         SocketError::AlreadyConnected => errno::EISCONN,
+        SocketError::InProgress => errno::EINPROGRESS,
+        SocketError::AlreadyInProgress => errno::EALREADY,
         SocketError::Again => errno::EAGAIN,
         SocketError::BrokenPipe => errno::EPIPE,
     }
@@ -273,7 +276,7 @@ pub(crate) fn sys_listen(fd: usize, backlog: isize) -> isize {
 }
 
 pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
-    let (_, client) = match socket_ofd(fd) {
+    let (ofd, client) = match socket_ofd(fd) {
         Ok(value) => value,
         Err(error) => return error,
     };
@@ -303,9 +306,22 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         } else {
             None
         };
-    client
-        .connect(address, resources)
-        .map_or_else(socket_error, |()| 0)
+    match client.connect(address, resources) {
+        Ok(()) => 0,
+        Err(SocketError::InProgress) if *ofd.flags.lock() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
+        Err(SocketError::InProgress) => loop {
+            match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(4 | 8) != 0) {
+                WaitResult::Woken => match client.connection_result() {
+                    Ok(()) => return 0,
+                    Err(SocketError::InProgress) => {}
+                    Err(error) => return socket_error(error),
+                },
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            }
+        },
+        Err(error) => socket_error(error),
+    }
 }
 
 pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize) -> isize {
@@ -316,8 +332,16 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
         Ok(value) => value,
         Err(error) => return error,
     };
+    let accept_notify = if listener.domain() == SocketDomain::Inet {
+        match create_pipe_endpoints() {
+            Ok(value) => Some(value),
+            Err(_) => return -errno::ENOMEM,
+        }
+    } else {
+        None
+    };
     loop {
-        match listener.accept() {
+        match listener.accept_with_notify(accept_notify.clone()) {
             Ok(socket) => {
                 let result = current_task().unwrap().fd_allocate(
                     OpenFileDescription::socket(

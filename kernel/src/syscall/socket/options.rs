@@ -69,7 +69,9 @@ pub(crate) fn sys_getsockopt(
             SocketType::Stream => 1,
             SocketType::Datagram => 2,
         },
-        SO_ERROR => 0,
+        SO_ERROR => socket
+            .take_error()
+            .map_or(0, |error| (-socket_error(error)) as i32),
         _ => return -errno::ENOPROTOOPT,
     };
     let task = current_task().unwrap();

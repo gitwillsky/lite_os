@@ -52,7 +52,7 @@
 | OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
-| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP socket set、peer、IP_PKTINFO 与 ephemeral port | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照 |
+| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP socket set、peer、IP_PKTINFO、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
 | VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |

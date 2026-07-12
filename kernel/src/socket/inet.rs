@@ -10,7 +10,7 @@ use smoltcp::{
     iface::{Config, Interface, PollIngressSingleResult, SocketHandle, SocketSet},
     socket::udp,
     time::Instant,
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint},
+    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr},
 };
 use spin::{Mutex, Once};
 
@@ -21,17 +21,19 @@ use crate::{
 };
 
 use self::device::EthernetDevice;
+use self::tcp::TcpEndpointState;
 use super::{InetAddress, SocketError, SocketPollState};
 
 #[path = "device.rs"]
 mod device;
+#[path = "inet/tcp.rs"]
+mod tcp;
 #[path = "inet/timing.rs"]
 mod timing;
+#[path = "inet/udp.rs"]
+mod udp_endpoint;
 pub(crate) use timing::network_work_due;
 
-const UDP_PACKET_SLOTS: usize = 8;
-const UDP_BUFFER_BYTES: usize = 128 * 1024;
-const MAX_UDP_PAYLOAD: usize = 65_507;
 const EPHEMERAL_START: u16 = 49_152;
 const EPHEMERAL_END: u16 = 65_535;
 // 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 hart 永久停留在 softirq context；
@@ -66,8 +68,12 @@ struct NetworkStack {
     device: EthernetDevice,
     sockets: SocketSet<'static>,
     endpoints: BTreeMap<SocketHandle, EndpointState>,
+    tcp_endpoints: BTreeMap<usize, TcpEndpointState>,
+    orphaned_tcp: Vec<SocketHandle>,
     interface_state: InterfaceState,
     next_ephemeral: u16,
+    next_tcp_ephemeral: u16,
+    next_tcp_id: usize,
 }
 
 // OWNER: the IPv4 module uniquely owns interface configuration, routes, ARP cache, UDP socket set,
@@ -108,6 +114,11 @@ impl NetworkStack {
                 )
             })
             .collect();
+        let tcp_before: Vec<_> = self
+            .tcp_endpoints
+            .iter()
+            .map(|(&id, state)| (id, state.endpoint.clone(), state.poll_state(self)))
+            .collect();
         let timestamp = now();
         // 1. 定时维护只执行一次，确保单轮协议推进的固定成本。
         self.interface.poll_maintenance(timestamp);
@@ -123,6 +134,7 @@ impl NetworkStack {
                 break;
             }
         }
+        tcp::maintain(self);
         // 3. egress API 自身保证有界；在 ingress 后推进一次即可发送 ARP/UDP 响应。
         self.interface
             .poll_egress(timestamp, &mut self.device, &mut self.sockets);
@@ -133,6 +145,17 @@ impl NetworkStack {
                 && let Some(endpoint) = endpoint.upgrade()
             {
                 notifications.push(endpoint);
+            }
+        }
+        for (id, endpoint, before) in tcp_before {
+            if let Some(state) = self.tcp_endpoints.get(&id) {
+                let after = state.poll_state(self);
+                if after != before
+                    && (after.readable || after.writable || after.hangup || after.error)
+                    && let Some(endpoint) = endpoint.upgrade()
+                {
+                    notifications.push(endpoint);
+                }
             }
         }
         PollOutcome {
@@ -163,45 +186,6 @@ impl NetworkStack {
                 .expect("one default IPv4 route must fit smoltcp route storage");
         }
     }
-
-    fn port_in_use(&self, address: Option<Ipv4Addr>, port: u16, except: SocketHandle) -> bool {
-        self.endpoints.keys().any(|handle| {
-            if *handle == except {
-                return false;
-            }
-            let endpoint = self.sockets.get::<udp::Socket<'static>>(*handle).endpoint();
-            endpoint.port == port
-                && (endpoint.addr.is_none()
-                    || address.is_none()
-                    || endpoint.addr == address.map(ipv4))
-        })
-    }
-
-    fn allocate_ephemeral(&mut self, handle: SocketHandle) -> Result<u16, SocketError> {
-        for _ in EPHEMERAL_START..=EPHEMERAL_END {
-            let candidate = self.next_ephemeral;
-            self.next_ephemeral = if candidate == EPHEMERAL_END {
-                EPHEMERAL_START
-            } else {
-                candidate + 1
-            };
-            if !self.port_in_use(None, candidate, handle) {
-                return Ok(candidate);
-            }
-        }
-        Err(SocketError::AddressInUse)
-    }
-
-    fn ensure_bound(&mut self, handle: SocketHandle) -> Result<(), SocketError> {
-        if self.sockets.get::<udp::Socket<'static>>(handle).is_open() {
-            return Ok(());
-        }
-        let port = self.allocate_ephemeral(handle)?;
-        self.sockets
-            .get_mut::<udp::Socket<'static>>(handle)
-            .bind(port)
-            .map_err(|_| SocketError::AddressNotAvailable)
-    }
 }
 
 /// @description 由 composition root 在 device discovery 后创建唯一 IPv4 stack。
@@ -221,6 +205,8 @@ pub(crate) fn init() {
             device,
             sockets: SocketSet::new(Vec::new()),
             endpoints: BTreeMap::new(),
+            tcp_endpoints: BTreeMap::new(),
+            orphaned_tcp: Vec::new(),
             interface_state: InterfaceState {
                 address: None,
                 prefix_length: 0,
@@ -228,6 +214,8 @@ pub(crate) fn init() {
                 up: false,
             },
             next_ephemeral: EPHEMERAL_START,
+            next_tcp_ephemeral: EPHEMERAL_START,
+            next_tcp_id: 1,
         })
     });
 }
@@ -248,118 +236,96 @@ pub(crate) fn dispatch_network_work() -> bool {
     }
 }
 
-/// @description AF_INET UDP endpoint；协议状态和地址均保存在唯一 NetworkStack。
+#[derive(Clone, Copy)]
+enum InetEndpoint {
+    Udp(SocketHandle),
+    Tcp(usize),
+}
+
+/// @description AF_INET UDP/TCP endpoint facade；协议状态和地址均保存在唯一 NetworkStack。
 pub(super) struct InetSocket {
-    handle: SocketHandle,
+    endpoint: InetEndpoint,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
 }
 
 impl InetSocket {
-    pub(super) fn new(notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<Self>, SocketError> {
-        let mut rx_metadata = Vec::new();
-        rx_metadata
-            .try_reserve_exact(UDP_PACKET_SLOTS)
-            .map_err(|_| SocketError::NoMemory)?;
-        rx_metadata.resize(UDP_PACKET_SLOTS, udp::PacketMetadata::EMPTY);
-        let mut tx_metadata = rx_metadata.clone();
-        let mut rx_payload = Vec::new();
-        rx_payload
-            .try_reserve_exact(UDP_BUFFER_BYTES)
-            .map_err(|_| SocketError::NoMemory)?;
-        rx_payload.resize(UDP_BUFFER_BYTES, 0);
-        let mut tx_payload = Vec::new();
-        tx_payload
-            .try_reserve_exact(UDP_BUFFER_BYTES)
-            .map_err(|_| SocketError::NoMemory)?;
-        tx_payload.resize(UDP_BUFFER_BYTES, 0);
-        let socket = udp::Socket::new(
-            udp::PacketBuffer::new(rx_metadata, rx_payload),
-            udp::PacketBuffer::new(core::mem::take(&mut tx_metadata), tx_payload),
-        );
+    /// @description 创建 UDP 或 TCP endpoint，并把协议状态注册到唯一 NetworkStack。
+    /// @param socket_type AF_INET datagram 或 stream 类型。
+    /// @param notify endpoint 独占的 readiness notification Pipe。
+    /// @return 完整 InetSocket facade Arc。
+    /// @errors stack 不可用或协议 buffer 分配失败时返回错误。
+    pub(super) fn new(
+        socket_type: super::SocketType,
+        notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+    ) -> Result<Arc<Self>, SocketError> {
+        if socket_type == super::SocketType::Stream {
+            let mut network = stack()?.lock();
+            let id = tcp::create_endpoint(&mut network, Weak::new())?;
+            let endpoint = Arc::new(Self {
+                endpoint: InetEndpoint::Tcp(id),
+                notify_read: notify.0,
+                notify_write: notify.1,
+            });
+            network
+                .tcp_endpoints
+                .get_mut(&id)
+                .expect("new TCP endpoint disappeared before Arc publication")
+                .endpoint = Arc::downgrade(&endpoint);
+            return Ok(endpoint);
+        }
         let mut network = stack()?.lock();
-        let handle = network.sockets.add(socket);
+        let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
         let endpoint = Arc::new(Self {
-            handle,
+            endpoint: InetEndpoint::Udp(handle),
             notify_read: notify.0,
             notify_write: notify.1,
         });
-        network.endpoints.insert(
-            handle,
-            EndpointState {
-                endpoint: Arc::downgrade(&endpoint),
-                peer: None,
-                packet_info: false,
-            },
-        );
+        network
+            .endpoints
+            .get_mut(&handle)
+            .expect("new UDP endpoint disappeared before Arc publication")
+            .endpoint = Arc::downgrade(&endpoint);
         Ok(endpoint)
     }
 
+    fn udp_handle(&self) -> Result<SocketHandle, SocketError> {
+        match self.endpoint {
+            InetEndpoint::Udp(handle) => Ok(handle),
+            InetEndpoint::Tcp(_) => Err(SocketError::WrongType),
+        }
+    }
+
     pub(super) fn bind(&self, address: InetAddress) -> Result<(), SocketError> {
-        let mut network = stack()?.lock();
-        if network
-            .sockets
-            .get::<udp::Socket<'static>>(self.handle)
-            .is_open()
-        {
-            return Err(SocketError::Invalid);
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::bind(self, address);
         }
-        let address_filter = (!address.address.is_unspecified()).then_some(address.address);
-        if address.port == 0 {
-            return Err(SocketError::Invalid);
-        }
-        if address_filter.is_some_and(|candidate| {
-            network.interface_state.address != Some(candidate) || !network.interface_state.up
-        }) {
-            return Err(SocketError::AddressNotAvailable);
-        }
-        if network.port_in_use(address_filter, address.port, self.handle) {
-            return Err(SocketError::AddressInUse);
-        }
-        let endpoint = IpListenEndpoint {
-            addr: address_filter.map(ipv4),
-            port: address.port,
-        };
-        network
-            .sockets
-            .get_mut::<udp::Socket<'static>>(self.handle)
-            .bind(endpoint)
-            .map_err(|_| SocketError::AddressNotAvailable)
+        let handle = self.udp_handle()?;
+        udp_endpoint::bind(handle, address)
     }
 
     pub(super) fn connect(&self, peer: InetAddress) -> Result<(), SocketError> {
-        if peer.port == 0 || peer.address.is_unspecified() {
-            return Err(SocketError::AddressNotAvailable);
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::connect(self, peer);
         }
-        let mut network = stack()?.lock();
-        network.ensure_bound(self.handle)?;
-        network
-            .endpoints
-            .get_mut(&self.handle)
-            .expect("AF_INET endpoint metadata disappeared")
-            .peer = Some(peer);
-        Ok(())
+        let handle = self.udp_handle()?;
+        udp_endpoint::connect(handle, peer)
     }
 
     pub(super) fn address(&self) -> Result<InetAddress, SocketError> {
-        let network = stack()?.lock();
-        let endpoint = network
-            .sockets
-            .get::<udp::Socket<'static>>(self.handle)
-            .endpoint();
-        Ok(InetAddress {
-            address: endpoint.addr.map(from_ip).unwrap_or(Ipv4Addr::UNSPECIFIED),
-            port: endpoint.port,
-        })
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::address(self);
+        }
+        let handle = self.udp_handle()?;
+        udp_endpoint::address(handle)
     }
 
     pub(super) fn peer_address(&self) -> Result<InetAddress, SocketError> {
-        stack()?
-            .lock()
-            .endpoints
-            .get(&self.handle)
-            .and_then(|state| state.peer)
-            .ok_or(SocketError::NotConnected)
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::peer_address(self);
+        }
+        let handle = self.udp_handle()?;
+        udp_endpoint::peer_address(handle)
     }
 
     pub(super) fn send_to(
@@ -367,42 +333,14 @@ impl InetSocket {
         input: &[u8],
         target: Option<InetAddress>,
     ) -> Result<usize, SocketError> {
-        if input.len() > MAX_UDP_PAYLOAD {
-            return Err(SocketError::MessageTooLarge);
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            if target.is_some() {
+                return Err(SocketError::AlreadyConnected);
+            }
+            return tcp::send(self, input);
         }
-        let mut network = stack()?.lock();
-        if !network.interface_state.up || network.interface_state.address.is_none() {
-            return Err(SocketError::NetworkUnreachable);
-        }
-        network.ensure_bound(self.handle)?;
-        let peer = target
-            .or_else(|| {
-                network
-                    .endpoints
-                    .get(&self.handle)
-                    .and_then(|state| state.peer)
-            })
-            .ok_or(SocketError::DestinationRequired)?;
-        if peer.port == 0 || peer.address.is_unspecified() {
-            return Err(SocketError::AddressNotAvailable);
-        }
-        network
-            .sockets
-            .get_mut::<udp::Socket<'static>>(self.handle)
-            .send_slice(input, IpEndpoint::new(ipv4(peer.address), peer.port))
-            .map_err(|error| match error {
-                udp::SendError::BufferFull => SocketError::Again,
-                udp::SendError::Unaddressable => SocketError::NetworkUnreachable,
-            })?;
-        let NetworkStack {
-            interface,
-            device,
-            sockets,
-            ..
-        } = &mut *network;
-        interface.poll_egress(now(), device, sockets);
-        drop(network);
-        Ok(input.len())
+        let handle = self.udp_handle()?;
+        udp_endpoint::send(handle, input, target)
     }
 
     pub(super) fn receive(
@@ -410,67 +348,34 @@ impl InetSocket {
         output: &mut [u8],
         peek: bool,
     ) -> Result<(usize, usize, InetAddress, Option<Ipv4Addr>), SocketError> {
-        let mut network = stack()?.lock();
-        let socket = network.sockets.get_mut::<udp::Socket<'static>>(self.handle);
-        let received = if peek {
-            socket
-                .peek()
-                .map(|(payload, metadata)| (payload, *metadata))
-        } else {
-            socket.recv()
-        };
-        let result = received.map(|(payload, metadata)| {
-            let full_length = payload.len();
-            let count = output.len().min(full_length);
-            output[..count].copy_from_slice(&payload[..count]);
-            let source = InetAddress {
-                address: from_ip(metadata.endpoint.addr),
-                port: metadata.endpoint.port,
-            };
-            let local = metadata.local_address.map(from_ip);
-            (count, full_length, source, local)
-        });
-        let drained = result.is_ok() && !peek && !socket.can_recv();
-        drop(network);
-        let (count, full_length, source, local) = result.map_err(|_| SocketError::Again)?;
-        if drained {
-            self.consume_notify();
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::receive(self, output, peek);
         }
-        Ok((count, full_length, source, local))
+        let handle = self.udp_handle()?;
+        udp_endpoint::receive(self, handle, output, peek)
     }
 
-    pub(super) fn set_packet_info(&self, enabled: bool) {
-        stack()
-            .expect("AF_INET endpoint lost network stack")
-            .lock()
-            .endpoints
-            .get_mut(&self.handle)
-            .expect("AF_INET endpoint metadata disappeared")
-            .packet_info = enabled;
+    pub(super) fn set_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
+        let handle = self.udp_handle()?;
+        udp_endpoint::set_packet_info(handle, enabled);
+        Ok(())
     }
 
     pub(super) fn packet_info(&self) -> bool {
-        stack().is_ok_and(|stack| {
-            stack
-                .lock()
-                .endpoints
-                .get(&self.handle)
-                .is_some_and(|state| state.packet_info)
-        })
+        let Ok(handle) = self.udp_handle() else {
+            return false;
+        };
+        udp_endpoint::packet_info(handle)
     }
 
     pub(super) fn poll_state(&self) -> SocketPollState {
-        let Ok(stack) = stack() else {
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            return tcp::poll_state(self);
+        }
+        let Ok(handle) = self.udp_handle() else {
             return SocketPollState::error();
         };
-        let network = stack.lock();
-        let socket = network.sockets.get::<udp::Socket<'static>>(self.handle);
-        SocketPollState {
-            readable: socket.can_recv(),
-            writable: socket.can_send(),
-            hangup: false,
-            error: false,
-        }
+        udp_endpoint::poll_state(handle)
     }
 
     pub(super) fn readiness_generation(&self) -> u64 {
@@ -481,6 +386,65 @@ impl InetSocket {
 
     pub(super) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
         vec![(self.notify_read.pipe(), PipeDirection::Read)]
+    }
+
+    /// @description 把 TCP endpoint 转换为 passive listener。
+    /// @param backlog 请求的 accept queue 深度。
+    /// @return listener 完整发布后返回 unit。
+    /// @errors UDP、无效状态、地址或分配失败时返回错误。
+    pub(super) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            tcp::listen(self, backlog)
+        } else {
+            Err(SocketError::OperationNotSupported)
+        }
+    }
+
+    /// @description 接受一个 TCP connection，并转移到独立 InetSocket facade。
+    /// @param notify accepted endpoint 独占的 readiness notification Pipe。
+    /// @return 持有 established handle 的新 endpoint。
+    /// @errors 非 listener、暂无连接或分配失败时返回错误。
+    pub(super) fn accept(
+        &self,
+        notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+    ) -> Result<Arc<Self>, SocketError> {
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            tcp::accept(self, notify)
+        } else {
+            Err(SocketError::OperationNotSupported)
+        }
+    }
+
+    /// @description 读取 active TCP connect 的最终状态。
+    /// @return established 返回 unit；UDP connect 立即视为成功。
+    /// @errors TCP 仍在进行、被拒绝或未连接时返回错误。
+    pub(super) fn connection_result(&self) -> Result<(), SocketError> {
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            tcp::connection_result(self)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// @description 读取并清除 endpoint pending error。
+    /// @return TCP pending error；UDP 或无错误时为 None。
+    /// @errors 无错误。
+    pub(super) fn take_error(&self) -> Option<SocketError> {
+        matches!(self.endpoint, InetEndpoint::Tcp(_))
+            .then(|| tcp::take_error(self))
+            .flatten()
+    }
+
+    /// @description 提交 TCP receive/send half-close。
+    /// @param how Linux `SHUT_RD/WR/RDWR` selector。
+    /// @return 成功返回 unit。
+    /// @errors UDP 或未连接 TCP 返回错误。
+    pub(super) fn shutdown(&self, how: usize) -> Result<(), SocketError> {
+        if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
+            tcp::shutdown(self, how)
+        } else {
+            Err(SocketError::OperationNotSupported)
+        }
     }
 
     fn notify(&self) {
@@ -497,12 +461,14 @@ impl InetSocket {
 
 impl Drop for InetSocket {
     fn drop(&mut self) {
-        if let Some(stack) = NETWORK_STACK.get() {
-            let mut network = stack.lock();
-            if network.endpoints.remove(&self.handle).is_some() {
-                network.sockets.remove(self.handle);
-            }
+        if let InetEndpoint::Tcp(id) = self.endpoint {
+            tcp::drop_endpoint(id);
+            return;
         }
+        let InetEndpoint::Udp(handle) = self.endpoint else {
+            unreachable!();
+        };
+        udp_endpoint::drop_endpoint(handle);
     }
 }
 

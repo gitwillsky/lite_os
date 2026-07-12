@@ -968,6 +968,9 @@ kernel/src/socket.rs :: enum SocketAddress :: Inet (InetAddress)
 kernel/src/socket.rs :: enum SocketAddress :: Unix (UnixAddress)
 kernel/src/socket.rs :: enum SocketDomain :: Inet
 kernel/src/socket.rs :: enum SocketDomain :: Unix
+kernel/src/socket.rs :: enum SocketError :: # [doc = " active connect 已启动，调用方应进入 writable/error wait。"] InProgress
+kernel/src/socket.rs :: enum SocketError :: # [doc = " established stream 被 peer reset。"] ConnectionReset
+kernel/src/socket.rs :: enum SocketError :: # [doc = " 同一 endpoint 已有尚未完成的 active connect。"] AlreadyInProgress
 kernel/src/socket.rs :: enum SocketError :: AddressInUse
 kernel/src/socket.rs :: enum SocketError :: AddressNotAvailable
 kernel/src/socket.rs :: enum SocketError :: Again
@@ -1004,10 +1007,11 @@ kernel/src/socket.rs :: pub (crate) enum SocketDomain
 kernel/src/socket.rs :: pub (crate) enum SocketError
 kernel/src/socket.rs :: pub (crate) enum SocketType
 kernel/src/socket.rs :: pub (crate) fn init ()
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn accept (& self) -> Result < Arc < Self > , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn accept_with_notify (& self , notify : Option < (Arc < PipeEnd > , Arc < PipeEnd >) > ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn bind (self : & Arc < Self > , address : SocketAddress) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn connect (self : & Arc < Self > , address : SocketAddress , resources : Option < UnixConnectResources > ,) -> Result < () , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn connection_result (& self) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn domain (& self) -> SocketDomain
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn ipv4_packet_info (& self) -> bool
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn listen (& self , backlog : usize) -> Result < () , SocketError >
@@ -1023,6 +1027,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn send_to (& self , input : 
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_ipv4_packet_info (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> SocketType
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn take_error (& self) -> Option < SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn write (& self , input : & [u8]) -> Result < usize , SocketError >
 kernel/src/socket.rs :: pub (crate) impl SocketPollState :: const fn error () -> Self
@@ -1059,20 +1064,55 @@ kernel/src/socket/inet.rs :: pub (crate) fn network_snapshot () -> Option < Netw
 kernel/src/socket/inet.rs :: pub (crate) struct InterfaceSnapshot
 kernel/src/socket/inet.rs :: pub (crate) struct NetworkSnapshot
 kernel/src/socket/inet.rs :: pub (crate) use timing :: network_work_due
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn accept (& self , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn address (& self) -> Result < InetAddress , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn bind (& self , address : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn connect (& self , peer : InetAddress) -> Result < () , SocketError >
-kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn new (notify : (Arc < PipeEnd > , Arc < PipeEnd >)) -> Result < Arc < Self > , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn connection_result (& self) -> Result < () , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn listen (& self , backlog : usize) -> Result < () , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn new (socket_type : super :: SocketType , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn packet_info (& self) -> bool
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn peer_address (& self) -> Result < InetAddress , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn readiness_generation (& self) -> u64
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn receive (& self , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn send_to (& self , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
-kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn set_packet_info (& self , enabled : bool)
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn set_packet_info (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn take_error (& self) -> Option < SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
 kernel/src/socket/inet.rs :: pub (super) struct InetSocket
+kernel/src/socket/inet/tcp.rs :: pub (super) TcpEndpointState :: endpoint : Weak < InetSocket >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn accept (socket : & InetSocket , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < InetSocket > , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn address (socket : & InetSocket) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn bind (socket : & InetSocket , address : InetAddress) -> Result < () , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn connect (socket : & InetSocket , peer : InetAddress) -> Result < () , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn connection_result (socket : & InetSocket) -> Result < () , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn create_endpoint (network : & mut NetworkStack , endpoint : Weak < InetSocket > ,) -> Result < usize , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn drop_endpoint (id : usize)
+kernel/src/socket/inet/tcp.rs :: pub (super) fn listen (socket : & InetSocket , backlog : usize) -> Result < () , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn peer_address (socket : & InetSocket) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) struct TcpEndpointState
+kernel/src/socket/inet/tcp.rs :: pub (super) use io :: { maintain , poll_state , receive , send , shutdown , take_error }
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn maintain (network : & mut NetworkStack)
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn poll_state (socket : & InetSocket) -> SocketPollState
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn receive (socket : & InetSocket , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn send (socket : & InetSocket , input : & [u8] ,) -> Result < usize , SocketError >
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn shutdown (socket : & InetSocket , how : usize ,) -> Result < () , SocketError >
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) fn take_error (socket : & InetSocket) -> Option < SocketError >
+kernel/src/socket/inet/tcp/io.rs :: pub (in crate :: socket :: inet) impl TcpEndpointState :: fn poll_state (& self , network : & NetworkStack) -> SocketPollState
 kernel/src/socket/inet/timing.rs :: pub (crate) fn network_work_due () -> bool
+kernel/src/socket/inet/udp.rs :: pub (super) fn address (handle : SocketHandle) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn bind (handle : SocketHandle , address : InetAddress) -> Result < () , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn connect (handle : SocketHandle , peer : InetAddress) -> Result < () , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn create_endpoint (network : & mut NetworkStack , endpoint : Weak < InetSocket > ,) -> Result < SocketHandle , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn drop_endpoint (handle : SocketHandle)
+kernel/src/socket/inet/udp.rs :: pub (super) fn packet_info (handle : SocketHandle) -> bool
+kernel/src/socket/inet/udp.rs :: pub (super) fn peer_address (handle : SocketHandle) -> Result < InetAddress , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandle) -> SocketPollState
+kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
+kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool)
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn bytes (& self) -> & [u8]
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn new (bytes : & [u8]) -> Result < Self , SocketError >
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn accept (& self) -> Result < Arc < Self > , SocketError >
@@ -1118,12 +1158,15 @@ kernel/src/syscall/errno.rs :: pub (crate) const EADDRINUSE : isize = 98
 kernel/src/syscall/errno.rs :: pub (crate) const EADDRNOTAVAIL : isize = 99
 kernel/src/syscall/errno.rs :: pub (crate) const EAFNOSUPPORT : isize = 97
 kernel/src/syscall/errno.rs :: pub (crate) const EAGAIN : isize = 11
+kernel/src/syscall/errno.rs :: pub (crate) const EALREADY : isize = 114
 kernel/src/syscall/errno.rs :: pub (crate) const EBADF : isize = 9
 kernel/src/syscall/errno.rs :: pub (crate) const ECHILD : isize = 10
 kernel/src/syscall/errno.rs :: pub (crate) const ECONNREFUSED : isize = 111
+kernel/src/syscall/errno.rs :: pub (crate) const ECONNRESET : isize = 104
 kernel/src/syscall/errno.rs :: pub (crate) const EDESTADDRREQ : isize = 89
 kernel/src/syscall/errno.rs :: pub (crate) const EEXIST : isize = 17
 kernel/src/syscall/errno.rs :: pub (crate) const EFAULT : isize = 14
+kernel/src/syscall/errno.rs :: pub (crate) const EINPROGRESS : isize = 115
 kernel/src/syscall/errno.rs :: pub (crate) const EINTR : isize = 4
 kernel/src/syscall/errno.rs :: pub (crate) const EINVAL : isize = 22
 kernel/src/syscall/errno.rs :: pub (crate) const EIO : isize = 5
