@@ -628,6 +628,36 @@ kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = TRAMPOLI
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8192 * 32
 kernel/src/memory/config.rs :: pub (crate) const VIRTUAL_ADDRESS_WIDTH : usize = 39
 kernel/src/memory/config.rs :: pub (crate) const VPN_WIDTH : usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
+kernel/src/memory/executable.rs :: enum ElfKind :: Executable
+kernel/src/memory/executable.rs :: enum ElfKind :: SharedObject
+kernel/src/memory/executable.rs :: enum ExecutableParseError :: # [doc = " ELF header、program header 或 PT_INTERP 不满足 RV64 loader contract。"] InvalidElf
+kernel/src/memory/executable.rs :: enum ExecutableParseError :: # [doc = " executable source 发生 I/O error、越界或 short read。"] Io
+kernel/src/memory/executable.rs :: enum ExecutableParseError :: # [doc = " metadata buffer 或 owned mapping plan 分配失败。"] OutOfMemory
+kernel/src/memory/executable.rs :: pub (crate) enum ExecutableParseError
+kernel/src/memory/executable.rs :: pub (crate) fn parse_interpreter_elf (source : Arc < dyn ExecutableSource > ,) -> Result < ParsedElf , ExecutableParseError >
+kernel/src/memory/executable.rs :: pub (crate) fn parse_main_elf (source : Arc < dyn ExecutableSource > ,) -> Result < (ParsedElf , Option < Vec < u8 > >) , ExecutableParseError >
+kernel/src/memory/executable.rs :: pub (crate) impl ExecutableImage :: fn new (main : ParsedElf , interpreter : Option < ParsedElf >) -> Self
+kernel/src/memory/executable.rs :: pub (crate) struct ExecutableImage
+kernel/src/memory/executable.rs :: pub (crate) struct ParsedElf
+kernel/src/memory/executable.rs :: pub (crate) trait ExecutableSource
+kernel/src/memory/executable.rs :: pub (super) ExecutableImage :: interpreter : Option < ParsedElf >
+kernel/src/memory/executable.rs :: pub (super) ExecutableImage :: main : ParsedElf
+kernel/src/memory/executable.rs :: pub (super) LoadSegment :: file_offset : usize
+kernel/src/memory/executable.rs :: pub (super) LoadSegment :: file_size : usize
+kernel/src/memory/executable.rs :: pub (super) LoadSegment :: flags : u32
+kernel/src/memory/executable.rs :: pub (super) LoadSegment :: memory_size : usize
+kernel/src/memory/executable.rs :: pub (super) LoadSegment :: virtual_address : usize
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: entry : usize
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: kind : ElfKind
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: load_segments : Vec < LoadSegment >
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: program_header_count : usize
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: program_header_entry_size : usize
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: program_header_offset : usize
+kernel/src/memory/executable.rs :: pub (super) ParsedElf :: source : Arc < dyn ExecutableSource >
+kernel/src/memory/executable.rs :: pub (super) enum ElfKind
+kernel/src/memory/executable.rs :: pub (super) struct LoadSegment
+kernel/src/memory/executable.rs :: trait ExecutableSource :: fn len (& self) -> usize
+kernel/src/memory/executable.rs :: trait ExecutableSource :: fn read_exact_at (& self , offset : usize , buffer : & mut [u8]) -> Result < () , () >
 kernel/src/memory/frame_allocator.rs :: pub (crate) FrameTracker :: pages : usize
 kernel/src/memory/frame_allocator.rs :: pub (crate) FrameTracker :: ppn : PhysicalPageNumber
 kernel/src/memory/frame_allocator.rs :: pub (crate) fn alloc () -> Option < FrameTracker >
@@ -649,6 +679,7 @@ kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn new () -
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn try_new () -> Result < Self , MemoryError >
 kernel/src/memory/kernel_stack.rs :: pub (crate) struct KernelStack
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。"] InvalidElf
+kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " executable source 在 transaction 构造期间发生 I/O error 或 short read。"] Io
 kernel/src/memory/mm.rs :: enum ElfLoadError :: # [doc = " 物理页或页表页分配失败。"] OutOfMemory
 kernel/src/memory/mm.rs :: enum MapType :: Framed
 kernel/src/memory/mm.rs :: enum MapType :: Identical
@@ -661,8 +692,6 @@ kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 在调用方指定
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址为空、非用户 canonical 地址、未映射或权限不匹配。"] Fault
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 地址加长度发生整数溢出。"] Overflow
 kernel/src/memory/mm.rs :: enum UserAccessError :: # [doc = " 无法为 kernel-owned copy 缓冲区分配内存。"] OutOfMemory
-kernel/src/memory/mm.rs :: pub (crate) ExecutableImage :: interpreter : Option < Vec < u8 > >
-kernel/src/memory/mm.rs :: pub (crate) ExecutableImage :: main : Vec < u8 >
 kernel/src/memory/mm.rs :: pub (crate) enum ElfLoadError
 kernel/src/memory/mm.rs :: pub (crate) enum MapType
 kernel/src/memory/mm.rs :: pub (crate) enum MemoryError
@@ -698,12 +727,12 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& 
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn unmap_user_mapping (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> (usize , usize)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& mut self , address : usize , length : usize ,) -> Result < () , UserAccessError >
-kernel/src/memory/mm.rs :: pub (crate) struct ExecutableImage
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_write (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
+kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
 kernel/src/memory/mod.rs :: pub (crate) fn init ()
 kernel/src/memory/mod.rs :: pub (crate) fn init_allocator ()
@@ -712,9 +741,10 @@ kernel/src/memory/mod.rs :: pub (crate) fn strampoline ()
 kernel/src/memory/mod.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex < MemorySet > >
 kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , VirtualAddress }
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
+kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameTracker , alloc_contiguous , statistics as frame_statistics }
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , ExecutableImage , MapPermission , MemoryError , MemorySet , UserAccessError , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , MapPermission , MemoryError , MemorySet , UserAccessError }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable
@@ -854,16 +884,14 @@ kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_retur
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)
 kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn zero_init () -> Self
 kernel/src/task/context.rs :: pub (crate) struct TaskContext
-kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF program-header table 或 PT_INTERP pathname 非法。"] InvalidElf
-kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS 路径解析或块读取失败。"] FileSystem (FileSystemError)
-kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 无法为完整 file image 分配 kernel 缓冲区。"] OutOfMemory
+kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 PT_INTERP 不满足 RV64 契约。"] InvalidElf
+kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 普通文件没有任何 execute mode bit。"] NotExecutable
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 最终 inode 不是普通文件。"] NotRegularFile
+kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 有界 ELF metadata 或 mapping plan 分配失败。"] OutOfMemory
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
 kernel/src/task/loader.rs :: pub (crate) fn load_executable_from_fs (path : & [u8]) -> Result < ExecutableImage , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) fn load_executable_from_inode (inode : Arc < dyn Inode > ,) -> Result < ExecutableImage , ProgramLoadError >
-kernel/src/task/loader.rs :: pub (crate) fn load_program_from_fs (path : & [u8]) -> Result < Vec < u8 > , ProgramLoadError >
-kernel/src/task/loader.rs :: pub (crate) fn load_program_from_inode (inode : Arc < dyn Inode >) -> Result < Vec < u8 > , ProgramLoadError >
 kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { ProgramLoadError , load_executable_from_fs , load_executable_from_inode }

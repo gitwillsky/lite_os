@@ -74,7 +74,7 @@
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1885 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
-| `kernel/src/memory/mm.rs` | 1616 | `memory::MemorySet` | VMA owner 同时承载 ELF 装载、映射变更与 user-copy | 提取保持 MemorySet 单一 owner 的 ELF builder 后下调额度 |
+| `kernel/src/memory/mm.rs` | 1467 | `memory::MemorySet` | VMA mutation、user-copy 与 initial stack 仍共享同一页表提交 owner | 沿 user-copy 与 initial-stack seam 拆分且不复制 VMA/PTE 状态后下调额度 |
 | `kernel/src/task/model.rs` | 1400 | `task::Process/Thread` | process、thread、signal frame 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 | `kernel/src/syscall/fs.rs` | 1124 | `syscall::fs` | Linux 文件 ABI translation 与 user-copy 聚集但不拥有 VFS 状态 | 按 fd I/O、namespace 与 metadata ABI family 拆分后下调额度 |
 | `kernel/src/fs/file.rs` | 648 | `fs::file` | OFD、fd table、terminal line discipline 共享 close/readiness 语义 | terminal 成为独立深 module 后下调额度 |
@@ -87,6 +87,7 @@
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照；禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
+- task loader 是 inode 到 `ExecutableSource` 的唯一 adapter owner；memory 只消费该随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、逐页填充与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 ELF parser/loader。
 - thread-directed signal 先发布 pending bit，再从 wait 的唯一 owner 注销 membership；blocking path 必须在 owner lock 内复查 deliverable signal，禁止 signal-before-enqueue lost wakeup。
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。

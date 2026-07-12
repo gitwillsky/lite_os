@@ -1,4 +1,5 @@
 mod cow;
+mod executable_load;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
 
@@ -14,6 +15,7 @@ use crate::memory::{
 };
 
 use super::config;
+use super::executable::{ElfKind, ExecutableImage};
 use super::{address::VirtualPageNumber, page_table::PageTable};
 
 #[derive(Debug, Clone, Copy)]
@@ -90,12 +92,8 @@ pub(crate) enum ElfLoadError {
     OutOfMemory,
     /// ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。
     InvalidElf,
-}
-
-/// @description exec transaction 的主 ELF 与可选 PT_INTERP file image。
-pub(crate) struct ExecutableImage {
-    pub(crate) main: Vec<u8>,
-    pub(crate) interpreter: Option<Vec<u8>>,
+    /// executable source 在 transaction 构造期间发生 I/O error 或 short read。
+    Io,
 }
 
 impl From<MemoryError> for ElfLoadError {
@@ -117,6 +115,7 @@ impl core::fmt::Display for ElfLoadError {
         match self {
             Self::OutOfMemory => write!(f, "out of memory while loading ELF"),
             Self::InvalidElf => write!(f, "invalid or unsupported RV64 ELF image"),
+            Self::Io => write!(f, "I/O error while loading ELF"),
         }
     }
 }
@@ -1205,154 +1204,13 @@ impl MemorySet {
             .ppn()
     }
 
-    fn map_elf_image(
-        &mut self,
-        elf_data: &[u8],
-        load_bias: usize,
-        allowed_type: xmas_elf::header::Type,
-        allow_interpreter: bool,
-    ) -> Result<LoadedElf, ElfLoadError> {
-        const ELF64_PHDR_SIZE: usize = 56;
-        let elf = xmas_elf::ElfFile::new(elf_data).map_err(|_| ElfLoadError::InvalidElf)?;
-        let header = elf.header;
-        if header.pt1.class() != xmas_elf::header::Class::SixtyFour
-            || header.pt1.data() != xmas_elf::header::Data::LittleEndian
-            || header.pt1.version() != xmas_elf::header::Version::Current
-            || header.pt2.machine().as_machine() != xmas_elf::header::Machine::RISC_V
-            || header.pt2.version() != 1
-            || usize::from(header.pt2.header_size()) != 64
-            || header.pt2.type_().as_type() != allowed_type
-        {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let flags = match header.pt2 {
-            xmas_elf::header::HeaderPt2::Header64(value) => value.flags,
-            xmas_elf::header::HeaderPt2::Header32(_) => return Err(ElfLoadError::InvalidElf),
-        };
-        if flags & !0x7 != 0 || flags & 0x6 == 0x6 {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let ph_offset =
-            usize::try_from(header.pt2.ph_offset()).map_err(|_| ElfLoadError::InvalidElf)?;
-        let phent = usize::from(header.pt2.ph_entry_size());
-        let phnum = usize::from(header.pt2.ph_count());
-        let ph_end = ph_offset
-            .checked_add(phent.checked_mul(phnum).ok_or(ElfLoadError::InvalidElf)?)
-            .filter(|end| {
-                phnum != 0 && ph_offset >= 64 && phent == ELF64_PHDR_SIZE && *end <= elf_data.len()
-            })
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let mut max_end = 0usize;
-        let mut phdr = None;
-        let mut loads = 0usize;
-        for index in 0..header.pt2.ph_count() {
-            let ph = elf
-                .program_header(index)
-                .map_err(|_| ElfLoadError::InvalidElf)?;
-            match ph.get_type().map_err(|_| ElfLoadError::InvalidElf)? {
-                xmas_elf::program::Type::Load => {
-                    if ph.file_size() > ph.mem_size() {
-                        return Err(ElfLoadError::InvalidElf);
-                    }
-                    let virtual_start =
-                        usize::try_from(ph.virtual_addr()).map_err(|_| ElfLoadError::InvalidElf)?;
-                    let start = load_bias
-                        .checked_add(virtual_start)
-                        .ok_or(ElfLoadError::InvalidElf)?;
-                    let mem_size =
-                        usize::try_from(ph.mem_size()).map_err(|_| ElfLoadError::InvalidElf)?;
-                    let end = start
-                        .checked_add(mem_size)
-                        .ok_or(ElfLoadError::InvalidElf)?;
-                    let file_start =
-                        usize::try_from(ph.offset()).map_err(|_| ElfLoadError::InvalidElf)?;
-                    let file_size =
-                        usize::try_from(ph.file_size()).map_err(|_| ElfLoadError::InvalidElf)?;
-                    let file_end = file_start
-                        .checked_add(file_size)
-                        .filter(|end| *end <= elf_data.len())
-                        .ok_or(ElfLoadError::InvalidElf)?;
-                    if mem_size == 0 {
-                        if file_size != 0 {
-                            return Err(ElfLoadError::InvalidElf);
-                        }
-                        continue;
-                    }
-                    let alignment =
-                        usize::try_from(ph.align()).map_err(|_| ElfLoadError::InvalidElf)?;
-                    if alignment > 1
-                        && (!alignment.is_power_of_two()
-                            || virtual_start % alignment != file_start % alignment)
-                    {
-                        return Err(ElfLoadError::InvalidElf);
-                    }
-                    let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
-                    if start == 0 || start >= end || end > user_end {
-                        return Err(ElfLoadError::InvalidElf);
-                    }
-                    let mut permission = MapPermission::U;
-                    if ph.flags().is_read() {
-                        permission |= MapPermission::R;
-                    }
-                    if ph.flags().is_write() {
-                        permission |= MapPermission::W;
-                    }
-                    if ph.flags().is_execute() {
-                        permission |= MapPermission::X;
-                    }
-                    if permission.contains(MapPermission::W | MapPermission::X) {
-                        return Err(ElfLoadError::InvalidElf);
-                    }
-                    self.push(
-                        MapArea::elf(start.into(), end.into(), permission),
-                        Some(&elf_data[file_start..file_end]),
-                    )
-                    .map_err(ElfLoadError::from)?;
-                    max_end = max_end.max(end);
-                    loads += 1;
-                    if file_start <= ph_offset && ph_end <= file_end {
-                        phdr = start.checked_add(ph_offset - file_start);
-                    }
-                }
-                xmas_elf::program::Type::Interp if allow_interpreter => {}
-                xmas_elf::program::Type::Dynamic | xmas_elf::program::Type::Tls => {}
-                xmas_elf::program::Type::Interp => return Err(ElfLoadError::InvalidElf),
-                xmas_elf::program::Type::OsSpecific(0x6474_e551) if ph.flags().is_execute() => {
-                    return Err(ElfLoadError::InvalidElf);
-                }
-                _ => {}
-            }
-        }
-        if loads == 0 {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let entry = load_bias
-            .checked_add(
-                usize::try_from(header.pt2.entry_point()).map_err(|_| ElfLoadError::InvalidElf)?,
-            )
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let entry_pte = self
-            .translate(VirtualAddress::from(entry).floor())
-            .ok_or(ElfLoadError::InvalidElf)?;
-        if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        Ok(LoadedElf {
-            entry,
-            phdr,
-            phent,
-            phnum,
-            max_end,
-        })
-    }
-
     /// @description 从 RV64 ET_EXEC 或动态 PIE+PT_INTERP 构造用户地址空间和 Linux 初始栈。
     ///
-    /// @param elf_data 完整 ELF file bytes。
+    /// @param image 已校验的有界 ELF metadata 与唯一 executable source，不持有完整文件副本。
     /// @param args 不含 NUL 的 argv 字节串。
     /// @param envs 不含 NUL 的 envp 字节串。
     /// @return 新 MemorySet、16-byte aligned 用户 sp 与 ELF entry。
-    /// @errors 只区分资源耗尽与非法/不支持的 ELF，且失败时不修改现有地址空间。
+    /// @errors 区分资源耗尽、非法/不支持的 ELF 与 source I/O；失败时不修改现有地址空间。
     pub(crate) fn from_elf(
         image: &ExecutableImage,
         args: &[Vec<u8>],
@@ -1362,25 +1220,18 @@ impl MemorySet {
         memory_set.map_trampoline().map_err(ElfLoadError::from)?;
         const MAIN_PIE_BASE: usize = 0x1_0000;
         const INTERPRETER_BASE: usize = 0x2000_0000;
-        let main_type = xmas_elf::ElfFile::new(&image.main)
-            .map_err(|_| ElfLoadError::InvalidElf)?
-            .header
-            .pt2
-            .type_()
-            .as_type();
+        let main_type = image.main.kind;
         let main_bias = match main_type {
-            xmas_elf::header::Type::Executable if image.interpreter.is_none() => 0,
-            xmas_elf::header::Type::SharedObject if image.interpreter.is_some() => MAIN_PIE_BASE,
+            ElfKind::Executable if image.interpreter.is_none() => 0,
+            ElfKind::SharedObject if image.interpreter.is_some() => MAIN_PIE_BASE,
             _ => return Err(ElfLoadError::InvalidElf),
         };
-        let main = memory_set.map_elf_image(&image.main, main_bias, main_type, true)?;
+        let main = memory_set.map_elf_image(&image.main, main_bias)?;
         let (entry_point, interpreter_base) = if let Some(interpreter) = &image.interpreter {
-            let loaded = memory_set.map_elf_image(
-                interpreter,
-                INTERPRETER_BASE,
-                xmas_elf::header::Type::SharedObject,
-                false,
-            )?;
+            if interpreter.kind != ElfKind::SharedObject {
+                return Err(ElfLoadError::InvalidElf);
+            }
+            let loaded = memory_set.map_elf_image(interpreter, INTERPRETER_BASE)?;
             (loaded.entry, INTERPRETER_BASE)
         } else {
             (main.entry, 0)

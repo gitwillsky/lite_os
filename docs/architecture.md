@@ -119,7 +119,7 @@ TaskManager 的唯一 indexed wait registry 拥有 wait registration，并可同
 
 Signal disposition 属于共享 Process；mask、coalesced standard-signal pending bit+首个 siginfo 与至多一条 syscall replay record 属于 Thread。`tgkill` 发布 `SI_TKILL`；最后一个 child Thread 退出发布 `SIGCHLD/CLD_EXITED`，并与 wait4 completion 共用 process graph 的同一退出提交点。`rt_sigtimedwait` 从同一 pending owner 消费指定 set，阻塞时使用 indexed wait registry 和可选 deadline；未屏蔽、非忽略 signal 则取消 deadline/futex/child/console/signal wait 并以 `Interrupted` 结果恢复 task。trap/syscall 边界把可重启结果暂存为 userspace `EINTR`，同时保存原 `a0..a5/a7/ecall PC`；实际交付 handler 含 `SA_RESTART` 时，signal frame 才保存 replay context，否则保存 `EINTR` context。trap return 选择最低未屏蔽 signal，在普通用户栈构造 Linux RV64 `siginfo + ucontext + sigcontext`，保存完整 GPR/FP state，并把 RA 指向独立 U|RX signal-return trampoline。`rt_sigreturn` 恢复原 mask、寄存器、FP 与 PC。当前 blocking `wait4` 和无 timeout 的 futex WAIT 可重启；带 relative timeout 的 futex WAIT 与 `nanosleep` 保持 `EINTR`，避免错误延长 timeout。无 altstack、queued realtime value、process-directed selection 或完整多线程 process 的 SIGCHLD target selection。
 
-`execve` 先完整读取 file、复制 byte argv/envp、构造新 MemorySet/initial stack，然后一次替换 AddressSpace。失败不修改旧映像；成功后 trap 返回点不用旧 syscall result 覆盖新入口。
+`execve` 通过 inode-backed `ExecutableSource` 只读取固定 ELF header、至多 64 KiB program-header table 与 PT_INTERP pathname，生成唯一映射计划；`MemorySet` 再把每个 PT_LOAD 直接按页读入新 frame，BSS 使用 frame 的零初始化区域。任一 source read、frame allocation、映射或 initial stack 构造失败都会丢弃整个新 MemorySet，不修改旧映像；成功后才一次替换 AddressSpace，trap 返回点不用旧 syscall result 覆盖新入口。
 
 ## 9. 调度模型
 
@@ -141,7 +141,7 @@ Signal disposition 属于共享 Process；mask、coalesced standard-signal pendi
 - ext2 对块号/目录项/间接块做边界验证，I/O 错误不冒充 sparse zero。
 - ext2 支持 `filetype`、`sparse_super` 与 `large_file`：分配/释放同步更新位图、group descriptor、primary/backup superblock 和 512-byte `i_blocks`；未知 incompat/RO-compat、journal/recovery 或旧式无 file-type 目录项会拒绝挂载。
 - 文件系统只有一个 mutation lock，append、目录变更和 allocator 元数据使用单一串行化顺序；unlink 后仍被 OFD 引用的 inode 延迟到最后 close 回收。
-- kernel ELF loader 要求 regular inode、至少一个 execute mode bit 和 full read。
+- kernel ELF loader 要求 regular inode 与至少一个 execute mode bit；filesystem 只通过 `ExecutableSource::read_exact_at` adapter 暴露只读随机访问，不向 memory 泄漏 inode，也不保留完整 ELF 文件副本。
 
 每个 Process 拥有唯一 `FileDescriptorTable`；fd entry 保存 `FD_CLOEXEC`，dup/fork 后共享同一 OFD。最后一个 Thread 提交 process exit 后立即取走并关闭全部 fd，不能把 EOF/SIGPIPE 等语义延迟到 TCB memory reap。PID 1 的 `0/1/2` 指向同一个 Terminal。anonymous Pipe 独占 64 KiB byte ring、read/write endpoint lifecycle 与 4096-byte `PIPE_BUF` 原子写；OFD Drop 发布 EOF/broken readiness，blocking read/write 复用 indexed wait registry，readv scatter 与 writev 不另建数据路径。
 

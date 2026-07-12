@@ -5,6 +5,7 @@ use crate::arch::dtb;
 
 mod address;
 mod config;
+mod executable;
 mod frame_allocator;
 mod heap_allocator;
 mod kernel_stack;
@@ -13,11 +14,12 @@ mod page_table;
 
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
+pub(crate) use executable::{
+    ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
+};
 pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
 pub(crate) use kernel_stack::KernelStack;
-pub(crate) use mm::{
-    ElfLoadError, ExecutableImage, MapPermission, MemoryError, MemorySet, UserAccessError,
-};
+pub(crate) use mm::{ElfLoadError, MapPermission, MemoryError, MemorySet, UserAccessError};
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {

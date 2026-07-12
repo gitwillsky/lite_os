@@ -611,7 +611,7 @@ def main() -> int:
                 "LITEOS_PERSIST_42",
                 "LITEOS_COW_ISOLATION_42",
                 "LITEOS_SCHED_8_HARTS_42",
-                "LITEOS_COW_PRESSURE_42",
+                "LITEOS_STREAMING_EXEC_42",
             ),
             interactions=(
                 ("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),
@@ -629,7 +629,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_SCHED_8_HARTS_42",
-                    b"i=0; while [ $i -lt 16 ]; do /bin/true || break; i=$((i+1)); done; [ \"$i\" -eq 16 ] && echo LITEOS_COW_PRESSURE_$((6*7))\n",
+                    b"n=$(for p in $pids; do /bin/awk '{print $1}' /proc/$p/stat; done | /bin/sort -n | /bin/wc -l); [ \"$n\" -eq 8 ] && echo LITEOS_STREAMING_EXEC_$((6*7))\n",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

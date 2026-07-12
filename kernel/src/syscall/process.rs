@@ -297,6 +297,7 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         Ok(()) => 0,
         Err(ElfLoadError::OutOfMemory) => -errno::ENOMEM,
         Err(ElfLoadError::InvalidElf) => -errno::ENOEXEC,
+        Err(ElfLoadError::Io) => -errno::EIO,
     }
 }
 

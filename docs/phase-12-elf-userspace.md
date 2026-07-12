@@ -113,7 +113,7 @@ kernel-created init 得到 `argc=1, argv[0]="/bin/init"`。`execve` 对 NULL 或
 
 > 后续状态：Phase 22 已将 cwd 收敛为 Process-owned directory inode，并使 relative `execve` 直接从该 inode 解析；本条只记录 Phase 12 当时边界。
 3. VFS 对 raw byte components 逐层查找，要求 regular inode，并在当前 root identity 模型下要求至少一个 execute mode bit。
-4. loader 要求 full read；short read 是 I/O error，不在零填充 buffer 上解析 ELF。
+4. 本阶段 loader 曾先读取整个文件；当前实现只完整读取有界 header/program-header/PT_INTERP 区间，PT_LOAD 逐页读取，任一 short read 仍作为 I/O error 回滚新映像。
 5. 创建全新 MemorySet、LOAD/BSS、heap boundary、stack、auxv 与 trap-context page。
 6. 只有上述全部成功后，才用一次 owner 替换提交 AddressSpace，然后写入新 TrapContext。
 7. trap 返回路径识别共享 `SYSCALL_EXECVE` 常量；成功时不把 syscall 返回值覆盖到新映像的 `a0`。
