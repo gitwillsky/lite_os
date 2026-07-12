@@ -1,0 +1,55 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_d7650814eb4db9 46,76,96
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_c13d1d1ea845ed 854,1021,1028,1083,1086,1145,1150-1153,1170
+docs/architecture.md
+  s_d637a88cd4b00d::t_3fc071181747f1 116,120,220-221,233
+docs/phase-36-process-exit.md
+  s_d637a88cd4b00d::t_b7b756feeebc3b 1-30
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_18ed6570a48e53 54-55,62,64,67,82,101
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_6ac89b2fdd656b 89-90
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_f46b2dfb3297b7 10-12,21,26-34
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_684a7bfe9b79be 803
+kernel/src/task/model/signal_state.rs
+  s_d637a88cd4b00d::t_d76a33aca2bbc9 14,77-89
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_41cbd5ce1255c7 22
+kernel/src/task/processor/job_control.rs
+  s_d637a88cd4b00d::t_fa9ecec5674a10 35-56
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_da8ba4f27941d6 23,28-31,40-54,57,65,141,180,196
+kernel/src/task/task_manager/process_exit.rs
+  s_d637a88cd4b00d::t_414ebc2ce33d3c 1-239
+kernel/src/task/task_manager/signal.rs
+  s_d637a88cd4b00d::t_b35d473194a710 440
+kernel/src/task/task_manager/wait_child.rs
+  s_d637a88cd4b00d::t_8c343cf7868f3d 56,59
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_c67bbb23befc42 18,78,84,123,130,150,157,165,211,219,221,225
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_252d9305b72465 660,664
+user/musl-smoke.c
+  s_d637a88cd4b00d::t_c61d11b0543dcb 66-71,87,350-374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "25b032b70e9d200e9e7d275c6b04659461076386",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
