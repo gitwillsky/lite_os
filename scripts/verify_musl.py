@@ -218,15 +218,15 @@ def find_compiler() -> Path:
 
 def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
     """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。"""
-    llvm = Path("/opt/homebrew/opt/llvm/bin")
-    clang = llvm / "clang"
-    archiver = Path("/opt/homebrew/bin/riscv64-unknown-elf-ar")
-    ranlib = Path("/opt/homebrew/bin/riscv64-unknown-elf-ranlib")
-    rustup = Path.home() / ".rustup" / "toolchains"
-    linkers = sorted(rustup.glob("nightly-*-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/rust-lld"), reverse=True)
-    if not clang.is_file() or not archiver.is_file() or not ranlib.is_file() or not linkers:
-        raise RuntimeError("Homebrew LLVM/RISC-V binutils and a pinned Rust rust-lld are required")
-    return clang.resolve(), linkers[0].resolve(), archiver.resolve(), ranlib.resolve()
+    clang = shutil.which("clang") or "/opt/homebrew/opt/llvm/bin/clang"
+    archiver = shutil.which("llvm-ar") or "/opt/homebrew/opt/llvm/bin/llvm-ar"
+    ranlib = shutil.which("llvm-ranlib") or "/opt/homebrew/opt/llvm/bin/llvm-ranlib"
+    rust_sysroot = Path(run(["rustc", "--print", "sysroot"], ROOT).strip())
+    linkers = sorted(rust_sysroot.glob("lib/rustlib/*/bin/rust-lld"))
+    tools = tuple(Path(tool) for tool in (clang, archiver, ranlib))
+    if not all(tool.is_file() for tool in tools) or not linkers:
+        raise RuntimeError("Clang, LLVM archive tools, and the pinned Rust rust-lld are required")
+    return tools[0].resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].resolve()
 
 
 def compiler_identity(compiler: Path) -> dict[str, object]:
