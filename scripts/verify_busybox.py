@@ -56,6 +56,7 @@ BUSYBOX_LINKS = (
     "cp",
     "cut",
     "dd",
+    "df",
     "dirname",
     "echo",
     "expr",
@@ -560,6 +561,7 @@ def main() -> int:
                 "LITEOS_MATH_42",
                 "LITEOS_TOOLS_42",
                 "LITEOS_OBSERVABILITY_42",
+                "LITEOS_FILESYSTEM_CAPACITY_42",
                 "LITEOS_TOP_42",
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
@@ -628,6 +630,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_OBSERVABILITY_42",
+                    b"/bin/grep -q '^root / ext2 rw 0 0$' /proc/mounts && /bin/grep -q '^devfs /dev devfs ro 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc ro 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_FILESYSTEM_CAPACITY_42",
                     b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n",
                 ),
                 (

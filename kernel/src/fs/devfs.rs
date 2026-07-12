@@ -2,7 +2,8 @@ use alloc::{sync::Arc, vec, vec::Vec};
 use spin::Once;
 
 use super::{
-    DeviceKind, DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType,
+    DeviceKind, DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode,
+    InodeMetadata, InodeType,
 };
 
 const DEVICE_FILESYSTEM_ID: usize = 2;
@@ -218,5 +219,22 @@ impl DevFileSystem {
 impl FileSystem for DevFileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
         Ok(self.root.clone())
+    }
+
+    fn statistics(&self) -> FileSystemStatistics {
+        FileSystemStatistics {
+            type_name: "devfs",
+            magic: 0x8584_58f6,
+            block_size: 4096,
+            blocks: 0,
+            blocks_free: 0,
+            blocks_available: 0,
+            files: 0,
+            files_free: 0,
+            fsid: [DEVICE_FILESYSTEM_ID as u32, 0],
+            name_length: 255,
+            fragment_size: 4096,
+            flags: 1,
+        }
     }
 }

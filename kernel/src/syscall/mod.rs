@@ -42,6 +42,8 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_IOCTL => sys_ioctl(args[0], args[1], args[2]),
         SYSCALL_MKDIRAT => sys_mkdirat(args[0] as isize, args[1] as *const u8, args[2] as u32),
         SYSCALL_UNLINKAT => sys_unlinkat(args[0] as isize, args[1] as *const u8, args[2]),
+        SYSCALL_STATFS => fs::statistics::sys_statfs(args[0] as *const u8, args[1]),
+        SYSCALL_FSTATFS => fs::statistics::sys_fstatfs(args[0], args[1]),
         SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
         SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
         SYSCALL_OPENAT => sys_openat(

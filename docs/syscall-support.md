@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 63 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 65 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 63 个入口
+## 2. 当前暴露的 65 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -37,6 +37,7 @@
 | 25 | `fcntl` | fd、command、argument | command 对应值；`EBADF/EINVAL` | POSIX fcntl | **Partial**。实现 `F_DUPFD/F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD_CLOEXEC`；`F_SETFL` 当前只允许修改 `O_APPEND`。 | `kernel/src/syscall/fs.rs` |
 | 29 | `ioctl` | fd、request、request-specific argument | 0；`EBADF/ENOTTY/EFAULT/EINVAL/EPERM/EIO/EINTR` | musl termios；BusyBox init/ash/stty | **Partial**。inherited console 与 `/dev/console`/`/dev/tty` 共用唯一 Terminal owner，支持 `TCGETS/TCSETS*`、`TIOCSCTTY`、`TIOCGPGRP/TIOCSPGRP`、`TIOCGWINSZ/TIOCSWINSZ`、`TIOCGSID`；后台 `TCSETS*`/`TIOCSPGRP` 产生 SIGTTOU，blocked/ignored 时继续，orphan group 返回 `EIO`。UART TTY 的 `VT_OPENQRY` 和 null/zero 正确返回 `ENOTTY`。尚无完整 VMIN/VTIME、TCSETSW drain、TCSETSF flush 和 TIOCNOTTY。 | `kernel/src/syscall/tty.rs`, `kernel/src/fs/file/terminal.rs`, `kernel/src/task/task_manager/terminal_access.rs` |
 | 34/35 | `mkdirat` / `unlinkat` | dirfd、raw path、mode/`AT_REMOVEDIR` | 0；标准 pathname errno | POSIX mkdirat/unlinkat | **Partial**。支持绝对路径、`AT_FDCWD`、目录 fd、中间 symlink traversal，以及 unlink 最终 link inode；无 credentials 与 mount-point mutation semantics。 | `kernel/src/syscall/fs.rs` |
+| 43/44 | `statfs` / `fstatfs` | pathname/fd、RV64 120-byte `struct statfs` | 0；`EFAULT/EBADF` 及 pathname/filesystem errno | Linux filesystem statistics；musl statvfs；BusyBox df | **Complete**（当前 VFS/OFD kinds）。VFS 唯一解析 mount→filesystem；ext2 返回扣除 metadata overhead 的总块、reserved-adjusted available、superblock inode 计数与 UUID fsid，procfs/devfs/pipefs 返回 Linux simple-statfs 形状；character fd 保留 backing inode。 | `kernel/src/syscall/fs/statistics.rs`, `kernel/src/fs/vfs.rs`, `kernel/src/fs/ext2/filesystem.rs` |
 | 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EISDIR/ENOSPC/EIO` | POSIX ftruncate | **Complete**。支持稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
 | 49 | `chdir` | NUL 结尾 raw pathname | 0；`EFAULT/ENOENT/ENOTDIR/ELOOP/ENOMEM/EIO` | POSIX chdir；musl direct wrapper | **Partial**。absolute/relative、`.`/`..`、重复分隔符与最多 40 次 symlink traversal 统一经 VFS cwd inode 解析；fork 共享初始 identity 后各 Process 独立替换。无 credentials/execute permission 与 mount namespace。 | `kernel/src/syscall/fs.rs`, `kernel/src/task/model.rs` |
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path errno | POSIX openat/close | **Partial**。regular/directory/character OFD、create/excl/trunc/append/directory/cloexec、默认 symlink traversal 以及 device fs `null/zero/tty/console` 打开成立；`/dev/tty` 校验 caller controlling session，device fs mutation 返回 `EROFS`，valid non-directory dirfd 返回 `ENOTDIR`。无 permissions 与 `O_NOFOLLOW`。 | `kernel/src/syscall/fs.rs` |
@@ -97,7 +98,7 @@
 
 ## 4. musl 结论
 
-当前 63 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec、process-group kill、基础 job control、系统可观测性与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
+当前 65 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec、process-group kill、基础 job control、系统/文件系统可观测性与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex requeue/PI/bitset与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack 与 queued realtime signal；

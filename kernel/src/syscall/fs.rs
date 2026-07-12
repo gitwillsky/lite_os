@@ -4,6 +4,7 @@ use core::mem;
 mod io;
 mod pathname;
 mod readlink;
+pub(crate) mod statistics;
 pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
@@ -23,7 +24,6 @@ use crate::{
 };
 
 use super::tty::guard_terminal_access;
-
 const AT_FDCWD: isize = -100;
 const AT_REMOVEDIR: usize = 0x200;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
@@ -109,7 +109,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
                 return -errno::ENXIO;
             }
         }
-        OpenFileDescription::character(device, terminal, ofd_flags)
+        OpenFileDescription::character(device, terminal, ofd_flags, inode)
     } else {
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY

@@ -7,7 +7,10 @@ use alloc::{
 };
 use core::fmt::Write;
 
-use super::{DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType};
+use super::{
+    DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
+    InodeType, vfs,
+};
 
 const PROC_FILESYSTEM_ID: usize = 3;
 const CLOCK_TICKS_PER_SECOND: u64 = 100;
@@ -62,6 +65,7 @@ enum ProcNode {
     MemInfo,
     LoadAvg,
     Uptime,
+    Mounts,
     ProcessDir(usize),
     ProcessStat(usize),
 }
@@ -74,6 +78,7 @@ impl ProcNode {
             Self::MemInfo => 3,
             Self::LoadAvg => 4,
             Self::Uptime => 5,
+            Self::Mounts => 6,
             Self::ProcessDir(pid) => 0x1_0000 + (pid as u64) * 2,
             Self::ProcessStat(pid) => 0x1_0001 + (pid as u64) * 2,
         }
@@ -98,12 +103,16 @@ impl ProcInode {
     }
 
     fn file_contents(&self) -> Result<Vec<u8>, FileSystemError> {
+        if matches!(self.node, ProcNode::Mounts) {
+            return vfs().mount_table();
+        }
         let snapshot = self.source.snapshot();
         let text = match self.node {
             ProcNode::Stat => format_cpu_stat(&snapshot),
             ProcNode::MemInfo => format_meminfo(&snapshot),
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot),
+            ProcNode::Mounts => unreachable!("mount table handled before task snapshot"),
             ProcNode::ProcessStat(pid) => snapshot
                 .processes
                 .iter()
@@ -197,6 +206,7 @@ impl Inode for ProcInode {
                     directory_entry(3, InodeType::File, b"meminfo"),
                     directory_entry(4, InodeType::File, b"loadavg"),
                     directory_entry(5, InodeType::File, b"uptime"),
+                    directory_entry(6, InodeType::File, b"mounts"),
                 ]);
                 entries.extend(self.source.snapshot().processes.into_iter().map(|process| {
                     directory_entry(
@@ -224,6 +234,7 @@ impl Inode for ProcInode {
                 b"meminfo" => ProcNode::MemInfo,
                 b"loadavg" => ProcNode::LoadAvg,
                 b"uptime" => ProcNode::Uptime,
+                b"mounts" => ProcNode::Mounts,
                 _ => {
                     let pid = parse_pid(name).ok_or(FileSystemError::NotFound)?;
                     if !self
@@ -286,6 +297,23 @@ impl ProcFileSystem {
 impl FileSystem for ProcFileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
         Ok(self.root.clone())
+    }
+
+    fn statistics(&self) -> FileSystemStatistics {
+        FileSystemStatistics {
+            type_name: "proc",
+            magic: 0x9fa0,
+            block_size: 4096,
+            blocks: 0,
+            blocks_free: 0,
+            blocks_available: 0,
+            files: 0,
+            files_free: 0,
+            fsid: [PROC_FILESYSTEM_ID as u32, 0],
+            name_length: 255,
+            fragment_size: 4096,
+            flags: 1,
+        }
     }
 }
 

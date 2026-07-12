@@ -48,7 +48,7 @@
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
-| OFD offset/status flags | OpenFileDescription |
+| OFD backend、backing mount identity、offset/status flags | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义 |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
@@ -57,8 +57,8 @@
 | per-hart busy runtime | ProcessorTopology 对应 hart slot；procfs 不另建 CPU counter |
 | 1/5/15 minute load average | TaskManager 的单一 fixed-point EWMA state |
 | system information snapshot | task façade 只投影 allocator、process graph、load average 与 timer 的权威状态；procfs/sysinfo 不另建 counter |
-| root mount、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
-| inode/on-disk allocation state | filesystem adapter mutation domain |
+| root mount、source/filesystem association、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
+| inode/on-disk allocation 与 statfs capacity state | filesystem adapter mutation domain；ext2 统计与 allocator mutation 共锁 |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
 | entropy device 与请求串行化 | VirtIORngDevice；random facade 不缓存或派生第二份状态 |
 | UART MMIO 与固定容量 RX ring | UART driver；hardirq 只填 ring，console waiter 只由 deferred softirq 消费 |
@@ -74,7 +74,7 @@
 
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
+| `kernel/src/fs/ext2.rs` | 2308 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
 | `kernel/src/task/model.rs` | 1099 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
@@ -85,7 +85,8 @@
 - kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
-- ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照；禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。

@@ -92,16 +92,17 @@ fn mount_root_filesystem() {
         drivers::block::get_primary_block_device().expect("boot requires one primary block device");
     let filesystem = fs::Ext2FileSystem::new(device).expect("invalid ext2 root filesystem");
     fs::vfs()
-        .mount_root(filesystem)
+        .mount_root(b"root", filesystem)
         .expect("root filesystem mounted more than once");
     info!("ext2 root filesystem mounted at /");
     fs::vfs()
-        .mount_at(b"/dev", fs::DevFileSystem::instance())
+        .mount_at(b"/dev", b"devfs", fs::DevFileSystem::instance())
         .expect("failed to mount devfs at /dev");
     info!("devfs mounted at /dev");
     fs::vfs()
         .mount_at(
             b"/proc",
+            b"proc",
             fs::ProcFileSystem::new(Arc::new(task::KernelProcSource)),
         )
         .expect("failed to mount procfs at /proc");

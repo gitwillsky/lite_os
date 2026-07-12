@@ -20,6 +20,34 @@ pub(crate) use procfs::{
 };
 pub(crate) use vfs::{init as init_vfs, vfs};
 
+/// @description filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
+pub(crate) struct FileSystemStatistics {
+    /// `/proc/mounts` 使用的 filesystem type name。
+    pub(crate) type_name: &'static str,
+    /// Linux `statfs.f_type` magic。
+    pub(crate) magic: u64,
+    /// 最优传输块大小。
+    pub(crate) block_size: u64,
+    /// 可供数据使用的总块数。
+    pub(crate) blocks: u64,
+    /// 包含 reserved blocks 的空闲块数。
+    pub(crate) blocks_free: u64,
+    /// 非特权调用者可用的空闲块数。
+    pub(crate) blocks_available: u64,
+    /// 总 inode 数。
+    pub(crate) files: u64,
+    /// 空闲 inode 数。
+    pub(crate) files_free: u64,
+    /// filesystem instance 的稳定标识。
+    pub(crate) fsid: [u32; 2],
+    /// 单个 pathname component 的最大字节数。
+    pub(crate) name_length: u64,
+    /// 容量计数使用的基本块大小。
+    pub(crate) fragment_size: u64,
+    /// Linux `ST_*` flags；VFS 负责补充 `ST_VALID`。
+    pub(crate) flags: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileSystemError {
     NotFound,
@@ -49,4 +77,9 @@ pub(crate) trait FileSystem: Send + Sync {
     ///
     /// 根 inode 无法从磁盘读取或数据无效时返回错误。
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
+
+    /// @description 取得一次 filesystem-owned 容量与 inode 统计快照。
+    ///
+    /// @return 当前统计；不得缓存或从 VFS/syscall 反向推导。
+    fn statistics(&self) -> FileSystemStatistics;
 }

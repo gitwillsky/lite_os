@@ -1,15 +1,23 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
-use super::{FileSystem, FileSystemError, Inode, InodeType};
+use super::{FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
-    root_fs: Mutex<Option<Arc<dyn FileSystem>>>,
+    root_fs: Mutex<Option<RootMount>>,
     mounts: Mutex<Vec<Mount>>,
 }
 
+struct RootMount {
+    source: &'static [u8],
+    filesystem: Arc<dyn FileSystem>,
+    root: Arc<dyn Inode>,
+}
+
 struct Mount {
+    source: &'static [u8],
+    filesystem: Arc<dyn FileSystem>,
     point_identity: (usize, u64),
     root_identity: (usize, u64),
     point: Arc<dyn Inode>,
@@ -19,11 +27,13 @@ struct Mount {
 
 impl VirtualFileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
-        self.root_fs
+        Ok(self
+            .root_fs
             .lock()
             .as_ref()
             .ok_or(FileSystemError::NotFound)?
-            .root_inode()
+            .root
+            .clone())
     }
 
     fn identity(inode: &Arc<dyn Inode>) -> Result<(usize, u64), FileSystemError> {
@@ -181,6 +191,7 @@ impl VirtualFileSystem {
     ///
     /// # Parameters
     ///
+    /// - `source`: `/proc/mounts` 中的 root source label。
     /// - `fs`: 根文件系统实例。
     ///
     /// # Returns
@@ -190,24 +201,35 @@ impl VirtualFileSystem {
     /// # Errors
     ///
     /// 根文件系统已挂载时返回 `AlreadyExists`，防止静默替换启动卷。
-    pub(crate) fn mount_root(&self, fs: Arc<dyn FileSystem>) -> Result<(), FileSystemError> {
+    pub(crate) fn mount_root(
+        &self,
+        source: &'static [u8],
+        fs: Arc<dyn FileSystem>,
+    ) -> Result<(), FileSystemError> {
         let mut root_fs = self.root_fs.lock();
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
-        *root_fs = Some(fs);
+        let root = fs.root_inode()?;
+        *root_fs = Some(RootMount {
+            source,
+            filesystem: fs,
+            root,
+        });
         Ok(())
     }
 
     /// @description 将一个 filesystem adapter 挂到已存在的 root-namespace 目录。
     ///
     /// @param path absolute mountpoint pathname；必须解析为尚未挂载的目录。
+    /// @param source `/proc/mounts` 中的 mount source label。
     /// @param filesystem mount 后由 root inode owner 保活的 filesystem adapter。
     /// @return mount publication 完成时成功。
     /// @errors 路径、类型、重复 mount、adapter root 或内存分配失败时返回明确错误。
     pub(crate) fn mount_at(
         &self,
         path: &[u8],
+        source: &'static [u8],
         filesystem: Arc<dyn FileSystem>,
     ) -> Result<(), FileSystemError> {
         if path.first() != Some(&b'/') {
@@ -234,6 +256,8 @@ impl VirtualFileSystem {
             .try_reserve(1)
             .map_err(|_| FileSystemError::OutOfMemory)?;
         mounts.push(Mount {
+            source,
+            filesystem,
             point_identity,
             root_identity,
             point,
@@ -241,6 +265,66 @@ impl VirtualFileSystem {
             root,
         });
         Ok(())
+    }
+
+    /// @description 取得 inode 所属 mounted filesystem 的最终 Linux statfs 快照。
+    ///
+    /// @param inode pathname 或 OFD 已解析出的 inode。
+    /// @return adapter 统计加当前 VFS mount flags。
+    /// @errors inode 不属于当前 namespace 中的 mounted filesystem 时返回 `InvalidFileSystem`。
+    pub(crate) fn statistics(
+        &self,
+        inode: Arc<dyn Inode>,
+    ) -> Result<FileSystemStatistics, FileSystemError> {
+        let filesystem_id = inode.filesystem_id();
+        let root_filesystem = self.root_fs.lock().as_ref().and_then(|mount| {
+            (mount.root.filesystem_id() == filesystem_id).then(|| mount.filesystem.clone())
+        });
+        let filesystem = root_filesystem.or_else(|| {
+            self.mounts
+                .lock()
+                .iter()
+                .find(|mount| mount.root_identity.0 == filesystem_id)
+                .map(|mount| mount.filesystem.clone())
+        });
+        let mut statistics = filesystem
+            .ok_or(FileSystemError::InvalidFileSystem)?
+            .statistics();
+        statistics.flags |= 0x20;
+        Ok(statistics)
+    }
+
+    /// @description 将当前 root namespace 投影为 Linux `/proc/mounts` 文本。
+    ///
+    /// @return root 与所有 boot mounts 的 escaped mntent records。
+    /// @errors mountpoint 反向解析失败或内存不足时返回明确文件系统错误。
+    pub(crate) fn mount_table(&self) -> Result<Vec<u8>, FileSystemError> {
+        let root = self
+            .root_fs
+            .lock()
+            .as_ref()
+            .map(|mount| (mount.source, mount.filesystem.clone()))
+            .ok_or(FileSystemError::NotFound)?;
+        let mounts = {
+            let mounted = self.mounts.lock();
+            let mut snapshot = Vec::new();
+            snapshot
+                .try_reserve_exact(mounted.len())
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            snapshot.extend(
+                mounted
+                    .iter()
+                    .map(|mount| (mount.source, mount.point.clone(), mount.filesystem.clone())),
+            );
+            snapshot
+        };
+        let mut output = Vec::new();
+        write_mount_record(&mut output, root.0, b"/", &root.1.statistics())?;
+        for (source, point, filesystem) in mounts {
+            let target = self.absolute_path(point)?;
+            write_mount_record(&mut output, source, &target, &filesystem.statistics())?;
+        }
+        Ok(output)
     }
 
     /// @description 将 persistent root filesystem 的已提交写入同步到 block device stable storage。
@@ -415,4 +499,47 @@ pub(crate) fn init() {
 
 pub(crate) fn vfs() -> &'static VirtualFileSystem {
     VFS_MANAGER.wait()
+}
+
+fn write_mount_record(
+    output: &mut Vec<u8>,
+    source: &[u8],
+    target: &[u8],
+    statistics: &FileSystemStatistics,
+) -> Result<(), FileSystemError> {
+    let escaped_fields = source
+        .len()
+        .checked_add(target.len())
+        .and_then(|length| length.checked_mul(4))
+        .ok_or(FileSystemError::OutOfMemory)?;
+    let required = escaped_fields
+        .checked_add(statistics.type_name.len())
+        .and_then(|length| length.checked_add(16))
+        .ok_or(FileSystemError::OutOfMemory)?;
+    output
+        .try_reserve(required)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    write_mount_field(output, source);
+    output.push(b' ');
+    write_mount_field(output, target);
+    output.push(b' ');
+    output.extend_from_slice(statistics.type_name.as_bytes());
+    output.extend_from_slice(if statistics.flags & 1 != 0 {
+        b" ro 0 0\n"
+    } else {
+        b" rw 0 0\n"
+    });
+    Ok(())
+}
+
+fn write_mount_field(output: &mut Vec<u8>, field: &[u8]) {
+    for byte in field {
+        match byte {
+            b' ' => output.extend_from_slice(b"\\040"),
+            b'\t' => output.extend_from_slice(b"\\011"),
+            b'\n' => output.extend_from_slice(b"\\012"),
+            b'\\' => output.extend_from_slice(b"\\134"),
+            byte => output.push(*byte),
+        }
+    }
 }

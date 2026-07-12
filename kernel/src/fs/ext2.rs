@@ -10,6 +10,8 @@ use spin::Mutex;
 use super::{DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType};
 use crate::drivers::block::{BLOCK_SIZE, BlockDevice};
 
+mod filesystem;
+
 // Utility function to align value up to the next multiple of align_to
 fn align_up(value: usize, align_to: usize) -> usize {
     (value + align_to - 1) & !(align_to - 1)
@@ -2302,16 +2304,5 @@ impl Drop for Ext2Inode {
                 );
             }
         }
-    }
-}
-
-impl FileSystem for Ext2FileSystem {
-    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let fs_arc = self
-            .self_ref
-            .lock()
-            .upgrade()
-            .ok_or(FileSystemError::InvalidFileSystem)?;
-        Ext2Inode::load(fs_arc, 2).map(|inode| inode as Arc<dyn Inode>)
     }
 }
