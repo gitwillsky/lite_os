@@ -1,0 +1,29 @@
+docs/architecture.md
+  s_d637a88cd4b00d::t_1795e16310eb6c 236
+docs/phase-46-unix-epoll.md
+  s_d637a88cd4b00d::t_048e807415fdea 16
+docs/phase-47-epoll-verify.md
+  s_d637a88cd4b00d::t_12e911574481c9 15
+docs/phase-9-ipc.md
+  s_d637a88cd4b00d::t_8f3de576f83261 45
+kernel/src/syscall/epoll.rs
+  s_d637a88cd4b00d::t_42622122a6e938 8,18-29,55,68,71-78,122,130,173-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f9fa795acbf8847558baeac331addeb9eb54611d",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
