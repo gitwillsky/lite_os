@@ -99,7 +99,7 @@ pub(crate) trait Inode: Send + Sync {
         None
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
+    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
 
     /// @description 读取 symbolic-link 的原始 target bytes，不追加 NUL。
     /// @return symbolic-link 返回完整 target；其他 inode 默认返回 InvalidOperation。
@@ -107,13 +107,13 @@ pub(crate) trait Inode: Send + Sync {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
+    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
 
-    fn append(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
+    fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
 
-    fn truncate(&self, size: u64) -> Result<(), FileSystemError>;
+    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError>;
 
-    fn sync(&self) -> Result<(), FileSystemError>;
+    fn sync_storage(&self) -> Result<(), FileSystemError>;
 
     /// @description 原子更新 inode 的 atime/mtime，并由 filesystem 更新 ctime。
     /// @param atime Some 为新的 epoch seconds，None 保留现值。

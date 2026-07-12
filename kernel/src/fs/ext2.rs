@@ -1863,7 +1863,7 @@ impl Inode for Ext2Inode {
         ino.i_mode & 0o111 != 0
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         let mut done = 0usize;
         let ino = self.disk.lock();
         let size = usize::try_from(Self::disk_size(&ino))
@@ -1925,13 +1925,13 @@ impl Inode for Ext2Inode {
                     size,
                 );
             }
-        } else if self.read_at(0, &mut target)? != size {
+        } else if self.read_storage(0, &mut target)? != size {
             return Err(FileSystemError::IoError);
         }
         Ok(target)
     }
 
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
@@ -1945,7 +1945,7 @@ impl Inode for Ext2Inode {
         Ok(written)
     }
 
-    fn append(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
@@ -1957,13 +1957,13 @@ impl Inode for Ext2Inode {
         Ok((offset, written))
     }
 
-    fn truncate(&self, size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
         let mutation = self.fs.begin_mutation()?;
         self.truncate_locked(size)?;
         mutation.commit()
     }
 
-    fn sync(&self) -> Result<(), FileSystemError> {
+    fn sync_storage(&self) -> Result<(), FileSystemError> {
         self.fs.device.flush().map_err(|_| FileSystemError::IoError)
     }
 

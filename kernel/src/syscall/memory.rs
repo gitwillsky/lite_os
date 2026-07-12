@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    fs::{InodeType, O_ACCMODE, O_WRONLY},
+    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
     memory::{MapPermission, MemoryError},
     task::current_task,
 };
@@ -12,6 +12,7 @@ const PROT_READ: usize = 0x1;
 const PROT_WRITE: usize = 0x2;
 const PROT_EXEC: usize = 0x4;
 const MAP_PRIVATE: usize = 0x02;
+const MAP_SHARED: usize = 0x01;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANONYMOUS: usize = 0x20;
 const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
@@ -44,6 +45,7 @@ fn memory_errno(error: MemoryError) -> isize {
     match error {
         MemoryError::AddressInUse => errno::EEXIST,
         MemoryError::PermissionDenied => errno::EACCES,
+        MemoryError::Io => errno::EIO,
         MemoryError::InvalidRange | MemoryError::PageTableError(_) | MemoryError::OutOfMemory => {
             errno::EINVAL
         }
@@ -79,8 +81,10 @@ pub(crate) fn sys_mmap(
     fd: isize,
     offset: usize,
 ) -> isize {
-    if flags & MAP_PRIVATE == 0
-        || flags & !(MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE) != 0
+    let sharing = flags & (MAP_PRIVATE | MAP_SHARED);
+    if !matches!(sharing, MAP_PRIVATE | MAP_SHARED)
+        || flags & !(MAP_PRIVATE | MAP_SHARED | MAP_FIXED | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE)
+            != 0
         || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0
     {
         return -errno::EINVAL;
@@ -101,6 +105,9 @@ pub(crate) fn sys_mmap(
     }
     let exact_address = fixed || flags & MAP_FIXED_NOREPLACE != 0;
     if flags & MAP_ANONYMOUS != 0 {
+        if sharing == MAP_SHARED {
+            return -errno::EINVAL;
+        }
         if fd != -1 || offset != 0 {
             return -errno::EINVAL;
         }
@@ -123,6 +130,26 @@ pub(crate) fn sys_mmap(
     if inode.inode_type() != InodeType::File {
         return -errno::ENODEV;
     }
+    if sharing == MAP_SHARED {
+        if permission.contains(MapPermission::W) && *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+            return -errno::EACCES;
+        }
+        let mapping = match crate::fs::mapping(inode) {
+            Ok(mapping) => mapping,
+            Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
+            Err(_) => return -errno::EIO,
+        };
+        return task
+            .map_shared_file(
+                address,
+                length,
+                permission,
+                exact_address,
+                mapping,
+                offset as u64,
+            )
+            .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
+    }
     let available = usize::try_from(inode.size().saturating_sub(offset as u64))
         .unwrap_or(usize::MAX)
         .min(length);
@@ -131,12 +158,47 @@ pub(crate) fn sys_mmap(
         return -errno::ENOMEM;
     }
     data.resize(available, 0);
-    match inode.read_at(offset as u64, &mut data) {
+    match crate::fs::read(inode, offset as u64, &mut data) {
         Ok(read) if read == available => {}
         Ok(_) | Err(_) => return -errno::EIO,
     }
     task.map_private_file(address, length, permission, exact_address, &data)
         .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
+}
+
+/// @description 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。
+pub(crate) fn sys_msync(address: usize, length: usize, flags: usize) -> isize {
+    const MS_ASYNC: usize = 1;
+    const MS_INVALIDATE: usize = 2;
+    const MS_SYNC: usize = 4;
+
+    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
+        || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0
+        || address % crate::memory::PAGE_SIZE != 0
+    {
+        return -errno::EINVAL;
+    }
+    if length == 0 {
+        return 0;
+    }
+    if flags & MS_SYNC == 0 {
+        return current_task()
+            .expect("msync requires a current task")
+            .sync_shared_mapping(address, length, false)
+            .map_or_else(|error| -msync_errno(error), |()| 0);
+    }
+    current_task()
+        .expect("msync requires a current task")
+        .sync_shared_mapping(address, length, true)
+        .map_or_else(|error| -msync_errno(error), |()| 0)
+}
+
+fn msync_errno(error: MemoryError) -> isize {
+    match error {
+        MemoryError::InvalidRange | MemoryError::OutOfMemory => errno::ENOMEM,
+        MemoryError::Io => errno::EIO,
+        other => memory_errno(other),
+    }
 }
 
 /// @description 解除 Linux/riscv64 anonymous private 映射，允许区间包含未映射洞。

@@ -1,4 +1,4 @@
-mod cow;
+mod address_space;
 mod credentials;
 mod process_exec;
 mod signal_state;
@@ -11,7 +11,8 @@ use crate::{
     fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, Terminal, vfs},
     memory::{
         ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
-        TRAP_CONTEXT, UserAccessError, VirtualAddress,
+        PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
+        SharedMappingInvalidator, TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
     sync::IrqMutex,
     task::{
@@ -21,6 +22,7 @@ use crate::{
     timer::get_time_us,
 };
 
+use address_space::AddressSpace;
 use credentials::Credentials;
 use process_exec::process_name;
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
@@ -87,114 +89,6 @@ pub(crate) enum WaitResult {
     Woken,
     TimedOut,
     Interrupted,
-}
-
-#[derive(Debug)]
-struct AddressSpace {
-    memory_set: Mutex<MemorySet>,
-}
-
-impl AddressSpace {
-    fn page_statistics(&self) -> (usize, usize) {
-        self.memory_set.lock().user_page_statistics()
-    }
-    fn write_clone_tid_values(
-        &self,
-        addresses: [Option<usize>; 2],
-        tid: i32,
-    ) -> Result<(), UserAccessError> {
-        let mut memory = self.memory_set.lock();
-        for address in addresses.into_iter().flatten() {
-            memory.validate_user_write(address, core::mem::size_of::<i32>())?;
-        }
-        for address in addresses.into_iter().flatten() {
-            memory.copy_to_user(address, &tid.to_ne_bytes())?;
-        }
-        Ok(())
-    }
-
-    fn map_anonymous(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-    ) -> Result<usize, MemoryError> {
-        self.memory_set
-            .lock()
-            .map_anonymous(address, length, permission, fixed_noreplace)
-    }
-
-    fn map_private_file(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        data: &[u8],
-    ) -> Result<usize, MemoryError> {
-        self.memory_set
-            .lock()
-            .map_private_file(address, length, permission, fixed_noreplace, data)
-    }
-
-    fn unmap_user_mapping(&self, address: usize, length: usize) -> Result<(), MemoryError> {
-        self.memory_set.lock().unmap_user_mapping(address, length)
-    }
-
-    fn protect_user_mapping(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-    ) -> Result<(), MemoryError> {
-        self.memory_set
-            .lock()
-            .protect_user_mapping(address, length, permission)
-    }
-
-    /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
-    ///
-    /// @param user_address 用户源地址。
-    /// @param destination kernel 目标缓冲区。
-    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
-    pub(crate) fn copy_from_user(
-        &self,
-        user_address: usize,
-        destination: &mut [u8],
-    ) -> Result<(), UserAccessError> {
-        self.memory_set
-            .lock()
-            .copy_from_user(user_address, destination)
-    }
-
-    /// @description 将 kernel 缓冲区复制到用户地址空间，地址空间锁覆盖整个复制。
-    ///
-    /// @param user_address 用户目标地址。
-    /// @param source kernel 源缓冲区。
-    /// @return 完整成功返回 `Ok(())`；fault、权限错误或 overflow 返回 `UserAccessError`。
-    pub(crate) fn copy_to_user(
-        &self,
-        user_address: usize,
-        source: &[u8],
-    ) -> Result<(), UserAccessError> {
-        self.memory_set.lock().copy_to_user(user_address, source)
-    }
-
-    /// @description 从用户空间复制有上限的 NUL 结尾字节串。
-    ///
-    /// @param user_address 用户字符串首地址。
-    /// @param max_len 包含终止 NUL 的最大总字节数。
-    /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
-    pub(crate) fn copy_user_c_string(
-        &self,
-        user_address: usize,
-        max_len: usize,
-    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.memory_set
-            .lock()
-            .copy_user_c_string(user_address, max_len)
-    }
 }
 
 #[derive(Debug)]
@@ -298,7 +192,7 @@ struct Process {
     // OWNER: Process 独占 Linux comm 与创建时刻；fork 复制，exec 原子替换 comm。
     comm: Mutex<Vec<u8>>,
     start_time_us: u64,
-    address_space: AddressSpace,
+    address_space: Arc<AddressSpace>,
     // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
     cwd: Mutex<Arc<dyn Inode>>,
     files: Mutex<FileDescriptorTable>,
@@ -330,13 +224,12 @@ impl TaskControlBlock {
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
         let terminal = Terminal::new(console);
+        let address_space = AddressSpace::new(memory_set)?;
         let process = Arc::new(Process {
             tgid: pid,
             comm: Mutex::new(process_name(loaded.execfn())),
             start_time_us: get_time_us(),
-            address_space: AddressSpace {
-                memory_set: Mutex::new(memory_set),
-            },
+            address_space,
             cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
             credentials: Mutex::new(Credentials::root()),
@@ -421,14 +314,13 @@ impl TaskControlBlock {
         child_trap.kernel_sp = kernel_stack_top;
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
+        let address_space = AddressSpace::new(memory_set)?;
         let child = Self {
             process: Arc::new(Process {
                 tgid: pid,
                 comm: Mutex::new(self.process.comm.lock().clone()),
                 start_time_us: get_time_us(),
-                address_space: AddressSpace {
-                    memory_set: Mutex::new(memory_set),
-                },
+                address_space,
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
                 credentials: Mutex::new(credentials),
@@ -942,6 +834,46 @@ impl TaskControlBlock {
         )
     }
 
+    pub(crate) fn map_shared_file(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        mapping: Arc<dyn SharedFileMapping>,
+        offset: u64,
+    ) -> Result<usize, MemoryError> {
+        self.process.address_space.map_shared_file(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            mapping,
+            offset,
+        )
+    }
+
+    pub(crate) fn sync_shared_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        writeback: bool,
+    ) -> Result<(), MemoryError> {
+        self.process
+            .address_space
+            .sync_shared_mapping(address, length, writeback)
+    }
+
+    pub(crate) fn handle_page_fault(
+        &self,
+        address: usize,
+        access: PageFaultAccess,
+    ) -> Result<PageFaultOutcome, MemoryError> {
+        self.process
+            .address_space
+            .handle_page_fault(address, access)
+    }
+
     pub(crate) fn unmap_user_mapping(
         &self,
         address: usize,
@@ -1024,6 +956,7 @@ impl TaskControlBlock {
     ///
     /// @return 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
     pub(super) fn close_all_files(&self) {
+        let _ = crate::fs::sync_all();
         let files = self.process.files.lock().take_all();
         drop(files);
     }

@@ -19,7 +19,7 @@
 | `memory` | `arch`, `config`, `id`, `random`, `sync` | 不感知 task、filesystem 或具体 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
 | `ipc` | `sync` | 只拥有 Pipe data/lifecycle，不感知 fd、task 或 syscall |
-| `fs` | `drivers`, `ipc`, `sync`, `timer` | `drivers` 仅允许 `block` seam |
+| `fs` | `drivers`, `ipc`, `memory`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`memory` 仅允许 shared-page seam |
 | `task` | `arch`, `fs`, `ipc`, `memory`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
 | `syscall` | `fs`, `ipc`, `memory`, `random`, `system`, `task`, `timer` | 不得绕过 facade 接触 adapter/scheduler/page table |
@@ -78,8 +78,8 @@
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
-| `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1097 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/memory/mm.rs` | 1112 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
+| `kernel/src/task/model.rs` | 1030 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 
 ## 5. Interface and capability contract
 

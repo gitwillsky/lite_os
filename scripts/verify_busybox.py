@@ -683,6 +683,10 @@ def main() -> int:
                     b"/bin/dynamic-smoke\n",
                 ),
                 (
+                    "LITEOS_SHARED_MMAP_45",
+                    b"",
+                ),
+                (
                     "LITEOS_DLOPEN_42",
                     b"/bin/liteos-script 'alpha beta' omega\n",
                 ),
@@ -879,6 +883,7 @@ def main() -> int:
                 "all DTB harts online: count=8, mask=0xff",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PERSIST_42",
+                "LITEOS_SHARED_PERSIST_45",
                 "LITEOS_CREDENTIAL_PERSIST_44",
                 "LITEOS_COW_ISOLATION_42",
                 "LITEOS_SCHED_8_HARTS_42",
@@ -892,6 +897,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_PERSIST_42",
+                    b"/bin/cat /shared-persist\n",
+                ),
+                (
+                    "LITEOS_SHARED_PERSIST_45",
                     b"set -- $(/bin/ls -ln /busybox-credential); [ \"$1:$3:$4\" = '-rw-r-----:1000:1000' ] && echo LITEOS_CREDENTIAL_PERSIST_$((6*7+2))\n",
                 ),
                 (
@@ -916,6 +925,13 @@ def main() -> int:
         )
         crash_image = Path(runtime_directory.name) / "crash.img"
         shutil.copyfile(image, crash_image)
+        power_cut(
+            crash_image,
+            4,
+            b"/bin/dynamic-smoke shared-crash\n",
+            "LITEOS_SHARED_CRASH_ACTIVE_45",
+            0.02,
+        )
         power_cut(
             crash_image,
             4,

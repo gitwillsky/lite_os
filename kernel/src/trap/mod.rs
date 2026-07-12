@@ -119,18 +119,15 @@ pub(crate) fn trap_handler() {
                     }
                 }
                 Exception::InstructionPageFault => {
-                    error!("Instruction Page Fault, VA:{:#x}", stval);
-                    exit_current_group_by_signal(11);
+                    handle_user_page_fault(stval, crate::memory::PageFaultAccess::Execute);
                 }
                 Exception::StorePageFault => {
-                    if !task::current_task()
-                        .is_some_and(|current| current.handle_cow_fault(stval).unwrap_or(false))
-                    {
-                        error!("Store Page Fault, VA:{:#x}", stval);
-                        exit_current_group_by_signal(11);
-                    }
+                    handle_user_page_fault(stval, crate::memory::PageFaultAccess::Write);
                 }
-                Exception::LoadFault | Exception::LoadPageFault | Exception::StoreFault => {
+                Exception::LoadPageFault => {
+                    handle_user_page_fault(stval, crate::memory::PageFaultAccess::Read);
+                }
+                Exception::LoadFault | Exception::StoreFault => {
                     if let Some(current) = task::current_task() {
                         let sepc_val = current.load_trap_context().sepc;
                         let sstatus_val = riscv::register::sstatus::read();
@@ -171,6 +168,23 @@ pub(crate) fn trap_handler() {
         task::suspend_current_and_run_next();
     }
     trap_return();
+}
+
+fn handle_user_page_fault(address: usize, access: crate::memory::PageFaultAccess) {
+    let outcome = task::current_task()
+        .and_then(|current| current.handle_page_fault(address, access).ok())
+        .unwrap_or(crate::memory::PageFaultOutcome::SegmentationFault);
+    match outcome {
+        crate::memory::PageFaultOutcome::Handled => {}
+        crate::memory::PageFaultOutcome::BusError => {
+            debug!("shared file mapping beyond EOF, VA:{address:#x}");
+            exit_current_group_by_signal(7);
+        }
+        crate::memory::PageFaultOutcome::SegmentationFault => {
+            debug!("user page fault, VA:{address:#x}");
+            exit_current_group_by_signal(11);
+        }
+    }
 }
 
 fn set_kernel_trap_entry() {

@@ -11,6 +11,7 @@ mod heap_allocator;
 mod kernel_stack;
 mod mm;
 mod page_table;
+mod shared_file;
 
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
@@ -19,7 +20,14 @@ pub(crate) use executable::{
 };
 pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
 pub(crate) use kernel_stack::KernelStack;
-pub(crate) use mm::{ElfLoadError, MapPermission, MemoryError, MemorySet, UserAccessError};
+pub(crate) use mm::{
+    ElfLoadError, MapPermission, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome,
+    UserAccessError,
+};
+pub(crate) use shared_file::{
+    SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedMappingInvalidator,
+    SharedPage, invalidate_shared_file, register_shared_mapping_owner,
+};
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {

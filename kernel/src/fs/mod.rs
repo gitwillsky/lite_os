@@ -4,6 +4,7 @@ mod devfs;
 mod ext2;
 mod file;
 mod inode;
+mod page_cache;
 mod permission;
 mod procfs;
 mod vfs;
@@ -16,6 +17,7 @@ pub(crate) use file::{
     TerminalAccess, TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use page_cache::{append, mapping, read, sync_all, sync_inode, truncate, write};
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileSystem, ProcProcessSnapshot, ProcSnapshot, ProcSource,

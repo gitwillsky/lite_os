@@ -114,7 +114,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
     }
     ofd.inode_ref()
         .ok_or(-errno::EINVAL)
-        .and_then(|i| i.truncate(size).map_err(ferr))
+        .and_then(|i| crate::fs::truncate(i, size).map_err(ferr))
         .map_or_else(|e| e, |_| 0)
 }
 pub(crate) fn sys_fsync(fd: usize) -> isize {
@@ -124,8 +124,9 @@ pub(crate) fn sys_fsync(fd: usize) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    ofd.inode_ref()
-        .map_or(-errno::EINVAL, |i| i.sync().map_or_else(ferr, |_| 0))
+    ofd.inode_ref().map_or(-errno::EINVAL, |i| {
+        crate::fs::sync_inode(i).map_or_else(ferr, |_| 0)
+    })
 }
 
 /// @description 将唯一 mounted filesystem 的已提交写入同步到 stable storage。

@@ -122,7 +122,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     let mut chunk = [0u8; 512];
     while total < length {
         let count = chunk.len().min(length - total);
-        let got = match inode.read_at(*offset, &mut chunk[..count]) {
+        let got = match crate::fs::read(inode.clone(), *offset, &mut chunk[..count]) {
             Ok(v) => v,
             Err(e) => return if total == 0 { ferr(e) } else { total as isize },
         };
@@ -251,7 +251,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             },
             OpenFileKind::Inode(inode) => {
                 if *ofd.flags.lock() & O_APPEND != 0 {
-                    match inode.append(&chunk[..count]) {
+                    match crate::fs::append(inode.clone(), &chunk[..count]) {
                         Ok((append_offset, written)) => {
                             *offset = append_offset + written as u64;
                             total += written;
@@ -269,7 +269,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
                         }
                     }
                 }
-                match inode.write_at(*offset, &chunk[..count]) {
+                match crate::fs::write(inode.clone(), *offset, &chunk[..count]) {
                     Ok(v) => v,
                     Err(e) => return if total == 0 { ferr(e) } else { total as isize },
                 }

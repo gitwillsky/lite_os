@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, vfs},
+    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, read, vfs},
     memory::{
         ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, MemorySet,
         parse_interpreter_elf, parse_main_elf,
@@ -74,8 +74,7 @@ impl ExecutableSource for InodeExecutableSource {
     }
 
     fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) -> Result<(), ()> {
-        self.inode
-            .read_at(offset as u64, buffer)
+        read(self.inode.clone(), offset as u64, buffer)
             .ok()
             .filter(|read| *read == buffer.len())
             .map(|_| ())

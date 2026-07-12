@@ -120,7 +120,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     } else {
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY
-            && let Err(error) = inode.truncate(0)
+            && let Err(error) = crate::fs::truncate(inode.clone(), 0)
         {
             return ferr(error);
         }

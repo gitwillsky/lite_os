@@ -116,23 +116,23 @@ impl Inode for DevInode {
         }
     }
 
-    fn read_at(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, FileSystemError> {
+    fn read_storage(&self, _offset: u64, _buf: &mut [u8]) -> Result<usize, FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn append(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
         Err(FileSystemError::InvalidOperation)
     }
 
-    fn sync(&self) -> Result<(), FileSystemError> {
+    fn sync_storage(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
 

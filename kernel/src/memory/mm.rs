@@ -1,6 +1,7 @@
 mod cow;
 mod executable_load;
 mod initial_stack;
+mod mmap;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
 
@@ -9,6 +10,7 @@ use bitflags::bitflags;
 use riscv::register::satp::{self, Satp};
 
 use crate::memory::{
+    SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
     frame_allocator::{FrameTracker, alloc},
     page_table::{PTEFlags, PageTableEntry, PageTableError},
@@ -27,6 +29,7 @@ pub(crate) enum MemoryError {
     InvalidRange,
     AddressInUse,
     PermissionDenied,
+    Io,
 }
 
 /// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
@@ -69,6 +72,7 @@ impl core::fmt::Display for MemoryError {
             MemoryError::InvalidRange => write!(f, "Invalid virtual memory range"),
             MemoryError::AddressInUse => write!(f, "Virtual memory range is already mapped"),
             MemoryError::PermissionDenied => write!(f, "Virtual memory operation is not allowed"),
+            MemoryError::Io => write!(f, "File-backed memory I/O failed"),
         }
     }
 }
@@ -108,8 +112,23 @@ impl From<MemoryError> for ElfLoadError {
             | MemoryError::InvalidRange
             | MemoryError::AddressInUse
             | MemoryError::PermissionDenied => Self::InvalidElf,
+            MemoryError::Io => Self::Io,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageFaultAccess {
+    Read,
+    Write,
+    Execute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageFaultOutcome {
+    Handled,
+    SegmentationFault,
+    BusError,
 }
 
 impl core::fmt::Display for ElfLoadError {
@@ -155,6 +174,36 @@ enum VmaKind {
 }
 
 #[derive(Debug)]
+struct SharedResident {
+    page: Arc<dyn SharedPage>,
+    writer: bool,
+}
+
+impl SharedResident {
+    fn new(page: Arc<dyn SharedPage>, writer: bool) -> Self {
+        if writer {
+            page.acquire_writer();
+        }
+        Self { page, writer }
+    }
+}
+
+impl Drop for SharedResident {
+    fn drop(&mut self) {
+        if self.writer {
+            self.page.release_writer();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SharedFileArea {
+    mapping: Arc<dyn SharedFileMapping>,
+    file_offset: u64,
+    resident: BTreeMap<VirtualPageNumber, SharedResident>,
+}
+
+#[derive(Debug)]
 pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_page_offset: usize,
@@ -164,6 +213,7 @@ pub(crate) struct MapArea {
     /// 是否标记为全局页（G位）。仅用于内核空间映射。
     global: bool,
     kind: VmaKind,
+    shared_file: Option<SharedFileArea>,
 }
 
 impl MapArea {
@@ -190,6 +240,7 @@ impl MapArea {
             map_type,
             global: false,
             kind: VmaKind::System,
+            shared_file: None,
         }
     }
 
@@ -212,6 +263,22 @@ impl MapArea {
     fn file(start_va: VirtualAddress, end_va: VirtualAddress, permissions: MapPermission) -> Self {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
         area.kind = VmaKind::File;
+        area
+    }
+
+    fn shared_file(
+        start_va: VirtualAddress,
+        end_va: VirtualAddress,
+        permissions: MapPermission,
+        mapping: Arc<dyn SharedFileMapping>,
+        file_offset: u64,
+    ) -> Self {
+        let mut area = Self::file(start_va, end_va, permissions);
+        area.shared_file = Some(SharedFileArea {
+            mapping,
+            file_offset,
+            resident: BTreeMap::new(),
+        });
         area
     }
 
@@ -268,6 +335,12 @@ impl MapArea {
     }
 
     pub(crate) fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
+        if self.shared_file.is_some() {
+            for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
+                page_table.reserve(VirtualPageNumber::from_vpn(vpn))?;
+            }
+            return Ok(());
+        }
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
             self.map_one(page_table, VirtualPageNumber::from_vpn(vpn))?;
         }
@@ -283,6 +356,9 @@ impl MapArea {
             let _ = page_table.unmap(vpn);
         }
         self.data_frames.clear();
+        if let Some(shared) = &mut self.shared_file {
+            shared.resident.clear();
+        }
     }
 
     fn map_one(
@@ -380,8 +456,39 @@ impl MapArea {
         let original_end = self.vpn_range.end;
         let right_frames = self.data_frames.split_off(&end);
         let middle_frames = self.data_frames.split_off(&start);
+        let (left_shared, middle_shared, right_shared) = if let Some(mut shared) = self.shared_file
+        {
+            let right_pages = shared.resident.split_off(&end);
+            let middle_pages = shared.resident.split_off(&start);
+            let base = shared.file_offset;
+            let page_bytes = config::PAGE_SIZE as u64;
+            let middle_offset =
+                base + (start.as_usize() - original_start.as_usize()) as u64 * page_bytes;
+            let right_offset =
+                base + (end.as_usize() - original_start.as_usize()) as u64 * page_bytes;
+            let mapping = shared.mapping;
+            (
+                Some(SharedFileArea {
+                    mapping: mapping.clone(),
+                    file_offset: base,
+                    resident: shared.resident,
+                }),
+                Some(SharedFileArea {
+                    mapping: mapping.clone(),
+                    file_offset: middle_offset,
+                    resident: middle_pages,
+                }),
+                Some(SharedFileArea {
+                    mapping,
+                    file_offset: right_offset,
+                    resident: right_pages,
+                }),
+            )
+        } else {
+            (None, None, None)
+        };
         let kind = self.kind;
-        let build = |range: Range<VirtualPageNumber>, data_frames| Self {
+        let build = |range: Range<VirtualPageNumber>, data_frames, shared_file| Self {
             vpn_range: range,
             data_page_offset: 0,
             data_frames,
@@ -389,10 +496,13 @@ impl MapArea {
             map_permission: self.map_permission,
             global: false,
             kind,
+            shared_file,
         };
-        let left = (original_start < start).then(|| build(original_start..start, self.data_frames));
-        let middle = build(start..end, middle_frames);
-        let right = (end < original_end).then(|| build(end..original_end, right_frames));
+        let left = (original_start < start)
+            .then(|| build(original_start..start, self.data_frames, left_shared));
+        let middle = build(start..end, middle_frames, middle_shared);
+        let right =
+            (end < original_end).then(|| build(end..original_end, right_frames, right_shared));
         (left, middle, right)
     }
 
@@ -415,6 +525,7 @@ impl MapArea {
             map_permission: self.map_permission,
             global: self.global,
             kind: self.kind,
+            shared_file: None,
         };
         if let Err(error) = cloned.map(page_table) {
             cloned.unmap(page_table);
@@ -636,12 +747,12 @@ impl MemorySet {
     /// @param destination kernel 目标缓冲区。
     /// @return 完整复制成功返回 `Ok(())`；地址溢出、缺页或非 `U|R` leaf 返回错误，且不返回用户引用。
     pub(crate) fn copy_from_user(
-        &self,
+        &mut self,
         user_address: usize,
         destination: &mut [u8],
     ) -> Result<(), UserAccessError> {
         // 1. 先验证完整范围，避免尾页 fault 时 destination 只得到前缀数据。
-        let end = self.validate_user_range(user_address, destination.len(), PTEFlags::R)?;
+        let end = self.prepare_user_read(user_address, destination.len())?;
         // 2. 验证成功后逐页复制；本阶段没有 lazy fault，映射在 &self 生命周期内稳定。
         let mut current = user_address;
         let mut copied = 0usize;
@@ -717,7 +828,7 @@ impl MemorySet {
         if address & 3 != 0 {
             return Err(UserAccessError::Fault);
         }
-        Self::checked_user_end(address, 4)?;
+        self.prepare_user_write(address, 4)?;
         let (ppn, offset) = self.user_page(address, PTEFlags::R | PTEFlags::W)?;
         if offset + 4 > config::PAGE_SIZE {
             return Err(UserAccessError::Fault);
@@ -734,7 +845,7 @@ impl MemorySet {
     /// @param max_len 包含终止 NUL 的最大总字节数。
     /// @return 成功返回不含 NUL 的 owned bytes；fault、未终止或内存不足返回明确错误。
     pub(crate) fn copy_user_c_string(
-        &self,
+        &mut self,
         user_address: usize,
         max_len: usize,
     ) -> Result<Vec<u8>, UserAccessError> {
@@ -745,6 +856,13 @@ impl MemorySet {
         let mut current = user_address;
         while bytes.len() < max_len {
             Self::checked_user_end(current, 1)?;
+            if self.user_page(current, PTEFlags::R).is_err() {
+                match self.handle_page_fault(current, PageFaultAccess::Read) {
+                    Ok(PageFaultOutcome::Handled) => {}
+                    Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
+                    _ => return Err(UserAccessError::Fault),
+                }
+            }
             let (ppn, page_offset) = self.user_page(current, PTEFlags::R)?;
             let count = (config::PAGE_SIZE - page_offset).min(max_len - bytes.len());
             // SAFETY: user_page 证明本页在 MemorySet 存活期间可读；切片只在本次循环
@@ -835,326 +953,6 @@ impl MemorySet {
             Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after brk page-table update");
         }
         Ok(new_break)
-    }
-
-    fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
-        start < end
-            && !self
-                .areas
-                .values()
-                .any(|area| start < area.vpn_range.end && area.vpn_range.start < end)
-    }
-
-    fn find_free_user_range(
-        &self,
-        first: VirtualPageNumber,
-        page_count: usize,
-    ) -> Option<Range<VirtualPageNumber>> {
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
-        let mut start = first.as_usize().max(1);
-        for area in self.areas.values() {
-            let area_start = area.vpn_range.start.as_usize();
-            let area_end = area.vpn_range.end.as_usize();
-            if area_end <= start {
-                continue;
-            }
-            if let Some(end) = start.checked_add(page_count)
-                && end <= area_start.min(user_end)
-            {
-                return Some(start.into()..end.into());
-            }
-            start = start.max(area_end);
-            if start >= user_end {
-                return None;
-            }
-        }
-        let end = start.checked_add(page_count)?;
-        (end <= user_end).then(|| start.into()..end.into())
-    }
-
-    /// @description 建立 eager anonymous private 用户映射，VMA 表是区间与页帧的唯一 owner。
-    ///
-    /// @param address 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
-    /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 用户页权限；必须含 U，允许 PROT_NONE，禁止 W+X。
-    /// @param fixed_noreplace 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
-    /// @return 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
-    pub(crate) fn map_anonymous(
-        &mut self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-    ) -> Result<usize, MemoryError> {
-        if length == 0
-            || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
-            || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
-        {
-            return Err(MemoryError::InvalidRange);
-        }
-        let page_count = length
-            .checked_add(config::PAGE_SIZE - 1)
-            .ok_or(MemoryError::InvalidRange)?
-            / config::PAGE_SIZE;
-        let hinted_start = VirtualAddress::from(address).floor();
-        let hinted_end = hinted_start
-            .as_usize()
-            .checked_add(page_count)
-            .map(VirtualPageNumber::from_vpn)
-            .ok_or(MemoryError::InvalidRange)?;
-        let user_end_vpn = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
-        let hint_is_valid = address != 0
-            && hinted_start.as_usize() < user_end_vpn
-            && hinted_end.as_usize() <= user_end_vpn;
-        let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
-            hinted_start..hinted_end
-        } else if fixed_noreplace {
-            return Err(if hint_is_valid {
-                MemoryError::AddressInUse
-            } else {
-                MemoryError::InvalidRange
-            });
-        } else {
-            self.find_free_user_range(VirtualAddress::from(Self::MMAP_BASE).floor(), page_count)
-                .ok_or(MemoryError::OutOfMemory)?
-        };
-        let start_address = usize::from(VirtualAddress::from(range.start));
-        let end_address = usize::from(VirtualAddress::from(range.end));
-        self.push(
-            MapArea::anonymous(start_address.into(), end_address.into(), permission),
-            None,
-        )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mmap page-table update");
-        Ok(start_address)
-    }
-
-    /// @description 建立 eager file-backed private 映射；VMA 独占映射后的私有页帧。
-    pub(crate) fn map_private_file(
-        &mut self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        data: &[u8],
-    ) -> Result<usize, MemoryError> {
-        if length == 0
-            || data.len() > length
-            || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
-            || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
-        {
-            return Err(MemoryError::InvalidRange);
-        }
-        let page_count = length
-            .checked_add(config::PAGE_SIZE - 1)
-            .ok_or(MemoryError::InvalidRange)?
-            / config::PAGE_SIZE;
-        let hinted_start = VirtualAddress::from(address).floor();
-        let hinted_end = hinted_start
-            .as_usize()
-            .checked_add(page_count)
-            .map(VirtualPageNumber::from_vpn)
-            .ok_or(MemoryError::InvalidRange)?;
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
-        let hint_is_valid =
-            address != 0 && hinted_start.as_usize() < user_end && hinted_end.as_usize() <= user_end;
-        let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
-            hinted_start..hinted_end
-        } else if fixed_noreplace {
-            return Err(if hint_is_valid {
-                MemoryError::AddressInUse
-            } else {
-                MemoryError::InvalidRange
-            });
-        } else {
-            self.find_free_user_range(VirtualAddress::from(Self::MMAP_BASE).floor(), page_count)
-                .ok_or(MemoryError::OutOfMemory)?
-        };
-        let start = usize::from(VirtualAddress::from(range.start));
-        let end = usize::from(VirtualAddress::from(range.end));
-        self.push(
-            MapArea::file(start.into(), end.into(), permission),
-            Some(data),
-        )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after file mmap page-table update");
-        Ok(start)
-    }
-
-    fn overlapping_mmap_keys(
-        &self,
-        start: VirtualPageNumber,
-        end: VirtualPageNumber,
-    ) -> Result<Vec<VirtualPageNumber>, MemoryError> {
-        let mut keys = Vec::new();
-        for (key, area) in &self.areas {
-            if start < area.vpn_range.end && area.vpn_range.start < end {
-                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::File) {
-                    return Err(MemoryError::PermissionDenied);
-                }
-                keys.push(*key);
-            }
-        }
-        Ok(keys)
-    }
-
-    fn merge_adjacent_anonymous(&mut self) {
-        loop {
-            let keys: Vec<_> = self.areas.keys().copied().collect();
-            let Some((left_key, right_key)) = keys.windows(2).find_map(|pair| {
-                let left = &self.areas[&pair[0]];
-                let right = &self.areas[&pair[1]];
-                (left.kind == VmaKind::Anonymous
-                    && right.kind == VmaKind::Anonymous
-                    && left.vpn_range.end == right.vpn_range.start
-                    && left.map_permission == right.map_permission)
-                    .then_some((pair[0], pair[1]))
-            }) else {
-                break;
-            };
-            let left = self.areas.remove(&left_key).unwrap();
-            let right = self.areas.remove(&right_key).unwrap();
-            self.areas.insert(left_key, left.merge_anonymous(right));
-        }
-    }
-
-    /// @description 解除 anonymous 或 file-backed private 页；未映射洞按 Linux 语义忽略。
-    ///
-    /// @param address page-aligned 起始地址。
-    /// @param length 非零字节长度，向上取整到整页。
-    /// @return 成功返回空值；若触及非 anonymous VMA 则保持全部映射不变并拒绝。
-    pub(crate) fn unmap_user_mapping(
-        &mut self,
-        address: usize,
-        length: usize,
-    ) -> Result<(), MemoryError> {
-        let range = Self::checked_page_range(address, length)?;
-        let keys = self.overlapping_mmap_keys(range.start, range.end)?;
-        for key in keys {
-            let area = self.areas.remove(&key).unwrap();
-            let cut_start = range.start.max(area.vpn_range.start);
-            let cut_end = range.end.min(area.vpn_range.end);
-            let (left, mut middle, right) = area.partition_protectable(cut_start, cut_end);
-            middle.unmap(&mut self.page_table);
-            if let Some(left) = left {
-                self.areas.insert(left.vpn_range.start, left);
-            }
-            if let Some(right) = right {
-                self.areas.insert(right.vpn_range.start, right);
-            }
-        }
-        if !self.range_is_free(range.start, range.end) {
-            return Err(MemoryError::PermissionDenied);
-        }
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after munmap page-table update");
-        Ok(())
-    }
-
-    fn checked_page_range(
-        address: usize,
-        length: usize,
-    ) -> Result<Range<VirtualPageNumber>, MemoryError> {
-        if address == 0 || length == 0 || !VirtualAddress::from(address).is_aligned() {
-            return Err(MemoryError::InvalidRange);
-        }
-        let end = address
-            .checked_add(length)
-            .and_then(|value| value.checked_add(config::PAGE_SIZE - 1))
-            .map(|value| value / config::PAGE_SIZE * config::PAGE_SIZE)
-            .ok_or(MemoryError::InvalidRange)?;
-        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
-        if end > user_end {
-            return Err(MemoryError::InvalidRange);
-        }
-        Ok(VirtualAddress::from(address).floor()..VirtualAddress::from(end).floor())
-    }
-
-    /// @description 修改完整 anonymous 或 ELF private 区间权限，并按边界拆分 VMA。
-    ///
-    /// @param address page-aligned 起始地址。
-    /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 新用户权限；允许 PROT_NONE，禁止 W+X。
-    /// @return 成功返回空值；缺页或触及其他系统 VMA 时在修改前整体失败。
-    pub(crate) fn protect_user_mapping(
-        &mut self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-    ) -> Result<(), MemoryError> {
-        if !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
-        {
-            return Err(MemoryError::InvalidRange);
-        }
-        let range = Self::checked_page_range(address, length)?;
-        let mut keys = Vec::new();
-        for (key, area) in &self.areas {
-            if range.start < area.vpn_range.end && area.vpn_range.start < range.end {
-                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File) {
-                    return Err(MemoryError::PermissionDenied);
-                }
-                keys.push(*key);
-            }
-        }
-        let mut covered = range.start;
-        for key in &keys {
-            let area = &self.areas[key];
-            if area.vpn_range.start > covered {
-                return Err(MemoryError::InvalidRange);
-            }
-            covered = covered.max(area.vpn_range.end);
-        }
-        if covered < range.end {
-            return Err(MemoryError::InvalidRange);
-        }
-        for key in keys {
-            let area = self.areas.remove(&key).unwrap();
-            let change_start = range.start.max(area.vpn_range.start);
-            let change_end = range.end.min(area.vpn_range.end);
-            let (left, mut middle, right) = area.partition_protectable(change_start, change_end);
-            let old_has_leaf = MapArea::has_leaf_permission(middle.map_permission);
-            let new_has_leaf = MapArea::has_leaf_permission(permission);
-            for vpn in change_start.as_usize()..change_end.as_usize() {
-                let vpn = VirtualPageNumber::from_vpn(vpn);
-                let mut pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
-                if permission.contains(MapPermission::W)
-                    && middle
-                        .data_frames
-                        .get(&vpn)
-                        .is_some_and(|frame| Arc::strong_count(frame) > 1)
-                {
-                    pte_flags.remove(PTEFlags::W);
-                }
-                match (old_has_leaf, new_has_leaf) {
-                    (true, true) => self
-                        .page_table
-                        .set_flags(vpn, pte_flags)
-                        .expect("accessible anonymous VMA must own a leaf PTE"),
-                    (true, false) => self
-                        .page_table
-                        .unmap(vpn)
-                        .expect("accessible anonymous VMA must own a leaf PTE"),
-                    (false, true) => {
-                        let ppn = middle
-                            .data_frames
-                            .get(&vpn)
-                            .expect("anonymous VMA must own every reserved frame")
-                            .ppn;
-                        self.page_table
-                            .map(vpn, ppn, pte_flags)
-                            .expect("PROT_NONE VMA must own an empty reserved leaf slot");
-                    }
-                    (false, false) => {}
-                }
-            }
-            middle.map_permission = permission;
-            for segment in [left, Some(middle), right].into_iter().flatten() {
-                self.areas.insert(segment.vpn_range.start, segment);
-            }
-        }
-        self.merge_adjacent_anonymous();
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mprotect page-table update");
-        Ok(())
     }
 
     pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {

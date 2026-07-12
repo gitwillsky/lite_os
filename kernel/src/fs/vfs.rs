@@ -349,7 +349,8 @@ impl VirtualFileSystem {
     /// @return flush 完成时成功。
     /// @errors 根文件系统未挂载或 block device flush 失败时返回明确文件系统错误。
     pub(crate) fn sync(&self) -> Result<(), FileSystemError> {
-        self.root_inode()?.sync()
+        super::sync_all()?;
+        self.root_inode()?.sync_storage()
     }
 
     /// 从根文件系统打开一个内核可见 inode。

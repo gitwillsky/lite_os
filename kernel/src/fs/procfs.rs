@@ -174,7 +174,7 @@ impl Inode for ProcInode {
         true
     }
 
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         let contents = self.file_contents()?;
         let offset = usize::try_from(offset).map_err(|_| FileSystemError::InvalidOperation)?;
         if offset >= contents.len() {
@@ -185,16 +185,16 @@ impl Inode for ProcInode {
         Ok(length)
     }
 
-    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
-    fn append(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
+    fn append_storage(&self, _buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
-    fn truncate(&self, _size: u64) -> Result<(), FileSystemError> {
+    fn truncate_storage(&self, _size: u64) -> Result<(), FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
-    fn sync(&self) -> Result<(), FileSystemError> {
+    fn sync_storage(&self) -> Result<(), FileSystemError> {
         Ok(())
     }
 

@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
@@ -14,6 +15,58 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+static int verify_shared_mapping(void)
+{
+    static const char persisted[] = "LITEOS_SHARED_PERSIST_45\n";
+    unlink("/shared-persist");
+    int fd = open("/shared-persist", O_CREAT | O_EXCL | O_RDWR, 0644);
+    if (fd < 0 || ftruncate(fd, 4096) != 0) return 50;
+    char *shared = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (shared == MAP_FAILED) return 51;
+    memcpy(shared, persisted, sizeof(persisted) - 1);
+    char observed[sizeof(persisted)] = { 0 };
+    if (lseek(fd, 0, SEEK_SET) != 0
+        || read(fd, observed, sizeof(persisted) - 1) != sizeof(persisted) - 1
+        || memcmp(observed, persisted, sizeof(persisted) - 1) != 0) return 52;
+    static const char direct[] = "direct-45";
+    if (lseek(fd, 64, SEEK_SET) != 64 || write(fd, direct, sizeof(direct)) != sizeof(direct)
+        || memcmp(shared + 64, direct, sizeof(direct)) != 0) return 53;
+    pid_t child = fork();
+    if (child == 0) {
+        memcpy(shared + 128, "fork-45", 8);
+        _exit(0);
+    }
+    int status;
+    if (child <= 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status)
+        || WEXITSTATUS(status) != 0 || memcmp(shared + 128, "fork-45", 8) != 0
+        || msync(shared, 4096, MS_SYNC) != 0 || munmap(shared, 8192) != 0) return 54;
+    child = fork();
+    if (child == 0) {
+        char *eof = mmap(NULL, 8192, PROT_READ, MAP_SHARED, fd, 0);
+        if (eof == MAP_FAILED) _exit(1);
+        volatile char byte = eof[4096];
+        (void)byte;
+        _exit(2);
+    }
+    if (child <= 0 || waitpid(child, &status, 0) != child
+        || !WIFSIGNALED(status) || WTERMSIG(status) != SIGBUS || close(fd) != 0) return 55;
+    puts("LITEOS_SHARED_MMAP_45");
+    return 0;
+}
+
+static int shared_crash_loop(void)
+{
+    int fd = open("/shared-crash", O_CREAT | O_RDWR, 0644);
+    if (fd < 0 || ftruncate(fd, 4096) != 0) return 1;
+    unsigned long *value = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (value == MAP_FAILED) return 2;
+    puts("LITEOS_SHARED_CRASH_ACTIVE_45");
+    for (;;) {
+        ++*value;
+        if (msync(value, 4096, MS_SYNC) != 0) return 3;
+    }
+}
 
 static int verify_credentials(const char *program)
 {
@@ -55,6 +108,7 @@ static int verify_credentials(const char *program)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "shared-crash") == 0) return shared_crash_loop();
     if (argc == 2 && strcmp(argv[1], "setid-probe") == 0) {
         uid_t real, effective, saved;
         return getresuid(&real, &effective, &saved) != 0 || real != 1000 || effective != 0 || saved != 0;
@@ -141,6 +195,8 @@ int main(int argc, char **argv)
     }
     int credential_result = verify_credentials(argv[0]);
     if (credential_result != 0) return credential_result;
+    int shared_result = verify_shared_mapping();
+    if (shared_result != 0) return shared_result;
     puts("LITEOS_DLOPEN_42");
     return 0;
 }
