@@ -1,0 +1,25 @@
+docs/phase-34-busybox-serial-console.md
+  s_d637a88cd4b00d::t_9a9a902e73282c 1-21
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_be07ec3d471171 38
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_37815f55a4967a 44-70,254-257,336,524,536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f4ba6771d9391b71e988388313bce18cd8c48cc9",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
