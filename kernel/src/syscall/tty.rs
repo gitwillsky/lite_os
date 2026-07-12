@@ -1,11 +1,13 @@
 use crate::{
-    fs::{CharacterDevice, OpenFileKind},
+    fs::{CharacterDevice, OpenFileKind, Terminal, TerminalAccess},
     syscall::errno,
     task::{
-        ProcessGroupError, claim_controlling_terminal, current_task, set_terminal_foreground_group,
-        terminal_foreground_group,
+        ProcessGroupError, TerminalAccessError, check_terminal_access, claim_controlling_terminal,
+        current_task, set_terminal_foreground_group, terminal_foreground_group,
     },
 };
+
+use super::INTERNAL_RESTART_SYS;
 
 const TCGETS: usize = 0x5401;
 const TCSETS: usize = 0x5402;
@@ -24,6 +26,21 @@ fn tty_error(error: ProcessGroupError) -> isize {
         ProcessGroupError::Permission => -errno::EPERM,
         ProcessGroupError::NotTerminal => -errno::ENOTTY,
     }
+}
+
+/// @description 将 task-owned TTY job-control 结果翻译为 syscall 内部结果。
+///
+/// @param terminal 正在访问的 TTY owner。
+/// @param access 输入、输出或状态修改。
+/// @return 允许访问时成功；EIO 或内部 restart sentinel 时返回对应错误。
+pub(super) fn guard_terminal_access(
+    terminal: &Terminal,
+    access: TerminalAccess,
+) -> Result<(), isize> {
+    check_terminal_access(terminal, access).map_err(|error| match error {
+        TerminalAccessError::Io => -errno::EIO,
+        TerminalAccessError::Restart => INTERNAL_RESTART_SYS,
+    })
 }
 
 /// @description 实现唯一 Terminal OFD 的 Linux termios/session/foreground ioctl 子集。
@@ -45,6 +62,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
             .copy_to_user(argument, &terminal.termios())
             .map_or(-errno::EFAULT, |()| 0),
         TCSETS | TCSETSW | TCSETSF => {
+            if let Err(error) = guard_terminal_access(terminal, TerminalAccess::StateChange) {
+                return error;
+            }
             let mut termios = [0u8; 36];
             if task.copy_from_user(argument, &mut termios).is_err() {
                 return -errno::EFAULT;
@@ -60,6 +80,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
             Err(error) => tty_error(error),
         },
         TIOCSPGRP => {
+            if let Err(error) = guard_terminal_access(terminal, TerminalAccess::StateChange) {
+                return error;
+            }
             let mut bytes = [0u8; 4];
             if task.copy_from_user(argument, &mut bytes).is_err() {
                 return -errno::EFAULT;

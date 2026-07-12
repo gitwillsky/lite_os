@@ -12,7 +12,7 @@ pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
     CharacterDevice, Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND,
     O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
-    TerminalRead,
+    TerminalAccess, TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use procfs::{

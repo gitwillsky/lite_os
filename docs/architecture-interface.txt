@@ -364,9 +364,6 @@ kernel/src/fs/file.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < dyn Inode >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
-kernel/src/fs/file.rs :: enum TerminalRead :: Bytes (usize)
-kernel/src/fs/file.rs :: enum TerminalRead :: Empty
-kernel/src/fs/file.rs :: enum TerminalRead :: Eof
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: kind : OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: offset : Mutex < u64 >
@@ -379,7 +376,6 @@ kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
 kernel/src/fs/file.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
-kernel/src/fs/file.rs :: pub (crate) enum TerminalRead
 kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
 kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn terminal (& self) -> Option < & Arc < Terminal > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool ,) -> Result < usize , () >
@@ -399,29 +395,39 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (inode
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , flags : u32) -> Arc < Self >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn claim_session (& self , session : usize , foreground_pgid : usize) -> Result < () , () >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn drain_input (& self) -> Result < u64 , FileSystemError >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn foreground_pgid (& self , session : usize) -> Result < usize , () >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Arc < Self >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize)
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn set_window_size (& self , window_size : [u8 ; 8])
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn signal_target_group (& self) -> Option < usize >
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn termios (& self) -> [u8 ; KERNEL_TERMIOS_SIZE]
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn wait_ready (& self) -> bool
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn window_size (& self) -> [u8 ; 8]
-kernel/src/fs/file.rs :: pub (crate) impl Terminal :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
-kernel/src/fs/file.rs :: pub (crate) struct Terminal
 kernel/src/fs/file.rs :: pub (crate) trait Console
+kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead }
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
+kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Output
+kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: StateChange
+kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Bytes (usize)
+kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Empty
+kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Eof
+kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalAccess
+kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalRead
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn background_signal (& self , session : usize , process_group : usize , access : TerminalAccess ,) -> Option < usize >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn claim_session (& self , session : usize , foreground_pgid : usize) -> Result < () , () >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn drain_input (& self) -> Result < u64 , FileSystemError >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgid (& self , session : usize) -> Result < usize , () >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Arc < Self >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize)
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_window_size (& self , window_size : [u8 ; 8])
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn signal_target_group (& self) -> Option < usize >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn termios (& self) -> [u8 ; KERNEL_TERMIOS_SIZE]
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn wait_ready (& self) -> bool
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn window_size (& self) -> [u8 ; 8]
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/file/terminal.rs :: pub (crate) struct Terminal
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
@@ -491,7 +497,7 @@ kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
-kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalRead , }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileSystem , ProcProcessSnapshot , ProcSnapshot , ProcSource , }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { init as init_vfs , vfs }
@@ -824,15 +830,16 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_mkdirat (fd : isize , name : * co
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_newfstatat (fd : isize , name : * const u8 , pointer : * mut u8 , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_openat (fd : isize , name : * const u8 , flags : u32 , mode : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_pipe2 (descriptors : usize , flags : u32) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_renameat2 (ofd : isize , on : * const u8 , nfd : isize , nn : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_unlinkat (fd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_read , sys_readv , sys_write , sys_writev }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
+kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
+kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
+kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8] ,) -> Result < Option < Arc < dyn Inode > > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn ferr (error : FileSystemError) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn path (task : & TaskControlBlock , pointer : * const u8) -> Result < Vec < u8 > , isize >
@@ -881,6 +888,7 @@ kernel/src/syscall/timer.rs :: pub (crate) fn sys_nanosleep (req : * const TimeS
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
 kernel/src/syscall/tty.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
+kernel/src/syscall/tty.rs :: pub (super) fn guard_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , isize >
 kernel/src/system.rs :: enum ResetKind :: ColdReboot
 kernel/src/system.rs :: enum ResetKind :: Shutdown
 kernel/src/system.rs :: pub (crate) enum ResetKind
@@ -977,9 +985,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
@@ -1031,6 +1037,8 @@ kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn en
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn kernel () -> Self
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn process_directed (pid : usize) -> Self
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn thread_directed (pid : usize) -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
+kernel/src/task/model/signal_state.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
 kernel/src/task/model/signal_state.rs :: pub (crate) struct PendingSignal
 kernel/src/task/model/signal_state.rs :: pub (crate) struct SignalAction
 kernel/src/task/model/signal_state.rs :: pub (in crate :: task) impl TaskControlBlock :: fn queue_process_signal < 'a > (& self , threads : impl Iterator < Item = & 'a Arc < TaskControlBlock > > , signal : usize , info : PendingSignal ,) -> Result < bool , () >
@@ -1145,12 +1153,17 @@ kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: KernelProcSource
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
+kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , wait_child }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
+kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
+kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Signaled (u8)
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_group (code : i32) -> !
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_group_by_signal (signal : usize) -> !
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_if_group_exiting ()
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_thread (code : i32) -> !
+kernel/src/task/task_manager/process_exit.rs :: pub (super) enum ProcessExitStatus
+kernel/src/task/task_manager/process_exit.rs :: pub (super) impl ProcessExitStatus :: fn wait_status (self) -> i32
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
 kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Running
@@ -1171,6 +1184,10 @@ kernel/src/task/task_manager/signal.rs :: pub (super) fn interrupt_waiting_task 
 kernel/src/task/task_manager/signal.rs :: pub (super) fn send_kernel_process_signal (tgid : usize , signal : usize , info : PendingSignal) -> bool
 kernel/src/task/task_manager/signal.rs :: pub (super) fn send_process_group_signal (pgid : usize , signal : usize) -> usize
 kernel/src/task/task_manager/signal.rs :: pub (super) struct ChildEvents
+kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Io
+kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Restart
+kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
+kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: Interrupted
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: InvalidSelector
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: NoChild

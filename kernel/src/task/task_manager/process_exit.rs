@@ -2,6 +2,21 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProcessExitStatus {
+    Exited(u8),
+    Signaled(u8),
+}
+
+impl ProcessExitStatus {
+    pub(super) fn wait_status(self) -> i32 {
+        match self {
+            Self::Exited(code) => i32::from(code) << 8,
+            Self::Signaled(signal) => i32::from(signal) & 0x7f,
+        }
+    }
+}
+
 /// @description 若当前 Process 已提交 group-exit，则在 calling Thread 上完成退出。
 ///
 /// @return 普通运行态直接返回；group-exit 已提交时不返回。

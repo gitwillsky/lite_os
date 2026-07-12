@@ -141,6 +141,7 @@ def boot(
     assert process.stdout is not None
     output = bytearray()
     pending_interactions = list(interactions)
+    interaction_cursor = 0
     deadline = time.monotonic() + timeout_seconds
     try:
         while time.monotonic() < deadline:
@@ -158,8 +159,15 @@ def boot(
                         f"QEMU -smp {smp} reached forbidden markers: {found!r}"
                         f"\n--- output tail ---\n{tail}"
                     )
-                while pending_interactions and pending_interactions[0][0] in text:
-                    _, data = pending_interactions.pop(0)
+                while pending_interactions:
+                    marker, data = pending_interactions[0]
+                    marker_offset = text.find(marker, interaction_cursor)
+                    if marker_offset < 0:
+                        break
+                    pending_interactions.pop(0)
+                    # 每个 marker 只能消费上一交互之后的新输出；缺少 cursor 时，重复 prompt/
+                    # Stopped 文本会立即触发未来输入，使 gate 绕过 guest 的真实状态转换。
+                    interaction_cursor = marker_offset + len(marker)
                     assert process.stdin is not None
                     # marker 通常先于 ash 的下一条 prompt；立即注入会让 prompt 切断命令前缀。
                     # 固定 settle 属于 serial transport 协议，不依赖某一条 gate 命令的长度或内容。

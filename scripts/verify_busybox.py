@@ -80,6 +80,7 @@ BUSYBOX_LINKS = (
     "sh",
     "sleep",
     "sort",
+    "stty",
     "sync",
     "tail",
     "tee",
@@ -569,6 +570,12 @@ def main() -> int:
                 "LITEOS_BG_CONTINUED_42",
                 "LITEOS_FG_CTRL_C_42",
                 "LITEOS_TTY_CTRL_C_42",
+                "LITEOS_BG_READ_STOPPED_42",
+                "LITEOS_BG_READ_OK_42",
+                "LITEOS_BG_READ_IGNORED_EIO_42",
+                "LITEOS_BG_WRITE_STOPPED_42",
+                "LITEOS_BG_WRITE_OK_42",
+                "LITEOS_BG_WRITE_IGNORED_42",
             ),
             interactions=(
                 (
@@ -661,7 +668,51 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_FG_START_42",
-                    b"\x03echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                    b"\x03",
+                ),
+                (
+                    "/ # ",
+                    b"echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_TTY_CTRL_C_42",
+                    b"/bin/dd if=/dev/tty of=/bgread bs=16 count=1 2>/dev/null & echo LITEOS_BG_READ_LAUNCHED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_READ_LAUNCHED_42",
+                    b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_READ_STOPPED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_READ_STOPPED_42",
+                    b"fg\n",
+                ),
+                (
+                    "/bin/dd if=/dev/tty",
+                    b"ttyinput\n",
+                ),
+                (
+                    "/ # ",
+                    b"value=$(/bin/cat /bgread); [ \"$value\" = ttyinput ] && echo LITEOS_BG_READ_OK_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_READ_OK_42",
+                    b"/bin/sh -c 'trap \"\" 21; exec /bin/dd if=/dev/tty of=/ignored-read bs=1 count=1 2>/dev/null' & wait; [ ! -s /ignored-read ] && echo LITEOS_BG_READ_IGNORED_EIO_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_READ_IGNORED_EIO_42",
+                    b"/bin/stty tostop </dev/tty; /bin/echo LITEOS_BG_WRITE_OK_$((6*7)) >/dev/tty & echo LITEOS_BG_WRITE_LAUNCHED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_WRITE_LAUNCHED_42",
+                    b"/bin/sleep 1; jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_BG_WRITE_STOPPED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_WRITE_STOPPED_42",
+                    b"fg\n",
+                ),
+                (
+                    "LITEOS_BG_WRITE_OK_42",
+                    b"/bin/sh -c 'trap \"\" 22; echo LITEOS_BG_WRITE_IGNORED_$((6*7)) >/dev/tty' & wait; /bin/stty -tostop </dev/tty\n",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

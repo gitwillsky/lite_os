@@ -23,8 +23,10 @@ use crate::{
 mod process_exit;
 mod procfs;
 mod signal;
+mod terminal_access;
 mod wait_child;
 
+use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
     exit_current_thread,
@@ -35,22 +37,8 @@ pub(crate) use signal::{
     SignalSendError, send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
+pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
 pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProcessExitStatus {
-    Exited(u8),
-    Signaled(u8),
-}
-
-impl ProcessExitStatus {
-    fn wait_status(self) -> i32 {
-        match self {
-            Self::Exited(code) => i32::from(code) << 8,
-            Self::Signaled(signal) => i32::from(signal) & 0x7f,
-        }
-    }
-}
 
 enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),

@@ -1,0 +1,511 @@
+use super::*;
+
+const IOV_MAX: usize = 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserIoVec {
+    base: usize,
+    length: usize,
+}
+
+/// @description 从 descriptor 读取至 userspace buffer。
+///
+/// @param fd 源 descriptor。
+/// @param pointer userspace 输出地址。
+/// @param length 最大读取长度。
+/// @return byte count、EOF 零或负 errno/internal restart sentinel。
+pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
+        return -errno::EBADF;
+    }
+    if let OpenFileKind::Character(device) = &ofd.kind {
+        match device {
+            CharacterDevice::Null => return 0,
+            CharacterDevice::Zero => {
+                let zeroes = [0u8; 512];
+                let mut copied = 0;
+                while copied < length {
+                    let count = (length - copied).min(zeroes.len());
+                    if task
+                        .copy_to_user(pointer as usize + copied, &zeroes[..count])
+                        .is_err()
+                    {
+                        return if copied == 0 {
+                            -errno::EFAULT
+                        } else {
+                            copied as isize
+                        };
+                    }
+                    copied += count;
+                }
+                return copied as isize;
+            }
+            CharacterDevice::Terminal {
+                terminal: console,
+                kind,
+            } => {
+                if length == 0 {
+                    return 0;
+                }
+                let mut chunk = [0u8; 512];
+                loop {
+                    if *kind == DeviceKind::Tty
+                        && let Err(error) = guard_terminal_access(console, TerminalAccess::Input)
+                    {
+                        return error;
+                    }
+                    if drain_terminal_input(console).is_err() {
+                        return -errno::EIO;
+                    }
+                    let count = length.min(chunk.len());
+                    let read = match console.read(&mut chunk[..count]) {
+                        TerminalRead::Empty => {
+                            match crate::task::wait_for_console(|| console.wait_ready()) {
+                                crate::task::WaitResult::Woken => continue,
+                                crate::task::WaitResult::Interrupted => return -errno::EINTR,
+                                crate::task::WaitResult::TimedOut => {
+                                    panic!("console wait cannot time out")
+                                }
+                            }
+                        }
+                        TerminalRead::Bytes(read) => read,
+                        TerminalRead::Eof => return 0,
+                    };
+                    return task
+                        .copy_to_user(pointer as usize, &chunk[..read])
+                        .map_or(-errno::EFAULT, |()| read as isize);
+                }
+            }
+        }
+    }
+    if let OpenFileKind::Pipe(endpoint) = &ofd.kind {
+        if endpoint.direction() != PipeDirection::Read {
+            return -errno::EBADF;
+        }
+        if length == 0 {
+            return 0;
+        }
+        let mut chunk = [0u8; 512];
+        loop {
+            let count = length.min(chunk.len());
+            match endpoint.read(&mut chunk[..count]) {
+                PipeRead::Bytes(read) => {
+                    return task
+                        .copy_to_user(pointer as usize, &chunk[..read])
+                        .map_or(-errno::EFAULT, |()| read as isize);
+                }
+                PipeRead::Eof => return 0,
+                PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
+                PipeRead::Empty => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Read) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return -errno::EINTR,
+                    WaitResult::TimedOut => panic!("pipe read wait cannot time out"),
+                },
+            }
+        }
+    }
+    let OpenFileKind::Inode(inode) = &ofd.kind else {
+        unreachable!("character device handled above")
+    };
+    if inode.inode_type() == InodeType::Directory {
+        return -errno::EISDIR;
+    }
+    let mut offset = ofd.offset.lock();
+    let mut total = 0;
+    let mut chunk = [0u8; 512];
+    while total < length {
+        let count = chunk.len().min(length - total);
+        let got = match inode.read_at(*offset, &mut chunk[..count]) {
+            Ok(v) => v,
+            Err(e) => return if total == 0 { ferr(e) } else { total as isize },
+        };
+        if got == 0 {
+            break;
+        }
+        if task
+            .copy_to_user(pointer as usize + total, &chunk[..got])
+            .is_err()
+        {
+            return if total == 0 {
+                -errno::EFAULT
+            } else {
+                total as isize
+            };
+        }
+        *offset += got as u64;
+        total += got;
+    }
+    total as isize
+}
+
+/// @description 将 userspace buffer 写入 descriptor。
+///
+/// @param fd 目标 descriptor。
+/// @param pointer userspace 输入地址。
+/// @param length 待写入长度。
+/// @return byte count、partial count 或负 errno/internal restart sentinel。
+pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+        return -errno::EBADF;
+    }
+    if let OpenFileKind::Pipe(endpoint) = &ofd.kind {
+        if endpoint.direction() != PipeDirection::Write {
+            return -errno::EBADF;
+        }
+        if length == 0 {
+            return 0;
+        }
+        let mut chunk = [0u8; PIPE_BUF];
+        let mut total = 0;
+        while total < length {
+            let count = (length - total).min(chunk.len());
+            if task
+                .copy_from_user(pointer as usize + total, &mut chunk[..count])
+                .is_err()
+            {
+                return if total == 0 {
+                    -errno::EFAULT
+                } else {
+                    total as isize
+                };
+            }
+            match endpoint.write(&chunk[..count]) {
+                PipeWrite::Bytes(written) => {
+                    total += written;
+                    if written < count {
+                        return total as isize;
+                    }
+                }
+                PipeWrite::Full if total != 0 => return total as isize,
+                PipeWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
+                PipeWrite::Full => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Write) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return -errno::EINTR,
+                    WaitResult::TimedOut => panic!("pipe write wait cannot time out"),
+                },
+                PipeWrite::Broken => {
+                    send_thread_signal(task.tgid(), task.tid(), 13)
+                        .expect("current pipe writer must exist");
+                    return if total == 0 {
+                        -errno::EPIPE
+                    } else {
+                        total as isize
+                    };
+                }
+            }
+        }
+        return total as isize;
+    }
+    if let OpenFileKind::Character(CharacterDevice::Terminal {
+        terminal,
+        kind: DeviceKind::Tty,
+    }) = &ofd.kind
+        && let Err(error) = guard_terminal_access(terminal, TerminalAccess::Output)
+    {
+        return error;
+    }
+    let mut offset = ofd.offset.lock();
+    let mut total = 0;
+    let mut chunk = [0u8; 512];
+    while total < length {
+        let count = chunk.len().min(length - total);
+        if task
+            .copy_from_user(pointer as usize + total, &mut chunk[..count])
+            .is_err()
+        {
+            return if total == 0 {
+                -errno::EFAULT
+            } else {
+                total as isize
+            };
+        }
+        let wrote = match &ofd.kind {
+            OpenFileKind::Pipe(_) => unreachable!("pipe handled before offset-backed write"),
+            OpenFileKind::Character(device) => match device {
+                CharacterDevice::Null | CharacterDevice::Zero => count,
+                CharacterDevice::Terminal {
+                    terminal: console, ..
+                } => match console.write(&chunk[..count]) {
+                    Ok(written) => written,
+                    Err(error) => {
+                        return if total == 0 {
+                            ferr(error)
+                        } else {
+                            total as isize
+                        };
+                    }
+                },
+            },
+            OpenFileKind::Inode(inode) => {
+                if *ofd.flags.lock() & O_APPEND != 0 {
+                    match inode.append(&chunk[..count]) {
+                        Ok((append_offset, written)) => {
+                            *offset = append_offset + written as u64;
+                            total += written;
+                            if written < count {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(error) => {
+                            return if total == 0 {
+                                ferr(error)
+                            } else {
+                                total as isize
+                            };
+                        }
+                    }
+                }
+                match inode.write_at(*offset, &chunk[..count]) {
+                    Ok(v) => v,
+                    Err(e) => return if total == 0 { ferr(e) } else { total as isize },
+                }
+            }
+        };
+        *offset += wrote as u64;
+        total += wrote;
+        if wrote < count {
+            break;
+        }
+    }
+    total as isize
+}
+
+/// @description 按 Linux RV64 `struct iovec` 顺序写入同一个 open file description。
+///
+/// @param fd 目标 descriptor。
+/// @param iovector userspace `iovec` 数组地址；count 为零时可为空。
+/// @param count iovec 数量，最大 1024。
+/// @return 总写入字节数；导入失败或首个 write 失败返回负 errno，已有进度后返回 partial count。
+pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
+    if count > IOV_MAX {
+        return -errno::EINVAL;
+    }
+    if count == 0 {
+        return sys_write(fd, core::ptr::null(), 0);
+    }
+    if iovector == 0 {
+        return -errno::EFAULT;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let mut vectors = Vec::new();
+    if vectors.try_reserve_exact(count).is_err() {
+        return -errno::ENOMEM;
+    }
+    let mut total_length = 0usize;
+    for index in 0..count {
+        let offset = match index.checked_mul(mem::size_of::<UserIoVec>()) {
+            Some(offset) => offset,
+            None => return -errno::EFAULT,
+        };
+        let address = match iovector.checked_add(offset) {
+            Some(address) => address,
+            None => return -errno::EFAULT,
+        };
+        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
+        if task.copy_from_user(address, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let vector = UserIoVec {
+            base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
+            length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
+        };
+        total_length = match total_length.checked_add(vector.length) {
+            Some(length) if length <= isize::MAX as usize => length,
+            _ => return -errno::EINVAL,
+        };
+        vectors.push(vector);
+    }
+    if total_length == 0 {
+        return 0;
+    }
+    if total_length <= PIPE_BUF
+        && let OpenFileKind::Pipe(endpoint) = &ofd.kind
+    {
+        if endpoint.direction() != PipeDirection::Write {
+            return -errno::EBADF;
+        }
+        let mut input = [0u8; PIPE_BUF];
+        let mut copied = 0;
+        for vector in &vectors {
+            if task
+                .copy_from_user(vector.base, &mut input[copied..copied + vector.length])
+                .is_err()
+            {
+                return -errno::EFAULT;
+            }
+            copied += vector.length;
+        }
+        loop {
+            match endpoint.write(&input[..total_length]) {
+                PipeWrite::Bytes(written) => {
+                    assert_eq!(written, total_length, "PIPE_BUF writev lost atomicity");
+                    return written as isize;
+                }
+                PipeWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
+                PipeWrite::Full => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Write) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return -errno::EINTR,
+                    WaitResult::TimedOut => panic!("pipe writev wait cannot time out"),
+                },
+                PipeWrite::Broken => {
+                    send_thread_signal(task.tgid(), task.tid(), 13)
+                        .expect("current pipe writev task must exist");
+                    return -errno::EPIPE;
+                }
+            }
+        }
+    }
+
+    let mut written = 0usize;
+    for vector in vectors {
+        if vector.length == 0 {
+            continue;
+        }
+        let result = sys_write(fd, vector.base as *const u8, vector.length);
+        if result < 0 {
+            return if written == 0 {
+                result
+            } else {
+                written as isize
+            };
+        }
+        let result = result as usize;
+        written += result;
+        if result < vector.length {
+            break;
+        }
+    }
+    written as isize
+}
+
+/// @description 按 Linux RV64 `struct iovec` 顺序从同一个 OFD scatter read。
+///
+/// @param fd 源 descriptor。
+/// @param iovector userspace `iovec` 数组地址；count 为零时可为空。
+/// @param count iovec 数量，最大 1024。
+/// @return 总读取字节数；导入失败或首个 read 失败返回负 errno，已有进度后返回 partial count。
+pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
+    if count > IOV_MAX {
+        return -errno::EINVAL;
+    }
+    if count == 0 {
+        return sys_read(fd, core::ptr::null_mut(), 0);
+    }
+    if iovector == 0 {
+        return -errno::EFAULT;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let stream = matches!(&ofd.kind, OpenFileKind::Pipe(_))
+        || matches!(&ofd.kind, OpenFileKind::Character(device) if device.terminal().is_some());
+    let mut vectors = Vec::new();
+    if vectors.try_reserve_exact(count).is_err() {
+        return -errno::ENOMEM;
+    }
+    let mut total_length = 0usize;
+    for index in 0..count {
+        let Some(address) = index
+            .checked_mul(mem::size_of::<UserIoVec>())
+            .and_then(|offset| iovector.checked_add(offset))
+        else {
+            return -errno::EFAULT;
+        };
+        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
+        if task.copy_from_user(address, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let vector = UserIoVec {
+            base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
+            length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
+        };
+        total_length = match total_length.checked_add(vector.length) {
+            Some(length) if length <= isize::MAX as usize => length,
+            _ => return -errno::EINVAL,
+        };
+        vectors.push(vector);
+    }
+    if total_length == 0 {
+        return 0;
+    }
+    if let OpenFileKind::Pipe(endpoint) = &ofd.kind {
+        if endpoint.direction() != PipeDirection::Read {
+            return -errno::EBADF;
+        }
+        let mut input = Vec::new();
+        let capacity = total_length.min(64 * 1024);
+        if input.try_reserve_exact(capacity).is_err() {
+            return -errno::ENOMEM;
+        }
+        input.resize(capacity, 0);
+        let read = loop {
+            match endpoint.read(&mut input) {
+                PipeRead::Bytes(read) => break read,
+                PipeRead::Eof => return 0,
+                PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
+                PipeRead::Empty => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Read) {
+                    WaitResult::Woken => {}
+                    WaitResult::Interrupted => return -errno::EINTR,
+                    WaitResult::TimedOut => panic!("pipe readv wait cannot time out"),
+                },
+            }
+        };
+        let mut copied = 0;
+        for vector in vectors {
+            let count = vector.length.min(read - copied);
+            if count == 0 {
+                break;
+            }
+            if task
+                .copy_to_user(vector.base, &input[copied..copied + count])
+                .is_err()
+            {
+                return if copied == 0 {
+                    -errno::EFAULT
+                } else {
+                    copied as isize
+                };
+            }
+            copied += count;
+        }
+        return copied as isize;
+    }
+    let mut read = 0usize;
+    for vector in vectors {
+        if vector.length == 0 {
+            continue;
+        }
+        let result = sys_read(fd, vector.base as *mut u8, vector.length);
+        if result < 0 {
+            return if read == 0 { result } else { read as isize };
+        }
+        let result = result as usize;
+        read += result;
+        if result < vector.length || stream && result != 0 {
+            break;
+        }
+    }
+    read as isize
+}
