@@ -97,6 +97,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut timer::TimeSpec),
         SYSCALL_SCHED_YIELD => sys_sched_yield(),
         SYSCALL_KILL => sys_kill(args[0] as i32, args[1]),
+        SYSCALL_TKILL => sys_tkill(args[0], args[1]),
         SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
         SYSCALL_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0], args[1]),
         SYSCALL_RT_SIGACTION => sys_rt_sigaction(args[0], args[1], args[2], args[3]),

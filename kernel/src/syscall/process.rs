@@ -6,10 +6,10 @@ use crate::{
     syscall::errno,
     task::{
         EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, TaskControlBlock,
-        ThreadCloneError, WaitChildError, clone_current_thread, create_session, current_task,
-        exit_current_and_run_next, fork_current_process, load_executable, parent_pid,
-        process_group, reap_child, session_id, set_process_group, suspend_current_and_run_next,
-        thread_count, wait_child,
+        ThreadCloneError, WaitChildError, clone_current_thread, consume_child_status,
+        create_session, current_task, exit_current_and_run_next, fork_current_process,
+        load_executable, parent_pid, process_group, session_id, set_process_group,
+        suspend_current_and_run_next, thread_count, wait_child,
     },
 };
 
@@ -221,7 +221,12 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
     if thread_count(current.tgid()) != 1 {
         return -errno::EAGAIN;
     }
-    let record = match wait_child(pid, options & WNOHANG != 0) {
+    let record = match wait_child(
+        pid,
+        options & WNOHANG != 0,
+        options & WUNTRACED != 0,
+        options & WCONTINUED != 0,
+    ) {
         Ok(Some(record)) => record,
         Ok(None) => return 0,
         Err(WaitChildError::NoChild) => return -errno::ECHILD,
@@ -237,7 +242,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
             return -errno::EFAULT;
         }
     }
-    reap_child(record.pid);
+    consume_child_status(record);
     record.pid as isize
 }
 

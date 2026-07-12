@@ -22,10 +22,15 @@ use crate::{
 
 mod procfs;
 mod signal;
+mod wait_child;
 
 pub(crate) use procfs::KernelProcSource;
-pub(crate) use signal::{SignalSendError, send_process_signal, send_thread_signal};
-use signal::{send_kernel_process_signal, send_process_group_signal};
+use signal::{ChildEvents, JobControlState};
+pub(crate) use signal::{
+    SignalSendError, send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
+};
+use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
+pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
 
 enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
@@ -37,6 +42,8 @@ struct ProcessNode {
     session: usize,
     process_group: usize,
     state: ProcessState,
+    job_control: JobControlState,
+    child_events: ChildEvents,
     waiter: Option<Arc<TaskControlBlock>>,
 }
 
@@ -110,6 +117,8 @@ impl TaskManager {
                 session: INIT_PID,
                 process_group: INIT_PID,
                 state: ProcessState::Live(threads),
+                job_control: JobControlState::Running,
+                child_events: ChildEvents::default(),
                 waiter: None,
             },
         );
@@ -146,6 +155,8 @@ impl TaskManager {
                 session,
                 process_group,
                 state: ProcessState::Live(threads),
+                job_control: JobControlState::Running,
+                child_events: ChildEvents::default(),
                 waiter: None,
             },
         );
@@ -153,7 +164,7 @@ impl TaskManager {
         graph.processes_created = graph.processes_created.saturating_add(1);
     }
 
-    fn publish_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) {
+    fn publish_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) -> bool {
         let mut graph = self.graph.lock();
         let node = graph
             .nodes
@@ -162,7 +173,12 @@ impl TaskManager {
         let ProcessState::Live(threads) = &mut node.state else {
             panic!("cannot publish thread into exited process");
         };
-        assert!(threads.insert(thread.tid(), thread).is_none());
+        let stopping = node.job_control != JobControlState::Running;
+        assert!(threads.insert(thread.tid(), thread.clone()).is_none());
+        if stopping {
+            crate::task::processor::request_task_stop(&thread);
+        }
+        stopping
     }
 
     fn parent_pid(&self, pid: usize) -> usize {
@@ -750,143 +766,10 @@ pub(crate) fn clone_current_thread(
         child.remove_thread_trap_context();
         return Err(ThreadCloneError::Fault);
     }
-    TASK_MANAGER.publish_thread(parent.tgid(), child.clone());
-    enqueue_new_task(child);
+    if !TASK_MANAGER.publish_thread(parent.tgid(), child.clone()) {
+        enqueue_new_task(child);
+    }
     Ok(tid)
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ChildExit {
-    pub(crate) pid: usize,
-    pub(crate) status: i32,
-}
-
-/// @description wait4 在 task layer 的精确结果分类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WaitChildError {
-    NoChild,
-    InvalidSelector,
-    Interrupted,
-}
-
-fn matching_child(child: usize, selector: isize) -> bool {
-    selector == -1 || selector > 0 && child == selector as usize
-}
-
-fn find_waitable_child(
-    graph: &ProcessGraph,
-    parent: usize,
-    selector: isize,
-) -> Result<Option<ChildExit>, WaitChildError> {
-    if selector == 0 || selector < -1 {
-        return Err(WaitChildError::InvalidSelector);
-    }
-    let mut has_child = false;
-    for (pid, node) in &graph.nodes {
-        if node.parent != Some(parent) || !matching_child(*pid, selector) {
-            continue;
-        }
-        has_child = true;
-        if let ProcessState::Exited(code) = node.state {
-            return Ok(Some(ChildExit {
-                pid: *pid,
-                status: (code & 0xff) << 8,
-            }));
-        }
-    }
-    if has_child {
-        Ok(None)
-    } else {
-        Err(WaitChildError::NoChild)
-    }
-}
-
-/// @description 等待指定或任一直接 child 产生最小 exit record。
-///
-/// @param selector `-1` 表示任一 child，正数表示指定 PID。
-/// @param nohang 无可消费 record 时是否立即返回。
-/// @return exit record、WNOHANG 的 None，或 selector/child/interruption 错误；record 尚未被消费。
-pub(crate) fn wait_child(
-    selector: isize,
-    nohang: bool,
-) -> Result<Option<ChildExit>, WaitChildError> {
-    let task = current_task().expect("wait4 requires current task");
-    let parent = task.tgid();
-    loop {
-        let mut graph = TASK_MANAGER.graph.lock();
-        match find_waitable_child(&graph, parent, selector)? {
-            Some(record) => return Ok(Some(record)),
-            None if nohang => return Ok(None),
-            None => {}
-        }
-        if task.has_deliverable_signal() {
-            return Err(WaitChildError::Interrupted);
-        }
-
-        let cpu = hart_id();
-        let end_time = get_time_us();
-        let mut sched = task.scheduling.policy.lock();
-        let runtime = end_time.saturating_sub(sched.last_runtime);
-        sched.update_vruntime(runtime);
-        drop(sched);
-
-        // graph lock 覆盖“再次检查 child”到 waiter 发布；exit 必须取得同一锁，因此不会丢唤醒。
-        with_current_processor(|processor| {
-            let current = processor
-                .take_current()
-                .expect("child wait requires current task");
-            assert!(Arc::ptr_eq(&current, &task));
-            let mut scheduling = task.scheduling.state.lock();
-            assert_eq!(scheduling.run_state, RunState::Running { cpu });
-            assert!(
-                scheduling.wait.is_none(),
-                "task already owns wait membership"
-            );
-            assert!(scheduling.wait_result.is_none());
-            let parent_node = graph
-                .nodes
-                .get_mut(&parent)
-                .expect("waiting parent missing from process graph");
-            assert!(
-                parent_node.waiter.is_none(),
-                "parent already owns child waiter"
-            );
-            parent_node.waiter = Some(current);
-            scheduling.wait = Some(WaitMembership::Child);
-            scheduling.run_state = RunState::Blocking { cpu };
-        });
-        drop(graph);
-        schedule_with_task_context(task.clone());
-        match task
-            .scheduling
-            .state
-            .lock()
-            .wait_result
-            .take()
-            .expect("child waiter resumed without a wake result")
-        {
-            WaitResult::Woken => {}
-            WaitResult::Interrupted => return Err(WaitChildError::Interrupted),
-            WaitResult::TimedOut => panic!("child waiter cannot time out"),
-        }
-    }
-}
-
-/// @description 在 status copyout 成功后消费唯一 child exit record。
-///
-/// @param pid `wait_child` 返回且仍属于当前 parent 的 exited child。
-/// @return 成功返回空值；record 变化表示内核不变量损坏。
-pub(crate) fn reap_child(pid: usize) {
-    let parent = current_task().expect("reap requires current task").tgid();
-    let mut graph = TASK_MANAGER.graph.lock();
-    let node = graph
-        .nodes
-        .get(&pid)
-        .expect("reaped child missing from process graph");
-    assert_eq!(node.parent, Some(parent));
-    assert!(matches!(node.state, ProcessState::Exited(_)));
-    assert!(node.waiter.is_none());
-    graph.nodes.remove(&pid);
 }
 
 /// @description futex WAIT 在 task layer 的精确结果分类。
@@ -1708,7 +1591,9 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     unsafe {
         crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
     }
-    crate::task::processor::finish_deschedule_transition(&task);
+    if crate::task::processor::finish_deschedule_transition(&task) {
+        complete_process_stop(task.tgid());
+    }
     // 退出 task 把自身 Arc 留在 per-hart slot；这里只在已经恢复的 idle stack 上析构。
     crate::task::processor::reap_deferred_task();
 }

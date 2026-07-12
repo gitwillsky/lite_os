@@ -20,18 +20,53 @@ use crate::{
 };
 
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
-use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
+use signal_state::{
+    PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_default_stop,
+    signal_is_ignored,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RunState {
     New,
-    Ready { cpu: usize, generation: u64 },
-    Running { cpu: usize },
-    Preempting { cpu: usize },
-    Blocking { cpu: usize },
+    Ready {
+        cpu: usize,
+        generation: u64,
+    },
+    Running {
+        cpu: usize,
+    },
+    Preempting {
+        cpu: usize,
+    },
+    Blocking {
+        cpu: usize,
+    },
     Blocked,
-    WakePending { cpu: usize },
+    WakePending {
+        cpu: usize,
+    },
+    StopPending {
+        cpu: usize,
+        transition: StopTransition,
+    },
+    Stopped {
+        resume: StopResume,
+    },
     Exited,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum StopTransition {
+    Running,
+    Preempting,
+    Blocking,
+    WakePending,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum StopResume {
+    Runnable,
+    Blocked,
 }
 /// @description blocked task 的唯一 wait registration membership ID。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -655,47 +690,6 @@ impl TaskControlBlock {
         result
     }
 
-    /// @description 将 standard signal 及首个来源合并进当前 Thread 的 pending state。
-    ///
-    /// @param signal Linux signal number。
-    /// @return signal 成功合并或按 disposition 丢弃时返回 `Ok(())`。
-    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
-    pub(super) fn queue_signal(&self, signal: usize, info: PendingSignal) -> Result<(), ()> {
-        if signal == 0 || signal > 64 {
-            return Err(());
-        }
-        let state = self.process.signal_state.lock();
-        let action = state.actions[signal];
-        if action.handler == 1 {
-            return Ok(());
-        }
-        let mut pending = self.thread.pending_signals.lock();
-        pending.queue(signal, info);
-        Ok(())
-    }
-
-    /// @description 将 standard signal 合并进当前 Process 的 shared pending state。
-    ///
-    /// @param signal Linux signal number。
-    /// @param info 首次发布时保存的 siginfo 来源。
-    /// @return queued/已 coalesce 返回 true，显式 SIG_IGN 丢弃返回 false。
-    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
-    pub(super) fn queue_process_signal(
-        &self,
-        signal: usize,
-        info: PendingSignal,
-    ) -> Result<bool, ()> {
-        if signal == 0 || signal > 64 {
-            return Err(());
-        }
-        let mut state = self.process.signal_state.lock();
-        if state.actions[signal].handler == 1 {
-            return Ok(false);
-        }
-        state.pending.queue(signal, info);
-        Ok(true)
-    }
-
     /// @description 判断当前 Thread 是否可接收指定 process-directed signal。
     ///
     /// @param signal 已校验的 Linux signal number。
@@ -797,6 +791,11 @@ impl TaskControlBlock {
             };
             if signal_is_ignored(signal, action) {
                 continue;
+            }
+            if signal_is_default_stop(signal, action) {
+                self.thread.suspend_restore_mask.lock().take();
+                self.thread.syscall_restart.lock().take();
+                return Ok(SignalDelivery::Stop(signal));
             }
             if action.handler == 0 {
                 self.thread.suspend_restore_mask.lock().take();

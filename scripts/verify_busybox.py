@@ -565,6 +565,9 @@ def main() -> int:
                 "LITEOS_REDIR_42",
                 "LITEOS_BG_42",
                 "LITEOS_PERSIST_WRITTEN_42",
+                "LITEOS_JOBS_STOPPED_42",
+                "LITEOS_BG_CONTINUED_42",
+                "LITEOS_FG_CTRL_C_42",
                 "LITEOS_TTY_CTRL_C_42",
             ),
             interactions=(
@@ -638,11 +641,27 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_PERSIST_WRITTEN_42",
-                    b"echo LITEOS_TTY_LOOP_$((6*7)); while :; do :; done\n",
+                    b"echo LITEOS_JOB_START_$((6*7)); /bin/sh -c 'while :; do :; done'\n",
                 ),
                 (
-                    "LITEOS_TTY_LOOP_42",
-                    b"\x03echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                    "LITEOS_JOB_START_42",
+                    b"\x1a",
+                ),
+                (
+                    "Stopped",
+                    b"jobs > /jobs; /bin/grep -q Stopped /jobs && echo LITEOS_JOBS_STOPPED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_JOBS_STOPPED_42",
+                    b"bg; jobs > /jobs; /bin/grep -q Running /jobs && echo LITEOS_BG_CONTINUED_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_BG_CONTINUED_42",
+                    b"echo LITEOS_FG_START_$((6*7)); fg; echo LITEOS_FG_CTRL_C_$((6*7)); echo LITEOS_TTY_CTRL_C_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_FG_START_42",
+                    b"\x03",
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

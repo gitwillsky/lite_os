@@ -65,9 +65,12 @@ fn process_snapshot() -> ProcSnapshot {
                     | RunState::Running { .. }
                     | RunState::Preempting { .. }
                     | RunState::WakePending { .. }
+                    | RunState::StopPending { .. }
             ) {
                 runnable_tasks += 1;
                 state = b'R';
+            } else if matches!(run_state, RunState::Stopped { .. }) {
+                state = b'T';
             }
             runtime_us =
                 runtime_us.saturating_add(thread.scheduling.policy.lock().total_runtime_us);
@@ -146,6 +149,7 @@ pub(super) fn update_load_average(now_us: u64) {
                     | RunState::Running { .. }
                     | RunState::Preempting { .. }
                     | RunState::WakePending { .. }
+                    | RunState::StopPending { .. }
             )
         })
         .count();

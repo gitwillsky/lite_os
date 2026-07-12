@@ -5,7 +5,7 @@ use crate::{
         sbi,
     },
     task::{
-        RunState, TaskControlBlock, WaitMembership, WaitResult,
+        RunState, StopResume, StopTransition, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
@@ -15,6 +15,11 @@ use core::{
     cell::UnsafeCell,
     mem::MaybeUninit,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
+
+mod job_control;
+pub(super) use job_control::{
+    begin_preempt_running_task, continue_stopped_task, request_task_stop,
 };
 
 /// @description context switch 异常返回时的 fail-stop 目标。
@@ -32,7 +37,6 @@ pub(crate) struct Processor {
     idle_context: TaskContext,
     runqueue: CfsRunQueue,
     deferred_reap: Option<Arc<TaskControlBlock>>,
-    need_reschedule: bool,
 }
 
 impl Processor {
@@ -45,7 +49,6 @@ impl Processor {
             idle_context,
             runqueue: CfsRunQueue::new(),
             deferred_reap: None,
-            need_reschedule: false,
         }
     }
 
@@ -155,14 +158,6 @@ impl Processor {
     fn take_deferred_reap(&mut self) -> Option<Arc<TaskControlBlock>> {
         self.deferred_reap.take()
     }
-
-    fn request_reschedule(&mut self) {
-        self.need_reschedule = true;
-    }
-
-    fn take_reschedule(&mut self) -> bool {
-        core::mem::take(&mut self.need_reschedule)
-    }
 }
 
 struct PerHartProcessor {
@@ -174,6 +169,9 @@ struct PerHartProcessor {
     inbound_entries: AtomicUsize,
     // OWNER: processor slot 发布本 hart 当前 Running membership；缺失会让选核把 busy hart 当成 idle。
     running_entries: AtomicUsize,
+    // OWNER: per-hart reschedule request 可由远端 stop signal 发布，本 hart trap return 唯一消费。
+    // 若仍保存在 local Processor，远端 IPI 只能唤醒而不能阻止目标 Thread 返回用户态。
+    reschedule_requested: AtomicBool,
     // OWNER: processor slot 累计本 hart 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
     busy_us: AtomicU64,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
@@ -192,6 +190,7 @@ impl PerHartProcessor {
             queued_entries: AtomicUsize::new(0),
             inbound_entries: AtomicUsize::new(0),
             running_entries: AtomicUsize::new(0),
+            reschedule_requested: AtomicBool::new(false),
             busy_us: AtomicU64::new(0),
             inbound: IrqMutex::new(VecDeque::new()),
         }
@@ -302,14 +301,18 @@ pub(super) fn reap_deferred_task() {
 ///
 /// @return 无返回值；flag 仅由本 hart 在关中断临界区访问。
 pub(crate) fn request_reschedule() {
-    with_current_processor(Processor::request_reschedule);
+    per_hart(hart_id())
+        .reschedule_requested
+        .store(true, Ordering::Release);
 }
 
 /// @description 消费当前 hart 的 reschedule flag。
 ///
 /// @return 本次用户态返回是否应先 yield。
 pub(crate) fn take_reschedule() -> bool {
-    with_current_processor(Processor::take_reschedule)
+    per_hart(hart_id())
+        .reschedule_requested
+        .swap(false, Ordering::AcqRel)
 }
 
 /// @description 将已完成 Ready transition 的 entry 投递给指定 active hart。
@@ -380,24 +383,6 @@ fn select_cpu(task: &TaskControlBlock) -> usize {
         Some(load) if load == best_load => last,
         _ => best_cpu,
     }
-}
-
-/// @description 撤销 Running membership 并进入尚不可调度的抢占交接状态。
-///
-/// @param task 当前 hart 唯一 running Task。
-/// @return 无返回值；Ready 发布必须等源 hart 回到 idle stack 后完成。
-pub(super) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) {
-    let source_cpu = hart_id();
-    let current =
-        with_current_processor(Processor::take_current).expect("preemption requires current task");
-    assert!(Arc::ptr_eq(&current, task));
-    let mut scheduling = task.scheduling.state.lock();
-    assert_eq!(
-        scheduling.run_state,
-        RunState::Running { cpu: source_cpu },
-        "preemption source lost running ownership"
-    );
-    scheduling.run_state = RunState::Preempting { cpu: source_cpu };
 }
 
 fn ready_entry(task: Arc<TaskControlBlock>, generation: u64) -> RunQueueEntry {
@@ -530,6 +515,24 @@ fn wake_waiting_task(
                 let generation = scheduling.transition_to_ready(target_cpu);
                 Some((target_cpu, generation))
             }
+            RunState::Stopped {
+                resume: StopResume::Blocked,
+            } => {
+                scheduling.run_state = RunState::Stopped {
+                    resume: StopResume::Runnable,
+                };
+                None
+            }
+            RunState::StopPending {
+                cpu,
+                transition: StopTransition::Blocking,
+            } => {
+                scheduling.run_state = RunState::StopPending {
+                    cpu,
+                    transition: StopTransition::WakePending,
+                };
+                None
+            }
             RunState::Exited => None,
             state => panic!("wait membership attached to invalid state {state:?}"),
         }
@@ -544,8 +547,9 @@ fn wake_waiting_task(
 ///
 /// @param task 刚从该 CPU 切回 idle 的 task。
 /// @return 无返回值；Ready 只在 task context 已停止执行后发布。
-pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) {
+pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool {
     let cpu = hart_id();
+    let mut stopped = false;
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
         match scheduling.run_state {
@@ -563,10 +567,27 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) {
                 let target_cpu = select_cpu(task);
                 Some((target_cpu, scheduling.transition_to_ready(target_cpu)))
             }
+            RunState::StopPending {
+                cpu: owner,
+                transition,
+            } => {
+                assert_eq!(owner, cpu, "stopping task returned on another CPU");
+                scheduling.run_state = RunState::Stopped {
+                    resume: match transition {
+                        StopTransition::Blocking => StopResume::Blocked,
+                        StopTransition::Running
+                        | StopTransition::Preempting
+                        | StopTransition::WakePending => StopResume::Runnable,
+                    },
+                };
+                stopped = true;
+                None
+            }
             _ => None,
         }
     };
     if let Some((target_cpu, generation)) = ready {
         deliver_ready_entry(target_cpu, ready_entry(task.clone(), generation));
     }
+    stopped
 }

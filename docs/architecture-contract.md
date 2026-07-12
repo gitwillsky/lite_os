@@ -43,7 +43,7 @@
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table | Process；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
-| PID/TID allocation、parent edge、live thread collection 或最小 exit record、child waiter | TaskManager process graph |
+| PID/TID allocation、parent edge、live thread collection、job-control lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
 | deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；一次 ppoll 只有一个 membership，可挂多个 source index |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
@@ -73,9 +73,9 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 1714 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1599 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1327 | `task::Process/Thread` | process、thread、signal frame 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/task/model.rs` | 1326 | `task::Process/Thread` | process、thread、signal frame 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 | `kernel/src/syscall/fs.rs` | 1124 | `syscall::fs` | Linux 文件 ABI translation 与 user-copy 聚集但不拥有 VFS 状态 | 按 fd I/O、namespace 与 metadata ABI family 拆分后下调额度 |
 | `kernel/src/fs/file.rs` | 648 | `fs::file` | OFD、fd table、terminal line discipline 共享 close/readiness 语义 | terminal 成为独立深 module 后下调额度 |
 
@@ -89,6 +89,7 @@
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。
 - thread-directed signal 发布到 Thread pending；kill/TTY/SIGCHLD 发布到 ProcessSignalState shared pending。两者经同一 delivery/wait seam 先发布 pending bit，再从 wait 的唯一 owner 注销 membership；blocking path 必须在 owner lock 内复查两类 pending，禁止 signal-before-enqueue lost wakeup。
+- stop/continue 冲突消除必须与 signal queue generation 同锁；Process graph 唯一提交 group-stop/continue 与 parent event，scheduler 只维护每个 Thread 的 `StopPending/Stopped` membership。禁止用第二套 stopped flag 与 run state 人工同步。
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。

@@ -36,6 +36,7 @@ pub const SYSCALL_NANOSLEEP: usize = 101;
 pub const SYSCALL_CLOCK_GETTIME: usize = 113;
 pub const SYSCALL_SCHED_YIELD: usize = 124;
 pub const SYSCALL_KILL: usize = 129;
+pub const SYSCALL_TKILL: usize = 130;
 pub const SYSCALL_TGKILL: usize = 131;
 pub const SYSCALL_RT_SIGSUSPEND: usize = 133;
 pub const SYSCALL_RT_SIGACTION: usize = 134;

@@ -153,8 +153,10 @@ def boot(
                 text = ANSI.sub("", output.decode(errors="replace"))
                 found = [marker for marker in forbidden_markers if marker in text]
                 if found:
+                    tail = "\n".join(text.splitlines()[-40:])
                     raise RuntimeError(
                         f"QEMU -smp {smp} reached forbidden markers: {found!r}"
+                        f"\n--- output tail ---\n{tail}"
                     )
                 while pending_interactions and pending_interactions[0][0] in text:
                     _, data = pending_interactions.pop(0)

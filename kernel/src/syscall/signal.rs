@@ -2,7 +2,7 @@ use crate::{
     syscall::errno,
     task::{
         SignalAction, SignalSendError, SignalWaitError, current_task, send_process_signal,
-        send_thread_signal, wait_for_signal, wait_for_signal_delivery,
+        send_thread_signal, send_tid_signal, wait_for_signal, wait_for_signal_delivery,
     },
 };
 
@@ -138,6 +138,18 @@ pub(crate) fn sys_tgkill(tgid: usize, tid: usize, signal: usize) -> isize {
         return send_thread_signal(tgid, tid, 0).map_or(-errno::ESRCH, |()| 0);
     }
     send_thread_signal(tgid, tid, signal).map_or(-errno::ESRCH, |()| 0)
+}
+
+/// @description 实现 Linux `tkill` 的全局 TID selector，并复用 thread-signal routing。
+///
+/// @param tid 目标 Thread ID。
+/// @param signal Linux signal number；零只做 existence probe。
+/// @return 成功返回零；signal 非法返回 `EINVAL`，TID 不存在返回 `ESRCH`。
+pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
+    if signal > 64 {
+        return -errno::EINVAL;
+    }
+    send_tid_signal(tid, signal).map_or(-errno::ESRCH, |()| 0)
 }
 
 /// @description 原子安装临时 mask 并等待一个将由 trap-return handler 消费的 signal。

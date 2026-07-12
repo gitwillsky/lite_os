@@ -10,6 +10,7 @@ pub(crate) struct SignalAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalDelivery {
     None,
+    Stop(usize),
     Terminate(i32),
 }
 
@@ -20,7 +21,11 @@ pub(super) fn normalize_signal_mask(mask: u64) -> u64 {
 }
 
 pub(super) fn signal_is_ignored(signal: usize, action: SignalAction) -> bool {
-    action.handler == 1 || signal == 17 && action.handler == 0
+    action.handler == 1 || action.handler == 0 && matches!(signal, 17 | 18 | 23 | 28)
+}
+
+pub(super) fn signal_is_default_stop(signal: usize, action: SignalAction) -> bool {
+    action.handler == 0 && matches!(signal, 19..=22)
 }
 
 /// @description coalesced standard signal 随 pending bit 保存的最小 Linux siginfo 来源。
@@ -66,6 +71,31 @@ impl PendingSignal {
             code: 1,
             pid: pid as i32,
             status,
+        }
+    }
+
+    /// @description 构造 job-control stop 完成时的 `CLD_STOPPED` 来源。
+    ///
+    /// @param pid 停止的 child thread group ID。
+    /// @param signal 触发 group stop 的 signal number。
+    /// @return parent SIGCHLD 与 wait status 共用的来源。
+    pub(crate) fn child_stopped(pid: usize, signal: usize) -> Self {
+        Self {
+            code: 5,
+            pid: pid as i32,
+            status: signal as i32,
+        }
+    }
+
+    /// @description 构造 stopped child 恢复时的 `CLD_CONTINUED` 来源。
+    ///
+    /// @param pid 恢复的 child thread group ID。
+    /// @return `si_status=SIGCONT` 的 parent SIGCHLD 来源。
+    pub(crate) fn child_continued(pid: usize) -> Self {
+        Self {
+            code: 6,
+            pid: pid as i32,
+            status: 18,
         }
     }
 
@@ -125,6 +155,10 @@ impl PendingSignals {
         self.bits &= !(1u64 << (signal - 1));
         Some((signal, self.info[signal]))
     }
+
+    pub(super) fn discard(&mut self, mask: u64) {
+        self.bits &= !mask;
+    }
 }
 
 /// @description Process 共享 disposition 与 process-directed pending 的唯一同锁 owner。
@@ -157,3 +191,80 @@ impl ProcessSignalState {
         }
     }
 }
+
+impl TaskControlBlock {
+    /// @description 将 standard signal 及首个来源合并进当前 Thread 的 pending state。
+    ///
+    /// @param threads 同一 Process 的完整 live Thread 集合，用于原子消除 stop/continue 冲突。
+    /// @param signal Linux signal number。
+    /// @param info 首次发布时保存的 siginfo 来源。
+    /// @return signal 成功合并或按 disposition 丢弃时返回 `Ok(())`。
+    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
+    pub(in crate::task) fn queue_signal<'a>(
+        &self,
+        threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
+        signal: usize,
+        info: PendingSignal,
+    ) -> Result<(), ()> {
+        if signal == 0 || signal > 64 {
+            return Err(());
+        }
+        let mut state = self.process.signal_state.lock();
+        let conflicting = signal_conflicting_mask(signal);
+        state.pending.discard(conflicting);
+        for thread in threads {
+            thread.thread.pending_signals.lock().discard(conflicting);
+        }
+        let action = state.actions[signal];
+        if action.handler == 1 {
+            return Ok(());
+        }
+        self.thread.pending_signals.lock().queue(signal, info);
+        Ok(())
+    }
+
+    /// @description 将 standard signal 合并进当前 Process 的 shared pending state。
+    ///
+    /// @param threads 同一 Process 的完整 live Thread 集合，用于原子消除 stop/continue 冲突。
+    /// @param signal Linux signal number。
+    /// @param info 首次发布时保存的 siginfo 来源。
+    /// @return queued/已 coalesce 返回 true，显式 SIG_IGN 丢弃返回 false。
+    /// @errors signal 不在 `1..=64` 时返回 `Err(())`。
+    pub(in crate::task) fn queue_process_signal<'a>(
+        &self,
+        threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
+        signal: usize,
+        info: PendingSignal,
+    ) -> Result<bool, ()> {
+        if signal == 0 || signal > 64 {
+            return Err(());
+        }
+        let mut state = self.process.signal_state.lock();
+        let conflicting = signal_conflicting_mask(signal);
+        state.pending.discard(conflicting);
+        for thread in threads {
+            thread.thread.pending_signals.lock().discard(conflicting);
+        }
+        if state.actions[signal].handler == 1 {
+            return Ok(false);
+        }
+        state.pending.queue(signal, info);
+        Ok(true)
+    }
+}
+
+fn signal_conflicting_mask(signal: usize) -> u64 {
+    const SIGCONT_MASK: u64 = 1u64 << (18 - 1);
+    const STOP_MASK: u64 =
+        (1u64 << (19 - 1)) | (1u64 << (20 - 1)) | (1u64 << (21 - 1)) | (1u64 << (22 - 1));
+    if signal == 18 {
+        STOP_MASK
+    } else if matches!(signal, 19..=22) {
+        SIGCONT_MASK
+    } else {
+        0
+    }
+}
+use alloc::sync::Arc;
+
+use super::TaskControlBlock;
