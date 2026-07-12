@@ -1,0 +1,29 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_110c82bfba1d64 77,90
+docs/architecture.md
+  s_d637a88cd4b00d::t_8cf35589cde2e5 122,144
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_40f51c6f9377fc 76
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_4e907c7f62a3cc 300
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_876b3d321ed4d8 614,632
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f3490cce72c4ff135a3e892291dcc15b82b347ac",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
