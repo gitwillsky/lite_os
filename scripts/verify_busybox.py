@@ -321,6 +321,7 @@ def main() -> int:
                 "all DTB harts online: count=1, mask=0x1",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
+                "LITEOS_LS_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
                 "LITEOS_BG_42",
@@ -334,6 +335,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
+                    b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_LS_42",
                     b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n",
                 ),
                 (
@@ -345,7 +350,8 @@ def main() -> int:
                     b"\x03echo LITEOS_TTY_CTRL_C_$((6*7))\n",
                 ),
             ),
-            forbidden_markers=tuple(
+            forbidden_markers=("Invalid argument",)
+            + tuple(
                 f"unsupported syscall_id: {number}"
                 for number in (29, 59, 65, 73, 81, 133, 137, 142, 154, 155, 156, 157, 174, 175, 176, 177)
             ),

@@ -21,6 +21,7 @@ impl VirtualFileSystem {
         &self,
         start: Arc<dyn Inode>,
         path: &[u8],
+        allow_final_symlink: bool,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let root = self.root_inode()?;
         let root_identity = (root.filesystem_id(), root.metadata()?.inode);
@@ -29,9 +30,16 @@ impl VirtualFileSystem {
         } else {
             start
         };
-        for component in path.split(|byte| *byte == b'/') {
+        let component_count = path
+            .split(|byte| *byte == b'/')
+            .filter(|component| !matches!(*component, b"" | b"."))
+            .count();
+        for (index, component) in path
+            .split(|byte| *byte == b'/')
+            .filter(|component| !matches!(*component, b"" | b"."))
+            .enumerate()
+        {
             match component {
-                b"" | b"." => {}
                 b".." => {
                     if (inode.filesystem_id(), inode.metadata()?.inode) != root_identity {
                         inode = inode.find_child(b"..")?;
@@ -39,7 +47,11 @@ impl VirtualFileSystem {
                 }
                 name => {
                     inode = inode.find_child(name)?;
-                    if inode.inode_type() == InodeType::SymLink {
+                    let is_untrailed_final = index + 1 == component_count
+                        && path.last().is_none_or(|byte| *byte != b'/');
+                    if inode.inode_type() == InodeType::SymLink
+                        && !(allow_final_symlink && is_untrailed_final)
+                    {
                         return Err(FileSystemError::SymbolicLink);
                     }
                 }
@@ -69,7 +81,7 @@ impl VirtualFileSystem {
         if name.is_empty() {
             return Err(FileSystemError::InvalidPath);
         }
-        Ok((self.resolve_from(start, parent_path)?, name.to_vec()))
+        Ok((self.resolve_from(start, parent_path, false)?, name.to_vec()))
     }
 
     /// 创建尚未挂载根文件系统的 VFS。
@@ -131,7 +143,7 @@ impl VirtualFileSystem {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
-        self.resolve_from(self.root_inode()?, path)
+        self.resolve_from(self.root_inode()?, path, false)
     }
 
     pub(crate) fn open_at(
@@ -140,7 +152,22 @@ impl VirtualFileSystem {
         path: &[u8],
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let start = start.unwrap_or(self.root_inode()?);
-        self.resolve_from(start, path)
+        self.resolve_from(start, path, false)
+    }
+
+    /// @description 解析 pathname 但保留最后一个 symbolic-link inode，供 Linux lstat 使用。
+    ///
+    /// @param start 相对路径的起始目录；None 表示 root。
+    /// @param path raw pathname；中间 symbolic link 仍因当前无 symlink traversal 返回错误。
+    /// @return 普通路径返回目标 inode，末项 symbolic link 返回 link inode 本身。
+    /// @errors 路径不存在、越过不支持的中间 symbolic link 或底层文件系统失败时返回错误。
+    pub(crate) fn open_at_no_follow(
+        &self,
+        start: Option<Arc<dyn Inode>>,
+        path: &[u8],
+    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let start = start.unwrap_or(self.root_inode()?);
+        self.resolve_from(start, path, true)
     }
 
     /// @description 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。

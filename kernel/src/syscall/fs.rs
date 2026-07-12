@@ -861,7 +861,8 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
 }
 
 pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags: u32) -> isize {
-    if flags != 0 {
+    const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
+    if flags & !AT_SYMLINK_NOFOLLOW != 0 {
         return -errno::EINVAL;
     }
     let Some(task) = current_task() else {
@@ -875,10 +876,12 @@ pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags
         Ok(start) => start,
         Err(error) => return error,
     };
-    match vfs()
-        .open_at(start, &path)
-        .and_then(|inode| inode.metadata())
-    {
+    let inode = if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        vfs().open_at_no_follow(start, &path)
+    } else {
+        vfs().open_at(start, &path)
+    };
+    match inode.and_then(|inode| inode.metadata()) {
         Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
         Err(error) => ferr(error),
     }
