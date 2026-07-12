@@ -1,4 +1,4 @@
-.PHONY: build-kernel build-bootloader build-musl build-rootfs run run-gdb clean clean-musl build verify verify-musl verify-busybox gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs run run-gdb clean clean-musl clean-busybox build verify verify-musl verify-busybox gdb addr2line
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -33,6 +33,9 @@ clean:
 
 clean-musl:
 	rm -rf target/musl-static
+
+clean-busybox:
+	rm -rf target/busybox-static
 
 build: build-kernel build-bootloader build-rootfs
 

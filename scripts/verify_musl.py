@@ -4,19 +4,28 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
-import hashlib
-import json
 import os
 import shutil
 import subprocess
 import sys
-import time
 import urllib.request
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+
+from build_cache import (
+    build_environment,
+    build_jobs_override,
+    cache_lock,
+    fingerprint,
+    generation_directory,
+    make_command,
+    manifest_matches,
+    publish_directory,
+    publish_generation,
+    sha256,
+    temporary_directory,
+    write_manifest,
+)
 
 from qemu_gate import boot
 
@@ -26,7 +35,6 @@ MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
 MUSL_URL = f"https://musl.libc.org/releases/musl-{MUSL_VERSION}.tar.gz"
 MUSL_SHA256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
-CACHE_MANIFEST = ".liteos-cache.json"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 2
 SMOKE_RECIPE_VERSION = 2
@@ -66,93 +74,6 @@ def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> str
         tail = "\n".join(result.stdout.splitlines()[-80:])
         raise RuntimeError(f"command failed: {' '.join(command)}\n{tail}")
     return result.stdout
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def fingerprint(payload: dict[str, object]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def expected_manifest(payload: dict[str, object]) -> dict[str, object]:
-    return {"fingerprint": fingerprint(payload), "recipe": payload}
-
-
-def manifest_matches(
-    directory: Path,
-    payload: dict[str, object],
-    required_files: tuple[str, ...],
-) -> bool:
-    try:
-        manifest = json.loads((directory / CACHE_MANIFEST).read_text())
-    except (OSError, json.JSONDecodeError):
-        return False
-    return manifest == expected_manifest(payload) and all(
-        (directory / relative).is_file() for relative in required_files
-    )
-
-
-def write_manifest(directory: Path, payload: dict[str, object]) -> None:
-    path = directory / CACHE_MANIFEST
-    temporary = directory / f".{CACHE_MANIFEST}.{os.getpid()}.tmp"
-    temporary.write_text(json.dumps(expected_manifest(payload), sort_keys=True) + "\n")
-    os.replace(temporary, path)
-
-
-@contextmanager
-def build_lock() -> Iterator[None]:
-    """串行化同一内容缓存的发布，避免并发进程观察半成品。"""
-    WORK.mkdir(parents=True, exist_ok=True)
-    with (WORK / ".build.lock").open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def temporary_directory(parent: Path, label: str) -> Path:
-    parent.mkdir(parents=True, exist_ok=True)
-    path = parent / f".{label}.{os.getpid()}.{time.time_ns()}.tmp"
-    path.mkdir()
-    return path
-
-
-def generation_directory(parent: Path, fingerprint_value: str) -> Path:
-    parent.mkdir(parents=True, exist_ok=True)
-    path = parent / f"{fingerprint_value}-{os.getpid()}-{time.time_ns()}"
-    path.mkdir()
-    return path
-
-
-def publish_directory(temporary: Path, final: Path) -> None:
-    """只在完整产物和 manifest 就绪后发布 content-addressed directory。"""
-    final.parent.mkdir(parents=True, exist_ok=True)
-    if final.exists():
-        shutil.rmtree(final)
-    temporary.rename(final)
-
-
-def publish_generation(generation: Path, link: Path) -> None:
-    """原子切换 fingerprint symlink；已打开的旧 generation 保持有效。"""
-    link.parent.mkdir(parents=True, exist_ok=True)
-    temporary_link = link.parent / f".{link.name}.{os.getpid()}.{time.time_ns()}.tmp"
-    temporary_link.symlink_to(generation.resolve(), target_is_directory=True)
-    if link.is_dir() and not link.is_symlink():
-        quarantine = link.parent / f".{link.name}.invalid.{time.time_ns()}"
-        link.rename(quarantine)
-        shutil.rmtree(quarantine)
-    try:
-        os.replace(temporary_link, link)
-    finally:
-        temporary_link.unlink(missing_ok=True)
 
 
 def source_payload() -> dict[str, object]:
@@ -246,36 +167,6 @@ def sysroot_payload(compiler: Path) -> dict[str, object]:
 
 def sysroot_cache_path(payload: dict[str, object]) -> Path:
     return WORK / "installs" / fingerprint(payload)
-
-
-def build_jobs_override() -> int | None:
-    override = os.environ.get("LITEOS_BUILD_JOBS")
-    if override is None:
-        return None
-    try:
-        jobs = int(override)
-    except ValueError as error:
-        raise RuntimeError("LITEOS_BUILD_JOBS must be a positive integer") from error
-    if jobs <= 0:
-        raise RuntimeError("LITEOS_BUILD_JOBS must be a positive integer")
-    return jobs
-
-
-def make_command(jobs_override: int | None) -> list[str]:
-    if jobs_override is not None:
-        return ["make", f"-j{jobs_override}"]
-    makeflags = os.environ.get("MAKEFLAGS", "")
-    if "--jobserver-auth=" in makeflags or "--jobserver-fds=" in makeflags:
-        return ["make"]
-    return ["make", f"-j{os.cpu_count() or 1}"]
-
-
-def build_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    env["LC_ALL"] = "C"
-    for name in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH"):
-        env.pop(name, None)
-    return env
 
 
 def build_musl(
@@ -464,7 +355,7 @@ def main() -> int:
     try:
         jobs_override = build_jobs_override()
         compiler = find_compiler()
-        with build_lock():
+        with cache_lock(WORK / ".build.lock"):
             source = obtain_source()
             install, sysroot_fingerprint = build_musl(
                 source, compiler, jobs_override, args.rebuild

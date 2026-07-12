@@ -8,6 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from verify_busybox import cached_busybox_binary
+from verify_musl import find_compiler
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -23,10 +26,9 @@ def llvm_readelf() -> str:
     raise RuntimeError("llvm-readelf is required by make verify")
 
 
-def inspect(tool: str, relative: str) -> str:
-    image = ROOT / relative
+def inspect(tool: str, image: Path) -> str:
     if not image.is_file():
-        raise RuntimeError(f"missing linked image: {relative}")
+        raise RuntimeError(f"missing linked image: {image}")
     return subprocess.run(
         [tool, "--file-header", "--program-headers", str(image)],
         check=True,
@@ -55,22 +57,23 @@ def require(output: str, relative: str, markers: tuple[str, ...]) -> None:
 def main() -> int:
     try:
         tool = llvm_readelf()
+        busybox = cached_busybox_binary(find_compiler())
         images = {
-            "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader": (
+            ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader": (
                 "ELF64",
                 "RISC-V",
                 "EXEC",
             ),
-            "target/riscv64gc-unknown-none-elf/debug/kernel": ("ELF64", "RISC-V", "EXEC"),
-            "target/busybox-static/source/busybox": (
+            ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel": (
                 "ELF64",
                 "RISC-V",
                 "EXEC",
-                "GNU_STACK",
             ),
+            busybox: ("ELF64", "RISC-V", "EXEC", "GNU_STACK"),
         }
-        for relative, markers in images.items():
-            require(inspect(tool, relative), relative, markers)
+        for image, markers in images.items():
+            label = str(image.relative_to(ROOT)) if image.is_relative_to(ROOT) else str(image)
+            require(inspect(tool, image), label, markers)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"artifact verification failed: {error}", file=sys.stderr)
         return 1

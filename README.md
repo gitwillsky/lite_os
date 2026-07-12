@@ -111,6 +111,8 @@ make verify-busybox
 
 该目标校验 BusyBox 官方 tarball SHA-256，应用唯一 `user/busybox.config` 与 `user/inittab`，构建 RISC-V 静态 `ET_EXEC` 和单 inode hardlink applet rootfs。gate 验证 ash 算术、pipeline、重定向、后台 wait、VINTR 和同镜像 1-hart 写入/8-hart 冷启动读回；同时检查无 dynamic interpreter、无 W+X LOAD、用户栈不可执行。BusyBox 源码和二进制不进入仓库。
 
+BusyBox source 与静态 ELF 分别按官方 archive SHA-256、唯一 config fragment、musl sysroot fingerprint、compiler identity 和构建 recipe 做内容寻址缓存。命中后仍执行 ELF 围栏，并从缓存 ELF 重新构造指定 ext2 image；强制重建使用 `python3 scripts/verify_busybox.py --build-only --image fs.img --rebuild`，清理全部 BusyBox generation 使用 `make clean-busybox`。并行度与 musl gate 共用 `LITEOS_BUILD_JOBS` 规则。
+
 ## 调试
 
 ```bash

@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -13,8 +11,28 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
+from build_cache import (
+    build_environment,
+    build_jobs_override,
+    cache_lock,
+    fingerprint,
+    generation_directory,
+    make_command,
+    manifest_matches,
+    publish_directory,
+    publish_generation,
+    sha256,
+    temporary_directory,
+    write_manifest,
+)
 from qemu_gate import boot
-from verify_musl import cached_musl_paths, find_compiler, run
+from verify_musl import (
+    MuslCachePaths,
+    cached_musl_paths,
+    compiler_identity,
+    find_compiler,
+    run,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "busybox-static"
@@ -22,6 +40,8 @@ CONFIG_FRAGMENT = ROOT / "user" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
+SOURCE_RECIPE_VERSION = 1
+BINARY_RECIPE_VERSION = 2
 BUSYBOX_LINKS = (
     "ash",
     "busybox",
@@ -46,16 +66,22 @@ BUSYBOX_LINKS = (
 )
 
 
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def source_payload() -> dict[str, object]:
+    return {
+        "kind": "busybox-source",
+        "recipe_version": SOURCE_RECIPE_VERSION,
+        "version": BUSYBOX_VERSION,
+        "archive_sha256": BUSYBOX_SHA256,
+        "strip_components": 1,
+    }
+
+
+def source_cache_path() -> Path:
+    return WORK / "sources" / fingerprint(source_payload())
 
 
 def obtain_source() -> Path:
-    """获取并校验官方 release tarball，不接受同版本的其他来源。"""
+    """获取并缓存固定官方源码；完整目录只在校验和解压成功后发布。"""
     archive = WORK / f"busybox-{BUSYBOX_VERSION}.tar.bz2"
     if not archive.is_file() or sha256(archive) != BUSYBOX_SHA256:
         archive.unlink(missing_ok=True)
@@ -72,13 +98,21 @@ def obtain_source() -> Path:
             raise RuntimeError("BusyBox release tarball SHA-256 mismatch")
         temporary.replace(archive)
 
-    source = WORK / "source"
-    shutil.rmtree(source, ignore_errors=True)
-    source.mkdir(parents=True)
-    run(
-        ["tar", "-xjf", str(archive), "--strip-components=1", "-C", str(source)],
-        ROOT,
-    )
+    payload = source_payload()
+    source = source_cache_path()
+    if manifest_matches(source, payload, ("Makefile", "scripts/kconfig/mconf.c")):
+        return source
+
+    temporary = temporary_directory(WORK / "sources", "source")
+    try:
+        run(
+            ["tar", "-xjf", str(archive), "--strip-components=1", "-C", str(temporary)],
+            ROOT,
+        )
+        write_manifest(temporary, payload)
+        publish_directory(temporary, source)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
     return source
 
 
@@ -99,10 +133,10 @@ def fragment_assignments(path: Path) -> dict[str, str]:
     return assignments
 
 
-def configure(source: Path, env: dict[str, str]) -> None:
+def configure(source: Path, build: Path, env: dict[str, str]) -> None:
     """从全关闭状态应用唯一 fragment，避免 BusyBox 默认 applet 隐式进入产物。"""
-    run(["make", "allnoconfig"], source, env)
-    config = source / ".config"
+    run(["make", "-C", str(source), f"O={build}", "allnoconfig"], ROOT, env)
+    config = build / ".config"
     lines = config.read_text().splitlines()
     assignments = fragment_assignments(CONFIG_FRAGMENT)
     replaced: set[str] = set()
@@ -122,8 +156,8 @@ def configure(source: Path, env: dict[str, str]) -> None:
     config.write_text("\n".join(lines) + "\n")
 
     result = subprocess.run(
-        ["make", "oldconfig"],
-        cwd=source,
+        ["make", "-C", str(source), f"O={build}", "oldconfig"],
+        cwd=ROOT,
         env=env,
         input="\n" * 2048,
         stdout=subprocess.PIPE,
@@ -140,16 +174,13 @@ def configure(source: Path, env: dict[str, str]) -> None:
         raise RuntimeError(f"BusyBox rejected required config: {', '.join(drift)}")
 
 
-def build_busybox(source: Path, compiler: Path) -> Path:
-    """使用上一 gate 产出的固定 musl sysroot 构建静态 BusyBox。"""
-    musl = cached_musl_paths(compiler)
-    env = os.environ.copy()
-    env["LC_ALL"] = "C"
-    for name in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH"):
-        env.pop(name, None)
-    configure(source, env)
-
-    specs = WORK / "musl-gcc.specs"
+def generate_specs(
+    compiler: Path,
+    musl: MuslCachePaths,
+    env: dict[str, str],
+    bare_metal_crt_fallback: bool,
+) -> str:
+    """生成绑定当前不可变 musl generation 的 GCC specs。"""
     result = subprocess.run(
         [
             "sh",
@@ -167,7 +198,7 @@ def build_busybox(source: Path, compiler: Path) -> Path:
     if result.returncode != 0:
         raise RuntimeError(f"failed to generate musl GCC specs\n{result.stdout}")
     specs_text = result.stdout
-    if run([str(compiler), "-print-file-name=crtbeginS.o"], ROOT).strip() == "crtbeginS.o":
+    if bare_metal_crt_fallback:
         # bare-metal GCC 只提供等价的静态 crtbegin/crtend；缺少此适配会在最终链接时误报库探测失败。
         specs_text = specs_text.replace("crtbeginS.o%s", "crtbegin.o%s")
         specs_text = specs_text.replace("crtendS.o%s", "crtend.o%s")
@@ -178,25 +209,117 @@ def build_busybox(source: Path, compiler: Path) -> Path:
             1,
         )
         specs_text = specs_text.replace("\n*esp_link:", "\n*lib:\n-lc\n\n*esp_link:", 1)
-    specs.write_text(specs_text)
+    return specs_text
 
-    prefix = str(compiler)[: -len("gcc")]
-    jobs = str(min(os.cpu_count() or 1, 8))
-    run(
-        [
-            "make",
-            f"-j{jobs}",
-            "ARCH=riscv",
-            f"CROSS_COMPILE={prefix}",
-            f"CC={compiler} -specs={specs}",
-        ],
-        source,
-        env,
+
+def binary_payload(
+    compiler: Path,
+    musl: MuslCachePaths,
+    bare_metal_crt_fallback: bool,
+) -> dict[str, object]:
+    return {
+        "kind": "busybox-static-binary",
+        "recipe_version": BINARY_RECIPE_VERSION,
+        "source_fingerprint": fingerprint(source_payload()),
+        "config_sha256": sha256(CONFIG_FRAGMENT),
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "compiler": compiler_identity(compiler),
+        "architecture": "riscv",
+        "bare_metal_crt_fallback": bare_metal_crt_fallback,
+        "environment": {
+            "LC_ALL": "C",
+            "CPATH": None,
+            "C_INCLUDE_PATH": None,
+            "CPLUS_INCLUDE_PATH": None,
+            "LIBRARY_PATH": None,
+        },
+    }
+
+
+def uses_bare_metal_crt(compiler: Path) -> bool:
+    return (
+        run([str(compiler), "-print-file-name=crtbeginS.o"], ROOT).strip()
+        == "crtbeginS.o"
     )
-    binary = source / "busybox"
-    if not binary.is_file():
-        raise RuntimeError("BusyBox build did not produce busybox")
-    return binary
+
+
+def binary_cache_entry(
+    compiler: Path,
+    musl: MuslCachePaths,
+    bare_metal_crt_fallback: bool,
+) -> tuple[dict[str, object], str, Path]:
+    payload = binary_payload(compiler, musl, bare_metal_crt_fallback)
+    binary_fingerprint = fingerprint(payload)
+    binary = WORK / "binaries" / binary_fingerprint / "busybox"
+    return payload, binary_fingerprint, binary
+
+
+def cached_busybox_binary(compiler: Path) -> Path:
+    """返回 fingerprint 与 manifest 均匹配的当前 BusyBox ELF。"""
+    musl = cached_musl_paths(compiler)
+    payload, _, binary = binary_cache_entry(
+        compiler, musl, uses_bare_metal_crt(compiler)
+    )
+    if not manifest_matches(binary.parent, payload, ("busybox",)):
+        raise RuntimeError("BusyBox binary cache is missing; run verify_busybox.py first")
+    return binary.resolve()
+
+
+def build_busybox(
+    source: Path,
+    compiler: Path,
+    jobs_override: int | None,
+    rebuild: bool = False,
+) -> Path:
+    """按 source/config/musl/compiler fingerprint 构建或复用静态 BusyBox。"""
+    musl = cached_musl_paths(compiler)
+    env = build_environment()
+    bare_metal_crt_fallback = uses_bare_metal_crt(compiler)
+    payload, binary_fingerprint, binary = binary_cache_entry(
+        compiler, musl, bare_metal_crt_fallback
+    )
+    if not rebuild and manifest_matches(binary.parent, payload, ("busybox",)):
+        print(f"BusyBox binary cache hit: {binary_fingerprint[:12]}")
+        return binary.resolve()
+
+    build = temporary_directory(WORK / "builds", "build")
+    generation = generation_directory(WORK / "binary-generations", binary_fingerprint)
+    published = False
+    try:
+        # 1. 使用 BusyBox 原生 O= 隔离机制，immutable source 始终只读。
+        # 2. configure/build 全部发生在私有输出树，并发 reader 不会观察中间状态。
+        # 3. 仅复制最终 ELF 到 generation，manifest 完整后才原子发布。
+        configure(source, build, env)
+        specs = build / "musl-gcc.specs"
+        specs.write_text(generate_specs(compiler, musl, env, bare_metal_crt_fallback))
+
+        prefix = str(compiler)[: -len("gcc")]
+        run(
+            [
+                *make_command(jobs_override),
+                "-C",
+                str(source),
+                f"O={build}",
+                "ARCH=riscv",
+                f"CROSS_COMPILE={prefix}",
+                f"CC={compiler} -specs={specs}",
+            ],
+            ROOT,
+            env,
+        )
+        built_binary = build / "busybox"
+        if not built_binary.is_file():
+            raise RuntimeError("BusyBox build did not produce busybox")
+        shutil.copy2(built_binary, generation / "busybox")
+        write_manifest(generation, payload)
+        publish_generation(generation, binary.parent)
+        published = True
+    finally:
+        shutil.rmtree(build, ignore_errors=True)
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    print(f"BusyBox binary cache populated: {binary_fingerprint[:12]}")
+    return binary.resolve()
 
 
 def verify_elf(binary: Path, compiler: Path) -> None:
@@ -303,14 +426,21 @@ def main() -> int:
         default=WORK / "fs.img",
         help="rootfs 输出路径",
     )
+    parser.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="忽略当前 fingerprint 的 BusyBox ELF 命中并重新构建",
+    )
     args = parser.parse_args()
     try:
         WORK.mkdir(parents=True, exist_ok=True)
+        jobs_override = build_jobs_override()
         compiler = find_compiler()
-        source = obtain_source()
-        binary = build_busybox(source, compiler)
-        verify_elf(binary, compiler)
-        image = create_image(binary, args.image.resolve())
+        with cache_lock(WORK / ".build.lock"):
+            source = obtain_source()
+            binary = build_busybox(source, compiler, jobs_override, args.rebuild)
+            verify_elf(binary, compiler)
+            image = create_image(binary, args.image.resolve())
         if args.build_only:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
