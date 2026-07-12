@@ -1,0 +1,39 @@
+README.md
+  s_d637a88cd4b00d::t_e389ccdb8311c5 16
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_d2b535aa3e1be6 79
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_17fcfa4a4a6470 802-806
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_e0c9508f45caaf 48
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_7761efe129eb2c 1,4-8,11
+kernel/src/syscall/fs/pathname.rs
+  s_d637a88cd4b00d::t_d4d04ae3fc5146 1-62
+kernel/src/syscall/fs/readlink.rs
+  s_d637a88cd4b00d::t_0c890e7af97698 1-50
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_9c2da07ac4c30f 61-66
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_4fcdd5db4380e7 531,579-582
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_7b480d7a1c389c 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "721bfe3562e0f567215738105dfce7516ae6ada3",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
