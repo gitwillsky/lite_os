@@ -1,0 +1,67 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_cc3b01effa244e 47,55-56,86,88,114,121
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_ae4b2809371d6c 890,969,972,987,992,996,1000-1005,1025,1040,1042,1050,1060,1062,1102-1108,1110,1141-1152,1414,1537-1538,1595,1659,1662,1728-1732
+docs/phase-51-dhcp-dns-http.md
+  s_d637a88cd4b00d::t_723c16be734a87 1-23
+kernel/src/socket.rs
+  s_d637a88cd4b00d::t_a40f321d37de46 8-9,14,27,34,43-53,65,91-92,118-120,138,152-154,161-164,194-195,204-205,231,268-269,280-281,292-293,303-309,319-320,365-375,383-417,429-430,449-453,462-468,476-477,485-486,494-495,501
+kernel/src/socket/device.rs
+  s_d637a88cd4b00d::t_d4579741221d10 10-11,18,27-30,40-46,49,51,54,59-60,84,93-96
+kernel/src/socket/inet.rs
+  s_d637a88cd4b00d::t_92c93c949c4b7a 24,26,30-31,48,68,168,239-241,432-436
+kernel/src/socket/inet/options.rs
+  s_d637a88cd4b00d::t_7a5fceff56fc06 1-87
+kernel/src/socket/inet/tcp.rs
+  s_d637a88cd4b00d::t_37ed256625fb2c 16-17,51-52,101,122-128,154,167,194-195,400,411
+kernel/src/socket/inet/udp.rs
+  s_d637a88cd4b00d::t_dfaa5434113924 11-12,56,63-70,79,91,135-136,168-183,238-241
+kernel/src/socket/packet.rs
+  s_d637a88cd4b00d::t_571558549940b8 1-354
+kernel/src/socket/unix.rs
+  s_d637a88cd4b00d::t_4ffc8b805142d8 85,214
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_12863ebb9338b0 12-13,120,123,136-137,152-165
+kernel/src/syscall/socket.rs
+  s_d637a88cd4b00d::t_7518bceb38c592 6-7,24,27,80-81,92,144-151,194-203,216,223-229
+kernel/src/syscall/socket/options.rs
+  s_d637a88cd4b00d::t_8064463af73077 6,9-11,13,16-19,32-41,43-50,54,57-82,112
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_ced6ab29c66cbc 4,81
+kernel/src/task/model/process_clone.rs
+  s_d637a88cd4b00d::t_ea6f9fbc500ee8 1-123
+kernel/src/task/model/process_exec.rs
+  s_d637a88cd4b00d::t_04efa48e990363 37-39
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_0bbefb6572919e 495-501
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_8c24fb0c561040 29,53-54,75-76,157,174-179,203
+kernel/src/task/task_manager/process_exit.rs
+  s_d637a88cd4b00d::t_50d18b53a1e47c 138
+kernel/src/task/task_manager/vfork.rs
+  s_d637a88cd4b00d::t_e434372db85558 1-88
+tools/architecture-check/src/main.rs
+  s_d637a88cd4b00d::t_74b879be1b16d6 250,258
+user/dynamic-smoke.c
+  s_d637a88cd4b00d::t_14b4cfc4dcb941 6-7,25-41,200
+user/udhcpc.script
+  s_d637a88cd4b00d::t_4a2d0d379ec044 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a73d01139a133e499d46c4d54a162adae72b1b24",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
