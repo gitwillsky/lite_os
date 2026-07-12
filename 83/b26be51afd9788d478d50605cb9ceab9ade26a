@@ -1,0 +1,57 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_9dd89c9dd6cefa 56,77,79-80,93
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_89d7c7155b4fb1 401,405-430,500,837,839-842,891,1040-1041,1156,1159-1160,1165-1166,1187-1190
+docs/architecture.md
+  s_d637a88cd4b00d::t_0251e18979450f 120,172,191,226,233
+docs/phase-37-tty-background-access.md
+  s_d637a88cd4b00d::t_253a58e20c8cfa 1-37
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_5713e344974fb3 38,46,66
+kernel/src/fs/file.rs
+  s_d637a88cd4b00d::t_ec274e0f7815de 1-3
+kernel/src/fs/file/terminal.rs
+  s_d637a88cd4b00d::t_f1f4fd25dded81 1-373
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_c9f4ddca1087c4 15
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_cb41b15e98be8d 4,7,15,25-26
+kernel/src/syscall/fs/io.rs
+  s_d637a88cd4b00d::t_d49ffa90a3a91b 1-511
+kernel/src/syscall/tty.rs
+  s_d637a88cd4b00d::t_26182b6c401d8b 2,5-6,10-11,31-45,65-67,83-85
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_dafcd3a27c0363 23
+kernel/src/task/model/signal_state.rs
+  s_d637a88cd4b00d::t_241b5765fb6c31 283-490
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_58ef3fa031ded1 26,29,40
+kernel/src/task/task_manager/process_exit.rs
+  s_d637a88cd4b00d::t_6c9aa236220901 5-19
+kernel/src/task/task_manager/terminal_access.rs
+  s_d637a88cd4b00d::t_57ae304a1e683a 1-69
+scripts/qemu_gate.py
+  s_d637a88cd4b00d::t_37c63ecd16da6e 144,162-170
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_29add5ca5819ef 83,573-578,671-715
+user/busybox.config
+  s_d637a88cd4b00d::t_3e8b70e02cc82c 35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "83b26be51afd9788d478d50605cb9ceab9ade26a",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
