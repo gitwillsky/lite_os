@@ -1,1 +1,2 @@
+::respawn:/etc/init.d/network-service
 ::askfirst:-/bin/sh

@@ -8,6 +8,7 @@
 - `NetworkStack` 继续唯一拥有 IPv4/UDP/TCP 与 endpoint option；`SO_REUSEADDR` 参与 bind collision，`SO_BROADCAST` 授权 limited/subnet broadcast，`SO_BINDTODEVICE` 在当前单 interface scope 验证并记录 `eth0` binding。
 - RX tap 只在 NetworkStack lock 内排队；Pipe notification 延迟到解锁后，保持 protocol state 与 wait source 的固定锁序。
 - `/usr/share/udhcpc/default.script` 是 BusyBox rootfs 的唯一 lease consumer，通过标准 ioctl/route 配置 `eth0`，并生成 musl resolver 唯一读取的 `/etc/resolv.conf`。
+- BusyBox init 以 `respawn` 监督前台 network service；console 与 DHCP 并发启动，service 退出由 init 重启，stale pidfile 只由 service entry 清理。正常 boot 不再依赖交互 shell 手工启动 DHCP。
 - BusyBox `spawn_and_wait` 通过 musl vfork 执行 lease script；vfork child 使用独立页表/trap frame、共享已驻留用户 frame，process graph 唯一挂起 parent 到 child exec/exit，不把 script 执行特判进网络层。
 
 ## Linux ABI 边界
@@ -18,6 +19,6 @@
 
 ## 运行验收事实
 
-- QEMU slirp 下 `udhcpc -f -q -n -i eth0` 经 raw DHCP discover/request 取得 lease，lease script 提交 address/netmask/default route，并产生 nameserver 配置。
+- QEMU slirp 冷启动后，init 监督的 `udhcpc -f -i eth0` 经 raw DHCP discover/request 取得并持续续租；gate 只等待自动生成的 address/default route/nameserver，不执行手工 DHCP 命令。
 - 固定动态 musl probe 以 `getaddrinfo(AF_INET)` 解析 `example.com` 并返回数值地址，证明 DHCP DNS 配置被真实消费；不把 BusyBox 自带 DNS engine 当作 libc resolver 证明。
 - host loopback 固定 HTTP origin 由 QEMU `10.0.2.2` 暴露；guest `wget` 下载固定 payload 并从 ext2 读回，证明 TCP/HTTP application path。

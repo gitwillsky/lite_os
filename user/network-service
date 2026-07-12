@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# @description BusyBox init 唯一监督的 DHCP service entry；进程本身保持前台运行。
+rm -f /run/udhcpc.eth0.pid
+exec /bin/udhcpc \
+    -f \
+    -i eth0 \
+    -p /run/udhcpc.eth0.pid \
+    -s /usr/share/udhcpc/default.script

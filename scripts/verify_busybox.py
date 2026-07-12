@@ -474,12 +474,16 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     commands = [
         "mkdir /etc",
+        "mkdir /etc/init.d",
         "mkdir /lib",
+        "mkdir /run",
         "mkdir /usr",
         "mkdir /usr/lib",
         "mkdir /usr/share",
         "mkdir /usr/share/udhcpc",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
+        f"write {ROOT / 'user' / 'network-service'} /etc/init.d/network-service",
+        "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
@@ -540,6 +544,11 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
     loader = run([str(find_debugfs()), "-R", "stat /lib/ld-musl-riscv64.so.1", str(image)], ROOT)
     if "Type: symlink" not in loader or "Size: 16" not in loader:
         raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
+    network_service = run(
+        [str(find_debugfs()), "-R", "stat /etc/init.d/network-service", str(image)], ROOT
+    )
+    if "Type: regular" not in network_service or "Mode:  0755" not in network_service:
+        raise RuntimeError("BusyBox rootfs lacks the supervised network service")
     return image
 
 
@@ -581,7 +590,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            3,
+            4,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -590,6 +599,7 @@ def main() -> int:
                 dynamic_probe,
                 dynamic_library,
                 ROOT / "user/inittab",
+                ROOT / "user/network-service",
                 ROOT / "user/udhcpc.script",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
@@ -614,6 +624,7 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
                 "LITEOS_DHCP_51",
+                "LITEOS_DHCP_RESPAWN_51",
                 "LITEOS_DNS_51",
                 "LITEOS_HTTP_51",
                 "LITEOS_LS_42",
@@ -672,10 +683,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    b"/bin/udhcpc -f -q -n -i eth0 && /bin/grep -q '^nameserver ' /etc/resolv.conf && echo LITEOS_DHCP_$((7*7+2))\n",
+                    b"while [ ! -s /etc/resolv.conf ]; do /bin/sleep 1; done; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); /bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15' && /bin/route | /bin/grep -q '^default .*10.0.2.2' && [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_$((7*7+2))\n",
                 ),
                 (
                     "LITEOS_DHCP_51",
+                    b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; while new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); [ -z \"$new\" ] || [ \"$new\" = \"$old\" ]; do /bin/sleep 1; done; /bin/sleep 2; count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route | /bin/grep -q '^default .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n",
+                ),
+                (
+                    "LITEOS_DHCP_RESPAWN_51",
                     b"/bin/dynamic-smoke resolve example.com\n",
                 ),
                 (
