@@ -1,0 +1,31 @@
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_1aef8fd460ffe3 476
+docs/phase-30-busybox-ls.md
+  s_d637a88cd4b00d::t_fde81857da5b25 1-13
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_3691967055c1da 48
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_fc60a7774478ac 24,33-41,50-54,84,146,155-170
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_aac2512a6e1fa4 864-865,879-884
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_c26ec6f1760fc5 324,338-341,353-354
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e2f5567e2d890e3f19af69ec5fa3bcbfd7df1fdb",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
