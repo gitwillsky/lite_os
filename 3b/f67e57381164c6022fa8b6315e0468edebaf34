@@ -1,0 +1,41 @@
+README.md
+  s_d637a88cd4b00d::t_3ed2e967df0e86 16,18
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_1748b15592e270 21,47,53-54
+docs/architecture.md
+  s_d637a88cd4b00d::t_f93313f5bb054e 196,209,224,236-237
+docs/phase-46-unix-epoll.md
+  s_d637a88cd4b00d::t_d7fdc0c181f668 1-14
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_91942bf986e4fb 15,31,36,50,83,108
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_08873fb0d613e3 4,14,18
+kernel/src/ipc.rs
+  s_d637a88cd4b00d::t_8e967d91a26313 4-7
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_e729208fb8202b 61-70
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_2c784e4cef052a 2,12,19-20,42-51,171-183,210
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_26d8833b4d4ce5 686
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_4a0e3bc64eab57 6-8,79-91,102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3bf67e57381164c6022fa8b6315e0468edebaf34",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
