@@ -1,0 +1,33 @@
+README.md
+  s_d637a88cd4b00d::t_0fd4ced24d0451 16,18
+docs/architecture.md
+  s_d637a88cd4b00d::t_9b7a89f31759cc 120,191,195
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_e5de8efc4b04ef 99
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_00ad51adbcbbcc 24,27-28,1550,1595-1599,1618,1641-1646
+kernel/src/task/task_manager/signal.rs
+  s_d637a88cd4b00d::t_774d612a191bac 1-282
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_846c4c102533eb 38
+user/busybox.config
+  s_d637a88cd4b00d::t_ec2de09b091c15 44-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "036aa6cc2afed6ac87204152c6d3cc8defd86e73",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
