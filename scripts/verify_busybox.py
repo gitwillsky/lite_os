@@ -41,7 +41,33 @@ BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
-BINARY_RECIPE_VERSION = 2
+BINARY_RECIPE_VERSION = 3
+# Linux v7.1 UAPI include/uapi/linux/vt.h：只公布 BusyBox 当前消费的稳定 request number。
+# 缺少它时 bare-metal GCC 会裁掉上游 serial-console probe，init 随后错误打开 /dev/tty5。
+LINUX_UAPI_REVISION = "8cd9520d35a6c38db6567e97dd93b1f11f185dc6"
+LINUX_UAPI_CPPFLAGS = ("-DVT_OPENQRY=0x5600",)
+FORBIDDEN_SYSCALL_LOG_IDS = (
+    29,
+    59,
+    65,
+    73,
+    81,
+    133,
+    137,
+    142,
+    154,
+    155,
+    156,
+    157,
+    174,
+    175,
+    176,
+    177,
+)
+FORBIDDEN_BOOT_MARKERS = (
+    "Invalid argument",
+    "init: can't log to /dev/tty5",
+) + tuple(f"unsupported syscall_id: {number}" for number in FORBIDDEN_SYSCALL_LOG_IDS)
 BUSYBOX_LINKS = (
     "ash",
     "busybox",
@@ -225,6 +251,10 @@ def binary_payload(
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "compiler": compiler_identity(compiler),
         "architecture": "riscv",
+        "linux_uapi": {
+            "revision": LINUX_UAPI_REVISION,
+            "cppflags": list(LINUX_UAPI_CPPFLAGS),
+        },
         "bare_metal_crt_fallback": bare_metal_crt_fallback,
         "environment": {
             "LC_ALL": "C",
@@ -303,6 +333,7 @@ def build_busybox(
                 "ARCH=riscv",
                 f"CROSS_COMPILE={prefix}",
                 f"CC={compiler} -specs={specs}",
+                f"EXTRA_CFLAGS={' '.join(LINUX_UAPI_CPPFLAGS)}",
             ],
             ROOT,
             env,
@@ -490,11 +521,7 @@ def main() -> int:
                     b"\x03echo LITEOS_TTY_CTRL_C_$((6*7))\n",
                 ),
             ),
-            forbidden_markers=("Invalid argument",)
-            + tuple(
-                f"unsupported syscall_id: {number}"
-                for number in (29, 59, 65, 73, 81, 133, 137, 142, 154, 155, 156, 157, 174, 175, 176, 177)
-            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
         )
         boot(
             image,
@@ -506,10 +533,7 @@ def main() -> int:
                 "LITEOS_PERSIST_42",
             ),
             interactions=(("Please press Enter to activate this console.", b"\n/bin/cat /persist\n"),),
-            forbidden_markers=tuple(
-                f"unsupported syscall_id: {number}"
-                for number in (29, 59, 65, 73, 81, 133, 137, 142, 154, 155, 156, 157, 174, 175, 176, 177)
-            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
         )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
