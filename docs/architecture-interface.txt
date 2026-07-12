@@ -379,6 +379,7 @@ kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn change (self : & Arc < Se
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn commit_delivery (& self , fd : usize , ofd : & Arc < OpenFileDescription > , revision : u64 , generation : u64 , edge : bool , oneshot : bool ,)
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn consume_notifications (& self)
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn has_ready (& self) -> bool
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn identity (epoll : & Arc < Self >) -> usize
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn new (notification_read : Arc < PipeEnd > , notification_write : Arc < PipeEnd > ,) -> Result < Arc < Self > , () >
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn readiness_generation (& self) -> u64
@@ -1090,6 +1091,7 @@ kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys (ofd : & Arc < OpenFileDescription >) -> Vec < PollWaitKey >
+kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys_for_interest (ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Vec < PollWaitKey >
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !
@@ -1406,14 +1408,11 @@ kernel/src/task/task_manager.rs :: enum FutexWaitError :: Fault
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: Invalid
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: TimedOut
-kernel/src/task/task_manager.rs :: enum PollWaitKey :: Console
-kernel/src/task/task_manager.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , }
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Again
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager.rs :: pub (crate) enum FutexWaitError
-kernel/src/task/task_manager.rs :: pub (crate) enum PollWaitKey
 kernel/src/task/task_manager.rs :: pub (crate) enum SignalWaitError
 kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
 kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
@@ -1436,13 +1435,13 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : allo
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64)
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
-kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , wait_child }
+kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
@@ -1513,6 +1512,39 @@ kernel/src/task/task_manager/wait_child.rs :: pub (crate) enum WaitChildError
 kernel/src/task/task_manager/wait_child.rs :: pub (crate) fn consume_child_status (record : ChildExit)
 kernel/src/task/task_manager/wait_child.rs :: pub (crate) fn wait_child (selector : isize , nohang : bool , include_stopped : bool , include_continued : bool ,) -> Result < Option < ChildExit > , WaitChildError >
 kernel/src/task/task_manager/wait_child.rs :: pub (crate) struct ChildExit
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Console
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Deadline
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Futex { tgid : usize , address : usize , }
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Pipe { identity : usize , direction : PipeDirection , }
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Poll
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Signal { mask : u64 , }
+kernel/src/task/task_manager/wait_key.rs :: enum PollWaitKey :: Console { events : i16 , exclusive : bool , wake_group : Option < usize > , }
+kernel/src/task/task_manager/wait_key.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > , }
+kernel/src/task/task_manager/wait_key.rs :: pub (crate) enum PollWaitKey
+kernel/src/task/task_manager/wait_key.rs :: pub (crate) impl PollWaitKey :: fn console (events : i16 , exclusive : bool , wake_group : Option < usize >) -> Self
+kernel/src/task/task_manager/wait_key.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Self
+kernel/src/task/task_manager/wait_key.rs :: pub (super) enum IndexedWaitKind
+kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn exclusive (self) -> bool
+kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_console (self , ready : i16) -> bool
+kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn matches_pipe (self , identity : usize , direction : PipeDirection , ready : i16 ,) -> bool
+kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn normalize (keys : & mut Vec < Self >)
+kernel/src/task/task_manager/wait_key.rs :: pub (super) impl PollWaitKey :: fn wake_group (self) -> Option < usize >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) IndexedWaitEntry :: kind : IndexedWaitKind
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) IndexedWaitEntry :: task : Arc < TaskControlBlock >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_console (& mut self , task : Arc < TaskControlBlock >) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_deadline (& mut self , deadline : u64 , task : Arc < TaskControlBlock >) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_futex (& mut self , tgid : usize , address : usize , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_pipe (& mut self , pipe : & Arc < Pipe > , direction : PipeDirection , task : Arc < TaskControlBlock > ,) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_poll (& mut self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_signal (& mut self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn pop_expired (& mut self , now : u64 ,) -> Option < (u64 , Arc < TaskControlBlock > , IndexedWaitKind) >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn remove (& mut self , id : u64) -> Option < IndexedWaitEntry >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn signal_mask (& self , id : u64) -> Option < u64 >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_console (& mut self , exclusive : bool , ready : i16 , excluded_groups : & BTreeSet < usize > ,) -> Option < (u64 , IndexedWaitEntry , Option < usize >) >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_futex (& mut self , tgid : usize , address : usize ,) -> Option < (u64 , Arc < TaskControlBlock >) >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_pipe (& mut self , identity : usize , direction : PipeDirection , exclusive : bool , ready : i16 , excluded_groups : & BTreeSet < usize > ,) -> Option < (u64 , IndexedWaitEntry , Option < usize >) >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitEntry
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitQueue
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: fcsr : usize
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_gp : usize

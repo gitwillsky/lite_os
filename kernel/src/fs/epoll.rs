@@ -9,6 +9,7 @@ use super::{OpenFileDescription, OpenFileKind};
 use crate::ipc::{Pipe, PipeEnd, PipeRead};
 
 const MAX_NESTING_DEPTH: usize = 5;
+const EPOLL_EXCLUSIVE: u32 = 1 << 28;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EpollChange {
@@ -92,6 +93,14 @@ pub(crate) struct Epoll {
 }
 
 impl Epoll {
+    /// @description 返回 source wake 用于合并同一 epoll instance waiters 的稳定 identity。
+    ///
+    /// @param epoll live epoll Arc。
+    /// @return Arc allocation lifetime 内稳定的地址 identity。
+    pub(crate) fn identity(epoll: &Arc<Self>) -> usize {
+        Arc::as_ptr(epoll) as usize
+    }
+
     /// @description 创建并注册一个只由 weak registry 跟踪的 epoll instance。
     ///
     /// @param notification_read 绑定统一 Poll registry 的内部 read endpoint。
@@ -136,26 +145,30 @@ impl Epoll {
         let key = InterestKey::new(fd, &ofd);
         match operation {
             EpollChange::Add => {
-                if self.state.lock().interests.contains_key(&key) {
-                    return Err(EpollChangeError::Exists);
-                }
                 if !ofd.epoll_pollable() {
                     return Err(EpollChangeError::Permission);
                 }
+                let event = event.ok_or(EpollChangeError::Invalid)?;
                 if let OpenFileKind::Epoll(target) = &ofd.kind {
+                    if event.events & EPOLL_EXCLUSIVE != 0 {
+                        return Err(EpollChangeError::Invalid);
+                    }
                     if Arc::ptr_eq(self, target) {
                         return Err(EpollChangeError::Invalid);
                     }
                     self.validate_nested_add(target)?;
                 }
                 let mut state = self.state.lock();
+                if state.interests.contains_key(&key) {
+                    return Err(EpollChangeError::Exists);
+                }
                 let revision = state.next_revision;
                 state.next_revision = state.next_revision.wrapping_add(1);
                 state.interests.insert(
                     key,
                     Interest {
                         ofd,
-                        event: event.ok_or(EpollChangeError::Invalid)?,
+                        event,
                         last_generation: 0,
                         revision,
                         disabled: false,
@@ -183,6 +196,9 @@ impl Epoll {
                     .ok_or(EpollChangeError::NotFound)?;
                 if !Arc::ptr_eq(&interest.ofd, &ofd) {
                     return Err(EpollChangeError::NotFound);
+                }
+                if interest.event.events & EPOLL_EXCLUSIVE != 0 {
+                    return Err(EpollChangeError::Invalid);
                 }
                 interest.event = event.ok_or(EpollChangeError::Invalid)?;
                 interest.last_generation = 0;

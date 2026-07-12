@@ -26,6 +26,8 @@ mod procfs;
 mod signal;
 mod terminal_access;
 mod wait_child;
+mod wait_key;
+mod wait_registry;
 
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
@@ -46,6 +48,9 @@ pub(crate) use signal::{
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
 pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
+use wait_key::IndexedWaitKind;
+pub(crate) use wait_key::PollWaitKey;
+use wait_registry::INDEXED_WAIT_QUEUE;
 
 enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
@@ -211,303 +216,9 @@ impl TaskManager {
     }
 }
 
-#[derive(Clone, Copy)]
-enum IndexedWaitKind {
-    Deadline,
-    Futex {
-        tgid: usize,
-        address: usize,
-    },
-    Console,
-    Signal {
-        mask: u64,
-    },
-    Pipe {
-        identity: usize,
-        direction: PipeDirection,
-    },
-    Poll,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum PollWaitKey {
-    Console,
-    Pipe {
-        identity: usize,
-        direction: PipeDirection,
-    },
-}
-
-impl PollWaitKey {
-    pub(crate) fn pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> Self {
-        Self::Pipe {
-            identity: Pipe::identity(pipe),
-            direction,
-        }
-    }
-}
-
-struct IndexedWaitEntry {
-    task: Arc<TaskControlBlock>,
-    kind: IndexedWaitKind,
-    deadline: Option<u64>,
-    poll_keys: Option<alloc::vec::Vec<PollWaitKey>>,
-}
-
-struct IndexedWaitQueue {
-    next_id: u64,
-    entries: BTreeMap<u64, IndexedWaitEntry>,
-    futex_index: BTreeSet<(usize, usize, u64)>,
-    deadline_index: BTreeSet<(u64, u64)>,
-    console_index: BTreeSet<u64>,
-    pipe_index: BTreeSet<(usize, u8, u64)>,
-}
-
-impl IndexedWaitQueue {
-    fn new() -> Self {
-        Self {
-            next_id: 0,
-            entries: BTreeMap::new(),
-            futex_index: BTreeSet::new(),
-            deadline_index: BTreeSet::new(),
-            console_index: BTreeSet::new(),
-            pipe_index: BTreeSet::new(),
-        }
-    }
-
-    fn allocate_id(&mut self) -> u64 {
-        self.next_id = self.next_id.wrapping_add(1);
-        assert_ne!(self.next_id, 0, "indexed wait ID wrapped");
-        self.next_id
-    }
-
-    fn insert_deadline(&mut self, deadline: u64, task: Arc<TaskControlBlock>) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.deadline_index.insert((deadline, id)));
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Deadline,
-                        deadline: Some(deadline),
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn insert_futex(
-        &mut self,
-        tgid: usize,
-        address: usize,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.futex_index.insert((tgid, address, id)));
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Futex { tgid, address },
-                        deadline,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn insert_console(&mut self, task: Arc<TaskControlBlock>) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.console_index.insert(id));
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Console,
-                        deadline: None,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn insert_signal(
-        &mut self,
-        mask: u64,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Signal { mask },
-                        deadline,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn insert_pipe(
-        &mut self,
-        pipe: &Arc<Pipe>,
-        direction: PipeDirection,
-        task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        let identity = Pipe::identity(pipe);
-        assert!(self.pipe_index.insert((identity, direction as u8, id)));
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Pipe {
-                            identity,
-                            direction,
-                        },
-                        deadline: None,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn insert_poll(
-        &mut self,
-        keys: alloc::vec::Vec<PollWaitKey>,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        for key in &keys {
-            match *key {
-                PollWaitKey::Console => assert!(self.console_index.insert(id)),
-                PollWaitKey::Pipe {
-                    identity,
-                    direction,
-                } => assert!(self.pipe_index.insert((identity, direction as u8, id))),
-            }
-        }
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Poll,
-                        deadline,
-                        poll_keys: Some(keys),
-                    },
-                )
-                .is_none()
-        );
-        id
-    }
-
-    fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
-        let entry = self.entries.remove(&id)?;
-        if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
-            assert!(self.futex_index.remove(&(tgid, address, id)));
-        }
-        if matches!(entry.kind, IndexedWaitKind::Console) {
-            assert!(self.console_index.remove(&id));
-        }
-        if let IndexedWaitKind::Pipe {
-            identity,
-            direction,
-        } = entry.kind
-        {
-            assert!(self.pipe_index.remove(&(identity, direction as u8, id)));
-        }
-        if let Some(keys) = &entry.poll_keys {
-            for key in keys {
-                match *key {
-                    PollWaitKey::Console => assert!(self.console_index.remove(&id)),
-                    PollWaitKey::Pipe {
-                        identity,
-                        direction,
-                    } => assert!(self.pipe_index.remove(&(identity, direction as u8, id))),
-                }
-            }
-        }
-        if let Some(deadline) = entry.deadline {
-            assert!(self.deadline_index.remove(&(deadline, id)));
-        }
-        Some(entry)
-    }
-
-    fn take_futex(&mut self, tgid: usize, address: usize) -> Option<(u64, Arc<TaskControlBlock>)> {
-        let (_, _, id) = *self
-            .futex_index
-            .range((tgid, address, 0)..=(tgid, address, u64::MAX))
-            .next()?;
-        self.remove(id).map(|entry| (id, entry.task))
-    }
-
-    fn pop_expired(&mut self, now: u64) -> Option<(u64, Arc<TaskControlBlock>, IndexedWaitKind)> {
-        let (deadline, id) = *self.deadline_index.first()?;
-        if deadline > now {
-            return None;
-        }
-        self.remove(id).map(|entry| (id, entry.task, entry.kind))
-    }
-
-    fn take_console(&mut self) -> Option<(u64, IndexedWaitEntry)> {
-        let id = *self.console_index.first()?;
-        self.remove(id).map(|entry| (id, entry))
-    }
-
-    fn take_pipe(
-        &mut self,
-        identity: usize,
-        direction: PipeDirection,
-    ) -> Option<(u64, IndexedWaitEntry)> {
-        let (_, _, id) = *self
-            .pipe_index
-            .range((identity, direction as u8, 0)..=(identity, direction as u8, u64::MAX))
-            .next()?;
-        self.remove(id).map(|entry| (id, entry))
-    }
-}
-
 lazy_static! {
     // OWNER: task manager owns PID allocation, parent relation, live task/exit record and child waiter.
     static ref TASK_MANAGER: TaskManager = TaskManager::new();
-    // OWNER: task manager owns one wait registration plus optional futex/deadline indexes.
-    static ref INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue> =
-        IrqMutex::new(IndexedWaitQueue::new());
 }
 
 /// @description 发布 kernel 创建的唯一 init task。
@@ -822,12 +533,22 @@ pub(crate) fn wait_for_console(input_ready: impl FnOnce() -> bool) -> WaitResult
 }
 
 fn wake_console_waiters() -> usize {
+    const INPUT: i16 = 0x001;
+    let mut waiters = alloc::vec::Vec::new();
+    let mut wake_groups = BTreeSet::new();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    while let Some((wait_id, entry, group)) = queue.take_console(false, INPUT, &wake_groups) {
+        if let Some(group) = group {
+            wake_groups.insert(group);
+        }
+        waiters.push((wait_id, entry));
+    }
+    if let Some((wait_id, entry, _)) = queue.take_console(true, INPUT, &wake_groups) {
+        waiters.push((wait_id, entry));
+    }
+    drop(queue);
     let mut count = 0;
-    loop {
-        let waiter = INDEXED_WAIT_QUEUE.lock().take_console();
-        let Some((wait_id, entry)) = waiter else {
-            return count;
-        };
+    for (wait_id, entry) in waiters {
         let woke = match entry.kind {
             IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(entry.task, wait_id)
@@ -841,6 +562,7 @@ fn wake_console_waiters() -> usize {
             count += 1;
         }
     }
+    count
 }
 
 struct TaskPipeNotifier;
@@ -859,19 +581,45 @@ pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()
 }
 
 fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
+    const INPUT: i16 = 0x001;
+    const OUTPUT: i16 = 0x004;
+    const ERROR: i16 = 0x008;
+    const HANGUP: i16 = 0x010;
     let identity = Pipe::identity(pipe);
     let mut waiters = alloc::vec::Vec::new();
+    let mut wake_groups = BTreeSet::new();
+    let mut exclusive_selected = false;
     let mut queue = INDEXED_WAIT_QUEUE.lock();
     for direction in [PipeDirection::Read, PipeDirection::Write] {
+        let state = pipe.poll_state(direction);
         let ready = match direction {
-            PipeDirection::Read => pipe.readable(),
-            PipeDirection::Write => pipe.writable(),
+            PipeDirection::Read => {
+                (if state.readable { INPUT } else { 0 }) | if state.hangup { HANGUP } else { 0 }
+            }
+            PipeDirection::Write => {
+                (if state.writable { OUTPUT } else { 0 }) | if state.error { ERROR } else { 0 }
+            }
         };
-        if !ready {
+        if ready == 0 {
             continue;
         }
-        while let Some(waiter) = queue.take_pipe(identity, direction) {
-            waiters.push(waiter);
+        while let Some((wait_id, entry, group)) =
+            queue.take_pipe(identity, direction, false, ready, &wake_groups)
+        {
+            if let Some(group) = group {
+                wake_groups.insert(group);
+            }
+            waiters.push((wait_id, entry));
+        }
+        if !exclusive_selected
+            && let Some((wait_id, entry, group)) =
+                queue.take_pipe(identity, direction, true, ready, &wake_groups)
+        {
+            if let Some(group) = group {
+                wake_groups.insert(group);
+            }
+            exclusive_selected = true;
+            waiters.push((wait_id, entry));
         }
     }
     drop(queue);
@@ -948,8 +696,7 @@ pub(crate) fn wait_for_poll(
     deadline: Option<u64>,
     ready: impl FnOnce() -> bool,
 ) -> WaitResult {
-    keys.sort_unstable();
-    keys.dedup();
+    PollWaitKey::normalize(&mut keys);
     let task = current_task().expect("ppoll wait requires current task");
     let cpu = hart_id();
     let mut queue = INDEXED_WAIT_QUEUE.lock();

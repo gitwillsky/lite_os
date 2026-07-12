@@ -5,7 +5,7 @@ use crate::{
     task::{WaitResult, create_pipe_endpoints, current_task, drain_terminal_input, wait_for_poll},
 };
 
-use super::{errno, poll::ofd_wait_keys};
+use super::{errno, poll::ofd_wait_keys_for_interest};
 
 const EPOLL_CLOEXEC: usize = 0x80000;
 const EPOLL_CTL_ADD: usize = 1;
@@ -15,8 +15,18 @@ const EPOLLEXCLUSIVE: u32 = 1 << 28;
 const EPOLLWAKEUP: u32 = 1 << 29;
 const EPOLLONESHOT: u32 = 1 << 30;
 const EPOLLET: u32 = 1 << 31;
-const EPOLL_ALLOWED: u32 =
-    0x001 | 0x002 | 0x004 | 0x008 | 0x010 | 0x2000 | EPOLLET | EPOLLONESHOT | EPOLLWAKEUP;
+const EPOLL_ALLOWED: u32 = 0x001
+    | 0x002
+    | 0x004
+    | 0x008
+    | 0x010
+    | 0x2000
+    | EPOLLEXCLUSIVE
+    | EPOLLET
+    | EPOLLONESHOT
+    | EPOLLWAKEUP;
+const EPOLL_EXCLUSIVE_ALLOWED: u32 =
+    0x001 | 0x004 | 0x008 | 0x010 | EPOLLEXCLUSIVE | EPOLLWAKEUP | EPOLLET;
 
 struct ReadyEvent {
     fd: usize,
@@ -42,7 +52,7 @@ fn epoll_fd(fd: usize) -> Result<Arc<Epoll>, isize> {
     }
 }
 
-fn read_event(pointer: usize) -> Result<EpollEvent, isize> {
+fn read_event(pointer: usize, operation: usize) -> Result<EpollEvent, isize> {
     if pointer == 0 {
         return Err(-errno::EFAULT);
     }
@@ -55,9 +65,17 @@ fn read_event(pointer: usize) -> Result<EpollEvent, isize> {
         events: u32::from_ne_bytes(bytes[..4].try_into().unwrap()),
         data: u64::from_ne_bytes(bytes[8..].try_into().unwrap()),
     };
-    if event.events & (EPOLLEXCLUSIVE | !EPOLL_ALLOWED) != 0 {
+    if event.events & !EPOLL_ALLOWED != 0 {
         return Err(-errno::EINVAL);
     }
+    if event.events & EPOLLEXCLUSIVE != 0
+        && (operation != EPOLL_CTL_ADD || event.events & !EPOLL_EXCLUSIVE_ALLOWED != 0)
+    {
+        return Err(-errno::EINVAL);
+    }
+    // Linux interest 始终订阅 ERR/HUP；缺失它们会让只请求 IN/OUT 的 exclusive callback
+    // 在 peer close 时不匹配 source wake，从而永久占着 exclusive quota。
+    event.events |= 0x008 | 0x010;
     // LiteOS 没有 suspend/power-management phase，因此与无 CAP_BLOCK_SUSPEND 的 Linux
     // caller 一样忽略 EPOLLWAKEUP；保留该位会虚假表达一个不存在的 wake lock owner。
     event.events &= !EPOLLWAKEUP;
@@ -101,7 +119,7 @@ pub(crate) fn sys_epoll_ctl(
     let (change, event) = match operation {
         EPOLL_CTL_ADD => (
             EpollChange::Add,
-            match read_event(event_pointer) {
+            match read_event(event_pointer, operation) {
                 Ok(value) => Some(value),
                 Err(error) => return error,
             },
@@ -109,7 +127,7 @@ pub(crate) fn sys_epoll_ctl(
         EPOLL_CTL_DEL => (EpollChange::Delete, None),
         EPOLL_CTL_MOD => (
             EpollChange::Modify,
-            match read_event(event_pointer) {
+            match read_event(event_pointer, operation) {
                 Ok(value) => Some(value),
                 Err(error) => return error,
             },
@@ -152,7 +170,12 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
         .map_err(|_| -errno::ENOMEM)?;
     for interest in snapshot {
         drain_terminals(&interest.ofd)?;
-        keys.extend(ofd_wait_keys(&interest.ofd));
+        keys.extend(ofd_wait_keys_for_interest(
+            &interest.ofd,
+            interest.event.events as i16,
+            interest.event.events & EPOLLEXCLUSIVE != 0,
+            Some(Epoll::identity(epoll)),
+        ));
         if interest.disabled {
             continue;
         }

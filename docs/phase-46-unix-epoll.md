@@ -13,4 +13,4 @@ Phase 46 以 Linux v7.1 与 musl 1.2.6 为固定语义源，在现有 OFD 和 In
 
 pathname AF_UNIX 需要 VFS socket inode 与 unlink lifetime，本阶段明确返回 `EOPNOTSUPP`，不以仅存内存 map 冒充；SCM_RIGHTS/credentials、AF_INET、VirtIO-net 与网络协议栈属于后续阶段。
 
-Phase 47 进一步修复 fork 后最后 descriptor close、fd reuse identity、并发 MOD/delivery、嵌套 epoll 与 ET 事件代际；当前仍不实现需要 wait queue wake-one/exclusive registration 的 `EPOLLEXCLUSIVE`，因此 ABI 矩阵不再把 epoll 泛化声明为 Complete。
+Phase 47 进一步修复 fork 后最后 descriptor close、fd reuse identity、并发 MOD/delivery、嵌套 epoll 与 ET 事件代际；Phase 48 又把 `EPOLLEXCLUSIVE` source wake-one 收敛进同一 IndexedWaitQueue。ABI 矩阵仍以当前 OFD event-mask 的精确边界为准。

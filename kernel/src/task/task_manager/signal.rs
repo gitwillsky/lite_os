@@ -490,11 +490,8 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
         let Some(WaitMembership::Signal(id)) = task.scheduling.state.lock().wait else {
             return false;
         };
-        let Some(entry) = queue.entries.get(&id) else {
+        let Some(mask) = queue.signal_mask(id) else {
             return false;
-        };
-        let IndexedWaitKind::Signal { mask } = entry.kind else {
-            panic!("signal wait membership has divergent registry kind");
         };
         task.with_pending_signal(mask, || queue.remove(id))
             .flatten()

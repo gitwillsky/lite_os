@@ -12,7 +12,7 @@
 - 每个 epoll 只有一对内部 notification Pipe endpoints，并复用 IndexedWaitQueue 的 Pipe key；并发 ADD/MOD/DEL 或最后 close 会唤醒基于旧 interest snapshot 睡眠的 waiter，重新求值前统一排空 notification，不建立第二套 registry。
 - 嵌套图变更由单一 graph lock 串行化，拒绝 self-loop、cycle 和超过 5 层的图；readiness 与 wait-key 递归因此有界。
 
-`EPOLLEXCLUSIVE` 需要 IndexedWaitQueue 对共享 source 提供 exclusive registration 与 wake-one 选择。当前实现明确返回 `EINVAL`，不以 wake-all 冒充，因此 syscall 矩阵保持 Partial。
+Phase 47 当时尚未实现 `EPOLLEXCLUSIVE`，因此没有以 wake-all 冒充；该缺口已由 Phase 48 在同一 IndexedWaitQueue 内完成。
 
 ## verify 成本模型
 

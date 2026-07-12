@@ -44,7 +44,7 @@
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
-| deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 Poll membership 与 source indexes |
+| deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
@@ -79,7 +79,7 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1058 | `task::TaskManager` | process graph 与 wait orchestration 仍集中维护跨锁不变量；wait key/index storage 已下沉 | 按 process graph 与 wait lifecycle 的真实 seam 继续分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1112 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
 | `kernel/src/task/model.rs` | 1027 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 
@@ -87,6 +87,7 @@
 
 - kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
+- `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。

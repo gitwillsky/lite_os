@@ -32,30 +32,49 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
 }
 
 pub(super) fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> {
+    ofd_wait_keys_for_interest(ofd, i16::MAX, false, None)
+}
+
+pub(super) fn ofd_wait_keys_for_interest(
+    ofd: &Arc<OpenFileDescription>,
+    events: i16,
+    exclusive: bool,
+    wake_group: Option<usize>,
+) -> Vec<PollWaitKey> {
     let mut keys = Vec::new();
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { .. }) => {
-            keys.push(PollWaitKey::Console)
+            keys.push(PollWaitKey::console(events, exclusive, wake_group))
         }
-        OpenFileKind::Pipe(endpoint) => {
-            keys.push(PollWaitKey::pipe(&endpoint.pipe(), endpoint.direction()))
-        }
+        OpenFileKind::Pipe(endpoint) => keys.push(PollWaitKey::pipe(
+            &endpoint.pipe(),
+            endpoint.direction(),
+            events,
+            exclusive,
+            wake_group,
+        )),
         OpenFileKind::Socket(socket) => {
-            keys.extend(
-                socket
-                    .wait_pipes()
-                    .into_iter()
-                    .map(|(pipe, direction)| PollWaitKey::pipe(&pipe, direction)),
-            );
+            keys.extend(socket.wait_pipes().into_iter().map(|(pipe, direction)| {
+                PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
+            }));
         }
         OpenFileKind::Epoll(epoll) => {
+            debug_assert!(!exclusive, "EPOLLEXCLUSIVE cannot target an epoll fd");
             keys.push(PollWaitKey::pipe(
                 &epoll.notification_pipe(),
                 crate::ipc::PipeDirection::Read,
+                0x001,
+                false,
+                wake_group,
             ));
             if let Ok(entries) = epoll.snapshot() {
                 for interest in entries {
-                    keys.extend(ofd_wait_keys(&interest.ofd));
+                    keys.extend(ofd_wait_keys_for_interest(
+                        &interest.ofd,
+                        interest.event.events as i16,
+                        interest.event.events & (1 << 28) != 0,
+                        wake_group,
+                    ));
                 }
             }
         }
@@ -68,7 +87,12 @@ fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Vec<PollWaitKey> {
     let mut keys = Vec::new();
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd {
-            keys.extend(ofd_wait_keys(ofd));
+            keys.extend(ofd_wait_keys_for_interest(
+                ofd,
+                descriptor.events | 0x008 | 0x010,
+                false,
+                None,
+            ));
         }
     }
     keys
