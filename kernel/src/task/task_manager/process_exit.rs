@@ -109,6 +109,18 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
 }
 
 fn exit_current(requested: ProcessExitStatus) -> ! {
+    let (task_context, idle_context) = prepare_current_exit(requested);
+    // SAFETY: prepare_current_exit 已把退出 task 的唯一调度 owner 移交 deferred-reap slot；
+    // 两个 context 都由该 hart 独占，且本 frame 不保留任何指向退出 task 的 Arc。
+    unsafe { crate::task::__switch(task_context, idle_context) };
+    panic!("exited task context resumed")
+}
+
+/// @description 完成退出副作用，并在仍可正常展开 Rust frame 时释放所有 task Arc。
+///
+/// @param requested calling Thread 请求的退出原因。
+/// @return 依次为 task/idle raw context 地址；task 由 deferred-reap slot 保活。
+fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut TaskContext) {
     let task = take_current_task().expect("No current task to exit");
 
     {
@@ -298,8 +310,5 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
     };
 
     crate::task::processor::defer_task_reap(task);
-    // SAFETY: deferred owner keeps the exiting task stack/context alive through the switch;
-    // idle context is hart-local and remains valid for the kernel lifetime.
-    unsafe { crate::task::__switch(task_cx_ptr, idle_task_cx_ptr) };
-    panic!("exited task context resumed")
+    (task_cx_ptr, idle_task_cx_ptr)
 }

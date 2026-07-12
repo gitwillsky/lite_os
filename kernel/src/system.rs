@@ -9,6 +9,20 @@ pub(crate) enum ResetKind {
     ColdReboot,
 }
 
+/// @description 返回唯一的 immutable system/build identity，供标准 utsname ABI 投影。
+///
+/// @return 依次为 sysname、nodename、release、version、machine、domainname。
+pub(crate) fn identity() -> [&'static str; 6] {
+    [
+        "LiteOS",
+        "liteos",
+        env!("CARGO_PKG_VERSION"),
+        "#1 SMP PREEMPT",
+        "riscv64",
+        "(none)",
+    ]
+}
+
 /// @description 通过唯一 SBI SRST seam 关闭或冷重启整个 SMP system。
 ///
 /// @param kind 已由 syscall UAPI 层验证的 reset 类型。

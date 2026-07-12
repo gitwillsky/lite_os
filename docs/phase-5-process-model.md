@@ -114,7 +114,7 @@
 2. `ThreadContext`：TID、kernel stack、trap context VA、`TaskContext`、thread pending/mask。
 3. `SchedulingEntity`：run state、调度策略字段、last-CPU hint、sleep deadline、stop/resume 状态。
 
-TGID index、per-hart runqueue/mailbox/current、idle-stack `switch_to_task` 局部 owner、短期查询结果和 deferred-reap slot 是全部 `Arc<TaskControlBlock>` owner。普通 suspend/block 在 `__switch` 前释放 task-stack Arc，由 TGID index 与 runqueue/sleep owner 保活 raw context；syscall、sigreturn 和 fatal-signal trap 在进入不返回的 exit 前也显式释放局部查询 Arc。exit 路径将状态置为 `Exited`，删除 TGID index owner，把自身 owner移入 deferred slot并切回 idle；完整 TCB 不作为 zombie 保留。当前没有 wait 消费者，因此 exit code 不进入伪缓存；未来 wait4 必须引入独立的最小 `ChildExitRecord`。
+TGID index、per-hart runqueue/mailbox/current、idle-stack `switch_to_task` 局部 owner、短期查询结果和 deferred-reap slot 是全部 `Arc<TaskControlBlock>` owner。普通 suspend/block 在 `__switch` 前释放 task-stack Arc，由 TGID index 与 runqueue/sleep owner 保活 raw context；user trap return 在 noreturn trampoline 前显式释放当前 TCB Arc，syscall、sigreturn 和 fatal-signal trap 在进入 exit 前也显式释放局部查询 Arc。terminal exit 的 prepare frame 将状态置为 `Exited`、删除 TGID index owner并把自身 owner 移入 deferred slot，然后先正常返回以析构所有局部 Arc；外层只携带 raw context 切回 idle，完整 TCB 不作为 zombie 保留。wait4 后续引入的最小 exit record 只保存 parent 可消费状态，不持有 TCB。
 
 `getpid` 明确返回 TGID，`gettid` 明确返回 TID，kill 只按 TGID index 查找。当前两者数值均为 1，但接口不再互相代用。`ProcessId::init()` 是唯一 ID 构造入口；在加入进程/线程创建 ABI 前，不开放任意整数构造或虚假回收协议。
 

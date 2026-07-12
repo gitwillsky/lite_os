@@ -48,6 +48,7 @@ FORBIDDEN_BOOT_MARKERS = (
     "unsupported syscall_id:",
 )
 BUSYBOX_LINKS = (
+    "arch",
     "ash",
     "awk",
     "basename",
@@ -55,6 +56,7 @@ BUSYBOX_LINKS = (
     "cat",
     "cp",
     "cut",
+    "date",
     "dd",
     "df",
     "dirname",
@@ -92,6 +94,7 @@ BUSYBOX_LINKS = (
     "tr",
     "true",
     "uniq",
+    "uname",
     "uptime",
     "wc",
     "zcat",
@@ -562,6 +565,9 @@ def main() -> int:
                 "LITEOS_TOOLS_42",
                 "LITEOS_OBSERVABILITY_42",
                 "LITEOS_FILESYSTEM_CAPACITY_42",
+                "LITEOS_SYSTEM_IDENTITY_42",
+                "LITEOS_WALLCLOCK_42",
+                "LITEOS_EXEC_RECLAIM_42",
                 "LITEOS_TOP_42",
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
@@ -634,6 +640,18 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
+                    b"[ \"$(/bin/uname -s)\" = LiteOS ] && [ \"$(/bin/uname -n)\" = liteos ] && [ \"$(/bin/uname -m)\" = riscv64 ] && [ \"$(/bin/uname -o)\" = LiteOS ] && [ \"$(/bin/arch)\" = riscv64 ] && echo LITEOS_SYSTEM_IDENTITY_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_SYSTEM_IDENTITY_42",
+                    b"epoch=$(/bin/date -u +%s); year=$(/bin/date -u +%Y); [ \"$epoch\" -ge 1704067200 ] && [ \"$year\" -ge 2024 ] && echo LITEOS_WALLCLOCK_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_WALLCLOCK_42",
+                    b"{ read _; read _ free_before _; } </proc/meminfo; i=0; while [ $i -lt 64 ] && /bin/true; do i=$((i+1)); done; { read _; read _ free_after _; } </proc/meminfo; loss=$((free_before-free_after)); [ \"$i\" -eq 64 ] && [ \"$loss\" -le 4096 ] && echo LITEOS_EXEC_RECLAIM_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_EXEC_RECLAIM_42",
                     b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n",
                 ),
                 (

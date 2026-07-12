@@ -4,10 +4,24 @@
 #include <string.h>
 #include <sys/random.h>
 #include <sys/statfs.h>
+#include <sys/syscall.h>
+#include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 int main(void)
 {
+    struct timeval direct_time;
+    struct timespec realtime;
+    int timezone[2] = { -1, -1 };
+    if (syscall(SYS_gettimeofday, &direct_time, timezone) != 0
+        || clock_gettime(CLOCK_REALTIME, &realtime) != 0
+        || direct_time.tv_usec < 0 || direct_time.tv_usec >= 1000000
+        || realtime.tv_sec < direct_time.tv_sec
+        || realtime.tv_sec > direct_time.tv_sec + 1
+        || timezone[0] != 0 || timezone[1] != 0) {
+        return 5;
+    }
     struct statfs by_path;
     struct statfs by_descriptor;
     struct statfs pipe_statistics;

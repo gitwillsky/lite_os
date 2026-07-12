@@ -7,13 +7,14 @@ mod process;
 mod random;
 mod reboot;
 mod signal;
+mod system_identity;
 mod system_info;
 mod timer;
 mod tty;
 
 use crate::syscall::{
     fs::*, futex::*, memory::*, poll::*, process::*, random::*, reboot::*, signal::*,
-    system_info::*, timer::*, tty::*,
+    system_identity::*, system_info::*, timer::*, tty::*,
 };
 use syscall_abi::*;
 
@@ -113,6 +114,8 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_GETPGID => sys_getpgid(args[0]),
         SYSCALL_GETSID => sys_getsid(args[0]),
         SYSCALL_SETSID => sys_setsid(),
+        SYSCALL_UNAME => sys_uname(args[0]),
+        SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0], args[1]),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
         SYSCALL_GETUID | SYSCALL_GETEUID | SYSCALL_GETGID | SYSCALL_GETEGID => {

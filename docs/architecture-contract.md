@@ -57,6 +57,8 @@
 | per-hart busy runtime | ProcessorTopology 对应 hart slot；procfs 不另建 CPU counter |
 | 1/5/15 minute load average | TaskManager 的单一 fixed-point EWMA state |
 | system information snapshot | task façade 只投影 allocator、process graph、load average 与 timer 的权威状态；procfs/sysinfo 不另建 counter |
+| immutable system/build identity | system module；uname 只编码，不复制 hostname/release/machine state |
+| realtime offset 与固定 UTC timezone policy | timer module；clock_gettime/gettimeofday 共用同一 realtime owner |
 | root mount、source/filesystem association、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
 | inode/on-disk allocation 与 statfs capacity state | filesystem adapter mutation domain；ext2 统计与 allocator mutation 共锁 |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
@@ -88,6 +90,7 @@
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
+- `uname` 只投影 system module 的 immutable identity；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。
@@ -100,6 +103,8 @@
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。
+- terminal exit 必须先在可返回的 prepare frame 完成副作用并释放全部 task Arc，再以只含 raw context 的凭据切到 idle，由 per-hart deferred-reap slot 保活并析构 TCB；禁止从持有 task Arc 的 Rust frame 永久切走。
+- user trap return 的 noreturn trampoline 前必须显式释放当前 TCB Arc；该 Rust frame 不会展开，依赖作用域析构会让每次 syscall 永久增加一个 kernel-stack 自引用。
 - 首个 `exit_group` 或默认致命 signal 在 process graph 唯一提交 group-exit status；所有 sibling 只经 signal/wait/scheduler seam 回到自身内核栈退出，最后一个 Thread 才发布 zombie 与 SIGCHLD。禁止远程释放运行栈、重复保存 status 或把 signal death 改写成 shell exit code。
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。

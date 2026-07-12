@@ -14,6 +14,31 @@ pub(crate) struct TimeSpec {
 const CLOCK_REALTIME: i32 = 0;
 const CLOCK_MONOTONIC: i32 = 1;
 
+/// @description 按 Linux RV64 legacy timeval ABI 返回 realtime 与固定 UTC timezone。
+///
+/// @param timeval 可选的用户态 16-byte `{ i64 sec, i64 usec }` 输出地址。
+/// @param timezone 可选的用户态 8-byte `{ i32 minuteswest, i32 dsttime }` 输出地址。
+/// @return 成功返回零；任一非空输出地址不可写返回 `-EFAULT`。
+pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
+    let task = current_task().expect("gettimeofday requires a current task");
+    // 1. Linux 先写 timeval；timezone fault 不回滚已经完成的 timeval copyout。
+    if timeval != 0 {
+        let nanoseconds = crate::timer::get_realtime_ns();
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&((nanoseconds / 1_000_000_000) as i64).to_ne_bytes());
+        bytes[8..].copy_from_slice(&((nanoseconds % 1_000_000_000 / 1_000) as i64).to_ne_bytes());
+        if task.copy_to_user(timeval, &bytes).is_err() {
+            return -EFAULT;
+        }
+    }
+    // 2. 当前没有 settimeofday ABI，唯一 timezone policy 为 UTC 且不使用 DST。
+    // 缺少该显式策略会迫使 syscall 伪造一份可变 timezone state。
+    if timezone != 0 && task.copy_to_user(timezone, &[0u8; 8]).is_err() {
+        return -EFAULT;
+    }
+    0
+}
+
 /// @description 按相对单调时间挂起当前任务。
 ///
 /// @param req 用户态请求时间；空指针返回 `EFAULT`。

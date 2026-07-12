@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 65 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 67 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 65 个入口
+## 2. 当前暴露的 67 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -69,6 +69,8 @@
 | 139 | `rt_sigreturn` | frame 隐式位于 sp | 恢复 a0/context；坏 frame 最终终止 | Linux RV64 signal ABI | **Partial**。恢复 32 GPR、32 FP、fcsr、PC 与 mask；frame 使用固定 Linux v7.1 RV64 layout和 U|RX return trampoline。无 vector/CFI extension context。 | `kernel/src/syscall/signal.rs`, `kernel/src/task/model.rs` |
 | 142 | `reboot` | magic1、magic2、command、argument | CAD command 返回 0；reset 成功不返回；`EINVAL/EIO` | BusyBox init shutdown policy | **Partial**。校验 Linux magic，`CAD_OFF/CAD_ON` 更新唯一 system policy，`RESTART/HALT/POWER_OFF` 映射 SBI SRST cold reboot/shutdown。platform 无 restart-reason channel，因此拒绝 `RESTART2`；无 kexec/suspend。 | `kernel/src/syscall/reboot.rs`, `kernel/src/system.rs` |
 | 154-157 | `setpgid/getpgid/getsid/setsid` | PID/PGID 或无参数 | 0/ID；`ESRCH/EPERM/EACCES` | POSIX session/job control；BusyBox init/ash | **Partial**。process graph 唯一拥有 SID/PGID/exec generation；fork 继承，setsid 创建新 session/group，setpgid 校验 direct-child、session leader、同 session group，并在 child exec point-of-no-return 后对 parent 返回 `EACCES`。exit/reparent 导致的 orphan transition 与 stopped group SIGHUP→SIGCONT 同属该 owner。无 credentials/namespace。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager/process_group.rs`, `kernel/src/task/task_manager/process_exit.rs` |
+| 160 | `uname` | RV64 390-byte `struct new_utsname *` | 0；`EFAULT` | POSIX uname；musl direct wrapper；BusyBox uname/arch | **Complete**（当前 immutable identity 模型）。system module 唯一提供 `LiteOS/liteos/<package-version>/#1 SMP PREEMPT/riscv64/(none)` 六字段；每字段 65 bytes 且尾部清零。无 sethostname/setdomainname 或 UTS namespace。 | `kernel/src/syscall/system_identity.rs`, `kernel/src/system.rs` |
+| 169 | `gettimeofday` | 可选 RV64 16-byte timeval、可选 8-byte timezone | 0；`EFAULT` | Linux legacy time API；musl compatibility | **Complete**（当前 realtime 模型）。与 `clock_gettime(CLOCK_REALTIME)` 共用 RTC+monotonic offset，microseconds 向下截断；按 Linux 顺序先 copy timeval 再 copy timezone，固定 UTC policy 返回 `{0,0}`。无 settimeofday/timezone mutation。 | `kernel/src/syscall/timer.rs`, `kernel/src/timer.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
 | 173 | `getppid` | 无参数 | parent TGID；init 为 0 | POSIX `getppid`；musl direct wrapper | **Complete**。读取 TaskManager 唯一 parent edge；orphan 重新指向 PID 1。 | `kernel/src/syscall/process.rs` |
 | 174-177 | `getuid/geteuid/getgid/getegid` | 无参数 | 0 | POSIX identity；BusyBox prompt | **Complete**（固定 root identity 基线）。当前没有 credential mutation ABI，real/effective UID/GID 均为 root 0。 | `kernel/src/syscall/process.rs` |
@@ -98,7 +100,7 @@
 
 ## 4. musl 结论
 
-当前 65 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec、process-group kill、基础 job control、系统/文件系统可观测性与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
+当前 67 个入口支撑固定 musl pthread consumer、动态 BusyBox 与 `dlopen` 共享对象 probe。该验证覆盖 relocation/TLS/RELRO、file-private mmap/MAP_FIXED、getrandom、pipeline、TTY、script exec、process-group kill、基础 job control、identity/realtime/文件系统可观测性与持久化，但不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex requeue/PI/bitset与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack 与 queued realtime signal；

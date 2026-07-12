@@ -241,6 +241,9 @@ pub(crate) fn trap_return() -> ! {
         trap_context.kernel_gp = kernel_gp;
         current_task.set_trap_context(trap_context);
     }
+    // trap return 通过 noreturn trampoline 跳转，Rust frame 不会展开；若不在此显式释放，
+    // 每次 syscall 都会把一个 TCB Arc 永久遗留在随后被覆盖的 task kernel stack 上。
+    drop(current_task);
 
     // SAFETY: both symbols are emitted by the trampoline assembly in one section; their addresses
     // are used only to derive the mapped restore entry offset.
