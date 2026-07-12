@@ -887,6 +887,7 @@ kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
+kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_vfork (& mut self) -> Result < Self , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_read (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
 kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_write (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
 kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
@@ -965,8 +966,10 @@ kernel/src/memory/shared_file.rs :: trait SharedPage :: fn mark_dirty (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
 kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
 kernel/src/socket.rs :: enum SocketAddress :: Inet (InetAddress)
+kernel/src/socket.rs :: enum SocketAddress :: Packet (PacketAddress)
 kernel/src/socket.rs :: enum SocketAddress :: Unix (UnixAddress)
 kernel/src/socket.rs :: enum SocketDomain :: Inet
+kernel/src/socket.rs :: enum SocketDomain :: Packet
 kernel/src/socket.rs :: enum SocketDomain :: Unix
 kernel/src/socket.rs :: enum SocketError :: # [doc = " active connect 已启动，调用方应进入 writable/error wait。"] InProgress
 kernel/src/socket.rs :: enum SocketError :: # [doc = " established stream 被 peer reset。"] ConnectionReset
@@ -981,16 +984,25 @@ kernel/src/socket.rs :: enum SocketError :: DestinationRequired
 kernel/src/socket.rs :: enum SocketError :: Invalid
 kernel/src/socket.rs :: enum SocketError :: MessageTooLarge
 kernel/src/socket.rs :: enum SocketError :: NetworkUnreachable
+kernel/src/socket.rs :: enum SocketError :: NoDevice
 kernel/src/socket.rs :: enum SocketError :: NoMemory
 kernel/src/socket.rs :: enum SocketError :: NotConnected
 kernel/src/socket.rs :: enum SocketError :: NotFound
 kernel/src/socket.rs :: enum SocketError :: OperationNotSupported
+kernel/src/socket.rs :: enum SocketError :: PermissionDenied
 kernel/src/socket.rs :: enum SocketError :: ProtocolNotSupported
 kernel/src/socket.rs :: enum SocketError :: WrongType
 kernel/src/socket.rs :: enum SocketType :: Datagram
+kernel/src/socket.rs :: enum SocketType :: Raw
 kernel/src/socket.rs :: enum SocketType :: Stream
 kernel/src/socket.rs :: pub (crate) InetAddress :: address : Ipv4Addr
 kernel/src/socket.rs :: pub (crate) InetAddress :: port : u16
+kernel/src/socket.rs :: pub (crate) PacketAddress :: address : [u8 ; 8]
+kernel/src/socket.rs :: pub (crate) PacketAddress :: address_length : u8
+kernel/src/socket.rs :: pub (crate) PacketAddress :: hardware_type : u16
+kernel/src/socket.rs :: pub (crate) PacketAddress :: interface_index : i32
+kernel/src/socket.rs :: pub (crate) PacketAddress :: packet_type : u8
+kernel/src/socket.rs :: pub (crate) PacketAddress :: protocol : u16
 kernel/src/socket.rs :: pub (crate) ReceivedMessage :: count : usize
 kernel/src/socket.rs :: pub (crate) ReceivedMessage :: full_length : usize
 kernel/src/socket.rs :: pub (crate) ReceivedMessage :: local_address : Option < Ipv4Addr >
@@ -1010,6 +1022,7 @@ kernel/src/socket.rs :: pub (crate) fn init ()
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn accept_with_notify (& self , notify : Option < (Arc < PipeEnd > , Arc < PipeEnd >) > ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn bind (self : & Arc < Self > , address : SocketAddress) -> Result < () , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn bind_to_device (& self , name : & [u8]) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn connect (self : & Arc < Self > , address : SocketAddress , resources : Option < UnixConnectResources > ,) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn connection_result (& self) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn domain (& self) -> SocketDomain
@@ -1024,7 +1037,9 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn readiness_generation (& se
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive (& self , output : & mut [u8] ,) -> Result < (usize , Option < SocketAddress >) , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive_message (& self , output : & mut [u8] , peek : bool ,) -> Result < ReceivedMessage , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn send_to (& self , input : & [u8] , target : Option < SocketAddress > ,) -> Result < usize , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_broadcast (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_ipv4_packet_info (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> SocketType
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn take_error (& self) -> Option < SocketError >
@@ -1032,6 +1047,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn wait_pipes (& self) -> Vec
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn write (& self , input : & [u8]) -> Result < usize , SocketError >
 kernel/src/socket.rs :: pub (crate) impl SocketPollState :: const fn error () -> Self
 kernel/src/socket.rs :: pub (crate) struct InetAddress
+kernel/src/socket.rs :: pub (crate) struct PacketAddress
 kernel/src/socket.rs :: pub (crate) struct ReceivedMessage
 kernel/src/socket.rs :: pub (crate) struct Socket
 kernel/src/socket.rs :: pub (crate) struct SocketPollState
@@ -1041,8 +1057,9 @@ kernel/src/socket.rs :: pub (crate) use unix :: UnixAddress
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn new (device : Arc < dyn NetworkDevice >) -> Self
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn statistics (& self) -> NetworkStatistics
+kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn take_packet_notifications (& mut self) -> Vec < Arc < PacketSocket > >
 kernel/src/socket/device.rs :: pub (super) struct EthernetDevice
-kernel/src/socket/device.rs :: pub (super) struct EthernetRxToken
+kernel/src/socket/device.rs :: pub (super) struct EthernetRxToken < 'a >
 kernel/src/socket/device.rs :: pub (super) struct EthernetTxToken
 kernel/src/socket/inet.rs :: pub (crate) InterfaceSnapshot :: address : Option < Ipv4Addr >
 kernel/src/socket/inet.rs :: pub (crate) InterfaceSnapshot :: mac : [u8 ; 6]
@@ -1082,7 +1099,15 @@ kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn shutdown (& self 
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn take_error (& self) -> Option < SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
 kernel/src/socket/inet.rs :: pub (super) struct InetSocket
+kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn bind_to_device (& self , name : & [u8]) -> Result < () , SocketError >
+kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn set_broadcast (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet/options.rs :: pub (in crate :: socket) impl InetSocket :: fn set_reuse_address (& self , enabled : bool) -> Result < () , SocketError >
+kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: bound_to_device : bool
+kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: broadcast : bool
+kernel/src/socket/inet/options.rs :: pub (super) InetSocketOptions :: reuse_address : bool
+kernel/src/socket/inet/options.rs :: pub (super) struct InetSocketOptions
 kernel/src/socket/inet/tcp.rs :: pub (super) TcpEndpointState :: endpoint : Weak < InetSocket >
+kernel/src/socket/inet/tcp.rs :: pub (super) TcpEndpointState :: options : InetSocketOptions
 kernel/src/socket/inet/tcp.rs :: pub (super) fn accept (socket : & InetSocket , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < InetSocket > , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn address (socket : & InetSocket) -> Result < InetAddress , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn bind (socket : & InetSocket , address : InetAddress) -> Result < () , SocketError >
@@ -1113,6 +1138,18 @@ kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandl
 kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool)
+kernel/src/socket/packet.rs :: pub (super) fn deliver (frame : & [u8]) -> Vec < Arc < PacketSocket > >
+kernel/src/socket/packet.rs :: pub (super) fn init ()
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn bind (& self , address : PacketAddress) -> Result < () , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn new (protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn notify (& self)
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn readiness_generation (& self) -> u64
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
+kernel/src/socket/packet.rs :: pub (super) struct PacketSocket
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn bytes (& self) -> & [u8]
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn new (bytes : & [u8]) -> Result < Self , SocketError >
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn accept (& self) -> Result < Arc < Self > , SocketError >
@@ -1374,6 +1411,7 @@ kernel/src/task/model.rs :: enum WaitMembership :: Futex (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Pipe (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Poll (u64)
 kernel/src/task/model.rs :: enum WaitMembership :: Signal (u64)
+kernel/src/task/model.rs :: enum WaitMembership :: Vfork (usize)
 kernel/src/task/model.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model.rs :: enum WaitResult :: TimedOut
 kernel/src/task/model.rs :: enum WaitResult :: Woken
@@ -1442,7 +1480,6 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_proc
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn close_all_files (& self)
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
@@ -1497,6 +1534,8 @@ kernel/src/task/model/credentials.rs :: pub (super) impl TaskControlBlock :: fn 
 kernel/src/task/model/credentials.rs :: pub (super) struct Credentials
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn with_file_descriptions < R > (& self , first : usize , second : usize , operation : impl FnOnce (Arc < OpenFileDescription > , Arc < OpenFileDescription >) -> R ,) -> Option < R >
+kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
+kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Vec < u8 >
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: None
@@ -1553,6 +1592,7 @@ kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn mark_active (& 
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn select_task (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn take_current (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) struct Processor
+kernel/src/task/processor.rs :: pub (in crate :: task) fn wake_waiting_task (task : Arc < TaskControlBlock > , expected : WaitMembership , result : Option < WaitResult > ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn account_current_hart_runtime (runtime_us : u64)
 kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn finish_deschedule_transition (task : & Arc < TaskControlBlock >) -> bool
@@ -1596,7 +1636,6 @@ kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : 
 kernel/src/task/task_manager.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
-kernel/src/task/task_manager.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
 kernel/src/task/task_manager.rs :: pub (crate) fn futex_wait (address : usize , expected : u32 , deadline : Option < u64 > ,) -> Result < () , FutexWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn futex_wake (tgid : usize , address : usize , count : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) -> isize
@@ -1617,8 +1656,10 @@ kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGro
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
+kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { fork_current_process , vfork_current_process }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , wait_child }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
+kernel/src/task/task_manager.rs :: pub (in crate :: task) mod vfork
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()
@@ -1684,6 +1725,11 @@ kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: I
 kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Restart
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
+kernel/src/task/task_manager/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
+kernel/src/task/task_manager/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize ,) -> Result < usize , crate :: memory :: MemoryError >
+kernel/src/task/task_manager/vfork.rs :: pub (in crate :: task) fn complete_vfork_exec (child_pid : usize)
+kernel/src/task/task_manager/vfork.rs :: pub (super) fn complete_vfork (child_pid : usize)
+kernel/src/task/task_manager/vfork.rs :: pub (super) fn wake_parent (parent : Arc < TaskControlBlock > , child_pid : usize)
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: Interrupted
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: InvalidSelector
 kernel/src/task/task_manager/wait_child.rs :: enum WaitChildError :: NoChild

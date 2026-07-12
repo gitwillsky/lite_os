@@ -5,10 +5,13 @@ use crate::ipc::{Pipe, PipeDirection, PipeEnd};
 
 #[path = "socket/inet.rs"]
 mod inet;
+#[path = "socket/packet.rs"]
+mod packet;
 #[path = "socket/unix.rs"]
 mod unix;
 
 use inet::InetSocket;
+use packet::PacketSocket;
 pub(crate) use unix::UnixAddress;
 use unix::UnixSocket;
 
@@ -21,18 +24,31 @@ pub(crate) use inet::{
 pub(crate) enum SocketDomain {
     Unix,
     Inet,
+    Packet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SocketType {
     Stream,
     Datagram,
+    Raw,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InetAddress {
     pub(crate) address: Ipv4Addr,
     pub(crate) port: u16,
+}
+
+/// @description Linux `sockaddr_ll` 的 domain value，不暴露 userspace padding。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PacketAddress {
+    pub(crate) protocol: u16,
+    pub(crate) interface_index: i32,
+    pub(crate) hardware_type: u16,
+    pub(crate) packet_type: u8,
+    pub(crate) address_length: u8,
+    pub(crate) address: [u8; 8],
 }
 
 pub(crate) struct ReceivedMessage {
@@ -46,6 +62,7 @@ pub(crate) struct ReceivedMessage {
 pub(crate) enum SocketAddress {
     Unix(UnixAddress),
     Inet(InetAddress),
+    Packet(PacketAddress),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +88,8 @@ pub(crate) enum SocketError {
     OperationNotSupported,
     Again,
     BrokenPipe,
+    PermissionDenied,
+    NoDevice,
     WrongType,
 }
 
@@ -96,6 +115,9 @@ impl SocketPollState {
 enum SocketBackend {
     Unix(Arc<UnixSocket>),
     Inet(Arc<InetSocket>),
+    Packet(Arc<PacketSocket>),
+    /// AF_INET raw control fd；data plane 未开放时不复制 NetworkStack 协议状态。
+    InterfaceControl,
 }
 
 /// @description OFD 唯一 socket backend facade；AF_UNIX/AF_INET adapter 不穿透 fs seam。
@@ -113,7 +135,7 @@ pub(crate) struct UnixConnectResources {
 }
 
 impl Socket {
-    /// @description 创建 AF_UNIX 或 AF_INET endpoint，并一次性校验 domain/type/protocol。
+    /// @description 创建 AF_UNIX、AF_INET 或 AF_PACKET endpoint，并一次性校验组合。
     ///
     /// @param domain Linux socket domain。
     /// @param socket_type stream/datagram type。
@@ -127,13 +149,19 @@ impl Socket {
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
     ) -> Result<Arc<Self>, SocketError> {
         let backend = match (domain, socket_type, protocol) {
-            (SocketDomain::Unix, _, 0) => SocketBackend::Unix(UnixSocket::new(socket_type, notify)),
+            (SocketDomain::Unix, SocketType::Stream | SocketType::Datagram, 0) => {
+                SocketBackend::Unix(UnixSocket::new(socket_type, notify))
+            }
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Datagram, notify)?)
             }
             (SocketDomain::Inet, SocketType::Stream, 0 | 6) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Stream, notify)?)
             }
+            (SocketDomain::Packet, SocketType::Datagram, _) => {
+                SocketBackend::Packet(PacketSocket::new(protocol, notify)?)
+            }
+            (SocketDomain::Inet, SocketType::Raw, 255) => SocketBackend::InterfaceControl,
             _ => return Err(SocketError::ProtocolNotSupported),
         };
         Ok(Arc::new(Self {
@@ -163,6 +191,8 @@ impl Socket {
         match (&self.backend, address) {
             (SocketBackend::Unix(socket), SocketAddress::Unix(address)) => socket.bind(address),
             (SocketBackend::Inet(socket), SocketAddress::Inet(address)) => socket.bind(address),
+            (SocketBackend::Packet(socket), SocketAddress::Packet(address)) => socket.bind(address),
+            (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
             _ => Err(SocketError::Invalid),
         }
     }
@@ -171,6 +201,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.listen(backlog),
             SocketBackend::Inet(socket) => socket.listen(backlog),
+            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
 
@@ -196,6 +228,7 @@ impl Socket {
                     resources.server_to_client,
                 )
             }
+            (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
             _ => Err(SocketError::Invalid),
         }
     }
@@ -232,6 +265,8 @@ impl Socket {
                     backend: SocketBackend::Inet(socket),
                 }))
             }
+            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
 
@@ -242,6 +277,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.connection_result(),
             SocketBackend::Unix(_) => Ok(()),
+            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::InterfaceControl => Ok(()),
         }
     }
 
@@ -252,6 +289,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.take_error(),
             SocketBackend::Unix(_) => None,
+            SocketBackend::Packet(_) => None,
+            SocketBackend::InterfaceControl => None,
         }
     }
 
@@ -261,6 +300,13 @@ impl Socket {
             SocketBackend::Inet(socket) => socket
                 .address()
                 .map(|value| Some(SocketAddress::Inet(value))),
+            SocketBackend::Packet(socket) => socket
+                .address()
+                .map(|value| Some(SocketAddress::Packet(value))),
+            SocketBackend::InterfaceControl => Ok(Some(SocketAddress::Inet(InetAddress {
+                address: Ipv4Addr::UNSPECIFIED,
+                port: 0,
+            }))),
         }
     }
 
@@ -270,6 +316,8 @@ impl Socket {
             SocketBackend::Inet(socket) => socket
                 .peer_address()
                 .map(|value| Some(SocketAddress::Inet(value))),
+            SocketBackend::Packet(_) => Err(SocketError::NotConnected),
+            SocketBackend::InterfaceControl => Err(SocketError::NotConnected),
         }
     }
 
@@ -314,6 +362,17 @@ impl Socket {
                         },
                     )
             }
+            SocketBackend::Packet(socket) => {
+                socket
+                    .receive(output, peek)
+                    .map(|(count, full_length, source)| ReceivedMessage {
+                        count,
+                        full_length,
+                        source: Some(SocketAddress::Packet(source)),
+                        local_address: None,
+                    })
+            }
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
 
@@ -321,6 +380,41 @@ impl Socket {
         match &self.backend {
             SocketBackend::Inet(socket) => socket.set_packet_info(enabled),
             SocketBackend::Unix(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// @description 将 SO_REUSEADDR policy 提交给具体 endpoint owner。
+    /// @param enabled 非零 userspace option value 的布尔投影。
+    /// @return AF_INET endpoint 成功更新返回 unit。
+    /// @errors 不支持的 domain 或失效 endpoint 返回错误。
+    pub(crate) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_reuse_address(enabled),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// @description 将 SO_BROADCAST policy 提交给 UDP endpoint owner。
+    /// @param enabled 非零 userspace option value 的布尔投影。
+    /// @return AF_INET UDP endpoint 成功更新返回 unit。
+    /// @errors 不支持的 domain/type 或失效 endpoint 返回错误。
+    pub(crate) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.set_broadcast(enabled),
+            _ => Err(SocketError::OperationNotSupported),
+        }
+    }
+
+    /// @description 将 SO_BINDTODEVICE interface name 提交给 endpoint owner。
+    /// @param name 已去除 NUL 的 interface name；空值解除绑定。
+    /// @return 当前唯一 eth0 binding 成功更新返回 unit。
+    /// @errors 未知 interface、domain 或失效 endpoint 返回错误。
+    pub(crate) fn bind_to_device(&self, name: &[u8]) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Inet(socket) => socket.bind_to_device(name),
+            _ => Err(SocketError::OperationNotSupported),
         }
     }
 
@@ -332,6 +426,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.write(input),
             SocketBackend::Inet(socket) => socket.send_to(input, None),
+            SocketBackend::Packet(socket) => socket.send_to(input, None),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
 
@@ -350,6 +446,11 @@ impl Socket {
                 socket.send_to(input, Some(address))
             }
             (SocketBackend::Inet(socket), None) => socket.send_to(input, None),
+            (SocketBackend::Packet(socket), Some(SocketAddress::Packet(address))) => {
+                socket.send_to(input, Some(address))
+            }
+            (SocketBackend::Packet(socket), None) => socket.send_to(input, None),
+            (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
             _ => Err(SocketError::Invalid),
         }
     }
@@ -358,6 +459,13 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.poll_state(),
             SocketBackend::Inet(socket) => socket.poll_state(),
+            SocketBackend::Packet(socket) => socket.poll_state(),
+            SocketBackend::InterfaceControl => SocketPollState {
+                readable: false,
+                writable: true,
+                hangup: false,
+                error: false,
+            },
         }
     }
 
@@ -365,6 +473,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.readiness_generation(events),
             SocketBackend::Inet(socket) => socket.readiness_generation(),
+            SocketBackend::Packet(socket) => socket.readiness_generation(),
+            SocketBackend::InterfaceControl => 0,
         }
     }
 
@@ -372,6 +482,8 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.wait_pipes(),
             SocketBackend::Inet(socket) => socket.wait_pipes(),
+            SocketBackend::Packet(socket) => socket.wait_pipes(),
+            SocketBackend::InterfaceControl => Vec::new(),
         }
     }
 
@@ -379,10 +491,13 @@ impl Socket {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.shutdown(how),
             SocketBackend::Inet(socket) => socket.shutdown(how),
+            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
 }
 
 pub(crate) fn init() {
+    packet::init();
     inet::init();
 }

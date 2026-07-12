@@ -135,6 +135,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
         );
         scheduling.run_state = RunState::Exited;
     }
+    complete_vfork(task.tgid());
     task.cleanup_robust_list();
     let (
         removed,

@@ -107,9 +107,28 @@ BUSYBOX_LINKS = (
     "uniq",
     "uname",
     "uptime",
+    "udhcpc",
     "wc",
+    "wget",
     "zcat",
 )
+
+def start_http_gate() -> tuple[subprocess.Popen[bytes], int]:
+    """在 QEMU slirp 稳定转发的非特权范围选择首个空闲 HTTP origin port。"""
+    for port in range(18080, 18181):
+        server = subprocess.Popen(
+            [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            server.wait(timeout=0.05)
+        except subprocess.TimeoutExpired:
+            return server, port
+        if server.returncode == 0:
+            raise RuntimeError("HTTP gate server exited without serving")
+    raise RuntimeError("no free HTTP gate port in 18080..18180")
 
 
 def source_payload() -> dict[str, object]:
@@ -458,7 +477,11 @@ def create_image(binary: Path, musl: MuslCachePaths, image: Path) -> Path:
         "mkdir /lib",
         "mkdir /usr",
         "mkdir /usr/lib",
+        "mkdir /usr/share",
+        "mkdir /usr/share/udhcpc",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
+        f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
+        "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
         f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
@@ -540,6 +563,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     runtime_directory: tempfile.TemporaryDirectory[str] | None = None
+    http_server: subprocess.Popen[bytes] | None = None
     try:
         WORK.mkdir(parents=True, exist_ok=True)
         jobs_override = build_jobs_override()
@@ -557,7 +581,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            2,
+            3,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -566,6 +590,7 @@ def main() -> int:
                 dynamic_probe,
                 dynamic_library,
                 ROOT / "user/inittab",
+                ROOT / "user/udhcpc.script",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 ROOT / "scripts/qemu_gate.py",
@@ -579,6 +604,7 @@ def main() -> int:
         runtime_directory = tempfile.TemporaryDirectory(prefix="liteos-busybox-gate-")
         runtime_image = Path(runtime_directory.name) / "fs.img"
         shutil.copyfile(image, runtime_image)
+        http_server, http_port = start_http_gate()
         boot(
             runtime_image,
             1,
@@ -587,6 +613,9 @@ def main() -> int:
                 "all DTB harts online: count=1, mask=0x1",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
+                "LITEOS_DHCP_51",
+                "LITEOS_DNS_51",
+                "LITEOS_HTTP_51",
                 "LITEOS_LS_42",
                 "LITEOS_NULL_42",
                 "LITEOS_ZERO_4",
@@ -643,6 +672,18 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
+                    b"/bin/udhcpc -f -q -n -i eth0 && /bin/grep -q '^nameserver ' /etc/resolv.conf && echo LITEOS_DHCP_$((7*7+2))\n",
+                ),
+                (
+                    "LITEOS_DHCP_51",
+                    b"/bin/dynamic-smoke resolve example.com\n",
+                ),
+                (
+                    "LITEOS_DNS_51",
+                    f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode(),
+                ),
+                (
+                    "LITEOS_HTTP_51",
                     b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
                 ),
                 (
@@ -1029,6 +1070,13 @@ def main() -> int:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1
     finally:
+        if http_server is not None:
+            http_server.terminate()
+            try:
+                http_server.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                http_server.kill()
+                http_server.wait(timeout=3)
         if runtime_directory is not None:
             runtime_directory.cleanup()
     print(f"BusyBox {BUSYBOX_VERSION} init+ash verification passed")

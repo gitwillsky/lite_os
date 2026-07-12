@@ -44,7 +44,7 @@
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
-| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、waiter 与 ITIMER_REAL | TaskManager process graph；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
+| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、child/vfork waiter 与 ITIMER_REAL | TaskManager process graph；vfork child node 唯一持有 suspended parent，exec/exit 消费后经 scheduler seam 唤醒；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
 | deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
@@ -52,7 +52,8 @@
 | OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
-| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP socket set、peer、IP_PKTINFO、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
+| Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP socket set、peer、IP_PKTINFO、socket option、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
+| AF_PACKET binding、protocol 与有界 receive queue | socket::PacketRegistry；RX frame 在 smoltcp ingress 前只镜像一次，packet endpoint 与 L3 NetworkStack 不复制彼此状态 |
 | VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
@@ -82,9 +83,9 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 1045 | `task::TaskManager` | process graph 与 wait orchestration 仍集中维护跨锁不变量；wait key/index 与 deferred work storage 已下沉 | 按 process graph 与 wait lifecycle 的真实 seam 继续分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1044 | `task::TaskManager` | process graph 与 wait orchestration 仍集中维护跨锁不变量；wait key/index、vfork lifecycle 与 deferred work storage 已下沉 | 按 process graph 与 wait lifecycle 的真实 seam 继续分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1112 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1027 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
+| `kernel/src/task/model.rs` | 943 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space、process clone 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 
 ## 5. Interface and capability contract
 
@@ -110,13 +111,14 @@
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。
+- vfork parent 使用独立 `WaitMembership::Vfork(child)` 且不可被 signal 提前解除；child 独立页表/trap frame、共享已驻留 user frame，只有 exec point-of-no-return 或 exit 可消费 child node 的唯一 waiter。
 - terminal exit 必须先在可返回的 prepare frame 完成副作用并释放全部 task Arc，再以只含 raw context 的凭据切到 idle，由 per-hart deferred-reap slot 保活并析构 TCB；禁止从持有 task Arc 的 Rust frame 永久切走。
 - user trap return 的 noreturn trampoline 前必须显式释放当前 TCB Arc；该 Rust frame 不会展开，依赖作用域析构会让每次 syscall 永久增加一个 kernel-stack 自引用。
 - 首个 `exit_group` 或默认致命 signal 在 process graph 唯一提交 group-exit status；所有 sibling 只经 signal/wait/scheduler seam 回到自身内核栈退出，最后一个 Thread 才发布 zombie 与 SIGCHLD。禁止远程释放运行栈、重复保存 status 或把 signal death 改写成 shell exit code。
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
-- `user/` 顶层只允许固定 BusyBox config/inittab、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
+- `user/` 顶层只允许固定 BusyBox config/inittab/udhcpc lease script、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
 
 ## 6. Change contract
 

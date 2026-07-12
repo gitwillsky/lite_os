@@ -492,7 +492,13 @@ pub(super) fn wake_poll_task(
     wake_waiting_task(task, WaitMembership::Poll(wait_id), Some(result))
 }
 
-fn wake_waiting_task(
+/// @description 消费指定 wait membership，并经 scheduler 唯一状态机发布 ready transition。
+/// @param task wait owner 移出的 blocked task Arc。
+/// @param expected 调用方持有的精确 wait identity。
+/// @param result 恢复后由 blocked syscall 消费的完成结果。
+/// @return membership 匹配并成功消费返回 true；stale wake 返回 false。
+/// @errors 无错误；状态不变量破坏时 fail-stop。
+pub(in crate::task) fn wake_waiting_task(
     task: Arc<TaskControlBlock>,
     expected: WaitMembership,
     result: Option<WaitResult>,

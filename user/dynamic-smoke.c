@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -19,6 +21,23 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+static int resolve_host(const char *host)
+{
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *addresses = NULL;
+    int error = getaddrinfo(host, NULL, &hints, &addresses);
+    if (error != 0 || addresses == NULL) return 70;
+    char address[INET_ADDRSTRLEN];
+    struct sockaddr_in *resolved = (struct sockaddr_in *)addresses->ai_addr;
+    if (inet_ntop(AF_INET, &resolved->sin_addr, address, sizeof(address)) == NULL) {
+        freeaddrinfo(addresses);
+        return 71;
+    }
+    printf("LITEOS_DNS_51 %s\n", address);
+    freeaddrinfo(addresses);
+    return 0;
+}
 
 static int verify_shared_mapping(void)
 {
@@ -178,6 +197,7 @@ static int verify_credentials(const char *program)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "shared-crash") == 0) return shared_crash_loop();
+    if (argc == 3 && strcmp(argv[1], "resolve") == 0) return resolve_host(argv[2]);
     if (argc == 2 && strcmp(argv[1], "setid-probe") == 0) {
         uid_t real, effective, saved;
         return getresuid(&real, &effective, &saved) != 0 || real != 1000 || effective != 0 || saved != 0;

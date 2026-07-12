@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# @description BusyBox udhcpc 唯一 lease consumer；只通过标准 ioctl/route 与 resolv.conf 提交配置。
+case "$1" in
+    deconfig)
+        ifconfig "$interface" 0.0.0.0
+        ;;
+    bound|renew)
+        ifconfig "$interface" "$ip" ${subnet:+netmask "$subnet"} \
+            ${broadcast:+broadcast "$broadcast"} up
+
+        for gateway in $router; do
+            route add default gw "$gateway" dev "$interface"
+            break
+        done
+
+        : > /etc/resolv.conf
+        if [ -n "$domain" ]; then
+            printf 'search %s\n' "$domain" >> /etc/resolv.conf
+        fi
+        for server in $dns; do
+            printf 'nameserver %s\n' "$server" >> /etc/resolv.conf
+        done
+        ;;
+esac
+
+exit 0

@@ -21,11 +21,14 @@ use crate::{
 };
 
 use self::device::EthernetDevice;
+use self::options::InetSocketOptions;
 use self::tcp::TcpEndpointState;
-use super::{InetAddress, SocketError, SocketPollState};
+use super::{InetAddress, SocketError, SocketPollState, packet::PacketSocket};
 
 #[path = "device.rs"]
 mod device;
+#[path = "inet/options.rs"]
+mod options;
 #[path = "inet/tcp.rs"]
 mod tcp;
 #[path = "inet/timing.rs"]
@@ -42,6 +45,7 @@ const NETWORK_RX_BUDGET: usize = 64;
 
 struct PollOutcome {
     notifications: Vec<Arc<InetSocket>>,
+    packet_notifications: Vec<Arc<PacketSocket>>,
     // 表示本轮未探测到 RX queue 为空；调用者必须重新投递 softirq，否则队列中已完成但
     // 没有新 IRQ edge 的 frame 可能永久滞留。
     rx_budget_exhausted: bool,
@@ -61,6 +65,7 @@ struct EndpointState {
     // IP_PKTINFO controls whether recvmsg publishes destination-address ancillary data. Keeping
     // it outside this endpoint owner would let setsockopt and packet delivery observe different flags.
     packet_info: bool,
+    options: InetSocketOptions,
 }
 
 struct NetworkStack {
@@ -160,6 +165,7 @@ impl NetworkStack {
         }
         PollOutcome {
             notifications,
+            packet_notifications: self.device.take_packet_notifications(),
             rx_budget_exhausted,
         }
     }
@@ -228,6 +234,9 @@ pub(crate) fn dispatch_network_work() -> bool {
     if let Some(stack) = NETWORK_STACK.get() {
         let outcome = stack.lock().poll();
         for endpoint in outcome.notifications {
+            endpoint.notify();
+        }
+        for endpoint in outcome.packet_notifications {
             endpoint.notify();
         }
         outcome.rx_budget_exhausted
@@ -420,7 +429,11 @@ impl InetSocket {
     /// @errors TCP 仍在进行、被拒绝或未连接时返回错误。
     pub(super) fn connection_result(&self) -> Result<(), SocketError> {
         if matches!(self.endpoint, InetEndpoint::Tcp(_)) {
-            tcp::connection_result(self)
+            let result = tcp::connection_result(self);
+            if !matches!(result, Err(SocketError::InProgress)) {
+                self.consume_notify();
+            }
+            result
         } else {
             Ok(())
         }

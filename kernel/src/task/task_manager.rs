@@ -26,6 +26,7 @@ mod process_group;
 mod procfs;
 mod signal;
 mod terminal_access;
+pub(in crate::task) mod vfork;
 mod wait_child;
 mod wait_key;
 mod wait_registry;
@@ -49,6 +50,8 @@ pub(crate) use signal::{
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
+use vfork::complete_vfork;
+pub(crate) use vfork::{fork_current_process, vfork_current_process};
 pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
 use wait_key::IndexedWaitKind;
 pub(crate) use wait_key::PollWaitKey;
@@ -69,6 +72,8 @@ struct ProcessNode {
     job_control: JobControlState,
     child_events: ChildEvents,
     waiter: Option<Arc<TaskControlBlock>>,
+    // child node 唯一持有 suspended vfork parent；缺失该 owner 会在 exec/exit 边界丢唤醒。
+    vfork_parent: Option<Arc<TaskControlBlock>>,
 }
 struct ProcessGraph {
     next_pid: usize,
@@ -149,6 +154,7 @@ impl TaskManager {
                 job_control: JobControlState::Running,
                 child_events: ChildEvents::default(),
                 waiter: None,
+                vfork_parent: None,
             },
         );
         assert!(previous.is_none(), "init inserted twice");
@@ -165,7 +171,12 @@ impl TaskManager {
         ProcessId::allocated(pid)
     }
 
-    fn publish_child(&self, parent: usize, child: Arc<TaskControlBlock>) {
+    fn publish_child(
+        &self,
+        parent: usize,
+        child: Arc<TaskControlBlock>,
+        vfork_parent: Option<Arc<TaskControlBlock>>,
+    ) {
         let pid = child.tgid();
         let mut graph = self.graph.lock();
         let parent_node = graph
@@ -189,6 +200,7 @@ impl TaskManager {
                 job_control: JobControlState::Running,
                 child_events: ChildEvents::default(),
                 waiter: None,
+                vfork_parent,
             },
         );
         assert!(previous.is_none(), "allocated PID already exists");
@@ -284,19 +296,6 @@ pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(),
         }
     }
     Ok(())
-}
-
-/// @description COW fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
-///
-/// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
-pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError> {
-    let parent = current_task().expect("fork requires current task");
-    let pid = TASK_MANAGER.allocate_pid();
-    let child = Arc::new(parent.fork_process(pid)?);
-    let child_pid = child.tgid();
-    TASK_MANAGER.publish_child(parent.tgid(), child.clone());
-    enqueue_new_task(child);
-    Ok(child_pid)
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -13,8 +13,8 @@ use smoltcp::{
 use crate::ipc::PipeEnd;
 
 use super::{
-    EPHEMERAL_END, EPHEMERAL_START, InetEndpoint, InetSocket, NetworkStack, SocketError, from_ip,
-    ipv4, now, stack,
+    EPHEMERAL_END, EPHEMERAL_START, InetEndpoint, InetSocket, InetSocketOptions, NetworkStack,
+    SocketError, from_ip, ipv4, now, stack,
 };
 use crate::socket::InetAddress;
 
@@ -48,6 +48,8 @@ pub(super) struct TcpEndpointState {
     handles: Vec<SocketHandle>,
     mode: TcpMode,
     pending_error: Option<SocketError>,
+    /// listener accept 继承同一个 SOL_SOCKET policy；缺失会让 accepted socket 丢失 device binding。
+    pub(super) options: InetSocketOptions,
 }
 
 fn allocate_buffer() -> Result<Vec<u8>, SocketError> {
@@ -96,6 +98,7 @@ pub(super) fn create_endpoint(
             handles: alloc::vec![handle],
             mode: TcpMode::Fresh { bound: None },
             pending_error: None,
+            options: InetSocketOptions::default(),
         },
     );
     Ok(id)
@@ -116,7 +119,13 @@ fn listen_endpoint(address: InetAddress) -> IpListenEndpoint {
 }
 
 impl NetworkStack {
-    fn tcp_port_in_use(&self, address: Option<Ipv4Addr>, port: u16, except: usize) -> bool {
+    fn tcp_port_in_use(
+        &self,
+        address: Option<Ipv4Addr>,
+        port: u16,
+        except: usize,
+        reuse_address: bool,
+    ) -> bool {
         self.tcp_endpoints.iter().any(|(&id, state)| {
             if id == except {
                 return false;
@@ -142,6 +151,7 @@ impl NetworkStack {
                     && (local.addr.is_none()
                         || address.is_none()
                         || local.addr == address.map(ipv4))
+                    && !(reuse_address && state.options.reuse_address)
             })
         })
     }
@@ -154,7 +164,7 @@ impl NetworkStack {
             } else {
                 candidate + 1
             };
-            if !self.tcp_port_in_use(None, candidate, id) {
+            if !self.tcp_port_in_use(None, candidate, id, false) {
                 return Ok(candidate);
             }
         }
@@ -181,7 +191,8 @@ pub(super) fn bind(socket: &InetSocket, address: InetAddress) -> Result<(), Sock
     } else {
         address.port
     };
-    if network.tcp_port_in_use(address_filter, port, id) {
+    let reuse_address = network.tcp_endpoints[&id].options.reuse_address;
+    if network.tcp_port_in_use(address_filter, port, id, reuse_address) {
         return Err(SocketError::AddressInUse);
     }
     let state = network
@@ -386,6 +397,7 @@ pub(super) fn accept(
         network.sockets.get::<tcp::Socket<'static>>(handle).state(),
         State::CloseWait
     );
+    let options = network.tcp_endpoints[&listener_id].options;
     network.tcp_endpoints.insert(
         id,
         TcpEndpointState {
@@ -396,6 +408,7 @@ pub(super) fn accept(
                 shutdown_read: false,
             },
             pending_error: None,
+            options,
         },
     );
     drop(network);

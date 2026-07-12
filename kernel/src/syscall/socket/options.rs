@@ -3,16 +3,20 @@ use super::{SocketType, current_task, errno, socket_error, socket_ofd};
 const IPPROTO_IP: usize = 0;
 const IP_PKTINFO: usize = 8;
 const SOL_SOCKET: usize = 1;
+const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
 const SO_ERROR: usize = 4;
+const SO_BROADCAST: usize = 6;
+const SO_BINDTODEVICE: usize = 25;
+const IFNAMSIZ: usize = 16;
 
-/// @description 设置当前已实现的 Linux socket option；未实现 option 明确返回 ENOPROTOOPT。
+/// @description 设置已实现的 Linux IP 与 SOL_SOCKET endpoint policy。
 ///
 /// @param fd socket descriptor。
-/// @param level Linux option level；当前只接受 `IPPROTO_IP`。
-/// @param option option number；当前只接受 `IP_PKTINFO`。
-/// @param value 指向 32-bit enabled value 的 userspace pointer。
-/// @param length value buffer 长度，必须为 4。
+/// @param level Linux option level。
+/// @param option option number。
+/// @param value option-specific userspace pointer。
+/// @param length option buffer 长度。
 /// @return 成功返回零；descriptor、option、user-copy 或 domain 错误返回负 errno。
 pub(crate) fn sys_setsockopt(
     fd: usize,
@@ -25,21 +29,58 @@ pub(crate) fn sys_setsockopt(
         Ok(value) => value,
         Err(error) => return error,
     };
-    if level != IPPROTO_IP || option != IP_PKTINFO || length != 4 {
-        return -errno::ENOPROTOOPT;
+    match (level, option) {
+        (IPPROTO_IP, IP_PKTINFO) => read_enabled(value, length)
+            .and_then(|enabled| socket.set_ipv4_packet_info(enabled).map_err(socket_error)),
+        (SOL_SOCKET, SO_REUSEADDR) => read_enabled(value, length)
+            .and_then(|enabled| socket.set_reuse_address(enabled).map_err(socket_error)),
+        (SOL_SOCKET, SO_BROADCAST) => read_enabled(value, length)
+            .and_then(|enabled| socket.set_broadcast(enabled).map_err(socket_error)),
+        (SOL_SOCKET, SO_BINDTODEVICE) => read_interface_name(value, length)
+            .and_then(|name| socket.bind_to_device(name).map_err(socket_error)),
+        _ => Err(-errno::ENOPROTOOPT),
     }
-    let mut enabled = [0u8; 4];
+    .map_or_else(|error| error, |()| 0)
+}
+
+fn read_enabled(value: usize, length: usize) -> Result<bool, isize> {
+    if length < 4 {
+        return Err(-errno::EINVAL);
+    }
+    let mut bytes = [0; 4];
     if value == 0
         || current_task()
             .unwrap()
-            .copy_from_user(value, &mut enabled)
+            .copy_from_user(value, &mut bytes)
             .is_err()
     {
-        return -errno::EFAULT;
+        return Err(-errno::EFAULT);
     }
-    socket
-        .set_ipv4_packet_info(i32::from_ne_bytes(enabled) != 0)
-        .map_or_else(socket_error, |()| 0)
+    Ok(i32::from_ne_bytes(bytes) != 0)
+}
+
+fn read_interface_name(value: usize, length: usize) -> Result<&'static [u8], isize> {
+    if length == 0 {
+        return Ok(&[]);
+    }
+    if value == 0 {
+        return Err(-errno::EFAULT);
+    }
+    let mut bytes = [0; IFNAMSIZ];
+    let count = length.min(IFNAMSIZ);
+    current_task()
+        .unwrap()
+        .copy_from_user(value, &mut bytes[..count])
+        .map_err(|_| -errno::EFAULT)?;
+    let name_length = bytes[..count]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(count);
+    match &bytes[..name_length] {
+        b"" => Ok(&[]),
+        b"eth0" => Ok(b"eth0"),
+        _ => Err(-errno::ENODEV),
+    }
 }
 
 /// @description 查询 Linux SOL_SOCKET 的只读 socket type 与 pending error。
@@ -68,6 +109,7 @@ pub(crate) fn sys_getsockopt(
         SO_TYPE => match socket.socket_type() {
             SocketType::Stream => 1,
             SocketType::Datagram => 2,
+            SocketType::Raw => 3,
         },
         SO_ERROR => socket
             .take_error()

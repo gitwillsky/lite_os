@@ -7,12 +7,15 @@ use smoltcp::{
 
 use crate::drivers::network::{NetworkDevice, NetworkError, NetworkStatistics};
 
+use super::super::packet::{self, PacketSocket};
+
 const ETHERNET_MTU: usize = 1514;
 const RECEIVE_CAPACITY: usize = 2048;
 
 /// @description 将 kernel Ethernet device seam 适配为 smoltcp token device。
 pub(super) struct EthernetDevice {
     device: Arc<dyn NetworkDevice>,
+    pending_packet_notifications: Vec<Arc<PacketSocket>>,
 }
 
 impl EthernetDevice {
@@ -21,7 +24,10 @@ impl EthernetDevice {
     /// @param device DTB 选中的唯一 Ethernet device。
     /// @return 只持共享设备 Arc 的 adapter。
     pub(super) fn new(device: Arc<dyn NetworkDevice>) -> Self {
-        Self { device }
+        Self {
+            device,
+            pending_packet_notifications: Vec::new(),
+        }
     }
 
     pub(super) fn mac_address(&self) -> [u8; 6] {
@@ -31,17 +37,27 @@ impl EthernetDevice {
     pub(super) fn statistics(&self) -> NetworkStatistics {
         self.device.statistics()
     }
+
+    /// @description 移出本轮 packet RX transition，供 NetworkStack 解锁后唤醒 Pipe。
+    /// @return 每个从 empty 转 readable 的 PacketSocket 至多出现一次。
+    /// @errors 无错误；调用后 adapter 中 pending list 为空。
+    pub(super) fn take_packet_notifications(&mut self) -> Vec<Arc<PacketSocket>> {
+        core::mem::take(&mut self.pending_packet_notifications)
+    }
 }
 
-pub(super) struct EthernetRxToken {
+pub(super) struct EthernetRxToken<'a> {
     frame: Vec<u8>,
+    pending_packet_notifications: &'a mut Vec<Arc<PacketSocket>>,
 }
 
-impl RxToken for EthernetRxToken {
+impl RxToken for EthernetRxToken<'_> {
     fn consume<R, F>(self, operation: F) -> R
     where
         F: FnOnce(&[u8]) -> R,
     {
+        self.pending_packet_notifications
+            .extend(packet::deliver(&self.frame));
         operation(&self.frame)
     }
 }
@@ -65,7 +81,7 @@ impl TxToken for EthernetTxToken {
 }
 
 impl Device for EthernetDevice {
-    type RxToken<'a> = EthernetRxToken;
+    type RxToken<'a> = EthernetRxToken<'a>;
     type TxToken<'a> = EthernetTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
@@ -74,7 +90,10 @@ impl Device for EthernetDevice {
             Ok(length) => {
                 frame.truncate(length);
                 Some((
-                    EthernetRxToken { frame },
+                    EthernetRxToken {
+                        frame,
+                        pending_packet_notifications: &mut self.pending_packet_notifications,
+                    },
                     EthernetTxToken {
                         device: self.device.clone(),
                     },

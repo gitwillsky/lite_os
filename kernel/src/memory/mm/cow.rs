@@ -1,5 +1,47 @@
 use super::*;
 
+fn clone_shared_file_area(
+    area: &MapArea,
+    page_table: &mut PageTable,
+) -> Result<MapArea, MemoryError> {
+    let shared = area
+        .shared_file
+        .as_ref()
+        .expect("shared-file clone requires shared metadata");
+    let mut resident = BTreeMap::new();
+    for (&vpn, source) in &shared.resident {
+        let cloned_page = SharedResident::new(source.page.clone(), source.writer);
+        if MapArea::has_leaf_permission(area.map_permission) {
+            page_table.map(
+                vpn,
+                cloned_page.page.frame().ppn(),
+                PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
+            )?;
+        }
+        resident.insert(vpn, cloned_page);
+    }
+    for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
+        let vpn = VirtualPageNumber::from_vpn(vpn);
+        if !resident.contains_key(&vpn) {
+            page_table.reserve(vpn)?;
+        }
+    }
+    Ok(MapArea {
+        vpn_range: area.vpn_range.clone(),
+        data_page_offset: area.data_page_offset,
+        data_frames: BTreeMap::new(),
+        map_type: area.map_type,
+        map_permission: area.map_permission,
+        global: area.global,
+        kind: area.kind,
+        shared_file: Some(SharedFileArea {
+            mapping: shared.mapping.clone(),
+            file_offset: shared.file_offset,
+            resident,
+        }),
+    })
+}
+
 impl MemorySet {
     pub(super) fn prepare_user_read(
         &mut self,
@@ -29,39 +71,8 @@ impl MemorySet {
         cloned.map_trampoline()?;
         for (key, area) in &mut self.areas {
             let cloned_area = if area.map_permission.contains(MapPermission::U) {
-                if let Some(shared) = &area.shared_file {
-                    let mut resident = BTreeMap::new();
-                    for (&vpn, source) in &shared.resident {
-                        let cloned_page = SharedResident::new(source.page.clone(), source.writer);
-                        if MapArea::has_leaf_permission(area.map_permission) {
-                            cloned.page_table.map(
-                                vpn,
-                                cloned_page.page.frame().ppn(),
-                                PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                            )?;
-                        }
-                        resident.insert(vpn, cloned_page);
-                    }
-                    for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
-                        let vpn = VirtualPageNumber::from_vpn(vpn);
-                        if !resident.contains_key(&vpn) {
-                            cloned.page_table.reserve(vpn)?;
-                        }
-                    }
-                    let cloned_area = MapArea {
-                        vpn_range: area.vpn_range.clone(),
-                        data_page_offset: area.data_page_offset,
-                        data_frames: BTreeMap::new(),
-                        map_type: area.map_type,
-                        map_permission: area.map_permission,
-                        global: area.global,
-                        kind: area.kind,
-                        shared_file: Some(SharedFileArea {
-                            mapping: shared.mapping.clone(),
-                            file_offset: shared.file_offset,
-                            resident,
-                        }),
-                    };
+                if area.shared_file.is_some() {
+                    let cloned_area = clone_shared_file_area(area, &mut cloned.page_table)?;
                     assert!(cloned.areas.insert(*key, cloned_area).is_none());
                     continue;
                 }
@@ -96,6 +107,65 @@ impl MemorySet {
             assert!(cloned.areas.insert(*key, cloned_area).is_none());
         }
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after fork COW publication");
+        Ok(cloned)
+    }
+
+    /// @description 为 vfork 创建独立页表/trap frame，并与 blocked parent 共享用户 frame。
+    /// @return child MemorySet；用户写立即对 parent 可见，kernel-only area 保持独立。
+    /// @errors 页表、COW 预解析或 supervisor frame 分配失败时返回错误。
+    pub(crate) fn try_clone_for_vfork(&mut self) -> Result<Self, MemoryError> {
+        // 1. 先解析 parent 私有可写页的既有 fork-COW；否则重新加 W 会把写入泄漏给
+        //    与 parent 共享旧 frame、但不受本次 vfork suspension 约束的第三个 Process。
+        let writable_pages: Vec<_> = self
+            .areas
+            .values()
+            .filter(|area| {
+                area.map_permission
+                    .contains(MapPermission::U | MapPermission::W)
+                    && area.shared_file.is_none()
+            })
+            .flat_map(|area| area.data_frames.keys().copied())
+            .collect();
+        for vpn in writable_pages {
+            self.handle_cow_fault(VirtualAddress::from(vpn).as_usize())?;
+        }
+
+        // 2. child page table 映射同一 user frame；supervisor trap context 仍独立复制，
+        //    因而 child exec 可替换自身 MemorySet 而不破坏 suspended parent 的返回现场。
+        let mut cloned = Self::try_new()?;
+        cloned.map_trampoline()?;
+        for (key, area) in &mut self.areas {
+            let cloned_area = if area.map_permission.contains(MapPermission::U) {
+                if area.shared_file.is_some() {
+                    clone_shared_file_area(area, &mut cloned.page_table)?
+                } else {
+                    let cloned_area = MapArea {
+                        vpn_range: area.vpn_range.clone(),
+                        data_page_offset: area.data_page_offset,
+                        data_frames: area.data_frames.clone(),
+                        map_type: area.map_type,
+                        map_permission: area.map_permission,
+                        global: area.global,
+                        kind: area.kind,
+                        shared_file: None,
+                    };
+                    if MapArea::has_leaf_permission(area.map_permission) {
+                        let flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
+                        for (&vpn, frame) in &area.data_frames {
+                            cloned.page_table.map(vpn, frame.ppn, flags)?;
+                        }
+                    } else {
+                        for &vpn in area.data_frames.keys() {
+                            cloned.page_table.reserve(vpn)?;
+                        }
+                    }
+                    cloned_area
+                }
+            } else {
+                area.try_clone_into(&mut cloned.page_table)?
+            };
+            assert!(cloned.areas.insert(*key, cloned_area).is_none());
+        }
         Ok(cloned)
     }
 

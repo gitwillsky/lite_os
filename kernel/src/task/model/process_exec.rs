@@ -34,6 +34,9 @@ impl TaskControlBlock {
         // 步骤2: 单次替换 Process 映像相关状态；旧 MemorySet 不暴露 stale PTE 窗口。
         let kernel_stack_top = self.thread.kernel_stack.get_top();
         *self.process.address_space.memory_set.lock() = new_memory_set;
+        // vfork parent 只能在 child 已脱离共享 user frame 后恢复；若在 has_execed 发布时
+        // 提前唤醒，两个 Process 会并发写同一 stack/frame，违反 Linux vfork contract。
+        super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
         *self.process.comm.lock() = new_comm;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
         self.process.files.lock().close_cloexec();

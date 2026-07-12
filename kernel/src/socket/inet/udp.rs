@@ -8,8 +8,8 @@ use smoltcp::{
 };
 
 use super::{
-    EPHEMERAL_END, EPHEMERAL_START, EndpointState, InetSocket, NetworkStack, from_ip, ipv4, now,
-    stack,
+    EPHEMERAL_END, EPHEMERAL_START, EndpointState, InetSocket, InetSocketOptions, NetworkStack,
+    from_ip, ipv4, now, stack,
 };
 use crate::socket::{InetAddress, SocketError, SocketPollState};
 
@@ -53,14 +53,21 @@ pub(super) fn create_endpoint(
             endpoint,
             peer: None,
             packet_info: false,
+            options: InetSocketOptions::default(),
         },
     );
     Ok(handle)
 }
 
 impl NetworkStack {
-    fn udp_port_in_use(&self, address: Option<Ipv4Addr>, port: u16, except: SocketHandle) -> bool {
-        self.endpoints.keys().any(|handle| {
+    fn udp_port_in_use(
+        &self,
+        address: Option<Ipv4Addr>,
+        port: u16,
+        except: SocketHandle,
+        reuse_address: bool,
+    ) -> bool {
+        self.endpoints.iter().any(|(handle, state)| {
             if *handle == except {
                 return false;
             }
@@ -69,6 +76,7 @@ impl NetworkStack {
                 && (endpoint.addr.is_none()
                     || address.is_none()
                     || endpoint.addr == address.map(ipv4))
+                && !(reuse_address && state.options.reuse_address)
         })
     }
 
@@ -80,7 +88,7 @@ impl NetworkStack {
             } else {
                 candidate + 1
             };
-            if !self.udp_port_in_use(None, candidate, handle) {
+            if !self.udp_port_in_use(None, candidate, handle, false) {
                 return Ok(candidate);
             }
         }
@@ -124,7 +132,8 @@ pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), Soc
     } else {
         address.port
     };
-    if network.udp_port_in_use(address_filter, port, handle) {
+    let reuse_address = network.endpoints[&handle].options.reuse_address;
+    if network.udp_port_in_use(address_filter, port, handle, reuse_address) {
         return Err(SocketError::AddressInUse);
     }
     network
@@ -154,6 +163,22 @@ pub(super) fn connect(handle: SocketHandle, peer: InetAddress) -> Result<(), Soc
         .expect("AF_INET UDP endpoint metadata disappeared")
         .peer = Some(peer);
     Ok(())
+}
+
+fn is_broadcast(address: Ipv4Addr, interface: super::InterfaceState) -> bool {
+    if address.is_broadcast() {
+        return true;
+    }
+    let Some(local) = interface.address else {
+        return false;
+    };
+    let host_bits = 32u32.saturating_sub(interface.prefix_length.into());
+    let host_mask = if host_bits == 32 {
+        u32::MAX
+    } else {
+        (1u32 << host_bits).saturating_sub(1)
+    };
+    u32::from(address) == (u32::from(local) | host_mask)
 }
 
 /// @description 读取 UDP handle 的权威本地 endpoint。
@@ -209,6 +234,10 @@ pub(super) fn send(
         .ok_or(SocketError::DestinationRequired)?;
     if peer.port == 0 || peer.address.is_unspecified() {
         return Err(SocketError::AddressNotAvailable);
+    }
+    let options = network.endpoints[&handle].options;
+    if is_broadcast(peer.address, network.interface_state) && !options.broadcast {
+        return Err(SocketError::PermissionDenied);
     }
     network
         .sockets

@@ -1,6 +1,7 @@
 mod address_space;
 mod credentials;
 mod file_descriptions;
+mod process_clone;
 mod process_exec;
 mod signal_state;
 use core::sync::atomic::AtomicUsize;
@@ -77,6 +78,7 @@ pub(crate) enum StopResume {
 pub(crate) enum WaitMembership {
     Deadline(u64),
     Child,
+    Vfork(usize),
     Futex(u64),
     Console(u64),
     Signal(u64),
@@ -282,92 +284,6 @@ impl TaskControlBlock {
             kernel_trap_handler,
         ));
         Ok(tcb)
-    }
-
-    /// @description 以 COW 用户页构造 fork child，Process 级非内存资源仍独立复制。
-    /// @param pid TaskManager 已唯一分配、尚未发布的 child TGID/TID。
-    /// @return 成功返回尚处于 New 状态的 child；OOM 时 parent 完全不变。
-    pub(super) fn fork_process(&self, pid: ProcessId) -> Result<Self, MemoryError> {
-        let tid = pid.0;
-        // 1. 先构造 COW 地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
-        let memory_set = self
-            .process
-            .address_space
-            .memory_set
-            .lock()
-            .try_clone_for_fork()?;
-        let cwd = self.process.cwd.lock().clone();
-        let files = self
-            .process
-            .files
-            .lock()
-            .try_clone()
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        let signal_actions = self.process.signal_state.lock().actions;
-        let credentials = self.process.credentials.lock().clone();
-        let kernel_stack = KernelStack::try_new()?;
-        let kernel_stack_top = kernel_stack.get_top();
-        let policy = self.scheduling.policy.lock();
-
-        // 2. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
-        let mut child_trap = self.load_trap_context();
-        child_trap.x[10] = 0;
-        child_trap.kernel_sp = kernel_stack_top;
-        child_trap.kernel_hart_id = 0;
-        child_trap.kernel_gp = 0;
-        let address_space = AddressSpace::new(memory_set)?;
-        let child = Self {
-            process: Arc::new(Process {
-                tgid: pid,
-                comm: Mutex::new(self.process.comm.lock().clone()),
-                start_time_us: get_time_us(),
-                address_space,
-                cwd: Mutex::new(cwd),
-                files: Mutex::new(files),
-                credentials: Mutex::new(credentials),
-                terminal: self.process.terminal.clone(),
-                signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
-            }),
-            thread: ThreadContext {
-                tid,
-                kernel_stack,
-                trap_cx_va: Mutex::new(TRAP_CONTEXT),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(
-                    kernel_stack_top,
-                    self.thread.kernel_trap_return,
-                )),
-                kernel_trap_handler: self.thread.kernel_trap_handler,
-                kernel_trap_return: self.thread.kernel_trap_return,
-                clear_child_tid: Mutex::new(None),
-                robust_list: Mutex::new(None),
-                signal_mask: Mutex::new(*self.thread.signal_mask.lock()),
-                pending_signals: Mutex::new(PendingSignals::new()),
-                suspend_restore_mask: Mutex::new(None),
-                syscall_restart: Mutex::new(None),
-            },
-            scheduling: SchedulingEntity {
-                state: IrqMutex::new(SchedulingState {
-                    run_state: RunState::New,
-                    next_generation: 0,
-                    wait: None,
-                    wait_result: None,
-                }),
-                policy: Mutex::new(Sched {
-                    last_runtime: 0,
-                    nice: policy.nice,
-                    vruntime: policy.vruntime,
-                    total_runtime_us: 0,
-                }),
-                last_cpu: AtomicUsize::new(
-                    self.scheduling
-                        .last_cpu
-                        .load(core::sync::atomic::Ordering::Relaxed),
-                ),
-            },
-        };
-        drop(policy);
-        child.set_trap_context(child_trap);
-        Ok(child)
     }
 
     /// @description 在当前 Process 内创建共享资源的独立 Thread 执行实体。

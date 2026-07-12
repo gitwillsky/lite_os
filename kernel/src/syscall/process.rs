@@ -9,7 +9,8 @@ use crate::{
         TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
         consume_child_status, create_session, current_task, exit_current_group,
         exit_current_thread, fork_current_process, load_executable, parent_pid, process_group,
-        session_id, set_process_group, suspend_current_and_run_next, thread_count, wait_child,
+        session_id, set_process_group, suspend_current_and_run_next, thread_count,
+        vfork_current_process, wait_child,
     },
 };
 
@@ -116,10 +117,10 @@ pub(crate) fn sys_setsid() -> isize {
     create_session().map_or_else(process_group_error, |value| value as isize)
 }
 
-/// @description 实现 fork-shaped Linux/riscv64 clone；不伪造 thread/TLS/tid-pointer 语义。
+/// @description 实现 fork、vfork 与 pthread-shaped Linux/riscv64 clone。
 ///
 /// @param flags 当前必须精确为 `SIGCHLD`。
-/// @param stack fork child 继承栈，必须为零。
+/// @param stack fork 必须为零；vfork 可提供 aligned child SP；pthread clone 必须非零。
 /// @param parent_tid fork flags 未启用对应语义，按 Linux 规则忽略。
 /// @param tls fork flags 未启用对应语义，按 Linux 规则忽略。
 /// @param child_tid fork flags 未启用对应语义，按 Linux 规则忽略。
@@ -132,6 +133,8 @@ pub(crate) fn sys_clone(
     child_tid: usize,
 ) -> isize {
     const SIGCHLD: usize = 17;
+    const CLONE_VM: usize = 0x100;
+    const CLONE_VFORK: usize = 0x4000;
     if flags == SIGCHLD {
         if stack != 0 {
             return -errno::EINVAL;
@@ -146,7 +149,20 @@ pub(crate) fn sys_clone(
             Err(_) => -errno::EAGAIN,
         };
     }
-    const CLONE_VM: usize = 0x100;
+    if flags == (SIGCHLD | CLONE_VM | CLONE_VFORK) {
+        if stack & 15 != 0 {
+            return -errno::EINVAL;
+        }
+        let current = current_task().expect("vfork requires current task");
+        if thread_count(current.tgid()) != 1 {
+            return -errno::EAGAIN;
+        }
+        return match vfork_current_process(stack) {
+            Ok(pid) => pid as isize,
+            Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
+            Err(_) => -errno::EAGAIN,
+        };
+    }
     const CLONE_FS: usize = 0x200;
     const CLONE_FILES: usize = 0x400;
     const CLONE_SIGHAND: usize = 0x800;

@@ -82,6 +82,7 @@ impl UnixSocket {
                     messages: VecDeque::new(),
                     peer: None,
                 },
+                SocketType::Raw => unreachable!("AF_UNIX raw type crossed Socket facade"),
             }),
             address: Mutex::new(None),
             notify_read: notify.0,
@@ -210,6 +211,7 @@ impl UnixSocket {
                     *peer = Some(Arc::downgrade(first));
                 }
             }
+            SocketType::Raw => unreachable!("AF_UNIX raw pair crossed Socket facade"),
         }
         Ok(())
     }

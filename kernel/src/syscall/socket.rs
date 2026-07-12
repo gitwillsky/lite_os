@@ -3,8 +3,8 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
     socket::{
-        InetAddress, Socket, SocketAddress, SocketDomain, SocketError, SocketType, UnixAddress,
-        UnixConnectResources, configure_address, configure_gateway, configure_netmask,
+        InetAddress, PacketAddress, Socket, SocketAddress, SocketDomain, SocketError, SocketType,
+        UnixAddress, UnixConnectResources, configure_address, configure_gateway, configure_netmask,
         configure_up, interface_snapshot,
     },
     task::{TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, wait_for_poll},
@@ -21,8 +21,10 @@ pub(crate) use options::{sys_getsockopt, sys_setsockopt};
 
 const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
+const AF_PACKET: usize = 17;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
+const SOCK_RAW: usize = 3;
 const SOCK_CLOEXEC: usize = O_CLOEXEC as usize;
 const SOCK_NONBLOCK: usize = O_NONBLOCK as usize;
 const MSG_PEEK: usize = 0x2;
@@ -75,6 +77,8 @@ pub(super) fn socket_error(error: SocketError) -> isize {
         SocketError::AlreadyInProgress => errno::EALREADY,
         SocketError::Again => errno::EAGAIN,
         SocketError::BrokenPipe => errno::EPIPE,
+        SocketError::PermissionDenied => errno::EACCES,
+        SocketError::NoDevice => errno::ENODEV,
     }
 }
 
@@ -85,6 +89,7 @@ fn decode_type(raw: usize) -> Result<(SocketType, u32, bool), isize> {
     let kind = match raw & 0xf {
         SOCK_STREAM => SocketType::Stream,
         SOCK_DGRAM => SocketType::Datagram,
+        SOCK_RAW => SocketType::Raw,
         _ => return Err(-errno::ESOCKTNOSUPPORT),
     };
     Ok((
@@ -136,6 +141,14 @@ fn read_address(pointer: usize, length: usize) -> Result<SocketAddress, isize> {
             address: core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[4..8]).unwrap()),
             port: u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
         })),
+        AF_PACKET if length >= 20 => Ok(SocketAddress::Packet(PacketAddress {
+            protocol: u16::from_ne_bytes(bytes[2..4].try_into().unwrap()),
+            interface_index: i32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+            hardware_type: u16::from_ne_bytes(bytes[8..10].try_into().unwrap()),
+            packet_type: bytes[10],
+            address_length: bytes[11],
+            address: bytes[12..20].try_into().unwrap(),
+        })),
         _ => Err(-errno::EAFNOSUPPORT),
     }
 }
@@ -178,6 +191,16 @@ fn encode_address(address: Option<SocketAddress>) -> ([u8; 110], usize) {
             encoded[4..8].copy_from_slice(&address.address.octets());
             16
         }
+        Some(SocketAddress::Packet(address)) => {
+            encoded[..2].copy_from_slice(&(AF_PACKET as u16).to_ne_bytes());
+            encoded[2..4].copy_from_slice(&address.protocol.to_ne_bytes());
+            encoded[4..8].copy_from_slice(&address.interface_index.to_ne_bytes());
+            encoded[8..10].copy_from_slice(&address.hardware_type.to_ne_bytes());
+            encoded[10] = address.packet_type;
+            encoded[11] = address.address_length;
+            encoded[12..20].copy_from_slice(&address.address);
+            20
+        }
         None => {
             encoded[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
             2
@@ -190,12 +213,20 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
     let domain = match domain {
         AF_UNIX => SocketDomain::Unix,
         AF_INET => SocketDomain::Inet,
+        AF_PACKET => SocketDomain::Packet,
         _ => return -errno::EAFNOSUPPORT,
     };
     let (kind, flags, cloexec) = match decode_type(kind) {
         Ok(value) => value,
         Err(error) => return error,
     };
+    // 当前没有 capability bitmap；effective UID 0 是 CAP_NET_RAW 的唯一标准等价策略。
+    // 缺失该检查会允许普通用户创建 raw control/packet fd，绕过 L3 policy。
+    if (domain == SocketDomain::Packet || kind == SocketType::Raw)
+        && current_task().unwrap().credential_id(true, true) != 0
+    {
+        return -errno::EPERM;
+    }
     let socket = match new_socket(domain, kind, protocol) {
         Ok(socket) => socket,
         Err(error) => return error,
