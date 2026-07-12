@@ -73,7 +73,7 @@ fn send_selected_thread_signal(
     tid: usize,
     signal: usize,
 ) -> Result<(), ()> {
-    let (target, notification) = {
+    let (target, queued, notification) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let tgid = match expected_tgid {
             Some(tgid) => tgid,
@@ -96,11 +96,16 @@ fn send_selected_thread_signal(
         }
         let all_threads = threads.values().cloned().collect::<Vec<_>>();
         let sender = current_task().map_or(0, |task| task.tgid());
-        target.queue_signal(
-            all_threads.iter(),
-            signal,
-            PendingSignal::thread_directed(sender),
-        )?;
+        let queued = if target.ignores_generated_signal_as_init(signal) {
+            false
+        } else {
+            target.queue_signal(
+                all_threads.iter(),
+                signal,
+                PendingSignal::thread_directed(sender),
+            )?;
+            true
+        };
         let notification = if signal == 18 {
             continue_process_locked(&mut graph, tgid)
         } else {
@@ -109,11 +114,13 @@ fn send_selected_thread_signal(
             }
             None
         };
-        (target, notification)
+        (target, queued, notification)
     };
     publish_job_notification(notification);
-    wake_signal_waiter(&target);
-    interrupt_waiting_task(&target);
+    if queued {
+        wake_signal_waiter(&target);
+        interrupt_waiting_task(&target);
+    }
     Ok(())
 }
 
@@ -231,9 +238,13 @@ fn generate_process_signal(
         .iter()
         .find(|thread| thread.accepts_process_signal(signal))
         .cloned();
-    let queued = representative
-        .queue_process_signal(all_threads.iter(), signal, info)
-        .map_err(|()| SignalSendError::InvalidSignal)?;
+    let queued = if representative.ignores_generated_signal_as_init(signal) {
+        false
+    } else {
+        representative
+            .queue_process_signal(all_threads.iter(), signal, info)
+            .map_err(|()| SignalSendError::InvalidSignal)?
+    };
     let notification = if signal == 18 {
         continue_process_locked(&mut graph, tgid)
     } else {

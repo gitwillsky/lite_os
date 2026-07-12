@@ -43,7 +43,7 @@
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
 | process address space、cwd inode、fd table | Process；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
-| PID/TID allocation、parent edge、live thread collection、group-exit status、job-control lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
+| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event 与 waiter | TaskManager process graph |
 | deadline/futex/pipe/poll/signal/console wait registration 及其 indexes | TaskManager 唯一 IndexedWaitQueue；一次 ppoll 只有一个 membership，可挂多个 source index |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
@@ -74,9 +74,9 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 1471 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1314 | `memory::MemorySet` | VMA mutation 与 user-copy 仍共享同一页表提交 owner | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1126 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/task/model.rs` | 1099 | `task::Process/Thread` | process、thread 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
 | `kernel/src/syscall/fs.rs` | 645 | `syscall::fs` | pathname、fd control 与 metadata ABI family 尚集中 | 沿 namespace 与 metadata ABI family 拆分后下调额度 |
 
 ## 5. Interface and capability contract
@@ -90,7 +90,10 @@
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。
 - thread-directed signal 发布到 Thread pending；kill/TTY/SIGCHLD 发布到 ProcessSignalState shared pending。两者经同一 delivery/wait seam 先发布 pending bit，再从 wait 的唯一 owner 注销 membership；blocking path 必须在 owner lock 内复查两类 pending，禁止 signal-before-enqueue lost wakeup。
 - stop/continue 冲突消除必须与 signal queue generation 同锁；Process graph 唯一提交 group-stop/continue 与 parent event，scheduler 只维护每个 Thread 的 `StopPending/Stopped` membership。禁止用第二套 stopped flag 与 run state 人工同步。
+- Process graph 在 exec point-of-no-return 唯一发布 `has_execed`，parent-side `setpgid` 必须在同一 graph lock 下得到成功或 `EACCES`。Process 退出/重父子关系前后只在该 owner 内计算 orphan transition，并冻结当时的 target TGID；锁外仅经统一 signal seam 发布全组 SIGHUP 后 SIGCONT。禁止在 syscall、Terminal 或 scheduler 复制 parent/SID/PGID/orphan 状态。
+- global init 的 unkillable policy 位于统一 signal generation/delivery：默认 disposition signal 被丢弃，显式 handler 和 blocked pending 仍遵循 Linux 语义，强制同步 fault 不经该豁免。默认 SIGTSTP/SIGTTIN/SIGTTOU 在 delivery 时必须复查 orphan group，SIGSTOP 不豁免。
 - Terminal 唯一判断 controlling session、foreground group 与 `TOSTOP`；TaskManager 唯一判断 caller process group、orphan 状态及 signal mask/disposition。后台访问只经该 seam 产生 SIGTTIN/SIGTTOU、EIO 或 syscall restart，禁止 syscall pathname/device 特判复制 job-control policy。
+- session leader 退出使用固定 graph -> Terminal 锁序原子取走 controlling session/foreground PGID，并在 graph lock 内冻结 foreground target；SIGHUP 必须在锁外经统一 signal seam 发布，禁止按可能已复用的 PGID 重新选择目标。
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。

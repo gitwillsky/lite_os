@@ -346,12 +346,17 @@ impl Terminal {
         Ok(())
     }
 
-    pub(crate) fn release_session(&self, session: usize) {
+    /// @description 原子释放 controlling session 并取走退出时应接收 SIGHUP 的 foreground PGID。
+    ///
+    /// @param session 正在退出的 session leader ID。
+    /// @return session 匹配时返回原 foreground PGID，否则返回 None。
+    pub(crate) fn release_session(&self, session: usize) -> Option<usize> {
         let mut state = self.state.lock();
         if state.controlling_session == Some(session) {
             state.controlling_session = None;
-            state.foreground_pgid = None;
+            return state.foreground_pgid.take();
         }
+        None
     }
 
     pub(crate) fn foreground_pgid(&self, session: usize) -> Result<usize, ()> {

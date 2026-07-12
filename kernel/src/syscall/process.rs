@@ -5,11 +5,11 @@ use crate::{
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, TaskControlBlock,
-        ThreadCloneError, WaitChildError, clone_current_thread, consume_child_status,
-        create_session, current_task, exit_current_group, exit_current_thread,
-        fork_current_process, load_executable, parent_pid, process_group, session_id,
-        set_process_group, suspend_current_and_run_next, thread_count, wait_child,
+        EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, SetProcessGroupError,
+        TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
+        consume_child_status, create_session, current_task, exit_current_group,
+        exit_current_thread, fork_current_process, load_executable, parent_pid, process_group,
+        session_id, set_process_group, suspend_current_and_run_next, thread_count, wait_child,
     },
 };
 
@@ -83,13 +83,21 @@ fn process_group_error(error: ProcessGroupError) -> isize {
     }
 }
 
+fn set_process_group_error(error: SetProcessGroupError) -> isize {
+    match error {
+        SetProcessGroupError::NotFound => -errno::ESRCH,
+        SetProcessGroupError::Permission => -errno::EPERM,
+        SetProcessGroupError::Executed => -errno::EACCES,
+    }
+}
+
 /// @description 修改 caller 或其直接 child 的 process group membership。
 ///
 /// @param pid 零表示 caller，否则为 direct child TGID。
 /// @param pgid 零表示目标 TGID，否则为同 session process group。
 /// @return 成功返回零；目标/权限错误返回负 errno。
 pub(crate) fn sys_setpgid(pid: usize, pgid: usize) -> isize {
-    set_process_group(pid, pgid).map_or_else(process_group_error, |()| 0)
+    set_process_group(pid, pgid).map_or_else(set_process_group_error, |()| 0)
 }
 
 /// @description 查询 live/zombie Process 的 process group ID。

@@ -365,7 +365,17 @@ impl TaskControlBlock {
             if signal_is_ignored(signal, action) {
                 continue;
             }
+            // Linux 的 SIGNAL_UNKILLABLE 语义只压制 PID 1 的默认 disposition；显式
+            // handler 仍需执行，强制同步 fault 则不经过 pending delivery 入口。
+            if self.tgid() == crate::task::pid::INIT_PID && action.handler == 0 {
+                continue;
+            }
             if signal_is_default_stop(signal, action) {
+                if signal != 19
+                    && super::super::task_manager::current_process_group_is_orphaned(self.tgid())
+                {
+                    continue;
+                }
                 self.thread.suspend_restore_mask.lock().take();
                 let mut context = self.load_trap_context();
                 self.apply_syscall_restart(&mut context);

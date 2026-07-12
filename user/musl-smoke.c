@@ -71,6 +71,10 @@ static void *group_exit_worker(void *argument)
 
 int main(int argc, char **argv, char **envp)
 {
+	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "setpgid-child") == 0) {
+		if (write(10, "E", 1) != 1) _exit(90);
+		for (;;) pause();
+	}
 	static const char create_failed[] = "LiteOS musl pthread create failed\n";
 	static const char join_failed[] = "LiteOS musl pthread join failed\n";
 	static const char signal_setup_failed[] = "LiteOS musl signal setup failed\n";
@@ -89,6 +93,11 @@ int main(int argc, char **argv, char **envp)
 	static const char pipe_failed[] = "LiteOS musl pipe readv failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
 	static const char sync_failed[] = "LiteOS musl pthread sync failed\n";
+	static const char exec_group_sync_failed[] = "LiteOS musl exec setpgid sync failed\n";
+	static const char exec_group_result_failed[] = "LiteOS musl exec setpgid result failed\n";
+	static const char exec_group_errno_failed[] = "LiteOS musl exec setpgid errno failed\n";
+	static const char exec_group_kill_failed[] = "LiteOS musl exec setpgid kill failed\n";
+	static const char exec_group_wait_failed[] = "LiteOS musl exec setpgid wait failed\n";
 	static const char message[] = "LiteOS musl pthread signal ok\n";
 	const struct timespec interrupt_sleep = { .tv_sec = 0, .tv_nsec = 500 * 1000 * 1000 };
 	const struct timespec poll_timeout = { 0 };
@@ -150,6 +159,44 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, tty_failed, sizeof tty_failed - 1);
 		return 4;
 	}
+	if (pipe(pipe_fds) != 0) {
+		write(STDOUT_FILENO, exec_group_sync_failed, sizeof exec_group_sync_failed - 1);
+		return 4;
+	}
+	child = fork();
+	if (child == 0) {
+		close(pipe_fds[0]);
+		if (dup2(pipe_fds[1], 10) != 10) _exit(42);
+		if (pipe_fds[1] != 10) close(pipe_fds[1]);
+		execl("/bin/init", "musl-smoke", "setpgid-child", (char *)0);
+		_exit(43);
+	}
+	close(pipe_fds[1]);
+	{
+		int synchronized;
+		int group_result;
+		int group_errno;
+		int kill_result;
+		int waited;
+		const char *failure = 0;
+		synchronized = child > 0 && read(pipe_fds[0], pipe_first, 1) == 1;
+		errno = 0;
+		group_result = synchronized ? setpgid(child, child) : 0;
+		group_errno = errno;
+		kill_result = child > 0 ? kill(child, SIGKILL) : -1;
+		waited = child > 0 ? waitpid(child, &child_status, 0) : -1;
+		if (!synchronized) failure = exec_group_sync_failed;
+		else if (group_result != -1) failure = exec_group_result_failed;
+		else if (group_errno != EACCES) failure = exec_group_errno_failed;
+		else if (kill_result != 0) failure = exec_group_kill_failed;
+		else if (waited != child || !WIFSIGNALED(child_status)
+		         || WTERMSIG(child_status) != SIGKILL) failure = exec_group_wait_failed;
+		if (failure) {
+			write(STDOUT_FILENO, failure, strlen(failure));
+			return 4;
+		}
+	}
+	close(pipe_fds[0]);
 	if (pipe(pipe_fds) != 0) {
 		write(STDOUT_FILENO, pipe_failed, sizeof pipe_failed - 1);
 		return 4;

@@ -130,10 +130,19 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
         parent_waiter,
         init_waiter,
         parent_signal_pid,
-        release_terminal_session,
+        terminal_hangup_targets,
+        orphaned_group_targets,
     ) = {
         let mut graph = TASK_MANAGER.graph.lock();
         let exiting_pid = task.tgid();
+        let process_will_exit = graph.nodes.get(&exiting_pid).is_some_and(
+            |node| matches!(&node.state, ProcessState::Live(threads) if threads.len() == 1),
+        );
+        let orphaned_before = if process_will_exit {
+            super::process_group::orphaned_stopped_groups(&graph)
+        } else {
+            BTreeMap::new()
+        };
         let (removed, process_status, parent, session_leader) = {
             let node = graph
                 .nodes
@@ -159,7 +168,7 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
         assert!(Arc::ptr_eq(&removed, &task));
 
         match process_status {
-            None => (removed, None, None, None, None, false),
+            None => (removed, None, None, None, None, Vec::new(), Vec::new()),
             Some(status) => {
                 // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
                 if exiting_pid != INIT_PID {
@@ -195,17 +204,63 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
                             .and_then(|init| init.waiter.take())
                     })
                     .flatten();
+                // 1. process graph 是 SID/PGID membership owner，因此在同一 graph 临界区
+                //    取走 Terminal foreground PGID 并冻结 live target 集合。
+                // 2. 统一使用 graph -> Terminal 锁序；反向路径都会先释放 Terminal lock 再发 signal，
+                //    否则 session exit 与 TIOCSPGRP 并发时可能形成锁环或错发给后加入成员。
+                // 3. signal 在锁外发布，避免 generation 再次进入 process graph 造成自锁。
+                let terminal_hangup_targets = if session_leader {
+                    task.terminal()
+                        .release_session(exiting_pid)
+                        .map(|foreground| {
+                            graph
+                                .nodes
+                                .iter()
+                                .filter_map(|(&tgid, node)| {
+                                    (node.session == exiting_pid
+                                        && node.process_group == foreground
+                                        && matches!(node.state, ProcessState::Live(_)))
+                                    .then_some(tgid)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let orphaned_after = super::process_group::orphaned_stopped_groups(&graph);
+                let orphaned_group_targets = orphaned_after
+                    .into_iter()
+                    .filter_map(|(group, members)| {
+                        (!orphaned_before.contains_key(&group)).then_some(members)
+                    })
+                    .collect();
                 (
                     removed,
                     Some(status),
                     parent_waiter,
                     init_waiter,
                     parent_signal_pid,
-                    session_leader,
+                    terminal_hangup_targets,
+                    orphaned_group_targets,
                 )
             }
         }
     };
+
+    // 退出导致的 terminal/orphan signal 必须先于 parent wake/SIGCHLD；否则 parent 可先
+    // reap 并推进 shell 状态，使 POSIX exit consequences 的观察顺序依赖调度竞态。
+    for tgid in terminal_hangup_targets {
+        send_kernel_process_signal(tgid, 1, PendingSignal::kernel());
+    }
+    for members in orphaned_group_targets {
+        for &tgid in &members {
+            send_kernel_process_signal(tgid, 1, PendingSignal::kernel());
+        }
+        for tgid in members {
+            send_kernel_process_signal(tgid, 18, PendingSignal::kernel());
+        }
+    }
 
     // 1. process graph 先注销 Thread owner，再发布 clear-child-tid completion。
     // 2. 若顺序相反，pthread_join 可在 graph 仍计数已退出 sibling 时返回，使紧随的
@@ -236,10 +291,6 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
         };
         send_kernel_process_signal(parent, 17, info);
     }
-    if release_terminal_session {
-        task.terminal().release_session(task.tgid());
-    }
-
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
     let task_cx_ptr = {
         let mut task_cx = task.task_context().lock();

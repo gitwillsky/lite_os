@@ -1,4 +1,5 @@
 mod cow;
+mod process_exec;
 mod signal_state;
 use core::sync::atomic::AtomicUsize;
 
@@ -657,6 +658,20 @@ impl TaskControlBlock {
         *mask & (1u64 << (signal - 1)) == 0 && !signal_is_ignored(signal, state.actions[signal])
     }
 
+    /// @description 判断 global init 是否应在 generation 阶段丢弃默认 disposition signal。
+    ///
+    /// @param signal 已校验的 Linux signal number。
+    /// @return PID 1 对不可捕获 signal，或对当前未屏蔽的默认 action 返回 true。
+    pub(super) fn ignores_generated_signal_as_init(&self, signal: usize) -> bool {
+        if self.tgid() != crate::task::pid::INIT_PID {
+            return false;
+        }
+        let mask = self.thread.signal_mask.lock();
+        let state = self.process.signal_state.lock();
+        state.actions[signal].handler == 0
+            && (matches!(signal, 9 | 19) || *mask & (1u64 << (signal - 1)) == 0)
+    }
+
     /// @description 原子检查给定 signal set 是否含 pending signal，并在成立时执行短操作。
     ///
     /// @param mask `rt_sigtimedwait` 正在等待的 signal set。
@@ -1039,48 +1054,6 @@ impl TaskControlBlock {
 
     pub(crate) fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
         self.process.files.lock().set_descriptor_flags(fd, flags)
-    }
-
-    /// @description 原子准备并提交当前单线程 Process 的新 ELF 映像。
-    ///
-    /// @param loaded 已完成 pathname/script/ELF resolution 的 immutable exec input。
-    /// @param envs 写入新用户栈的环境。
-    /// @return 准备或提交成功返回 `Ok(())`；ELF/内存错误在修改 Process 前返回。
-    /// @errors 不支持的 ELF 与内存不足分别映射为 `ElfLoadError`。
-    pub(crate) fn execve_replace(
-        &self,
-        loaded: &LoadedExecutable,
-        envs: &[Vec<u8>],
-    ) -> Result<(), ElfLoadError> {
-        // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
-        let (new_memory_set, user_sp, entry_point) = loaded.build_address_space(envs)?;
-        let new_comm = process_name(loaded.execfn());
-
-        // 步骤2: 替换内存管理结构
-        // 这是关键步骤 - 完全替换当前进程的地址空间
-        let kernel_stack_top = self.thread.kernel_stack.get_top();
-
-        // 单次赋值提交新地址空间；旧 MemorySet 在 guard 内被完整替换，不暴露 stale PTE 窗口。
-        *self.process.address_space.memory_set.lock() = new_memory_set;
-        *self.process.comm.lock() = new_comm;
-        *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
-        self.process.files.lock().close_cloexec();
-        self.process
-            .signal_state
-            .lock()
-            .reset_dispositions_for_exec();
-
-        // 步骤3: 设置新程序的陷阱上下文。参数与环境只存在于新初始栈中。
-        self.set_trap_context(TrapContext::app_init_context(
-            entry_point,
-            user_sp,
-            KERNEL_SPACE.wait().lock().token(),
-            kernel_stack_top,
-            self.thread.kernel_trap_handler,
-        ));
-
-        // 地址空间由统一的 trap 返回路径激活；在这里切换会让后续内核代码运行在用户页表上。
-        Ok(())
     }
 
     /// @description 返回当前 Process/thread group ID。

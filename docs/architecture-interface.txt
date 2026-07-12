@@ -418,7 +418,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgi
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Arc < Self >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
-kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize)
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_window_size (& self , window_size : [u8 ; 8])
@@ -973,7 +973,6 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signa
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : alloc :: sync :: Arc < OpenFileDescription > , cloexec : bool ,) -> Result < usize , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate_pair (& self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
@@ -1013,6 +1012,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn close_all_files (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn process_statistics (& self) -> (Vec < u8 > , u64 , usize , usize)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
@@ -1022,6 +1022,7 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliver
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_pending_signal < T > (& self , mask : u64 , action : impl FnOnce () -> T ,) -> Option < T >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
 kernel/src/task/model/cow.rs :: pub (crate) impl TaskControlBlock :: fn handle_cow_fault (& self , address : usize) -> Result < bool , MemoryError >
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: None
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: Stop (usize)
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: Terminate (usize)
@@ -1110,22 +1111,16 @@ kernel/src/task/task_manager.rs :: enum FutexWaitError :: Invalid
 kernel/src/task/task_manager.rs :: enum FutexWaitError :: TimedOut
 kernel/src/task/task_manager.rs :: enum PollWaitKey :: Console
 kernel/src/task/task_manager.rs :: enum PollWaitKey :: Pipe { identity : usize , direction : PipeDirection , }
-kernel/src/task/task_manager.rs :: enum ProcessGroupError :: NotFound
-kernel/src/task/task_manager.rs :: enum ProcessGroupError :: NotTerminal
-kernel/src/task/task_manager.rs :: enum ProcessGroupError :: Permission
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Again
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager.rs :: pub (crate) enum FutexWaitError
 kernel/src/task/task_manager.rs :: pub (crate) enum PollWaitKey
-kernel/src/task/task_manager.rs :: pub (crate) enum ProcessGroupError
 kernel/src/task/task_manager.rs :: pub (crate) enum SignalWaitError
 kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
-kernel/src/task/task_manager.rs :: pub (crate) fn claim_controlling_terminal (terminal : & crate :: fs :: Terminal , force : usize ,) -> Result < () , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
 kernel/src/task/task_manager.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
-kernel/src/task/task_manager.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn dispatch_pending_deferred_work ()
 kernel/src/task/task_manager.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
@@ -1134,14 +1129,9 @@ kernel/src/task/task_manager.rs :: pub (crate) fn futex_wait (address : usize , 
 kernel/src/task/task_manager.rs :: pub (crate) fn futex_wake (tgid : usize , address : usize , count : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) -> isize
 kernel/src/task/task_manager.rs :: pub (crate) fn parent_pid (pid : usize) -> usize
-kernel/src/task/task_manager.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
-kernel/src/task/task_manager.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
-kernel/src/task/task_manager.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , ProcessGroupError >
-kernel/src/task/task_manager.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next ()
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (input_ready : impl FnOnce () -> bool) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> WaitResult
@@ -1151,10 +1141,12 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deli
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
+kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: KernelProcSource
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , wait_child }
+kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
 kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Signaled (u8)
@@ -1164,6 +1156,25 @@ kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_if_g
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_thread (code : i32) -> !
 kernel/src/task/task_manager/process_exit.rs :: pub (super) enum ProcessExitStatus
 kernel/src/task/task_manager/process_exit.rs :: pub (super) impl ProcessExitStatus :: fn wait_status (self) -> i32
+kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: NotFound
+kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: NotTerminal
+kernel/src/task/task_manager/process_group.rs :: enum ProcessGroupError :: Permission
+kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: Executed
+kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: NotFound
+kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: Permission
+kernel/src/task/task_manager/process_group.rs :: pub (crate) enum ProcessGroupError
+kernel/src/task/task_manager/process_group.rs :: pub (crate) enum SetProcessGroupError
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & crate :: fs :: Terminal , force : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn set_process_group (pid : usize , pgid : usize) -> Result < () , SetProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn set_terminal_foreground_group (terminal : & crate :: fs :: Terminal , pgid : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn terminal_foreground_group (terminal : & crate :: fs :: Terminal ,) -> Result < usize , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn current_process_group_is_orphaned (tgid : usize) -> bool
+kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn mark_process_exec (tgid : usize)
+kernel/src/task/task_manager/process_group.rs :: pub (super) fn orphaned_stopped_groups (graph : & ProcessGraph ,) -> BTreeMap < (usize , usize) , Vec < usize > >
+kernel/src/task/task_manager/process_group.rs :: pub (super) fn process_group_is_orphaned (graph : & ProcessGraph , session : usize , process_group : usize ,) -> bool
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
 kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Running

@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod process_exit;
+mod process_group;
 mod procfs;
 mod signal;
 mod terminal_access;
@@ -31,6 +32,12 @@ pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
     exit_current_thread,
 };
+pub(crate) use process_group::{
+    ProcessGroupError, SetProcessGroupError, claim_controlling_terminal, create_session,
+    process_group, session_id, set_process_group, set_terminal_foreground_group,
+    terminal_foreground_group,
+};
+pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
 pub(crate) use procfs::KernelProcSource;
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
@@ -44,18 +51,18 @@ enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
     Exited(ProcessExitStatus),
 }
-
 struct ProcessNode {
     parent: Option<usize>,
     session: usize,
     process_group: usize,
+    // 标记 exec point-of-no-return；缺少它会让 parent 在新映像生效后仍成功 setpgid。
+    has_execed: bool,
     state: ProcessState,
     group_exit: Option<ProcessExitStatus>,
     job_control: JobControlState,
     child_events: ChildEvents,
     waiter: Option<Arc<TaskControlBlock>>,
 }
-
 struct ProcessGraph {
     next_pid: usize,
     processes_created: u64,
@@ -125,6 +132,7 @@ impl TaskManager {
                 parent: None,
                 session: INIT_PID,
                 process_group: INIT_PID,
+                has_execed: true,
                 state: ProcessState::Live(threads),
                 group_exit: None,
                 job_control: JobControlState::Running,
@@ -164,6 +172,7 @@ impl TaskManager {
                 parent: Some(parent),
                 session,
                 process_group,
+                has_execed: false,
                 state: ProcessState::Live(threads),
                 group_exit: None,
                 job_control: JobControlState::Running,
@@ -515,175 +524,6 @@ pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
 /// @return init 或无 parent 返回零，否则返回 parent TGID。
 pub(crate) fn parent_pid(pid: usize) -> usize {
     TASK_MANAGER.parent_pid(pid)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProcessGroupError {
-    NotFound,
-    Permission,
-    NotTerminal,
-}
-
-/// @description 将当前 Process 建为新 session 与 process-group leader。
-///
-/// @return 成功返回新 SID（等于 TGID）。
-/// @errors 当前 PID 已是任一 process group ID 时返回 Permission。
-pub(crate) fn create_session() -> Result<usize, ProcessGroupError> {
-    let pid = current_task().expect("setsid requires current task").tgid();
-    let mut graph = TASK_MANAGER.graph.lock();
-    if graph.nodes.values().any(|node| node.process_group == pid) {
-        return Err(ProcessGroupError::Permission);
-    }
-    let node = graph
-        .nodes
-        .get_mut(&pid)
-        .ok_or(ProcessGroupError::NotFound)?;
-    node.session = pid;
-    node.process_group = pid;
-    Ok(pid)
-}
-
-/// @description 查询指定 Process 的 process group ID。
-///
-/// @param pid 零表示当前 TGID，否则为目标 TGID。
-/// @return live/zombie process 的 PGID。
-/// @errors 目标不存在时返回 NotFound。
-pub(crate) fn process_group(pid: usize) -> Result<usize, ProcessGroupError> {
-    let current = current_task()
-        .expect("getpgid requires current task")
-        .tgid();
-    TASK_MANAGER
-        .graph
-        .lock()
-        .nodes
-        .get(&if pid == 0 { current } else { pid })
-        .map(|node| node.process_group)
-        .ok_or(ProcessGroupError::NotFound)
-}
-
-/// @description 查询指定 Process 的 session ID。
-///
-/// @param pid 零表示当前 TGID，否则为目标 TGID。
-/// @return live/zombie process 的 SID。
-/// @errors 目标不存在时返回 NotFound。
-pub(crate) fn session_id(pid: usize) -> Result<usize, ProcessGroupError> {
-    let current = current_task().expect("getsid requires current task").tgid();
-    TASK_MANAGER
-        .graph
-        .lock()
-        .nodes
-        .get(&if pid == 0 { current } else { pid })
-        .map(|node| node.session)
-        .ok_or(ProcessGroupError::NotFound)
-}
-
-/// @description 按 Linux parent/child/session 约束修改 process group membership。
-///
-/// @param pid 零表示 caller；非零只允许 caller 的直接 child。
-/// @param pgid 零表示目标 TGID；非零必须是同 session 已存在 group 或目标自身。
-/// @return 成功返回 `Ok(())`。
-/// @errors 目标不存在返回 NotFound；跨 session、session leader 或非法 group 返回 Permission。
-pub(crate) fn set_process_group(pid: usize, pgid: usize) -> Result<(), ProcessGroupError> {
-    let caller = current_task()
-        .expect("setpgid requires current task")
-        .tgid();
-    let target = if pid == 0 { caller } else { pid };
-    let desired = if pgid == 0 { target } else { pgid };
-    let mut graph = TASK_MANAGER.graph.lock();
-    let caller_session = graph
-        .nodes
-        .get(&caller)
-        .ok_or(ProcessGroupError::NotFound)?
-        .session;
-    let target_node = graph
-        .nodes
-        .get(&target)
-        .ok_or(ProcessGroupError::NotFound)?;
-    if target != caller && target_node.parent != Some(caller) {
-        return Err(ProcessGroupError::NotFound);
-    }
-    if target_node.session != caller_session || target_node.session == target {
-        return Err(ProcessGroupError::Permission);
-    }
-    if desired != target
-        && !graph
-            .nodes
-            .values()
-            .any(|node| node.session == caller_session && node.process_group == desired)
-    {
-        return Err(ProcessGroupError::Permission);
-    }
-    graph
-        .nodes
-        .get_mut(&target)
-        .expect("validated process disappeared under graph lock")
-        .process_group = desired;
-    Ok(())
-}
-
-/// @description 当前 session leader 尝试取得一个 Terminal 作为 controlling TTY。
-///
-/// @param terminal ioctl fd 指向的 TTY owner。
-/// @param force TIOCSCTTY force 参数；当前无 capability model，只接受零。
-/// @return 成功取得或重复确认同一 session 时返回 `Ok(())`。
-/// @errors 非 session leader/force 请求返回 Permission；TTY 属于其他 session 返回 Permission。
-pub(crate) fn claim_controlling_terminal(
-    terminal: &crate::fs::Terminal,
-    force: usize,
-) -> Result<(), ProcessGroupError> {
-    let pid = current_task()
-        .expect("TIOCSCTTY requires current task")
-        .tgid();
-    let (session, pgid) = {
-        let graph = TASK_MANAGER.graph.lock();
-        let node = graph.nodes.get(&pid).ok_or(ProcessGroupError::NotFound)?;
-        (node.session, node.process_group)
-    };
-    if force != 0 || session != pid {
-        return Err(ProcessGroupError::Permission);
-    }
-    terminal
-        .claim_session(session, pgid)
-        .map_err(|()| ProcessGroupError::Permission)
-}
-
-/// @description 查询当前 session controlling TTY 的 foreground process group。
-///
-/// @param terminal ioctl fd 指向的 TTY owner。
-/// @return foreground PGID。
-/// @errors fd 的 TTY 不属于 caller session 时返回 NotTerminal。
-pub(crate) fn terminal_foreground_group(
-    terminal: &crate::fs::Terminal,
-) -> Result<usize, ProcessGroupError> {
-    let session = session_id(0)?;
-    terminal
-        .foreground_pgid(session)
-        .map_err(|()| ProcessGroupError::NotTerminal)
-}
-
-/// @description 将 caller session 内已存在的 process group 设为 TTY foreground owner。
-///
-/// @param terminal ioctl fd 指向的 TTY owner。
-/// @param pgid 同 session 的已存在 process group ID。
-/// @return 成功返回 `Ok(())`。
-/// @errors group 不存在/跨 session 返回 Permission；TTY 不属于 caller session 返回 NotTerminal。
-pub(crate) fn set_terminal_foreground_group(
-    terminal: &crate::fs::Terminal,
-    pgid: usize,
-) -> Result<(), ProcessGroupError> {
-    let session = session_id(0)?;
-    let graph = TASK_MANAGER.graph.lock();
-    if !graph
-        .nodes
-        .values()
-        .any(|node| node.session == session && node.process_group == pgid)
-    {
-        return Err(ProcessGroupError::Permission);
-    }
-    drop(graph);
-    terminal
-        .set_foreground_pgid(session, pgid)
-        .map_err(|()| ProcessGroupError::NotTerminal)
 }
 
 pub(crate) fn thread_count(tgid: usize) -> usize {

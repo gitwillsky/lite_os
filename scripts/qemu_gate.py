@@ -169,10 +169,11 @@ def boot(
                     # Stopped 文本会立即触发未来输入，使 gate 绕过 guest 的真实状态转换。
                     interaction_cursor = marker_offset + len(marker)
                     assert process.stdin is not None
-                    # marker 通常先于 ash 的下一条 prompt；立即注入会让 prompt 切断命令前缀。
-                    # 固定 settle 属于 serial transport 协议，不依赖某一条 gate 命令的长度或内容。
-                    time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
-                    send_interaction(process.stdin, data)
+                    if data:
+                        # marker 通常先于 ash 的下一条 prompt；立即注入会让 prompt 切断命令前缀。
+                        # 空 data 只推进单调 cursor，是无需触碰 UART 的 ordering barrier。
+                        time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
+                        send_interaction(process.stdin, data)
                 if all(marker in text for marker in markers):
                     if "panicked at" in text or "[ERROR]" in text:
                         raise RuntimeError(f"QEMU -smp {smp} reached a fatal/error path")
