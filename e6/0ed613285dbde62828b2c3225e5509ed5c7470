@@ -1,0 +1,35 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_564fc5eb86c5e4 76
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_b13304aae246d7 871,990,993,995
+docs/architecture.md
+  s_d637a88cd4b00d::t_531cfc0c20abb2 133
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_766d54bd2fcc58 24
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_aafc58dc8e6b8a 95-97,107-118,175-176,194,367-368,379-380,385-402,543,546-547,549,559-564,569-570
+kernel/src/task/task_manager.rs
+  s_d637a88cd4b00d::t_0ea447500701dd 17,1006,1109,1239,1355,1408,1466,1512,1560,1612,1666,1882
+kernel/src/task/task_manager/procfs.rs
+  s_d637a88cd4b00d::t_cee1f5bfef8def 66,147
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_9e4b69a5f67292 607-614
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e60ed613285dbde62828b2c3225e5509ed5c7470",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
