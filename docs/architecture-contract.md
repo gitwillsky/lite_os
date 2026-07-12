@@ -48,10 +48,10 @@
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
-| OFD backend、backing mount identity、offset/status flags | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义 |
+| OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | ipc::UnixSocket；OFD 只持 endpoint Arc，fork/dup 共享 |
-| epoll interest、ET history、ONESHOT state | fs::Epoll；readiness 与 ppoll 共用同一 seam |
+| epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
 | VMA 区间、类型、权限与 framed page lifetime | MemorySet 的有序 VMA 表；PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | process comm/创建时刻、thread runtime 与 run state | Process、SchedulingEntity；procfs 只读取快照 |
@@ -81,7 +81,7 @@
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 1311 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1112 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 1030 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/task/model.rs` | 1027 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 
 ## 5. Interface and capability contract
 

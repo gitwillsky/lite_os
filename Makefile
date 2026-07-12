@@ -43,8 +43,6 @@ build: build-kernel build-bootloader build-rootfs
 
 verify:
 	cargo fmt --all -- --check
-	cargo check -p architecture-check
-	cargo check -p syscall-abi -p kernel --target riscv64gc-unknown-none-elf
 	cargo clippy -p architecture-check -- -D warnings
 	cargo clippy -p syscall-abi -p kernel --target riscv64gc-unknown-none-elf --bins --lib -- -D warnings
 	cd bootloader && cargo clippy --release -- -D warnings && cd -

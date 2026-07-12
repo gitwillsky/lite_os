@@ -127,4 +127,4 @@ make gdb
 
 ## 验证约束
 
-本仓库不维护、不修正、不执行测试用例。统一运行 `make verify`；它执行 AST 架构围栏、workspace/组件构建、Clippy、ELF 静态检查、默认 BusyBox rootfs 的 `-smp 1/3/8` 冷启动、固定 musl pthread consumer，以及 BusyBox `init + ash` UART/持久化 gate。各阶段的证据保存在 `docs/phase-*.md`。
+本仓库不维护、不修正、不执行测试用例。统一运行 `make verify`；它执行 AST 架构围栏、workspace/组件构建、Clippy、ELF 静态检查，并由 musl、BusyBox 和独立拓扑 gate 合计覆盖 `-smp 1/3/8`、动态 userspace 与持久化恢复。runtime gate 只在 kernel、bootloader、rootfs 的 ELF/library/recipe 输入与 QEMU identity 全部相同时复用上次成功结果；任一语义输入变化自动失效，可用 `LITEOS_VERIFY_REBUILD=1 make verify` 强制完整重跑。各阶段的证据保存在 `docs/phase-*.md`。

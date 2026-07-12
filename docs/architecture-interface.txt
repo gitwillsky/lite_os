@@ -361,21 +361,28 @@ kernel/src/fs/epoll.rs :: enum EpollChange :: Delete
 kernel/src/fs/epoll.rs :: enum EpollChange :: Modify
 kernel/src/fs/epoll.rs :: enum EpollChangeError :: Exists
 kernel/src/fs/epoll.rs :: enum EpollChangeError :: Invalid
+kernel/src/fs/epoll.rs :: enum EpollChangeError :: Loop
+kernel/src/fs/epoll.rs :: enum EpollChangeError :: NoMemory
 kernel/src/fs/epoll.rs :: enum EpollChangeError :: NotFound
+kernel/src/fs/epoll.rs :: enum EpollChangeError :: Permission
 kernel/src/fs/epoll.rs :: pub (crate) EpollEvent :: data : u64
 kernel/src/fs/epoll.rs :: pub (crate) EpollEvent :: events : u32
 kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: disabled : bool
 kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: event : EpollEvent
 kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: fd : usize
-kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: last_ready : u32
+kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: last_generation : u64
 kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: ofd : Arc < OpenFileDescription >
+kernel/src/fs/epoll.rs :: pub (crate) EpollInterest :: revision : u64
 kernel/src/fs/epoll.rs :: pub (crate) enum EpollChange
 kernel/src/fs/epoll.rs :: pub (crate) enum EpollChangeError
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn change (& self , operation : EpollChange , fd : usize , ofd : Option < Arc < OpenFileDescription > > , event : Option < EpollEvent > ,) -> Result < () , EpollChangeError >
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn clear_absent_edges (& self , readiness : & [(usize , u32)])
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn commit_delivery (& self , fd : usize , ready : u32 , edge : bool , oneshot : bool)
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn new () -> Arc < Self >
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn remove_ofd (& self , closed : & Arc < OpenFileDescription >)
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn change (self : & Arc < Self > , operation : EpollChange , fd : usize , ofd : Arc < OpenFileDescription > , event : Option < EpollEvent > ,) -> Result < () , EpollChangeError >
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn commit_delivery (& self , fd : usize , ofd : & Arc < OpenFileDescription > , revision : u64 , generation : u64 , edge : bool , oneshot : bool ,)
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn consume_notifications (& self)
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn has_ready (& self) -> bool
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn new (notification_read : Arc < PipeEnd > , notification_write : Arc < PipeEnd > ,) -> Result < Arc < Self > , () >
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn readiness_generation (& self) -> u64
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn release_file (closed : & Arc < OpenFileDescription >)
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn snapshot (& self) -> Result < Vec < EpollInterest > , () >
 kernel/src/fs/epoll.rs :: pub (crate) struct Epoll
 kernel/src/fs/epoll.rs :: pub (crate) struct EpollEvent
@@ -439,11 +446,13 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (&
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Self
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_inode : Arc < dyn Inode > ,) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Arc < Self >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (inode : Arc < dyn Inode > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn poll_events (& self , events : i16) -> i16
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < UnixSocket > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_inode : Arc < dyn Inode > , flags : u32 ,) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
@@ -469,6 +478,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgi
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Arc < Self >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
@@ -674,6 +684,7 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readable (& self) -> bool
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn writable (& self) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
@@ -717,6 +728,7 @@ kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn pair (first :
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn peer_address (& self) -> Option < UnixAddress >
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn read (& self , output : & mut [u8]) -> Result < usize , SocketError >
+kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn readiness_generation (& self , _events : i16) -> u64
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn receive (& self , output : & mut [u8] ,) -> Result < (usize , Option < UnixAddress >) , SocketError >
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn send_to (& self , input : & [u8] , target : Option < & Arc < Self > > ,) -> Result < usize , SocketError >
 kernel/src/ipc/unix_socket.rs :: pub (crate) impl UnixSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
@@ -961,6 +973,7 @@ kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & S
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn mark_dirty (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
 kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
+kernel/src/sync/mod.rs :: pub (crate) fn next_readiness_generation () -> u64
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: const fn new (value : T) -> Self
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn lock (& self) -> IrqMutexGuard < '_ , T >
 kernel/src/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn disable () -> Self
@@ -975,7 +988,7 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_res_ids (uid : bool 
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize , list : usize) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
-kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event : usize ,) -> isize
+kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/errno.rs :: pub (crate) const E2BIG : isize = 7
 kernel/src/syscall/errno.rs :: pub (crate) const EACCES : isize = 13
@@ -1217,7 +1230,6 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& 
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate (& self , old : usize , minimum : usize , cloexec : bool ,) -> Result < usize , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate_to (& self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_flags (& self , fd : usize) -> Result < u32 , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < alloc :: sync :: Arc < OpenFileDescription > >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
@@ -1304,6 +1316,8 @@ kernel/src/task/model/credentials.rs :: pub (super) impl Credentials :: fn set_u
 kernel/src/task/model/credentials.rs :: pub (super) impl Credentials :: fn uid (& self , effective : bool) -> u32
 kernel/src/task/model/credentials.rs :: pub (super) impl TaskControlBlock :: fn apply_exec_setid (& self , mode : u32 , uid : u32 , gid : u32)
 kernel/src/task/model/credentials.rs :: pub (super) struct Credentials
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn with_file_descriptions < R > (& self , first : usize , second : usize , operation : impl FnOnce (Arc < OpenFileDescription > , Arc < OpenFileDescription >) -> R ,) -> Option < R >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Vec < u8 >
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: None

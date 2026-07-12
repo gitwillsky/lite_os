@@ -400,6 +400,33 @@ impl UnixSocket {
         }
     }
 
+    /// @description 投影 socket 所有可能无条件返回或被请求的 poll 状态变化 generation。
+    ///
+    /// @param _events poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
+    /// @return 跨 I/O source 可比较的 generation。
+    pub(crate) fn readiness_generation(&self, _events: i16) -> u64 {
+        let state = self.state.lock();
+        match &*state {
+            SocketState::Stream {
+                receive, transmit, ..
+            } => {
+                // HUP/ERR 不受 requested mask 限制，因此两侧 generation 都必须参与；否则只关注
+                // EPOLLIN 的 ET watcher 会在 peer write-close 时因 generation 未变化而漏掉 HUP。
+                let read = receive.as_ref().map_or(0, |end| {
+                    end.pipe().readiness_generation(PipeDirection::Read)
+                });
+                let write = transmit.as_ref().map_or(0, |end| {
+                    end.pipe().readiness_generation(PipeDirection::Write)
+                });
+                read.max(write)
+            }
+            _ => self
+                .notify_read
+                .pipe()
+                .readiness_generation(PipeDirection::Read),
+        }
+    }
+
     pub(crate) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
         let state = self.state.lock();
         match &*state {

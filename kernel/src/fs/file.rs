@@ -2,6 +2,7 @@ mod terminal;
 pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead};
 
 use alloc::{sync::Arc, vec, vec::Vec};
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use spin::Mutex;
 
 use super::Epoll;
@@ -77,6 +78,9 @@ pub(crate) struct OpenFileDescription {
     pub(crate) offset: Mutex<u64>,
     pub(crate) flags: Mutex<u32>,
     character_inode: Option<Arc<dyn Inode>>,
+    // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
+    // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
+    descriptor_refs: AtomicUsize,
 }
 
 impl OpenFileDescription {
@@ -86,6 +90,7 @@ impl OpenFileDescription {
         const OUTPUT: i16 = 0x004;
         const ERROR: i16 = 0x008;
         const HANGUP: i16 = 0x010;
+        const READ_HANGUP: i16 = 0x2000;
         let mut result = 0;
         match &self.kind {
             OpenFileKind::Inode(_) => result = events & (INPUT | OUTPUT),
@@ -126,22 +131,50 @@ impl OpenFileDescription {
                 }
                 if state.hangup {
                     result |= HANGUP;
+                    if events & READ_HANGUP != 0 {
+                        result |= READ_HANGUP;
+                    }
                 }
             }
             OpenFileKind::Epoll(epoll) => {
-                if events & INPUT != 0
-                    && epoll.snapshot().is_ok_and(|entries| {
-                        entries.iter().any(|interest| {
-                            !interest.disabled
-                                && interest.ofd.poll_events(interest.event.events as i16) != 0
-                        })
-                    })
-                {
+                if events & INPUT != 0 && epoll.has_ready() {
                     result |= INPUT;
                 }
             }
         }
         result
+    }
+
+    /// @description 返回当前 OFD 最近一次可观察 I/O 状态变化的全局 generation。
+    ///
+    /// @param events caller 关注的 poll event mask。
+    /// @return 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
+    pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
+        match &self.kind {
+            OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
+                terminal.readiness_generation()
+            }
+            OpenFileKind::Pipe(endpoint) => {
+                endpoint.pipe().readiness_generation(endpoint.direction())
+            }
+            OpenFileKind::Socket(socket) => socket.readiness_generation(events),
+            OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
+            OpenFileKind::Character(CharacterDevice::Null | CharacterDevice::Zero)
+            | OpenFileKind::Inode(_) => 0,
+        }
+    }
+
+    /// @description 判断 backend 是否提供可注册 wait source，而非仅提供同步 poll 结果。
+    ///
+    /// @return 可加入 epoll 返回 true；regular inode/null/zero 返回 false 并映射 EPERM。
+    pub(crate) fn epoll_pollable(&self) -> bool {
+        matches!(
+            self.kind,
+            OpenFileKind::Character(CharacterDevice::Terminal { .. })
+                | OpenFileKind::Pipe(_)
+                | OpenFileKind::Socket(_)
+                | OpenFileKind::Epoll(_)
+        )
     }
 
     /// @description 构造继承给 init 的 console OFD，并保留 devfs backing inode。
@@ -163,6 +196,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_inode: Some(backing_inode),
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -189,6 +223,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_inode: Some(backing_inode),
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -198,6 +233,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_inode: None,
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -207,6 +243,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_inode: None,
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -216,6 +253,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_inode: None,
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -225,6 +263,7 @@ impl OpenFileDescription {
             offset: Mutex::new(0),
             flags: Mutex::new(O_RDWR),
             character_inode: None,
+            descriptor_refs: AtomicUsize::new(0),
         })
     }
 
@@ -267,10 +306,35 @@ impl OpenFileDescription {
     }
 }
 
-#[derive(Clone)]
 struct FileDescriptor {
     ofd: Arc<OpenFileDescription>,
     cloexec: bool,
+}
+
+impl FileDescriptor {
+    fn new(ofd: Arc<OpenFileDescription>, cloexec: bool) -> Self {
+        // fd table lock/Process publication owns entry visibility；该原子只计数，不发布 OFD 数据，
+        // 因此 increment 使用 Relaxed。缺少 increment 会让任一 close 提前删除仍存活的 interest。
+        ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
+        Self { ofd, cloexec }
+    }
+}
+
+impl Clone for FileDescriptor {
+    fn clone(&self) -> Self {
+        Self::new(self.ofd.clone(), self.cloexec)
+    }
+}
+
+impl Drop for FileDescriptor {
+    fn drop(&mut self) {
+        // Release/Acquire 与其他 fd table 的最后 decrement 配对，确保判定为最后引用后才执行
+        // 全局 cleanup；缺少原子 RMW 会让 fork 后两个 table 同时误判生命周期。
+        if self.ofd.descriptor_refs.fetch_sub(1, Ordering::Release) == 1 {
+            fence(Ordering::Acquire);
+            Epoll::release_file(&self.ofd);
+        }
+    }
 }
 
 /// @description 进程 fd table；dup 复制 fd entry 并共享同一个 OFD。
@@ -301,26 +365,26 @@ impl FileDescriptorTable {
             .expect("mounted console device must resolve");
         Self {
             entries: vec![
-                Some(FileDescriptor {
-                    ofd: OpenFileDescription::terminal(
+                Some(FileDescriptor::new(
+                    OpenFileDescription::terminal(
                         terminal.clone(),
                         backing_inode.clone(),
                         O_RDONLY,
                     ),
-                    cloexec: false,
-                }),
-                Some(FileDescriptor {
-                    ofd: OpenFileDescription::terminal(
+                    false,
+                )),
+                Some(FileDescriptor::new(
+                    OpenFileDescription::terminal(
                         terminal.clone(),
                         backing_inode.clone(),
                         O_WRONLY,
                     ),
-                    cloexec: false,
-                }),
-                Some(FileDescriptor {
-                    ofd: OpenFileDescription::terminal(terminal, backing_inode, O_WRONLY),
-                    cloexec: false,
-                }),
+                    false,
+                )),
+                Some(FileDescriptor::new(
+                    OpenFileDescription::terminal(terminal, backing_inode, O_WRONLY),
+                    false,
+                )),
             ],
         }
     }
@@ -343,7 +407,7 @@ impl FileDescriptorTable {
         }
         for fd in minimum..self.entries.len() {
             if self.entries[fd].is_none() {
-                self.entries[fd] = Some(FileDescriptor { ofd, cloexec });
+                self.entries[fd] = Some(FileDescriptor::new(ofd, cloexec));
                 return Ok(fd);
             }
         }
@@ -354,7 +418,7 @@ impl FileDescriptorTable {
         if fd >= MAX_FILE_DESCRIPTORS {
             return Err(());
         }
-        self.entries.push(Some(FileDescriptor { ofd, cloexec }));
+        self.entries.push(Some(FileDescriptor::new(ofd, cloexec)));
         Ok(fd)
     }
 
@@ -388,21 +452,14 @@ impl FileDescriptorTable {
         if self.entries.len() < required {
             self.entries.resize(required, None);
         }
-        self.entries[available[0]] = Some(FileDescriptor {
-            ofd: first,
-            cloexec,
-        });
-        self.entries[available[1]] = Some(FileDescriptor {
-            ofd: second,
-            cloexec,
-        });
+        self.entries[available[0]] = Some(FileDescriptor::new(first, cloexec));
+        self.entries[available[1]] = Some(FileDescriptor::new(second, cloexec));
         Ok((available[0], available[1]))
     }
 
     pub(crate) fn close(&mut self, fd: usize) -> Result<(), ()> {
         let entry = self.entries.get_mut(fd).ok_or(())?;
-        let closed = entry.take().ok_or(())?.ofd;
-        self.remove_epoll_interest_if_last(&closed);
+        drop(entry.take().ok_or(())?);
         Ok(())
     }
 
@@ -438,10 +495,7 @@ impl FileDescriptorTable {
         if self.entries.len() <= new {
             self.entries.resize(new + 1, None);
         }
-        let replaced = self.entries[new].replace(FileDescriptor { ofd, cloexec });
-        if let Some(replaced) = replaced {
-            self.remove_epoll_interest_if_last(&replaced.ofd);
-        }
+        drop(self.entries[new].replace(FileDescriptor::new(ofd, cloexec)));
         Ok(new)
     }
 
@@ -471,36 +525,10 @@ impl FileDescriptorTable {
     }
 
     pub(crate) fn close_cloexec(&mut self) {
-        let mut closed = Vec::new();
         for entry in &mut self.entries {
             if entry.as_ref().is_some_and(|entry| entry.cloexec) {
-                closed.push(entry.take().unwrap().ofd);
+                drop(entry.take());
             }
-        }
-        for ofd in closed {
-            self.remove_epoll_interest_if_last(&ofd);
-        }
-    }
-
-    fn remove_epoll_interest_if_last(&self, closed: &Arc<OpenFileDescription>) {
-        if self
-            .entries
-            .iter()
-            .flatten()
-            .any(|entry| Arc::ptr_eq(&entry.ofd, closed))
-        {
-            return;
-        }
-        for epoll in self
-            .entries
-            .iter()
-            .flatten()
-            .filter_map(|entry| match &entry.ofd.kind {
-                OpenFileKind::Epoll(epoll) => Some(epoll),
-                _ => None,
-            })
-        {
-            epoll.remove_ofd(closed);
         }
     }
 }

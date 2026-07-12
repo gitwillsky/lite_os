@@ -1,5 +1,6 @@
 mod address_space;
 mod credentials;
+mod file_descriptions;
 mod process_exec;
 mod signal_state;
 use core::sync::atomic::AtomicUsize;
@@ -915,10 +916,6 @@ impl TaskControlBlock {
     /// @return 无返回值。
     pub(crate) fn set_working_directory(&self, inode: Arc<dyn Inode>) {
         *self.process.cwd.lock() = inode;
-    }
-
-    pub(crate) fn fd_get(&self, fd: usize) -> Option<alloc::sync::Arc<OpenFileDescription>> {
-        self.process.files.lock().get(fd)
     }
 
     /// @description 返回当前 Process 可继承的 platform Terminal identity。

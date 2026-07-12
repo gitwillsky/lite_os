@@ -16,8 +16,8 @@ from typing import BinaryIO
 
 ROOT = Path(__file__).resolve().parent.parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
-SERIAL_WRITE_CHUNK = 1
-SERIAL_WRITE_INTERVAL_SECONDS = 0.002
+SERIAL_WRITE_CHUNK = 4
+SERIAL_WRITE_INTERVAL_SECONDS = 0.001
 SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
 
 

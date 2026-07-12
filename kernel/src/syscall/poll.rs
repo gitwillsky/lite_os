@@ -49,6 +49,10 @@ pub(super) fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> 
             );
         }
         OpenFileKind::Epoll(epoll) => {
+            keys.push(PollWaitKey::pipe(
+                &epoll.notification_pipe(),
+                crate::ipc::PipeDirection::Read,
+            ));
             if let Ok(entries) = epoll.snapshot() {
                 for interest in entries {
                     keys.extend(ofd_wait_keys(&interest.ofd));
@@ -99,13 +103,28 @@ fn copy_revents(task: &TaskControlBlock, descriptors: &[PollDescriptor]) -> Resu
     Ok(count)
 }
 
-fn drain_terminals(descriptors: &[PollDescriptor]) {
+fn prepare_descriptors(descriptors: &[PollDescriptor]) {
     for descriptor in descriptors {
-        if let Some(ofd) = &descriptor.ofd
-            && let OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) = &ofd.kind
-        {
+        if let Some(ofd) = &descriptor.ofd {
+            prepare_ofd(ofd);
+        }
+    }
+}
+
+fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
+    match &ofd.kind {
+        OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
             let _ = drain_terminal_input(terminal);
         }
+        OpenFileKind::Epoll(epoll) => {
+            epoll.consume_notifications();
+            if let Ok(entries) = epoll.snapshot() {
+                for interest in entries {
+                    prepare_ofd(&interest.ofd);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -190,7 +209,7 @@ pub(crate) fn sys_ppoll(
         true
     };
     loop {
-        drain_terminals(&descriptors);
+        prepare_descriptors(&descriptors);
         let ready = evaluate(&mut descriptors);
         if ready != 0 || deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
             if temporary_mask {

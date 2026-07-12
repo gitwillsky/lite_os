@@ -21,6 +21,9 @@ from build_cache import (
     manifest_matches,
     publish_directory,
     publish_generation,
+    publish_runtime_gate,
+    runtime_gate_hit,
+    runtime_gate_payload,
     sha256,
     temporary_directory,
     write_manifest,
@@ -541,10 +544,34 @@ def main() -> int:
             source = obtain_source()
             binary = build_busybox(source, compiler, jobs_override, args.rebuild)
             verify_elf(binary, compiler)
-            image = create_image(binary, cached_musl_paths(compiler), args.image.resolve())
+            musl = cached_musl_paths(compiler)
         if args.build_only:
+            image = create_image(binary, musl, args.image.resolve())
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
+        dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+        stamp = ROOT / "target/verify-gates/busybox.json"
+        payload = runtime_gate_payload(
+            "busybox-runtime",
+            2,
+            (
+                ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
+                ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+                binary,
+                musl.install / "usr/lib/libc.so",
+                dynamic_probe,
+                dynamic_library,
+                ROOT / "user/inittab",
+                ROOT / "create_fs.py",
+                Path(__file__).resolve(),
+                ROOT / "scripts/qemu_gate.py",
+            ),
+        )
+        image = args.image.resolve()
+        if runtime_gate_hit(stamp, payload, (image,)):
+            print(f"BusyBox {BUSYBOX_VERSION} init+ash verification cache hit")
+            return 0
+        image = create_image(binary, musl, image)
         runtime_directory = tempfile.TemporaryDirectory(prefix="liteos-busybox-gate-")
         runtime_image = Path(runtime_directory.name) / "fs.img"
         shutil.copyfile(image, runtime_image)
@@ -993,6 +1020,7 @@ def main() -> int:
         )
         if check.returncode != 0:
             raise RuntimeError(f"post-recovery e2fsck failed:\n{check.stdout}")
+        publish_runtime_gate(stamp, payload)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"BusyBox verification failed: {error}", file=sys.stderr)
         return 1

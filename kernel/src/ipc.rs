@@ -47,6 +47,8 @@ struct PipeState {
     length: usize,
     readers: usize,
     writers: usize,
+    read_generation: u64,
+    write_generation: u64,
 }
 
 /// @description anonymous pipe 的唯一 byte ring 与 endpoint lifecycle owner。
@@ -73,6 +75,8 @@ impl Pipe {
                 length: 0,
                 readers: 1,
                 writers: 1,
+                read_generation: crate::sync::next_readiness_generation(),
+                write_generation: crate::sync::next_readiness_generation(),
             }),
             notifier,
         });
@@ -120,6 +124,18 @@ impl Pipe {
         }
     }
 
+    /// @description 返回指定 endpoint 最近一次可观察状态变化的全局 generation。
+    ///
+    /// @param direction read 侧跟踪 data/EOF，write 侧跟踪 space/broken-pipe。
+    /// @return 跨 I/O source 可比较的 generation。
+    pub(crate) fn readiness_generation(&self, direction: PipeDirection) -> u64 {
+        let state = self.state.lock();
+        match direction {
+            PipeDirection::Read => state.read_generation,
+            PipeDirection::Write => state.write_generation,
+        }
+    }
+
     fn read(self: &Arc<Self>, output: &mut [u8]) -> PipeRead {
         let result = {
             let mut state = self.state.lock();
@@ -136,6 +152,7 @@ impl Pipe {
                     state.head = (state.head + 1) % state.bytes.len();
                     state.length -= 1;
                 }
+                state.write_generation = crate::sync::next_readiness_generation();
                 PipeRead::Bytes(count)
             }
         };
@@ -161,6 +178,7 @@ impl Pipe {
                         state.bytes[tail] = *byte;
                         state.length += 1;
                     }
+                    state.read_generation = crate::sync::next_readiness_generation();
                     PipeWrite::Bytes(count)
                 }
             }
@@ -178,10 +196,12 @@ impl Pipe {
                 PipeDirection::Read => {
                     assert_ne!(state.readers, 0, "pipe reader underflow");
                     state.readers -= 1;
+                    state.write_generation = crate::sync::next_readiness_generation();
                 }
                 PipeDirection::Write => {
                     assert_ne!(state.writers, 0, "pipe writer underflow");
                     state.writers -= 1;
+                    state.read_generation = crate::sync::next_readiness_generation();
                 }
             }
         }

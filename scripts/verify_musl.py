@@ -22,6 +22,9 @@ from build_cache import (
     manifest_matches,
     publish_directory,
     publish_generation,
+    publish_runtime_gate,
+    runtime_gate_hit,
+    runtime_gate_payload,
     sha256,
     temporary_directory,
     write_manifest,
@@ -498,6 +501,23 @@ def main() -> int:
         if args.build_only:
             print(f"musl {MUSL_VERSION} runtime build passed")
             return 0
+        stamp = ROOT / "target/verify-gates/musl.json"
+        payload = runtime_gate_payload(
+            "musl-runtime",
+            2,
+            (
+                ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
+                ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+                binary,
+                ROOT / "create_fs.py",
+                Path(__file__).resolve(),
+                ROOT / "scripts/qemu_gate.py",
+            ),
+        )
+        image = WORK / "fs.img"
+        if runtime_gate_hit(stamp, payload, (image,)):
+            print(f"musl {MUSL_VERSION} pthread signal verification cache hit")
+            return 0
         image = create_image(binary)
         boot(
             image,
@@ -508,6 +528,7 @@ def main() -> int:
                 "LiteOS musl pthread signal ok",
             ),
         )
+        publish_runtime_gate(stamp, payload)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"musl verification failed: {error}", file=sys.stderr)
         return 1

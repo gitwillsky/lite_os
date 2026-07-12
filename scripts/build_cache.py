@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -134,3 +135,52 @@ def build_environment() -> dict[str, str]:
     for name in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH"):
         env.pop(name, None)
     return env
+
+
+def runtime_gate_payload(
+    kind: str,
+    recipe_version: int,
+    inputs: tuple[Path, ...],
+) -> dict[str, object]:
+    """构造只由实际执行比特、gate recipe 与 QEMU identity 决定的成功缓存键。"""
+    qemu = shutil.which("qemu-system-riscv64")
+    if qemu is None:
+        raise RuntimeError("qemu-system-riscv64 is required")
+    version = subprocess.run(
+        [qemu, "--version"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    ).stdout.splitlines()[0]
+    return {
+        "kind": kind,
+        "recipe_version": recipe_version,
+        "inputs": {str(path): sha256(path) for path in inputs},
+        "qemu": {"path": str(Path(qemu).resolve()), "version": version},
+    }
+
+
+def runtime_gate_hit(
+    stamp: Path,
+    payload: dict[str, object],
+    required_artifacts: tuple[Path, ...] = (),
+) -> bool:
+    """仅当 payload 一致且当前 invocation 所需产物仍存在时命中。"""
+    if os.environ.get("LITEOS_VERIFY_REBUILD") == "1":
+        return False
+    if any(not artifact.is_file() for artifact in required_artifacts):
+        return False
+    try:
+        current = json.loads(stamp.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return current == expected_manifest(payload)
+
+
+def publish_runtime_gate(stamp: Path, payload: dict[str, object]) -> None:
+    """在全部 runtime assertions 成功后原子发布 success stamp。"""
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    temporary = stamp.parent / f".{stamp.name}.{os.getpid()}.{time.time_ns()}.tmp"
+    temporary.write_text(json.dumps(expected_manifest(payload), sort_keys=True) + "\n")
+    os.replace(temporary, stamp)

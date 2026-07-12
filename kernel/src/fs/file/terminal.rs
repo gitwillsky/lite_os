@@ -32,6 +32,7 @@ struct TerminalState {
     line: [u8; TERMINAL_LINE_CAPACITY],
     line_len: usize,
     eof_pending: bool,
+    input_generation: u64,
 }
 
 impl TerminalState {
@@ -103,6 +104,7 @@ impl Terminal {
                 line: [0; TERMINAL_LINE_CAPACITY],
                 line_len: 0,
                 eof_pending: false,
+                input_generation: crate::sync::next_readiness_generation(),
             }),
         })
     }
@@ -136,6 +138,13 @@ impl Terminal {
 
     pub(crate) fn wait_ready(&self) -> bool {
         self.input_ready() || self.console.input_ready()
+    }
+
+    /// @description 返回 cooked input 最近一次变为可观察输入的全局 generation。
+    ///
+    /// @return 跨 I/O source 可比较的 generation。
+    pub(crate) fn readiness_generation(&self) -> u64 {
+        self.state.lock().input_generation
     }
 
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
@@ -233,6 +242,7 @@ impl Terminal {
                         state
                             .push_input(byte)
                             .map_err(|()| FileSystemError::IoError)?;
+                        state.input_generation = crate::sync::next_readiness_generation();
                     } else if byte == control(2) {
                         if state.line_len != 0 {
                             state.line_len -= 1;
@@ -256,6 +266,7 @@ impl Terminal {
                         } else {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
                         }
+                        state.input_generation = crate::sync::next_readiness_generation();
                         continue;
                     } else {
                         if state.line_len == state.line.len() {
@@ -266,6 +277,7 @@ impl Terminal {
                         state.line_len += 1;
                         if byte == b'\n' {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
+                            state.input_generation = crate::sync::next_readiness_generation();
                         }
                     }
                     if local_flags & ECHO != 0 || byte == b'\n' && local_flags & ECHONL != 0 {
