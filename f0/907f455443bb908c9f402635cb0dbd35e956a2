@@ -1,0 +1,35 @@
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_06df300d86f2d6 7,18-20
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_129167076e1e07 102-108
+kernel/src/memory/frame_allocator.rs
+  s_d637a88cd4b00d::t_9384e5199d2104 189-194,234-240
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_dc303b7af8350e 501-515
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_b4fff87ffc7ecd 16
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_31e57de8cf0c04 13-16,67-76,215-217,353-354,399-400,415-417,456-457,496,547-548,585,662,1334,1342,1367-1376
+kernel/src/task/processor.rs
+  s_d637a88cd4b00d::t_6295ae19d8f94d 17,160-161,177,183-197
+user/busybox.config
+  s_d637a88cd4b00d::t_9d8b3a35bc3ea4 45-53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f0907f455443bb908c9f402635cb0dbd35e956a2",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
