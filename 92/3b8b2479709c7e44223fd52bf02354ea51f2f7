@@ -1,0 +1,65 @@
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_0ff44908e46bcc 22,81-82
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_68646327f85e8a 486,498,504-505,507,544,550-556,763,767-772,780-781,793,795,814,820-827,839-840,863-889,985,1120,1124,1134,1163-1177
+kernel/src/fs/devfs.rs
+  s_d637a88cd4b00d::t_335dec9b856cee 119,123,127,131,135
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_0158bee1da3d0a 1866,1928,1934,1948,1960,1966
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_517941201d9334 102,110,112,114,116
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_8752ef9b483c0c 7,20
+kernel/src/fs/procfs.rs
+  s_d637a88cd4b00d::t_6ebb79b5891094 177,188,191,194,197
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_926dea40ea29c6 352-353
+kernel/src/memory/mm.rs
+  s_d637a88cd4b00d::t_45a82e71fc54c1 4,13,32,75,115,120-133,176-205,216,243,269-284,338-343,359-361,459-489,491,499,501-505,528,750,755,831,848,859-865
+kernel/src/memory/mm/cow.rs
+  s_d637a88cd4b00d::t_5e16f7e21d0a80 4-25,32-67,76,155-158
+kernel/src/memory/mm/mmap.rs
+  s_d637a88cd4b00d::t_18e2bfb5d36d2d 1-552
+kernel/src/memory/mod.rs
+  s_d637a88cd4b00d::t_02055ebd2a78f7 14,23-30
+kernel/src/memory/shared_file.rs
+  s_d637a88cd4b00d::t_c3cf0054210a7d 1-141
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_c903cc6abb3110 117,127-129
+kernel/src/syscall/fs/io.rs
+  s_d637a88cd4b00d::t_91633eb650805c 125,254,272
+kernel/src/syscall/fs/open.rs
+  s_d637a88cd4b00d::t_7de6fb06a62736 123
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_2bc2b8e91990e9 177
+kernel/src/task/loader.rs
+  s_d637a88cd4b00d::t_fbeb34568760ef 4,77
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_6039848b8c21ab 1,14-15,25,195,227,232,317,323,837-876,959
+kernel/src/task/model/address_space.rs
+  s_d637a88cd4b00d::t_be7a9aed86dac2 1-166
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_cfe3a5ca0fc96e 685-688,886,900-903,928-934
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_16a0f3721e798e 84
+user/dynamic-smoke.c
+  s_d637a88cd4b00d::t_545e4beaa45be2 10,19-70,111,198-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "923b8b2479709c7e44223fd52bf02354ea51f2f7",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
