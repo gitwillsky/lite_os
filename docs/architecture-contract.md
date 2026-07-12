@@ -66,7 +66,20 @@
 
 新增 global、Atomic、lock、cache 或 flag 必须在声明附近写 `OWNER:`，并说明缺失该 owner 会造成的具体状态分裂。
 
-## 4. Interface and capability contract
+## 4. Source size contract
+
+生产 Rust 源文件默认不得超过 600 行，绝对上限为 2500 行。超过默认上限的存量文件只能保留在下表精确额度内：额度只能随重构下降，不得为功能开发上调；新增例外必须同时给出状态 owner、不可立即拆分的原因与消除条件。行数只是退化信号，拆分必须形成有领域含义的深 module 与小 interface，禁止按行数机械切片或建立 pass-through module。
+
+| Source | Max lines | Owner | Reason | Exit criterion |
+|---|---:|---|---|---|
+| `kernel/src/fs/ext2.rs` | 2317 | `fs::ext2` | ext2 inode、allocator 与磁盘事务仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
+| `kernel/src/task/task_manager.rs` | 1925 | `task::TaskManager` | process graph、wait registry 与调度状态转换尚集中维护跨锁不变量 | 按 process graph 与 wait lifecycle 的真实 seam 分离后下调额度 |
+| `kernel/src/memory/mm.rs` | 1617 | `memory::MemorySet` | VMA owner 同时承载 ELF 装载、映射变更与 user-copy | 提取保持 MemorySet 单一 owner 的 ELF builder 后下调额度 |
+| `kernel/src/task/model.rs` | 1400 | `task::Process/Thread` | process、thread、signal frame 与地址空间 façade 尚共处一文件 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后下调额度 |
+| `kernel/src/syscall/fs.rs` | 1168 | `syscall::fs` | Linux 文件 ABI translation 与 user-copy 聚集但不拥有 VFS 状态 | 按 fd I/O、namespace 与 metadata ABI family 拆分后下调额度 |
+| `kernel/src/fs/file.rs` | 648 | `fs::file` | OFD、fd table、terminal line discipline 共享 close/readiness 语义 | terminal 成为独立深 module 后下调额度 |
+
+## 5. Interface and capability contract
 
 - kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
@@ -83,7 +96,7 @@
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
 - `user/` 顶层只允许固定 BusyBox config/inittab、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
 
-## 5. Change contract
+## 6. Change contract
 
 修改前必须确定所属 module、状态 owner、interface 变化、依赖变化以及 error/exit/interrupt cleanup。依赖采用正向 allowlist，未列出的跨 module 依赖一律失败。扩大 interface 或新增 global state 必须更新对应权威契约；不得修改围栏来掩盖实现问题。只有其他架构规则全部通过时，`cargo run -p architecture-check -- --write-interface` 才能更新 interface contract。
 

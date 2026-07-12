@@ -1068,8 +1068,10 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deli
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) struct ChildExit
-kernel/src/task/task_manager.rs :: pub (crate) struct KernelProcSource
+kernel/src/task/task_manager.rs :: pub (crate) use procfs :: KernelProcSource
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
+kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
+kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: fcsr : usize
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_gp : usize
