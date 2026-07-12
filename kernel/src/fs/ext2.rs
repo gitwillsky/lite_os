@@ -1118,6 +1118,7 @@ impl Ext2Inode {
         match mode & 0xF000 {
             0x4000 => InodeType::Directory,
             0xA000 => InodeType::SymLink,
+            0x2000 => InodeType::CharacterDevice,
             0x1000 => InodeType::Fifo,
             _ => InodeType::File,
         }
@@ -1150,6 +1151,7 @@ impl Ext2Inode {
             InodeType::File => 1,
             InodeType::Directory => 2,
             InodeType::SymLink => 7,
+            InodeType::CharacterDevice => 3,
             InodeType::Fifo => 5,
         }
     }
@@ -1854,6 +1856,7 @@ impl Inode for Ext2Inode {
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let inode = self.disk.lock();
         Ok(InodeMetadata {
+            filesystem: 1,
             inode: self.inode_num as u64,
             kind: Self::kind_from_mode(inode.i_mode),
             mode: inode.i_mode as u32,
@@ -1866,6 +1869,7 @@ impl Inode for Ext2Inode {
             atime: inode.i_atime as u64,
             mtime: inode.i_mtime as u64,
             ctime: inode.i_ctime as u64,
+            device: None,
         })
     }
 
@@ -1966,6 +1970,7 @@ impl Inode for Ext2Inode {
                 let kind = match header.file_type {
                     2 => InodeType::Directory,
                     7 => InodeType::SymLink,
+                    3 => InodeType::CharacterDevice,
                     5 => InodeType::Fifo,
                     _ => InodeType::File,
                 };

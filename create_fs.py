@@ -6,6 +6,8 @@ import shutil
 import argparse
 import sys
 
+BOOT_DIRECTORIES = ("/bin", "/dev")
+
 def find_tool(candidates):
     for path in candidates:
         if shutil.which(path):
@@ -72,8 +74,8 @@ def copy_files_to_ext2(image_path, debugfs_bin, init_elf):
     bin_entries = collect_binaries(init_elf)
 
     # 构建 debugfs 命令脚本
-    commands = []
-    commands.append("mkdir /bin")
+    # boot layout 只声明 kernel composition root 将消费的 mountpoint；设备节点由运行时 device filesystem 提供。
+    commands = [f"mkdir {directory}" for directory in BOOT_DIRECTORIES]
     for src, dst in bin_entries:
         # debugfs 的 write 语法: write <native_file> <dest_file>
         commands.append(f"write {src} {dst}")

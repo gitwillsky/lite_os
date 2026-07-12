@@ -8,12 +8,51 @@ pub(crate) enum InodeType {
     File = 0,
     Directory = 1,
     SymLink = 2,
+    CharacterDevice = 3,
     Fifo = 4,
+}
+
+/// @description devfs inode 与打开后的 character OFD 共享的标准设备 identity。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceKind {
+    Null,
+    Zero,
+    Tty,
+    Console,
+}
+
+impl DeviceKind {
+    /// @description 返回 Linux conventional character-device major/minor。
+    pub(crate) fn numbers(self) -> (u32, u32) {
+        match self {
+            Self::Null => (1, 3),
+            Self::Zero => (1, 5),
+            Self::Tty => (5, 0),
+            Self::Console => (5, 1),
+        }
+    }
+
+    pub(crate) fn inode(self) -> u64 {
+        match self {
+            Self::Null => 2,
+            Self::Zero => 3,
+            Self::Tty => 4,
+            Self::Console => 5,
+        }
+    }
+
+    pub(crate) fn mode(self) -> u32 {
+        match self {
+            Self::Console => 0o020600,
+            Self::Null | Self::Zero | Self::Tty => 0o020666,
+        }
+    }
 }
 
 /// @description VFS 与 Linux stat/getdents 共享的稳定 inode 元数据。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InodeMetadata {
+    pub(crate) filesystem: u64,
     pub(crate) inode: u64,
     pub(crate) kind: InodeType,
     pub(crate) mode: u32,
@@ -26,6 +65,7 @@ pub(crate) struct InodeMetadata {
     pub(crate) atime: u64,
     pub(crate) mtime: u64,
     pub(crate) ctime: u64,
+    pub(crate) device: Option<DeviceKind>,
 }
 
 /// @description 一个目录项的原始字节名称与 inode identity。
@@ -47,6 +87,11 @@ pub(crate) trait Inode: Send + Sync {
     fn size(&self) -> u64;
 
     fn is_executable(&self) -> bool;
+
+    /// @description 标识由 devfs 打开的 character device；普通 filesystem inode 返回 None。
+    fn device_kind(&self) -> Option<DeviceKind> {
+        None
+    }
 
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
 

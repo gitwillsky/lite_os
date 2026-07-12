@@ -1,16 +1,19 @@
 use alloc::sync::Arc;
 
+mod devfs;
 mod ext2;
 mod file;
 mod inode;
 mod vfs;
 
+pub(crate) use devfs::DevFileSystem;
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
-    Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK,
-    O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal, TerminalRead,
+    CharacterDevice, Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND,
+    O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
+    TerminalRead,
 };
-pub(crate) use inode::{DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use vfs::{init as init_vfs, vfs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +27,7 @@ pub(crate) enum FileSystemError {
     IoError,
     InvalidFileSystem,
     InvalidOperation,
+    ReadOnly,
     SymbolicLink,
     OutOfMemory,
     NoSpace,

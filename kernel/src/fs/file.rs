@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 use spin::Mutex;
 
-use super::{FileSystemError, Inode};
+use super::{DeviceKind, FileSystemError, Inode};
 use crate::ipc::PipeEnd;
 
 pub(crate) const O_ACCMODE: u32 = 3;
@@ -12,9 +12,36 @@ pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1024;
 
-/// @description OFD 后端；console 和 inode 共享同一 fd 表，不保留 syscall 特判旁路。
+/// @description 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
+pub(crate) enum CharacterDevice {
+    Null,
+    Zero,
+    Terminal {
+        terminal: Arc<Terminal>,
+        kind: DeviceKind,
+    },
+}
+
+impl CharacterDevice {
+    pub(crate) fn kind(&self) -> DeviceKind {
+        match self {
+            Self::Null => DeviceKind::Null,
+            Self::Zero => DeviceKind::Zero,
+            Self::Terminal { kind, .. } => *kind,
+        }
+    }
+
+    pub(crate) fn terminal(&self) -> Option<&Arc<Terminal>> {
+        match self {
+            Self::Terminal { terminal, .. } => Some(terminal),
+            Self::Null | Self::Zero => None,
+        }
+    }
+}
+
+/// @description OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
 pub(crate) enum OpenFileKind {
-    Terminal(Arc<Terminal>),
+    Character(CharacterDevice),
     Pipe(Arc<PipeEnd>),
     Inode(Arc<dyn Inode>),
 }
@@ -380,7 +407,23 @@ pub(crate) struct OpenFileDescription {
 impl OpenFileDescription {
     pub(crate) fn terminal(terminal: Arc<Terminal>, flags: u32) -> Arc<Self> {
         Arc::new(Self {
-            kind: OpenFileKind::Terminal(terminal),
+            kind: OpenFileKind::Character(CharacterDevice::Terminal {
+                terminal,
+                kind: DeviceKind::Console,
+            }),
+            offset: Mutex::new(0),
+            flags: Mutex::new(flags),
+        })
+    }
+
+    pub(crate) fn character(kind: DeviceKind, terminal: Arc<Terminal>, flags: u32) -> Arc<Self> {
+        let device = match kind {
+            DeviceKind::Null => CharacterDevice::Null,
+            DeviceKind::Zero => CharacterDevice::Zero,
+            DeviceKind::Tty | DeviceKind::Console => CharacterDevice::Terminal { terminal, kind },
+        };
+        Arc::new(Self {
+            kind: OpenFileKind::Character(device),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
         })
@@ -405,7 +448,7 @@ impl OpenFileDescription {
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(inode) => Some(inode.clone()),
-            OpenFileKind::Terminal(_) => None,
+            OpenFileKind::Character(_) => None,
             OpenFileKind::Pipe(_) => None,
         }
     }

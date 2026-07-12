@@ -3,9 +3,18 @@ use spin::Mutex;
 
 use super::{FileSystem, FileSystemError, Inode, InodeType};
 
-/// @description 管理唯一根文件系统，并为内核 ELF 加载器解析绝对路径。
+/// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
     root_fs: Mutex<Option<Arc<dyn FileSystem>>>,
+    mounts: Mutex<Vec<Mount>>,
+}
+
+struct Mount {
+    point_identity: (usize, u64),
+    root_identity: (usize, u64),
+    point: Arc<dyn Inode>,
+    parent: Arc<dyn Inode>,
+    root: Arc<dyn Inode>,
 }
 
 impl VirtualFileSystem {
@@ -15,6 +24,38 @@ impl VirtualFileSystem {
             .as_ref()
             .ok_or(FileSystemError::NotFound)?
             .root_inode()
+    }
+
+    fn identity(inode: &Arc<dyn Inode>) -> Result<(usize, u64), FileSystemError> {
+        Ok((inode.filesystem_id(), inode.metadata()?.inode))
+    }
+
+    fn enter_mount(&self, inode: Arc<dyn Inode>) -> Result<Arc<dyn Inode>, FileSystemError> {
+        let identity = Self::identity(&inode)?;
+        Ok(self
+            .mounts
+            .lock()
+            .iter()
+            .find(|mount| mount.point_identity == identity)
+            .map_or(inode, |mount| mount.root.clone()))
+    }
+
+    fn leave_mount(&self, inode: &Arc<dyn Inode>) -> Option<Arc<dyn Inode>> {
+        let identity = Self::identity(inode).ok()?;
+        self.mounts
+            .lock()
+            .iter()
+            .find(|mount| mount.root_identity == identity)
+            .map(|mount| mount.parent.clone())
+    }
+
+    fn mount_point(&self, inode: &Arc<dyn Inode>) -> Option<Arc<dyn Inode>> {
+        let identity = Self::identity(inode).ok()?;
+        self.mounts
+            .lock()
+            .iter()
+            .find(|mount| mount.root_identity == identity)
+            .map(|mount| mount.point.clone())
     }
 
     fn resolve_from(
@@ -41,12 +82,14 @@ impl VirtualFileSystem {
         {
             match component {
                 b".." => {
-                    if (inode.filesystem_id(), inode.metadata()?.inode) != root_identity {
+                    if let Some(parent) = self.leave_mount(&inode) {
+                        inode = parent;
+                    } else if (inode.filesystem_id(), inode.metadata()?.inode) != root_identity {
                         inode = inode.find_child(b"..")?;
                     }
                 }
                 name => {
-                    inode = inode.find_child(name)?;
+                    inode = self.enter_mount(inode.find_child(name)?)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
                     if inode.inode_type() == InodeType::SymLink
@@ -92,6 +135,7 @@ impl VirtualFileSystem {
     pub(crate) fn new() -> Self {
         Self {
             root_fs: Mutex::new(None),
+            mounts: Mutex::new(Vec::new()),
         }
     }
 
@@ -117,7 +161,51 @@ impl VirtualFileSystem {
         Ok(())
     }
 
-    /// @description 将唯一根文件系统的已提交写入同步到 block device stable storage。
+    /// @description 将一个 filesystem adapter 挂到已存在的 root-namespace 目录。
+    ///
+    /// @param path absolute mountpoint pathname；必须解析为尚未挂载的目录。
+    /// @param filesystem mount 后由 root inode owner 保活的 filesystem adapter。
+    /// @return mount publication 完成时成功。
+    /// @errors 路径、类型、重复 mount、adapter root 或内存分配失败时返回明确错误。
+    pub(crate) fn mount_at(
+        &self,
+        path: &[u8],
+        filesystem: Arc<dyn FileSystem>,
+    ) -> Result<(), FileSystemError> {
+        if path.first() != Some(&b'/') {
+            return Err(FileSystemError::InvalidPath);
+        }
+        let point = self.open(path)?;
+        if point.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        let root = filesystem.root_inode()?;
+        if root.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        let parent = point.find_child(b"..")?;
+        let point_identity = Self::identity(&point)?;
+        let root_identity = Self::identity(&root)?;
+        let mut mounts = self.mounts.lock();
+        if mounts.iter().any(|mount| {
+            mount.point_identity == point_identity || mount.root_identity == root_identity
+        }) {
+            return Err(FileSystemError::AlreadyExists);
+        }
+        mounts
+            .try_reserve(1)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        mounts.push(Mount {
+            point_identity,
+            root_identity,
+            point,
+            parent,
+            root,
+        });
+        Ok(())
+    }
+
+    /// @description 将 persistent root filesystem 的已提交写入同步到 block device stable storage。
     ///
     /// @return flush 完成时成功。
     /// @errors 根文件系统未挂载或 block device flush 失败时返回明确文件系统错误。
@@ -185,6 +273,9 @@ impl VirtualFileSystem {
         let mut components = Vec::new();
         let mut visited = Vec::new();
         loop {
+            if let Some(point) = self.mount_point(&current) {
+                current = point;
+            }
             let identity = (current.filesystem_id(), current.metadata()?.inode);
             if identity == root_identity {
                 break;

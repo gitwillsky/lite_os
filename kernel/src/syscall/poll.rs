@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{MAX_FILE_DESCRIPTORS, OpenFileDescription, OpenFileKind},
+    fs::{CharacterDevice, MAX_FILE_DESCRIPTORS, OpenFileDescription, OpenFileKind},
     syscall::errno,
     task::{
         PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
@@ -34,13 +34,16 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
     };
     match &ofd.kind {
         OpenFileKind::Inode(_) => descriptor.events & (POLLIN | POLLOUT),
-        OpenFileKind::Terminal(terminal) => {
-            let mut result = descriptor.events & POLLOUT;
-            if descriptor.events & POLLIN != 0 && terminal.wait_ready() {
-                result |= POLLIN;
+        OpenFileKind::Character(device) => match device {
+            CharacterDevice::Null | CharacterDevice::Zero => descriptor.events & (POLLIN | POLLOUT),
+            CharacterDevice::Terminal { terminal, .. } => {
+                let mut result = descriptor.events & POLLOUT;
+                if descriptor.events & POLLIN != 0 && terminal.wait_ready() {
+                    result |= POLLIN;
+                }
+                result
             }
-            result
-        }
+        },
         OpenFileKind::Pipe(endpoint) => {
             let state = endpoint.pipe().poll_state(endpoint.direction());
             let mut result = 0;
@@ -68,7 +71,9 @@ fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Vec<PollWaitKey> {
             continue;
         };
         match &ofd.kind {
-            OpenFileKind::Terminal(_) if descriptor.events & POLLIN != 0 => {
+            OpenFileKind::Character(CharacterDevice::Terminal { .. })
+                if descriptor.events & POLLIN != 0 =>
+            {
                 keys.push(PollWaitKey::Console);
             }
             OpenFileKind::Pipe(endpoint) => {
@@ -112,7 +117,7 @@ fn copy_revents(task: &TaskControlBlock, descriptors: &[PollDescriptor]) -> Resu
 fn drain_terminals(descriptors: &[PollDescriptor]) {
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd
-            && let OpenFileKind::Terminal(terminal) = &ofd.kind
+            && let OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) = &ofd.kind
         {
             let _ = drain_terminal_input(terminal);
         }

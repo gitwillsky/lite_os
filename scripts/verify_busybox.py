@@ -29,6 +29,7 @@ BUSYBOX_LINKS = (
     "busybox",
     "cat",
     "cp",
+    "dd",
     "echo",
     "false",
     "grep",
@@ -259,7 +260,10 @@ def create_image(binary: Path, image: Path) -> Path:
         ],
         ROOT,
     )
-    commands = ["mkdir /etc", f"write {ROOT / 'user' / 'inittab'} /etc/inittab"]
+    commands = [
+        "mkdir /etc",
+        f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
+    ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
     script_path: Path | None = None
@@ -322,6 +326,11 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
                 "LITEOS_LS_42",
+                "LITEOS_NULL_42",
+                "LITEOS_ZERO_4",
+                "LITEOS_TTYDEV_42",
+                "LITEOS_CONSOLEDEV_42",
+                "LITEOS_DEVCWD_42",
                 "LITEOS_PIPE_42",
                 "LITEOS_REDIR_42",
                 "LITEOS_BG_42",
@@ -339,6 +348,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_LS_42",
+                    b"/bin/ls /dev; echo HIDDEN >/dev/null; echo LITEOS_NULL_$((6*7)); /bin/dd if=/dev/zero of=/zero bs=4 count=1 2>/dev/null; set -- $(/bin/wc -c /zero); echo LITEOS_ZERO_$1; echo LITEOS_TTYDEV_$((6*7)) >/dev/tty; echo LITEOS_CONSOLEDEV_$((6*7)) >/dev/console; cd /dev; set -- $(/bin/pwd); [ \"$1\" = /dev ] && echo LITEOS_DEVCWD_$((6*7)); cd /\n",
+                ),
+                (
+                    "LITEOS_DEVCWD_42",
                     b"/bin/echo LITEOS_PIPE_$((6*7)) | /bin/grep PIPE; echo LITEOS_REDIR_$((6*7)) > /redir; /bin/cat /redir; (echo LITEOS_BG_$((6*7)) > /bg) & wait; /bin/cat /bg; echo LITEOS_PERSIST_$((6*7)) > /persist; sync; echo LITEOS_PERSIST_WRITTEN_$((6*7))\n",
                 ),
                 (

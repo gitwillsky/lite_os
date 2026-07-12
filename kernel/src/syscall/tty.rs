@@ -1,5 +1,5 @@
 use crate::{
-    fs::OpenFileKind,
+    fs::{CharacterDevice, OpenFileKind},
     syscall::errno,
     task::{
         ProcessGroupError, claim_controlling_terminal, current_task, set_terminal_foreground_group,
@@ -37,7 +37,7 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let OpenFileKind::Terminal(terminal) = &ofd.kind else {
+    let OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) = &ofd.kind else {
         return -errno::ENOTTY;
     };
     match request {

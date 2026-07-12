@@ -18,6 +18,7 @@
 - 默认 private；扩大任何 scoped interface 必须更新 interface contract 并说明调用者。
 - 禁止私有 ABI、固定 hart 数、双轨实现、兼容入口和无领域含义的 module。
 - 新增 unsafe、global、lock、Atomic、Once、cache 或 flag 必须记录证明、owner 与失败后果。
+- 新能力与问题修复必须对照固定一手规范和成熟 kernel 语义；范围缩减必须在 ABI 矩阵/阶段文档精确记录，禁止以“能跑”代替正确语义。
 
 ## 修改前
 

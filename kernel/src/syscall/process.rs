@@ -378,6 +378,7 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
         ProgramLoadError::FileSystem(FileSystemError::NotFound) => errno::ENOENT,
         ProgramLoadError::FileSystem(FileSystemError::NotDirectory) => errno::ENOTDIR,
         ProgramLoadError::FileSystem(FileSystemError::SymbolicLink) => errno::ELOOP,
+        ProgramLoadError::FileSystem(FileSystemError::ReadOnly) => errno::EACCES,
         ProgramLoadError::FileSystem(FileSystemError::OutOfMemory) => errno::ENOMEM,
         ProgramLoadError::FileSystem(
             FileSystemError::AlreadyExists

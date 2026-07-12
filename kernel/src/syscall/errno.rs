@@ -10,6 +10,8 @@ pub(crate) const ESRCH: isize = 3;
 pub(crate) const EINTR: isize = 4;
 /// 输入输出错误。
 pub(crate) const EIO: isize = 5;
+/// 当前 Process 没有 controlling TTY 等目标设备。
+pub(crate) const ENXIO: isize = 6;
 /// 参数列表过长。
 pub(crate) const E2BIG: isize = 7;
 /// 可执行文件格式无效。
@@ -36,6 +38,8 @@ pub(crate) const EMFILE: isize = 24;
 /// fd 不是 TTY 或 TTY 不属于 caller session。
 pub(crate) const ENOTTY: isize = 25;
 pub(crate) const ENOSPC: isize = 28;
+/// 目标 filesystem 不允许 mutation。
+pub(crate) const EROFS: isize = 30;
 /// pipe 没有 reader。
 pub(crate) const EPIPE: isize = 32;
 pub(crate) const ESPIPE: isize = 29;

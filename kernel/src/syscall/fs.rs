@@ -3,16 +3,16 @@ use core::mem;
 
 use crate::{
     fs::{
-        FileSystemError, Inode, InodeMetadata, InodeType, MAX_FILE_DESCRIPTORS, O_ACCMODE,
-        O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind,
-        TerminalRead, vfs,
+        CharacterDevice, DeviceKind, FileSystemError, Inode, InodeMetadata, InodeType,
+        MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY,
+        OpenFileDescription, OpenFileKind, TerminalRead, vfs,
     },
     ipc::{PIPE_BUF, PipeDirection, PipeRead, PipeWrite},
     memory::UserAccessError,
     syscall::errno,
     task::{
         TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, drain_terminal_input,
-        send_thread_signal, wait_for_pipe,
+        send_thread_signal, session_id, wait_for_pipe,
     },
 };
 
@@ -40,6 +40,7 @@ fn ferr(error: FileSystemError) -> isize {
         FileSystemError::DirectoryNotEmpty => errno::ENOTEMPTY,
         FileSystemError::NoSpace => errno::ENOSPC,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
+        FileSystemError::ReadOnly => errno::EROFS,
         FileSystemError::SymbolicLink => errno::ELOOP,
         FileSystemError::OutOfMemory => errno::ENOMEM,
         FileSystemError::IoError | FileSystemError::InvalidFileSystem => errno::EIO,
@@ -70,10 +71,8 @@ fn base(task: &TaskControlBlock, fd: isize, path: &[u8]) -> Result<Option<Arc<dy
     if fd == AT_FDCWD {
         return Ok(Some(task.working_directory()));
     }
-    let inode = task
-        .fd_get(fd as usize)
-        .and_then(|ofd| ofd.inode_ref())
-        .ok_or(-errno::EBADF)?;
+    let ofd = task.fd_get(fd as usize).ok_or(-errno::EBADF)?;
+    let inode = ofd.inode_ref().ok_or(-errno::ENOTDIR)?;
     if inode.inode_type() != InodeType::Directory {
         return Err(-errno::ENOTDIR);
     }
@@ -139,17 +138,36 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
     if inode.inode_type() == InodeType::Directory && flags & O_ACCMODE != O_RDONLY {
         return -errno::EISDIR;
     }
-    if flags & O_TRUNC != 0
-        && flags & O_ACCMODE != O_RDONLY
-        && let Err(error) = inode.truncate(0)
+    if !matches!(
+        inode.inode_type(),
+        InodeType::File | InodeType::Directory | InodeType::CharacterDevice
+    ) || inode.inode_type() == InodeType::CharacterDevice && inode.device_kind().is_none()
     {
-        return ferr(error);
+        return -errno::ENXIO;
     }
-    task.fd_allocate(
-        OpenFileDescription::inode(inode, flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC)),
-        flags & O_CLOEXEC != 0,
-    )
-    .map_or(-errno::EMFILE, |v| v as isize)
+    let ofd_flags = flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
+    let ofd = if let Some(device) = inode.device_kind() {
+        let terminal = task.terminal();
+        if device == DeviceKind::Tty {
+            let Ok(session) = session_id(0) else {
+                return -errno::ENXIO;
+            };
+            if terminal.controlling_session() != Some(session) {
+                return -errno::ENXIO;
+            }
+        }
+        OpenFileDescription::character(device, terminal, ofd_flags)
+    } else {
+        if flags & O_TRUNC != 0
+            && flags & O_ACCMODE != O_RDONLY
+            && let Err(error) = inode.truncate(0)
+        {
+            return ferr(error);
+        }
+        OpenFileDescription::inode(inode, ofd_flags)
+    };
+    task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
+        .map_or(-errno::EMFILE, |v| v as isize)
 }
 
 pub(crate) fn sys_close(fd: usize) -> isize {
@@ -204,31 +222,58 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
         return -errno::EBADF;
     }
-    if let OpenFileKind::Terminal(console) = &ofd.kind {
-        if length == 0 {
-            return 0;
-        }
-        let mut chunk = [0u8; 512];
-        loop {
-            if drain_terminal_input(console).is_err() {
-                return -errno::EIO;
-            }
-            let count = length.min(chunk.len());
-            let read = match console.read(&mut chunk[..count]) {
-                TerminalRead::Empty => match crate::task::wait_for_console(|| console.wait_ready())
-                {
-                    crate::task::WaitResult::Woken => continue,
-                    crate::task::WaitResult::Interrupted => return -errno::EINTR,
-                    crate::task::WaitResult::TimedOut => {
-                        panic!("console wait cannot time out")
+    if let OpenFileKind::Character(device) = &ofd.kind {
+        match device {
+            CharacterDevice::Null => return 0,
+            CharacterDevice::Zero => {
+                let zeroes = [0u8; 512];
+                let mut copied = 0;
+                while copied < length {
+                    let count = (length - copied).min(zeroes.len());
+                    if task
+                        .copy_to_user(pointer as usize + copied, &zeroes[..count])
+                        .is_err()
+                    {
+                        return if copied == 0 {
+                            -errno::EFAULT
+                        } else {
+                            copied as isize
+                        };
                     }
-                },
-                TerminalRead::Bytes(read) => read,
-                TerminalRead::Eof => return 0,
-            };
-            return task
-                .copy_to_user(pointer as usize, &chunk[..read])
-                .map_or(-errno::EFAULT, |()| read as isize);
+                    copied += count;
+                }
+                return copied as isize;
+            }
+            CharacterDevice::Terminal {
+                terminal: console, ..
+            } => {
+                if length == 0 {
+                    return 0;
+                }
+                let mut chunk = [0u8; 512];
+                loop {
+                    if drain_terminal_input(console).is_err() {
+                        return -errno::EIO;
+                    }
+                    let count = length.min(chunk.len());
+                    let read = match console.read(&mut chunk[..count]) {
+                        TerminalRead::Empty => {
+                            match crate::task::wait_for_console(|| console.wait_ready()) {
+                                crate::task::WaitResult::Woken => continue,
+                                crate::task::WaitResult::Interrupted => return -errno::EINTR,
+                                crate::task::WaitResult::TimedOut => {
+                                    panic!("console wait cannot time out")
+                                }
+                            }
+                        }
+                        TerminalRead::Bytes(read) => read,
+                        TerminalRead::Eof => return 0,
+                    };
+                    return task
+                        .copy_to_user(pointer as usize, &chunk[..read])
+                        .map_or(-errno::EFAULT, |()| read as isize);
+                }
+            }
         }
     }
     if let OpenFileKind::Pipe(endpoint) = &ofd.kind {
@@ -258,7 +303,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
         }
     }
     let OpenFileKind::Inode(inode) = &ofd.kind else {
-        unreachable!("terminal handled above")
+        unreachable!("character device handled above")
     };
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
@@ -366,15 +411,20 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         }
         let wrote = match &ofd.kind {
             OpenFileKind::Pipe(_) => unreachable!("pipe handled before offset-backed write"),
-            OpenFileKind::Terminal(console) => match console.write(&chunk[..count]) {
-                Ok(written) => written,
-                Err(error) => {
-                    return if total == 0 {
-                        ferr(error)
-                    } else {
-                        total as isize
-                    };
-                }
+            OpenFileKind::Character(device) => match device {
+                CharacterDevice::Null | CharacterDevice::Zero => count,
+                CharacterDevice::Terminal {
+                    terminal: console, ..
+                } => match console.write(&chunk[..count]) {
+                    Ok(written) => written,
+                    Err(error) => {
+                        return if total == 0 {
+                            ferr(error)
+                        } else {
+                            total as isize
+                        };
+                    }
+                },
             },
             OpenFileKind::Inode(inode) => {
                 if *ofd.flags.lock() & O_APPEND != 0 {
@@ -546,7 +596,8 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let stream = matches!(&ofd.kind, OpenFileKind::Terminal(_) | OpenFileKind::Pipe(_));
+    let stream = matches!(&ofd.kind, OpenFileKind::Pipe(_))
+        || matches!(&ofd.kind, OpenFileKind::Character(device) if device.terminal().is_some());
     let mut vectors = Vec::new();
     if vectors.try_reserve_exact(count).is_err() {
         return -errno::ENOMEM;
@@ -751,7 +802,7 @@ pub(crate) fn sys_fsync(fd: usize) -> isize {
         return -errno::EBADF;
     };
     ofd.inode_ref()
-        .map_or(0, |i| i.sync().map_or_else(ferr, |_| 0))
+        .map_or(-errno::EINVAL, |i| i.sync().map_or_else(ferr, |_| 0))
 }
 
 /// @description 将唯一 mounted filesystem 的已提交写入同步到 stable storage。
@@ -790,13 +841,13 @@ const _: () = assert!(mem::size_of::<LinuxStat>() == 128);
 fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMetadata>) -> isize {
     let stat = if let Some(metadata) = metadata {
         LinuxStat {
-            st_dev: 1,
+            st_dev: metadata.filesystem,
             st_ino: metadata.inode,
             st_mode: metadata.mode,
             st_nlink: metadata.links,
             st_uid: metadata.uid,
             st_gid: metadata.gid,
-            st_rdev: 0,
+            st_rdev: metadata.device.map_or(0, encode_device),
             pad1: 0,
             st_size: metadata.size as i64,
             st_blksize: metadata.block_size as i32,
@@ -844,6 +895,33 @@ fn copy_stat(task: &TaskControlBlock, pointer: *mut u8, metadata: Option<InodeMe
         .map_or(-errno::EFAULT, |_| 0)
 }
 
+fn encode_device(device: DeviceKind) -> u64 {
+    let (major, minor) = device.numbers();
+    u64::from(minor & 0xff)
+        | (u64::from(major & 0xfff) << 8)
+        | (u64::from(minor & !0xff) << 12)
+        | (u64::from(major & !0xfff) << 32)
+}
+
+fn character_metadata(device: DeviceKind) -> InodeMetadata {
+    InodeMetadata {
+        filesystem: 2,
+        inode: device.inode(),
+        kind: InodeType::CharacterDevice,
+        mode: device.mode(),
+        links: 1,
+        uid: 0,
+        gid: 0,
+        size: 0,
+        blocks: 0,
+        block_size: 4096,
+        atime: 0,
+        mtime: 0,
+        ctime: 0,
+        device: Some(device),
+    }
+}
+
 pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -856,7 +934,13 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
             Ok(metadata) => copy_stat(&task, pointer, Some(metadata)),
             Err(error) => ferr(error),
         },
-        None => copy_stat(&task, pointer, None),
+        None => match &ofd.kind {
+            OpenFileKind::Character(device) => {
+                copy_stat(&task, pointer, Some(character_metadata(device.kind())))
+            }
+            OpenFileKind::Pipe(_) => copy_stat(&task, pointer, None),
+            OpenFileKind::Inode(_) => unreachable!("inode_ref lost inode OFD"),
+        },
     }
 }
 
@@ -915,6 +999,7 @@ pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isiz
             InodeType::Directory => 4,
             InodeType::Fifo => 1,
             InodeType::SymLink => 10,
+            InodeType::CharacterDevice => 2,
             InodeType::File => 8,
         });
         output.extend_from_slice(&entry.name);

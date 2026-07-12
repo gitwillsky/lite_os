@@ -94,6 +94,10 @@ fn mount_root_filesystem() {
         .mount_root(filesystem)
         .expect("root filesystem mounted more than once");
     info!("ext2 root filesystem mounted at /");
+    fs::vfs()
+        .mount_at(b"/dev", fs::DevFileSystem::instance())
+        .expect("failed to mount devfs at /dev");
+    info!("devfs mounted at /dev");
 }
 
 struct PlatformConsole;

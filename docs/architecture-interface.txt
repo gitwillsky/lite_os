@@ -349,11 +349,16 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqAvail
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqDesc
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsed
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsedElem
+kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Arc < Self >
+kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
 kernel/src/fs/ext2.rs :: pub (crate) impl Ext2FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/ext2.rs :: pub (crate) struct Ext2FileSystem
+kernel/src/fs/file.rs :: enum CharacterDevice :: Null
+kernel/src/fs/file.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
+kernel/src/fs/file.rs :: enum CharacterDevice :: Zero
+kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < dyn Inode >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
-kernel/src/fs/file.rs :: enum OpenFileKind :: Terminal (Arc < Terminal >)
 kernel/src/fs/file.rs :: enum TerminalRead :: Bytes (usize)
 kernel/src/fs/file.rs :: enum TerminalRead :: Empty
 kernel/src/fs/file.rs :: enum TerminalRead :: Eof
@@ -367,8 +372,11 @@ kernel/src/fs/file.rs :: pub (crate) const O_CLOEXEC : u32 = 0x80000
 kernel/src/fs/file.rs :: pub (crate) const O_NONBLOCK : u32 = 0x800
 kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
+kernel/src/fs/file.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) enum TerminalRead
+kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
+kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn terminal (& self) -> Option < & Arc < Terminal > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool ,) -> Result < usize , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close (& mut self , fd : usize) -> Result < () , () >
@@ -381,6 +389,7 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn set_descript
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Self
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (inode : Arc < dyn Inode > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32) -> Arc < Self >
@@ -408,6 +417,11 @@ kernel/src/fs/file.rs :: pub (crate) trait Console
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/inode.rs :: enum DeviceKind :: Console
+kernel/src/fs/inode.rs :: enum DeviceKind :: Null
+kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
+kernel/src/fs/inode.rs :: enum DeviceKind :: Zero
+kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
 kernel/src/fs/inode.rs :: enum InodeType :: Fifo = 4
 kernel/src/fs/inode.rs :: enum InodeType :: File = 0
@@ -419,6 +433,8 @@ kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: atime : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: block_size : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: blocks : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: ctime : u64
+kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: device : Option < DeviceKind >
+kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: filesystem : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: gid : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: inode : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: kind : InodeType
@@ -427,12 +443,17 @@ kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mode : u32
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: mtime : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: size : u64
 kernel/src/fs/inode.rs :: pub (crate) InodeMetadata :: uid : u32
+kernel/src/fs/inode.rs :: pub (crate) enum DeviceKind
 kernel/src/fs/inode.rs :: pub (crate) enum InodeType
+kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn inode (self) -> u64
+kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn mode (self) -> u32
+kernel/src/fs/inode.rs :: pub (crate) impl DeviceKind :: fn numbers (self) -> (u32 , u32)
 kernel/src/fs/inode.rs :: pub (crate) struct DirectoryEntry
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
 kernel/src/fs/inode.rs :: trait Inode :: fn append (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kind : InodeType , mode : u32 ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn device_kind (& self) -> Option < DeviceKind >
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
@@ -457,18 +478,21 @@ kernel/src/fs/mod.rs :: enum FileSystemError :: NoSpace
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotDirectory
 kernel/src/fs/mod.rs :: enum FileSystemError :: NotFound
 kernel/src/fs/mod.rs :: enum FileSystemError :: OutOfMemory
+kernel/src/fs/mod.rs :: enum FileSystemError :: ReadOnly
 kernel/src/fs/mod.rs :: enum FileSystemError :: SymbolicLink
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
+kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
-kernel/src/fs/mod.rs :: pub (crate) use file :: { Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalRead , }
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DirectoryEntry , Inode , InodeMetadata , InodeType }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalRead , }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { init as init_vfs , vfs }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , inode : Arc < dyn Inode >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , kind : InodeType , mode : u32 ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_at (& self , path : & [u8] , filesystem : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , fs : Arc < dyn FileSystem >) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open (& self , path : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -692,9 +716,11 @@ kernel/src/syscall/errno.rs :: pub (crate) const ENOSYS : isize = 38
 kernel/src/syscall/errno.rs :: pub (crate) const ENOTDIR : isize = 20
 kernel/src/syscall/errno.rs :: pub (crate) const ENOTEMPTY : isize = 39
 kernel/src/syscall/errno.rs :: pub (crate) const ENOTTY : isize = 25
+kernel/src/syscall/errno.rs :: pub (crate) const ENXIO : isize = 6
 kernel/src/syscall/errno.rs :: pub (crate) const EPERM : isize = 1
 kernel/src/syscall/errno.rs :: pub (crate) const EPIPE : isize = 32
 kernel/src/syscall/errno.rs :: pub (crate) const ERANGE : isize = 34
+kernel/src/syscall/errno.rs :: pub (crate) const EROFS : isize = 30
 kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
 kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
 kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
