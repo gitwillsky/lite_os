@@ -1,0 +1,25 @@
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_67e500c07fbd26 1963-1986
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_b0fcaeccf627b5 68-73
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_43ac9a464f24c6 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d836f87b943bf09ad02c897cb00d38213feda930",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
