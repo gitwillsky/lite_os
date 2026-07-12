@@ -1,0 +1,33 @@
+Makefile
+  s_d637a88cd4b00d::t_8d91cc5bd57491 1,37-39
+README.md
+  s_d637a88cd4b00d::t_54ce17edaeec71 114-115
+docs/phase-33-busybox-build-cache.md
+  s_d637a88cd4b00d::t_d0f03d2af183f8 1-27
+scripts/build_cache.py
+  s_d637a88cd4b00d::t_8d546ac03cbb56 1-136
+scripts/verify_artifacts.py
+  s_d637a88cd4b00d::t_0bd247964d93b2 11-13,29,31,60,62,67,72,74-76
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_5cf0ba46ee9fd0 14-27,29-35,43-44,69-80,84,101-115,136,138-139,159-160,177-183,201,212,214-261,263-322,429-433,437,439-443
+scripts/verify_musl.py
+  s_d637a88cd4b00d::t_bc40996bbd9f96 14-28,358
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d37d81915050edb1dfff4d1174c3d4617986b5f8",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
