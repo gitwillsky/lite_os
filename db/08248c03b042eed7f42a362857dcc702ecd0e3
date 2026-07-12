@@ -1,0 +1,35 @@
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_7b06bea4809a09 9-12,224-229,245
+kernel/src/task/mod.rs
+  s_d637a88cd4b00d::t_0b71803af5af77 17-18
+kernel/src/task/model.rs
+  s_d637a88cd4b00d::t_96f3a219e8de79 23-26,31-43,45-54,57-70,795-799
+kernel/src/task/model/signal_state.rs
+  s_d637a88cd4b00d::t_254f6d14665a9e 13,24-28,77-101,158-161,194-270
+kernel/src/task/task_manager/procfs.rs
+  s_d637a88cd4b00d::t_e0a4d262e8e1ed 68,72-73,152
+kernel/src/task/task_manager/wait_child.rs
+  s_d637a88cd4b00d::t_cf2f39ff511b3d 1-181
+kernel/src/trap/mod.rs
+  s_d637a88cd4b00d::t_c6c6fb6e278b52 18,210-225,228
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_a5c4991126ee3c 568-570,644,647-664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "db08248c03b042eed7f42a362857dcc702ecd0e3",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
