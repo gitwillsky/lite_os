@@ -528,6 +528,7 @@ def main() -> int:
                 "LITEOS_MATH_42",
                 "LITEOS_TOOLS_42",
                 "LITEOS_TOP_42",
+                "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
                 "LITEOS_ARCHIVE_42",
                 "LITEOS_PIPE_42",
@@ -575,6 +576,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOP_42",
+                    b"/bin/ls -l /lib | /bin/grep -q 'ld-musl-riscv64.so.1 -> /usr/lib/libc.so' && echo LITEOS_READLINK_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_READLINK_42",
                     b"/bin/dynamic-smoke\n",
                 ),
                 (
