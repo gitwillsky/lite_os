@@ -1,0 +1,63 @@
+AGENTS.md
+  s_d637a88cd4b00d::t_2728a6039a460b 21
+README.md
+  s_d637a88cd4b00d::t_e467cfbed3487d 13
+create_fs.py
+  s_d637a88cd4b00d::t_58a08adf95acb5 9-10,77-78
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_1719720ad1ecc0 54,69
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_5154e4576786b1 352-353,356-359,375,378-379,392,420-424,436-437,446,448-450,456,481,485,487-488,495,719,723
+docs/architecture.md
+  s_d637a88cd4b00d::t_a76243cab28c37 28,61,63,137-138,140,172,226
+docs/phase-31-device-filesystem.md
+  s_d637a88cd4b00d::t_c0f88f86585268 1-22
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_05efaf3f8b4be1 38,42,46-47,50
+kernel/src/fs/devfs.rs
+  s_d637a88cd4b00d::t_6c37fba26c2055 1-222
+kernel/src/fs/ext2.rs
+  s_d637a88cd4b00d::t_ca668f38f64a7a 1121,1154,1859,1872,1973
+kernel/src/fs/file.rs
+  s_d637a88cd4b00d::t_3036e21fc9e24b 4,15-42,44,410-426,451
+kernel/src/fs/inode.rs
+  s_d637a88cd4b00d::t_38cd000ebe6002 11,15-51,55,68,91-95
+kernel/src/fs/mod.rs
+  s_d637a88cd4b00d::t_098756ef8c31b8 3,9,12-14,16,30
+kernel/src/fs/vfs.rs
+  s_d637a88cd4b00d::t_30571dda9fa6f7 6,9-17,29-60,85-87,92,138,164-208,276-278
+kernel/src/main.rs
+  s_d637a88cd4b00d::t_e72ff15c8b37d2 97-100
+kernel/src/syscall/errno.rs
+  s_d637a88cd4b00d::t_94447306dd5b55 13-14,41-42
+kernel/src/syscall/fs.rs
+  s_d637a88cd4b00d::t_a5ac0fd8cf39cb 6-8,15,43,74-75,141-144,146,148-170,225-245,247-256,258-276,306,414-427,599-600,805,844,850,898-924,937-943,1002
+kernel/src/syscall/poll.rs
+  s_d637a88cd4b00d::t_544b59116e94d3 4,37-44,46,74-76,120
+kernel/src/syscall/process.rs
+  s_d637a88cd4b00d::t_1556284053a215 381
+kernel/src/syscall/tty.rs
+  s_d637a88cd4b00d::t_cd14661ad90c6e 2,40
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_6bea37959a55ad 32,263-266,329-333,351-354
+user/busybox.config
+  s_d637a88cd4b00d::t_029e20f29b64eb 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "512ad3e667875d63f4c2b8a74a5816b1a75ab050",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
