@@ -1,0 +1,71 @@
+README.md
+  s_d637a88cd4b00d::t_ee93f785a0006e 16
+docs/architecture-contract.md
+  s_d637a88cd4b00d::t_086b9750ac6e42 55,101
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_26a4b51a623970 1041,1044,1103,1107,1110-1125,1137,1159-1163,1322,1342,1389,1391
+docs/architecture.md
+  s_d637a88cd4b00d::t_71073e5e0b49d0 192,196,228,237
+docs/phase-51-dhcp-dns-http.md
+  s_d637a88cd4b00d::t_4fcad766a47608 17
+docs/phase-52-icmp-https.md
+  s_d637a88cd4b00d::t_57b7e2218fcd18 1-16
+docs/standards-baseline.md
+  s_d637a88cd4b00d::t_f036b5c502a108 22
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_ef13f47157962d 15,31,51,84,94,110,116
+kernel/Cargo.toml
+  s_d637a88cd4b00d::t_d6dd37930cb39d 19
+kernel/src/socket.rs
+  s_d637a88cd4b00d::t_2cfe5e7a9fc67f 161-163,424-441
+kernel/src/socket/inet.rs
+  s_d637a88cd4b00d::t_3f2dd274448872 18,25,31-32,39-40,79,131,171,220,259,294-296,315,323-325,334-336,345-347,356-358,374-376,389-392,480-483
+kernel/src/socket/inet/options.rs
+  s_d637a88cd4b00d::t_36c340047bedf3 13-14,41,51-53,73-75,92,97-100
+kernel/src/socket/inet/raw.rs
+  s_d637a88cd4b00d::t_e330324499e533 1-272
+kernel/src/socket/inet/tcp.rs
+  s_d637a88cd4b00d::t_830e7b644a6b39 107-130,134-136,427-430
+kernel/src/socket/inet/wait.rs
+  s_d637a88cd4b00d::t_f86d234bf1d55b 1-44
+kernel/src/syscall/ioctl.rs
+  s_d637a88cd4b00d::t_e4fe966cea7ee1 2,6-7,21-36
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_320bce0793c7ea 12,24,100,219
+kernel/src/syscall/riscv_hwprobe.rs
+  s_d637a88cd4b00d::t_0848596282423d 1-79
+kernel/src/syscall/socket/options.rs
+  s_d637a88cd4b00d::t_87fb27569ebd75 5-7,38-44,51-52,59-62,75
+kernel/src/system.rs
+  s_d637a88cd4b00d::t_a044d5a616a2e4 26-50
+scripts/https_gate.py
+  s_d637a88cd4b00d::t_20d0e72a6eafe2 1-26
+scripts/musl_clang.py
+  s_d637a88cd4b00d::t_84ef0197f2183a 32
+scripts/openssl_cache.py
+  s_d637a88cd4b00d::t_d6acc26d3897d7 1-177
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_4e61cd38d7e2e8 32,87,136-208,535-540,558,570-572,636-641,666,676,678,685,693-694,700-701,709,711-712,715-716,726,728,731-732,789,793-797,801-804,813-820,1207-1213
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_111104b0d9b599 34,108
+user/busybox.config
+  s_d637a88cd4b00d::t_ed1295d2b2ef34 72-73,91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f7cfd8f31f6a279f7a36f99a82eba5d40c13d5ed",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
