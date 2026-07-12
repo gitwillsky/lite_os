@@ -101,6 +101,8 @@ make verify-musl
 
 该目标校验官方 release tarball SHA-256，在 `target/musl-static/` 构建一次性工具链产物，将 `user/musl-smoke.c` 链接为静态 `ET_EXEC`，再以独立 ext2 镜像冷启动并要求输出 `LiteOS musl pthread signal ok`。consumer 实际执行 `pthread_create/join`、mutex/condition/timedwait，以及 `tgkill` 分别中断 futex、`nanosleep` 和 `waitpid` 的 handler/`EINTR`/`rem`/reap 路径；随后启用 `SA_RESTART`，验证无 timeout futex 和 `waitpid` 透明重放而 `nanosleep` 仍返回 `EINTR`。musl 源码和二进制不进入仓库。
 
+musl source、sysroot 和 smoke ELF 分别使用包含官方 SHA-256、compiler identity、configure/link recipe 和 consumer hash 的 content fingerprint。缓存以不可变 generation 生成，并用进程锁与原子 symlink 切换发布；普通命中不重新 configure/build/install。冷构建并行度默认来自宿主 CPU/上层 GNU Make jobserver，可用 `LITEOS_BUILD_JOBS=<n>` 显式覆盖。强制重建使用 `python3 scripts/verify_musl.py --build-only --rebuild`；清理全部 generation 使用 `make clean-musl`。
+
 固定 BusyBox 1.37.0 `init + ash` 验收可单独执行：
 
 ```bash

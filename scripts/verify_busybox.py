@@ -14,12 +14,10 @@ import urllib.request
 from pathlib import Path
 
 from qemu_gate import boot
-from verify_musl import find_compiler, run
+from verify_musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "busybox-static"
-MUSL_INSTALL = ROOT / "target" / "musl-static" / "install"
-MUSL_SOURCE = ROOT / "target" / "musl-static" / "source"
 CONFIG_FRAGMENT = ROOT / "user" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
@@ -144,8 +142,7 @@ def configure(source: Path, env: dict[str, str]) -> None:
 
 def build_busybox(source: Path, compiler: Path) -> Path:
     """使用上一 gate 产出的固定 musl sysroot 构建静态 BusyBox。"""
-    if not (MUSL_INSTALL / "lib" / "libc.a").is_file() or not MUSL_SOURCE.is_dir():
-        raise RuntimeError("musl gate must run before BusyBox gate")
+    musl = cached_musl_paths(compiler)
     env = os.environ.copy()
     env["LC_ALL"] = "C"
     for name in ("CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH", "LIBRARY_PATH"):
@@ -156,9 +153,9 @@ def build_busybox(source: Path, compiler: Path) -> Path:
     result = subprocess.run(
         [
             "sh",
-            str(MUSL_SOURCE / "tools" / "musl-gcc.specs.sh"),
-            str(MUSL_INSTALL / "include"),
-            str(MUSL_INSTALL / "lib"),
+            str(musl.source / "tools" / "musl-gcc.specs.sh"),
+            str(musl.install / "include"),
+            str(musl.install / "lib"),
             "/lib/ld-musl-riscv64.so.1",
         ],
         cwd=ROOT,
