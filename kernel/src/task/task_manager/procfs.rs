@@ -9,6 +9,20 @@ use crate::{
 
 use super::{LoadAverage, ProcessState, TASK_MANAGER};
 
+/// @description task façade 对外提供的系统运行状态快照，不拥有任何统计状态。
+pub(crate) struct SystemInfoSnapshot {
+    /// 自启动起的 monotonic 微秒数。
+    pub(crate) uptime_us: u64,
+    /// allocator 当前管理的物理内存字节数。
+    pub(crate) total_memory_bytes: u64,
+    /// allocator 当前空闲的物理内存字节数。
+    pub(crate) free_memory_bytes: u64,
+    /// process graph 当前 live thread 数量。
+    pub(crate) task_count: usize,
+    /// TaskManager 唯一 EWMA owner 投影出的 1/5/15 分钟千分制负载。
+    pub(crate) load_milli: [u64; 3],
+}
+
 /// @description 将 task/memory/processor 的权威状态投影为 procfs 只读快照。
 pub(crate) struct KernelProcSource;
 
@@ -117,6 +131,21 @@ fn process_snapshot() -> ProcSnapshot {
         load_milli,
         cpus,
         processes,
+    }
+}
+
+/// @description 从 procfs 共用的采集边界投影系统级运行状态，避免 syscall 复制统计路径。
+///
+/// @return 当前 uptime、内存、任务数与 1/5/15 分钟负载的不可变快照。
+pub(crate) fn system_info_snapshot() -> SystemInfoSnapshot {
+    let snapshot = process_snapshot();
+    let page_size = crate::memory::PAGE_SIZE as u64;
+    SystemInfoSnapshot {
+        uptime_us: snapshot.uptime_us,
+        total_memory_bytes: (snapshot.total_pages as u64).saturating_mul(page_size),
+        free_memory_bytes: (snapshot.free_pages as u64).saturating_mul(page_size),
+        task_count: snapshot.total_tasks,
+        load_milli: snapshot.load_milli,
     }
 }
 

@@ -56,6 +56,7 @@
 | termios、cooked input、controlling session、foreground process group | Terminal；TaskManager 只读取 job-control 判定结果，不复制 TTY 状态 |
 | per-hart busy runtime | ProcessorTopology 对应 hart slot；procfs 不另建 CPU counter |
 | 1/5/15 minute load average | TaskManager 的单一 fixed-point EWMA state |
+| system information snapshot | task façade 只投影 allocator、process graph、load average 与 timer 的权威状态；procfs/sysinfo 不另建 counter |
 | root mount、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
 | inode/on-disk allocation state | filesystem adapter mutation domain |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
@@ -85,6 +86,7 @@
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照；禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。

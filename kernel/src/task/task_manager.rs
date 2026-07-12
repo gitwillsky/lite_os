@@ -38,7 +38,7 @@ pub(crate) use process_group::{
     terminal_foreground_group,
 };
 pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
-pub(crate) use procfs::KernelProcSource;
+pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
     SignalSendError, send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,

@@ -61,6 +61,7 @@ BUSYBOX_LINKS = (
     "expr",
     "false",
     "find",
+    "free",
     "grep",
     "gunzip",
     "gzip",
@@ -70,6 +71,7 @@ BUSYBOX_LINKS = (
     "mkdir",
     "mv",
     "printf",
+    "ps",
     "pwd",
     "rm",
     "rmdir",
@@ -89,6 +91,7 @@ BUSYBOX_LINKS = (
     "tr",
     "true",
     "uniq",
+    "uptime",
     "wc",
     "zcat",
 )
@@ -556,6 +559,7 @@ def main() -> int:
                 "LITEOS_FIND_42",
                 "LITEOS_MATH_42",
                 "LITEOS_TOOLS_42",
+                "LITEOS_OBSERVABILITY_42",
                 "LITEOS_TOP_42",
                 "LITEOS_READLINK_42",
                 "LITEOS_DLOPEN_42",
@@ -620,6 +624,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TOOLS_42",
+                    b"/bin/ps > /ps.out; proc_total=$(/bin/awk '/^MemTotal:/ {print $2}' /proc/meminfo); free_total=$(/bin/free | /bin/awk '/^Mem:/ {print $2}'); /bin/grep -q init /ps.out && /bin/grep -q sh /ps.out && [ \"$proc_total\" = \"$free_total\" ] && /bin/uptime | /bin/grep -q 'load average:' && echo LITEOS_OBSERVABILITY_$((6*7))\n",
+                ),
+                (
+                    "LITEOS_OBSERVABILITY_42",
                     b"/bin/top -bn1 | /bin/grep -q init && echo LITEOS_TOP_$((6*7))\n",
                 ),
                 (

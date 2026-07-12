@@ -881,6 +881,7 @@ kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigsuspend (mask : usize ,
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigtimedwait (set : usize , info : usize , timeout : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_tgkill (tgid : usize , tid : usize , signal : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_tkill (tid : usize , signal : usize) -> isize
+kernel/src/syscall/system_info.rs :: pub (crate) fn sys_sysinfo (address : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_nsec : i64
 kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_sec : i64
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_gettime (clock_id : i32 , result : * mut TimeSpec) -> isize
@@ -1142,7 +1143,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_ti
 kernel/src/task/task_manager.rs :: pub (crate) impl PollWaitKey :: fn pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> Self
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
-kernel/src/task/task_manager.rs :: pub (crate) use procfs :: KernelProcSource
+kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , wait_child }
@@ -1175,7 +1176,14 @@ kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn curre
 kernel/src/task/task_manager/process_group.rs :: pub (in crate :: task) fn mark_process_exec (tgid : usize)
 kernel/src/task/task_manager/process_group.rs :: pub (super) fn orphaned_stopped_groups (graph : & ProcessGraph ,) -> BTreeMap < (usize , usize) , Vec < usize > >
 kernel/src/task/task_manager/process_group.rs :: pub (super) fn process_group_is_orphaned (graph : & ProcessGraph , session : usize , process_group : usize ,) -> bool
+kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: free_memory_bytes : u64
+kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: load_milli : [u64 ; 3]
+kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: task_count : usize
+kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: total_memory_bytes : u64
+kernel/src/task/task_manager/procfs.rs :: pub (crate) SystemInfoSnapshot :: uptime_us : u64
+kernel/src/task/task_manager/procfs.rs :: pub (crate) fn system_info_snapshot () -> SystemInfoSnapshot
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
+kernel/src/task/task_manager/procfs.rs :: pub (crate) struct SystemInfoSnapshot
 kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Running
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Stopped
