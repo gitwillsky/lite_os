@@ -1,0 +1,43 @@
+README.md
+  s_d637a88cd4b00d::t_68e1bdba19808c 16
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_d1666c9c2cf8d2 904,909,918
+docs/phase-41-system-identity.md
+  s_d637a88cd4b00d::t_abcf9d2c4e3617 1-17
+docs/phase-42-wallclock.md
+  s_d637a88cd4b00d::t_fc9c6ae997bd18 1-17
+docs/syscall-support.md
+  s_d637a88cd4b00d::t_17f58fbd629d33 15,31,72-73,103
+kernel/src/syscall/mod.rs
+  s_d637a88cd4b00d::t_e3c5044eb2e0ca 10,17,117-118
+kernel/src/syscall/system_identity.rs
+  s_d637a88cd4b00d::t_3bf1376afc85f3 1-28
+kernel/src/syscall/timer.rs
+  s_d637a88cd4b00d::t_045655886a876d 17-41
+kernel/src/system.rs
+  s_d637a88cd4b00d::t_4c83c8eff565aa 12-25
+syscall-abi/src/lib.rs
+  s_d637a88cd4b00d::t_f44f842dc01ce4 53-54
+user/busybox.config
+  s_d637a88cd4b00d::t_ea1a186904a2d3 16-17,47-49
+user/dynamic-smoke.c
+  s_d637a88cd4b00d::t_e506cc61599335 7-9,14-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4a5e7fac6986f7056941ba53ceab3177a53fa99b",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
