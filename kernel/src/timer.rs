@@ -91,6 +91,18 @@ pub(crate) fn get_realtime_ns() -> u64 {
     read_goldfish_rtc_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
+/// @description 返回本次启动时刻对应的 Unix epoch 秒数。
+///
+/// @return RTC 校准得到的 realtime offset，按秒向下取整。
+/// @panics `init_rtc` 尚未发布 realtime offset 时 panic，避免 procfs 输出伪造启动时间。
+pub(crate) fn boot_epoch_seconds() -> u64 {
+    assert!(
+        REALTIME_INITIALIZED.load(Ordering::Acquire),
+        "boot epoch read before realtime initialization"
+    );
+    REALTIME_OFFSET_NS.load(Ordering::Relaxed) / NSEC_PER_SEC
+}
+
 pub(crate) fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = dtb::board_info().time_base_freq;

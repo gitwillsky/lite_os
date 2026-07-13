@@ -7,7 +7,7 @@ use crate::{
     },
     memory::frame_statistics,
     task::{RunState, processor::cpu_runtime_snapshot},
-    timer::get_time_us,
+    timer::{boot_epoch_seconds, get_time_us},
 };
 
 use super::{LoadAverage, ProcessState, TASK_MANAGER};
@@ -190,6 +190,7 @@ fn process_snapshot() -> ProcSnapshot {
     });
     ProcSnapshot {
         uptime_us,
+        boot_epoch_seconds: boot_epoch_seconds(),
         total_pages,
         free_pages,
         runnable_tasks,
