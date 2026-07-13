@@ -1,0 +1,128 @@
+Makefile
+  s_4f5164fcd853bc::t_01a56e9e54d4a9 1,15-17,60,69-71
+README.md
+  s_4f5164fcd853bc::t_3ebc8840d07953 13,17
+docs/architecture-contract.md
+  s_4f5164fcd853bc::t_914b8ad92ae855 60,80,94-95,104,107,116
+docs/architecture-interface.txt
+  s_001f3638e69315::t_9e3dc5a6fe0cf2 441,447,476,482,530,532,629,734,752,774-788,833,835-848,1458,1463,1476-1477,1479,1484,1488,1490,1495,1497-1502,1507,1640,1697,1723,1768-1774,1776,1779,1973
+docs/architecture.md
+  s_4f5164fcd853bc::t_4ec47bd37f5327 143,150,195-197,201,248
+docs/standards-baseline.md
+  s_4f5164fcd853bc::t_4cf705e342c0e5 22-24
+docs/syscall-support.md
+  s_4f5164fcd853bc::t_1838b78224e36c 15,31,36,39,48,55,61,100,114
+kernel/src/fs/devfs.rs
+  s_4f5164fcd853bc::t_d5670fa3fbd40f 82-83,220-229
+kernel/src/fs/file.rs
+  s_4f5164fcd853bc::t_32220aade6ae1f 12-15,30,42,50,61,107,153-160,179-182,197,240,292-301,306-309,319-322,353-355,599-611
+kernel/src/fs/file/proc.rs
+  s_4f5164fcd853bc::t_ced98387e494fe 20
+kernel/src/fs/inode.rs
+  s_4f5164fcd853bc::t_3d40ce163d2f1d 20-21,32-33,43-44,53
+kernel/src/fs/mod.rs
+  s_4f5164fcd853bc::t_905731db6f62c1 32
+kernel/src/fs/vfs.rs
+  s_4f5164fcd853bc::t_521754590e0ea5 19-20,24,39-41,286
+kernel/src/fs/vfs/advisory_lock.rs
+  s_4f5164fcd853bc::t_4bcf04d6e9cc06 55
+kernel/src/fs/vfs/record_lock.rs
+  s_4f5164fcd853bc::t_4959a0424579c0 1-242
+kernel/src/ipc.rs
+  s_4f5164fcd853bc::t_69a4fde280f200 4-6
+kernel/src/ipc/eventfd.rs
+  s_4f5164fcd853bc::t_f64f321349265e 1-131
+kernel/src/syscall/eventfd.rs
+  s_4f5164fcd853bc::t_251b90ca863616 1-38
+kernel/src/syscall/fs.rs
+  s_4f5164fcd853bc::t_f86d7673d4c9e8 6,16-17,19-22,178,190-205,356
+kernel/src/syscall/fs/attributes.rs
+  s_4f5164fcd853bc::t_f151650ce269c8 90-92,120-160
+kernel/src/syscall/fs/fcntl.rs
+  s_4f5164fcd853bc::t_e2c5ad7cb0e298 1-269
+kernel/src/syscall/fs/io.rs
+  s_4f5164fcd853bc::t_3f390bed9d8ccf 4-7,9,63-92,158-187,354-381,419,424-430,504-507
+kernel/src/syscall/fs/io/positioned.rs
+  s_4f5164fcd853bc::t_3e95ca2b34e7e3 1-340
+kernel/src/syscall/fs/io/vector.rs
+  s_4f5164fcd853bc::t_672f110312540f 14-56,75-78
+kernel/src/syscall/mod.rs
+  s_4f5164fcd853bc::t_6f51f7fb6c09a7 4,27,62,96,116-119,137-139
+kernel/src/syscall/poll.rs
+  s_4f5164fcd853bc::t_bb698b2afbc681 101-120
+kernel/src/task/mod.rs
+  s_4f5164fcd853bc::t_aff77371ba0048 26
+kernel/src/task/model.rs
+  s_4f5164fcd853bc::t_7af5bf2a764a94 16
+kernel/src/task/model/address_space.rs
+  s_4f5164fcd853bc::t_d40b12b2a3e448 281-296,438-449
+kernel/src/task/model/file_descriptions.rs
+  s_4f5164fcd853bc::t_5c5f99994c5f27 4,11-106
+kernel/src/task/model/process_exec.rs
+  s_4f5164fcd853bc::t_0cc93d2d6e90ee 46
+kernel/src/task/task_manager/advisory_lock.rs
+  s_4f5164fcd853bc::t_4a408bd6edbf67 7,62-67,69,75,101,122,126,130-157
+scripts/apk_apps_cache.py
+  s_4f5164fcd853bc::t_2c5a4bc29c1c7f 1-55
+scripts/apk_cache.py
+  s_4f5164fcd853bc::t_cd79d383e89cac 38-42,52,105,177
+scripts/apk_rootfs.py
+  s_4f5164fcd853bc::t_a8428e5f9ac785 2,11,37-39,63,262,273-275,282,316,331-332,355,357-370
+scripts/ext2_image.py
+  s_4f5164fcd853bc::t_e74a0b98a2eede 1-43
+scripts/fixtures/apk-apps/curl.sh
+  s_4f5164fcd853bc::t_304c95d3556d2b 1-39
+scripts/fixtures/apk-apps/git.sh
+  s_4f5164fcd853bc::t_cff78fee45c264 1-39
+scripts/fixtures/apk-apps/install.sh
+  s_4f5164fcd853bc::t_44555a5fd04a29 1-19
+scripts/fixtures/apk-apps/network-up.sh
+  s_4f5164fcd853bc::t_47c1c366c3f582 1-13
+scripts/fixtures/apk-apps/sqlite-recovery.sh
+  s_4f5164fcd853bc::t_5f68a7d99d2725 1-16
+scripts/fixtures/apk-apps/sqlite.sh
+  s_4f5164fcd853bc::t_a9253874a81f55 1-35
+scripts/https_gate.py
+  s_4f5164fcd853bc::t_bbec6a19f13450 9-10,14-31,37,39-40
+scripts/tls_gate.py
+  s_4f5164fcd853bc::t_5bd6ed7005b98a 1-150
+scripts/verify_apk_apps.py
+  s_4f5164fcd853bc::t_7b14e338712059 1-321
+scripts/verify_busybox.py
+  s_4f5164fcd853bc::t_3c4795a24b7361 38-39,127,842-847,906,923-924,943
+syscall-abi/src/lib.rs
+  s_4f5164fcd853bc::t_6217e085adbdca 6,24,39-42,50,116-117
+user/busybox.config
+  s_4f5164fcd853bc::t_1a4a6415553008 226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ea38ebb638953baa35ade2371e54c4cda4024edf",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_001f3638e69315": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c5f-d46b-72b0-a274-bf8a86ea81c0",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    },
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
