@@ -11,6 +11,6 @@
 
 ## 运行验收事实
 
-- QEMU slirp gateway 收到 BusyBox `ping -c 1` Echo Reply。
+- QEMU slirp gateway 连续收到 BusyBox `ping -c 3` Echo Reply，同时覆盖 ITIMER_REAL 周期发包与阻塞接收的 SIGALRM 唤醒。
 - 受控 loopback HTTPS origin 使用临时 CA 与 DNS SAN：正确 hostname 下载固定 payload，直接以 gateway IP 访问必须因 hostname/IP mismatch 失败。
 - OpenSSL 实际消费 `riscv_hwprobe`、`FIONBIO`、`TCP_NODELAY`、`pselect6`、getrandom、realtime、DNS 与现有 TCP stream；禁止 `--no-check-certificate` 或明文 redirect 作为验收。

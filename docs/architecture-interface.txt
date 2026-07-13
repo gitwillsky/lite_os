@@ -1117,7 +1117,7 @@ kernel/src/socket/inet/raw.rs :: pub (super) fn new (notify : (Arc < PipeEnd > ,
 kernel/src/socket/inet/raw.rs :: pub (super) fn poll_state (handle : SocketHandle) -> SocketPollState
 kernel/src/socket/inet/raw.rs :: pub (super) fn readiness_notifications (network : & NetworkStack , before : ReadinessSnapshot ,) -> Vec < Arc < InetSocket > >
 kernel/src/socket/inet/raw.rs :: pub (super) fn readiness_snapshot (network : & NetworkStack) -> ReadinessSnapshot
-kernel/src/socket/inet/raw.rs :: pub (super) fn receive (handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress) , SocketError >
+kernel/src/socket/inet/raw.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress) , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn set_broadcast (handle : SocketHandle , enabled : bool) -> Result < () , SocketError >
 kernel/src/socket/inet/raw.rs :: pub (super) fn set_hop_limit (handle : SocketHandle , value : u8) -> Result < () , SocketError >

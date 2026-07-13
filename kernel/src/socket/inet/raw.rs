@@ -184,6 +184,7 @@ pub(super) fn send(
 }
 
 pub(super) fn receive(
+    endpoint: &InetSocket,
     handle: SocketHandle,
     output: &mut [u8],
     peek: bool,
@@ -202,6 +203,11 @@ pub(super) fn receive(
         address: Ipv4Addr::from(<[u8; 4]>::try_from(&packet[12..16]).unwrap()),
         port: 0,
     };
+    let drained = !peek && !socket.can_recv();
+    drop(network);
+    if drained {
+        endpoint.consume_notify();
+    }
     Ok((count, full_length, source))
 }
 

@@ -2,12 +2,12 @@ use alloc::{collections::BTreeSet, vec::Vec};
 
 use crate::{
     arch::hart,
-    task::processor::request_reschedule,
+    task::{PendingSignal, processor::request_reschedule},
     timer::{get_time_ns, get_time_us},
 };
 
 use super::{
-    ProcessState, TASK_MANAGER, process_terminal_input, procfs, send_process_signal,
+    ProcessState, TASK_MANAGER, process_terminal_input, procfs, send_kernel_process_signal,
     wake_console_waiters, wake_expired_tasks,
 };
 
@@ -48,7 +48,9 @@ fn expire_real_timers(now_us: u64) {
         targets
     };
     for tgid in targets {
-        let _ = send_process_signal(tgid as i32, 14);
+        // ITIMER_REAL 由 kernel timer 产生；deferred/idle context 没有 userspace sender，
+        // 若走 kill syscall 路径会因 current task 不存在而静默丢失 SIGALRM。
+        let _ = send_kernel_process_signal(tgid, 14, PendingSignal::kernel());
     }
 }
 

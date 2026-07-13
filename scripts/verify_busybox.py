@@ -798,7 +798,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DHCP_RESPAWN_51",
-                    b"/bin/ping -c 1 -W 3 10.0.2.2 | /bin/grep -q '1 packets received' && echo LITEOS_PING_$((7*7+3))\n",
+                    b"/bin/ping -c 3 -W 3 10.0.2.2 | /bin/grep -q '3 packets received' && echo LITEOS_PING_$((7*7+3))\n",
                 ),
                 (
                     "LITEOS_PING_52",

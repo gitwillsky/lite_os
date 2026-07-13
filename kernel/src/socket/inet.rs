@@ -387,7 +387,7 @@ impl InetSocket {
             return tcp::receive(self, output, peek);
         }
         if let InetEndpoint::Raw(handle) = self.endpoint {
-            let (count, full_length, source) = raw_endpoint::receive(handle, output, peek)?;
+            let (count, full_length, source) = raw_endpoint::receive(self, handle, output, peek)?;
             return Ok((count, full_length, source, None));
         }
         let handle = self.udp_handle()?;
