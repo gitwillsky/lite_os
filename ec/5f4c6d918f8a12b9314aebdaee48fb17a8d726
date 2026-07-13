@@ -1,0 +1,88 @@
+Makefile
+  s_4f5164fcd853bc::t_d61570a32b8249 12
+README.md
+  s_4f5164fcd853bc::t_bcaefeaf374836 16-17,39-40,116
+docs/architecture-interface.txt
+  s_4f5164fcd853bc::t_a7362d72664f33 439-440,559,621,624,627,727,729-747,1389,1415,1430,1433,1440,1455,1581,1626,1751-1762,1774-1775,1846,1900,1904-1911,2019,2039,2050
+docs/standards-baseline.md
+  s_4f5164fcd853bc::t_312042eeb30e1f 22
+docs/syscall-support.md
+  s_4f5164fcd853bc::t_8994a9cca3d33f 15,31,40-41,45,110
+kernel/src/fs/ext2.rs
+  s_4f5164fcd853bc::t_b4e17d07c409de 18,1950,1959-1962
+kernel/src/fs/ext2/storage_mutation.rs
+  s_4f5164fcd853bc::t_c98bbfe6c7974b 1-50
+kernel/src/fs/file.rs
+  s_4f5164fcd853bc::t_ec19b8279eb386 349
+kernel/src/fs/inode.rs
+  s_4f5164fcd853bc::t_55bdafc751b936 122-130
+kernel/src/fs/mod.rs
+  s_4f5164fcd853bc::t_9727db77debab9 22-24,30-33
+kernel/src/fs/page_cache.rs
+  s_4f5164fcd853bc::t_81ea8401b05fac 295-312
+kernel/src/fs/vfs.rs
+  s_4f5164fcd853bc::t_f92835c3e415c6 17-21,33-37,279-280
+kernel/src/fs/vfs/advisory_lock.rs
+  s_4f5164fcd853bc::t_c6de7337eda9f3 1-224
+kernel/src/syscall/errno.rs
+  s_4f5164fcd853bc::t_744d87d5b651e6 53-54
+kernel/src/syscall/fs.rs
+  s_4f5164fcd853bc::t_f13269de5985ae 6,16,19,127-172
+kernel/src/syscall/fs/flock.rs
+  s_4f5164fcd853bc::t_4a3e781c80984f 1-75
+kernel/src/syscall/fs/namespace.rs
+  s_4f5164fcd853bc::t_cbd49bc790aef0 7-40
+kernel/src/syscall/mod.rs
+  s_4f5164fcd853bc::t_4e1e92ea53d1d9 64-70,96
+kernel/src/task/mod.rs
+  s_4f5164fcd853bc::t_4a4e59b136ac0e 24-26,50
+kernel/src/task/model.rs
+  s_4f5164fcd853bc::t_cf2bf737aedab3 36
+kernel/src/task/model/scheduling.rs
+  s_4f5164fcd853bc::t_7498ef6767ec43 5-26
+kernel/src/task/processor.rs
+  s_4f5164fcd853bc::t_4c8311ec2b2eb1 435-442
+kernel/src/task/task_manager.rs
+  s_4f5164fcd853bc::t_d2ddb7f8366016 22,321
+kernel/src/task/task_manager/advisory_lock.rs
+  s_4f5164fcd853bc::t_2720722c743bdd 1-130
+kernel/src/task/task_manager/signal.rs
+  s_4f5164fcd853bc::t_11e55cfd899ab6 526,565-567
+kernel/src/task/task_manager/wait_key.rs
+  s_4f5164fcd853bc::t_3aabe39b7ec133 3,23-25
+kernel/src/task/task_manager/wait_registry.rs
+  s_4f5164fcd853bc::t_5054d8924804ea 10,77,89,241-263,325-327,377-387
+scripts/apk_cache.py
+  s_4f5164fcd853bc::t_f58c730071f54b 1-173
+scripts/apk_package.py
+  s_4f5164fcd853bc::t_2aa07e905ae4e2 1-229
+scripts/apk_rootfs.py
+  s_4f5164fcd853bc::t_1712af8ca74585 1-363
+scripts/verify_busybox.py
+  s_4f5164fcd853bc::t_a121778d4c59eb 18,284-307,877-884,931-945,979,1004-1006,1015,1024,1116,1543-1579
+syscall-abi/src/lib.rs
+  s_4f5164fcd853bc::t_47d49dd59cd3f0 13-14,26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ec5f4c6d918f8a12b9314aebdaee48fb17a8d726",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
