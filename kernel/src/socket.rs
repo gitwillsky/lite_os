@@ -122,6 +122,9 @@ enum SocketBackend {
 
 /// @description OFD 唯一 socket backend facade；AF_UNIX/AF_INET adapter 不穿透 fs seam。
 pub(crate) struct Socket {
+    // Socket facade 唯一持有 procfs anonymous inode identity；accepted socket 必须取得新 identity，
+    // 否则用户态无法区分 listener 与已接受连接。
+    object_id: u64,
     domain: SocketDomain,
     socket_type: SocketType,
     backend: SocketBackend,
@@ -168,6 +171,7 @@ impl Socket {
             _ => return Err(SocketError::ProtocolNotSupported),
         };
         Ok(Arc::new(Self {
+            object_id: crate::id::next_runtime_object_id(),
             domain,
             socket_type,
             backend,
@@ -176,6 +180,7 @@ impl Socket {
 
     fn from_unix(socket: Arc<UnixSocket>) -> Arc<Self> {
         Arc::new(Self {
+            object_id: crate::id::next_runtime_object_id(),
             domain: SocketDomain::Unix,
             socket_type: socket.socket_type(),
             backend: SocketBackend::Unix(socket),
@@ -263,6 +268,7 @@ impl Socket {
             SocketBackend::Inet(socket) => {
                 let socket = socket.accept(notify.ok_or(SocketError::NoMemory)?)?;
                 Ok(Arc::new(Self {
+                    object_id: crate::id::next_runtime_object_id(),
                     domain: SocketDomain::Inet,
                     socket_type: SocketType::Stream,
                     backend: SocketBackend::Inet(socket),
@@ -271,6 +277,11 @@ impl Socket {
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
+    }
+
+    /// @description 返回 `/proc/<pid>/fd` 使用的本次 boot 稳定 socket identity。
+    pub(crate) fn object_id(&self) -> u64 {
+        self.object_id
     }
 
     /// @description 解析可能异步完成的 domain connect 结果。

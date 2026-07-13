@@ -143,9 +143,10 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
     if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
         return -errno::EINVAL;
     }
-    let OpenFileKind::Inode(inode) = &ofd.kind else {
+    let OpenFileKind::Inode(opened) = &ofd.kind else {
         unreachable!("character device handled above")
     };
+    let inode = opened.inode();
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
@@ -322,7 +323,8 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
                     }
                 },
             },
-            OpenFileKind::Inode(inode) => {
+            OpenFileKind::Inode(opened) => {
+                let inode = opened.inode();
                 if *ofd.flags.lock() & O_APPEND != 0 {
                     match crate::fs::append(inode.clone(), &chunk[..count]) {
                         Ok((append_offset, written)) => {

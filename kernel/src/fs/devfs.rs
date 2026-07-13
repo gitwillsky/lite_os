@@ -15,6 +15,26 @@ static DEVICE_FILESYSTEM: Once<Arc<DevFileSystem>> = Once::new();
 enum DevNode {
     Root,
     Device(DeviceKind),
+    Link(DevLink),
+}
+
+#[derive(Clone, Copy)]
+enum DevLink {
+    Fd,
+    Stdin,
+    Stdout,
+    Stderr,
+}
+
+impl DevLink {
+    fn target(self) -> &'static [u8] {
+        match self {
+            Self::Fd => b"/proc/self/fd",
+            Self::Stdin => b"/proc/self/fd/0",
+            Self::Stdout => b"/proc/self/fd/1",
+            Self::Stderr => b"/proc/self/fd/2",
+        }
+    }
 }
 
 impl DevNode {
@@ -22,6 +42,10 @@ impl DevNode {
         match self {
             Self::Root => 1,
             Self::Device(device) => device.inode(),
+            Self::Link(DevLink::Fd) => 6,
+            Self::Link(DevLink::Stdin) => 7,
+            Self::Link(DevLink::Stdout) => 8,
+            Self::Link(DevLink::Stderr) => 9,
         }
     }
 
@@ -29,6 +53,7 @@ impl DevNode {
         match self {
             Self::Root => 0o040755,
             Self::Device(device) => device.mode(),
+            Self::Link(_) => 0o120777,
         }
     }
 }
@@ -56,6 +81,10 @@ impl DevInode {
             b"zero" => DevNode::Device(DeviceKind::Zero),
             b"tty" => DevNode::Device(DeviceKind::Tty),
             b"console" => DevNode::Device(DeviceKind::Console),
+            b"fd" => DevNode::Link(DevLink::Fd),
+            b"stdin" => DevNode::Link(DevLink::Stdin),
+            b"stdout" => DevNode::Link(DevLink::Stdout),
+            b"stderr" => DevNode::Link(DevLink::Stderr),
             _ => return Err(FileSystemError::NotFound),
         };
         Ok(Self::new(self.filesystem_id, node))
@@ -71,16 +100,24 @@ impl Inode for DevInode {
         let device = match self.node {
             DevNode::Root => None,
             DevNode::Device(device) => Some(device),
+            DevNode::Link(_) => None,
         };
         Ok(InodeMetadata {
             filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
             kind: self.inode_type(),
             mode: self.node.mode(),
-            links: if device.is_some() { 1 } else { 2 },
+            links: if matches!(self.node, DevNode::Root) {
+                2
+            } else {
+                1
+            },
             uid: 0,
             gid: 0,
-            size: 0,
+            size: match self.node {
+                DevNode::Link(link) => link.target().len() as u64,
+                DevNode::Root | DevNode::Device(_) => 0,
+            },
             blocks: 0,
             block_size: 4096,
             atime: 0,
@@ -94,11 +131,15 @@ impl Inode for DevInode {
         match self.node {
             DevNode::Root => InodeType::Directory,
             DevNode::Device(_) => InodeType::CharacterDevice,
+            DevNode::Link(_) => InodeType::SymLink,
         }
     }
 
     fn size(&self) -> u64 {
-        0
+        match self.node {
+            DevNode::Link(link) => link.target().len() as u64,
+            DevNode::Root | DevNode::Device(_) => 0,
+        }
     }
 
     fn is_executable(&self) -> bool {
@@ -113,6 +154,14 @@ impl Inode for DevInode {
         match self.node {
             DevNode::Root => None,
             DevNode::Device(device) => Some(device),
+            DevNode::Link(_) => None,
+        }
+    }
+
+    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+        match self.node {
+            DevNode::Link(link) => Ok(link.target().to_vec()),
+            DevNode::Root | DevNode::Device(_) => Err(FileSystemError::InvalidOperation),
         }
     }
 
@@ -171,6 +220,26 @@ impl Inode for DevInode {
                 kind: InodeType::CharacterDevice,
                 name: b"console".to_vec(),
             },
+            DirectoryEntry {
+                inode: 6,
+                kind: InodeType::SymLink,
+                name: b"fd".to_vec(),
+            },
+            DirectoryEntry {
+                inode: 7,
+                kind: InodeType::SymLink,
+                name: b"stdin".to_vec(),
+            },
+            DirectoryEntry {
+                inode: 8,
+                kind: InodeType::SymLink,
+                name: b"stdout".to_vec(),
+            },
+            DirectoryEntry {
+                inode: 9,
+                kind: InodeType::SymLink,
+                name: b"stderr".to_vec(),
+            },
         ])
     }
 
@@ -208,7 +277,7 @@ pub(crate) struct DevFileSystem {
 }
 
 impl DevFileSystem {
-    /// @description 取得包含 null/zero/tty/console 的唯一 device filesystem。
+    /// @description 取得标准 character nodes 与 procfs fd aliases 的唯一 device filesystem。
     pub(crate) fn instance() -> Arc<Self> {
         DEVICE_FILESYSTEM
             .call_once(|| {

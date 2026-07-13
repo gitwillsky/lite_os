@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::fs::OpenFileDescription;
+use crate::fs::{OpenFileDescription, ProcFileDescriptorSnapshot};
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -24,5 +24,23 @@ impl TaskControlBlock {
         let first = files.get(first)?;
         let second = files.get(second)?;
         Some(operation(first, second))
+    }
+
+    /// @description 在 Process files lock 外解析 procfs fd targets，避免 VFS lock 进入 fd owner。
+    /// @return 按 fd 递增的 target 快照；分配或 VFS 投影失败返回 None。
+    pub(crate) fn process_file_descriptors(
+        &self,
+    ) -> Option<alloc::vec::Vec<ProcFileDescriptorSnapshot>> {
+        let descriptions = self.process.files.lock().snapshot().ok()?;
+        descriptions
+            .into_iter()
+            .map(|(fd, ofd)| {
+                Some(ProcFileDescriptorSnapshot {
+                    fd,
+                    target: ofd.proc_target().ok()?,
+                    opened: ofd.opened_ref(),
+                })
+            })
+            .collect()
     }
 }

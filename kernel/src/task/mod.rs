@@ -57,7 +57,7 @@ pub(crate) fn init(
         .try_reserve_exact(1)
         .expect("failed to allocate init argv");
     arguments.push(argv0);
-    let root = vfs().open(b"/").expect("mounted root must resolve");
+    let root = vfs().open_file(b"/").expect("mounted root must resolve");
     let loaded = load_executable(
         root,
         path,

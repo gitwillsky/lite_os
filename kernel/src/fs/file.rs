@@ -1,3 +1,5 @@
+#[path = "file/proc.rs"]
+mod proc;
 mod terminal;
 pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead};
 
@@ -6,7 +8,7 @@ use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use spin::Mutex;
 
 use super::Epoll;
-use super::{DeviceKind, FileSystemError, FileSystemStatistics, Inode, vfs};
+use super::{DeviceKind, FileSystemError, FileSystemStatistics, Inode, OpenedFile, vfs};
 use crate::{ipc::PipeEnd, socket::Socket};
 
 pub(crate) const O_ACCMODE: u32 = 3;
@@ -51,7 +53,7 @@ pub(crate) enum OpenFileKind {
     Pipe(Arc<PipeEnd>),
     Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
-    Inode(Arc<dyn Inode>),
+    Inode(Arc<OpenedFile>),
 }
 
 /// @description console 文件后端 seam；具体 SBI adapter 只在 composition root 装配。
@@ -77,7 +79,7 @@ pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
     pub(crate) offset: Mutex<u64>,
     pub(crate) flags: Mutex<u32>,
-    character_inode: Option<Arc<dyn Inode>>,
+    character_opened: Option<Arc<OpenedFile>>,
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
     // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
     descriptor_refs: AtomicUsize,
@@ -177,15 +179,15 @@ impl OpenFileDescription {
         )
     }
 
-    /// @description 构造继承给 init 的 console OFD，并保留 devfs backing inode。
+    /// @description 构造继承给 init 的 console OFD，并保留 devfs opened entry。
     ///
     /// @param terminal 共享 TTY owner。
-    /// @param backing_inode `/dev/console` inode，用于 metadata 与 fstatfs。
+    /// @param backing_opened `/dev/console` opened entry，用于 metadata、fstatfs 与 procfs。
     /// @param flags OFD status flags。
     /// @return 新 console OFD。
     pub(crate) fn terminal(
         terminal: Arc<Terminal>,
-        backing_inode: Arc<dyn Inode>,
+        backing_opened: Arc<OpenedFile>,
         flags: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -195,7 +197,7 @@ impl OpenFileDescription {
             }),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
-            character_inode: Some(backing_inode),
+            character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
         })
     }
@@ -205,13 +207,13 @@ impl OpenFileDescription {
     /// @param kind device identity。
     /// @param terminal 共享 TTY owner。
     /// @param flags OFD status flags。
-    /// @param backing_inode 打开时的 devfs inode，用于 metadata 与 fstatfs。
+    /// @param backing_opened 打开时的 devfs opened entry，用于 metadata、fstatfs 与 procfs。
     /// @return 新 character-device OFD。
     pub(crate) fn character(
         kind: DeviceKind,
         terminal: Arc<Terminal>,
         flags: u32,
-        backing_inode: Arc<dyn Inode>,
+        backing_opened: Arc<OpenedFile>,
     ) -> Arc<Self> {
         let device = match kind {
             DeviceKind::Null => CharacterDevice::Null,
@@ -222,17 +224,17 @@ impl OpenFileDescription {
             kind: OpenFileKind::Character(device),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
-            character_inode: Some(backing_inode),
+            character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
         })
     }
 
-    pub(crate) fn inode(inode: Arc<dyn Inode>, flags: u32) -> Arc<Self> {
+    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Arc<Self> {
         Arc::new(Self {
-            kind: OpenFileKind::Inode(inode),
+            kind: OpenFileKind::Inode(opened),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
-            character_inode: None,
+            character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
     }
@@ -242,7 +244,7 @@ impl OpenFileDescription {
             kind: OpenFileKind::Pipe(endpoint),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
-            character_inode: None,
+            character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
     }
@@ -252,7 +254,7 @@ impl OpenFileDescription {
             kind: OpenFileKind::Socket(socket),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
-            character_inode: None,
+            character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
     }
@@ -262,15 +264,25 @@ impl OpenFileDescription {
             kind: OpenFileKind::Epoll(epoll),
             offset: Mutex::new(0),
             flags: Mutex::new(O_RDWR),
-            character_inode: None,
+            character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
     }
 
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
-            OpenFileKind::Inode(inode) => Some(inode.clone()),
+            OpenFileKind::Inode(opened) => Some(opened.inode()),
             OpenFileKind::Character(_) => None,
+            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => None,
+        }
+    }
+
+    /// @description 返回 pathname-backed OFD 的稳定 opened-entry identity。
+    /// @return regular/directory/character OFD 返回 opened entry；anonymous OFD 返回 None。
+    pub(crate) fn opened_ref(&self) -> Option<Arc<OpenedFile>> {
+        match &self.kind {
+            OpenFileKind::Inode(opened) => Some(opened.clone()),
+            OpenFileKind::Character(_) => self.character_opened.clone(),
             OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => None,
         }
     }
@@ -281,11 +293,12 @@ impl OpenFileDescription {
     /// @errors 无 backing filesystem 的 OFD 返回 `InvalidFileSystem`。
     pub(crate) fn filesystem_statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         match &self.kind {
-            OpenFileKind::Inode(inode) => vfs().statistics(inode.clone()),
+            OpenFileKind::Inode(opened) => vfs().statistics(opened.inode()),
             OpenFileKind::Character(_) => vfs().statistics(
-                self.character_inode
+                self.character_opened
                     .clone()
-                    .ok_or(FileSystemError::InvalidFileSystem)?,
+                    .ok_or(FileSystemError::InvalidFileSystem)?
+                    .inode(),
             ),
             OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) => Ok(FileSystemStatistics {
                 type_name: "pipefs",
@@ -363,18 +376,18 @@ impl FileDescriptorTable {
 
     /// @description 构造 init 的三个 inherited console descriptor。
     ///
-    /// @param terminal 唯一 TTY owner；backing inode 从已挂载 devfs 解析一次。
+    /// @param terminal 唯一 TTY owner；backing opened entry 从已挂载 devfs 解析一次。
     /// @return fd 0/1/2 分别为 console read/write/write OFD 的 descriptor table。
     pub(crate) fn with_terminal(terminal: Arc<Terminal>) -> Self {
-        let backing_inode = vfs()
-            .open(b"/dev/console")
+        let backing_opened = vfs()
+            .open_file(b"/dev/console")
             .expect("mounted console device must resolve");
         Self {
             entries: vec![
                 Some(FileDescriptor::new(
                     OpenFileDescription::terminal(
                         terminal.clone(),
-                        backing_inode.clone(),
+                        backing_opened.clone(),
                         O_RDONLY,
                     ),
                     false,
@@ -382,13 +395,13 @@ impl FileDescriptorTable {
                 Some(FileDescriptor::new(
                     OpenFileDescription::terminal(
                         terminal.clone(),
-                        backing_inode.clone(),
+                        backing_opened.clone(),
                         O_WRONLY,
                     ),
                     false,
                 )),
                 Some(FileDescriptor::new(
-                    OpenFileDescription::terminal(terminal, backing_inode, O_WRONLY),
+                    OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY),
                     false,
                 )),
             ],

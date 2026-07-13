@@ -1,7 +1,7 @@
 use alloc::{format, string::String};
 use core::fmt::Write;
 
-use super::{ProcProcessSnapshot, ticks};
+use super::{ProcProcessSnapshot, system::ticks};
 
 /// @description 将 Process snapshot 编码为 Linux `/proc/<pid>/stat` 单行格式。
 /// @param process 目标 live Process 的只读快照。

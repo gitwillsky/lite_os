@@ -147,6 +147,7 @@ BUSYBOX_LINKS = (
     "top",
     "tr",
     "true",
+    "tty",
     "uniq",
     "uname",
     "uptime",
@@ -333,6 +334,50 @@ def install_phase56_script(image: Path, directory: Path) -> None:
     commands.write_text(
         f"write {fixture} /run/phase56.sh\n"
         "set_inode_field /run/phase56.sh mode 0100755\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_phase57_script(image: Path, directory: Path) -> None:
+    """向 disposable runtime image 注入 opened-file identity 与标准 fd alias 验收。"""
+    fixture = directory / "phase57.sh"
+    fixture.write_text(
+        "#!/bin/sh\nset -e\n"
+        "[ \"$(/bin/tty)\" = /dev/console ]\n"
+        "[ \"$(/bin/readlink /proc/self/fd/0)\" = /dev/console ]\n"
+        "[ \"$(/bin/readlink /dev/fd)\" = /proc/self/fd ]\n"
+        "[ \"$(/bin/readlink /dev/stdin)\" = /proc/self/fd/0 ]\n"
+        "/bin/ls /proc/self/fd | /bin/grep -qx 0\n"
+        "/bin/printf pipe57 | /bin/sh -c \"/bin/readlink /proc/self/fd/0 | /bin/grep -Eq '^pipe:\\[[0-9]+\\]$'\"\n"
+        "echo LITEOS_TTY_$((3*19))\n"
+        "/bin/rm -f /tmp/opened57 /tmp/renamed57 /tmp/alias57 /tmp/fresh57\n"
+        "exec 3>/tmp/opened57\n"
+        "[ \"$(/bin/readlink /proc/self/fd/3)\" = /tmp/opened57 ]\n"
+        "/bin/printf before >/dev/fd/3\n"
+        "[ \"$(/bin/cat /tmp/opened57)\" = before ]\n"
+        "/bin/mv /tmp/opened57 /tmp/renamed57\n"
+        "[ \"$(/bin/readlink /proc/self/fd/3)\" = /tmp/renamed57 ]\n"
+        "/bin/ln /tmp/renamed57 /tmp/alias57\n"
+        "exec 4>>/tmp/alias57\n"
+        "[ \"$(/bin/readlink /proc/self/fd/4)\" = /tmp/alias57 ]\n"
+        "/bin/rm /tmp/renamed57\n"
+        "[ \"$(/bin/readlink /proc/self/fd/3)\" = '/tmp/renamed57 (deleted)' ]\n"
+        "[ \"$(/bin/readlink /proc/self/fd/4)\" = /tmp/alias57 ]\n"
+        "/bin/printf magic >>/dev/fd/3\n"
+        "[ \"$(/bin/cat /tmp/alias57)\" = beforemagic ]\n"
+        "/bin/printf after >&3\n"
+        "[ \"$(/bin/cat /tmp/alias57)\" = afteremagic ]\n"
+        "echo LITEOS_OPENED_RENAME_$((3*19))\n"
+        "exec 5>/tmp/fresh57; [ \"$(/bin/readlink /proc/self/fd/5)\" = /tmp/fresh57 ]\n"
+        "exec 5>&-\n"
+        "if /bin/readlink /proc/self/fd/5 >/dev/null 2>&1; then exit 1; fi\n"
+        "/bin/printf stdout57 >/dev/stdout\n"
+        "echo LITEOS_OPENED_FD_$((3*19))\n"
+    )
+    commands = directory / "phase57-debugfs.commands"
+    commands.write_text(
+        f"write {fixture} /run/phase57.sh\n"
+        "set_inode_field /run/phase57.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -888,7 +933,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            9,
+            10,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -925,12 +970,16 @@ def main() -> int:
         install_archive_fixtures(runtime_image, runtime_path)
         install_phase55_script(runtime_image, runtime_path)
         install_phase56_script(runtime_image, runtime_path)
+        install_phase57_script(runtime_image, runtime_path)
         phase55_image = runtime_path / "phase55.img"
         phase56_image = runtime_path / "phase56.img"
+        phase57_image = runtime_path / "phase57.img"
         shutil.copyfile(runtime_image, phase55_image)
         shutil.copyfile(runtime_image, phase56_image)
+        shutil.copyfile(runtime_image, phase57_image)
         install_guest_gate_init(phase55_image, runtime_path, "/run/phase55.sh", "phase55")
         install_guest_gate_init(phase56_image, runtime_path, "/run/phase56.sh", "phase56")
+        install_guest_gate_init(phase57_image, runtime_path, "/run/phase57.sh", "phase57")
         boot(
             runtime_image,
             1,
@@ -1365,6 +1414,18 @@ def main() -> int:
                 "all DTB harts online: count=1, mask=0x1",
                 "init started: BusyBox v1.37.0",
                 "LITEOS_IDENTITY_56",
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            timeout_seconds=30,
+        )
+        boot(
+            phase57_image,
+            1,
+            (
+                "dynamic hart topology initialized: count=1, mask=0x1",
+                "all DTB harts online: count=1, mask=0x1",
+                "init started: BusyBox v1.37.0",
+                "LITEOS_OPENED_FD_57",
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             timeout_seconds=30,

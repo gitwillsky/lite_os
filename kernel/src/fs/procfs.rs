@@ -1,14 +1,12 @@
-use alloc::{
-    format,
-    string::{String, ToString},
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
-use core::fmt::Write;
+use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
 
 mod process;
+mod system;
 use process::{format_process_comm, format_process_stat, format_process_status};
+use system::{
+    format_cpu_stat, format_loadavg, format_meminfo, format_network_devices, format_network_routes,
+    format_uptime,
+};
 
 use super::{
     DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
@@ -16,7 +14,6 @@ use super::{
 };
 
 const PROC_FILESYSTEM_ID: usize = 3;
-const CLOCK_TICKS_PER_SECOND: u64 = 100;
 
 #[derive(Clone)]
 pub(crate) struct ProcProcessSnapshot {
@@ -38,6 +35,13 @@ pub(crate) struct ProcProcessSnapshot {
     pub(crate) resident_pages: usize,
     pub(crate) fd_size: usize,
     pub(crate) last_cpu: usize,
+}
+
+/// @description 一个 live descriptor number 与其 Linux procfs symlink target 快照。
+pub(crate) struct ProcFileDescriptorSnapshot {
+    pub(crate) fd: usize,
+    pub(crate) target: Vec<u8>,
+    pub(crate) opened: Option<Arc<super::OpenedFile>>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +89,14 @@ pub(crate) trait ProcSource: Send + Sync {
     /// @param pid live process TGID。
     /// @return 存在且 argument range 可读时返回 NUL 分隔 bytes；否则返回 None。
     fn process_arguments(&self, pid: usize) -> Option<Vec<u8>>;
+
+    /// @description 按 TGID 投影 live fd/OFD identity，不复制 backend 状态。
+    /// @param pid live process TGID。
+    /// @return process 存在且快照成功时返回按 fd 排序的 targets；否则返回 None。
+    fn process_file_descriptors(
+        &self,
+        pid: usize,
+    ) -> Result<Option<Vec<ProcFileDescriptorSnapshot>>, FileSystemError>;
 }
 
 #[derive(Clone, Copy)]
@@ -104,6 +116,8 @@ enum ProcNode {
     ProcessStatus(usize),
     ProcessCmdline(usize),
     ProcessComm(usize),
+    ProcessFdDir(usize),
+    ProcessFd(usize, usize),
 }
 
 impl ProcNode {
@@ -119,18 +133,22 @@ impl ProcNode {
             Self::NetDev => 8,
             Self::NetRoute => 9,
             Self::SelfLink => 10,
-            Self::ProcessDir(pid) => 0x1_0000 + (pid as u64) * 8,
-            Self::ProcessStat(pid) => 0x1_0001 + (pid as u64) * 8,
-            Self::ProcessStatus(pid) => 0x1_0002 + (pid as u64) * 8,
-            Self::ProcessCmdline(pid) => 0x1_0003 + (pid as u64) * 8,
-            Self::ProcessComm(pid) => 0x1_0004 + (pid as u64) * 8,
+            Self::ProcessDir(pid) => 0x1000_0000_0000_0000 | (pid as u64) << 4,
+            Self::ProcessStat(pid) => 0x1000_0000_0000_0001 | (pid as u64) << 4,
+            Self::ProcessStatus(pid) => 0x1000_0000_0000_0002 | (pid as u64) << 4,
+            Self::ProcessCmdline(pid) => 0x1000_0000_0000_0003 | (pid as u64) << 4,
+            Self::ProcessComm(pid) => 0x1000_0000_0000_0004 | (pid as u64) << 4,
+            Self::ProcessFdDir(pid) => 0x1000_0000_0000_0005 | (pid as u64) << 4,
+            Self::ProcessFd(pid, fd) => 0x2000_0000_0000_0000 | (pid as u64) << 10 | fd as u64,
         }
     }
 
     fn kind(self) -> InodeType {
         match self {
-            Self::Root | Self::NetDir | Self::ProcessDir(_) => InodeType::Directory,
-            Self::SelfLink => InodeType::SymLink,
+            Self::Root | Self::NetDir | Self::ProcessDir(_) | Self::ProcessFdDir(_) => {
+                InodeType::Directory
+            }
+            Self::SelfLink | Self::ProcessFd(_, _) => InodeType::SymLink,
             _ => InodeType::File,
         }
     }
@@ -183,7 +201,12 @@ impl ProcInode {
                 .find(|process| process.pid == pid)
                 .map(format_process_comm)
                 .ok_or(FileSystemError::NotFound)?,
-            ProcNode::Root | ProcNode::NetDir | ProcNode::SelfLink | ProcNode::ProcessDir(_) => {
+            ProcNode::Root
+            | ProcNode::NetDir
+            | ProcNode::SelfLink
+            | ProcNode::ProcessDir(_)
+            | ProcNode::ProcessFdDir(_)
+            | ProcNode::ProcessFd(_, _) => {
                 return Err(FileSystemError::IsDirectory);
             }
             ProcNode::ProcessCmdline(_) => unreachable!("cmdline handled as binary data"),
@@ -208,10 +231,10 @@ impl Inode for ProcInode {
             filesystem: PROC_FILESYSTEM_ID as u64,
             inode: self.node.inode(),
             kind,
-            mode: if kind == InodeType::Directory {
-                0o040555
-            } else {
-                0o100444
+            mode: match kind {
+                InodeType::Directory => 0o040555,
+                InodeType::SymLink => 0o120777,
+                _ => 0o100444,
             },
             links: if kind == InodeType::Directory { 2 } else { 1 },
             uid: 0,
@@ -253,13 +276,32 @@ impl Inode for ProcInode {
     }
 
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
-        if !matches!(self.node, ProcNode::SelfLink) {
-            return Err(FileSystemError::InvalidOperation);
+        match self.node {
+            ProcNode::SelfLink => self
+                .source
+                .current_pid()
+                .map(|pid| pid.to_string().into_bytes())
+                .ok_or(FileSystemError::NotFound),
+            ProcNode::ProcessFd(pid, fd) => self
+                .source
+                .process_file_descriptors(pid)?
+                .and_then(|entries| entries.into_iter().find(|entry| entry.fd == fd))
+                .map(|entry| entry.target)
+                .ok_or(FileSystemError::NotFound),
+            _ => Err(FileSystemError::InvalidOperation),
         }
+    }
+
+    fn follow_link(&self) -> Option<Arc<super::OpenedFile>> {
+        let ProcNode::ProcessFd(pid, fd) = self.node else {
+            return None;
+        };
         self.source
-            .current_pid()
-            .map(|pid| pid.to_string().into_bytes())
-            .ok_or(FileSystemError::NotFound)
+            .process_file_descriptors(pid)
+            .ok()??
+            .into_iter()
+            .find(|entry| entry.fd == fd)?
+            .opened
     }
 
     fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
@@ -276,9 +318,13 @@ impl Inode for ProcInode {
     }
 
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
+        let parent_inode = match self.node {
+            ProcNode::ProcessFdDir(pid) => ProcNode::ProcessDir(pid).inode(),
+            _ => 1,
+        };
         let mut entries = vec![
             directory_entry(self.node.inode(), InodeType::Directory, b"."),
-            directory_entry(1, InodeType::Directory, b".."),
+            directory_entry(parent_inode, InodeType::Directory, b".."),
         ];
         match self.node {
             ProcNode::Root => {
@@ -312,7 +358,27 @@ impl Inode for ProcInode {
                     b"cmdline",
                 ),
                 directory_entry(ProcNode::ProcessComm(pid).inode(), InodeType::File, b"comm"),
+                directory_entry(
+                    ProcNode::ProcessFdDir(pid).inode(),
+                    InodeType::Directory,
+                    b"fd",
+                ),
             ]),
+            ProcNode::ProcessFdDir(pid) => {
+                entries.extend(
+                    self.source
+                        .process_file_descriptors(pid)?
+                        .ok_or(FileSystemError::NotFound)?
+                        .into_iter()
+                        .map(|entry| {
+                            directory_entry(
+                                ProcNode::ProcessFd(pid, entry.fd).inode(),
+                                InodeType::SymLink,
+                                entry.fd.to_string().as_bytes(),
+                            )
+                        }),
+                );
+            }
             ProcNode::NetDir => entries.extend([
                 directory_entry(8, InodeType::File, b"dev"),
                 directory_entry(9, InodeType::File, b"route"),
@@ -354,7 +420,23 @@ impl Inode for ProcInode {
                 b"status" => ProcNode::ProcessStatus(pid),
                 b"cmdline" => ProcNode::ProcessCmdline(pid),
                 b"comm" => ProcNode::ProcessComm(pid),
+                b"fd" => ProcNode::ProcessFdDir(pid),
                 _ => return Err(FileSystemError::NotFound),
+            },
+            ProcNode::ProcessFdDir(pid) => match name {
+                b"." => ProcNode::ProcessFdDir(pid),
+                b".." => ProcNode::ProcessDir(pid),
+                _ => {
+                    let fd = parse_pid(name).ok_or(FileSystemError::NotFound)?;
+                    if !self
+                        .source
+                        .process_file_descriptors(pid)?
+                        .is_some_and(|entries| entries.iter().any(|entry| entry.fd == fd))
+                    {
+                        return Err(FileSystemError::NotFound);
+                    }
+                    ProcNode::ProcessFd(pid, fd)
+                }
             },
             ProcNode::NetDir => match name {
                 b"." => ProcNode::NetDir,
@@ -440,136 +522,4 @@ fn parse_pid(name: &[u8]) -> Option<usize> {
     name.iter().try_fold(0usize, |pid, byte| {
         pid.checked_mul(10)?.checked_add((byte - b'0') as usize)
     })
-}
-
-fn ticks(microseconds: u64) -> u64 {
-    microseconds / (1_000_000 / CLOCK_TICKS_PER_SECOND)
-}
-
-fn format_cpu_stat(snapshot: &ProcSnapshot) -> String {
-    let mut output = String::new();
-    let total_busy: u64 = snapshot
-        .cpus
-        .iter()
-        .map(|cpu| cpu.busy_us.min(snapshot.uptime_us))
-        .sum();
-    let total_idle = snapshot
-        .uptime_us
-        .saturating_mul(snapshot.cpus.len() as u64)
-        .saturating_sub(total_busy);
-    let _ = writeln!(
-        output,
-        "cpu  {} 0 0 {} 0 0 0 0",
-        ticks(total_busy),
-        ticks(total_idle)
-    );
-    for cpu in &snapshot.cpus {
-        let busy = cpu.busy_us.min(snapshot.uptime_us);
-        let _ = writeln!(
-            output,
-            "cpu{} {} 0 0 {} 0 0 0 0",
-            cpu.hart_id,
-            ticks(busy),
-            ticks(snapshot.uptime_us - busy)
-        );
-    }
-    let _ = writeln!(
-        output,
-        "processes {}\nprocs_running {}\nprocs_blocked 0",
-        snapshot.processes_created, snapshot.runnable_tasks
-    );
-    output
-}
-
-fn format_meminfo(snapshot: &ProcSnapshot) -> String {
-    format!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         0 kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          0 kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           0 kB\n",
-        snapshot.total_pages * 4,
-        snapshot.free_pages * 4,
-        snapshot.free_pages * 4
-    )
-}
-
-fn format_loadavg(snapshot: &ProcSnapshot) -> String {
-    format!(
-        "{}.{:02} {}.{:02} {}.{:02} {}/{} {}\n",
-        snapshot.load_milli[0] / 1000,
-        snapshot.load_milli[0] / 10 % 100,
-        snapshot.load_milli[1] / 1000,
-        snapshot.load_milli[1] / 10 % 100,
-        snapshot.load_milli[2] / 1000,
-        snapshot.load_milli[2] / 10 % 100,
-        snapshot.runnable_tasks,
-        snapshot.total_tasks,
-        snapshot.last_pid
-    )
-}
-
-fn format_uptime(snapshot: &ProcSnapshot) -> String {
-    let idle_us: u64 = snapshot
-        .cpus
-        .iter()
-        .map(|cpu| {
-            snapshot
-                .uptime_us
-                .saturating_sub(cpu.busy_us.min(snapshot.uptime_us))
-        })
-        .sum();
-    format!(
-        "{}.{:02} {}.{:02}\n",
-        snapshot.uptime_us / 1_000_000,
-        snapshot.uptime_us / 10_000 % 100,
-        idle_us / 1_000_000,
-        idle_us / 10_000 % 100
-    )
-}
-
-fn format_network_devices(network: Option<ProcNetworkSnapshot>) -> String {
-    let mut output = String::from(
-        "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n",
-    );
-    if let Some(network) = network {
-        let _ = writeln!(
-            output,
-            "  eth0: {:8} {:7}    0    0    0     0          0         0 {:8} {:7}    0    0    0     0       0          0",
-            network.received_bytes,
-            network.received_packets,
-            network.transmitted_bytes,
-            network.transmitted_packets,
-        );
-    }
-    output
-}
-
-fn format_network_routes(network: Option<ProcNetworkSnapshot>) -> String {
-    let mut output = String::from(
-        "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n",
-    );
-    let Some(network) = network else {
-        return output;
-    };
-    let mask = if network.prefix_length == 0 {
-        0
-    } else {
-        u32::MAX << (32 - network.prefix_length)
-    };
-    if let Some(address) = network.address {
-        let destination = u32::from_be_bytes(address) & mask;
-        let _ = writeln!(
-            output,
-            "eth0\t{:08X}\t00000000\t{:04X}\t0\t0\t0\t{:08X}\t0\t0\t0",
-            destination.swap_bytes(),
-            if network.up { 1 } else { 0 },
-            mask.swap_bytes(),
-        );
-    }
-    if let Some(gateway) = network.gateway {
-        let _ = writeln!(
-            output,
-            "eth0\t00000000\t{:08X}\t{:04X}\t0\t0\t0\t00000000\t0\t0\t0",
-            u32::from_be_bytes(gateway).swap_bytes(),
-            if network.up { 3 } else { 2 },
-        );
-    }
-    output
 }

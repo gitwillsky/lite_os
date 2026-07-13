@@ -167,6 +167,7 @@ fn copy_stat(
     pointer: *mut u8,
     metadata: Option<InodeMetadata>,
     anonymous_mode: u32,
+    anonymous_inode: u64,
 ) -> isize {
     let stat = if let Some(metadata) = metadata {
         UserStat {
@@ -193,7 +194,7 @@ fn copy_stat(
     } else {
         UserStat {
             st_dev: 0,
-            st_ino: 0,
+            st_ino: anonymous_inode,
             st_mode: anonymous_mode,
             st_nlink: 1,
             st_uid: 0,
@@ -260,16 +261,24 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     };
     match ofd.inode_ref() {
         Some(inode) => match inode.metadata() {
-            Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0),
+            Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0, 0),
             Err(error) => ferr(error),
         },
         None => match &ofd.kind {
-            OpenFileKind::Character(device) => {
-                copy_stat(&task, pointer, Some(character_metadata(device.kind())), 0)
+            OpenFileKind::Character(device) => copy_stat(
+                &task,
+                pointer,
+                Some(character_metadata(device.kind())),
+                0,
+                0,
+            ),
+            OpenFileKind::Pipe(endpoint) => {
+                copy_stat(&task, pointer, None, 0o010666, endpoint.pipe().object_id())
             }
-            OpenFileKind::Pipe(_) => copy_stat(&task, pointer, None, 0o010666),
-            OpenFileKind::Socket(_) => copy_stat(&task, pointer, None, 0o140777),
-            OpenFileKind::Epoll(_) => copy_stat(&task, pointer, None, 0o100600),
+            OpenFileKind::Socket(socket) => {
+                copy_stat(&task, pointer, None, 0o140777, socket.object_id())
+            }
+            OpenFileKind::Epoll(_) => copy_stat(&task, pointer, None, 0o100600, 0),
             OpenFileKind::Inode(_) => unreachable!("inode_ref lost inode OFD"),
         },
     }
@@ -394,7 +403,7 @@ pub(crate) fn sys_newfstatat(fd: isize, name: *const u8, pointer: *mut u8, flags
         vfs().open_at(start, &path, &task.access_identity(true))
     };
     match inode.and_then(|inode| inode.metadata()) {
-        Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0),
+        Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0, 0),
         Err(error) => ferr(error),
     }
 }

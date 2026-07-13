@@ -414,6 +414,7 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
             | FileSystemError::CrossDevice
             | FileSystemError::PermissionDenied
             | FileSystemError::AccessDenied
+            | FileSystemError::Busy
             | FileSystemError::TooManyLinks
             | FileSystemError::IoError
             | FileSystemError::InvalidFileSystem,

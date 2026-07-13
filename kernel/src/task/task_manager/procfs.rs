@@ -1,7 +1,10 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
-    fs::{ProcCpuSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource},
+    fs::{
+        ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot,
+        ProcSnapshot, ProcSource,
+    },
     memory::frame_statistics,
     task::{RunState, processor::cpu_runtime_snapshot},
     timer::get_time_us,
@@ -45,6 +48,38 @@ impl ProcSource for KernelProcSource {
             threads.values().next()?.clone()
         };
         representative.process_arguments()
+    }
+
+    fn process_file_descriptors(
+        &self,
+        pid: usize,
+    ) -> Result<Option<alloc::vec::Vec<ProcFileDescriptorSnapshot>>, crate::fs::FileSystemError>
+    {
+        let representative = {
+            let graph = TASK_MANAGER.graph.lock();
+            let Some(node) = graph.nodes.get(&pid) else {
+                return Ok(None);
+            };
+            let ProcessState::Live(threads) = &node.state else {
+                return Ok(None);
+            };
+            let Some(representative) = threads.values().next() else {
+                return Ok(None);
+            };
+            representative.clone()
+        };
+        let Some(caller) = crate::task::current_task() else {
+            return Err(crate::fs::FileSystemError::AccessDenied);
+        };
+        let caller_euid = caller.credential_res_ids(true)[1];
+        let target_uids = representative.credential_res_ids(true);
+        if caller.tgid() != pid
+            && caller_euid != 0
+            && target_uids.iter().any(|uid| *uid != caller_euid)
+        {
+            return Err(crate::fs::FileSystemError::AccessDenied);
+        }
+        Ok(representative.process_file_descriptors())
     }
 }
 

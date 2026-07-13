@@ -14,7 +14,7 @@ const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
 const O_DIRECTORY: u32 = 0x10000;
 
-/// @description 校验 pathname search permission 后替换 Process cwd inode。
+/// @description 校验 pathname search permission 后替换 Process cwd opened entry。
 pub(crate) fn sys_chdir(name: *const u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -25,10 +25,11 @@ pub(crate) fn sys_chdir(name: *const u8) -> isize {
     };
     let start = (path.first() != Some(&b'/')).then(|| task.working_directory());
     let identity = task.access_identity(true);
-    let inode = match vfs().open_at(start, &path, &identity) {
-        Ok(inode) => inode,
+    let opened = match vfs().open_file_at(start, &path, &identity) {
+        Ok(opened) => opened,
         Err(error) => return ferr(error),
     };
+    let inode = opened.inode();
     if inode.inode_type() != InodeType::Directory {
         return -errno::ENOTDIR;
     }
@@ -39,7 +40,7 @@ pub(crate) fn sys_chdir(name: *const u8) -> isize {
     if let Err(error) = identity.require(metadata, 1) {
         return ferr(error);
     }
-    task.set_working_directory(inode);
+    task.set_working_directory(opened);
     0
 }
 
@@ -60,9 +61,9 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         Err(error) => return error,
     };
     let identity = task.access_identity(true);
-    let inode = match vfs().open_at(start.clone(), &path, &identity) {
+    let opened = match vfs().open_file_at(start.clone(), &path, &identity) {
         Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -errno::EEXIST,
-        Ok(inode) => inode,
+        Ok(opened) => opened,
         Err(FileSystemError::NotFound) if flags & O_CREAT != 0 => {
             if path.last() == Some(&b'/') {
                 return -errno::ENOTDIR;
@@ -74,12 +75,13 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
                 task.creation_mode(mode),
                 &identity,
             ) {
-                Ok(inode) => inode,
+                Ok(opened) => opened,
                 Err(error) => return ferr(error),
             }
         }
         Err(error) => return ferr(error),
     };
+    let inode = opened.inode();
     let requested = match flags & O_ACCMODE {
         O_RDONLY => 4,
         O_WRONLY => 2,
@@ -116,7 +118,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
                 return -errno::ENXIO;
             }
         }
-        OpenFileDescription::character(device, terminal, ofd_flags, inode)
+        OpenFileDescription::character(device, terminal, ofd_flags, opened)
     } else {
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY
@@ -124,7 +126,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         {
             return ferr(error);
         }
-        OpenFileDescription::inode(inode, ofd_flags)
+        OpenFileDescription::inode(opened, ofd_flags)
     };
     task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
         .map_or(-errno::EMFILE, |fd| fd as isize)

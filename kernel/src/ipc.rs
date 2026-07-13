@@ -49,6 +49,8 @@ struct PipeState {
 
 /// @description anonymous pipe 的唯一 byte ring 与 endpoint lifecycle owner。
 pub(crate) struct Pipe {
+    // Pipe owner 分配一次并由两个 endpoint 共享；缺失时 read/write fd 会报告不同 pipe inode。
+    object_id: u64,
     state: Mutex<PipeState>,
     notifier: Arc<dyn PipeNotifier>,
 }
@@ -65,6 +67,7 @@ impl Pipe {
         bytes.try_reserve_exact(PIPE_CAPACITY).map_err(|_| ())?;
         bytes.resize(PIPE_CAPACITY, 0);
         let pipe = Arc::new(Self {
+            object_id: crate::id::next_runtime_object_id(),
             state: Mutex::new(PipeState {
                 bytes,
                 head: 0,
@@ -90,6 +93,10 @@ impl Pipe {
 
     pub(crate) fn identity(pipe: &Arc<Self>) -> usize {
         Arc::as_ptr(pipe) as usize
+    }
+
+    pub(crate) fn object_id(&self) -> u64 {
+        self.object_id
     }
 
     pub(crate) fn readable(&self) -> bool {

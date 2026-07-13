@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, read, vfs},
+    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, OpenedFile, read, vfs},
     memory::{
         ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, MemorySet,
         parse_interpreter_elf, parse_main_elf,
@@ -102,7 +102,7 @@ struct ScriptRewrite {
 /// @return 最终 ELF image、重写后的 argv 与原始 AT_EXECFN pathname。
 /// @errors 返回 pathname、权限、资源、argument limit、interpreter loop 或格式错误。
 pub(crate) fn load_executable(
-    working_directory: Arc<dyn Inode>,
+    working_directory: Arc<OpenedFile>,
     path: Vec<u8>,
     mut arguments: Vec<Vec<u8>>,
     mut argument_bytes: usize,

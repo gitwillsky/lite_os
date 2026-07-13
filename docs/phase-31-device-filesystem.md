@@ -4,7 +4,7 @@
 
 rootfs builder 只在 ext2 中预建空 `/dev` mountpoint，不写入伪设备文件。kernel composition root 在 ext2 mount 后把内存 device filesystem 作为第二个 `FileSystem` adapter 挂载到 `/dev`。mount enter/leave、`..`、cwd 反向解析和跨 filesystem rename 判定都由 VFS 唯一 mount table 拥有；syscall 不检查 `/dev` 字符串。
 
-device filesystem 是唯一 singleton owner，使用稳定 `st_dev=2`；VFS 同时拒绝同一 filesystem root 重复挂载。它固定公布 Linux conventional character nodes：`null(1,3)`、`zero(1,5)`、`tty(5,0)` 和 `console(5,1)`。inode metadata/getdents 报告 character type 与 `st_rdev`；open 后全部进入唯一 `OpenFileKind::Character`。`tty/console` 持有 Process 继承的同一 Terminal owner，`tty` 额外校验 caller session 的 controlling TTY；`null/zero` 实现标准 byte-stream 语义。
+device filesystem 是唯一 singleton owner，使用稳定 `st_dev=2`；VFS 同时拒绝同一 filesystem root 重复挂载。它固定公布 Linux conventional character nodes：`null(1,3)`、`zero(1,5)`、`tty(5,0)` 和 `console(5,1)`。inode metadata/getdents 报告 character type 与 `st_rdev`；open 后全部进入唯一 `OpenFileKind::Character`。`tty/console` 持有 Process 继承的同一 Terminal owner，`tty` 额外校验 caller session 的 controlling TTY；`null/zero` 实现标准 byte-stream 语义。Phase 57 在同一 devfs 增加 `fd/stdin/stdout/stderr` symlink，统一指向 procfs fd magic links，不在 ext2 `/dev` 维护第二份节点。
 
 ## 验收
 

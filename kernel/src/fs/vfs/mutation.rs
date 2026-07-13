@@ -1,19 +1,20 @@
 use alloc::sync::Arc;
 
-use super::{AccessIdentity, FileSystemError, Inode, InodeType, VirtualFileSystem};
+use super::{AccessIdentity, FileSystemError, Inode, InodeType, OpenedFile, VirtualFileSystem};
 use crate::fs::CreateMetadata;
 
 impl VirtualFileSystem {
     /// @description 校验 parent access、umask/setgid inheritance 后创建 inode。
     pub(crate) fn create_at(
         &self,
-        start: Option<Arc<dyn Inode>>,
+        start: Option<Arc<OpenedFile>>,
         path: &[u8],
         kind: InodeType,
         mode: u32,
         identity: &AccessIdentity,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let _namespace = self.namespace_mutation.lock();
+        let start = start.unwrap_or(self.root_opened()?);
         // `/` 是已存在的 namespace entry；若继续交给 parent/name 分割，空末项会被
         // 误报为 EINVAL，导致标准 `mkdir -p /absolute/path` 无法跳过 root。
         if path.iter().all(|byte| *byte == b'/') {
@@ -23,7 +24,8 @@ impl VirtualFileSystem {
         if matches!(name.as_slice(), b"." | b"..") {
             return Err(FileSystemError::AlreadyExists);
         }
-        let parent_metadata = parent.metadata()?;
+        let parent_inode = parent.inode();
+        let parent_metadata = parent_inode.metadata()?;
         identity.require(parent_metadata, 3)?;
         let gid = if parent_metadata.mode & 0o2000 != 0 {
             parent_metadata.gid
@@ -36,7 +38,7 @@ impl VirtualFileSystem {
             } else {
                 0
             };
-        parent.create(
+        let inode = parent_inode.create(
             &name,
             kind,
             CreateMetadata {
@@ -44,27 +46,30 @@ impl VirtualFileSystem {
                 uid: identity.uid(),
                 gid,
             },
-        )
+        )?;
+        self.register(OpenedFile::child(inode, parent, name))
     }
 
     /// @description 校验 parent access 后创建 owner-aware symbolic link。
     pub(crate) fn symlink_at(
         &self,
-        start: Option<Arc<dyn Inode>>,
+        start: Option<Arc<OpenedFile>>,
         path: &[u8],
         target: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
+        let _namespace = self.namespace_mutation.lock();
+        let start = start.unwrap_or(self.root_opened()?);
         let (parent, name) = self.parent_from(start, path, identity)?;
-        let metadata = parent.metadata()?;
+        let parent_inode = parent.inode();
+        let metadata = parent_inode.metadata()?;
         identity.require(metadata, 3)?;
         let gid = if metadata.mode & 0o2000 != 0 {
             metadata.gid
         } else {
             identity.gid()
         };
-        parent.symlink(
+        parent_inode.symlink(
             &name,
             target,
             CreateMetadata {
@@ -79,13 +84,15 @@ impl VirtualFileSystem {
     pub(crate) fn link_at(
         &self,
         target: Arc<dyn Inode>,
-        new_start: Option<Arc<dyn Inode>>,
+        new_start: Option<Arc<OpenedFile>>,
         new_path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let new_start = new_start.unwrap_or(self.root_inode()?);
+        let _namespace = self.namespace_mutation.lock();
+        let new_start = new_start.unwrap_or(self.root_opened()?);
         let (parent, name) = self.parent_from(new_start, new_path, identity)?;
-        identity.require(parent.metadata()?, 3)?;
+        let parent_inode = parent.inode();
+        identity.require(parent_inode.metadata()?, 3)?;
         let target_metadata = target.metadata()?;
         let safe_source = target_metadata.kind == InodeType::File
             && target_metadata.mode & 0o4000 == 0
@@ -94,25 +101,31 @@ impl VirtualFileSystem {
         if identity.uid() != 0 && identity.uid() != target_metadata.uid && !safe_source {
             return Err(FileSystemError::PermissionDenied);
         }
-        if parent.filesystem_id() != target.filesystem_id() {
+        if parent_inode.filesystem_id() != target.filesystem_id() {
             return Err(FileSystemError::CrossDevice);
         }
-        parent.link(&name, target)
+        parent_inode.link(&name, target)
     }
 
     /// @description 执行 parent access 与 sticky-directory policy 后删除 entry。
     pub(crate) fn unlink_at(
         &self,
-        start: Option<Arc<dyn Inode>>,
+        start: Option<Arc<OpenedFile>>,
         path: &[u8],
         directory: bool,
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
+        let _namespace = self.namespace_mutation.lock();
+        let start = start.unwrap_or(self.root_opened()?);
         let (parent, name) = self.parent_from(start, path, identity)?;
-        let parent_metadata = parent.metadata()?;
+        let parent_inode = parent.inode();
+        let parent_metadata = parent_inode.metadata()?;
         identity.require(parent_metadata, 3)?;
-        let target = parent.find_child(&name)?.metadata()?;
+        let target_inode = parent_inode.find_child(&name)?;
+        let target = target_inode.metadata()?;
+        if self.is_mount_point(&target_inode) {
+            return Err(FileSystemError::Busy);
+        }
         if sticky_denied(
             parent_metadata.mode,
             parent_metadata.uid,
@@ -121,28 +134,37 @@ impl VirtualFileSystem {
         ) {
             return Err(FileSystemError::PermissionDenied);
         }
-        parent.unlink(&name, directory)
+        parent_inode.unlink(&name, directory)?;
+        self.mark_unlinked(&parent, &name, (target_inode.filesystem_id(), target.inode));
+        Ok(())
     }
 
     /// @description 对源/目标 parent 与 sticky owner 统一授权后原子 rename。
     pub(crate) fn rename_at(
         &self,
-        old_start: Option<Arc<dyn Inode>>,
+        old_start: Option<Arc<OpenedFile>>,
         old_path: &[u8],
-        new_start: Option<Arc<dyn Inode>>,
+        new_start: Option<Arc<OpenedFile>>,
         new_path: &[u8],
         no_replace: bool,
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let old_start = old_start.unwrap_or(self.root_inode()?);
-        let new_start = new_start.unwrap_or(self.root_inode()?);
+        let _namespace = self.namespace_mutation.lock();
+        let old_start = old_start.unwrap_or(self.root_opened()?);
+        let new_start = new_start.unwrap_or(self.root_opened()?);
         let (old_parent, old_name) = self.parent_from(old_start, old_path, identity)?;
         let (new_parent, new_name) = self.parent_from(new_start, new_path, identity)?;
-        let old_metadata = old_parent.metadata()?;
-        let new_metadata = new_parent.metadata()?;
+        let old_parent_inode = old_parent.inode();
+        let new_parent_inode = new_parent.inode();
+        let old_metadata = old_parent_inode.metadata()?;
+        let new_metadata = new_parent_inode.metadata()?;
         identity.require(old_metadata, 3)?;
         identity.require(new_metadata, 3)?;
-        let source = old_parent.find_child(&old_name)?.metadata()?;
+        let source_inode = old_parent_inode.find_child(&old_name)?;
+        let source = source_inode.metadata()?;
+        if self.is_mount_point(&source_inode) {
+            return Err(FileSystemError::Busy);
+        }
         if sticky_denied(
             old_metadata.mode,
             old_metadata.uid,
@@ -151,7 +173,11 @@ impl VirtualFileSystem {
         ) {
             return Err(FileSystemError::PermissionDenied);
         }
-        if let Ok(target) = new_parent.find_child(&new_name) {
+        let target = new_parent_inode.find_child(&new_name).ok();
+        if let Some(target) = &target {
+            if self.is_mount_point(target) {
+                return Err(FileSystemError::Busy);
+            }
             let target = target.metadata()?;
             if sticky_denied(
                 new_metadata.mode,
@@ -162,10 +188,32 @@ impl VirtualFileSystem {
                 return Err(FileSystemError::PermissionDenied);
             }
         }
-        if old_parent.filesystem_id() != new_parent.filesystem_id() {
+        if old_parent_inode.filesystem_id() != new_parent_inode.filesystem_id() {
             return Err(FileSystemError::CrossDevice);
         }
-        old_parent.rename(&old_name, new_metadata.inode, &new_name, no_replace)
+        let source_identity = (source_inode.filesystem_id(), source.inode);
+        if let Some(target) = &target
+            && (target.filesystem_id(), target.metadata()?.inode) == source_identity
+            && !no_replace
+        {
+            return Ok(());
+        }
+        let replaced_identity = target
+            .as_ref()
+            .map(|target| Ok((target.filesystem_id(), target.metadata()?.inode)))
+            .transpose()?;
+        old_parent_inode.rename(&old_name, new_metadata.inode, &new_name, no_replace)?;
+        if let Some(identity) = replaced_identity {
+            self.mark_unlinked(&new_parent, &new_name, identity);
+        }
+        self.move_opened_entries(
+            &old_parent,
+            &old_name,
+            source_identity,
+            new_parent,
+            &new_name,
+        );
+        Ok(())
     }
 }
 

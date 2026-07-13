@@ -19,6 +19,4 @@
 
 ## Gate 边界
 
-Phase 55/56 的语义判断完全在各自 disposable image 内的 fail-fast shell script 完成；BusyBox init 以唯一 `sysinit` action 直接启动脚本，不经过 askfirst shell 或 UART 命令注入。host Python 只安装 runtime fixture、启动 QEMU、设置 deadline、拒绝 kernel error 并等待最终 marker。掉电、跨冷启动与交互 job-control 仍由 host orchestration 负责。
-
-`tty` 本阶段没有开放：musl `ttyname()` 依赖完整 `/proc/self/fd/<n>` symlink identity，而当前 OFD 未拥有在 rename/hardlink 后仍正确的 opened dentry path。该能力不得通过写死 `/dev/console` 伪造。
+Phase 55/56 的语义判断完全在各自 disposable image 内的 fail-fast shell script 完成；BusyBox init 以唯一 `sysinit` action 直接启动脚本，不经过 askfirst shell 或 UART 命令注入。host Python 只安装 runtime fixture、启动 QEMU、设置 deadline、拒绝 kernel error 并等待最终 marker。掉电、跨冷启动与交互 job-control 仍由 host orchestration 负责。`tty` 及其依赖的 opened-file identity 在 Phase 57 由独立竖切开放。

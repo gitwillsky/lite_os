@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{CreateMetadata, FileSystemError};
+use super::{CreateMetadata, FileSystemError, OpenedFile};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,12 @@ pub(crate) trait Inode: Send + Sync {
     /// @return symbolic-link 返回完整 target；其他 inode 默认返回 InvalidOperation。
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
         Err(FileSystemError::InvalidOperation)
+    }
+
+    /// @description 解析 procfs 等 kernel-owned magic link 的 live opened-entry target。
+    /// @return magic link 返回目标；persistent/devfs 普通 symlink 返回 None 并使用 raw bytes。
+    fn follow_link(&self) -> Option<Arc<OpenedFile>> {
+        None
     }
 
     fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;

@@ -28,6 +28,8 @@ pub(crate) const ENOMEM: isize = 12;
 pub(crate) const EACCES: isize = 13;
 /// 无效用户空间地址。
 pub(crate) const EFAULT: isize = 14;
+/// 目标是 live mount root/mountpoint 等正在使用的 namespace object。
+pub(crate) const EBUSY: isize = 16;
 pub(crate) const EEXIST: isize = 17;
 /// old/new pathname 不属于同一 mounted filesystem。
 pub(crate) const EXDEV: isize = 18;

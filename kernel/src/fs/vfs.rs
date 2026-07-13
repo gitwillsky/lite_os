@@ -1,4 +1,7 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use spin::Mutex;
 
 use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeType};
@@ -7,18 +10,27 @@ use super::{AccessIdentity, FileSystem, FileSystemError, FileSystemStatistics, I
 mod mount_table;
 #[path = "vfs/mutation.rs"]
 mod mutation;
+#[path = "vfs/opened.rs"]
+mod opened;
 use mount_table::write_mount_record;
+pub(crate) use opened::OpenedFile;
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
     root_fs: Mutex<Option<RootMount>>,
     mounts: Mutex<Vec<Mount>>,
+    // OWNER: VFS namespace mutation lock serializes adapter commit with opened-entry publication；
+    // 缺失时并发 A→B→C rename 可让磁盘停在 C、registry 因乱序停在 B。
+    namespace_mutation: Mutex<()>,
+    // OWNER: VFS 只以 Weak 注册 live opened-entry，供 namespace mutation 原子更新身份；
+    // 缺失该 registry 会使 rename/unlink 后的 OFD path 永久停留在旧目录项。
+    opened: Mutex<Vec<Weak<OpenedFile>>>,
 }
 
 struct RootMount {
     source: &'static [u8],
     filesystem: Arc<dyn FileSystem>,
-    root: Arc<dyn Inode>,
+    root: Arc<OpenedFile>,
 }
 
 struct Mount {
@@ -26,13 +38,23 @@ struct Mount {
     filesystem: Arc<dyn FileSystem>,
     point_identity: (usize, u64),
     root_identity: (usize, u64),
-    point: Arc<dyn Inode>,
-    parent: Arc<dyn Inode>,
-    root: Arc<dyn Inode>,
+    point: Arc<OpenedFile>,
+    parent: Arc<OpenedFile>,
+    root: Arc<OpenedFile>,
 }
 
 impl VirtualFileSystem {
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
+        Ok(self
+            .root_fs
+            .lock()
+            .as_ref()
+            .ok_or(FileSystemError::NotFound)?
+            .root
+            .inode())
+    }
+
+    fn root_opened(&self) -> Result<Arc<OpenedFile>, FileSystemError> {
         Ok(self
             .root_fs
             .lock()
@@ -46,18 +68,18 @@ impl VirtualFileSystem {
         Ok((inode.filesystem_id(), inode.metadata()?.inode))
     }
 
-    fn enter_mount(&self, inode: Arc<dyn Inode>) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let identity = Self::identity(&inode)?;
+    fn enter_mount(&self, opened: Arc<OpenedFile>) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let identity = Self::identity(&opened.inode())?;
         Ok(self
             .mounts
             .lock()
             .iter()
             .find(|mount| mount.point_identity == identity)
-            .map_or(inode, |mount| mount.root.clone()))
+            .map_or(opened, |mount| mount.root.clone()))
     }
 
-    fn leave_mount(&self, inode: &Arc<dyn Inode>) -> Option<Arc<dyn Inode>> {
-        let identity = Self::identity(inode).ok()?;
+    fn leave_mount(&self, opened: &Arc<OpenedFile>) -> Option<Arc<OpenedFile>> {
+        let identity = Self::identity(&opened.inode()).ok()?;
         self.mounts
             .lock()
             .iter()
@@ -65,38 +87,48 @@ impl VirtualFileSystem {
             .map(|mount| mount.parent.clone())
     }
 
-    fn mount_point(&self, inode: &Arc<dyn Inode>) -> Option<Arc<dyn Inode>> {
-        let identity = Self::identity(inode).ok()?;
+    fn is_mount_point(&self, inode: &Arc<dyn Inode>) -> bool {
+        let Ok(identity) = Self::identity(inode) else {
+            return false;
+        };
         self.mounts
             .lock()
             .iter()
-            .find(|mount| mount.root_identity == identity)
-            .map(|mount| mount.point.clone())
+            .any(|mount| mount.point_identity == identity || mount.root_identity == identity)
+    }
+
+    fn register(&self, opened: Arc<OpenedFile>) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let mut registry = self.opened.lock();
+        registry.retain(|entry| entry.strong_count() != 0);
+        registry
+            .try_reserve(1)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        registry.push(Arc::downgrade(&opened));
+        Ok(opened)
     }
 
     fn resolve_from(
         &self,
-        start: Arc<dyn Inode>,
+        start: Arc<OpenedFile>,
         path: &[u8],
         allow_final_symlink: bool,
         identity: &AccessIdentity,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
         self.resolve_from_with_limit(start, path, allow_final_symlink, identity, 0)
     }
 
     fn resolve_from_with_limit(
         &self,
-        start: Arc<dyn Inode>,
+        start: Arc<OpenedFile>,
         path: &[u8],
         allow_final_symlink: bool,
         identity: &AccessIdentity,
         followed_links: usize,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
         const MAX_SYMLINKS: usize = 40;
-        let root = self.root_inode()?;
-        let root_identity = (root.filesystem_id(), root.metadata()?.inode);
-        let mut inode = if path.first() == Some(&b'/') {
-            root
+        let root = self.root_opened()?;
+        let mut opened = if path.first() == Some(&b'/') {
+            root.clone()
         } else {
             start
         };
@@ -109,27 +141,58 @@ impl VirtualFileSystem {
             .filter(|component| !matches!(*component, b"" | b"."))
             .enumerate()
         {
-            identity.require(inode.metadata()?, 1)?;
+            identity.require(opened.inode().metadata()?, 1)?;
             match component {
                 b".." => {
-                    if let Some(parent) = self.leave_mount(&inode) {
-                        inode = parent;
-                    } else if (inode.filesystem_id(), inode.metadata()?.inode) != root_identity {
-                        inode = inode.find_child(b"..")?;
+                    if let Some(parent) = self.leave_mount(&opened) {
+                        opened = parent;
+                    } else if !opened.same_inode(&root) {
+                        opened = opened.parent().ok_or(FileSystemError::InvalidFileSystem)?;
                     }
                 }
                 name => {
-                    let parent = inode.clone();
-                    inode = self.enter_mount(inode.find_child(name)?)?;
+                    let parent = opened.clone();
+                    let inode = parent.inode().find_child(name)?;
+                    opened =
+                        self.register(OpenedFile::child(inode, parent.clone(), name.to_vec()))?;
+                    opened = self.enter_mount(opened)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
-                    if inode.inode_type() == InodeType::SymLink
+                    if opened.inode().inode_type() == InodeType::SymLink
                         && !(allow_final_symlink && is_untrailed_final)
                     {
                         if followed_links >= MAX_SYMLINKS {
                             return Err(FileSystemError::SymbolicLink);
                         }
-                        let target = inode.read_link()?;
+                        if let Some(target) = opened.inode().follow_link() {
+                            let mut remaining = Vec::new();
+                            for part in path
+                                .split(|byte| *byte == b'/')
+                                .filter(|part| !matches!(*part, b"" | b"."))
+                                .skip(index + 1)
+                            {
+                                if !remaining.is_empty() {
+                                    remaining.push(b'/');
+                                }
+                                remaining.extend_from_slice(part);
+                            }
+                            if remaining.is_empty() {
+                                if path.last() == Some(&b'/')
+                                    && target.inode().inode_type() != InodeType::Directory
+                                {
+                                    return Err(FileSystemError::NotDirectory);
+                                }
+                                return Ok(target);
+                            }
+                            return self.resolve_from_with_limit(
+                                target,
+                                &remaining,
+                                allow_final_symlink,
+                                identity,
+                                followed_links + 1,
+                            );
+                        }
+                        let target = opened.inode().read_link()?;
                         if target.is_empty() {
                             return Err(FileSystemError::NotFound);
                         }
@@ -158,24 +221,24 @@ impl VirtualFileSystem {
                 }
             }
         }
-        if component_count == 0 && inode.inode_type() == InodeType::Directory {
-            identity.require(inode.metadata()?, 1)?;
+        if component_count == 0 && opened.inode().inode_type() == InodeType::Directory {
+            identity.require(opened.inode().metadata()?, 1)?;
         }
         if path.len() > 1
             && path.last() == Some(&b'/')
-            && inode.inode_type() != InodeType::Directory
+            && opened.inode().inode_type() != InodeType::Directory
         {
             return Err(FileSystemError::NotDirectory);
         }
-        Ok(inode)
+        Ok(opened)
     }
 
     fn parent_from(
         &self,
-        start: Arc<dyn Inode>,
+        start: Arc<OpenedFile>,
         path: &[u8],
         identity: &AccessIdentity,
-    ) -> Result<(Arc<dyn Inode>, Vec<u8>), FileSystemError> {
+    ) -> Result<(Arc<OpenedFile>, Vec<u8>), FileSystemError> {
         let trimmed = path.strip_suffix(b"/").unwrap_or(path);
         let split = trimmed.iter().rposition(|byte| *byte == b'/');
         let (parent_path, name) = match split {
@@ -201,6 +264,8 @@ impl VirtualFileSystem {
         Self {
             root_fs: Mutex::new(None),
             mounts: Mutex::new(Vec::new()),
+            namespace_mutation: Mutex::new(()),
+            opened: Mutex::new(Vec::new()),
         }
     }
 
@@ -227,7 +292,7 @@ impl VirtualFileSystem {
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
-        let root = fs.root_inode()?;
+        let root = self.register(OpenedFile::root(fs.root_inode()?))?;
         *root_fs = Some(RootMount {
             source,
             filesystem: fs,
@@ -252,17 +317,22 @@ impl VirtualFileSystem {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
-        let point = self.open(path)?;
-        if point.inode_type() != InodeType::Directory {
+        let point = self.open_file(path)?;
+        if point.inode().inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
-        let root = filesystem.root_inode()?;
-        if root.inode_type() != InodeType::Directory {
+        let root_inode = filesystem.root_inode()?;
+        if root_inode.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
-        let parent = point.find_child(b"..")?;
-        let point_identity = Self::identity(&point)?;
-        let root_identity = Self::identity(&root)?;
+        let parent = point.parent().ok_or(FileSystemError::InvalidPath)?;
+        let point_identity = Self::identity(&point.inode())?;
+        let root_identity = Self::identity(&root_inode)?;
+        let root = self.register(OpenedFile::child(
+            root_inode,
+            parent.clone(),
+            point.location_name(),
+        ))?;
         let mut mounts = self.mounts.lock();
         if mounts.iter().any(|mount| {
             mount.point_identity == point_identity || mount.root_identity == root_identity
@@ -295,7 +365,7 @@ impl VirtualFileSystem {
     ) -> Result<FileSystemStatistics, FileSystemError> {
         let filesystem_id = inode.filesystem_id();
         let root_filesystem = self.root_fs.lock().as_ref().and_then(|mount| {
-            (mount.root.filesystem_id() == filesystem_id).then(|| mount.filesystem.clone())
+            (mount.root.inode().filesystem_id() == filesystem_id).then(|| mount.filesystem.clone())
         });
         let filesystem = root_filesystem.or_else(|| {
             self.mounts
@@ -353,34 +423,40 @@ impl VirtualFileSystem {
         self.root_inode()?.sync_storage()
     }
 
-    /// 从根文件系统打开一个内核可见 inode。
-    ///
-    /// # Parameters
-    ///
-    /// - `path`: 必须以 `/` 开头的 NUL 之前原始路径字节。
-    ///
-    /// # Returns
-    ///
-    /// 成功时返回解析后 inode 的共享引用。
-    ///
-    /// # Errors
-    ///
-    /// 路径非绝对路径、根文件系统未挂载、分量不存在、symlink loop，
-    /// 或者带尾随 `/` 的结果不是目录时返回错误。
-    pub(crate) fn open(&self, path: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+    /// @description 从 root namespace 打开并保留标准 opened-entry identity。
+    /// @param path 绝对 pathname。
+    /// @return VFS-owned opened entry。
+    /// @errors pathname、权限或内存失败时返回明确错误。
+    pub(crate) fn open_file(&self, path: &[u8]) -> Result<Arc<OpenedFile>, FileSystemError> {
         if path.first() != Some(&b'/') {
             return Err(FileSystemError::InvalidPath);
         }
-        self.resolve_from(self.root_inode()?, path, false, &AccessIdentity::root())
+        self.resolve_from(self.root_opened()?, path, false, &AccessIdentity::root())
     }
 
     pub(crate) fn open_at(
         &self,
-        start: Option<Arc<dyn Inode>>,
+        start: Option<Arc<OpenedFile>>,
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
+        self.open_file_at(start, path, identity)
+            .map(|opened| opened.inode())
+    }
+
+    /// @description 相对 opened directory 解析 pathname 并保留最终目录项身份。
+    /// @param start 相对 lookup 起点；None 表示 root。
+    /// @param path raw pathname。
+    /// @param identity traversal credential snapshot。
+    /// @return 最终 opened entry。
+    /// @errors traversal、symlink 或资源失败时返回明确错误。
+    pub(crate) fn open_file_at(
+        &self,
+        start: Option<Arc<OpenedFile>>,
+        path: &[u8],
+        identity: &AccessIdentity,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        let start = start.unwrap_or(self.root_opened()?);
         self.resolve_from(start, path, false, identity)
     }
 
@@ -392,12 +468,13 @@ impl VirtualFileSystem {
     /// @errors 路径不存在、symlink loop 或底层文件系统失败时返回错误。
     pub(crate) fn open_at_no_follow(
         &self,
-        start: Option<Arc<dyn Inode>>,
+        start: Option<Arc<OpenedFile>>,
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        let start = start.unwrap_or(self.root_inode()?);
+        let start = start.unwrap_or(self.root_opened()?);
         self.resolve_from(start, path, true, identity)
+            .map(|opened| opened.inode())
     }
 
     /// @description 从目录 inode identity 反向解析当前 namespace 中的 raw absolute path。
@@ -405,60 +482,22 @@ impl VirtualFileSystem {
     /// @param inode 必须属于当前 root filesystem 且为目录。
     /// @return root 返回 `/`；其他目录返回当前目录项关系对应的 absolute path。
     /// @errors inode 已不可达、目录关系损坏、跨 filesystem 或底层 I/O 失败时返回明确错误。
-    pub(crate) fn absolute_path(&self, inode: Arc<dyn Inode>) -> Result<Vec<u8>, FileSystemError> {
-        if inode.inode_type() != InodeType::Directory {
+    pub(crate) fn absolute_path(
+        &self,
+        opened: Arc<OpenedFile>,
+    ) -> Result<Vec<u8>, FileSystemError> {
+        if opened.inode().inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
-        let root = self.root_inode()?;
-        let root_identity = (root.filesystem_id(), root.metadata()?.inode);
-        let mut current = inode;
-        let mut components = Vec::new();
-        let mut visited = Vec::new();
-        loop {
-            if let Some(point) = self.mount_point(&current) {
-                current = point;
-            }
-            let identity = (current.filesystem_id(), current.metadata()?.inode);
-            if identity == root_identity {
-                break;
-            }
-            if current.filesystem_id() != root.filesystem_id() || visited.contains(&identity) {
-                return Err(FileSystemError::InvalidFileSystem);
-            }
-            visited.push(identity);
-            let parent = current.find_child(b"..")?;
-            let name = parent
-                .list()?
-                .into_iter()
-                .find(|entry| {
-                    entry.inode == identity.1
-                        && entry.name.as_slice() != b"."
-                        && entry.name.as_slice() != b".."
-                })
-                .ok_or(FileSystemError::NotFound)?
-                .name;
-            components.push(name);
-            current = parent;
-        }
+        opened.path(false)
+    }
 
-        let names_size = components
-            .iter()
-            .try_fold(0usize, |size, component| size.checked_add(component.len()));
-        let size = names_size
-            .and_then(|size| size.checked_add(components.len().saturating_sub(1)))
-            .and_then(|size| size.checked_add(1))
-            .ok_or(FileSystemError::InvalidFileSystem)?;
-        let mut path = Vec::new();
-        path.try_reserve_exact(size)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        path.push(b'/');
-        for component in components.iter().rev() {
-            if path.len() > 1 {
-                path.push(b'/');
-            }
-            path.extend_from_slice(component);
-        }
-        Ok(path)
+    /// @description 投影 procfs fd symlink 使用的 opened pathname。
+    /// @param opened live OFD/cwd opened entry。
+    /// @return 当前路径；任一祖先已删除时追加 Linux ` (deleted)` 后缀。
+    /// @errors opened-entry 链损坏或内存不足时返回明确错误。
+    pub(crate) fn opened_path(&self, opened: &Arc<OpenedFile>) -> Result<Vec<u8>, FileSystemError> {
+        opened.path(true)
     }
 }
 

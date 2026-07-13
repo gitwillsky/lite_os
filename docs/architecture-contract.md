@@ -18,8 +18,8 @@
 | `sync` | `arch` | 只依赖本地中断机制 |
 | `memory` | `arch`, `config`, `id`, `random`, `sync` | 不感知 task、filesystem 或具体 driver policy |
 | `drivers` | `arch`, `memory`, `sync` | 不感知 task、filesystem 或 syscall |
-| `ipc` | `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall |
-| `socket` | `drivers`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam |
+| `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
+| `socket` | `drivers`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
 | `fs` | `drivers`, `ipc`, `memory`, `socket`, `sync`, `timer` | `drivers` 仅允许 `block` seam；socket 仅允许统一 OFD backend facade；`memory` 仅允许 shared-page seam |
 | `task` | `arch`, `fs`, `ipc`, `memory`, `socket`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry；只在 deferred context 推进 network stack |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
@@ -43,13 +43,13 @@
 | hart possible/online/active、startup stack | HartTopology |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address space、cwd inode、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
+| process address space、cwd opened-entry、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
 | PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、child/vfork waiter 与 ITIMER_REAL | TaskManager process graph；vfork child node 唯一持有 suspended parent，exec/exit 消费后经 scheduler seam 唤醒；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
 | deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
-| OFD backend、backing mount identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；character fd 保留打开时 inode，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
+| OFD backend、opened-entry identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；pathname-backed character/regular/directory fd 保留 VFS opened entry，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
 | anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
 | Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP/raw ICMP socket set、peer、IP_PKTINFO、socket option、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
@@ -65,7 +65,9 @@
 | system information snapshot | task façade 只投影 allocator、process graph、load average 与 timer 的权威状态；procfs/sysinfo 不另建 counter |
 | immutable system/build identity | system module；uname 只编码，不复制 hostname/release/machine state |
 | realtime offset 与固定 UTC timezone policy | timer module；clock_gettime/gettimeofday 共用同一 realtime owner |
-| root mount、source/filesystem association、boot-time mount table、mount enter/leave 与 pathname traversal | VFS |
+| root mount、source/filesystem association、boot-time mount table、mount enter/leave、pathname traversal 与 namespace mutation publication order | VFS；mutation lock 覆盖 adapter commit 到 opened-entry registry publication |
+| opened-entry parent/name/deleted 关系与 live weak registry | VFS；cwd/OFD/procfs 只持 Arc 或读取投影，rename/unlink 只在 VFS 更新 |
+| boot 内 anonymous Pipe/Socket object identity allocation | id module 分配机制；具体 object owner 持有，fd table/procfs 不复制 |
 | inode/on-disk allocation、statfs capacity、JBD2 active transaction/recovery sequence 与 orphan chain | filesystem adapter mutation domain；ext2 统计、allocator、journal 与 orphan lifecycle 共用唯一 mutation 顺序 |
 | VirtIO descriptor/DMA lifetime | VirtQueue/driver instance |
 | entropy device 与请求串行化 | VirtIORngDevice；random facade 不缓存或派生第二份状态 |
@@ -94,9 +96,12 @@
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
-- ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。运行时 devfs/procfs 只经 VFS mount table 发布；`/dev/fd` 与 stdio aliases 只由 devfs 指向 `/proc/self/fd`，禁止写入会被 mount 遮蔽的 ext2 节点。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory/fd 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- cwd、directory fd 与 pathname-backed OFD 必须持有同一 VFS `OpenedFile` seam；VFS weak registry 唯一提交 rename/unlink 对 parent/name/deleted 的更新。禁止缓存绝对路径、由 inode 扫描猜测 hardlink 名称，或把 procfs ` (deleted)` target 当普通 pathname 重新解析。`/proc/<pid>/fd` magic link 可跟随 live opened entry，Pipe/Socket target 与 `fstat` 只投影其 object owner identity，eventpoll 使用标准 anon-inode label。
+- `/proc/<pid>/fd` 只允许同 TGID、effective root，或 caller effective UID 与目标 real/effective/saved UID 全部相同的访问；credential 判定留在 task façade，procfs 不复制 Process credential state。未建模 fsuid/capability/dumpable 前不得扩大该边界。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
 - VFS 只决定 pathname、mount 与 cross-filesystem policy；ext2 的 create/link/unlink/rename、allocator、JBD2 write-set/commit/checkpoint 与 orphan recovery 必须在同一 mutation domain。禁止 syscall/VFS 复制 link count、journal 状态或用写序调整冒充跨块原子性。
+- live mount root/mountpoint 不得被 unlink 或作为 rename source/replace target；VFS 在进入 adapter mutation 前返回 `EBUSY`，防止 mount table 与 opened-entry namespace 分裂。
 - VFS permission evaluator 只消费 Process 发布的 immutable identity snapshot，唯一决定 traversal、inode rwx、parent mutation、sticky directory、protected hardlink 与 setgid-directory inheritance；syscall 和 filesystem adapter 不得复制权限 policy。ext2 只持久化 VFS 已决定的 mode/UID/GID/ctime。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - `uname` 只投影 system module 的 immutable identity；`riscv_hwprobe` 只通过 system façade 投影 DTB/HartTopology 的平台事实；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、ISA、hart mask、release、timezone 或第二份 wallclock offset。

@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{FileSystemError, Inode, InodeType},
+    fs::{FileSystemError, InodeType, OpenedFile},
     memory::UserAccessError,
     syscall::errno,
     task::TaskControlBlock,
@@ -20,6 +20,7 @@ pub(super) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::CrossDevice => errno::EXDEV,
         FileSystemError::PermissionDenied => errno::EPERM,
         FileSystemError::AccessDenied => errno::EACCES,
+        FileSystemError::Busy => errno::EBUSY,
         FileSystemError::TooManyLinks => errno::EMLINK,
         FileSystemError::InvalidPath | FileSystemError::InvalidOperation => errno::EINVAL,
         FileSystemError::ReadOnly => errno::EROFS,
@@ -58,7 +59,7 @@ pub(super) fn base(
     task: &TaskControlBlock,
     fd: isize,
     path: &[u8],
-) -> Result<Option<Arc<dyn Inode>>, isize> {
+) -> Result<Option<Arc<OpenedFile>>, isize> {
     if path.first() == Some(&b'/') {
         return Ok(None);
     }
@@ -66,9 +67,10 @@ pub(super) fn base(
         return Ok(Some(task.working_directory()));
     }
     let ofd = task.fd_get(fd as usize).ok_or(-errno::EBADF)?;
-    let inode = ofd.inode_ref().ok_or(-errno::ENOTDIR)?;
+    let opened = ofd.opened_ref().ok_or(-errno::ENOTDIR)?;
+    let inode = opened.inode();
     if inode.inode_type() != InodeType::Directory {
         return Err(-errno::ENOTDIR);
     }
-    Ok(Some(inode))
+    Ok(Some(opened))
 }

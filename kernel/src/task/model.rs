@@ -10,7 +10,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-    fs::{Console, FileDescriptorTable, Inode, OpenFileDescription, Terminal, vfs},
+    fs::{Console, FileDescriptorTable, OpenFileDescription, OpenedFile, Terminal, vfs},
     memory::{
         ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
         PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
@@ -196,8 +196,8 @@ struct Process {
     comm: Mutex<Vec<u8>>,
     start_time_us: u64,
     address_space: Arc<AddressSpace>,
-    // OWNER: Process 独占当前目录 inode；absolute path 只由 VFS 目录项反向推导，禁止缓存第二份 path 状态。
-    cwd: Mutex<Arc<dyn Inode>>,
+    // OWNER: Process 独占 VFS opened cwd identity；只保存 inode 会使 rename 后的 getcwd 与相对 lookup 分裂。
+    cwd: Mutex<Arc<OpenedFile>>,
     files: Mutex<FileDescriptorTable>,
     // OWNER: Process 的单锁凭据集供 thread 共享；拆分字段会让 setres* 暴露中间身份。
     credentials: Mutex<Credentials>,
@@ -233,7 +233,7 @@ impl TaskControlBlock {
             comm: Mutex::new(process_name(loaded.execfn())),
             start_time_us: get_time_us(),
             address_space,
-            cwd: Mutex::new(vfs().open(b"/").expect("mounted root must resolve")),
+            cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
             credentials: Mutex::new(Credentials::root()),
             terminal,
@@ -822,16 +822,16 @@ impl TaskControlBlock {
     /// @description 复制当前 Process 工作目录的唯一 inode identity。
     ///
     /// @return 当前目录的共享 inode。
-    pub(crate) fn working_directory(&self) -> Arc<dyn Inode> {
+    pub(crate) fn working_directory(&self) -> Arc<OpenedFile> {
         self.process.cwd.lock().clone()
     }
 
     /// @description 原子替换当前 Process 的工作目录 identity。
     ///
-    /// @param inode 已由 VFS 证明为目录的 inode。
+    /// @param opened 已由 VFS 证明为目录的 opened entry。
     /// @return 无返回值。
-    pub(crate) fn set_working_directory(&self, inode: Arc<dyn Inode>) {
-        *self.process.cwd.lock() = inode;
+    pub(crate) fn set_working_directory(&self, opened: Arc<OpenedFile>) {
+        *self.process.cwd.lock() = opened;
     }
 
     /// @description 返回当前 Process 可继承的 platform Terminal identity。

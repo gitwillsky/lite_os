@@ -438,7 +438,7 @@ kernel/src/fs/file.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Ter
 kernel/src/fs/file.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
-kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < dyn Inode >)
+kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < OpenedFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
@@ -469,17 +469,18 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn slot_capacit
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Self
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_inode : Arc < dyn Inode > ,) -> Arc < Self >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (inode : Arc < dyn Inode > , flags : u32) -> Arc < Self >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (opened : Arc < OpenedFile > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn opened_ref (& self) -> Option < Arc < OpenedFile > >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn poll_events (& self , events : i16) -> i16
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Arc < Self >
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_inode : Arc < dyn Inode > , flags : u32 ,) -> Arc < Self >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
@@ -487,6 +488,8 @@ kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/file/proc.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
+kernel/src/fs/file/proc.rs :: pub (crate) impl OpenFileDescription :: fn proc_target (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Output
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: StateChange
@@ -553,6 +556,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kin
 kernel/src/fs/inode.rs :: trait Inode :: fn device_kind (& self) -> Option < DeviceKind >
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn follow_link (& self) -> Option < Arc < OpenedFile > >
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
@@ -572,6 +576,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , rem
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
+kernel/src/fs/mod.rs :: enum FileSystemError :: Busy
 kernel/src/fs/mod.rs :: enum FileSystemError :: CrossDevice
 kernel/src/fs/mod.rs :: enum FileSystemError :: DirectoryNotEmpty
 kernel/src/fs/mod.rs :: enum FileSystemError :: InvalidFileSystem
@@ -609,8 +614,8 @@ kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , Fi
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { append , mapping , read , sync_all , sync_inode , truncate , write }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
-kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , }
-kernel/src/fs/mod.rs :: pub (crate) use vfs :: { init as init_vfs , vfs }
+kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , }
+kernel/src/fs/mod.rs :: pub (crate) use vfs :: { OpenedFile , init as init_vfs , vfs }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> FileSystemStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) fn append (inode : Arc < dyn Inode > , input : & [u8]) -> Result < (u64 , usize) , FileSystemError >
@@ -634,6 +639,9 @@ kernel/src/fs/permission.rs :: pub (crate) struct AccessIdentity
 kernel/src/fs/permission.rs :: pub (crate) struct CreateMetadata
 kernel/src/fs/procfs.rs :: pub (crate) ProcCpuSnapshot :: busy_us : u64
 kernel/src/fs/procfs.rs :: pub (crate) ProcCpuSnapshot :: hart_id : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: fd : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: opened : Option < Arc < super :: OpenedFile > >
+kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: target : Vec < u8 >
 kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: address : Option < [u8 ; 4] >
 kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: gateway : Option < [u8 ; 4] >
 kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: prefix_length : u8
@@ -673,6 +681,7 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: total_tasks : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: uptime_us : u64
 kernel/src/fs/procfs.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource >) -> Arc < Self >
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcCpuSnapshot
+kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileDescriptorSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcNetworkSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcProcessSnapshot
@@ -680,30 +689,55 @@ kernel/src/fs/procfs.rs :: pub (crate) struct ProcSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) trait ProcSource
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_arguments (& self , pid : usize) -> Option < Vec < u8 > >
+kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_file_descriptors (& self , pid : usize ,) -> Result < Option < Vec < ProcFileDescriptorSnapshot > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn snapshot (& self) -> ProcSnapshot
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_comm (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_stat (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_status (process : & ProcProcessSnapshot) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_cpu_stat (snapshot : & ProcSnapshot) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_loadavg (snapshot : & ProcSnapshot) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_meminfo (snapshot : & ProcSnapshot) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_devices (network : Option < ProcNetworkSnapshot >) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network : Option < ProcNetworkSnapshot >) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> String
+kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , inode : Arc < dyn Inode >) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_at (& self , path : & [u8] , source : & 'static [u8] , filesystem : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_root (& self , source : & 'static [u8] , fs : Arc < dyn FileSystem > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn mount_table (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn new () -> Self
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open (& self , path : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at_no_follow (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_at_no_follow (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file (& self , path : & [u8]) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn opened_path (& self , opened : & Arc < OpenedFile >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn statistics (& self , inode : Arc < dyn Inode > ,) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn sync (& self) -> Result < () , FileSystemError >
 kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSystem >
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
+kernel/src/fs/vfs.rs :: pub (crate) use opened :: OpenedFile
 kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , source : & [u8] , target : & [u8] , statistics : & FileSystemStatistics ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , kind : InodeType , mode : u32 , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < dyn Inode > , new_start : Option < Arc < dyn Inode > > , new_path : & [u8] , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : Option < Arc < dyn Inode > > , old_path : & [u8] , new_start : Option < Arc < dyn Inode > > , new_path : & [u8] , no_replace : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : Option < Arc < dyn Inode > > , path : & [u8] , directory : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , kind : InodeType , mode : u32 , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < dyn Inode > , new_start : Option < Arc < OpenedFile > > , new_path : & [u8] , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : Option < Arc < OpenedFile > > , old_path : & [u8] , new_start : Option < Arc < OpenedFile > > , new_path : & [u8] , no_replace : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : Option < Arc < OpenedFile > > , path : & [u8] , directory : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn inode (& self) -> Arc < dyn Inode >
+kernel/src/fs/vfs/opened.rs :: pub (crate) struct OpenedFile
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn child (inode : Arc < dyn Inode > , parent : Arc < OpenedFile > , name : Vec < u8 > ,) -> Arc < Self >
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn location_name (& self) -> Vec < u8 >
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn mark_deleted (& self)
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn matches (& self , parent : & Arc < OpenedFile > , name : & [u8] , inode_identity : (usize , u64) ,) -> bool
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn move_to (& self , parent : Arc < OpenedFile > , name : & [u8])
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn parent (& self) -> Option < Arc < OpenedFile > >
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn path (& self , deleted_suffix : bool) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn root (inode : Arc < dyn Inode >) -> Arc < Self >
+kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn same_inode (& self , other : & Arc < OpenedFile >) -> bool
+kernel/src/fs/vfs/opened.rs :: pub (super) impl VirtualFileSystem :: fn mark_unlinked (& self , parent : & Arc < OpenedFile > , name : & [u8] , inode_identity : (usize , u64) ,)
+kernel/src/fs/vfs/opened.rs :: pub (super) impl VirtualFileSystem :: fn move_opened_entries (& self , old_parent : & Arc < OpenedFile > , old_name : & [u8] , source_identity : (usize , u64) , new_parent : Arc < OpenedFile > , new_name : & [u8] ,)
+kernel/src/id.rs :: pub (crate) fn next_runtime_object_id () -> u64
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn alloc (& mut self) -> usize
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn dealloc (& mut self , id : usize)
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn new (initial_id : usize) -> Self
@@ -725,6 +759,7 @@ kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readable (& self) -> bool
@@ -1040,6 +1075,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn domain (& self) -> SocketD
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn ipv4_packet_info (& self) -> bool
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn listen (& self , backlog : usize) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn new (domain : SocketDomain , socket_type : SocketType , protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn object_id (& self) -> u64
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn pair (first : & Arc < Self > , second : & Arc < Self > , first_to_second : (Arc < PipeEnd > , Arc < PipeEnd >) , second_to_first : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn peer_address (& self) -> Result < Option < SocketAddress > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn poll_state (& self) -> SocketPollState
@@ -1231,6 +1267,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const EAFNOSUPPORT : isize = 97
 kernel/src/syscall/errno.rs :: pub (crate) const EAGAIN : isize = 11
 kernel/src/syscall/errno.rs :: pub (crate) const EALREADY : isize = 114
 kernel/src/syscall/errno.rs :: pub (crate) const EBADF : isize = 9
+kernel/src/syscall/errno.rs :: pub (crate) const EBUSY : isize = 16
 kernel/src/syscall/errno.rs :: pub (crate) const ECHILD : isize = 10
 kernel/src/syscall/errno.rs :: pub (crate) const ECONNREFUSED : isize = 111
 kernel/src/syscall/errno.rs :: pub (crate) const ECONNRESET : isize = 104
@@ -1311,7 +1348,7 @@ kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_renameat2 (old_dirfd : 
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_unlinkat (dirfd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_chdir (name : * const u8) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_openat (fd : isize , name : * const u8 , flags : u32 , mode : u32) -> isize
-kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8] ,) -> Result < Option < Arc < dyn Inode > > , isize >
+kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8] ,) -> Result < Option < Arc < OpenedFile > > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn ferr (error : FileSystemError) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn path (task : & TaskControlBlock , pointer : * const u8) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn path_allow_empty (task : & TaskControlBlock , pointer : * const u8 ,) -> Result < Vec < u8 > , isize >
@@ -1415,7 +1452,7 @@ kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 最终 inode �
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " 有界 probe、ELF metadata、argv rewrite 或 mapping plan 分配失败。"] OutOfMemory
 kernel/src/task/loader.rs :: pub (crate) const EXEC_ARGUMENT_BYTES_LIMIT : usize = 128 * 1024
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
-kernel/src/task/loader.rs :: pub (crate) fn load_executable (working_directory : Arc < dyn Inode > , path : Vec < u8 > , mut arguments : Vec < Vec < u8 > > , mut argument_bytes : usize , identity : & AccessIdentity ,) -> Result < LoadedExecutable , ProgramLoadError >
+kernel/src/task/loader.rs :: pub (crate) fn load_executable (working_directory : Arc < OpenedFile > , path : Vec < u8 > , mut arguments : Vec < Vec < u8 > > , mut argument_bytes : usize , identity : & AccessIdentity ,) -> Result < LoadedExecutable , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) struct LoadedExecutable
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn credential_metadata (& self) -> InodeMetadata
@@ -1498,7 +1535,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_ch
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , inode : Arc < dyn Inode >)
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_working_directory (& self , opened : Arc < OpenedFile >)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
@@ -1509,7 +1546,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < dyn Inode >
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < OpenedFile >
 kernel/src/task/model.rs :: pub (crate) struct Sched
 kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) struct SchedulingState
@@ -1574,6 +1611,7 @@ kernel/src/task/model/credentials.rs :: pub (super) impl Credentials :: fn uid (
 kernel/src/task/model/credentials.rs :: pub (super) impl TaskControlBlock :: fn apply_exec_setid (& self , mode : u32 , uid : u32 , gid : u32)
 kernel/src/task/model/credentials.rs :: pub (super) struct Credentials
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn process_file_descriptors (& self ,) -> Option < alloc :: vec :: Vec < ProcFileDescriptorSnapshot > >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn with_file_descriptions < R > (& self , first : usize , second : usize , operation : impl FnOnce (Arc < OpenFileDescription > , Arc < OpenFileDescription >) -> R ,) -> Option < R >
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
