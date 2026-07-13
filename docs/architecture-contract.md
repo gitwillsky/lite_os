@@ -81,9 +81,9 @@
 
 ## 4. Source size contract
 
-生产 Rust 源文件默认不得超过 600 行，绝对上限为 2500 行。超过默认上限的存量文件只能保留在下表精确额度内：额度只能随重构下降，不得为功能开发上调；新增例外必须同时给出状态 owner、不可立即拆分的原因与消除条件。行数只是退化信号，拆分必须形成有领域含义的深 module 与小 interface，禁止按行数机械切片或建立 pass-through module。
+生产 Rust 源文件采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致验证失败；超过 1200 行默认拒绝。reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam，选择拆成深 module，或在下表登记精确审查额度。登记是超过 1200 行的唯一例外入口，也可用于记录 601–1200 行文件的审查结论；必须同时给出状态 owner、不可立即拆分的原因与消除条件。每个登记额度就是该文件的硬上限，只能随重构下降，不得为功能开发上调；文件低于登记额度时 checker 强制同步下调。行数只是退化信号，禁止按行数机械切片或建立 pass-through module。
 
-| Source | Max lines | Owner | Reason | Exit criterion |
+| Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 744 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；context switch、thread clone、futex、pipe wait、wait key/index、child wait/vfork lifecycle 与 deferred work storage 已下沉 | 按 process graph 与剩余 lifecycle 的真实 seam 继续分离后下调额度 |
