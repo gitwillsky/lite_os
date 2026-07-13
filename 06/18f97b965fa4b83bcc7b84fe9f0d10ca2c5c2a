@@ -1,0 +1,28 @@
+docs/architecture-contract.md
+  s_4f5164fcd853bc::t_c4a9e12c552326 84,86
+tools/architecture-check/src/main.rs
+  s_4f5164fcd853bc::t_fba20220387d92 20-21,87,97,119-125,146,153,157,170,176,178,181,183,186-187,190,193-200,210,213,219-222,225-226,229,231-235,237,240,245-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0618f97b965fa4b83bcc7b84fe9f0d10ca2c5c2a",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
