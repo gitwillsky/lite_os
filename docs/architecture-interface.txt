@@ -800,6 +800,7 @@ kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDi
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mut [u8]) -> PipeRead
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write (& self , input : & [u8]) -> PipeWrite
+kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write_stream (& self , input : & [u8]) -> PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl PipePollState :: fn satisfies (self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeWaitCondition :: fn direction (self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) struct Pipe

@@ -47,6 +47,13 @@ pub(crate) enum PipeWrite {
     Broken,
 }
 
+/// @description byte ring 写入语义；匿名 pipe 保证 `PIPE_BUF` 原子性，stream socket 允许短写。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PipeWriteMode {
+    Pipe,
+    Stream,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PipePollState {
     pub(crate) readable: bool,
@@ -206,14 +213,18 @@ impl Pipe {
         result
     }
 
-    fn write(self: &Arc<Self>, input: &[u8]) -> PipeWrite {
+    fn write(self: &Arc<Self>, input: &[u8], mode: PipeWriteMode) -> PipeWrite {
         let result = {
             let mut state = self.state.lock();
             if state.readers == 0 {
                 PipeWrite::Broken
             } else {
                 let available = state.bytes.len() - state.length;
-                if available == 0 || input.len() <= PIPE_BUF && available < input.len() {
+                if available == 0
+                    || mode == PipeWriteMode::Pipe
+                        && input.len() <= PIPE_BUF
+                        && available < input.len()
+                {
                     PipeWrite::Full
                 } else {
                     let count = available.min(input.len());
@@ -273,7 +284,15 @@ impl PipeEnd {
     }
 
     pub(crate) fn write(&self, input: &[u8]) -> PipeWrite {
-        self.pipe.write(input)
+        self.pipe.write(input, PipeWriteMode::Pipe)
+    }
+
+    /// @description 按 stream 语义写入当前可用容量，允许返回非零短写。
+    ///
+    /// @param input 待写入的连续字节。
+    /// @return 写入字节数、无容量或 peer 已关闭。
+    pub(crate) fn write_stream(&self, input: &[u8]) -> PipeWrite {
+        self.pipe.write(input, PipeWriteMode::Stream)
     }
 }
 

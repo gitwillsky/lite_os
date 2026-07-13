@@ -167,6 +167,7 @@ impl UnixSocket {
         if pending.len() >= *backlog {
             return Err(SocketError::Again);
         }
+        pending.try_reserve(1).map_err(|_| SocketError::NoMemory)?;
         *client_state = SocketState::Stream {
             receive: Some(server_to_client.0),
             transmit: Some(client_to_server.1),
@@ -178,8 +179,9 @@ impl UnixSocket {
             peer: client.address(),
         };
         *server.address.lock() = listener.address();
-        pending.try_reserve(1).map_err(|_| SocketError::NoMemory)?;
         pending.push_back(server);
+        drop(listener_state);
+        drop(client_state);
         listener.notify();
         Ok(())
     }
@@ -236,6 +238,7 @@ impl UnixSocket {
             return Err(SocketError::Invalid);
         };
         let accepted = pending.pop_front().ok_or(SocketError::Again)?;
+        drop(state);
         self.consume_notify();
         Ok(accepted)
     }
@@ -246,17 +249,21 @@ impl UnixSocket {
     ) -> Result<(usize, Option<UnixAddress>), SocketError> {
         let mut state = self.state.lock();
         match &mut *state {
-            SocketState::Stream { receive: None, .. } => Ok((0, None)),
-            SocketState::Stream {
-                receive: Some(receive),
-                ..
-            } => match receive.read(output) {
-                PipeRead::Bytes(count) => Ok((count, None)),
-                PipeRead::Eof => Ok((0, None)),
-                PipeRead::Empty => Err(SocketError::Again),
-            },
+            SocketState::Stream { receive, .. } => {
+                let receive = receive.clone();
+                drop(state);
+                let Some(receive) = receive else {
+                    return Ok((0, None));
+                };
+                match receive.read(output) {
+                    PipeRead::Bytes(count) => Ok((count, None)),
+                    PipeRead::Eof => Ok((0, None)),
+                    PipeRead::Empty => Err(SocketError::Again),
+                }
+            }
             SocketState::Datagram { messages, .. } => {
                 let message = messages.pop_front().ok_or(SocketError::Again)?;
+                drop(state);
                 self.consume_notify();
                 let count = output.len().min(message.bytes.len());
                 output[..count].copy_from_slice(&message.bytes[..count]);
@@ -269,15 +276,18 @@ impl UnixSocket {
     pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketError> {
         let state = self.state.lock();
         match &*state {
-            SocketState::Stream { transmit: None, .. } => Err(SocketError::BrokenPipe),
-            SocketState::Stream {
-                transmit: Some(transmit),
-                ..
-            } => match transmit.write(input) {
-                PipeWrite::Bytes(count) => Ok(count),
-                PipeWrite::Full => Err(SocketError::Again),
-                PipeWrite::Broken => Err(SocketError::BrokenPipe),
-            },
+            SocketState::Stream { transmit, .. } => {
+                let transmit = transmit.clone();
+                drop(state);
+                let Some(transmit) = transmit else {
+                    return Err(SocketError::BrokenPipe);
+                };
+                match transmit.write_stream(input) {
+                    PipeWrite::Bytes(count) => Ok(count),
+                    PipeWrite::Full => Err(SocketError::Again),
+                    PipeWrite::Broken => Err(SocketError::BrokenPipe),
+                }
+            }
             SocketState::Datagram { peer, .. } => {
                 let target = peer
                     .as_ref()
@@ -436,12 +446,19 @@ impl UnixSocket {
         else {
             return Err(SocketError::NotConnected);
         };
-        if how == 0 || how == 2 {
-            receive.take();
-        }
-        if how == 1 || how == 2 {
-            transmit.take();
-        }
+        let closed_receive = if matches!(how, 0 | 2) {
+            receive.take()
+        } else {
+            None
+        };
+        let closed_transmit = if matches!(how, 1 | 2) {
+            transmit.take()
+        } else {
+            None
+        };
+        drop(state);
+        drop(closed_receive);
+        drop(closed_transmit);
         Ok(())
     }
 }

@@ -51,7 +51,7 @@
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
 | OFD backend、opened-entry identity、offset/status flags、跨 fd-table descriptor 引用数 | OpenFileDescription；pathname-backed character/regular/directory fd 保留 VFS opened entry，anonymous pipe 使用 pipefs 语义；最后 descriptor close 触发 epoll interest cleanup |
-| anonymous Pipe byte ring、endpoint count、PIPE_BUF atomicity | ipc::Pipe；不复制到 fd table 或 wait registry |
+| anonymous Pipe/AF_UNIX stream 共用的 byte ring、endpoint count、pipe `PIPE_BUF` atomicity 与 stream short-write policy | ipc::Pipe；mode 由调用 seam 明确选择，不复制到 fd table、socket state 或 wait registry |
 | AF_UNIX abstract namespace、endpoint state、listen/datagram queue | socket::UnixSocket；OFD 只持统一 Socket Arc，fork/dup 共享，具体 domain adapter 不穿透 fs seam |
 | Ethernet interface IPv4 address/prefix/default route、ARP cache、UDP/TCP/raw ICMP socket set、peer、IP_PKTINFO、socket option、ephemeral port、TCP listener backlog 与 FIN/TIME_WAIT orphan | socket::NetworkStack；ioctl、packet dispatch、procfs 只读同一 owner 快照；accepted handle 只转移给新 Socket/OFD，不复制协议状态 |
 | AF_PACKET binding、protocol 与有界 receive queue | socket::PacketRegistry；RX frame 在 smoltcp ingress 前只镜像一次，packet endpoint 与 L3 NetworkStack 不复制彼此状态 |
@@ -98,6 +98,7 @@
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
 - `ipc::PipeWaitCondition` 只允许 syscall I/O 构造、`task_manager::pipe_wait` 消费；它把 `PIPE_BUF` 原子写的容量条件带入唯一 wait registration，poll key 不得复制这项 blocking-write policy。
+- `socket::UnixSocket` 只在 state lock 内选择/转移 endpoint；Pipe I/O、endpoint Drop 与 notification 必须在释放 state lock 后执行。AF_UNIX stream 必须使用 ipc owner 的 short-write mode，禁止复制 pipe atomicity 或在 socket 层维护第二份容量状态。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。rootfs builder 只能把完整 tree 转成一个 signed `liteos-base` package，再由 target `apk.static` 创建最终 installed DB；host 不得直接解包最终 runtime、伪造数据库或保留 package 外的同名文件 owner。本地 private key 只允许位于 ignored `target/apk-runtime`，镜像只安装 public trust root。运行时 devfs/procfs 只经 VFS mount table 发布；`/dev/fd` 与 stdio aliases 只由 devfs 指向 `/proc/self/fd`，禁止写入会被 mount 遮蔽的 ext2 节点。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory/fd 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - cwd、directory fd 与 pathname-backed OFD 必须持有同一 VFS `OpenedFile` seam；VFS weak registry 唯一提交 rename/unlink 对 parent/name/deleted 的更新。禁止缓存绝对路径、由 inode 扫描猜测 hardlink 名称，或把 procfs ` (deleted)` target 当普通 pathname 重新解析。`/proc/<pid>/fd` magic link 可跟随 live opened entry，Pipe/Socket target 与 `fstat` 只投影其 object owner identity，eventpoll 使用标准 anon-inode label。
