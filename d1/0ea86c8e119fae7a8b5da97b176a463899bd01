@@ -1,0 +1,23 @@
+kernel/src/fs/vfs/mutation.rs
+  s_4f5164fcd853bc::t_9a867f3ff00939 17-21,23-25
+user/busybox.config
+  s_4f5164fcd853bc::t_0d1597990e27ca 4,15,24-25,27,42-44,63,116-122,127-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d10ea86c8e119fae7a8b5da97b176a463899bd01",
+  "prompts": {},
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
