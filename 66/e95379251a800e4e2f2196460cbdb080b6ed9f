@@ -1,0 +1,31 @@
+docs/architecture-interface.txt
+  s_d637a88cd4b00d::t_d4a0a59942cddd 1120
+docs/phase-52-icmp-https.md
+  s_d637a88cd4b00d::t_32a7a7484a8726 14
+kernel/src/socket/inet.rs
+  s_d637a88cd4b00d::t_4ada7140171347 390
+kernel/src/socket/inet/raw.rs
+  s_d637a88cd4b00d::t_3d144b21e4b1c6 187,206-210
+kernel/src/task/task_manager/deferred.rs
+  s_d637a88cd4b00d::t_bc4ae5395413c7 5,10,51-53
+scripts/verify_busybox.py
+  s_d637a88cd4b00d::t_1cc5519b1d58f2 801
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "66e95379251a800e4e2f2196460cbdb080b6ed9f",
+  "prompts": {},
+  "sessions": {
+    "s_d637a88cd4b00d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4f8b-7315-7431-832f-029779bd148c",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
