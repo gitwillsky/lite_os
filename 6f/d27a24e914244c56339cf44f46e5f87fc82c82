@@ -1,0 +1,56 @@
+README.md
+  s_4f5164fcd853bc::t_cc9c082b5173a7 13,85
+docs/phase-31-device-filesystem.md
+  s_4f5164fcd853bc::t_2844509460df43 7
+docs/phase-56-busybox-portable-scripting.md
+  s_4f5164fcd853bc::t_5b9750c667f373 22
+kernel/src/fs/inode.rs
+  s_4f5164fcd853bc::t_a151559b77b8ac 3,110-115
+kernel/src/fs/procfs/process.rs
+  s_4f5164fcd853bc::t_edb17516b48a23 4
+kernel/src/fs/procfs/system.rs
+  s_4f5164fcd853bc::t_7edec6d09bc260 1-138
+kernel/src/fs/vfs/opened.rs
+  s_4f5164fcd853bc::t_74e30f560f26e4 1-197
+kernel/src/id.rs
+  s_4f5164fcd853bc::t_a3bbce7e5e4a04 2-16
+kernel/src/ipc.rs
+  s_4f5164fcd853bc::t_b11f9e63aebc14 52-53,70,98-101
+kernel/src/socket.rs
+  s_4f5164fcd853bc::t_163e2bf57c4ba2 125-127,174,183,271,282-286
+kernel/src/syscall/fs/io.rs
+  s_4f5164fcd853bc::t_a6a81a07a0f6aa 146,149,326-327
+kernel/src/task/loader.rs
+  s_4f5164fcd853bc::t_e24525ec3afb01 4,105
+kernel/src/task/mod.rs
+  s_4f5164fcd853bc::t_677db4ddd79bda 60
+kernel/src/task/model.rs
+  s_4f5164fcd853bc::t_81ec9e292bea93 13,199-200,236,825,831,833-834
+kernel/src/task/model/file_descriptions.rs
+  s_4f5164fcd853bc::t_023c6cf005c751 4,28-45
+user/busybox.config
+  s_4f5164fcd853bc::t_6eca3cd248e376 85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6fd27a24e914244c56339cf44f46e5f87fc82c82",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
