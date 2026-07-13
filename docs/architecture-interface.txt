@@ -1651,6 +1651,7 @@ kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn begin_pree
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn continue_stopped_task (task : Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_reschedule (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_stop (task : & Arc < TaskControlBlock >)
+kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on (cpu : usize)
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64

@@ -23,7 +23,7 @@ pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) 
     }
 }
 
-fn request_reschedule_on(cpu: usize) {
+pub(super) fn request_reschedule_on(cpu: usize) {
     per_hart(cpu)
         .reschedule_requested
         .store(true, Ordering::Release);

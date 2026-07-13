@@ -90,10 +90,11 @@
 ## 5. Interface and capability contract
 
 - kernel 与 bootloader 是 binary crate，跨 module interface 使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；不得使用裸 `pub` 伪造外部 interface。
+- `processor::job_control::request_reschedule_on` 只向 parent scheduler 的 Ready delivery 开放；它统一发布 per-hart reschedule，并在远端复用同一次 SBI IPI 唤醒 mailbox，其他 module 不得直接调用。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
-- ext2 只提供 persistent root；`/dev`、`/proc` 是 rootfs boot-layout mountpoint，运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。运行时 devfs/procfs 只经 VFS mount table 发布。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
 - VFS 只决定 pathname、mount 与 cross-filesystem policy；ext2 的 create/link/unlink/rename、allocator、JBD2 write-set/commit/checkpoint 与 orphan recovery 必须在同一 mutation domain。禁止 syscall/VFS 复制 link count、journal 状态或用写序调整冒充跨块原子性。
 - VFS permission evaluator 只消费 Process 发布的 immutable identity snapshot，唯一决定 traversal、inode rwx、parent mutation、sticky directory、protected hardlink 与 setgid-directory inheritance；syscall 和 filesystem adapter 不得复制权限 policy。ext2 只持久化 VFS 已决定的 mode/UID/GID/ctime。
@@ -118,7 +119,7 @@
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
-- `user/` 顶层只允许固定 BusyBox config/inittab/network service/udhcpc lease script、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
+- `user/` 顶层只允许固定 BusyBox config、passwd/group identity、inittab/network service/udhcpc lease script、musl consumer 与 dynamic-loader C probe；围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
 
 ## 6. Change contract
 

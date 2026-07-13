@@ -315,7 +315,7 @@ pub(crate) fn take_reschedule() -> bool {
         .swap(false, Ordering::AcqRel)
 }
 
-/// @description 将已完成 Ready transition 的 entry 投递给指定 active hart。
+/// @description 投递 Ready entry；busy target 同步 reschedule，避免 syscall writer 饿死 Ready reader。
 ///
 /// @param cpu_id 目标 hart ID。
 /// @param entry 带 generation 的 membership token。
@@ -327,19 +327,19 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
     let current = hart_id();
     if cpu_id == current {
         with_current_processor(|processor| processor.add_ready_entry(entry));
+        if per_hart(current).running_entries.load(Ordering::Relaxed) != 0 {
+            request_reschedule();
+        }
         return;
     }
 
     let target = per_hart(cpu_id);
-    assert!(
-        target_state.is_active(),
-        "cannot enqueue task to inactive CPU {cpu_id}"
-    );
+    assert!(target_state.is_active());
     let mut inbound = target.inbound.lock();
     inbound.push_back(entry);
     target.inbound_entries.fetch_add(1, Ordering::Relaxed);
     drop(inbound);
-    sbi::sbi_send_ipi(1usize << cpu_id, 0).expect("SBI IPI failed for task mailbox");
+    job_control::request_reschedule_on(cpu_id);
 }
 
 /// @description 在 active hart 中选择近似负载最低者。

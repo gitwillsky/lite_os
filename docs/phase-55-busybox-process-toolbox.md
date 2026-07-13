@@ -14,5 +14,5 @@
 - guest 并发启动同名进程，核对 `status/comm/cmdline/self`，并由 `pidof`、name/full-command `pgrep` 找到真实 PID。
 - `pkill -P` 与 `killall` 发送 SIGTERM，ash `wait` 观察 143，进程退出后对应 proc directory 消失。
 - `timeout` 终止超时 consumer；`nohup` 安装 SIGHUP ignore 后在显式 HUP 下继续到正常退出。
-- `watch` 至少完成两次周期刷新，SIGINT 后由 `wait` 观察 130，terminal echo 保持正常。
-- 完整 `python3 scripts/verify_busybox.py --image fs.img` 冷启动门通过，并继续执行既有全部 BusyBox 功能门。
+- `watch` 至少完成两次周期刷新，SIGTERM 后由 `wait` 观察 143，terminal echo 保持正常；既有前台 job-control gate 独立验证 Ctrl-C→SIGINT。
+- disposable image 的 BusyBox init 以唯一 `sysinit` action 直接运行 fail-fast guest script；host 不注入 shell 命令，只等待最终 marker，并继续执行既有全部 BusyBox 功能门。

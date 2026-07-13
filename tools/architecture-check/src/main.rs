@@ -245,9 +245,11 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "busybox.config",
         "dynamic-smoke-lib.c",
         "dynamic-smoke.c",
+        "group",
         "inittab",
         "musl-smoke.c",
         "network-service",
+        "passwd",
         "udhcpc.script",
     ]);
     match fs::read_dir(root.join("user")) {
@@ -256,7 +258,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if !allowed_user_files.contains(name.as_str()) {
                     errors.push(format!(
-                        "user/{name}: only fixed BusyBox init/network policy and musl/dynamic-loader consumers are allowed"
+                        "user/{name}: only fixed BusyBox identity/init/network policy and musl/dynamic-loader consumers are allowed"
                     ));
                 }
             }

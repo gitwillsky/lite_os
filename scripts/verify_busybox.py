@@ -56,6 +56,8 @@ FORBIDDEN_BOOT_MARKERS = (
     "unsupported syscall_id:",
 )
 BUSYBOX_LINKS = (
+    "[",
+    "[[",
     "arch",
     "ash",
     "awk",
@@ -65,6 +67,9 @@ BUSYBOX_LINKS = (
     "bzip2",
     "bzcat",
     "cat",
+    "chmod",
+    "chown",
+    "cksum",
     "clear",
     "cmp",
     "cp",
@@ -82,6 +87,7 @@ BUSYBOX_LINKS = (
     "find",
     "free",
     "grep",
+    "groups",
     "gunzip",
     "gzip",
     "hd",
@@ -89,14 +95,15 @@ BUSYBOX_LINKS = (
     "hexdump",
     "id",
     "ifconfig",
-    "chmod",
-    "chown",
+    "install",
     "kill",
     "killall",
     "ln",
     "ls",
     "less",
+    "md5sum",
     "mkdir",
+    "mktemp",
     "more",
     "mv",
     "nc",
@@ -109,6 +116,7 @@ BUSYBOX_LINKS = (
     "pidof",
     "pkill",
     "printf",
+    "printenv",
     "ps",
     "pwd",
     "readlink",
@@ -120,16 +128,20 @@ BUSYBOX_LINKS = (
     "sed",
     "seq",
     "setsid",
+    "sha1sum",
     "sha256sum",
+    "sha512sum",
     "sh",
     "sleep",
     "sort",
-    "stty",
+    "stat",
     "strings",
+    "stty",
     "sync",
     "tar",
     "tail",
     "tee",
+    "test",
     "touch",
     "timeout",
     "top",
@@ -145,10 +157,12 @@ BUSYBOX_LINKS = (
     "watch",
     "wget",
     "which",
+    "whoami",
     "vi",
     "xargs",
     "xz",
     "xzcat",
+    "yes",
     "zcat",
 )
 
@@ -261,6 +275,124 @@ def install_archive_fixtures(image: Path, directory: Path) -> None:
         f"write {xz_fixture} /run/phase53.xz\n"
         f"write {zip_fixture} /run/phase53.zip\n"
         f"write {traversal_fixture} /run/phase53-traversal.tar\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_phase56_script(image: Path, directory: Path) -> None:
+    """向 disposable runtime image 注入可移植脚本/安装工具链验收。"""
+    fixture = directory / "phase56.sh"
+    fixture.write_text(
+        "#!/bin/sh\nset -e\n"
+        "/bin/test 9223372036854775806 -gt 2147483647\n"
+        "/bin/[ -d /tmp ]\n"
+        "/bin/[[ alpha = alpha ']]'\n"
+        "[ \"$(PHASE56=portable /bin/printenv PHASE56)\" = portable ]\n"
+        "/bin/yes phase56 | /bin/head -n 3 >/run/yes56\n"
+        "[ \"$(/bin/wc -l </run/yes56)\" -eq 3 ]\n"
+        "echo LITEOS_SCRIPT_PRIMITIVES_$((7*8))\n"
+        "/bin/rm -f /run/tmp56.* /tmp/phase56.*\n"
+        "workers=''; i=0\n"
+        "while [ $i -lt 8 ]; do (/bin/mktemp /tmp/phase56.XXXXXX >/run/tmp56.$i) & workers=\"$workers $!\"; i=$((i+1)); done\n"
+        "ok=1; for worker in $workers; do wait $worker || ok=0; done\n"
+        "/bin/cat /run/tmp56.[0-7] >/run/tmp56.list\n"
+        "lines=$(/bin/wc -l </run/tmp56.list); unique=$(/bin/sort -u /run/tmp56.list | /bin/wc -l)\n"
+        "for path in $(/bin/cat /run/tmp56.list); do [ \"$(/bin/stat -c %a $path)\" = 600 ] || ok=0; done\n"
+        "directory=$(/bin/mktemp -d /tmp/phase56-dir.XXXXXX)\n"
+        "[ \"$ok:$lines:$unique:$(/bin/stat -c %a $directory):$(/bin/stat -c %a /tmp)\" = 1:8:8:700:1777 ]\n"
+        "echo LITEOS_MKTEMP_$((7*8))\n"
+        "/bin/rm -rf /phase56 /stage56; /bin/mkdir /phase56\n"
+        "/bin/printf 'configure-phase-56\\n' >/phase56/source\n"
+        "/bin/ln -s source /phase56/link\n"
+        "source_time=$(/bin/stat -c %Y /phase56/source)\n"
+        "/bin/install -D -p -o 1000 -g 1000 -m 0750 /phase56/source /stage56/usr/bin/demo\n"
+        "/bin/install -d -o 1000 -g 1000 -m 0750 /stage56/var/lib/demo\n"
+        "if /bin/install /phase56/missing /stage56/bad 2>/dev/null; then exit 1; fi\n"
+        "fields=$(/bin/stat -c '%a:%u:%g:%s:%Y' /stage56/usr/bin/demo)\n"
+        "[ \"$fields\" = \"750:1000:1000:19:$source_time\" ]\n"
+        "[ \"$(/bin/stat -c %F /phase56/link)\" = 'symbolic link' ]\n"
+        "[ \"$(/bin/stat -Lc %F /phase56/link)\" = 'regular file' ]\n"
+        "/bin/test /phase56/source -ef /phase56/link\n"
+        "[ \"$(/bin/stat -c '%a:%u:%g' /stage56/var/lib/demo)\" = 750:1000:1000 ]\n"
+        "[ ! -e /stage56/bad ]\n"
+        "[ \"$(/bin/stat -f -c %b /)\" -gt 0 ]\n"
+        "echo LITEOS_INSTALL_$((7*8))\n"
+        "cd /stage56/usr/bin\n"
+        "/bin/md5sum demo >/run/demo.md5; /bin/sha1sum demo >/run/demo.sha1\n"
+        "/bin/sha256sum demo >/run/demo.sha256; /bin/sha512sum demo >/run/demo.sha512\n"
+        "/bin/md5sum -c /run/demo.md5 >/dev/null; /bin/sha1sum -c /run/demo.sha1 >/dev/null\n"
+        "/bin/sha256sum -c /run/demo.sha256 >/dev/null; /bin/sha512sum -c /run/demo.sha512 >/dev/null\n"
+        "set -- $(/bin/cksum demo); cd /; [ \"$2\" -eq 19 ]\n"
+        "echo LITEOS_CHECKSUM_$((7*8))\n"
+        "[ \"$(/bin/whoami)\" = root ]; [ \"$(/bin/groups)\" = root ]\n"
+        "[ \"$(PHASE56=identity /bin/printenv PHASE56)\" = identity ]\n"
+        "[ \"$(/bin/stat -c %a /root)\" = 700 ]\n"
+        "echo LITEOS_IDENTITY_$((7*8))\n"
+    )
+    commands = directory / "phase56-debugfs.commands"
+    commands.write_text(
+        f"write {fixture} /run/phase56.sh\n"
+        "set_inode_field /run/phase56.sh mode 0100755\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_phase55_script(image: Path, directory: Path) -> None:
+    """向 disposable runtime image 注入进程发现与生命周期验收。"""
+    fixture = directory / "phase55.sh"
+    fixture.write_text(
+        "#!/bin/sh\nset -e\n"
+        "/bin/sleep 30 & p1=$!; /bin/sleep 30 & p2=$!\n"
+        "/bin/grep -q '^Name:[[:space:]]*sleep$' /proc/$p1/status\n"
+        "[ \"$(/bin/cat /proc/$p1/comm)\" = sleep ]\n"
+        "/bin/tr '\\000' ' ' </proc/$p1/cmdline | /bin/grep -q '/bin/sleep 30 '\n"
+        "/bin/readlink /proc/self | /bin/grep -Eq '^[0-9]+$'\n"
+        "case \" $(/bin/pidof sleep) \" in *\" $p1 \"*) true;; *) false;; esac\n"
+        "/bin/pgrep sleep | /bin/grep -qx \"$p2\"\n"
+        "/bin/pgrep -f '/bin/sleep 30' | /bin/grep -qx \"$p1\"\n"
+        "echo LITEOS_PROCFS_$((5*11))\n"
+        "/bin/pkill -TERM -P $$ sleep\n"
+        "set +e; wait $p1; s1=$?; wait $p2; s2=$?; set -e\n"
+        "/bin/tail -f /dev/null & tail55=$!\n"
+        "while [ \"$(/bin/cat /proc/$tail55/comm 2>/dev/null)\" != tail ]; do :; done\n"
+        "/bin/killall tail\n"
+        "set +e; wait $tail55; tail_status=$?; set -e\n"
+        "[ \"$s1:$s2:$tail_status\" = 143:143:143 ]; [ ! -d /proc/$p1 ]\n"
+        "echo LITEOS_PROCESS_SIGNAL_$((5*11))\n"
+        "set +e; /bin/timeout 1 /bin/sleep 30; timed=$?; set -e\n"
+        "/bin/nohup /bin/sleep 2 >/dev/null 2>&1 & nohup55=$!\n"
+        "while [ \"$(/bin/cat /proc/$nohup55/comm 2>/dev/null)\" != sleep ]; do :; done\n"
+        "/bin/kill -HUP $nohup55; wait $nohup55; nohup_status=$?\n"
+        "[ \"$timed:$nohup_status\" = 143:0 ]\n"
+        "echo LITEOS_PROCESS_LIFECYCLE_$((5*11))\n"
+        "/bin/rm -f /watch55\n"
+        "/bin/watch -n 1 -t '/bin/echo refresh' >/watch55 & watch55=$!\n"
+        "/bin/sleep 2; /bin/kill -TERM $watch55\n"
+        "set +e; wait $watch55; watch_status=$?; set -e\n"
+        "refreshes=$(/bin/grep -c refresh /watch55)\n"
+        "[ \"$watch_status\" -eq 143 ]; [ \"$refreshes\" -ge 2 ]\n"
+        "/bin/stty -a | /bin/grep -q echo\n"
+        "echo LITEOS_WATCH_$((5*11))\n"
+        "echo LITEOS_PROCESS_TOOLS_$((5*11))\n"
+    )
+    commands = directory / "phase55-debugfs.commands"
+    commands.write_text(
+        f"write {fixture} /run/phase55.sh\n"
+        "set_inode_field /run/phase55.sh mode 0100755\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_guest_gate_init(
+    image: Path, directory: Path, script: str, gate_name: str
+) -> None:
+    """让 disposable image 由 BusyBox init 直接执行唯一 guest 自检脚本。"""
+    fixture = directory / f"{gate_name}-inittab"
+    fixture.write_text(f"::sysinit:/bin/sh {script}\n")
+    commands = directory / f"{gate_name}-inittab.debugfs"
+    commands.write_text(
+        "rm /etc/inittab\n"
+        f"write {fixture} /etc/inittab\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -617,10 +749,16 @@ def create_image(
         "mkdir /etc/ssl",
         "mkdir /lib",
         "mkdir /run",
+        "mkdir /root",
+        "set_inode_field /root mode 040700",
+        "mkdir /tmp",
+        "set_inode_field /tmp mode 041777",
         "mkdir /usr",
         "mkdir /usr/lib",
         "mkdir /usr/share",
         "mkdir /usr/share/udhcpc",
+        f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
+        f"write {ROOT / 'user' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
         f"write {ROOT / 'user' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
@@ -679,6 +817,15 @@ def create_image(
     metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
     if f"Links: {len(expected)}" not in metadata:
         raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    temporary_directory_metadata = run(
+        [str(find_debugfs()), "-R", "stat /tmp", str(image)], ROOT
+    )
+    if "Mode:  01777" not in temporary_directory_metadata:
+        raise RuntimeError("BusyBox rootfs /tmp must have mode 01777")
+    passwd = run([str(find_debugfs()), "-R", "cat /etc/passwd", str(image)], ROOT)
+    group = run([str(find_debugfs()), "-R", "cat /etc/group", str(image)], ROOT)
+    if "root:x:0:0:root:/root:/bin/sh" not in passwd or "root:x:0:" not in group:
+        raise RuntimeError("BusyBox rootfs lacks the canonical root identity records")
     executable_script = run(
         [str(find_debugfs()), "-R", "stat /bin/liteos-script", str(image)], ROOT
     )
@@ -741,7 +888,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            8,
+            9,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -751,6 +898,8 @@ def main() -> int:
                 dynamic_library,
                 openssl.binary,
                 openssl.ca_bundle,
+                ROOT / "user/passwd",
+                ROOT / "user/group",
                 ROOT / "user/inittab",
                 ROOT / "user/network-service",
                 ROOT / "user/udhcpc.script",
@@ -774,6 +923,14 @@ def main() -> int:
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, openssl.ca_bundle, gate_ca, runtime_path)
         install_archive_fixtures(runtime_image, runtime_path)
+        install_phase55_script(runtime_image, runtime_path)
+        install_phase56_script(runtime_image, runtime_path)
+        phase55_image = runtime_path / "phase55.img"
+        phase56_image = runtime_path / "phase56.img"
+        shutil.copyfile(runtime_image, phase55_image)
+        shutil.copyfile(runtime_image, phase56_image)
+        install_guest_gate_init(phase55_image, runtime_path, "/run/phase55.sh", "phase55")
+        install_guest_gate_init(phase56_image, runtime_path, "/run/phase56.sh", "phase56")
         boot(
             runtime_image,
             1,
@@ -797,11 +954,6 @@ def main() -> int:
                 "LITEOS_VI_54",
                 "LITEOS_LESS_54",
                 "LITEOS_TEXT_DIAG_54",
-                "LITEOS_PROCFS_55",
-                "LITEOS_PROCESS_SIGNAL_55",
-                "LITEOS_PROCESS_LIFECYCLE_55",
-                "LITEOS_WATCH_55",
-                "LITEOS_PROCESS_TOOLS_55",
                 "LITEOS_LS_42",
                 "LITEOS_NULL_42",
                 "LITEOS_ZERO_4",
@@ -926,18 +1078,6 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TEXT_DIAG_54",
-                    b"/bin/sleep 30 & p1=$!; /bin/sleep 30 & p2=$!; /bin/grep -q '^Name:[[:space:]]*sleep$' /proc/$p1/status && [ \"$(/bin/cat /proc/$p1/comm)\" = sleep ] && /bin/tr '\\000' ' ' </proc/$p1/cmdline | /bin/grep -q '/bin/sleep 30 ' && /bin/readlink /proc/self | /bin/grep -Eq '^[0-9]+$' && case \" $(/bin/pidof sleep) \" in *\" $p1 \"*) true;; *) false;; esac && /bin/pgrep sleep | /bin/grep -qx \"$p2\" && /bin/pgrep -f '/bin/sleep 30' | /bin/grep -qx \"$p1\" && echo LITEOS_PROCFS_$((5*11))\n",
-                ),
-                (
-                    "LITEOS_PROCFS_55",
-                    b"/bin/pkill -TERM -P $$ sleep; wait $p1; s1=$?; wait $p2; s2=$?; /bin/tail -f /dev/null & tail55=$!; /bin/killall tail; wait $tail55; st=$?; [ \"$s1:$s2:$st\" = 143:143:143 ] && [ ! -d /proc/$p1 ] && echo LITEOS_PROCESS_SIGNAL_$((5*11))\n",
-                ),
-                (
-                    "LITEOS_PROCESS_SIGNAL_55",
-                    b"/bin/rm -f /watch55; /bin/timeout 1 /bin/sleep 30 & timeout55=$!; /bin/nohup /bin/sleep 2 >/dev/null 2>&1 & nohup55=$!; /bin/watch -n 1 -t '/bin/echo refresh' >/watch55 & watch55=$!; while [ \"$(/bin/cat /proc/$nohup55/comm 2>/dev/null)\" != sleep ]; do :; done; /bin/kill -HUP $nohup55; wait $timeout55; timed=$?; wait $nohup55; nohup_status=$?; /bin/kill -INT $watch55; wait $watch55; watch_status=$?; refreshes=$(/bin/grep -c refresh /watch55); [ \"$timed:$nohup_status\" = 143:0 ] && echo LITEOS_PROCESS_LIFECYCLE_$((5*11)) && [ \"$watch_status\" -eq 130 ] && [ \"$refreshes\" -ge 2 ] && /bin/stty -a | /bin/grep -q echo && echo LITEOS_WATCH_$((5*11)) && echo LITEOS_PROCESS_TOOLS_$((5*11))\n",
-                ),
-                (
-                    "LITEOS_PROCESS_TOOLS_55",
                     b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
                 ),
                 (
@@ -1204,6 +1344,30 @@ def main() -> int:
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,
             persistent_writes=True,
             timeout_seconds=90,
+        )
+        boot(
+            phase55_image,
+            1,
+            (
+                "dynamic hart topology initialized: count=1, mask=0x1",
+                "all DTB harts online: count=1, mask=0x1",
+                "init started: BusyBox v1.37.0",
+                "LITEOS_PROCESS_TOOLS_55",
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            timeout_seconds=45,
+        )
+        boot(
+            phase56_image,
+            1,
+            (
+                "dynamic hart topology initialized: count=1, mask=0x1",
+                "all DTB harts online: count=1, mask=0x1",
+                "init started: BusyBox v1.37.0",
+                "LITEOS_IDENTITY_56",
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            timeout_seconds=30,
         )
         boot(
             runtime_image,
