@@ -1,0 +1,33 @@
+docs/architecture-contract.md
+  s_1387d0a59ae237::t_7f86524e7759d9 69,118
+docs/architecture-interface.txt
+  s_1387d0a59ae237::t_50d684552b9f45 683,2133
+docs/architecture.md
+  s_1387d0a59ae237::t_1a9cfe88228f34 143
+kernel/src/fs/procfs.rs
+  s_1387d0a59ae237::t_d5862f39a923ea 67
+kernel/src/fs/procfs/system.rs
+  s_1387d0a59ae237::t_92d50261f8dc4d 39
+kernel/src/task/task_manager/procfs.rs
+  s_1387d0a59ae237::t_c9a84102e2cb57 10,193
+kernel/src/timer.rs
+  s_1387d0a59ae237::t_fd6413b80a8cba 94-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "565e4d262313a9c0c24d1a866e9d20e5717889ce",
+  "prompts": {},
+  "sessions": {
+    "s_1387d0a59ae237": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c74-33ca-7970-9b16-94733b12d6fc",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
