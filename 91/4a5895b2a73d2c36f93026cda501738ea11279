@@ -1,0 +1,35 @@
+README.md
+  s_4f5164fcd853bc::t_fae2e827b0c000 85
+docs/architecture-contract.md
+  s_4f5164fcd853bc::t_34cf95b2360d2a 61,88
+docs/architecture.md
+  s_4f5164fcd853bc::t_7908fa718ff77a 140,192
+kernel/src/fs/file.rs
+  s_4f5164fcd853bc::t_3d7949ff615b1a 346-351
+kernel/src/memory/mm.rs
+  s_4f5164fcd853bc::t_80be86cc774228 5-8,16-19,21,549-550,560,568
+kernel/src/memory/mm/cow.rs
+  s_4f5164fcd853bc::t_853a7deb01933b 71,137
+kernel/src/memory/mm/initial_stack.rs
+  s_4f5164fcd853bc::t_253a2293e4794d 116,125,181
+user/busybox.config
+  s_4f5164fcd853bc::t_57ffde933d9a1b 76-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "914a5895b2a73d2c36f93026cda501738ea11279",
+  "prompts": {},
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
