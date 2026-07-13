@@ -2,36 +2,49 @@
 
 ## Problem
 
-The BusyBox host build adapter resolves Clang, LLVM archive tools, and Rust LLD
-portably, but still hard-codes the macOS Homebrew path for `llvm-strip`. On Linux,
-the installed `/usr/bin/llvm-strip` is ignored and `make build` fails while
-constructing the BusyBox cache fingerprint.
+The musl host build adapter resolves Clang, LLVM archive tools, and Rust LLD
+portably, but the BusyBox and OpenSSL adapters still hard-code the macOS
+Homebrew path for `llvm-strip`. On Linux, the installed `/usr/bin/llvm-strip` is
+ignored: BusyBox fails while constructing its cache fingerprint, and OpenSSL
+fails when stripping its completed binary.
+
+The OpenSSL cache fingerprint also omits the strip tool identity even though the
+tool changes the published artifact.
 
 ## Design
 
-Add one private helper in `scripts/verify_busybox.py` that locates `llvm-strip`
-on `PATH` and falls back to the existing Homebrew path. It returns the resolved
-file path or raises a clear `RuntimeError` when neither candidate exists.
+Add one scoped helper in `scripts/verify_musl.py`, the existing host toolchain
+adapter, that locates `llvm-strip` on `PATH` and falls back to the existing
+Homebrew path. It returns the absolute discovered path or raises a clear
+`RuntimeError` when neither candidate exists. The helper must preserve a
+discovered symlink instead of resolving it because LLVM multicall tools select
+behavior from `argv[0]`.
 
-Resolve the tool once for each BusyBox cache/build operation. Use that same path
-for both the binary fingerprint and BusyBox's `STRIP=` make variable so the cache
-identity always describes the tool that actually produced the artifact.
+The scoped interface has exactly two callers: `scripts/verify_busybox.py` and
+`scripts/openssl_cache.py`. Each resolves the tool once per cache/build
+operation and uses the same path for execution and fingerprinting. The
+fingerprints record the path and SHA-256 of the tool that produced each
+artifact.
 
-This change stays inside the host-side BusyBox build adapter. It does not change
-kernel modules, state ownership, scoped interfaces, dependency direction, ABI,
-or error/exit/interrupt cleanup paths.
+This change stays inside the host-side build adapters. It expands one scoped
+host-toolchain interface with the two callers named above, but does not change
+kernel modules, state ownership, dependency direction, ABI, or
+error/exit/interrupt cleanup paths.
 
 ## Alternatives
 
-- Extending `MuslCachePaths` with a strip tool would widen a shared scoped
-  interface for a BusyBox-only need.
+- Extending `MuslCachePaths` with a strip tool would mix a transient host build
+  tool into the published musl cache paths.
 - Adding an environment-variable override would create an unnecessary build
   interface and another source of cache identity ambiguity.
+- Duplicating discovery in BusyBox and OpenSSL would create two implementations
+  that can drift.
 
 ## Verification
 
 1. Run `python3 scripts/verify_busybox.py --build-only --image fs.img` and confirm
-   the Linux `llvm-strip` path is accepted and the BusyBox/rootfs build passes.
+   the Linux `llvm-strip` path is accepted and the BusyBox, OpenSSL, and rootfs
+   build passes.
 2. Run `make run`, confirm LiteOS reaches its BusyBox userspace, then terminate
    QEMU normally.
 3. Run `make verify` as the repository's required final gate.
