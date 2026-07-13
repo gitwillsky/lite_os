@@ -1,0 +1,29 @@
+README.md
+  s_4f5164fcd853bc::t_e3fd0f827a74e3 85
+tools/architecture-check/src/main.rs
+  s_4f5164fcd853bc::t_b0742ca68de6f7 248,252,261
+user/busybox.config
+  s_4f5164fcd853bc::t_22f900acd8f903 15-18,20,43,46-47,53,58,67-68,70-71,75-77,91-92
+user/group
+  s_4f5164fcd853bc::t_bb677e0a217045 1-2
+user/passwd
+  s_4f5164fcd853bc::t_37ce15b45a2cbb 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c3b875addb22b211bdf8cb8f4bdfc8d60dd288d0",
+  "prompts": {},
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
