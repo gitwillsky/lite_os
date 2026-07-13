@@ -40,11 +40,12 @@
 |---|---|
 | M-mode initialization、HSM、RFENCE | bootloader 对应 module |
 | DTB board facts | immutable BoardInfo publication |
-| hart possible/online/active、startup stack | HartTopology |
+| hart possible/online/active、startup stack、同步 memory-barrier request/completion generation | HartTopology；每次调用的 generation 由 arch hart barrier mechanism 唯一分配 |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address space、cwd opened-entry、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
-| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、child/vfork waiter 与 ITIMER_REAL | TaskManager process graph；vfork child node 唯一持有 suspended parent，exec/exit 消费后经 scheduler seam 唤醒；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
+| process address-space handle、cwd opened-entry、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；vfork child Process 初始持同一 AddressSpace Arc，exec 只替换 child handle；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
+| VMA 与 private expedited membarrier registration | AddressSpace；CLONE_VM/vfork 共享，fork/exec 新 owner 从未注册开始 |
+| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、child-event claim、child/vfork waiter 与 ITIMER_REAL | TaskManager process graph；vfork child node 唯一持有发起调用的 suspended parent Thread，exec/exit 消费后经 scheduler seam 唤醒；child event 先 claim 再于 copyout 后唯一消费；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
 | deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；futex index 只消费 memory 归一化的 private/shared key，requeue 原地迁移同一 registration；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
@@ -85,9 +86,9 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 946 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；futex、wait key/index、vfork lifecycle 与 deferred work storage已下沉 | 按 process graph 与剩余 wait lifecycle 的真实 seam 继续分离后下调额度 |
+| `kernel/src/task/task_manager.rs` | 921 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；futex、wait key/index、child wait/vfork lifecycle 与 deferred work storage已下沉 | 按 process graph 与剩余 lifecycle 的真实 seam 继续分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1092 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap、shared area 与 futex key lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 933 | `task::Process/Thread` | process 与 thread 生命周期尚共处一文件；address-space、process clone、process statistics 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
+| `kernel/src/task/model.rs` | 736 | `task::Process/Thread` | process 与 thread 核心生命周期仍共处一文件；address-space forwarding、process clone/exec、statistics 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 
 ## 5. Interface and capability contract
 
@@ -118,7 +119,9 @@
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。
-- vfork parent 使用独立 `WaitMembership::Vfork(child)` 且不可被 signal 提前解除；child 独立页表/trap frame、共享已驻留 user frame，只有 exec point-of-no-return 或 exit 可消费 child node 的唯一 waiter。
+- vfork caller 使用独立 `WaitMembership::Vfork(child)` 且不可被 signal 提前解除；child Process 与 parent 精确共享同一 AddressSpace Arc，并使用按 TID 分配的 supervisor trap page。只有 exec 原子替换 child handle并删除临时页，或 exit 先删除临时页，才能消费 child node 的唯一 caller waiter；不得挂起整个 parent Process。
+- child exit/stop/continue event 必须在 process graph 锁内 claim；status copyout 成功后才消费，失败必须 release。多个 parent Thread 可分别等待，但同一 event 不得被重复返回或回收。
+- private expedited membarrier registration 只存在于 AddressSpace；syscall 只能通过 task façade 请求 arch 对所有 active DTB hart 做同步 full fence。不得用本地 fence、RFENCE、吞 `ENOSYS` 或 musl fallback 冒充跨 hart memory ordering。
 - terminal exit 必须先在可返回的 prepare frame 完成副作用并释放全部 task Arc，再以只含 raw context 的凭据切到 idle，由 per-hart deferred-reap slot 保活并析构 TCB；禁止从持有 task Arc 的 Rust frame 永久切走。
 - user trap return 的 noreturn trampoline 前必须显式释放当前 TCB Arc；该 Rust frame 不会展开，依赖作用域析构会让每次 syscall 永久增加一个 kernel-stack 自引用。
 - 首个 `exit_group` 或默认致命 signal 在 process graph 唯一提交 group-exit status；所有 sibling 只经 signal/wait/scheduler seam 回到自身内核栈退出，最后一个 Thread 才发布 zombie 与 SIGCHLD。禁止远程释放运行栈、重复保存 status 或把 signal death 改写成 shell exit code。

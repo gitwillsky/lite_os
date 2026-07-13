@@ -9,8 +9,8 @@ use crate::{
         TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
         consume_child_status, create_session, current_task, exit_current_group,
         exit_current_thread, fork_current_process, load_executable, parent_pid, process_group,
-        session_id, set_process_group, suspend_current_and_run_next, thread_count,
-        vfork_current_process, wait_child,
+        release_child_status, session_id, set_process_group, suspend_current_and_run_next,
+        thread_count, vfork_current_process, wait_child,
     },
 };
 
@@ -153,10 +153,6 @@ pub(crate) fn sys_clone(
         if stack & 15 != 0 {
             return -errno::EINVAL;
         }
-        let current = current_task().expect("vfork requires current task");
-        if thread_count(current.tgid()) != 1 {
-            return -errno::EAGAIN;
-        }
         return match vfork_current_process(stack) {
             Ok(pid) => pid as isize,
             Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
@@ -232,7 +228,7 @@ pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
 ///
 /// @param pid `-1` 表示任一 child，正数表示指定 child。
 /// @param status 可为空；非空时写入 Linux wait status word。
-/// @param options 当前只接受零或 `WNOHANG`。
+/// @param options 当前接受 `WNOHANG/WUNTRACED/WCONTINUED` 的任意组合。
 /// @param rusage 当前必须为空，避免返回未实现的资源统计。
 /// @return child PID、WNOHANG 的零，或负 Linux errno。
 pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *mut u8) -> isize {
@@ -241,10 +237,6 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
     const WCONTINUED: usize = 8;
     if options & !(WNOHANG | WUNTRACED | WCONTINUED) != 0 || !rusage.is_null() {
         return -errno::EINVAL;
-    }
-    let current = current_task().expect("wait4 requires current task");
-    if thread_count(current.tgid()) != 1 {
-        return -errno::EAGAIN;
     }
     let record = match wait_child(
         pid,
@@ -264,6 +256,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
             .copy_to_user(status as usize, &record.status.to_ne_bytes())
             .is_err()
         {
+            release_child_status(record);
             return -errno::EFAULT;
         }
     }

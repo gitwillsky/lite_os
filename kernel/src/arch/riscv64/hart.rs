@@ -1,12 +1,15 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     mem::{MaybeUninit, offset_of, size_of},
-    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
 };
 
 use spin::Once;
 
 use crate::memory::KERNEL_STACK_SIZE;
+
+mod memory_barrier;
+pub(crate) use memory_barrier::{complete_pending_memory_barrier, synchronize_memory_barrier};
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
 /// Timer deadline 到期后的 deferred work bit。
@@ -37,6 +40,10 @@ pub(crate) struct HartState {
     startup_stack_top: usize,
     _startup_stack: Box<StartupStack>,
     softirq_pending: AtomicU32,
+    // OWNER: HartTopology 的每个 slot 保存该 hart 应完成/已完成的同步屏障 generation。
+    // 若请求或完成值另存于 syscall/task，会在 IPI 合并或并发调用时丢失确认并永久等待。
+    memory_barrier_request: AtomicU64,
+    memory_barrier_complete: AtomicU64,
     online: AtomicBool,
     active: AtomicBool,
 }
@@ -51,6 +58,8 @@ impl HartState {
             startup_stack_top,
             _startup_stack: startup_stack,
             softirq_pending: AtomicU32::new(0),
+            memory_barrier_request: AtomicU64::new(0),
+            memory_barrier_complete: AtomicU64::new(0),
             online: AtomicBool::new(false),
             active: AtomicBool::new(false),
         }

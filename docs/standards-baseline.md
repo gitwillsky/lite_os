@@ -60,6 +60,8 @@ Linux UAPI 是 LiteOS 对外 Linux/riscv64 ABI 的最高权威。POSIX 或 musl 
 
 script exec 额外固定同 revision 的 [`fs/binfmt_script.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/binfmt_script.c) 与 [`include/uapi/linux/binfmts.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/binfmts.h)：前者定义 shebang space/tab、optional argument 与 argv rewrite，后者固定 256-byte `BINPRM_BUF_SIZE`；`fs/exec.c` 的 interpreter loop 定义最多 5 次 rewrite 后返回 `ELOOP`。
 
+`membarrier` 额外固定同 revision 的 [`include/uapi/linux/membarrier.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/membarrier.h) 与 [`kernel/sched/membarrier.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/membarrier.c)：前者定义 command/flag bit，后者定义 registration 的 mm owner、`EPERM/EINVAL`、syscall entry/exit full barrier 与同步 IPI completion 语义。固定 musl 的 [`src/linux/membarrier.c`](https://git.musl-libc.org/cgit/musl/tree/src/linux/membarrier.c?id=9fa28ece75d8a2191de7c5bb53bed224c5947417) 只作为首个 pthread 创建前注册和动态 TLS barrier 的 consumer 证据。
+
 ## 3. RISC-V ELF psABI
 
 固定 revision 的 [`riscv-cc.adoc`](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/e03d44ae2f0e1144f9498c2896b5ae25b0449398/riscv-cc.adoc) 明确：

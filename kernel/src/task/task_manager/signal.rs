@@ -32,7 +32,7 @@ enum ProcessSelector {
 
 struct JobNotification {
     parent: usize,
-    waiter: Option<Arc<TaskControlBlock>>,
+    waiters: Vec<Arc<TaskControlBlock>>,
     info: PendingSignal,
 }
 
@@ -444,7 +444,7 @@ fn take_parent_notification(
     }
     Some(JobNotification {
         parent,
-        waiter: node.waiter.take(),
+        waiters: take_child_waiters(node),
         info,
     })
 }
@@ -453,7 +453,7 @@ fn publish_job_notification(notification: Option<JobNotification>) {
     let Some(notification) = notification else {
         return;
     };
-    if let Some(waiter) = notification.waiter {
+    for waiter in notification.waiters {
         crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
     send_kernel_process_signal(notification.parent, 17, notification.info);
@@ -572,8 +572,8 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                     .nodes
                     .get_mut(&task.tgid())
                     .expect("waiting process disappeared from graph")
-                    .waiter
-                    .take();
+                    .child_waiters
+                    .remove(&task.tid());
                 if let Some(waiter) = &waiter {
                     assert!(Arc::ptr_eq(waiter, task));
                 }

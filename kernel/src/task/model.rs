@@ -195,7 +195,10 @@ struct Process {
     // OWNER: Process 独占 Linux comm 与创建时刻；fork 复制，exec 原子替换 comm。
     comm: Mutex<Vec<u8>>,
     start_time_us: u64,
-    address_space: Arc<AddressSpace>,
+    // OWNER: Process 的单锁 handle 决定所有 Thread 当前使用的 AddressSpace；vfork child
+    // 初始共享 parent Arc，exec 只替换 child Process 的 handle。若直接缓存第二份 mm pointer，
+    // exec detach 会让 syscall、trap 与 futex 在不同地址空间继续运行。
+    address_space: Mutex<Arc<AddressSpace>>,
     // OWNER: Process 独占 VFS opened cwd identity；只保存 inode 会使 rename 后的 getcwd 与相对 lookup 分裂。
     cwd: Mutex<Arc<OpenedFile>>,
     files: Mutex<FileDescriptorTable>,
@@ -232,7 +235,7 @@ impl TaskControlBlock {
             tgid: pid,
             comm: Mutex::new(process_name(loaded.execfn())),
             start_time_us: get_time_us(),
-            address_space,
+            address_space: Mutex::new(address_space),
             cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
             credentials: Mutex::new(Credentials::root()),
@@ -307,7 +310,7 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = self
             .process
-            .address_space
+            .address_space()
             .memory_set
             .lock()
             .allocate_thread_trap_context(tid)?;
@@ -586,9 +589,8 @@ impl TaskControlBlock {
                 return;
             }
             let new = old & FUTEX_WAITERS | FUTEX_OWNER_DIED;
-            let exchanged = self
-                .process
-                .address_space
+            let address_space = self.process.address_space();
+            let exchanged = address_space
                 .memory_set
                 .lock()
                 .compare_exchange_user_u32(address, old, new)
@@ -611,205 +613,6 @@ impl TaskControlBlock {
         if pending != 0 {
             mark(pending);
         }
-    }
-
-    pub(super) fn remove_thread_trap_context(&self) {
-        if self.trap_context_va() == TRAP_CONTEXT {
-            return;
-        }
-        self.process
-            .address_space
-            .memory_set
-            .lock()
-            .remove_thread_trap_context(self.trap_context_va());
-    }
-
-    /// 获取当前线程TrapContext虚拟地址
-    pub(crate) fn trap_context_va(&self) -> usize {
-        *self.thread.trap_cx_va.lock()
-    }
-
-    /// @description 覆盖当前 Thread 的 supervisor-only trap context。
-    ///
-    /// @param trap_context 待写入的完整上下文值。
-    /// @return 无返回值；映射缺失表示 kernel 不变量损坏并 panic。
-    pub(crate) fn set_trap_context(&self, trap_context: TrapContext) {
-        let va = self.trap_context_va();
-        let memory_set = self.process.address_space.memory_set.lock();
-        let ppn = memory_set.trap_context_ppn(va);
-        let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
-        // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
-        // frame retained by the address-space guard.
-        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
-        assert!(
-            ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
-        );
-        // SAFETY: address-space guard 保证映射存活；当前 Thread 是该 trap context 的唯一写者。
-        unsafe { ptr.write(trap_context) };
-    }
-
-    /// @description 复制当前 Thread trap context，不让底层映射引用逃逸地址空间锁。
-    ///
-    /// @return owned TrapContext clone；映射缺失表示 kernel 不变量损坏并 panic。
-    pub(crate) fn load_trap_context(&self) -> TrapContext {
-        let va = self.trap_context_va();
-        let memory_set = self.process.address_space.memory_set.lock();
-        let ppn = memory_set.trap_context_ppn(va);
-        let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
-        // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
-        // frame retained by the address-space guard.
-        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
-        assert!(
-            ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
-        );
-        // SAFETY: guard 保证 frame 存活；只读引用仅用于本行 clone 且不会逃逸。
-        unsafe { (&*ptr).clone() }
-    }
-
-    pub(crate) fn copy_from_user(
-        &self,
-        user_address: usize,
-        destination: &mut [u8],
-    ) -> Result<(), UserAccessError> {
-        self.process
-            .address_space
-            .copy_from_user(user_address, destination)
-    }
-
-    pub(crate) fn copy_to_user(
-        &self,
-        user_address: usize,
-        source: &[u8],
-    ) -> Result<(), UserAccessError> {
-        self.process
-            .address_space
-            .copy_to_user(user_address, source)
-    }
-
-    pub(super) fn write_clone_tid_values(
-        &self,
-        addresses: [Option<usize>; 2],
-        tid: i32,
-    ) -> Result<(), UserAccessError> {
-        self.process
-            .address_space
-            .write_clone_tid_values(addresses, tid)
-    }
-
-    pub(crate) fn copy_user_c_string(
-        &self,
-        user_address: usize,
-        max_len: usize,
-    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process
-            .address_space
-            .copy_user_c_string(user_address, max_len)
-    }
-
-    pub(crate) fn user_token(&self) -> usize {
-        self.process.address_space.memory_set.lock().token()
-    }
-
-    pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, MemoryError> {
-        self.process
-            .address_space
-            .memory_set
-            .lock()
-            .set_program_break(new_break)
-    }
-
-    pub(crate) fn map_anonymous(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-    ) -> Result<usize, MemoryError> {
-        self.process
-            .address_space
-            .map_anonymous(address, length, permission, fixed_noreplace)
-    }
-
-    pub(crate) fn map_private_file(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        data: &[u8],
-    ) -> Result<usize, MemoryError> {
-        self.process.address_space.map_private_file(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            data,
-        )
-    }
-
-    pub(crate) fn map_shared_file(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        mapping: Arc<dyn SharedFileMapping>,
-        offset: u64,
-    ) -> Result<usize, MemoryError> {
-        self.process.address_space.map_shared_file(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            mapping,
-            offset,
-        )
-    }
-
-    pub(crate) fn sync_shared_mapping(
-        &self,
-        address: usize,
-        length: usize,
-        writeback: bool,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space
-            .sync_shared_mapping(address, length, writeback)
-    }
-
-    pub(crate) fn handle_page_fault(
-        &self,
-        address: usize,
-        access: PageFaultAccess,
-    ) -> Result<PageFaultOutcome, MemoryError> {
-        self.process
-            .address_space
-            .handle_page_fault(address, access)
-    }
-
-    pub(crate) fn unmap_user_mapping(
-        &self,
-        address: usize,
-        length: usize,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space
-            .unmap_user_mapping(address, length)
-    }
-
-    pub(crate) fn protect_user_mapping(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space
-            .protect_user_mapping(address, length, permission)
     }
 
     /// @description 取得当前 Thread 的 context-switch 保存区锁。

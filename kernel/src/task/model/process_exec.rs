@@ -24,6 +24,7 @@ impl TaskControlBlock {
     ) -> Result<(), ElfLoadError> {
         // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
         let (new_memory_set, user_sp, entry_point) = loaded.build_address_space(envs)?;
+        let new_address_space = AddressSpace::new(new_memory_set)?;
         let new_comm = process_name(loaded.execfn());
         let credential_metadata = loaded.credential_metadata();
 
@@ -31,12 +32,11 @@ impl TaskControlBlock {
         // 在 process graph lock 上建立确定顺序，避免新映像已经生效而 parent 仍错误改组。
         super::super::task_manager::mark_process_exec(self.tgid());
 
-        // 步骤2: 单次替换 Process 映像相关状态；旧 MemorySet 不暴露 stale PTE 窗口。
+        // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
+        // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
         let kernel_stack_top = self.thread.kernel_stack.get_top();
-        *self.process.address_space.memory_set.lock() = new_memory_set;
-        // vfork parent 只能在 child 已脱离共享 user frame 后恢复；若在 has_execed 发布时
-        // 提前唤醒，两个 Process 会并发写同一 stack/frame，违反 Linux vfork contract。
-        super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
+        let old_trap_context = self.trap_context_va();
+        let old_address_space = self.process.replace_address_space(new_address_space);
         *self.process.comm.lock() = new_comm;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
         self.process.files.lock().close_cloexec();
@@ -58,6 +58,15 @@ impl TaskControlBlock {
             kernel_stack_top,
             self.thread.kernel_trap_handler,
         ));
+        if old_trap_context != TRAP_CONTEXT {
+            old_address_space
+                .memory_set
+                .lock()
+                .remove_thread_trap_context(old_trap_context);
+        }
+        // vfork parent 只能在完整 exec commit 且 child 临时 trap page 已从共享 mm 删除后恢复；
+        // 提前唤醒会让 parent 与尚未 detach 的 child 并发修改同一 AddressSpace。
+        super::super::task_manager::vfork::complete_vfork_exec(self.tgid());
         Ok(())
     }
 }

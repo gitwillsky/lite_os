@@ -8,7 +8,7 @@ impl TaskControlBlock {
         self.clone_process(pid, false, 0)
     }
 
-    /// @description 以共享用户 frame、独立页表构造尚未发布的 vfork child。
+    /// @description 以同一 AddressSpace 构造尚未发布的 vfork child。
     /// @param pid TaskManager 已唯一分配的 child TGID/TID。
     /// @param child_stack 非零时覆盖 child SP；零值继承 parent SP。
     /// @return 成功返回 New child；parent 必须在发布后阻塞到 child exec/exit。
@@ -27,22 +27,19 @@ impl TaskControlBlock {
         share_user_memory: bool,
         child_stack: usize,
     ) -> Result<Self, MemoryError> {
-        // share_user_memory 只区分 fork COW 与 vfork shared-frame contract；缺失该选择会让
-        // vfork child 的 stack store 对 parent 不可见，破坏 exec 失败的 errno handoff。
+        // share_user_memory 只区分 fork COW 与 vfork CLONE_VM contract；缺失该选择会让
+        // posix_spawn child 的 stack/errno-pipe 操作脱离 parent mm，破坏标准 handoff。
         let tid = pid.0;
         // 1. 先构造地址空间和所有可能失败的 process-owned 资源，发布前不修改 process graph。
-        let memory_set = if share_user_memory {
-            self.process
-                .address_space
-                .memory_set
-                .lock()
-                .try_clone_for_vfork()?
+        let parent_address_space = self.process.address_space();
+        let address_space = if share_user_memory {
+            parent_address_space.clone()
         } else {
-            self.process
-                .address_space
+            let memory_set = parent_address_space
                 .memory_set
                 .lock()
-                .try_clone_for_fork()?
+                .try_clone_for_fork()?;
+            AddressSpace::new(memory_set)?
         };
         let cwd = self.process.cwd.lock().clone();
         let files = self
@@ -55,9 +52,28 @@ impl TaskControlBlock {
         let credentials = self.process.credentials.lock().clone();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let policy = self.scheduling.policy.lock();
+        let (nice, vruntime) = {
+            let policy = self.scheduling.policy.lock();
+            (policy.nice, policy.vruntime)
+        };
+        let last_cpu = self
+            .scheduling
+            .last_cpu
+            .load(core::sync::atomic::Ordering::Relaxed);
 
-        // 2. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
+        // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
+        // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
+        // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
+        let trap_cx_va = if share_user_memory {
+            address_space
+                .memory_set
+                .lock()
+                .allocate_thread_trap_context(tid)?
+        } else {
+            TRAP_CONTEXT
+        };
+
+        // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
         let mut child_trap = self.load_trap_context();
         child_trap.x[10] = 0;
         if child_stack != 0 {
@@ -66,13 +82,12 @@ impl TaskControlBlock {
         child_trap.kernel_sp = kernel_stack_top;
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
-        let address_space = AddressSpace::new(memory_set)?;
         let child = Self {
             process: Arc::new(Process {
                 tgid: pid,
                 comm: Mutex::new(self.process.comm.lock().clone()),
                 start_time_us: get_time_us(),
-                address_space,
+                address_space: Mutex::new(address_space),
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
                 credentials: Mutex::new(credentials),
@@ -82,7 +97,7 @@ impl TaskControlBlock {
             thread: ThreadContext {
                 tid,
                 kernel_stack,
-                trap_cx_va: Mutex::new(TRAP_CONTEXT),
+                trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(
                     kernel_stack_top,
                     self.thread.kernel_trap_return,
@@ -105,18 +120,13 @@ impl TaskControlBlock {
                 }),
                 policy: Mutex::new(Sched {
                     last_runtime: 0,
-                    nice: policy.nice,
-                    vruntime: policy.vruntime,
+                    nice,
+                    vruntime,
                     total_runtime_us: 0,
                 }),
-                last_cpu: AtomicUsize::new(
-                    self.scheduling
-                        .last_cpu
-                        .load(core::sync::atomic::Ordering::Relaxed),
-                ),
+                last_cpu: AtomicUsize::new(last_cpu),
             },
         };
-        drop(policy);
         child.set_trap_context(child_trap);
         Ok(child)
     }

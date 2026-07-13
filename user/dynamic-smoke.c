@@ -22,6 +22,8 @@
 #include <time.h>
 #include <unistd.h>
 
+int verify_process_spawn(void);
+
 static int resolve_host(const char *host)
 {
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
@@ -197,6 +199,7 @@ static int verify_credentials(const char *program)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "shared-crash") == 0) return shared_crash_loop();
+    if (argc == 2 && strcmp(argv[1], "spawn") == 0) return verify_process_spawn();
     if (argc == 3 && strcmp(argv[1], "resolve") == 0) return resolve_host(argv[2]);
     if (argc == 2 && strcmp(argv[1], "setid-probe") == 0) {
         uid_t real, effective, saved;

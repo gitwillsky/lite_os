@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 106 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 107 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 106 个入口
+## 2. 当前暴露的 107 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -84,16 +84,17 @@
 | 198-212, 242 | AF_UNIX、AF_INET UDP/TCP/raw ICMP 与 AF_PACKET socket | socket/sockaddr/iovec/msghdr/cmsg/options | fd/count；标准 socket errno | Linux sockets；musl；BusyBox nc/udhcpc/ping/wget；OpenSSL | **Partial（明确 domain/protocol scope）**。AF_UNIX abstract stream/datagram 保持原范围；AF_INET UDP 支持既有 datagram/message/option 语义；IPv4 TCP 支持 active/passive stream、pselect/ppoll/epoll、`FIONBIO`、`TCP_NODELAY`、shutdown 与 close-time lifecycle。effective-root 可创建 AF_INET/SOCK_RAW/IPPROTO_ICMP：发送由内核补 IPv4 header 并经唯一 smoltcp route/ARP，接收返回重序列化的 IPv4 header，支持 bind、MSG_PEEK/DONTWAIT/TRUNC、IP_TTL、SO_BROADCAST 与 SO_BINDTODEVICE。AF_PACKET/SOCK_DGRAM/ETH_P_IP 继续服务 DHCP。单 VirtIO-net interface 由标准 ioctl 配置，smoltcp 0.13.1 唯一拥有 ARP/IPv4/ICMP/UDP/TCP 状态并使用 Reno。pathname AF_UNIX、IPv6、其他 raw IP protocol、ARP packet protocol、multicast、TCP urgent data/keepalive/linger 尚未开放。 | `kernel/src/syscall/socket.rs`, `kernel/src/syscall/socket/{message,options}.rs`, `kernel/src/socket.rs`, `kernel/src/socket/{packet,inet}.rs`, `kernel/src/socket/inet/{raw,options,udp,tcp,wait}.rs`, `kernel/src/socket/unix.rs` |
 | 214 | `brk` | `unsigned long new_brk` | 成功返回新 break；失败返回未改变旧 break，无负 errno | Linux legacy VM；musl compatibility path | **Complete**。越界/OOM 保持旧 break；页映射变化后同步跨 hart TLB。 | `kernel/src/syscall/memory.rs` |
 | 215 | `munmap` | page-aligned address、nonzero length | `0`；`EINVAL/EACCES/EIO` | POSIX `munmap`；musl allocator/loader | **Complete（当前 VMA 类型）**。支持 anonymous、file private/shared VMA 删除、洞忽略和左右拆分；shared dirty range 先同步写回，系统 VMA 返回 `EACCES`。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm/mmap.rs` |
-| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/vfork/pthread；BusyBox spawn | **Partial**。支持 fork-shaped COW process clone；单线程 `CLONE_VM|CLONE_VFORK|SIGCHLD` 使用独立页表/trap frame、共享已驻留 user frame，并不可中断地挂起 parent 到 child exec/exit；支持 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone，并按 Linux 语义忽略历史 `CLONE_DETACHED`。多线程 fork/vfork 返回 `EAGAIN`，无 namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/model/process_clone.rs`, `kernel/src/task/task_manager/vfork.rs`, `kernel/src/memory/mm/cow.rs` |
+| 220 | `clone` | flags、stack、parent_tid、tls、child_tid | parent=child PID/TID、child=0；标准 errno | Linux process/thread primitive；musl fork/vfork/pthread；BusyBox spawn | **Partial**。支持 fork-shaped COW process clone；`CLONE_VM|CLONE_VFORK|SIGCHLD` child 使用独立 Process handle、精确共享同一 AddressSpace，并只挂起发起调用的 parent Thread 到 child exec detach/exit；parent sibling 可继续运行并并发 spawn。支持 VM/FS/FILES/SIGHAND/THREAD/SYSVSEM/SETTLS 配合 parent/child-set/clear-tid 的 thread clone，并按 Linux 语义忽略历史 `CLONE_DETACHED`。普通多线程 fork 仍返回 `EAGAIN`，无 namespace/pidfd flags。 | `kernel/src/syscall/process.rs`, `kernel/src/task/model/process_clone.rs`, `kernel/src/task/task_manager/vfork.rs` |
 | 221 | `execve` | `const char *path, char *const argv[], char *const envp[]`；raw NUL bytes | 成功不回旧映像；标准 errno | POSIX `execve`；musl direct wrapper | **Partial**。既有 ELF/script/dynamic transaction 加 credential-aware search/execute 与最终 ELF setuid/setgid；set-id 仅在映像成功准备后的不可失败 commit 生效。多线程 Process 仍返回 `EAGAIN`。 | `kernel/src/syscall/process.rs`, `kernel/src/task/loader.rs`, `kernel/src/task/model/process_exec.rs` |
 | 222 | `mmap` | address、length、prot、flags、fd、offset | address；`EINVAL/EACCES/EEXIST/ENOMEM/EIO` | POSIX `mmap`；musl allocator/loader | **Complete（anonymous + regular-file scope）**。anonymous private/shared eager mapping、file private eager mapping与 regular-file shared lazy mapping；anonymous shared backing 跨 fork 保持 frame/futex identity，file shared 页经唯一 page cache 保持 read/write/fork coherence，EOF fault 为 SIGBUS；支持 fixed variants、PROT_NONE 与 W^X。尚无 tmpfs/shmem pathname object。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm/{mmap,shared_area}.rs`, `kernel/src/fs/page_cache.rs` |
 | 226 | `mprotect` | page-aligned address、length、prot | `0`；`EINVAL/EACCES` | POSIX `mprotect`；musl loader | **Complete（当前 VMA 类型）**。anonymous/file/ELF private 与 anonymous/file shared VMA 可拆分并切换 resident/nonresident 权限，支持 RELRO、shared writer lifecycle，强制 W^X；缺页整体失败。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm/mmap.rs` |
 | 227 | `msync` | page-aligned address、length、`MS_*` | `0`；`EINVAL/ENOMEM/EIO` | POSIX `msync`；musl | **Complete（当前 VMA 类型）**。固定 Linux flag validation；MS_ASYNC 只校验 coverage、不启动 I/O，MS_SYNC 对 file MAP_SHARED 区间同步 page cache、ext2 journal 与 block flush；hole 最终 ENOMEM。 | `kernel/src/syscall/memory.rs`, `kernel/src/memory/mm/mmap.rs`, `kernel/src/fs/page_cache.rs` |
 | 278 | `getrandom` | buffer、length、`GRND_NONBLOCK/GRND_RANDOM` | 字节数；`EFAULT/EINVAL/EIO` | Linux entropy API；musl | **Complete**（virtio-rng 基线）。唯一 entropy source 为 virtio-rng；设备失败不回退 RTC/timer。 | `kernel/src/syscall/random.rs`, `kernel/src/drivers/virtio_rng.rs` |
-| 260 | `wait4` | pid、status、options、rusage | child PID/0；标准 errno，含 `EINTR` | POSIX waitpid backend；musl direct wrapper | **Partial**。单线程 caller 支持 PID、任一 child、caller/explicit process group selector、blocking/`WNOHANG`、`WUNTRACED`、`WCONTINUED`、独立消费 exited/signaled/stopped/continued status、signal interruption与 copyout-before-consume；handler 含 `SA_RESTART` 时透明重放。多线程调用返回 `EAGAIN`，rusage 必须为空。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager/wait_child.rs` |
+| 283 | `membarrier` | command、flags、cpu_id | command mask/0；`EINVAL/EPERM` | Linux memory-ordering ABI；musl pthread/dynamic TLS | **Partial（private expedited scope）**。实现并只由 QUERY 宣告 `REGISTER_PRIVATE_EXPEDITED` 与 `PRIVATE_EXPEDITED`；registration 属于 AddressSpace，CLONE_VM/vfork 共享而 fork/exec 重置。执行路径以 generation + SBI IPI 等待所有 active DTB hart 完成 full fence，语义强于 mm-target mask但不缩减 ordering。其他 global/sync-core/rseq/get-registrations command 返回 `EINVAL`，非零 flags 返回 `EINVAL`。 | `kernel/src/syscall/membarrier.rs`, `kernel/src/task/memory_barrier.rs`, `kernel/src/arch/riscv64/hart/memory_barrier.rs` |
+| 260 | `wait4` | pid、status、options、rusage | child PID/0；标准 errno，含 `EINTR` | POSIX waitpid backend；musl direct wrapper | **Partial**。多线程 caller 支持 PID、任一 child、caller/explicit process group selector、blocking/`WNOHANG`、`WUNTRACED`、`WCONTINUED`、独立消费 exited/signaled/stopped/continued status、signal interruption与 copyout-before-consume；handler 含 `SA_RESTART` 时透明重放。process graph 的 per-TID waiter 与唯一 event claim 防止并发重复回收；copyout 失败释放 claim。rusage 必须为空。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager/wait_child.rs` |
 | 258 | `riscv_hwprobe` | pair array、可选 CPU mask、flags | 0；`EFAULT/EINVAL` | Linux/riscv64 CPU capability discovery；OpenSSL | **Partial（value-query scope）**。flags=0 支持 pair copyin/out、unknown key→`{-1,0}`、显式 CPU mask 与 all-online shortcut；system façade 保守投影 IMA/FD/C、Sv39 user limit、time CSR frequency 和 vector-misaligned unsupported，不宣告未经 DTB 证明的扩展。`RISCV_HWPROBE_WHICH_CPUS` 尚未开放。 | `kernel/src/syscall/riscv_hwprobe.rs`, `kernel/src/system.rs` |
 
-文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型和单线程 Process 模型。
+文件 ABI 与原有 process/time/memory ABI 的精确边界均以本表为准；“Complete”只覆盖当前明确存在的对象类型与已声明并发模型。
 
 ## 3. 第一阶段标准 ABI 缺口
 
@@ -107,7 +108,7 @@
 
 ## 4. musl 结论
 
-当前 106 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP 与 OpenSSL HTTPS consumer。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 107 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP 与 OpenSSL HTTPS consumer。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex PI/PI-requeue/WAKE_OP 与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack 与 queued realtime signal；

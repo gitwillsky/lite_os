@@ -5,6 +5,7 @@ use crate::task::{context::TaskContext, pid::ProcessId};
 
 mod context;
 mod loader;
+mod memory_barrier;
 mod model;
 mod pid;
 mod processor;
@@ -13,6 +14,7 @@ mod task_manager;
 mod trap_context;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
+pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
 pub(crate) use model::{
     PendingSignal, RunState, SignalAction, SignalDelivery, StopResume, StopTransition,
     TaskControlBlock, WaitMembership, WaitResult,

@@ -710,10 +710,11 @@ def find_debugfs() -> Path:
 def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     payload = {
         "kind": "dynamic-loader-probe",
-        "recipe_version": 1,
+        "recipe_version": 2,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "main_sha256": sha256(ROOT / "user/dynamic-smoke.c"),
+        "spawn_sha256": sha256(ROOT / "scripts/fixtures/musl-process-spawn.c"),
         "library_sha256": sha256(ROOT / "user/dynamic-smoke-lib.c"),
     }
     entry = WORK / "dynamic-probes" / fingerprint(payload)
@@ -750,6 +751,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
                 str(ROOT / "user/dynamic-smoke.c"),
+                str(ROOT / "scripts/fixtures/musl-process-spawn.c"),
                 "-fPIE",
                 "-pie",
                 "-ldl",
@@ -933,7 +935,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            10,
+            11,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -1203,6 +1205,14 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DLOPEN_42",
+                    b"",
+                ),
+                (
+                    "/ # ",
+                    b"/bin/dynamic-smoke spawn\n",
+                ),
+                (
+                    "LITEOS_POSIX_SPAWN_59",
                     b"",
                 ),
                 (

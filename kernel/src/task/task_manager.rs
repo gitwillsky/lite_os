@@ -54,7 +54,10 @@ use signal::{complete_process_stop, send_kernel_process_signal, send_process_gro
 pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
 use vfork::complete_vfork;
 pub(crate) use vfork::{fork_current_process, vfork_current_process};
-pub(crate) use wait_child::{WaitChildError, consume_child_status, wait_child};
+use wait_child::take_child_waiters;
+pub(crate) use wait_child::{
+    WaitChildError, consume_child_status, release_child_status, wait_child,
+};
 use wait_key::IndexedWaitKind;
 pub(crate) use wait_key::PollWaitKey;
 use wait_registry::INDEXED_WAIT_QUEUE;
@@ -63,6 +66,7 @@ enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
     Exited(ProcessExitStatus),
 }
+
 struct ProcessNode {
     parent: Option<usize>,
     session: usize,
@@ -73,10 +77,16 @@ struct ProcessNode {
     group_exit: Option<ProcessExitStatus>,
     job_control: JobControlState,
     child_events: ChildEvents,
-    waiter: Option<Arc<TaskControlBlock>>,
+    // OWNER: parent Process node owns every Thread currently waiting for a child event. A single
+    // waiter slot makes concurrent waitpid either overwrite membership or return non-Linux EAGAIN.
+    child_waiters: BTreeMap<usize, Arc<TaskControlBlock>>,
+    // OWNER: process graph 独占 child event claim；copyout 成功才消费，EFAULT 释放。缺失该
+    // claim 时两个 parent Thread 可同时返回同一 zombie，并由第二次 reap 触发状态分裂。
+    child_wait_claim: Option<wait_child::ChildWaitClaim>,
     // child node 唯一持有 suspended vfork parent；缺失该 owner 会在 exec/exit 边界丢唤醒。
     vfork_parent: Option<Arc<TaskControlBlock>>,
 }
+
 struct ProcessGraph {
     next_pid: usize,
     processes_created: u64,
@@ -155,7 +165,8 @@ impl TaskManager {
                 group_exit: None,
                 job_control: JobControlState::Running,
                 child_events: ChildEvents::default(),
-                waiter: None,
+                child_waiters: BTreeMap::new(),
+                child_wait_claim: None,
                 vfork_parent: None,
             },
         );
@@ -171,42 +182,6 @@ impl TaskManager {
             .checked_add(1)
             .expect("PID namespace exhausted");
         ProcessId::allocated(pid)
-    }
-
-    fn publish_child(
-        &self,
-        parent: usize,
-        child: Arc<TaskControlBlock>,
-        vfork_parent: Option<Arc<TaskControlBlock>>,
-    ) {
-        let pid = child.tgid();
-        let mut graph = self.graph.lock();
-        let parent_node = graph
-            .nodes
-            .get(&parent)
-            .expect("fork parent disappeared before child publication");
-        assert!(matches!(parent_node.state, ProcessState::Live(_)));
-        let session = parent_node.session;
-        let process_group = parent_node.process_group;
-        let mut threads = BTreeMap::new();
-        threads.insert(child.tid(), child);
-        let previous = graph.nodes.insert(
-            pid,
-            ProcessNode {
-                parent: Some(parent),
-                session,
-                process_group,
-                has_execed: false,
-                state: ProcessState::Live(threads),
-                group_exit: None,
-                job_control: JobControlState::Running,
-                child_events: ChildEvents::default(),
-                waiter: None,
-                vfork_parent,
-            },
-        );
-        assert!(previous.is_none(), "allocated PID already exists");
-        graph.processes_created = graph.processes_created.saturating_add(1);
     }
 
     fn publish_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) -> bool {

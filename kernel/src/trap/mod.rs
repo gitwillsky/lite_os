@@ -21,7 +21,9 @@ use crate::{
 
 #[inline(always)]
 fn handle_supervisor_soft_interrupt() {
-    // 普通 IPI 只负责唤醒；TLB 同步由 SBI RFENCE 在 M-mode 完成。
+    // 同步 memory barrier 必须在 task deferred work 前确认；普通 IPI 仅负责唤醒，
+    // TLB 同步仍由 SBI RFENCE 在 M-mode 完成。
+    hart::complete_pending_memory_barrier();
     task::dispatch_pending_deferred_work();
 }
 

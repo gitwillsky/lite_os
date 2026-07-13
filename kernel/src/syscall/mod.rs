@@ -4,6 +4,7 @@ mod errno;
 mod fs;
 mod futex;
 mod ioctl;
+mod membarrier;
 mod memory;
 mod poll;
 mod process;
@@ -21,6 +22,7 @@ use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
     reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
+use membarrier::sys_membarrier;
 use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
 
@@ -217,6 +219,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2]),
         SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2]),
         SYSCALL_GETRANDOM => sys_getrandom(args[0], args[1], args[2]),
+        SYSCALL_MEMBARRIER => sys_membarrier(args[0], args[1], args[2]),
         SYSCALL_WAIT4 => sys_wait4(
             args[0] as isize,
             args[1] as *mut i32,

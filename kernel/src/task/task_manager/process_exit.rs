@@ -135,13 +135,12 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
         );
         scheduling.run_state = RunState::Exited;
     }
-    complete_vfork(task.tgid());
     task.cleanup_robust_list();
     let (
         removed,
         process_status,
-        parent_waiter,
-        init_waiter,
+        parent_waiters,
+        init_waiters,
         parent_signal_pid,
         terminal_hangup_targets,
         orphaned_group_targets,
@@ -173,7 +172,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
             let parent = node.parent;
             let session_leader = node.session == exiting_pid;
             if let Some(status) = process_status {
-                assert!(node.waiter.is_none());
+                assert!(node.child_waiters.is_empty());
                 node.state = ProcessState::Exited(status);
             }
             (removed, process_status, parent, session_leader)
@@ -184,7 +183,15 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
         }
 
         match process_status {
-            None => (removed, None, None, None, None, Vec::new(), Vec::new()),
+            None => (
+                removed,
+                None,
+                Vec::new(),
+                Vec::new(),
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
             Some(status) => {
                 // 1. orphan 只改写 graph 中的唯一 parent edge；不复制 child collection。
                 if exiting_pid != INIT_PID {
@@ -195,12 +202,10 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
                     }
                 }
                 // 2. 取走 waiter owner 后释放 graph lock，再进入 scheduler seam，避免锁序反转。
-                let parent_waiter = parent.and_then(|pid| {
-                    graph
-                        .nodes
-                        .get_mut(&pid)
-                        .and_then(|parent| parent.waiter.take())
-                });
+                let parent_waiters = parent
+                    .and_then(|pid| graph.nodes.get_mut(&pid))
+                    .map(take_child_waiters)
+                    .unwrap_or_default();
                 let parent_signal_pid = parent.filter(|pid| {
                     graph
                         .nodes
@@ -212,14 +217,15 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
                         child.parent == Some(INIT_PID)
                             && matches!(child.state, ProcessState::Exited(_))
                     });
-                let init_waiter = adopted_exited
-                    .then(|| {
-                        graph
-                            .nodes
-                            .get_mut(&INIT_PID)
-                            .and_then(|init| init.waiter.take())
-                    })
-                    .flatten();
+                let init_waiters = if adopted_exited {
+                    graph
+                        .nodes
+                        .get_mut(&INIT_PID)
+                        .map(take_child_waiters)
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 // 1. process graph 是 SID/PGID membership owner，因此在同一 graph 临界区
                 //    取走 Terminal foreground PGID 并冻结 live target 集合。
                 // 2. 统一使用 graph -> Terminal 锁序；反向路径都会先释放 Terminal lock 再发 signal，
@@ -254,8 +260,8 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
                 (
                     removed,
                     Some(status),
-                    parent_waiter,
-                    init_waiter,
+                    parent_waiters,
+                    init_waiters,
                     parent_signal_pid,
                     terminal_hangup_targets,
                     orphaned_group_targets,
@@ -290,10 +296,11 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
         task.close_all_files();
     }
     drop(removed);
-    if process_status.is_none() {
-        task.remove_thread_trap_context();
-    }
-    for waiter in [parent_waiter, init_waiter].into_iter().flatten() {
+    task.remove_thread_trap_context();
+    // vfork child exit 只有在临时 trap page 已从共享 AddressSpace 删除后才能恢复 parent；
+    // 否则 parent 可与仍持有 shared-mm supervisor mapping 的 child cleanup 并发。
+    complete_vfork(task.tgid());
+    for waiter in parent_waiters.into_iter().chain(init_waiters) {
         crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
     if let (Some(parent), Some(status)) = (parent_signal_pid, process_status) {
