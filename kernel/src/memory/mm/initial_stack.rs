@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::memory::config;
 
-use super::{ElfLoadError, MemorySet};
+use super::{ElfLoadError, MemorySet, UserFaultLimits};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ElfAuxInfo {
@@ -50,6 +50,7 @@ impl MemorySet {
         envs: &[Vec<u8>],
         execfn: &[u8],
         aux: ElfAuxInfo,
+        stack_limit: u64,
     ) -> Result<usize, ElfLoadError> {
         const AT_NULL: usize = 0;
         const AT_PHDR: usize = 3;
@@ -94,13 +95,14 @@ impl MemorySet {
             .checked_add(total_string_size)
             .and_then(|size| size.checked_add(15))
             .ok_or(ElfLoadError::InvalidElf)?;
-        if stack_size > config::USER_STACK_SIZE {
-            return Err(ElfLoadError::InvalidElf);
-        }
         let stack_ptr = stack_top
             .checked_sub(stack_size)
             .ok_or(ElfLoadError::InvalidElf)?
             & !15usize;
+        if (stack_top - stack_ptr) as u64 > stack_limit {
+            return Err(ElfLoadError::InvalidElf);
+        }
+        let fault_limits = UserFaultLimits::new(stack_limit, u64::MAX);
         let mut string_ptr = stack_ptr
             .checked_add(pointer_space)
             .ok_or(ElfLoadError::InvalidElf)?;
@@ -116,7 +118,7 @@ impl MemorySet {
         let argument_start = string_ptr;
         for arg in args {
             argv_ptrs.push(string_ptr);
-            self.write_c_string_to_user_stack(string_ptr, arg)?;
+            self.write_c_string_to_user_stack(string_ptr, arg, fault_limits)?;
             string_ptr = string_ptr
                 .checked_add(arg.len())
                 .and_then(|address| address.checked_add(1))
@@ -125,14 +127,14 @@ impl MemorySet {
         let argument_end = string_ptr;
         for env in envs {
             envp_ptrs.push(string_ptr);
-            self.write_c_string_to_user_stack(string_ptr, env)?;
+            self.write_c_string_to_user_stack(string_ptr, env, fault_limits)?;
             string_ptr = string_ptr
                 .checked_add(env.len())
                 .and_then(|address| address.checked_add(1))
                 .ok_or(ElfLoadError::InvalidElf)?;
         }
         let execfn_ptr = string_ptr;
-        self.write_c_string_to_user_stack(execfn_ptr, execfn)?;
+        self.write_c_string_to_user_stack(execfn_ptr, execfn, fault_limits)?;
         string_ptr = string_ptr
             .checked_add(execfn.len())
             .and_then(|address| address.checked_add(1))
@@ -140,23 +142,23 @@ impl MemorySet {
         let random_ptr = string_ptr;
         let mut random = [0u8; RANDOM_BYTES];
         crate::random::fill(&mut random).map_err(|_| ElfLoadError::InvalidElf)?;
-        self.copy_to_user(random_ptr, &random)
+        self.copy_to_user(random_ptr, &random, fault_limits)
             .map_err(|_| ElfLoadError::InvalidElf)?;
 
         let mut writer = stack_ptr;
-        self.write_usize_to_user_stack(writer, args.len())?;
+        self.write_usize_to_user_stack(writer, args.len(), fault_limits)?;
         writer += core::mem::size_of::<usize>();
         for pointer in argv_ptrs {
-            self.write_usize_to_user_stack(writer, pointer)?;
+            self.write_usize_to_user_stack(writer, pointer, fault_limits)?;
             writer += core::mem::size_of::<usize>();
         }
-        self.write_usize_to_user_stack(writer, 0)?;
+        self.write_usize_to_user_stack(writer, 0, fault_limits)?;
         writer += core::mem::size_of::<usize>();
         for pointer in envp_ptrs {
-            self.write_usize_to_user_stack(writer, pointer)?;
+            self.write_usize_to_user_stack(writer, pointer, fault_limits)?;
             writer += core::mem::size_of::<usize>();
         }
-        self.write_usize_to_user_stack(writer, 0)?;
+        self.write_usize_to_user_stack(writer, 0, fault_limits)?;
         writer += core::mem::size_of::<usize>();
 
         for (kind, value) in [
@@ -170,9 +172,9 @@ impl MemorySet {
             (AT_EXECFN, execfn_ptr),
             (AT_NULL, 0),
         ] {
-            self.write_usize_to_user_stack(writer, kind)?;
+            self.write_usize_to_user_stack(writer, kind, fault_limits)?;
             writer += core::mem::size_of::<usize>();
-            self.write_usize_to_user_stack(writer, value)?;
+            self.write_usize_to_user_stack(writer, value, fault_limits)?;
             writer += core::mem::size_of::<usize>();
         }
 
@@ -186,13 +188,14 @@ impl MemorySet {
         &mut self,
         address: usize,
         value: &[u8],
+        limits: UserFaultLimits,
     ) -> Result<(), ElfLoadError> {
-        self.copy_to_user(address, value)
+        self.copy_to_user(address, value, limits)
             .map_err(|_| ElfLoadError::InvalidElf)?;
         let nul_address = address
             .checked_add(value.len())
             .ok_or(ElfLoadError::InvalidElf)?;
-        self.copy_to_user(nul_address, &[0])
+        self.copy_to_user(nul_address, &[0], limits)
             .map_err(|_| ElfLoadError::InvalidElf)
     }
 
@@ -200,8 +203,9 @@ impl MemorySet {
         &mut self,
         address: usize,
         value: usize,
+        limits: UserFaultLimits,
     ) -> Result<(), ElfLoadError> {
-        self.copy_to_user(address, &value.to_le_bytes())
+        self.copy_to_user(address, &value.to_le_bytes(), limits)
             .map_err(|_| ElfLoadError::InvalidElf)
     }
 }

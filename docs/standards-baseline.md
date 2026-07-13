@@ -62,6 +62,8 @@ script exec 额外固定同 revision 的 [`fs/binfmt_script.c`](https://github.c
 
 `membarrier` 额外固定同 revision 的 [`include/uapi/linux/membarrier.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/linux/membarrier.h) 与 [`kernel/sched/membarrier.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/membarrier.c)：前者定义 command/flag bit，后者定义 registration 的 mm owner、`EPERM/EINVAL`、syscall entry/exit full barrier 与同步 IPI completion 语义。固定 musl 的 [`src/linux/membarrier.c`](https://git.musl-libc.org/cgit/musl/tree/src/linux/membarrier.c?id=9fa28ece75d8a2191de7c5bb53bed224c5947417) 只作为首个 pthread 创建前注册和动态 TLS barrier 的 consumer 证据。
 
+虚拟内存与资源限制额外固定同 revision 的 [`include/uapi/asm-generic/mman-common.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/mman-common.h)、[`mm/madvise.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/mm/madvise.c)、[`include/uapi/asm-generic/resource.h`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/include/uapi/asm-generic/resource.h) 与 [`kernel/sys.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sys.c)：它们分别定义 advice/rlimit 编号、VMA residency 行为、`rlimit64` 布局以及 `prlimit64` permission、soft/hard update 与 copyout 顺序。ELF/brk/stack/anonymous fault、COW 和 reclaim 则以同 revision 的 `fs/binfmt_elf.c`、`mm/mmap.c`、`mm/memory.c` 与 `mm/vmscan.c` owner/lifecycle 为实现语义基线。
+
 ## 3. RISC-V ELF psABI
 
 固定 revision 的 [`riscv-cc.adoc`](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/e03d44ae2f0e1144f9498c2896b5ae25b0449398/riscv-cc.adoc) 明确：

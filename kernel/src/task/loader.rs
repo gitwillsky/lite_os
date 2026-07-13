@@ -28,8 +28,19 @@ impl LoadedExecutable {
     pub(super) fn build_address_space(
         &self,
         environments: &[Vec<u8>],
+        stack_limit: u64,
+        address_space_limit: u64,
+        data_limit: u64,
     ) -> Result<(MemorySet, usize, usize), ElfLoadError> {
-        MemorySet::from_elf(&self.image, &self.arguments, environments, &self.execfn)
+        MemorySet::from_elf(
+            &self.image,
+            &self.arguments,
+            environments,
+            &self.execfn,
+            stack_limit,
+            address_space_limit,
+            data_limit,
+        )
     }
 
     /// @description 返回用户传给 execve 的原始 pathname，用于 AT_EXECFN 与 process comm。

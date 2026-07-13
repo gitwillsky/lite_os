@@ -42,6 +42,13 @@ impl CfsRunQueue {
         self.tasks.pop()
     }
 
+    /// @description 返回当前 Ready heap 的最小 vruntime，用于新 task 的公平 placement。
+    ///
+    /// @return 队列为空时为 `None`。
+    pub(in crate::task) fn minimum_vruntime(&self) -> Option<u64> {
+        self.tasks.peek().map(|entry| entry.vruntime)
+    }
+
     /// @description 返回真实 local heap entry 数。
     ///
     /// @return 当前容器长度。

@@ -134,8 +134,7 @@ impl StackFrameAllocator {
             return None;
         }
 
-        // For contiguous allocation, we can only use the continuous range
-        // Cannot use recycled pages as they might not be contiguous
+        // 1. 优先从从未分配的尾部取得连续区间，保持常见路径 O(1)。
         let allocation_end = self.current_start_ppn.as_usize().checked_add(pages)?;
         if allocation_end <= self.end_ppn.as_usize() {
             let start_ppn = self.current_start_ppn;
@@ -146,8 +145,68 @@ impl StackFrameAllocator {
             self.current_start_ppn = PhysicalPageNumber::from(allocation_end);
             Some(start_ppn)
         } else {
+            // 2. 尾部不足时扫描 recycled intrusive list；缺少此路径会让动态 heap 在
+            //    物理页总量充足但发生回收后仍因假性连续内存耗尽而失败。
+            let mut candidate = self.recycled_head;
+            while let Some(start) = candidate {
+                let start_value = start.as_usize();
+                let complete = (0..pages).all(|offset| {
+                    start_value
+                        .checked_add(offset)
+                        .filter(|page| *page < self.end_ppn.as_usize())
+                        .is_some_and(|page| self.recycled_contains(PhysicalPageNumber::from(page)))
+                });
+                if complete {
+                    for offset in 0..pages {
+                        self.remove_recycled(PhysicalPageNumber::from(
+                            start_value
+                                .checked_add(offset)
+                                .expect("validated contiguous recycled run"),
+                        ));
+                    }
+                    return Some(start);
+                }
+                candidate = Self::recycled_next(start);
+            }
             None
         }
+    }
+
+    fn recycled_contains(&self, target: PhysicalPageNumber) -> bool {
+        let mut cursor = self.recycled_head;
+        while let Some(page) = cursor {
+            if page == target {
+                return true;
+            }
+            cursor = Self::recycled_next(page);
+        }
+        false
+    }
+
+    fn remove_recycled(&mut self, target: PhysicalPageNumber) {
+        let mut previous: Option<PhysicalPageNumber> = None;
+        let mut cursor = self.recycled_head;
+        while let Some(page) = cursor {
+            let next = Self::recycled_next(page);
+            if page == target {
+                if let Some(previous) = previous {
+                    // SAFETY: previous 仍在 recycled list 中，其页首 next 字段由 allocator lock 独占。
+                    unsafe {
+                        previous
+                            .as_page_mut_ptr()
+                            .cast::<usize>()
+                            .write(next.map_or(0, |page| page.as_usize()))
+                    };
+                } else {
+                    self.recycled_head = next;
+                }
+                self.recycled_len -= 1;
+                return;
+            }
+            previous = Some(page);
+            cursor = next;
+        }
+        panic!("contiguous recycled run changed while allocator lock is held");
     }
 
     pub(crate) fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
@@ -222,13 +281,26 @@ pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
     FRAME_ALLOCATOR.call_once(|| IrqMutex::new(StackFrameAllocator::new(start_addr, end_addr)));
 }
 
-pub(crate) fn alloc() -> Option<FrameTracker> {
+fn alloc_raw() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR.wait().lock().alloc();
     res.map(FrameTracker::new)
 }
 
+/// @description 从唯一 frame allocator 分配一页；耗尽时统一回收可重建用户页后重试。
+pub(crate) fn alloc() -> Option<FrameTracker> {
+    if let Some(frame) = alloc_raw() {
+        return Some(frame);
+    }
+    super::shared_file::reclaim_pages(64);
+    alloc_raw()
+}
+
 pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
-    let res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+    let mut res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+    if res.is_none() {
+        super::shared_file::reclaim_pages(pages.max(64));
+        res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+    }
     res.map(|b| FrameTracker::new_contiguous(b, pages))
 }
 

@@ -50,6 +50,7 @@ impl TaskControlBlock {
             .map_err(|_| MemoryError::OutOfMemory)?;
         let signal_actions = self.process.signal_state.lock().actions;
         let credentials = self.process.credentials.lock().clone();
+        let resource_limits = self.process.resource_limits.lock().forked();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let (nice, vruntime) = {
@@ -60,6 +61,7 @@ impl TaskControlBlock {
             .scheduling
             .last_cpu
             .load(core::sync::atomic::Ordering::Relaxed);
+        let cpu_runtime_us = Arc::new(core::sync::atomic::AtomicU64::new(0));
 
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
@@ -91,6 +93,8 @@ impl TaskControlBlock {
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
                 credentials: Mutex::new(credentials),
+                resource_limits: Mutex::new(resource_limits),
+                cpu_runtime_us: cpu_runtime_us.clone(),
                 terminal: self.process.terminal.clone(),
                 signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
             }),
@@ -123,6 +127,7 @@ impl TaskControlBlock {
                     nice,
                     vruntime,
                     total_runtime_us: 0,
+                    process_runtime_us: cpu_runtime_us,
                 }),
                 last_cpu: AtomicUsize::new(last_cpu),
             },

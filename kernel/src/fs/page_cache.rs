@@ -3,8 +3,8 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use crate::memory::{
-    PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage,
-    invalidate_shared_file,
+    MemoryReclaimer, PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame,
+    SharedPage, invalidate_shared_file, register_memory_reclaimer,
 };
 
 use super::{FileSystemError, Inode, InodeType};
@@ -60,14 +60,7 @@ impl CachedFile {
         if let Some(page) = self.pages.lock().get(&index).cloned() {
             return Ok(page);
         }
-        let frame = match SharedFrame::allocate() {
-            Ok(frame) => frame,
-            Err(SharedFileError::OutOfMemory) => {
-                reclaim_clean_pages();
-                SharedFrame::allocate().map_err(shared_error)?
-            }
-            Err(error) => return Err(shared_error(error)),
-        };
+        let frame = SharedFrame::allocate().map_err(shared_error)?;
         let offset = index
             .checked_mul(PAGE_SIZE as u64)
             .ok_or(FileSystemError::InvalidOperation)?;
@@ -160,6 +153,24 @@ impl SharedFileMapping for CachedFile {
     }
 }
 
+impl MemoryReclaimer for CachedFile {
+    fn reclaim_pages(&self, limit: usize) -> usize {
+        let Some(mut pages) = self.pages.try_lock() else {
+            return 0;
+        };
+        let mut reclaimed = 0;
+        pages.retain(|_, page| {
+            let reclaim = reclaimed < limit
+                && !page.dirty.load(Ordering::Acquire)
+                && page.writers.load(Ordering::Acquire) == 0
+                && Arc::strong_count(page) == 1;
+            reclaimed += usize::from(reclaim);
+            !reclaim
+        });
+        reclaimed
+    }
+}
+
 // OWNER: fs page-cache owns every regular inode cached page until clean reclaim. A weak-only map
 // would lose dirty MAP_SHARED pages when the final VMA disappears before sync(2).
 static FILES: Once<Mutex<BTreeMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
@@ -182,6 +193,7 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
         operation: Mutex::new(()),
         pages: Mutex::new(BTreeMap::new()),
     });
+    register_memory_reclaimer(file.clone()).map_err(shared_error)?;
     files.insert(id, file.clone());
     Ok(file)
 }
@@ -232,13 +244,30 @@ pub(crate) fn write(
     Ok(written)
 }
 
-pub(crate) fn append(inode: Arc<dyn Inode>, input: &[u8]) -> Result<(u64, usize), FileSystemError> {
+/// @description 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
+///
+/// @param inode 目标 inode。
+/// @param input 待追加数据。
+/// @param size_limit caller 的 RLIMIT_FSIZE soft limit。
+/// @return append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
+pub(crate) fn append(
+    inode: Arc<dyn Inode>,
+    input: &[u8],
+    size_limit: u64,
+) -> Result<(u64, usize), FileSystemError> {
     if inode.inode_type() != InodeType::File {
         return inode.append_storage(input);
     }
     let file = cached_file(inode)?;
     let _operation = file.operation.lock();
-    let (offset, written) = file.inode.append_storage(input)?;
+    let offset = file.inode.size();
+    let allowed = usize::try_from(size_limit.saturating_sub(offset))
+        .unwrap_or(usize::MAX)
+        .min(input.len());
+    if allowed == 0 {
+        return Ok((offset, 0));
+    }
+    let (offset, written) = file.inode.append_storage(&input[..allowed])?;
     file.update_cached(offset, &input[..written])?;
     Ok((offset, written))
 }
@@ -283,27 +312,11 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
         let _operation = file.operation.lock();
         file.writeback_range(0, u64::MAX)?;
     }
-    reclaim_clean_pages();
-    Ok(())
-}
-
-/// @description 在物理页分配失败时仅回收没有 VMA/调用者引用的 clean cache page。
-fn reclaim_clean_pages() {
-    let files: Vec<_> = FILES
-        .call_once(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .values()
-        .cloned()
-        .collect();
-    for file in files {
-        file.pages
-            .lock()
-            .retain(|_, page| page.dirty.load(Ordering::Acquire) || Arc::strong_count(page) != 1);
-    }
     FILES
         .wait()
         .lock()
         .retain(|_, file| Arc::strong_count(file) != 1 || !file.pages.lock().is_empty());
+    Ok(())
 }
 
 fn fs_error(error: FileSystemError) -> SharedFileError {

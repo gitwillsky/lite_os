@@ -43,6 +43,8 @@ pub(crate) const EINVAL: isize = 22;
 pub(crate) const EMFILE: isize = 24;
 /// fd 不是 TTY 或 TTY 不属于 caller session。
 pub(crate) const ENOTTY: isize = 25;
+/// 写入或 truncate 超出 RLIMIT_FSIZE。
+pub(crate) const EFBIG: isize = 27;
 pub(crate) const ENOSPC: isize = 28;
 /// 目标 filesystem 不允许 mutation。
 pub(crate) const EROFS: isize = 30;

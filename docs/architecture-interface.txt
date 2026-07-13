@@ -447,7 +447,7 @@ kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: kind : OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: offset : Mutex < u64 >
-kernel/src/fs/file.rs :: pub (crate) const MAX_FILE_DESCRIPTORS : usize = 1024
+kernel/src/fs/file.rs :: pub (crate) const MAX_FILE_DESCRIPTORS : usize = 1_048_576
 kernel/src/fs/file.rs :: pub (crate) const O_ACCMODE : u32 = 3
 kernel/src/fs/file.rs :: pub (crate) const O_APPEND : u32 = 0x400
 kernel/src/fs/file.rs :: pub (crate) const O_CLOEXEC : u32 = 0x80000
@@ -459,13 +459,13 @@ kernel/src/fs/file.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
 kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn terminal (& self) -> Option < & Arc < Terminal > >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool ,) -> Result < usize , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool , limit : usize ,) -> Result < (usize , usize) , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close (& mut self , fd : usize) -> Result < () , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close_cloexec (& mut self)
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn descriptor_flags (& self , fd : usize) -> Result < u32 , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (& mut self , old : usize , minimum : usize , cloexec : bool ,) -> Result < usize , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , () >
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (& mut self , old : usize , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn slot_capacity (& self) -> usize
@@ -621,7 +621,7 @@ kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDe
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { OpenedFile , init as init_vfs , vfs }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> FileSystemStatistics
-kernel/src/fs/page_cache.rs :: pub (crate) fn append (inode : Arc < dyn Inode > , input : & [u8]) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn append (inode : Arc < dyn Inode > , input : & [u8] , size_limit : u64 ,) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn read (inode : Arc < dyn Inode > , offset : u64 , output : & mut [u8] ,) -> Result < usize , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
@@ -750,6 +750,8 @@ kernel/src/ipc.rs :: enum PipeDirection :: Write
 kernel/src/ipc.rs :: enum PipeRead :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeRead :: Empty
 kernel/src/ipc.rs :: enum PipeRead :: Eof
+kernel/src/ipc.rs :: enum PipeWaitCondition :: Readable
+kernel/src/ipc.rs :: enum PipeWaitCondition :: Writable { minimum : usize }
 kernel/src/ipc.rs :: enum PipeWrite :: Broken
 kernel/src/ipc.rs :: enum PipeWrite :: Bytes (usize)
 kernel/src/ipc.rs :: enum PipeWrite :: Full
@@ -757,9 +759,11 @@ kernel/src/ipc.rs :: pub (crate) PipePollState :: error : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: hangup : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: readable : bool
 kernel/src/ipc.rs :: pub (crate) PipePollState :: writable : bool
+kernel/src/ipc.rs :: pub (crate) PipePollState :: write_capacity : usize
 kernel/src/ipc.rs :: pub (crate) const PIPE_BUF : usize = 4096
 kernel/src/ipc.rs :: pub (crate) enum PipeDirection
 kernel/src/ipc.rs :: pub (crate) enum PipeRead
+kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
@@ -767,11 +771,13 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn Pipe
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readable (& self) -> bool
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
-kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn writable (& self) -> bool
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mut [u8]) -> PipeRead
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write (& self , input : & [u8]) -> PipeWrite
+kernel/src/ipc.rs :: pub (crate) impl PipePollState :: fn satisfies (self , condition : PipeWaitCondition) -> bool
+kernel/src/ipc.rs :: pub (crate) impl PipeWaitCondition :: fn direction (self) -> PipeDirection
 kernel/src/ipc.rs :: pub (crate) struct Pipe
 kernel/src/ipc.rs :: pub (crate) struct PipeEnd
 kernel/src/ipc.rs :: pub (crate) struct PipePollState
@@ -814,8 +820,8 @@ kernel/src/memory/address.rs :: pub (crate) struct PhysicalAddress
 kernel/src/memory/address.rs :: pub (crate) struct PhysicalPageNumber
 kernel/src/memory/address.rs :: pub (crate) struct VirtualAddress
 kernel/src/memory/address.rs :: pub (crate) struct VirtualPageNumber
+kernel/src/memory/config.rs :: pub (crate) const BOOTSTRAP_HEAP_SIZE : usize = 2 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
-kernel/src/memory/config.rs :: pub (crate) const MAX_HEAP_SIZE : usize = 4 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) const PAGE_OFFSET_WIDTH : usize = 12
 kernel/src/memory/config.rs :: pub (crate) const PAGE_SIZE : usize = 4096
 kernel/src/memory/config.rs :: pub (crate) const PHYSICAL_ADDRESS_WIDTH : usize = 56
@@ -824,7 +830,7 @@ kernel/src/memory/config.rs :: pub (crate) const PTE_FLAGS_WIDTH : usize = 10
 kernel/src/memory/config.rs :: pub (crate) const SIGNAL_TRAMPOLINE : usize = TRAP_CONTEXT - PAGE_SIZE
 kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = usize :: MAX - PAGE_SIZE + 1
 kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = TRAMPOLINE - PAGE_SIZE
-kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8192 * 32
+kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) const VIRTUAL_ADDRESS_WIDTH : usize = 39
 kernel/src/memory/config.rs :: pub (crate) const VPN_WIDTH : usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
 kernel/src/memory/executable.rs :: enum ElfKind :: Executable
@@ -870,6 +876,7 @@ kernel/src/memory/frame_allocator.rs :: pub (crate) impl StackFrameAllocator :: 
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl StackFrameAllocator :: fn dealloc (& mut self , ppn : PhysicalPageNumber) -> Result < () , FrameAllocError >
 kernel/src/memory/frame_allocator.rs :: pub (crate) impl StackFrameAllocator :: fn new (start_addr : PhysicalAddress , end_addr : PhysicalAddress) -> Self
 kernel/src/memory/frame_allocator.rs :: pub (crate) struct FrameTracker
+kernel/src/memory/heap_allocator.rs :: pub (crate) fn enable_frame_backed_growth ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn handle_heap_alloc_error (layout : alloc :: Layout) -> !
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn init ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct KernelAllocator
@@ -913,49 +920,67 @@ kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn unmap (& mut self , pa
 kernel/src/memory/mm.rs :: pub (crate) impl MemoryError :: fn is_out_of_memory (self) -> bool
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn active (& self)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn allocate_thread_trap_context (& mut self , tid : usize ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn compare_exchange_user_u32 (& mut self , address : usize , current : u32 , new : u32 ,) -> Result < Result < u32 , u32 > , UserAccessError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& mut self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_to_user (& mut self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn copy_user_c_string (& mut self , user_address : usize , max_len : usize ,) -> Result < Vec < u8 > , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , isize >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] ,) -> Result < (Self , usize , usize) , ElfLoadError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_trampoline (& mut self) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn new () -> Self
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn push (& mut self , mut map_area : MapArea , data : Option < & [u8] > ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_thread_trap_context (& mut self , address : usize)
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (& mut self , new_break : usize) -> Result < usize , MemoryError >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (& mut self , new_break : usize , address_space_limit : u64 , data_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> (usize , usize)
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& mut self , address : usize , length : usize ,) -> Result < () , UserAccessError >
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
-kernel/src/memory/mm.rs :: pub (crate) use futex_key :: FutexKey
+kernel/src/memory/mm.rs :: pub (crate) use { futex_key :: FutexKey , mapping_request :: { FileMappingSource , MappingResourceLimits , MemoryAdvice } , user_access :: UserFaultLimits , }
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
-kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_read (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
-kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_write (& mut self , address : usize , length : usize ,) -> Result < usize , UserAccessError >
+kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_read (& mut self , address : usize , length : usize , limits : UserFaultLimits ,) -> Result < usize , UserAccessError >
+kernel/src/memory/mm/cow.rs :: pub (super) impl MemorySet :: fn prepare_user_write (& mut self , address : usize , length : usize , limits : UserFaultLimits ,) -> Result < usize , UserAccessError >
 kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 匿名共享映射以不可复用的 backing ID 和字节偏移跨进程匹配。"] SharedAnonymous { backing : u64 , offset : usize }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 文件共享映射以 inode identity 和文件字节偏移跨地址空间匹配。"] SharedFile { file : SharedFileId , offset : u64 }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 私有映射只在同一个 AddressSpace 内共享等待队列。"] Private { address_space : usize , address : usize , }
 kernel/src/memory/mm/futex_key.rs :: pub (crate) enum FutexKey
-kernel/src/memory/mm/futex_key.rs :: pub (crate) impl MemorySet :: fn futex_key (& mut self , address : usize , address_space : usize , private : bool ,) -> Result < FutexKey , UserAccessError >
+kernel/src/memory/mm/futex_key.rs :: pub (crate) impl MemorySet :: fn futex_key (& mut self , address : usize , address_space : usize , private : bool , limits : UserFaultLimits ,) -> Result < FutexKey , UserAccessError >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl ElfAuxInfo :: fn new (phdr : usize , phent : usize , phnum : usize , entry : usize , base : usize) -> Self
-kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , aux : ElfAuxInfo ,) -> Result < usize , ElfLoadError >
+kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) struct ElfAuxInfo
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: DontNeed
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Free
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Normal
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Random
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Sequential
+kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: WillNeed
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl MappingResourceLimits :: const fn new (address_space : u64 , data : u64) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct FileMappingSource
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct MappingResourceLimits
+kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: mapping : Arc < dyn SharedFileMapping >
+kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: offset : u64
+kernel/src/memory/mm/mapping_request.rs :: pub (super) MappingResourceLimits :: address_space : u64
+kernel/src/memory/mm/mapping_request.rs :: pub (super) MappingResourceLimits :: data : u64
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn handle_page_fault (& mut self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
+kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn handle_page_fault_with_limits (& mut self , address : usize , access : PageFaultAccess , limits : UserFaultLimits ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn invalidate_shared_file (& mut self , id : SharedFileId , size : u64)
-kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_private_file (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_shared_file (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , file_offset : u64 ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn protect_user_mapping (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 , data_limit : u64 ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_private_file (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , limits : MappingResourceLimits ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn map_shared_file (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn unmap_user_mapping (& mut self , address : usize , length : usize ,) -> Result < () , MemoryError >
-kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_shared_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn advise_user_mapping (& mut self , address : usize , length : usize , advice : MemoryAdvice ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn reclaim_private_pages (& mut self , limit : usize) -> usize
+kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_shared_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm/mmap/protection.rs :: pub (crate) impl MemorySet :: fn protect_user_mapping (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn cached_file (source : Arc < dyn SharedFileMapping > , data_start : usize , source_offset : usize ,) -> Self
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn executable (source : Arc < dyn ExecutableSource > , data_start : usize , source_offset : usize , file_size : usize ,) -> Self
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn faultable (& self , vpn : VirtualPageNumber) -> bool
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn fill (& self , vpn : VirtualPageNumber , frame : & mut FrameTracker ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/private_area.rs :: pub (super) struct PrivateFileArea
 kernel/src/memory/mm/process.rs :: pub (crate) impl MemorySet :: fn process_arguments (& mut self) -> Result < Vec < u8 > , UserAccessError >
 kernel/src/memory/mm/shared_area.rs :: pub (super) AnonymousSharedBacking :: id : u64
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedAnonymousArea :: backing : Arc < AnonymousSharedBacking >
@@ -966,6 +991,7 @@ kernel/src/memory/mm/shared_area.rs :: pub (super) SharedFileArea :: resident : 
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: page : Arc < dyn SharedPage >
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: writer : bool
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl AnonymousSharedBacking :: fn allocate (page_count : usize) -> Result < Arc < Self > , MemoryError >
+kernel/src/memory/mm/shared_area.rs :: pub (super) impl AnonymousSharedBacking :: fn page (& self , index : usize) -> Result < Arc < FrameTracker > , MemoryError >
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl MapArea :: fn anonymous_mergeable (& self , right : & Self) -> bool
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl MapArea :: fn map_shared_anonymous (& self , page_table : & mut PageTable ,) -> Result < bool , MemoryError >
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl MapArea :: fn shared_anonymous (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission , backing : Arc < AnonymousSharedBacking > ,) -> Self
@@ -976,6 +1002,20 @@ kernel/src/memory/mm/shared_area.rs :: pub (super) struct AnonymousSharedBacking
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedAnonymousArea
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedFileArea
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedResident
+kernel/src/memory/mm/user_access.rs :: pub (crate) UserFaultLimits :: address_space : u64
+kernel/src/memory/mm/user_access.rs :: pub (crate) UserFaultLimits :: stack : u64
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn compare_exchange_user_u32 (& mut self , address : usize , current : u32 , new : u32 , limits : UserFaultLimits ,) -> Result < Result < u32 , u32 > , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& mut self , address : usize , destination : & mut [u8] , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn copy_to_user (& mut self , address : usize , source : & [u8] , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn copy_user_c_string (& mut self , address : usize , max_len : usize , limits : UserFaultLimits ,) -> Result < Vec < u8 > , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn validate_user_write (& mut self , address : usize , length : usize , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (crate) impl UserFaultLimits :: const fn new (stack : u64 , address_space : u64) -> Self
+kernel/src/memory/mm/user_access.rs :: pub (crate) struct UserFaultLimits
+kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn checked_user_end (start : usize , len : usize) -> Result < usize , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn user_page (& self , address : usize , required : PTEFlags ,) -> Result < (PhysicalPageNumber , usize) , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn validate_user_range (& self , start : usize , len : usize , required : PTEFlags ,) -> Result < usize , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (super) impl UserFaultLimits :: const fn existing_mappings () -> Self
+kernel/src/memory/mm/user_access.rs :: pub (super) impl UserFaultLimits :: const fn initial_exec () -> Self
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
 kernel/src/memory/mod.rs :: pub (crate) fn init ()
 kernel/src/memory/mod.rs :: pub (crate) fn init_allocator ()
@@ -987,8 +1027,8 @@ kernel/src/memory/mod.rs :: pub (crate) use config :: *
 kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameTracker , alloc_contiguous , statistics as frame_statistics }
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , FutexKey , MapPermission , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , }
-kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedMappingInvalidator , SharedPage , invalidate_shared_file , register_shared_mapping_owner , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , FileMappingSource , FutexKey , MapPermission , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , register_memory_mapping_owner , register_memory_reclaimer , }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable
@@ -1018,7 +1058,9 @@ kernel/src/memory/shared_file.rs :: pub (crate) SharedFileId :: filesystem : usi
 kernel/src/memory/shared_file.rs :: pub (crate) SharedFileId :: inode : u64
 kernel/src/memory/shared_file.rs :: pub (crate) enum SharedFileError
 kernel/src/memory/shared_file.rs :: pub (crate) fn invalidate_shared_file (id : SharedFileId , size : u64) -> Result < () , SharedFileError >
-kernel/src/memory/shared_file.rs :: pub (crate) fn register_shared_mapping_owner (owner : Arc < dyn SharedMappingInvalidator > ,) -> Result < () , SharedFileError >
+kernel/src/memory/shared_file.rs :: pub (crate) fn reclaim_pages (limit : usize) -> usize
+kernel/src/memory/shared_file.rs :: pub (crate) fn register_memory_mapping_owner (owner : Arc < dyn MemoryMappingOwner > ,) -> Result < () , SharedFileError >
+kernel/src/memory/shared_file.rs :: pub (crate) fn register_memory_reclaimer (owner : Arc < dyn MemoryReclaimer > ,) -> Result < () , SharedFileError >
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn allocate () -> Result < Self , SharedFileError >
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn ppn (& self) -> PhysicalPageNumber
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn read (& self , offset : usize , output : & mut [u8])
@@ -1026,14 +1068,16 @@ kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn write (& 
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn zero_from (& self , offset : usize)
 kernel/src/memory/shared_file.rs :: pub (crate) struct SharedFileId
 kernel/src/memory/shared_file.rs :: pub (crate) struct SharedFrame
+kernel/src/memory/shared_file.rs :: pub (crate) trait MemoryMappingOwner
+kernel/src/memory/shared_file.rs :: pub (crate) trait MemoryReclaimer
 kernel/src/memory/shared_file.rs :: pub (crate) trait SharedFileMapping
-kernel/src/memory/shared_file.rs :: pub (crate) trait SharedMappingInvalidator
 kernel/src/memory/shared_file.rs :: pub (crate) trait SharedPage
+kernel/src/memory/shared_file.rs :: trait MemoryMappingOwner :: fn invalidate_shared_file (& self , id : SharedFileId , size : u64)
+kernel/src/memory/shared_file.rs :: trait MemoryReclaimer :: fn reclaim_pages (& self , limit : usize) -> usize
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn id (& self) -> SharedFileId
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn page (& self , index : u64) -> Result < Arc < dyn SharedPage > , SharedFileError >
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn size (& self) -> u64
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& self , offset : u64 , length : u64) -> Result < () , SharedFileError >
-kernel/src/memory/shared_file.rs :: trait SharedMappingInvalidator :: fn invalidate_shared_file (& self , id : SharedFileId , size : u64)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & SharedFrame
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn mark_dirty (& self)
@@ -1302,6 +1346,7 @@ kernel/src/syscall/errno.rs :: pub (crate) const ECONNRESET : isize = 104
 kernel/src/syscall/errno.rs :: pub (crate) const EDESTADDRREQ : isize = 89
 kernel/src/syscall/errno.rs :: pub (crate) const EEXIST : isize = 17
 kernel/src/syscall/errno.rs :: pub (crate) const EFAULT : isize = 14
+kernel/src/syscall/errno.rs :: pub (crate) const EFBIG : isize = 27
 kernel/src/syscall/errno.rs :: pub (crate) const EINPROGRESS : isize = 115
 kernel/src/syscall/errno.rs :: pub (crate) const EINTR : isize = 4
 kernel/src/syscall/errno.rs :: pub (crate) const EINVAL : isize = 22
@@ -1366,9 +1411,16 @@ kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmod (fd : usize , m
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmodat (dirfd : isize , name : * const u8 , mode : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchownat (dirfd : isize , name : * const u8 , owner : u32 , group : u32 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
-kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs/io.rs :: pub (crate) use vector :: sys_readv
+kernel/src/syscall/fs/io/vector.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs/io/vector.rs :: pub (super) UserIoVec :: base : usize
+kernel/src/syscall/fs/io/vector.rs :: pub (super) UserIoVec :: length : usize
+kernel/src/syscall/fs/io/vector.rs :: pub (super) const IOV_MAX : usize = 1024
+kernel/src/syscall/fs/io/vector.rs :: pub (super) struct UserIoVec
+kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn bounded_regular_write (task : & TaskControlBlock , ofd : & OpenFileDescription , offset : u64 , requested : usize , completed : usize ,) -> Result < usize , isize >
+kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn file_size_exceeded (task : & TaskControlBlock) -> isize
 kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_linkat (old_dirfd : isize , old_path : * const u8 , new_dirfd : isize , new_path : * const u8 , flags : usize ,) -> isize
 kernel/src/syscall/fs/links.rs :: pub (crate) fn sys_symlinkat (target : * const u8 , new_dirfd : isize , new_path : * const u8) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mkdirat (dirfd : isize , name : * const u8 , mode : u32) -> isize
@@ -1387,6 +1439,7 @@ kernel/src/syscall/futex.rs :: pub (crate) fn sys_futex (address : usize , opera
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/membarrier.rs :: pub (super) fn sys_membarrier (command : usize , flags : usize , _cpu_id : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isize
+kernel/src/syscall/memory.rs :: pub (crate) fn sys_madvise (address : usize , length : usize , advice : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , length : usize , prot : usize , flags : usize , fd : isize , offset : usize ,) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mprotect (address : usize , length : usize , prot : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_msync (address : usize , length : usize , flags : usize) -> isize
@@ -1417,6 +1470,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
+kernel/src/syscall/resource_limit.rs :: pub (crate) fn sys_prlimit64 (pid : usize , resource : usize , replacement : usize , previous : usize ,) -> isize
 kernel/src/syscall/riscv_hwprobe.rs :: pub (crate) fn sys_riscv_hwprobe (pairs : usize , pair_count : usize , cpusetsize : usize , cpus : usize , flags : usize ,) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_kill (pid : i32 , signal : usize) -> isize
 kernel/src/syscall/signal.rs :: pub (crate) fn sys_rt_sigaction (signal : usize , action : usize , old_action : usize , signal_set_size : usize ,) -> isize
@@ -1483,7 +1537,7 @@ kernel/src/task/loader.rs :: pub (crate) const EXEC_ARGUMENT_BYTES_LIMIT : usize
 kernel/src/task/loader.rs :: pub (crate) enum ProgramLoadError
 kernel/src/task/loader.rs :: pub (crate) fn load_executable (working_directory : Arc < OpenedFile > , path : Vec < u8 > , mut arguments : Vec < Vec < u8 > > , mut argument_bytes : usize , identity : & AccessIdentity ,) -> Result < LoadedExecutable , ProgramLoadError >
 kernel/src/task/loader.rs :: pub (crate) struct LoadedExecutable
-kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
+kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn credential_metadata (& self) -> InodeMetadata
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn execfn (& self) -> & [u8]
 kernel/src/task/memory_barrier.rs :: pub (crate) fn register_private_memory_barrier ()
@@ -1492,7 +1546,7 @@ kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , ker
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { register_private_memory_barrier , synchronize_private_memory }
-kernel/src/task/mod.rs :: pub (crate) use model :: { PendingSignal , RunState , SignalAction , SignalDelivery , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
+kernel/src/task/mod.rs :: pub (crate) use model :: { PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
@@ -1523,26 +1577,12 @@ kernel/src/task/model.rs :: enum WaitMembership :: Vfork (usize)
 kernel/src/task/model.rs :: enum WaitResult :: Interrupted
 kernel/src/task/model.rs :: enum WaitResult :: TimedOut
 kernel/src/task/model.rs :: enum WaitResult :: Woken
-kernel/src/task/model.rs :: pub (crate) Sched :: last_runtime : u64
-kernel/src/task/model.rs :: pub (crate) Sched :: nice : i32
-kernel/src/task/model.rs :: pub (crate) Sched :: total_runtime_us : u64
-kernel/src/task/model.rs :: pub (crate) Sched :: vruntime : u64
-kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: last_cpu : AtomicUsize
-kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: policy : Mutex < Sched >
-kernel/src/task/model.rs :: pub (crate) SchedulingEntity :: state : IrqMutex < SchedulingState >
-kernel/src/task/model.rs :: pub (crate) SchedulingState :: next_generation : u64
-kernel/src/task/model.rs :: pub (crate) SchedulingState :: run_state : RunState
-kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
-kernel/src/task/model.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
 kernel/src/task/model.rs :: pub (crate) TaskControlBlock :: scheduling : SchedulingEntity
 kernel/src/task/model.rs :: pub (crate) enum RunState
 kernel/src/task/model.rs :: pub (crate) enum StopResume
 kernel/src/task/model.rs :: pub (crate) enum StopTransition
 kernel/src/task/model.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model.rs :: pub (crate) enum WaitResult
-kernel/src/task/model.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
-kernel/src/task/model.rs :: pub (crate) impl Sched :: fn update_vruntime (& mut self , runtime_us : u64)
-kernel/src/task/model.rs :: pub (crate) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , ecall_pc : usize)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal_suspend (& self , temporary : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
@@ -1564,10 +1604,9 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn terminal (& 
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tgid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < OpenedFile >
-kernel/src/task/model.rs :: pub (crate) struct Sched
-kernel/src/task/model.rs :: pub (crate) struct SchedulingEntity
-kernel/src/task/model.rs :: pub (crate) struct SchedulingState
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
+kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY , RLIMIT_AS , RLIMIT_DATA , RLIMIT_NPROC , RLIMIT_STACK , ResourceLimit , ResourceLimitError , }
+kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
@@ -1583,18 +1622,9 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_pending
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_key < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
@@ -1606,27 +1636,38 @@ kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskContro
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (super) AddressSpace :: memory_set : Mutex < MemorySet >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , data : & [u8] ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn advise_user_mapping (& self , address : usize , length : usize , advice : crate :: memory :: MemoryAdvice ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_to_user (& self , user_address : usize , source : & [u8] , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_user_c_string (& self , user_address : usize , max_len : usize , limits : UserFaultLimits ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess , limits : UserFaultLimits ,) -> Result < PageFaultOutcome , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 , data_limit : u64 ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , limits : MappingResourceLimits ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn new (memory_set : MemorySet) -> Result < Arc < Self > , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn page_statistics (& self) -> (usize , usize)
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn process_arguments (& self) -> Option < alloc :: vec :: Vec < u8 > >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_key < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_word < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_key < R > (& self , address : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_word < R > (& self , address : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (super) impl Process :: fn address_space (& self) -> Arc < AddressSpace >
 kernel/src/task/model/address_space.rs :: pub (super) impl Process :: fn replace_address_space (& self , replacement : Arc < AddressSpace > ,) -> Arc < AddressSpace >
 kernel/src/task/model/address_space.rs :: pub (super) struct AddressSpace
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn advise_user_mapping (& self , address : usize , length : usize , advice : crate :: memory :: MemoryAdvice ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn set_program_break (& self , new_break : usize) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
 kernel/src/task/model/credentials.rs :: pub (crate) impl TaskControlBlock :: fn access_identity (& self , effective : bool) -> AccessIdentity
 kernel/src/task/model/credentials.rs :: pub (crate) impl TaskControlBlock :: fn creation_mode (& self , mode : u32) -> u32
 kernel/src/task/model/credentials.rs :: pub (crate) impl TaskControlBlock :: fn credential_id (& self , uid : bool , effective : bool) -> u32
@@ -1661,6 +1702,53 @@ kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskContro
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Vec < u8 >
+kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidLimit
+kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidResource
+kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: NotFound
+kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: PermissionDenied
+kernel/src/task/model/resource_limits.rs :: pub (crate) ResourceLimit :: hard : u64
+kernel/src/task/model/resource_limits.rs :: pub (crate) ResourceLimit :: soft : u64
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_AS : usize = 9
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_CORE : usize = 4
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_DATA : usize = 2
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_MEMLOCK : usize = 8
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_NPROC : usize = 6
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIMIT_STACK : usize = 3
+kernel/src/task/model/resource_limits.rs :: pub (crate) const RLIM_INFINITY : u64 = u64 :: MAX
+kernel/src/task/model/resource_limits.rs :: pub (crate) enum ResourceLimitError
+kernel/src/task/model/resource_limits.rs :: pub (crate) impl TaskControlBlock :: fn file_descriptor_limit (& self) -> usize
+kernel/src/task/model/resource_limits.rs :: pub (crate) impl TaskControlBlock :: fn file_size_limit (& self) -> u64
+kernel/src/task/model/resource_limits.rs :: pub (crate) impl TaskControlBlock :: fn resource_limit (& self , resource : usize) -> Option < ResourceLimit >
+kernel/src/task/model/resource_limits.rs :: pub (crate) struct ResourceLimit
+kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_cpu_runtime_us (& self) -> u64
+kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn replace_resource_limit (& self , resource : usize , replacement : ResourceLimit , privileged : bool ,) -> Result < ResourceLimit , ResourceLimitError >
+kernel/src/task/model/resource_limits.rs :: pub (in crate :: task) impl TaskControlBlock :: fn resource_cpu_signal (& self , runtime_us : u64) -> Option < usize >
+kernel/src/task/model/resource_limits.rs :: pub (super) const RLIMIT_FSIZE : usize = 1
+kernel/src/task/model/resource_limits.rs :: pub (super) const RLIMIT_NOFILE : usize = 7
+kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: fn cpu_signal (& mut self , runtime_us : u64) -> Option < usize >
+kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: fn defaults () -> Self
+kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: fn forked (& self) -> Self
+kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: fn get (& self , resource : usize) -> Option < ResourceLimit >
+kernel/src/task/model/resource_limits.rs :: pub (super) impl TaskControlBlock :: fn user_fault_limits (& self) -> crate :: memory :: UserFaultLimits
+kernel/src/task/model/resource_limits.rs :: pub (super) struct ResourceLimits
+kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: last_runtime : u64
+kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: nice : i32
+kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: total_runtime_us : u64
+kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: vruntime : u64
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: last_cpu : AtomicUsize
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: policy : Mutex < Sched >
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: state : IrqMutex < SchedulingState >
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: next_generation : u64
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: run_state : RunState
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
+kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
+kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
+kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn update_vruntime (& mut self , runtime_us : u64)
+kernel/src/task/model/scheduling.rs :: pub (crate) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> u64
+kernel/src/task/model/scheduling.rs :: pub (crate) struct Sched
+kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingEntity
+kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingState
+kernel/src/task/model/scheduling.rs :: pub (super) Sched :: process_runtime_us : Arc < AtomicU64 >
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: None
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: Stop (usize)
 kernel/src/task/model/signal_state.rs :: enum SignalDelivery :: Terminate (usize)
@@ -1704,7 +1792,6 @@ kernel/src/task/pid.rs :: pub (super) struct ProcessId
 kernel/src/task/processor.rs :: pub (crate) Processor :: current : Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) extern "C" fn idle_return () -> !
 kernel/src/task/processor.rs :: pub (crate) fn cpu_runtime_snapshot () -> Vec < (usize , u64) >
-kernel/src/task/processor.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> usize
 kernel/src/task/processor.rs :: pub (crate) fn request_reschedule ()
 kernel/src/task/processor.rs :: pub (crate) fn take_reschedule () -> bool
 kernel/src/task/processor.rs :: pub (crate) fn with_current_processor < R > (f : impl FnOnce (& mut Processor) -> R) -> R
@@ -1715,6 +1802,7 @@ kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn mark_active (& 
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn select_task (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn take_current (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) struct Processor
+kernel/src/task/processor.rs :: pub (crate) use placement :: enqueue_new_task
 kernel/src/task/processor.rs :: pub (in crate :: task) fn wake_waiting_task (task : Arc < TaskControlBlock > , expected : WaitMembership , result : Option < WaitResult > ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn account_current_hart_runtime (runtime_us : u64)
 kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < TaskControlBlock >)
@@ -1734,6 +1822,9 @@ kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn continue_s
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_reschedule (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_stop (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on (cpu : usize)
+kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> usize
+kernel/src/task/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < TaskControlBlock > , generation : u64) -> RunQueueEntry
+kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock) -> usize
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64
@@ -1743,15 +1834,11 @@ kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn push (& mut self , entry : RunQueueEntry)
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct CfsRunQueue
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct RunQueueEntry
+kernel/src/task/scheduler/cfs_scheduler.rs :: pub (in crate :: task) impl CfsRunQueue :: fn minimum_vruntime (& self) -> Option < u64 >
 kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Again
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Interrupted
-kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Fault
-kernel/src/task/task_manager.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager.rs :: pub (crate) enum SignalWaitError
-kernel/src/task/task_manager.rs :: pub (crate) enum ThreadCloneError
-kernel/src/task/task_manager.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
-kernel/src/task/task_manager.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager.rs :: pub (crate) fn current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn drain_terminal_input (terminal : & crate :: fs :: Terminal) -> Result < () , () >
 kernel/src/task/task_manager.rs :: pub (crate) fn nanosleep (nanoseconds : u64) -> isize
@@ -1761,24 +1848,27 @@ kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next (
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (input_ready : impl FnOnce () -> bool) -> WaitResult
-kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , direction : PipeDirection) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64)
 kernel/src/task/task_manager.rs :: pub (crate) fn wake_expired_tasks (current_time_ns : u64) -> usize
 kernel/src/task/task_manager.rs :: pub (crate) use deferred :: { dispatch_pending_deferred_work , real_timer , set_real_timer }
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
+kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_pipe_endpoints , wait_for_pipe }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
-kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
+kernel/src/task/task_manager.rs :: pub (crate) use resource_limit :: process_resource_limit
+kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
+kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { fork_current_process , vfork_current_process }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/task_manager.rs :: pub (in crate :: task) mod vfork
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
+kernel/src/task/task_manager/context_switch.rs :: pub (super) fn schedule_with_task_context (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn real_timer (tgid : usize , now_us : u64) -> Result < (u64 , u64) , () >
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn set_real_timer (tgid : usize , value_us : u64 , interval_us : u64 , now_us : u64 ,) -> Result < (u64 , u64) , () >
@@ -1792,6 +1882,8 @@ kernel/src/task/task_manager/futex.rs :: pub (crate) enum FutexWaitError
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_requeue (task : & TaskControlBlock , source : usize , target : usize , private : bool , wake_count : usize , requeue_count : usize , compare : Option < u32 > ,) -> Result < usize , FutexWaitError >
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wait (task : Arc < TaskControlBlock > , address : usize , expected : u32 , private : bool , deadline : Option < u64 > , bitset : u32 ,) -> Result < () , FutexWaitError >
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wake (task : & TaskControlBlock , address : usize , private : bool , count : usize , bitset : u32 ,) -> Result < usize , FutexWaitError >
+kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
+kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
 kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Exited (u8)
 kernel/src/task/task_manager/process_exit.rs :: enum ProcessExitStatus :: Signaled (u8)
 kernel/src/task/task_manager/process_exit.rs :: pub (crate) fn exit_current_group (code : i32) -> !
@@ -1828,6 +1920,9 @@ kernel/src/task/task_manager/procfs.rs :: pub (crate) fn system_info_snapshot ()
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct KernelProcSource
 kernel/src/task/task_manager/procfs.rs :: pub (crate) struct SystemInfoSnapshot
 kernel/src/task/task_manager/procfs.rs :: pub (super) fn update_load_average (now_us : u64)
+kernel/src/task/task_manager/resource_limit.rs :: pub (crate) fn process_resource_limit (pid : usize , resource : usize , replacement : Option < ResourceLimit > ,) -> Result < ResourceLimit , ResourceLimitError >
+kernel/src/task/task_manager/resource_limit.rs :: pub (in crate :: task) fn check_process_slot () -> bool
+kernel/src/task/task_manager/resource_limit.rs :: pub (super) fn enforce_cpu_limit (task : & Arc < TaskControlBlock >)
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Running
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Stopped
 kernel/src/task/task_manager/signal.rs :: enum JobControlState :: Stopping (usize)
@@ -1835,6 +1930,7 @@ kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: InvalidSignal
 kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: NotFound
 kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: Permission
 kernel/src/task/task_manager/signal.rs :: pub (crate) enum SignalSendError
+kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_kernel_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_process_signal (pid : i32 , signal : usize) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_tid_signal (tid : usize , signal : usize) -> Result < () , SignalSendError >
@@ -1851,6 +1947,11 @@ kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: I
 kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Restart
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
+kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Fault
+kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
+kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: ResourceLimit
+kernel/src/task/task_manager/thread_clone.rs :: pub (crate) enum ThreadCloneError
+kernel/src/task/task_manager/thread_clone.rs :: pub (crate) fn clone_current_thread (stack : usize , tls : usize , parent_tid : Option < usize > , child_set_tid : Option < usize > , clear_child_tid : Option < usize > ,) -> Result < usize , ThreadCloneError >
 kernel/src/task/task_manager/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
 kernel/src/task/task_manager/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize ,) -> Result < usize , crate :: memory :: MemoryError >
 kernel/src/task/task_manager/vfork.rs :: pub (in crate :: task) fn complete_vfork_exec (child_pid : usize)
@@ -1877,7 +1978,7 @@ kernel/src/task/task_manager/wait_child.rs :: pub (super) struct ChildWaitClaim
 kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Console
 kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Deadline
 kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Futex { key : FutexKey , bitset : u32 , }
-kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Pipe { identity : usize , direction : PipeDirection , }
+kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Pipe { identity : usize , condition : PipeWaitCondition , }
 kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Poll
 kernel/src/task/task_manager/wait_key.rs :: enum IndexedWaitKind :: Signal { mask : u64 , }
 kernel/src/task/task_manager/wait_key.rs :: enum PollWaitKey :: Console { events : i16 , exclusive : bool , wake_group : Option < usize > , }
@@ -1896,7 +1997,7 @@ kernel/src/task/task_manager/wait_registry.rs :: pub (super) IndexedWaitEntry ::
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_console (& mut self , task : Arc < TaskControlBlock >) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_deadline (& mut self , deadline : u64 , task : Arc < TaskControlBlock >) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_futex (& mut self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_pipe (& mut self , pipe : & Arc < Pipe > , direction : PipeDirection , task : Arc < TaskControlBlock > ,) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_pipe (& mut self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , task : Arc < TaskControlBlock > ,) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_poll (& mut self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_signal (& mut self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn pop_expired (& mut self , now : u64 ,) -> Option < (u64 , Arc < TaskControlBlock > , IndexedWaitKind) >
@@ -1905,7 +2006,7 @@ kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQue
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn signal_mask (& self , id : u64) -> Option < u64 >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_console (& mut self , exclusive : bool , ready : i16 , excluded_groups : & BTreeSet < usize > ,) -> Option < (u64 , IndexedWaitEntry , Option < usize >) >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_futex (& mut self , key : FutexKey , bitset : u32 ,) -> Option < (u64 , Arc < TaskControlBlock >) >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_pipe (& mut self , identity : usize , direction : PipeDirection , exclusive : bool , ready : i16 , excluded_groups : & BTreeSet < usize > ,) -> Option < (u64 , IndexedWaitEntry , Option < usize >) >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn take_pipe (& mut self , identity : usize , direction : PipeDirection , exclusive : bool , ready : i16 , state : PipePollState , excluded_groups : & BTreeSet < usize > ,) -> Option < (u64 , IndexedWaitEntry , Option < usize >) >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitEntry
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitQueue
 kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]

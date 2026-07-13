@@ -1,4 +1,6 @@
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 use super::*;
 
@@ -13,21 +15,20 @@ static NEXT_SHARED_ANONYMOUS_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) struct AnonymousSharedBacking {
     /// 不复用的 process-independent futex backing identity。
     pub(super) id: u64,
-    frames: Vec<Arc<FrameTracker>>,
+    page_count: usize,
+    // OWNER: backing lock 唯一发布每个共享页索引的 frame；缺失它会让并发 fault
+    // 为同一 MAP_SHARED 页建立不同物理 identity，破坏 futex 与跨 fork 可见性。
+    frames: Mutex<BTreeMap<usize, Arc<FrameTracker>>>,
 }
 
 impl AnonymousSharedBacking {
-    /// @description 一次性分配完整匿名共享 backing，失败时不发布任何 VMA。
+    /// @description 创建空的匿名共享 backing，物理页由首次 fault 按索引发布。
     ///
     /// @param page_count backing 持有的物理页数。
     /// @return 成功返回唯一共享 owner；容量或物理页不足返回 OutOfMemory。
     pub(super) fn allocate(page_count: usize) -> Result<Arc<Self>, MemoryError> {
-        let mut frames = Vec::new();
-        frames
-            .try_reserve_exact(page_count)
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        for _ in 0..page_count {
-            frames.push(Arc::new(alloc().ok_or(MemoryError::OutOfMemory)?));
+        if page_count == 0 {
+            return Err(MemoryError::InvalidRange);
         }
         let id = NEXT_SHARED_ANONYMOUS_ID
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -35,7 +36,23 @@ impl AnonymousSharedBacking {
             })
             .expect("anonymous shared-backing identity exhausted")
             + 1;
-        Ok(Arc::new(Self { id, frames }))
+        Ok(Arc::new(Self {
+            id,
+            page_count,
+            frames: Mutex::new(BTreeMap::new()),
+        }))
+    }
+
+    pub(super) fn page(&self, index: usize) -> Result<Arc<FrameTracker>, MemoryError> {
+        if index >= self.page_count {
+            return Err(MemoryError::InvalidRange);
+        }
+        if let Some(frame) = self.frames.lock().get(&index).cloned() {
+            return Ok(frame);
+        }
+        let frame = Arc::new(alloc().ok_or(MemoryError::OutOfMemory)?);
+        let mut frames = self.frames.lock();
+        Ok(frames.entry(index).or_insert_with(|| frame.clone()).clone())
     }
 }
 
@@ -144,14 +161,6 @@ impl MapArea {
             backing: backing.clone(),
             page_offset: 0,
         });
-        for (index, vpn) in
-            (area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize()).enumerate()
-        {
-            area.data_frames.insert(
-                VirtualPageNumber::from_vpn(vpn),
-                backing.frames[index].clone(),
-            );
-        }
         area
     }
 
@@ -170,7 +179,8 @@ impl MapArea {
         mapping: Arc<dyn SharedFileMapping>,
         file_offset: u64,
     ) -> Self {
-        let mut area = Self::file(start_va, end_va, permissions);
+        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
+        area.kind = VmaKind::File;
         area.shared_file = Some(SharedFileArea {
             mapping,
             file_offset,
@@ -190,17 +200,7 @@ impl MapArea {
         if self.shared_anonymous.is_none() {
             return Ok(false);
         }
-        for (&vpn, frame) in &self.data_frames {
-            if Self::has_leaf_permission(self.map_permission) {
-                page_table.map(
-                    vpn,
-                    frame.ppn,
-                    PTEFlags::from_bits(self.map_permission.bits()).unwrap(),
-                )?;
-            } else {
-                page_table.reserve(vpn)?;
-            }
-        }
+        let _ = page_table;
         Ok(true)
     }
 

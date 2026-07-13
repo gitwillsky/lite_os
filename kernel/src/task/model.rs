@@ -3,8 +3,11 @@ mod credentials;
 mod file_descriptions;
 mod process_clone;
 mod process_exec;
+mod resource_limits;
+mod scheduling;
 mod signal_state;
-use core::sync::atomic::AtomicUsize;
+
+use core::sync::atomic::{AtomicU64, AtomicUsize};
 
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
@@ -12,21 +15,25 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, OpenFileDescription, OpenedFile, Terminal, vfs},
     memory::{
-        ElfLoadError, FutexKey, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
-        PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
-        SharedMappingInvalidator, TRAP_CONTEXT, UserAccessError, VirtualAddress,
+        ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack, MapPermission,
+        MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer, MemorySet,
+        PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping, TRAP_CONTEXT,
+        UserAccessError, UserFaultLimits, VirtualAddress,
     },
     sync::IrqMutex,
-    task::{
-        TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId,
-        processor::account_current_hart_runtime,
-    },
+    task::{TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId},
     timer::get_time_us,
 };
 
 use address_space::AddressSpace;
 use credentials::Credentials;
 use process_exec::process_name;
+use resource_limits::ResourceLimits;
+pub(crate) use resource_limits::{
+    RLIM_INFINITY, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NPROC, RLIMIT_STACK, ResourceLimit,
+    ResourceLimitError,
+};
+pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
 
@@ -122,73 +129,6 @@ struct SyscallRestart {
     ecall_pc: usize,
 }
 
-#[derive(Debug)]
-pub(crate) struct Sched {
-    /// 本次运行开始的 monotonic 时间，只在 sched mutex 内访问。
-    pub(crate) last_runtime: u64,
-    /// nice值 (-20到19, 影响动态优先级计算)
-    pub(crate) nice: i32,
-    /// 累计运行时间 (用于CFS调度算法)
-    pub(crate) vruntime: u64,
-    /// Thread 实际占用 CPU 的累计微秒数；procfs 只读取，不复制该状态。
-    pub(crate) total_runtime_us: u64,
-}
-
-/// @description 调度器唯一拥有和解释的 Thread 运行状态。
-pub(crate) struct SchedulingEntity {
-    // state/generation/wait_key 必须在一个 IRQ-safe 临界区内转换；拆锁会允许重复 enqueue。
-    pub(crate) state: IrqMutex<SchedulingState>,
-    pub(crate) policy: Mutex<Sched>,
-    /// 只作为下次 CPU 选择的亲和性 hint，不发布 task 状态。
-    pub(crate) last_cpu: AtomicUsize,
-}
-
-/// @description run state、enqueue generation 与 wait membership 的唯一权威。
-#[derive(Debug)]
-pub(crate) struct SchedulingState {
-    pub(crate) run_state: RunState,
-    pub(crate) next_generation: u64,
-    pub(crate) wait: Option<WaitMembership>,
-    pub(crate) wait_result: Option<WaitResult>,
-}
-
-impl SchedulingState {
-    /// @description 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
-    ///
-    /// @param cpu 新 membership 的 owner CPU。
-    /// @return 必须随 RunQueueEntry 一起保存的 generation。
-    pub(crate) fn transition_to_ready(&mut self, cpu: usize) -> u64 {
-        self.next_generation = self.next_generation.wrapping_add(1);
-        assert_ne!(self.next_generation, 0, "runqueue generation wrapped");
-        let generation = self.next_generation;
-        self.run_state = RunState::Ready { cpu, generation };
-        generation
-    }
-}
-
-impl Sched {
-    /// 计算动态优先级 (基于nice值)
-    pub(crate) fn get_dynamic_priority(&self) -> i32 {
-        // Linux-like priority calculation: priority = 20 + nice
-        // 范围: 0-39 (nice: -20到19)
-        (20 + self.nice).clamp(0, 39)
-    }
-
-    /// 更新虚拟运行时间 (CFS算法核心)
-    pub(crate) fn update_vruntime(&mut self, runtime_us: u64) {
-        self.total_runtime_us = self.total_runtime_us.saturating_add(runtime_us);
-        account_current_hart_runtime(runtime_us);
-        // 根据优先级调整权重，优先级越高权重越大，vruntime增长越慢
-        let weight = match self.get_dynamic_priority() {
-            0..=9 => 4,   // 高优先级
-            10..=19 => 2, // 中等优先级
-            20..=29 => 1, // 默认优先级
-            _ => 1,       // 低优先级
-        };
-        self.vruntime += runtime_us / weight;
-    }
-}
-
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
     tgid: ProcessId,
@@ -204,6 +144,12 @@ struct Process {
     files: Mutex<FileDescriptorTable>,
     // OWNER: Process 的单锁凭据集供 thread 共享；拆分字段会让 setres* 暴露中间身份。
     credentials: Mutex<Credentials>,
+    // OWNER: Process 的单锁 limits 由所有 Thread 共享、fork 复制、exec 保留；若放入
+    // AddressSpace，vfork parent/child 的独立 prlimit policy 会被错误合并。
+    resource_limits: Mutex<ResourceLimits>,
+    // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
+    // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
+    cpu_runtime_us: Arc<AtomicU64>,
     terminal: Arc<Terminal>,
     // OWNER: disposition 与 process-directed pending 必须同锁；拆开会造成 SIG_IGN/queue 竞态和锁序反转。
     signal_state: Mutex<ProcessSignalState>,
@@ -224,13 +170,19 @@ impl TaskControlBlock {
         kernel_trap_return: usize,
         console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
-        let (memory_set, user_sp, entry_point) = loaded.build_address_space(&[])?;
+        let resource_limits = ResourceLimits::defaults();
+        let stack_limit = resource_limits.get(RLIMIT_STACK).unwrap().soft;
+        let address_space_limit = resource_limits.get(RLIMIT_AS).unwrap().soft;
+        let data_limit = resource_limits.get(RLIMIT_DATA).unwrap().soft;
+        let (memory_set, user_sp, entry_point) =
+            loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
         let kernel_stack = KernelStack::new();
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
         let terminal = Terminal::new(console);
         let address_space = AddressSpace::new(memory_set)?;
+        let cpu_runtime_us = Arc::new(AtomicU64::new(0));
         let process = Arc::new(Process {
             tgid: pid,
             comm: Mutex::new(process_name(loaded.execfn())),
@@ -239,6 +191,8 @@ impl TaskControlBlock {
             cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
             credentials: Mutex::new(Credentials::root()),
+            resource_limits: Mutex::new(resource_limits),
+            cpu_runtime_us: cpu_runtime_us.clone(),
             terminal,
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         });
@@ -273,6 +227,7 @@ impl TaskControlBlock {
                     nice: 0,
                     vruntime: 0,
                     total_runtime_us: 0,
+                    process_runtime_us: cpu_runtime_us,
                 }),
                 last_cpu: AtomicUsize::new(0),
             },
@@ -353,6 +308,7 @@ impl TaskControlBlock {
                     nice: policy.nice,
                     vruntime: policy.vruntime,
                     total_runtime_us: 0,
+                    process_runtime_us: self.process.cpu_runtime_us.clone(),
                 }),
                 last_cpu: AtomicUsize::new(
                     self.scheduling
@@ -593,7 +549,7 @@ impl TaskControlBlock {
             let exchanged = address_space
                 .memory_set
                 .lock()
-                .compare_exchange_user_u32(address, old, new)
+                .compare_exchange_user_u32(address, old, new, self.user_fault_limits())
                 .is_ok_and(|result| result.is_ok());
             if exchanged {
                 let _ = crate::task::futex_wake(self, address, false, 1, u32::MAX);
@@ -649,7 +605,10 @@ impl TaskControlBlock {
         ofd: alloc::sync::Arc<OpenFileDescription>,
         cloexec: bool,
     ) -> Result<usize, ()> {
-        self.process.files.lock().allocate(ofd, 0, cloexec)
+        self.process
+            .files
+            .lock()
+            .allocate(ofd, 0, cloexec, self.file_descriptor_limit())
     }
 
     pub(crate) fn fd_allocate_pair(
@@ -658,10 +617,12 @@ impl TaskControlBlock {
         second: Arc<OpenFileDescription>,
         cloexec: bool,
     ) -> Result<(usize, usize), ()> {
-        self.process
-            .files
-            .lock()
-            .allocate_pair(first, second, cloexec)
+        self.process.files.lock().allocate_pair(
+            first,
+            second,
+            cloexec,
+            self.file_descriptor_limit(),
+        )
     }
 
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
@@ -683,7 +644,10 @@ impl TaskControlBlock {
         minimum: usize,
         cloexec: bool,
     ) -> Result<usize, ()> {
-        self.process.files.lock().duplicate(old, minimum, cloexec)
+        self.process
+            .files
+            .lock()
+            .duplicate(old, minimum, cloexec, self.file_descriptor_limit())
     }
 
     pub(crate) fn fd_duplicate_to(
@@ -692,7 +656,10 @@ impl TaskControlBlock {
         new: usize,
         cloexec: bool,
     ) -> Result<usize, ()> {
-        self.process.files.lock().duplicate_to(old, new, cloexec)
+        self.process
+            .files
+            .lock()
+            .duplicate_to(old, new, cloexec, self.file_descriptor_limit())
     }
 
     pub(crate) fn fd_flags(&self, fd: usize) -> Result<u32, ()> {

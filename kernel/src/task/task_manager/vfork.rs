@@ -46,11 +46,16 @@ fn publish_child(
 /// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
 /// @errors 地址空间或 Process 资源分配失败时返回 MemoryError。
 pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError> {
+    let creation = TASK_MANAGER.process_creation.lock();
+    if !super::check_process_slot() {
+        return Err(crate::memory::MemoryError::InvalidRange);
+    }
     let parent = current_task().expect("fork requires current task");
     let pid = TASK_MANAGER.allocate_pid();
     let child = Arc::new(parent.fork_process(pid)?);
     let child_pid = child.tgid();
     publish_child(parent.tgid(), child.clone(), None);
+    drop(creation);
     enqueue_new_task(child);
     Ok(child_pid)
 }
@@ -62,11 +67,16 @@ pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError
 pub(crate) fn vfork_current_process(
     child_stack: usize,
 ) -> Result<usize, crate::memory::MemoryError> {
+    let creation = TASK_MANAGER.process_creation.lock();
+    if !super::check_process_slot() {
+        return Err(crate::memory::MemoryError::InvalidRange);
+    }
     let parent = current_task().expect("vfork requires current task");
     let pid = TASK_MANAGER.allocate_pid();
     let child = Arc::new(parent.vfork_process(pid, child_stack)?);
     let child_pid = child.tgid();
     publish_child(parent.tgid(), child.clone(), Some(parent.clone()));
+    drop(creation);
 
     let cpu = hart_id();
     let end_time = get_time_us();

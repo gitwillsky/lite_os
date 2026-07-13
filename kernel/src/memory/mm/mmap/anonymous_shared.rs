@@ -15,6 +15,7 @@ impl MemorySet {
         length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
+        address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
         if length == 0
             || !permission.contains(MapPermission::U)
@@ -27,6 +28,11 @@ impl MemorySet {
             .checked_add(config::PAGE_SIZE - 1)
             .ok_or(MemoryError::InvalidRange)?
             / config::PAGE_SIZE;
+        self.ensure_resource_capacity(
+            page_count as u64 * config::PAGE_SIZE as u64,
+            address_space_limit,
+            None,
+        )?;
         let hinted_start = VirtualAddress::from(address).floor();
         let hinted_end = hinted_start
             .as_usize()

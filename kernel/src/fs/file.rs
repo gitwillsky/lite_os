@@ -18,7 +18,7 @@ pub(crate) const O_RDWR: u32 = 2;
 pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
-pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1024;
+pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1_048_576;
 
 /// @description 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
 pub(crate) enum CharacterDevice {
@@ -356,6 +356,17 @@ pub(crate) struct FileDescriptorTable {
 }
 
 impl FileDescriptorTable {
+    fn ensure_len(&mut self, length: usize) -> Result<(), ()> {
+        if length <= self.entries.len() {
+            return Ok(());
+        }
+        self.entries
+            .try_reserve_exact(length - self.entries.len())
+            .map_err(|_| ())?;
+        self.entries.resize(length, None);
+        Ok(())
+    }
+
     /// @description 返回当前 fd table 已分配的 descriptor slot 数。
     /// @return 包含空洞的 slot 容量，对应 Linux `/proc/<pid>/status` FDSize。
     pub(crate) fn slot_capacity(&self) -> usize {
@@ -420,21 +431,23 @@ impl FileDescriptorTable {
         ofd: Arc<OpenFileDescription>,
         minimum: usize,
         cloexec: bool,
+        limit: usize,
     ) -> Result<usize, ()> {
-        if minimum >= MAX_FILE_DESCRIPTORS {
+        let limit = limit.min(MAX_FILE_DESCRIPTORS);
+        if minimum >= limit {
             return Err(());
         }
-        for fd in minimum..self.entries.len() {
+        for fd in minimum..self.entries.len().min(limit) {
             if self.entries[fd].is_none() {
                 self.entries[fd] = Some(FileDescriptor::new(ofd, cloexec));
                 return Ok(fd);
             }
         }
         if self.entries.len() < minimum {
-            self.entries.resize(minimum, None);
+            self.ensure_len(minimum)?;
         }
         let fd = self.entries.len();
-        if fd >= MAX_FILE_DESCRIPTORS {
+        if fd >= limit {
             return Err(());
         }
         self.entries.push(Some(FileDescriptor::new(ofd, cloexec)));
@@ -452,10 +465,11 @@ impl FileDescriptorTable {
         first: Arc<OpenFileDescription>,
         second: Arc<OpenFileDescription>,
         cloexec: bool,
+        limit: usize,
     ) -> Result<(usize, usize), ()> {
         let mut available = [usize::MAX; 2];
         let mut found = 0;
-        for fd in 0..MAX_FILE_DESCRIPTORS {
+        for fd in 0..limit.min(MAX_FILE_DESCRIPTORS) {
             if self.entries.get(fd).is_none_or(Option::is_none) {
                 available[found] = fd;
                 found += 1;
@@ -468,9 +482,7 @@ impl FileDescriptorTable {
             return Err(());
         }
         let required = available[1] + 1;
-        if self.entries.len() < required {
-            self.entries.resize(required, None);
-        }
+        self.ensure_len(required)?;
         self.entries[available[0]] = Some(FileDescriptor::new(first, cloexec));
         self.entries[available[1]] = Some(FileDescriptor::new(second, cloexec));
         Ok((available[0], available[1]))
@@ -496,9 +508,10 @@ impl FileDescriptorTable {
         old: usize,
         minimum: usize,
         cloexec: bool,
+        limit: usize,
     ) -> Result<usize, ()> {
         let ofd = self.get(old).ok_or(())?;
-        self.allocate(ofd, minimum, cloexec)
+        self.allocate(ofd, minimum, cloexec, limit)
     }
 
     pub(crate) fn duplicate_to(
@@ -506,13 +519,14 @@ impl FileDescriptorTable {
         old: usize,
         new: usize,
         cloexec: bool,
+        limit: usize,
     ) -> Result<usize, ()> {
-        if new >= MAX_FILE_DESCRIPTORS {
+        if new >= limit.min(MAX_FILE_DESCRIPTORS) {
             return Err(());
         }
         let ofd = self.get(old).ok_or(())?;
         if self.entries.len() <= new {
-            self.entries.resize(new + 1, None);
+            self.ensure_len(new + 1)?;
         }
         drop(self.entries[new].replace(FileDescriptor::new(ofd, cloexec)));
         Ok(new)

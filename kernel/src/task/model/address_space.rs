@@ -1,6 +1,8 @@
 use super::*;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+mod mapping;
+
 #[derive(Debug)]
 pub(super) struct AddressSpace {
     pub(super) memory_set: Mutex<MemorySet>,
@@ -15,7 +17,9 @@ impl AddressSpace {
             memory_set: Mutex::new(memory_set),
             private_memory_barrier_registered: AtomicBool::new(false),
         });
-        crate::memory::register_shared_mapping_owner(owner.clone())
+        crate::memory::register_memory_mapping_owner(owner.clone())
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        crate::memory::register_memory_reclaimer(owner.clone())
             .map_err(|_| MemoryError::OutOfMemory)?;
         Ok(owner)
     }
@@ -33,13 +37,14 @@ impl AddressSpace {
         &self,
         addresses: [Option<usize>; 2],
         tid: i32,
+        limits: UserFaultLimits,
     ) -> Result<(), UserAccessError> {
         let mut memory = self.memory_set.lock();
         for address in addresses.into_iter().flatten() {
-            memory.validate_user_write(address, core::mem::size_of::<i32>())?;
+            memory.validate_user_write(address, core::mem::size_of::<i32>(), limits)?;
         }
         for address in addresses.into_iter().flatten() {
-            memory.copy_to_user(address, &tid.to_ne_bytes())?;
+            memory.copy_to_user(address, &tid.to_ne_bytes(), limits)?;
         }
         Ok(())
     }
@@ -50,10 +55,17 @@ impl AddressSpace {
         length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
+        address_space_limit: u64,
+        data_limit: u64,
     ) -> Result<usize, MemoryError> {
-        self.memory_set
-            .lock()
-            .map_anonymous(address, length, permission, fixed_noreplace)
+        self.memory_set.lock().map_anonymous(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            address_space_limit,
+            data_limit,
+        )
     }
 
     /// @description 在 AddressSpace owner 下建立唯一 anonymous shared mapping。
@@ -69,10 +81,15 @@ impl AddressSpace {
         length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
+        address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
-        self.memory_set
-            .lock()
-            .map_shared_anonymous(address, length, permission, fixed_noreplace)
+        self.memory_set.lock().map_shared_anonymous(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            address_space_limit,
+        )
     }
 
     /// @description 在 AddressSpace owner lock 内验证 futex word 并生成稳定 key。
@@ -85,11 +102,12 @@ impl AddressSpace {
         &self,
         address: usize,
         private: bool,
+        limits: UserFaultLimits,
         consume: impl FnOnce(FutexKey) -> R,
     ) -> Result<R, UserAccessError> {
         let identity = self as *const Self as usize;
         let mut memory = self.memory_set.lock();
-        let key = memory.futex_key(address, identity, private)?;
+        let key = memory.futex_key(address, identity, private, limits)?;
         Ok(consume(key))
     }
 
@@ -103,13 +121,14 @@ impl AddressSpace {
         &self,
         address: usize,
         private: bool,
+        limits: UserFaultLimits,
         consume: impl FnOnce(FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
         let identity = self as *const Self as usize;
         let mut memory = self.memory_set.lock();
-        let key = memory.futex_key(address, identity, private)?;
+        let key = memory.futex_key(address, identity, private, limits)?;
         let mut bytes = [0u8; core::mem::size_of::<u32>()];
-        memory.copy_from_user(address, &mut bytes)?;
+        memory.copy_from_user(address, &mut bytes, limits)?;
         Ok(consume(key, u32::from_ne_bytes(bytes)))
     }
 
@@ -125,14 +144,15 @@ impl AddressSpace {
         source: usize,
         target: usize,
         private: bool,
+        limits: UserFaultLimits,
         consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
         let identity = self as *const Self as usize;
         let mut memory = self.memory_set.lock();
-        let source_key = memory.futex_key(source, identity, private)?;
-        let target_key = memory.futex_key(target, identity, private)?;
+        let source_key = memory.futex_key(source, identity, private, limits)?;
+        let target_key = memory.futex_key(target, identity, private, limits)?;
         let mut bytes = [0u8; core::mem::size_of::<u32>()];
-        memory.copy_from_user(source, &mut bytes)?;
+        memory.copy_from_user(source, &mut bytes, limits)?;
         Ok(consume(source_key, target_key, u32::from_ne_bytes(bytes)))
     }
 
@@ -142,11 +162,17 @@ impl AddressSpace {
         length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
-        data: &[u8],
+        file: FileMappingSource,
+        limits: MappingResourceLimits,
     ) -> Result<usize, MemoryError> {
-        self.memory_set
-            .lock()
-            .map_private_file(address, length, permission, fixed_noreplace, data)
+        self.memory_set.lock().map_private_file(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            file,
+            limits,
+        )
     }
 
     pub(super) fn map_shared_file(
@@ -155,16 +181,16 @@ impl AddressSpace {
         length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
-        mapping: Arc<dyn SharedFileMapping>,
-        offset: u64,
+        file: FileMappingSource,
+        address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
         self.memory_set.lock().map_shared_file(
             address,
             length,
             permission,
             fixed_noreplace,
-            mapping,
-            offset,
+            file,
+            address_space_limit,
         )
     }
 
@@ -183,8 +209,11 @@ impl AddressSpace {
         &self,
         address: usize,
         access: PageFaultAccess,
+        limits: UserFaultLimits,
     ) -> Result<PageFaultOutcome, MemoryError> {
-        self.memory_set.lock().handle_page_fault(address, access)
+        self.memory_set
+            .lock()
+            .handle_page_fault_with_limits(address, access, limits)
     }
 
     pub(super) fn unmap_user_mapping(
@@ -206,6 +235,17 @@ impl AddressSpace {
             .protect_user_mapping(address, length, permission)
     }
 
+    pub(super) fn advise_user_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        advice: crate::memory::MemoryAdvice,
+    ) -> Result<(), MemoryError> {
+        self.memory_set
+            .lock()
+            .advise_user_mapping(address, length, advice)
+    }
+
     /// @description 从用户地址空间复制字节到 kernel 缓冲区，地址空间锁覆盖整个复制。
     ///
     /// @param user_address 用户源地址。
@@ -215,10 +255,11 @@ impl AddressSpace {
         &self,
         user_address: usize,
         destination: &mut [u8],
+        limits: UserFaultLimits,
     ) -> Result<(), UserAccessError> {
         self.memory_set
             .lock()
-            .copy_from_user(user_address, destination)
+            .copy_from_user(user_address, destination, limits)
     }
 
     /// @description 将 kernel 缓冲区复制到用户地址空间，地址空间锁覆盖整个复制。
@@ -230,8 +271,11 @@ impl AddressSpace {
         &self,
         user_address: usize,
         source: &[u8],
+        limits: UserFaultLimits,
     ) -> Result<(), UserAccessError> {
-        self.memory_set.lock().copy_to_user(user_address, source)
+        self.memory_set
+            .lock()
+            .copy_to_user(user_address, source, limits)
     }
 
     /// @description 从用户空间复制有上限的 NUL 结尾字节串。
@@ -243,10 +287,11 @@ impl AddressSpace {
         &self,
         user_address: usize,
         max_len: usize,
+        limits: UserFaultLimits,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.memory_set
             .lock()
-            .copy_user_c_string(user_address, max_len)
+            .copy_user_c_string(user_address, max_len, limits)
     }
 }
 
@@ -357,9 +402,11 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8],
     ) -> Result<(), UserAccessError> {
-        self.process
-            .address_space()
-            .copy_from_user(user_address, destination)
+        self.process.address_space().copy_from_user(
+            user_address,
+            destination,
+            self.user_fault_limits(),
+        )
     }
 
     pub(crate) fn copy_to_user(
@@ -369,7 +416,7 @@ impl TaskControlBlock {
     ) -> Result<(), UserAccessError> {
         self.process
             .address_space()
-            .copy_to_user(user_address, source)
+            .copy_to_user(user_address, source, self.user_fault_limits())
     }
 
     pub(in crate::task) fn write_clone_tid_values(
@@ -377,9 +424,11 @@ impl TaskControlBlock {
         addresses: [Option<usize>; 2],
         tid: i32,
     ) -> Result<(), UserAccessError> {
-        self.process
-            .address_space()
-            .write_clone_tid_values(addresses, tid)
+        self.process.address_space().write_clone_tid_values(
+            addresses,
+            tid,
+            self.user_fault_limits(),
+        )
     }
 
     pub(crate) fn copy_user_c_string(
@@ -387,133 +436,15 @@ impl TaskControlBlock {
         user_address: usize,
         max_len: usize,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.process
-            .address_space()
-            .copy_user_c_string(user_address, max_len)
+        self.process.address_space().copy_user_c_string(
+            user_address,
+            max_len,
+            self.user_fault_limits(),
+        )
     }
 
     pub(crate) fn user_token(&self) -> usize {
         self.process.address_space().memory_set.lock().token()
-    }
-
-    pub(crate) fn set_program_break(&self, new_break: usize) -> Result<usize, MemoryError> {
-        self.process
-            .address_space()
-            .memory_set
-            .lock()
-            .set_program_break(new_break)
-    }
-
-    pub(crate) fn map_anonymous(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-    ) -> Result<usize, MemoryError> {
-        self.process
-            .address_space()
-            .map_anonymous(address, length, permission, fixed_noreplace)
-    }
-
-    pub(crate) fn map_private_file(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        data: &[u8],
-    ) -> Result<usize, MemoryError> {
-        self.process.address_space().map_private_file(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            data,
-        )
-    }
-
-    pub(crate) fn map_shared_file(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-        mapping: Arc<dyn SharedFileMapping>,
-        offset: u64,
-    ) -> Result<usize, MemoryError> {
-        self.process.address_space().map_shared_file(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            mapping,
-            offset,
-        )
-    }
-
-    pub(crate) fn sync_shared_mapping(
-        &self,
-        address: usize,
-        length: usize,
-        writeback: bool,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space()
-            .sync_shared_mapping(address, length, writeback)
-    }
-
-    pub(crate) fn handle_page_fault(
-        &self,
-        address: usize,
-        access: PageFaultAccess,
-    ) -> Result<PageFaultOutcome, MemoryError> {
-        self.process
-            .address_space()
-            .handle_page_fault(address, access)
-    }
-
-    pub(crate) fn unmap_user_mapping(
-        &self,
-        address: usize,
-        length: usize,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space()
-            .unmap_user_mapping(address, length)
-    }
-
-    pub(crate) fn protect_user_mapping(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-    ) -> Result<(), MemoryError> {
-        self.process
-            .address_space()
-            .protect_user_mapping(address, length, permission)
-    }
-
-    /// @description 通过 calling Process 的唯一 AddressSpace owner 建立 anonymous shared mapping。
-    ///
-    /// @param address 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
-    /// @param length 非零 mapping 字节长度。
-    /// @param permission 用户页权限。
-    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
-    /// @return 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
-    pub(crate) fn map_shared_anonymous(
-        &self,
-        address: usize,
-        length: usize,
-        permission: MapPermission,
-        fixed_noreplace: bool,
-    ) -> Result<usize, MemoryError> {
-        self.process.address_space().map_shared_anonymous(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-        )
     }
 
     /// @description 使用当前 Process AddressSpace 解析并消费 futex key。
@@ -528,9 +459,12 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process
-            .address_space()
-            .with_futex_key(address, private, consume)
+        self.process.address_space().with_futex_key(
+            address,
+            private,
+            self.user_fault_limits(),
+            consume,
+        )
     }
 
     /// @description 使用当前 Process AddressSpace 原子解析 futex key 与当前 word。
@@ -545,9 +479,12 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process
-            .address_space()
-            .with_futex_word(address, private, consume)
+        self.process.address_space().with_futex_word(
+            address,
+            private,
+            self.user_fault_limits(),
+            consume,
+        )
     }
 
     /// @description 使用当前 Process AddressSpace 原子解析 requeue 两端 key 与 source word。
@@ -564,9 +501,13 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
-        self.process
-            .address_space()
-            .with_futex_requeue(source, target, private, consume)
+        self.process.address_space().with_futex_requeue(
+            source,
+            target,
+            private,
+            self.user_fault_limits(),
+            consume,
+        )
     }
 
     /// @description 通过 Process address-space owner 读取实时 argv bytes。
@@ -587,8 +528,16 @@ impl TaskControlBlock {
     }
 }
 
-impl SharedMappingInvalidator for AddressSpace {
+impl MemoryMappingOwner for AddressSpace {
     fn invalidate_shared_file(&self, id: SharedFileId, size: u64) {
         self.memory_set.lock().invalidate_shared_file(id, size);
+    }
+}
+
+impl MemoryReclaimer for AddressSpace {
+    fn reclaim_pages(&self, limit: usize) -> usize {
+        self.memory_set
+            .try_lock()
+            .map_or(0, |mut memory| memory.reclaim_private_pages(limit))
     }
 }

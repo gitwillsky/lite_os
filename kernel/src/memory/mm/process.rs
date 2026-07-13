@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use super::{MemorySet, UserAccessError};
+use super::{MemorySet, UserAccessError, UserFaultLimits};
 
 impl MemorySet {
     /// @description 从当前 Linux mm argument range 复制 NUL 分隔的 argv bytes。
@@ -17,7 +17,11 @@ impl MemorySet {
             .try_reserve_exact(length)
             .map_err(|_| UserAccessError::OutOfMemory)?;
         arguments.resize(length, 0);
-        self.copy_from_user(self.argument_range.start, &mut arguments)?;
+        self.copy_from_user(
+            self.argument_range.start,
+            &mut arguments,
+            UserFaultLimits::existing_mappings(),
+        )?;
         Ok(arguments)
     }
 }

@@ -21,12 +21,13 @@ pub(crate) use executable::{
 pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
-    ElfLoadError, FutexKey, MapPermission, MemoryError, MemorySet, PageFaultAccess,
-    PageFaultOutcome, UserAccessError,
+    ElfLoadError, FileMappingSource, FutexKey, MapPermission, MappingResourceLimits, MemoryAdvice,
+    MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, UserAccessError, UserFaultLimits,
 };
 pub(crate) use shared_file::{
-    SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedMappingInvalidator,
-    SharedPage, invalidate_shared_file, register_shared_mapping_owner,
+    MemoryMappingOwner, MemoryReclaimer, SharedFileError, SharedFileId, SharedFileMapping,
+    SharedFrame, SharedPage, invalidate_shared_file, register_memory_mapping_owner,
+    register_memory_reclaimer,
 };
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
@@ -74,6 +75,7 @@ pub(crate) fn init() {
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
     frame_allocator::init(kernel_end_addr, memory_end_addr);
+    heap_allocator::enable_frame_backed_growth();
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();

@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
 mod access;
@@ -21,15 +21,15 @@ pub(crate) use readlink::sys_readlinkat;
 
 use crate::{
     fs::{
-        CharacterDevice, DeviceKind, InodeMetadata, InodeType, MAX_FILE_DESCRIPTORS, O_ACCMODE,
-        O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind,
-        TerminalAccess, TerminalRead, vfs,
+        CharacterDevice, DeviceKind, InodeMetadata, InodeType, O_ACCMODE, O_APPEND, O_CLOEXEC,
+        O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, TerminalAccess,
+        TerminalRead, vfs,
     },
-    ipc::{PIPE_BUF, PipeDirection, PipeRead, PipeWrite},
+    ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
     task::{
         TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, drain_terminal_input,
-        send_thread_signal, wait_for_pipe,
+        send_kernel_thread_signal, send_thread_signal, wait_for_pipe,
     },
 };
 
@@ -111,6 +111,11 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
     };
     if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
         return -errno::EBADF;
+    }
+    if size > task.file_size_limit() {
+        send_kernel_thread_signal(task.tgid(), task.tid(), 25)
+            .expect("current ftruncate caller must exist");
+        return -errno::EFBIG;
     }
     ofd.inode_ref()
         .ok_or(-errno::EINVAL)
@@ -467,12 +472,12 @@ pub(crate) fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
     if old == new || flags & !O_CLOEXEC != 0 {
         return -errno::EINVAL;
     }
-    if new >= MAX_FILE_DESCRIPTORS {
-        return -errno::EBADF;
-    }
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
+    if new >= task.file_descriptor_limit() {
+        return -errno::EBADF;
+    }
     task.fd_duplicate_to(old, new, flags & O_CLOEXEC != 0)
         .map_or(-errno::EBADF, |value| value as isize)
 }
@@ -481,7 +486,7 @@ pub(crate) fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
         return -errno::ESRCH;
     };
     match cmd {
-        0 if arg < MAX_FILE_DESCRIPTORS => {
+        0 if arg < t.file_descriptor_limit() => {
             if t.fd_get(fd).is_none() {
                 -errno::EBADF
             } else {
@@ -499,7 +504,7 @@ pub(crate) fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
             *flags = (*flags & !(O_APPEND | O_NONBLOCK)) | (arg as u32 & (O_APPEND | O_NONBLOCK));
             0
         }),
-        1030 if arg < MAX_FILE_DESCRIPTORS => {
+        1030 if arg < t.file_descriptor_limit() => {
             if t.fd_get(fd).is_none() {
                 -errno::EBADF
             } else {

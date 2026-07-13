@@ -20,12 +20,6 @@ fn clone_shared_file_area(
         }
         resident.insert(vpn, cloned_page);
     }
-    for vpn in area.vpn_range.start.as_usize()..area.vpn_range.end.as_usize() {
-        let vpn = VirtualPageNumber::from_vpn(vpn);
-        if !resident.contains_key(&vpn) {
-            page_table.reserve(vpn)?;
-        }
-    }
     Ok(MapArea {
         vpn_range: area.vpn_range.clone(),
         data_page_offset: area.data_page_offset,
@@ -40,6 +34,10 @@ fn clone_shared_file_area(
             file_offset: shared.file_offset,
             resident,
         }),
+        private_file: None,
+        lazy_private: false,
+        discardable: BTreeSet::new(),
+        dirty_private: BTreeSet::new(),
     })
 }
 
@@ -48,12 +46,13 @@ impl MemorySet {
         &mut self,
         address: usize,
         length: usize,
+        limits: UserFaultLimits,
     ) -> Result<usize, UserAccessError> {
         let end = Self::checked_user_end(address, length)?;
         let mut current = address;
         while current < end {
             if self.user_page(current, PTEFlags::R).is_err() {
-                match self.handle_page_fault(current, PageFaultAccess::Read) {
+                match self.handle_page_fault_with_limits(current, PageFaultAccess::Read, limits) {
                     Ok(PageFaultOutcome::Handled) => {}
                     Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
                     _ => return Err(UserAccessError::Fault),
@@ -88,6 +87,10 @@ impl MemorySet {
                     kind: area.kind,
                     shared_anonymous: area.shared_anonymous.clone(),
                     shared_file: None,
+                    private_file: area.private_file.clone(),
+                    lazy_private: area.lazy_private,
+                    discardable: area.discardable.clone(),
+                    dirty_private: area.dirty_private.clone(),
                 };
                 if MapArea::has_leaf_permission(area.map_permission) {
                     let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
@@ -137,10 +140,9 @@ impl MemorySet {
                 .translate(vpn)
                 .is_some_and(|pte| pte.flags().contains(PTEFlags::W)));
         }
-        let frame = area
-            .data_frames
-            .get_mut(&vpn)
-            .ok_or(MemoryError::InvalidRange)?;
+        let Some(frame) = area.data_frames.get_mut(&vpn) else {
+            return Ok(false);
+        };
         if self
             .page_table
             .translate(vpn)
@@ -172,11 +174,12 @@ impl MemorySet {
         &mut self,
         address: usize,
         length: usize,
+        limits: UserFaultLimits,
     ) -> Result<usize, UserAccessError> {
         let end = Self::checked_user_end(address, length)?;
         let mut current = address;
         while current < end {
-            match self.handle_page_fault(current, PageFaultAccess::Write) {
+            match self.handle_page_fault_with_limits(current, PageFaultAccess::Write, limits) {
                 Ok(PageFaultOutcome::Handled) => {}
                 Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
                 _ => return Err(UserAccessError::Fault),

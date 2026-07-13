@@ -23,7 +23,11 @@ impl TaskControlBlock {
         envs: &[Vec<u8>],
     ) -> Result<(), ElfLoadError> {
         // 步骤1: 在不修改当前 Process 的前提下，完整准备新映像和初始栈。
-        let (new_memory_set, user_sp, entry_point) = loaded.build_address_space(envs)?;
+        let stack_limit = self.resource_limit(RLIMIT_STACK).unwrap().soft;
+        let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
+        let data_limit = self.resource_limit(RLIMIT_DATA).unwrap().soft;
+        let (new_memory_set, user_sp, entry_point) =
+            loaded.build_address_space(envs, stack_limit, address_space_limit, data_limit)?;
         let new_address_space = AddressSpace::new(new_memory_set)?;
         let new_comm = process_name(loaded.execfn());
         let credential_metadata = loaded.credential_metadata();

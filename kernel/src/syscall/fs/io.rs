@@ -1,13 +1,23 @@
 use super::*;
 use crate::task::wait_for_poll;
 
-const IOV_MAX: usize = 1024;
+mod write_limit;
+use write_limit::{bounded_regular_write, file_size_exceeded};
+mod vector;
+pub(crate) use vector::sys_readv;
+use vector::{IOV_MAX, UserIoVec};
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct UserIoVec {
-    base: usize,
-    length: usize,
+/// @description 把 task-layer pipe wait result 统一翻译为 syscall control flow。
+///
+/// @param pipe anonymous pipe owner。
+/// @param condition blocking I/O 必须满足的精确 read/write 条件。
+/// @return ready 返回 Ok；signal interruption 返回 `-EINTR`。
+fn block_on_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> Result<(), isize> {
+    match wait_for_pipe(pipe, condition) {
+        WaitResult::Woken => Ok(()),
+        WaitResult::Interrupted => Err(-errno::EINTR),
+        WaitResult::TimedOut => panic!("pipe I/O wait cannot time out"),
+    }
 }
 
 /// @description 从 descriptor 读取至 userspace buffer。
@@ -104,11 +114,12 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
                 }
                 PipeRead::Eof => return 0,
                 PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
-                PipeRead::Empty => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Read) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => panic!("pipe read wait cannot time out"),
-                },
+                PipeRead::Empty => {
+                    if let Err(error) = block_on_pipe(&endpoint.pipe(), PipeWaitCondition::Readable)
+                    {
+                        return error;
+                    }
+                }
             }
         }
     }
@@ -224,11 +235,14 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
                 }
                 PipeWrite::Full if total != 0 => return total as isize,
                 PipeWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
-                PipeWrite::Full => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Write) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => panic!("pipe write wait cannot time out"),
-                },
+                PipeWrite::Full => {
+                    if let Err(error) = block_on_pipe(
+                        &endpoint.pipe(),
+                        PipeWaitCondition::Writable { minimum: count },
+                    ) {
+                        return error;
+                    }
+                }
                 PipeWrite::Broken => {
                     send_thread_signal(task.tgid(), task.tid(), 13)
                         .expect("current pipe writer must exist");
@@ -292,7 +306,16 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
     let mut total = 0;
     let mut chunk = [0u8; 512];
     while total < length {
-        let count = chunk.len().min(length - total);
+        let count = match bounded_regular_write(
+            &task,
+            &ofd,
+            *offset,
+            chunk.len().min(length - total),
+            total,
+        ) {
+            Ok(count) => count,
+            Err(result) => return result,
+        };
         if task
             .copy_from_user(pointer as usize + total, &mut chunk[..count])
             .is_err()
@@ -326,8 +349,16 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             OpenFileKind::Inode(opened) => {
                 let inode = opened.inode();
                 if *ofd.flags.lock() & O_APPEND != 0 {
-                    match crate::fs::append(inode.clone(), &chunk[..count]) {
+                    match crate::fs::append(inode.clone(), &chunk[..count], task.file_size_limit())
+                    {
                         Ok((append_offset, written)) => {
+                            if written == 0 && count != 0 {
+                                return if total == 0 {
+                                    file_size_exceeded(&task)
+                                } else {
+                                    total as isize
+                                };
+                            }
                             *offset = append_offset + written as u64;
                             total += written;
                             if written < count {
@@ -436,11 +467,16 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
                     return written as isize;
                 }
                 PipeWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
-                PipeWrite::Full => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Write) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => panic!("pipe writev wait cannot time out"),
-                },
+                PipeWrite::Full => {
+                    if let Err(error) = block_on_pipe(
+                        &endpoint.pipe(),
+                        PipeWaitCondition::Writable {
+                            minimum: total_length,
+                        },
+                    ) {
+                        return error;
+                    }
+                }
                 PipeWrite::Broken => {
                     send_thread_signal(task.tgid(), task.tid(), 13)
                         .expect("current pipe writev task must exist");
@@ -470,117 +506,4 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
         }
     }
     written as isize
-}
-
-/// @description 按 Linux RV64 `struct iovec` 顺序从同一个 OFD scatter read。
-///
-/// @param fd 源 descriptor。
-/// @param iovector userspace `iovec` 数组地址；count 为零时可为空。
-/// @param count iovec 数量，最大 1024。
-/// @return 总读取字节数；导入失败或首个 read 失败返回负 errno，已有进度后返回 partial count。
-pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
-    if count > IOV_MAX {
-        return -errno::EINVAL;
-    }
-    if count == 0 {
-        return sys_read(fd, core::ptr::null_mut(), 0);
-    }
-    if iovector == 0 {
-        return -errno::EFAULT;
-    }
-    let Some(task) = current_task() else {
-        return -errno::ESRCH;
-    };
-    let Some(ofd) = task.fd_get(fd) else {
-        return -errno::EBADF;
-    };
-    let stream = matches!(&ofd.kind, OpenFileKind::Pipe(_))
-        || matches!(&ofd.kind, OpenFileKind::Character(device) if device.terminal().is_some());
-    let mut vectors = Vec::new();
-    if vectors.try_reserve_exact(count).is_err() {
-        return -errno::ENOMEM;
-    }
-    let mut total_length = 0usize;
-    for index in 0..count {
-        let Some(address) = index
-            .checked_mul(mem::size_of::<UserIoVec>())
-            .and_then(|offset| iovector.checked_add(offset))
-        else {
-            return -errno::EFAULT;
-        };
-        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
-        if task.copy_from_user(address, &mut bytes).is_err() {
-            return -errno::EFAULT;
-        }
-        let vector = UserIoVec {
-            base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
-            length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
-        };
-        total_length = match total_length.checked_add(vector.length) {
-            Some(length) if length <= isize::MAX as usize => length,
-            _ => return -errno::EINVAL,
-        };
-        vectors.push(vector);
-    }
-    if total_length == 0 {
-        return 0;
-    }
-    if let OpenFileKind::Pipe(endpoint) = &ofd.kind {
-        if endpoint.direction() != PipeDirection::Read {
-            return -errno::EBADF;
-        }
-        let mut input = Vec::new();
-        let capacity = total_length.min(64 * 1024);
-        if input.try_reserve_exact(capacity).is_err() {
-            return -errno::ENOMEM;
-        }
-        input.resize(capacity, 0);
-        let read = loop {
-            match endpoint.read(&mut input) {
-                PipeRead::Bytes(read) => break read,
-                PipeRead::Eof => return 0,
-                PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => return -errno::EAGAIN,
-                PipeRead::Empty => match wait_for_pipe(&endpoint.pipe(), PipeDirection::Read) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => panic!("pipe readv wait cannot time out"),
-                },
-            }
-        };
-        let mut copied = 0;
-        for vector in vectors {
-            let count = vector.length.min(read - copied);
-            if count == 0 {
-                break;
-            }
-            if task
-                .copy_to_user(vector.base, &input[copied..copied + count])
-                .is_err()
-            {
-                return if copied == 0 {
-                    -errno::EFAULT
-                } else {
-                    copied as isize
-                };
-            }
-            copied += count;
-        }
-        return copied as isize;
-    }
-    let mut read = 0usize;
-    for vector in vectors {
-        if vector.length == 0 {
-            continue;
-        }
-        let result = sys_read(fd, vector.base as *mut u8, vector.length);
-        if result < 0 {
-            return if read == 0 { result } else { read as isize };
-        }
-        let result = result as usize;
-        read += result;
-        if result < vector.length || stream && result != 0 {
-            break;
-        }
-    }
-    read as isize
 }

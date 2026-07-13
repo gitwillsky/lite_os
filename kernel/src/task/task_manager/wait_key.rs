@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::ipc::{Pipe, PipeDirection};
+use crate::ipc::{Pipe, PipeDirection, PipeWaitCondition};
 use crate::memory::FutexKey;
 
 /// @description IndexedWaitQueue entry 的唯一 wait kind discriminator。
@@ -17,7 +17,7 @@ pub(super) enum IndexedWaitKind {
     },
     Pipe {
         identity: usize,
-        direction: PipeDirection,
+        condition: PipeWaitCondition,
     },
     Poll,
 }

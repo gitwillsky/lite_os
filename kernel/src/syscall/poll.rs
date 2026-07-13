@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
-    fs::{CharacterDevice, MAX_FILE_DESCRIPTORS, OpenFileDescription, OpenFileKind},
+    fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
     syscall::errno,
     task::{
         PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
@@ -172,13 +172,16 @@ pub(crate) fn sys_ppoll(
     signal_mask: usize,
     signal_set_size: usize,
 ) -> isize {
-    if count > MAX_FILE_DESCRIPTORS || count != 0 && poll_fds == 0 {
+    if count != 0 && poll_fds == 0 {
         return -errno::EINVAL;
     }
     if signal_mask != 0 && signal_set_size != 8 {
         return -errno::EINVAL;
     }
     let task = current_task().expect("ppoll requires current task");
+    if count > task.file_descriptor_limit() {
+        return -errno::EINVAL;
+    }
     let mut descriptors = Vec::new();
     if descriptors.try_reserve_exact(count).is_err() {
         return -errno::ENOMEM;
@@ -281,10 +284,10 @@ pub(crate) fn sys_pselect6(
     timeout: usize,
     signal_argument: usize,
 ) -> isize {
-    if count > MAX_FILE_DESCRIPTORS {
+    let task = current_task().expect("pselect6 requires current task");
+    if count > task.file_descriptor_limit() {
         return -errno::EINVAL;
     }
-    let task = current_task().expect("pselect6 requires current task");
     let byte_count = count.div_ceil(8);
     let read_bits = match copy_fd_set(&task, read_set, byte_count) {
         Ok(bits) => bits,

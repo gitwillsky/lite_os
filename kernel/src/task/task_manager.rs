@@ -8,7 +8,6 @@ use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::hart_id,
-    ipc::{Pipe, PipeDirection, PipeEnd, PipeNotifier},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
@@ -20,20 +19,26 @@ use crate::{
     timer::{get_time_ns, get_time_us},
 };
 
+mod context_switch;
 mod deferred;
 mod futex;
+mod pipe_wait;
 mod process_exit;
 mod process_group;
 mod procfs;
+mod resource_limit;
 mod signal;
 mod terminal_access;
+mod thread_clone;
 pub(in crate::task) mod vfork;
 mod wait_child;
 mod wait_key;
 mod wait_registry;
 
+use context_switch::schedule_with_task_context;
 pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_timer};
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
+pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe};
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
@@ -46,12 +51,17 @@ pub(crate) use process_group::{
 };
 pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
+use resource_limit::check_process_slot;
+use resource_limit::enforce_cpu_limit;
+pub(crate) use resource_limit::process_resource_limit;
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
-    SignalSendError, send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
+    SignalSendError, send_kernel_thread_signal, send_process_signal, send_thread_signal,
+    send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
+pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 use vfork::complete_vfork;
 pub(crate) use vfork::{fork_current_process, vfork_current_process};
 use wait_child::take_child_waiters;
@@ -59,6 +69,7 @@ pub(crate) use wait_child::{
     WaitChildError, consume_child_status, release_child_status, wait_child,
 };
 use wait_key::IndexedWaitKind;
+
 pub(crate) use wait_key::PollWaitKey;
 use wait_registry::INDEXED_WAIT_QUEUE;
 
@@ -100,6 +111,9 @@ struct ProcessGraph {
 struct TaskManager {
     graph: IrqMutex<ProcessGraph>,
     load_average: IrqMutex<LoadAverage>,
+    // OWNER: clone/fork/vfork 从 RLIMIT_NPROC 检查到 graph publish 的唯一串行化锁。
+    // 缺失它会让并发创建者同时通过同一剩余 slot，越过 Process soft limit。
+    process_creation: IrqMutex<()>,
 }
 
 struct LoadAverage {
@@ -146,6 +160,7 @@ impl TaskManager {
                 last_update_us: 0,
                 fixed: [0; 3],
             }),
+            process_creation: IrqMutex::new(()),
         }
     }
 
@@ -275,47 +290,6 @@ pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(),
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum ThreadCloneError {
-    Memory(crate::memory::MemoryError),
-    Fault,
-}
-
-/// @description 在当前 thread group 内创建共享 Process 资源的新 Thread。
-///
-/// @param stack 16-byte aligned child 用户栈顶。
-/// @param tls child `tp`。
-/// @param parent_tid 可选 parent TID copyout。
-/// @param child_set_tid 可选 child TID copyout。
-/// @param clear_child_tid 可选 thread exit 清零地址。
-/// @return 成功返回 child TID；任何验证/分配失败都不发布 graph/runqueue membership。
-pub(crate) fn clone_current_thread(
-    stack: usize,
-    tls: usize,
-    parent_tid: Option<usize>,
-    child_set_tid: Option<usize>,
-    clear_child_tid: Option<usize>,
-) -> Result<usize, ThreadCloneError> {
-    let parent = current_task().expect("thread clone requires current task");
-    let tid = TASK_MANAGER.allocate_pid().0;
-    let child = Arc::new(
-        parent
-            .clone_thread(tid, stack, tls, clear_child_tid)
-            .map_err(ThreadCloneError::Memory)?,
-    );
-    if parent
-        .write_clone_tid_values([parent_tid, child_set_tid], tid as i32)
-        .is_err()
-    {
-        child.remove_thread_trap_context();
-        return Err(ThreadCloneError::Fault);
-    }
-    if !TASK_MANAGER.publish_thread(parent.tgid(), child.clone()) {
-        enqueue_new_task(child);
-    }
-    Ok(tid)
-}
-
 /// @description 从统一 wait registry 消费所有到期 task。
 ///
 /// @param current_time_ns 当前 monotonic 时间。
@@ -426,126 +400,6 @@ fn wake_console_waiters() -> usize {
         }
     }
     count
-}
-
-struct TaskPipeNotifier;
-
-impl PipeNotifier for TaskPipeNotifier {
-    fn notify(&self, pipe: &Arc<Pipe>) {
-        wake_pipe_waiters(pipe);
-    }
-}
-
-/// @description 创建绑定统一 task wait registry 的 anonymous pipe endpoints。
-///
-/// @return read/write endpoints；kernel heap 不足返回错误。
-pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-    Pipe::pair(Arc::new(TaskPipeNotifier))
-}
-
-fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
-    const INPUT: i16 = 0x001;
-    const OUTPUT: i16 = 0x004;
-    const ERROR: i16 = 0x008;
-    const HANGUP: i16 = 0x010;
-    let identity = Pipe::identity(pipe);
-    let mut waiters = alloc::vec::Vec::new();
-    let mut wake_groups = BTreeSet::new();
-    let mut exclusive_selected = false;
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    for direction in [PipeDirection::Read, PipeDirection::Write] {
-        let state = pipe.poll_state(direction);
-        let ready = match direction {
-            PipeDirection::Read => {
-                (if state.readable { INPUT } else { 0 }) | if state.hangup { HANGUP } else { 0 }
-            }
-            PipeDirection::Write => {
-                (if state.writable { OUTPUT } else { 0 }) | if state.error { ERROR } else { 0 }
-            }
-        };
-        if ready == 0 {
-            continue;
-        }
-        while let Some((wait_id, entry, group)) =
-            queue.take_pipe(identity, direction, false, ready, &wake_groups)
-        {
-            if let Some(group) = group {
-                wake_groups.insert(group);
-            }
-            waiters.push((wait_id, entry));
-        }
-        if !exclusive_selected
-            && let Some((wait_id, entry, group)) =
-                queue.take_pipe(identity, direction, true, ready, &wake_groups)
-        {
-            if let Some(group) = group {
-                wake_groups.insert(group);
-            }
-            exclusive_selected = true;
-            waiters.push((wait_id, entry));
-        }
-    }
-    drop(queue);
-    let count = waiters.len();
-    for (wait_id, entry) in waiters {
-        match entry.kind {
-            IndexedWaitKind::Pipe { .. } => {
-                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Woken);
-            }
-            IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken);
-            }
-            _ => panic!("pipe index contains non-pipe wait"),
-        }
-    }
-    count
-}
-
-/// @description 在统一 wait registry 阻塞到 pipe endpoint ready 或 signal interruption。
-///
-/// @param pipe anonymous pipe owner。
-/// @param direction read 等待 data/EOF；write 等待 space/broken reader。
-/// @return ready 返回 Woken；signal 返回 Interrupted。
-pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, direction: PipeDirection) -> WaitResult {
-    let task = current_task().expect("pipe wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let ready = match direction {
-        PipeDirection::Read => pipe.readable(),
-        PipeDirection::Write => pipe.writable(),
-    };
-    if ready {
-        return WaitResult::Woken;
-    }
-    if task.has_deliverable_signal() {
-        return WaitResult::Interrupted;
-    }
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("pipe wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
-        let wait_id = queue.insert_pipe(pipe, direction, current);
-        scheduling.wait = Some(WaitMembership::Pipe(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    task.scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("pipe waiter resumed without a wake result")
 }
 
 /// @description 为一次 ppoll 在多个 I/O source index 上发布唯一 wait registration。
@@ -741,17 +595,16 @@ pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
 
 pub(crate) fn run_tasks() -> ! {
     with_current_processor(|processor| processor.mark_active());
-
     loop {
         // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
         dispatch_pending_deferred_work();
         with_current_processor(|processor| processor.drain_inbound_to_local());
         let task = with_current_processor(Processor::select_task);
-
         if let Some(task) = task {
-            drop(idle_irq);
             switch_to_task(task);
+            // guard 留在 idle stack 跨越切换，确保 kernel continuation 恢复时 SIE=0。
+            drop(idle_irq);
             continue;
         }
 
@@ -784,37 +637,7 @@ pub(crate) fn suspend_current_and_run_next() {
     }
     drop(sched);
     begin_preempt_running_task(&task);
-
     schedule_with_task_context(task);
-}
-
-/// 安全的调度函数，确保在切换期间任务上下文内存保持有效
-/// 通过保持Arc引用而非锁来保证内存安全
-fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
-    // 只提取稳定 raw pointer，确保 `&mut Processor` 不跨越实际执行任意代码的 context switch。
-    let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
-
-    // 获取任务上下文指针但立即释放锁
-    let task_cx_ptr = {
-        let mut task_cx = task.task_context().lock();
-        let ptr = &mut *task_cx as *mut TaskContext;
-
-        // 验证指针有效性
-        if ptr.is_null() {
-            panic!("Task context pointer is null for task {}", task.tid());
-        }
-
-        ptr
-    }; // 锁在此处自动释放
-
-    // TaskManager 以及 ready runqueue/indexed wait registry 中的 owner 保证 raw context 在切换期间存活。
-    // 此处必须先释放 task-stack Arc；否则 task 若不再恢复，该 Arc 会永久埋在自身 stack。
-    drop(task);
-    // SAFETY: both contexts are retained by per-hart/task ownership, all guards are released,
-    // and the idle context is the valid continuation for this hart.
-    unsafe {
-        crate::task::__switch(task_cx_ptr, idle_task_cx_ptr);
-    }
 }
 
 /// @description 将当前 task 加入 indexed wait registry 并切回 idle。

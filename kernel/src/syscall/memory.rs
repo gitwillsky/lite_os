@@ -1,8 +1,6 @@
-use alloc::vec::Vec;
-
 use crate::{
     fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
-    memory::{MapPermission, MemoryError},
+    memory::{MapPermission, MemoryAdvice, MemoryError},
     task::current_task,
 };
 
@@ -130,15 +128,15 @@ pub(crate) fn sys_mmap(
     if inode.inode_type() != InodeType::File {
         return -errno::ENODEV;
     }
+    let mapping = match crate::fs::mapping(inode.clone()) {
+        Ok(mapping) => mapping,
+        Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
+        Err(_) => return -errno::EIO,
+    };
     if sharing == MAP_SHARED {
         if permission.contains(MapPermission::W) && *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
             return -errno::EACCES;
         }
-        let mapping = match crate::fs::mapping(inode) {
-            Ok(mapping) => mapping,
-            Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
-            Err(_) => return -errno::EIO,
-        };
         return task
             .map_shared_file(
                 address,
@@ -150,20 +148,15 @@ pub(crate) fn sys_mmap(
             )
             .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
     }
-    let available = usize::try_from(inode.size().saturating_sub(offset as u64))
-        .unwrap_or(usize::MAX)
-        .min(length);
-    let mut data = Vec::new();
-    if data.try_reserve_exact(available).is_err() {
-        return -errno::ENOMEM;
-    }
-    data.resize(available, 0);
-    match crate::fs::read(inode, offset as u64, &mut data) {
-        Ok(read) if read == available => {}
-        Ok(_) | Err(_) => return -errno::EIO,
-    }
-    task.map_private_file(address, length, permission, exact_address, &data)
-        .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
+    task.map_private_file(
+        address,
+        length,
+        permission,
+        exact_address,
+        mapping,
+        offset as u64,
+    )
+    .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }
 
 /// @description 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。
@@ -227,5 +220,25 @@ pub(crate) fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize 
     current_task()
         .expect("mprotect requires a current task")
         .protect_user_mapping(address, length, permission)
+        .map_or_else(|error| -memory_errno(error), |()| 0)
+}
+
+/// @description 应用 Linux/riscv64 madvise residency policy，不维护 syscall 层 shadow state。
+pub(crate) fn sys_madvise(address: usize, length: usize, advice: usize) -> isize {
+    if !address.is_multiple_of(crate::memory::PAGE_SIZE) {
+        return -errno::EINVAL;
+    }
+    let advice = match advice {
+        0 => MemoryAdvice::Normal,
+        1 => MemoryAdvice::Random,
+        2 => MemoryAdvice::Sequential,
+        3 => MemoryAdvice::WillNeed,
+        4 => MemoryAdvice::DontNeed,
+        8 => MemoryAdvice::Free,
+        _ => return -errno::EINVAL,
+    };
+    current_task()
+        .expect("madvise requires a current task")
+        .advise_user_mapping(address, length, advice)
         .map_or_else(|error| -memory_errno(error), |()| 0)
 }

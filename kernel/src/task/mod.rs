@@ -16,8 +16,9 @@ mod trap_context;
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
 pub(crate) use model::{
-    PendingSignal, RunState, SignalAction, SignalDelivery, StopResume, StopTransition,
-    TaskControlBlock, WaitMembership, WaitResult,
+    PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError, RunState,
+    SignalAction, SignalDelivery, StopResume, StopTransition, TaskControlBlock, WaitMembership,
+    WaitResult,
 };
 pub(crate) use processor::*;
 pub(crate) use task_manager::*;

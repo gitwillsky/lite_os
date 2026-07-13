@@ -18,9 +18,12 @@ use core::{
 };
 
 mod job_control;
+mod placement;
 pub(super) use job_control::{
     begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
 };
+pub(crate) use placement::enqueue_new_task;
+use placement::{ready_entry, select_cpu};
 
 /// @description context switch 异常返回时的 fail-stop 目标。
 ///
@@ -65,6 +68,13 @@ impl Processor {
     /// @return 无返回值。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
         self.runqueue.push(entry);
+        let floor = self
+            .runqueue
+            .minimum_vruntime()
+            .expect("non-empty runqueue lost placement floor");
+        per_hart(self.hart_id)
+            .placement_vruntime
+            .store(floor, Ordering::Release);
         // queued_entries 与 local heap 每次 push/pop 一一对应，不统计 mailbox/current。
         per_hart(self.hart_id)
             .queued_entries
@@ -95,6 +105,10 @@ impl Processor {
                     scheduling.run_state = RunState::Running { cpu: self.hart_id };
                     drop(scheduling);
                     self.current = Some(entry.task.clone());
+                    let floor = self.runqueue.minimum_vruntime().unwrap_or(entry.vruntime);
+                    per_hart(self.hart_id)
+                        .placement_vruntime
+                        .store(floor, Ordering::Release);
                     per_hart(self.hart_id)
                         .running_entries
                         .fetch_add(1, Ordering::Relaxed);
@@ -172,6 +186,10 @@ struct PerHartProcessor {
     // OWNER: per-hart reschedule request 可由远端 stop signal 发布，本 hart trap return 唯一消费。
     // 若仍保存在 local Processor，远端 IPI 只能唤醒而不能阻止目标 Thread 返回用户态。
     reschedule_requested: AtomicBool,
+    // OWNER: owner hart 发布 local Ready 队列的 vruntime floor；remote creator 只读取并与
+    // inbound snapshot 合并。缺失时 fork churn 可持续插队，饿死已经 runnable 的 task。
+    // 过期值只改变新 task 排序，不拥有或发布 scheduler membership。
+    placement_vruntime: AtomicU64,
     // OWNER: processor slot 累计本 hart 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
     busy_us: AtomicU64,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
@@ -191,6 +209,7 @@ impl PerHartProcessor {
             inbound_entries: AtomicUsize::new(0),
             running_entries: AtomicUsize::new(0),
             reschedule_requested: AtomicBool::new(false),
+            placement_vruntime: AtomicU64::new(0),
             busy_us: AtomicU64::new(0),
             inbound: IrqMutex::new(VecDeque::new()),
         }
@@ -340,77 +359,6 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
     target.inbound_entries.fetch_add(1, Ordering::Relaxed);
     drop(inbound);
     job_control::request_reschedule_on(cpu_id);
-}
-
-/// @description 在 active hart 中选择近似负载最低者。
-///
-/// @param task 只读取 last-CPU hint，不改变其状态。
-/// @return 被选中的 hart ID。
-fn select_cpu(task: &TaskControlBlock) -> usize {
-    let states = hart::states();
-    // Relaxed 只用于分散扫描起点，不承担任何状态发布。
-    let start = NEXT_CPU.fetch_add(1, Ordering::Relaxed) % states.len();
-    let current = hart_id();
-    // last_cpu 仅提供缓存亲和性提示；过期值只影响候选顺序，不影响任务所有权或可见性。
-    let last = task.scheduling.last_cpu.load(Ordering::Relaxed);
-    let mut best_cpu = current;
-    let mut best_load = usize::MAX;
-    let mut last_load = None;
-
-    for offset in 0..states.len() {
-        let state = &states[(start + offset) % states.len()];
-        if !state.is_active() {
-            continue;
-        }
-        let cpu = state.hart_id();
-        let slot = per_hart(cpu);
-        let load = slot
-            .queued_entries
-            .load(Ordering::Relaxed)
-            .saturating_add(slot.inbound_entries.load(Ordering::Relaxed))
-            .saturating_add(slot.running_entries.load(Ordering::Relaxed));
-        if load < best_load {
-            best_load = load;
-            best_cpu = cpu;
-        }
-        if cpu == last {
-            last_load = Some(load);
-        }
-    }
-
-    match last_load {
-        // 仅在同为最小负载时保留缓存亲和性；允许多一个 runnable 会把两个 CPU-bound task 永久压在同一 hart。
-        Some(load) if load == best_load => last,
-        _ => best_cpu,
-    }
-}
-
-fn ready_entry(task: Arc<TaskControlBlock>, generation: u64) -> RunQueueEntry {
-    let vruntime = task.scheduling.policy.lock().vruntime;
-    RunQueueEntry {
-        task,
-        generation,
-        vruntime,
-    }
-}
-
-/// @description 将新建 Task 从 New 转换为唯一 Ready membership 并投递。
-///
-/// @param task process graph 已拥有的初始 Task。
-/// @return 选中的 CPU。
-pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
-    let cpu = select_cpu(&task);
-    let generation = {
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(
-            scheduling.run_state,
-            RunState::New,
-            "task must start in New"
-        );
-        scheduling.transition_to_ready(cpu)
-    };
-    deliver_ready_entry(cpu, ready_entry(task, generation));
-    cpu
 }
 
 /// @description 消费一个明确 deadline wait membership，并完成无丢失唤醒转换。

@@ -7,7 +7,7 @@ use lazy_static::lazy_static;
 
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
-    ipc::{Pipe, PipeDirection},
+    ipc::{Pipe, PipeDirection, PipePollState, PipeWaitCondition},
     memory::FutexKey,
     sync::IrqMutex,
     task::TaskControlBlock,
@@ -39,12 +39,18 @@ impl IndexedWaitEntry {
         identity: usize,
         direction: PipeDirection,
         ready: i16,
+        state: PipePollState,
     ) -> Option<Option<usize>> {
         match self.kind {
             IndexedWaitKind::Pipe {
                 identity: candidate,
-                direction: candidate_direction,
-            } if candidate == identity && candidate_direction == direction => Some(None),
+                condition,
+            } if candidate == identity
+                && condition.direction() == direction
+                && state.satisfies(condition) =>
+            {
+                Some(None)
+            }
             IndexedWaitKind::Poll => self
                 .poll_keys
                 .as_ref()
@@ -200,11 +206,12 @@ impl IndexedWaitQueue {
     pub(super) fn insert_pipe(
         &mut self,
         pipe: &Arc<Pipe>,
-        direction: PipeDirection,
+        condition: PipeWaitCondition,
         task: Arc<TaskControlBlock>,
     ) -> u64 {
         let id = self.allocate_id();
         let identity = Pipe::identity(pipe);
+        let direction = condition.direction();
         assert!(
             self.pipe_index
                 .insert((identity, direction as u8, false, id))
@@ -217,7 +224,7 @@ impl IndexedWaitQueue {
                         task,
                         kind: IndexedWaitKind::Pipe {
                             identity,
-                            direction,
+                            condition,
                         },
                         deadline: None,
                         poll_keys: None,
@@ -280,9 +287,10 @@ impl IndexedWaitQueue {
         }
         if let IndexedWaitKind::Pipe {
             identity,
-            direction,
+            condition,
         } = entry.kind
         {
+            let direction = condition.direction();
             assert!(
                 self.pipe_index
                     .remove(&(identity, direction as u8, false, id))
@@ -413,6 +421,7 @@ impl IndexedWaitQueue {
         direction: PipeDirection,
         exclusive: bool,
         ready: i16,
+        state: PipePollState,
         excluded_groups: &BTreeSet<usize>,
     ) -> Option<(u64, IndexedWaitEntry, Option<usize>)> {
         let id = self
@@ -425,7 +434,7 @@ impl IndexedWaitQueue {
             .find(|id| {
                 self.entries
                     .get(id)
-                    .and_then(|entry| entry.pipe_wake_group(identity, direction, ready))
+                    .and_then(|entry| entry.pipe_wake_group(identity, direction, ready, state))
                     .is_some_and(|group| {
                         group.is_none_or(|group| !excluded_groups.contains(&group))
                     })
@@ -433,7 +442,7 @@ impl IndexedWaitQueue {
         let group = self
             .entries
             .get(&id)?
-            .pipe_wake_group(identity, direction, ready)?;
+            .pipe_wake_group(identity, direction, ready, state)?;
         self.remove(id).map(|entry| (id, entry, group))
     }
 }

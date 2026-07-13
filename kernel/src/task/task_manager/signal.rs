@@ -60,7 +60,16 @@ pub(crate) fn send_thread_signal(
     tid: usize,
     signal: usize,
 ) -> Result<(), SignalSendError> {
-    send_selected_thread_signal(Some(tgid), tid, signal)
+    send_selected_thread_signal(Some(tgid), tid, signal, None)
+}
+
+/// @description 向指定 Thread 投递 kernel-generated signal，绕过 userspace credential 检查。
+pub(crate) fn send_kernel_thread_signal(
+    tgid: usize,
+    tid: usize,
+    signal: usize,
+) -> Result<(), SignalSendError> {
+    send_selected_thread_signal(Some(tgid), tid, signal, Some(PendingSignal::kernel()))
 }
 
 /// @description 按全局 TID 定位 Thread，并复用唯一 thread-signal generation seam。
@@ -70,13 +79,14 @@ pub(crate) fn send_thread_signal(
 /// @return 目标存在且 signal 合法时返回 `Ok(())`。
 /// @errors TID 不存在或 signal 非法时返回 `Err(())`。
 pub(crate) fn send_tid_signal(tid: usize, signal: usize) -> Result<(), SignalSendError> {
-    send_selected_thread_signal(None, tid, signal)
+    send_selected_thread_signal(None, tid, signal, None)
 }
 
 fn send_selected_thread_signal(
     expected_tgid: Option<usize>,
     tid: usize,
     signal: usize,
+    kernel_info: Option<PendingSignal>,
 ) -> Result<(), SignalSendError> {
     let (target, queued, notification) = {
         let mut graph = TASK_MANAGER.graph.lock();
@@ -99,29 +109,27 @@ fn send_selected_thread_signal(
             .get(&tid)
             .cloned()
             .ok_or(SignalSendError::NotFound)?;
-        let sender_task = current_task().ok_or(SignalSendError::NotFound)?;
-        let same_session = signal == 18
-            && graph
-                .nodes
-                .get(&sender_task.tgid())
-                .is_some_and(|sender| sender.session == graph.nodes.get(&tgid).unwrap().session);
-        if !sender_task.may_signal(&target) && !same_session {
-            return Err(SignalSendError::Permission);
+        if kernel_info.is_none() {
+            let sender_task = current_task().ok_or(SignalSendError::NotFound)?;
+            let same_session = signal == 18
+                && graph.nodes.get(&sender_task.tgid()).is_some_and(|sender| {
+                    sender.session == graph.nodes.get(&tgid).unwrap().session
+                });
+            if !sender_task.may_signal(&target) && !same_session {
+                return Err(SignalSendError::Permission);
+            }
         }
         if signal == 0 {
             return Ok(());
         }
         let all_threads = threads.values().cloned().collect::<Vec<_>>();
         let sender = current_task().map_or(0, |task| task.tgid());
+        let info = kernel_info.unwrap_or_else(|| PendingSignal::thread_directed(sender));
         let queued = if target.ignores_generated_signal_as_init(signal) {
             false
         } else {
             target
-                .queue_signal(
-                    all_threads.iter(),
-                    signal,
-                    PendingSignal::thread_directed(sender),
-                )
+                .queue_signal(all_threads.iter(), signal, info)
                 .map_err(|()| SignalSendError::InvalidSignal)?;
             true
         };

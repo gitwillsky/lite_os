@@ -28,11 +28,12 @@ impl MemorySet {
         address: usize,
         address_space: usize,
         private: bool,
+        limits: UserFaultLimits,
     ) -> Result<FutexKey, UserAccessError> {
         if address == 0 || address & 3 != 0 {
             return Err(UserAccessError::Fault);
         }
-        self.prepare_user_read(address, core::mem::size_of::<u32>())?;
+        self.prepare_user_read(address, core::mem::size_of::<u32>(), limits)?;
         if private {
             return Ok(FutexKey::Private {
                 address_space,

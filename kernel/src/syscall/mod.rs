@@ -10,6 +10,7 @@ mod poll;
 mod process;
 mod random;
 mod reboot;
+mod resource_limit;
 mod riscv_hwprobe;
 mod signal;
 mod socket;
@@ -23,6 +24,7 @@ use crate::syscall::{
     reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
 use membarrier::sys_membarrier;
+use resource_limit::sys_prlimit64;
 use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
 
@@ -218,6 +220,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         ),
         SYSCALL_MPROTECT => sys_mprotect(args[0], args[1], args[2]),
         SYSCALL_MSYNC => sys_msync(args[0], args[1], args[2]),
+        SYSCALL_MADVISE => sys_madvise(args[0], args[1], args[2]),
         SYSCALL_GETRANDOM => sys_getrandom(args[0], args[1], args[2]),
         SYSCALL_MEMBARRIER => sys_membarrier(args[0], args[1], args[2]),
         SYSCALL_WAIT4 => sys_wait4(
@@ -226,6 +229,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[2],
             args[3] as *mut u8,
         ),
+        SYSCALL_PRLIMIT64 => sys_prlimit64(args[0], args[1], args[2], args[3]),
         SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
         SYSCALL_RISCV_HWPROBE => sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4]),
         _ => {

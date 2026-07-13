@@ -100,20 +100,42 @@ pub(crate) trait SharedFileMapping: Send + Sync + Debug {
     fn sync_range(&self, offset: u64, length: u64) -> Result<(), SharedFileError>;
 }
 
-/// @description truncate 用于撤销所有地址空间 stale shared PTE 的反向 interface。
-pub(crate) trait SharedMappingInvalidator: Send + Sync {
+/// @description memory subsystem 对 live AddressSpace 的反向维护 interface。
+pub(crate) trait MemoryMappingOwner: Send + Sync {
     fn invalidate_shared_file(&self, id: SharedFileId, size: u64);
+}
+
+/// @description frame allocator 慢路径使用的物理页回收 seam；具体 owner 不泄漏到 memory 下层。
+pub(crate) trait MemoryReclaimer: Send + Sync {
+    fn reclaim_pages(&self, limit: usize) -> usize;
 }
 
 // OWNER: memory module owns the weak address-space invalidation registry. Holding strong Process
 // references here would keep exited address spaces and every mapped page alive forever.
-static SHARED_MAPPING_OWNERS: Once<Mutex<Vec<Weak<dyn SharedMappingInvalidator>>>> = Once::new();
+static MEMORY_MAPPING_OWNERS: Once<Mutex<Vec<Weak<dyn MemoryMappingOwner>>>> = Once::new();
+// OWNER: memory module 只保存 weak reclaimer adapter；强引用会让已退出 AddressSpace 或
+// 已移除 page-cache object 永久存活。callback 前释放 registry lock，避免 owner 锁序反转。
+static MEMORY_RECLAIMERS: Once<Mutex<Vec<Weak<dyn MemoryReclaimer>>>> = Once::new();
 
 /// @description 注册一个 address-space invalidator，registry 只保留 weak lifetime。
-pub(crate) fn register_shared_mapping_owner(
-    owner: Arc<dyn SharedMappingInvalidator>,
+pub(crate) fn register_memory_mapping_owner(
+    owner: Arc<dyn MemoryMappingOwner>,
 ) -> Result<(), SharedFileError> {
-    let mut owners = SHARED_MAPPING_OWNERS
+    let mut owners = MEMORY_MAPPING_OWNERS
+        .call_once(|| Mutex::new(Vec::new()))
+        .lock();
+    owners
+        .try_reserve(1)
+        .map_err(|_| SharedFileError::OutOfMemory)?;
+    owners.push(Arc::downgrade(&owner));
+    Ok(())
+}
+
+/// @description 注册一个只保留 weak lifetime 的物理页回收 owner。
+pub(crate) fn register_memory_reclaimer(
+    owner: Arc<dyn MemoryReclaimer>,
+) -> Result<(), SharedFileError> {
+    let mut owners = MEMORY_RECLAIMERS
         .call_once(|| Mutex::new(Vec::new()))
         .lock();
     owners
@@ -125,7 +147,7 @@ pub(crate) fn register_shared_mapping_owner(
 
 /// @description 在不持有 registry lock 时通知所有 live address spaces 撤销 EOF 外 PTE。
 pub(crate) fn invalidate_shared_file(id: SharedFileId, size: u64) -> Result<(), SharedFileError> {
-    let mut owners = SHARED_MAPPING_OWNERS
+    let mut owners = MEMORY_MAPPING_OWNERS
         .call_once(|| Mutex::new(Vec::new()))
         .lock();
     owners.retain(|owner| owner.strong_count() != 0);
@@ -138,4 +160,30 @@ pub(crate) fn invalidate_shared_file(id: SharedFileId, size: u64) -> Result<(), 
         owner.invalidate_shared_file(id, size);
     }
     Ok(())
+}
+
+/// @description 在不持有 registry lock 时请求所有 resident owner 回收可重建物理页。
+pub(crate) fn reclaim_pages(limit: usize) -> usize {
+    let mut reclaimed = 0;
+    let mut cursor = 0;
+    loop {
+        if reclaimed >= limit {
+            break;
+        }
+        // OOM 慢路径不能为 owner snapshot 再分配 Vec；逐项 clone Weak 并在 callback 前释放锁。
+        let owner = {
+            let mut owners = MEMORY_RECLAIMERS
+                .call_once(|| Mutex::new(Vec::new()))
+                .lock();
+            owners.retain(|owner| owner.strong_count() != 0);
+            let owner = owners.get(cursor).cloned();
+            cursor += usize::from(owner.is_some());
+            owner
+        };
+        let Some(owner) = owner.and_then(|owner| owner.upgrade()) else {
+            break;
+        };
+        reclaimed += owner.reclaim_pages(limit - reclaimed);
+    }
+    reclaimed
 }

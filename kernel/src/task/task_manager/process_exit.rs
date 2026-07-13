@@ -122,6 +122,11 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
 /// @return 依次为 task/idle raw context 地址；task 由 deferred-reap slot 保活。
 fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut TaskContext) {
     let task = take_current_task().expect("No current task to exit");
+    let end_time = get_time_us();
+    let mut sched = task.scheduling.policy.lock();
+    let runtime = end_time.saturating_sub(sched.last_runtime);
+    sched.update_vruntime(runtime);
+    drop(sched);
 
     {
         let mut scheduling = task.scheduling.state.lock();

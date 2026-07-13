@@ -11,6 +11,28 @@ pub(crate) enum PipeDirection {
     Write,
 }
 
+/// @description blocking pipe I/O 的精确完成条件；写等待携带本次原子写所需的完整容量。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PipeWaitCondition {
+    Readable,
+    Writable { minimum: usize },
+}
+
+impl PipeWaitCondition {
+    /// @description 返回该 blocking condition 所属的 endpoint direction，并验证写容量范围。
+    ///
+    /// @return read/write endpoint direction；非法写容量破坏 kernel 调用契约并 fail-stop。
+    pub(crate) fn direction(self) -> PipeDirection {
+        match self {
+            Self::Readable => PipeDirection::Read,
+            Self::Writable { minimum } => {
+                assert!((1..=PIPE_BUF).contains(&minimum));
+                PipeDirection::Write
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipeRead {
     Bytes(usize),
@@ -31,6 +53,20 @@ pub(crate) struct PipePollState {
     pub(crate) writable: bool,
     pub(crate) hangup: bool,
     pub(crate) error: bool,
+    pub(crate) write_capacity: usize,
+}
+
+impl PipePollState {
+    /// @description 判断同一 PipeState snapshot 是否满足 blocking I/O 的精确完成条件。
+    ///
+    /// @param condition read data/EOF 或一笔 `PIPE_BUF` 范围内原子写所需的完整容量。
+    /// @return 条件已满足或 write endpoint 已 broken 时返回 true。
+    pub(crate) fn satisfies(self, condition: PipeWaitCondition) -> bool {
+        match condition {
+            PipeWaitCondition::Readable => self.readable,
+            PipeWaitCondition::Writable { minimum } => self.error || self.write_capacity >= minimum,
+        }
+    }
 }
 
 pub(crate) trait PipeNotifier: Send + Sync {
@@ -104,9 +140,12 @@ impl Pipe {
         state.length != 0 || state.writers == 0
     }
 
-    pub(crate) fn writable(&self) -> bool {
-        let state = self.state.lock();
-        state.readers == 0 || state.length != state.bytes.len()
+    /// @description 在 Pipe owner lock 下复查 blocking I/O 的精确完成条件。
+    ///
+    /// @param condition read data/EOF 或一笔原子写所需的完整容量。
+    /// @return 当前状态满足条件时返回 true。
+    pub(crate) fn wait_ready(&self, condition: PipeWaitCondition) -> bool {
+        self.poll_state(condition.direction()).satisfies(condition)
     }
 
     pub(crate) fn poll_state(&self, direction: PipeDirection) -> PipePollState {
@@ -117,12 +156,14 @@ impl Pipe {
                 writable: false,
                 hangup: state.writers == 0,
                 error: false,
+                write_capacity: 0,
             },
             PipeDirection::Write => PipePollState {
                 readable: false,
                 writable: state.readers != 0 && state.length != state.bytes.len(),
                 hangup: false,
                 error: state.readers == 0,
+                write_capacity: state.bytes.len() - state.length,
             },
         }
     }

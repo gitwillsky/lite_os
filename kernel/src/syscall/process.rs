@@ -197,6 +197,7 @@ pub(crate) fn sys_clone(
     ) {
         Ok(tid) => tid as isize,
         Err(ThreadCloneError::Fault) => -errno::EFAULT,
+        Err(ThreadCloneError::ResourceLimit) => -errno::EAGAIN,
         Err(ThreadCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
         Err(ThreadCloneError::Memory(_)) => -errno::EINVAL,
     }

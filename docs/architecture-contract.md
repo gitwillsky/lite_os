@@ -43,10 +43,10 @@
 | hart possible/online/active、startup stack、同步 memory-barrier request/completion generation | HartTopology；每次调用的 generation 由 arch hart barrier mechanism 唯一分配 |
 | per-hart current、runqueue、mailbox | task ProcessorTopology |
 | task run state、generation、wait membership 与 wake result | SchedulingState |
-| process address-space handle、cwd opened-entry、fd table、real/effective/saved UID/GID、supplementary groups、umask | Process；Thread 共享，fork 复制；vfork child Process 初始持同一 AddressSpace Arc，exec 只替换 child handle；最后一个 Thread exit 立即取走 fd table，TCB 延迟析构不得延迟 fd close |
+| process address-space handle、cwd opened-entry、fd table、credentials/umask、resource limits、聚合 CPU runtime | Process；Thread 共享，fork 复制 limits 并重置 runtime，exec 保留；vfork child Process 初始持同一 AddressSpace Arc，exec 只替换 child handle；最后一个 Thread exit 立即取走 fd table |
 | VMA 与 private expedited membarrier registration | AddressSpace；CLONE_VM/vfork 共享，fork/exec 新 owner 从未注册开始 |
-| PID/TID allocation、parent edge、live thread collection、exec generation、group-exit status、job-control/orphan lifecycle、child exit/stop/continue event、child-event claim、child/vfork waiter 与 ITIMER_REAL | TaskManager process graph；vfork child node 唯一持有发起调用的 suspended parent Thread，exec/exit 消费后经 scheduler seam 唤醒；child event 先 claim 再于 copyout 后唯一消费；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
-| deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；futex index 只消费 memory 归一化的 private/shared key，requeue 原地迁移同一 registration；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
+| PID/TID allocation、parent edge、live thread collection、process-creation reservation、exec generation、group-exit status、job-control/orphan lifecycle、child event/waiter 与 ITIMER_REAL | TaskManager process graph；独立 creation lock 只覆盖 `RLIMIT_NPROC` 检查到 graph publication，防止并发超限；vfork child node 唯一持有 suspended parent Thread；timer softirq 只推进 expiration 并经统一 signal seam 发布 SIGALRM |
+| deadline/futex/pipe/poll/signal/console wait registration、event filter、exclusive mode 及其 indexes | TaskManager 唯一 IndexedWaitQueue；futex index 只消费 memory 归一化的 private/shared key，requeue 原地迁移同一 registration；blocking pipe writer registration 保存本次原子写所需容量，poll 仍只观察通用 endpoint readiness；ppoll/epoll/socket blocking 共用 source indexes；source wake 唤醒全部普通 callback group（每个 epoll instance 一个 thread）及一个 exclusive group |
 | signal disposition、process-directed shared pending set | Arc<Process> 的单一 ProcessSignalState lock |
 | signal mask、thread-directed pending set、active frame | ThreadContext 与用户 RV64 rt_sigframe |
 | interrupted syscall 的单次 replay record | ThreadContext；signal frame 保存最终 replay/EINTR 上下文 |
@@ -57,7 +57,7 @@
 | AF_PACKET binding、protocol 与有界 receive queue | socket::PacketRegistry；RX frame 在 smoltcp ingress 前只镜像一次，packet endpoint 与 L3 NetworkStack 不复制彼此状态 |
 | VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
-| VMA 区间、类型、权限、anonymous shared backing 与 framed page lifetime | MemorySet 的有序 VMA 表；anonymous shared backing 以 Arc 唯一拥有跨 fork frame 集合，memory module 的单调 AtomicU64 只分配不可复用 futex identity；PageTable 只保存硬件 translation |
+| VMA 区间、类型、权限、private dirty/discardable residency、anonymous shared backing 与 framed page lifetime | MemorySet 的有序 VMA 表；ELF/anonymous/brk/stack/file 页按 fault 驻留，anonymous shared backing 按索引唯一发布跨 fork frame，PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | process comm/创建时刻、mm argument range、thread runtime 与 run state | Process、MemorySet、SchedulingEntity；procfs 只读取快照或 mm 中的实时 argv bytes |
 | termios、cooked input、controlling session、foreground process group | Terminal；TaskManager 只读取 job-control 判定结果，不复制 TTY 状态 |
@@ -86,9 +86,9 @@
 | Source | Max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 2291 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
-| `kernel/src/task/task_manager.rs` | 921 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；futex、wait key/index、child wait/vfork lifecycle 与 deferred work storage已下沉 | 按 process graph 与剩余 lifecycle 的真实 seam 继续分离后下调额度 |
-| `kernel/src/memory/mm.rs` | 1092 | `memory::MemorySet` | 页表提交与 user-copy 仍共享同一地址空间 owner；mmap、shared area 与 futex key lifecycle 已下沉到领域 module | 提取不暴露 PageTable/frame 的 user-copy 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 736 | `task::Process/Thread` | process 与 thread 核心生命周期仍共处一文件；address-space forwarding、process clone/exec、statistics 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
+| `kernel/src/task/task_manager.rs` | 744 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；context switch、thread clone、futex、pipe wait、wait key/index、child wait/vfork lifecycle 与 deferred work storage 已下沉 | 按 process graph 与剩余 lifecycle 的真实 seam 继续分离后下调额度 |
+| `kernel/src/memory/mm.rs` | 1087 | `memory::MemorySet` | 核心 VMA 表示、页表提交与 kernel/system mapping 仍共享底层 PageTable/frame 不变量；mapping request、mmap、user-copy、shared/private area 与 futex key lifecycle 已下沉 | 提取不泄漏 PageTable/frame 的 kernel mapping 与 VMA mutation 深 module 后下调额度 |
+| `kernel/src/task/model.rs` | 703 | `task::Process/Thread` | process 与 thread 核心生命周期仍共处一文件；address-space forwarding、process clone/exec、resource policy、scheduling、statistics 与 fd lookup façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
 
 ## 5. Interface and capability contract
 
@@ -96,6 +96,7 @@
 - `processor::job_control::request_reschedule_on` 只向 parent scheduler 的 Ready delivery 开放；它统一发布 per-hart reschedule，并在远端复用同一次 SBI IPI 唤醒 mailbox，其他 module 不得直接调用。
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
+- `ipc::PipeWaitCondition` 只允许 syscall I/O 构造、`task_manager::pipe_wait` 消费；它把 `PIPE_BUF` 原子写的容量条件带入唯一 wait registration，poll key 不得复制这项 blocking-write policy。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
 - ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。运行时 devfs/procfs 只经 VFS mount table 发布；`/dev/fd` 与 stdio aliases 只由 devfs 指向 `/proc/self/fd`，禁止写入会被 mount 遮蔽的 ext2 节点。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory/fd 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - cwd、directory fd 与 pathname-backed OFD 必须持有同一 VFS `OpenedFile` seam；VFS weak registry 唯一提交 rename/unlink 对 parent/name/deleted 的更新。禁止缓存绝对路径、由 inode 扫描猜测 hardlink 名称，或把 procfs ` (deleted)` target 当普通 pathname 重新解析。`/proc/<pid>/fd` magic link 可跟随 live opened entry，Pipe/Socket target 与 `fstat` 只投影其 object owner identity，eventpoll 使用标准 anon-inode label。
@@ -108,6 +109,8 @@
 - `uname` 只投影 system module 的 immutable identity；`riscv_hwprobe` 只通过 system façade 投影 DTB/HartTopology 的平台事实；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、ISA、hart mask、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。
+- Process resource-limit owner 只在 task layer 执行权限、fork/exec lifecycle 与 CPU/NPROC policy；syscall 只编解码 `rlimit64`，memory/fs 只消费数值上限，不得反向读取 Process。
+- frame allocator 的唯一慢路径通过 weak reclaimer seam 同步回收 `MADV_FREE`、clean private file/ELF 与无外部引用的 clean page-cache 页；private/shared dirty 页无 writeback 证明时禁止回收。kernel heap 只从 frame allocator 转移页，不维护第二份物理容量 owner。
 - futex private key 由 AddressSpace identity + uaddr 构成；anonymous/file shared key 只能由 MemorySet 从 backing identity + offset 归一化。IndexedWaitQueue 锁在 AddressSpace 锁外覆盖 key/value 比较、membership 发布、bitset wake 与 requeue，禁止 syscall、Process 或 scheduler 复制映射判断。
 - task loader 是 pathname、Linux script rewrite 与 inode 到 `ExecutableSource` adapter 的唯一 owner；memory 只消费最终 ELF 随机读 seam，并唯一拥有 ELF 解析计划、PT_LOAD 映射、initial stack 与失败回滚。禁止恢复完整文件 `Vec`、filesystem 到 memory 的具体类型泄漏或第二套 script/ELF loader。
 - thread-directed signal 发布到 Thread pending；kill/TTY/SIGCHLD 发布到 ProcessSignalState shared pending。两者经同一 delivery/wait seam 先发布 pending bit，再从 wait 的唯一 owner 注销 membership；blocking path 必须在 owner lock 内复查两类 pending，禁止 signal-before-enqueue lost wakeup。
