@@ -1,0 +1,56 @@
+kernel/src/arch/riscv64/hart.rs
+  s_4f5164fcd853bc::t_864552f5d19573 4,11-13,43-46,61-62
+kernel/src/syscall/mod.rs
+  s_4f5164fcd853bc::t_0af51531ecc455 7,25,222
+kernel/src/task/memory_barrier.rs
+  s_4f5164fcd853bc::t_6e670916f8f2fb 1-24
+kernel/src/task/mod.rs
+  s_4f5164fcd853bc::t_f576a1d2ef3a62 8,17
+kernel/src/task/model.rs
+  s_4f5164fcd853bc::t_db7ec32d159e3e 198-201,238,313,592-593
+kernel/src/task/model/process_clone.rs
+  s_4f5164fcd853bc::t_b45e86630fa2c0 11,30-31,34-36,38,41-42,55-74,76,90,100,123-124,127
+kernel/src/task/model/process_exec.rs
+  s_4f5164fcd853bc::t_74e572b05bd890 27,35-36,38-39,61-69
+kernel/src/task/task_manager.rs
+  s_4f5164fcd853bc::t_c186bb699641c6 57-60,69,80-85,89,168-169
+kernel/src/task/task_manager/process_exit.rs
+  s_4f5164fcd853bc::t_3e4d7760cac172 142-143,175,186-194,205-208,220-228,263-264,299-303
+kernel/src/task/task_manager/signal.rs
+  s_4f5164fcd853bc::t_965dfe0a487d95 35,447,456,575-576
+kernel/src/task/task_manager/wait_child.rs
+  s_4f5164fcd853bc::t_5fc1f3b88ce93c 3-25,31,61,63,69,75-77,79,83-85,88,92-94,97,101-103,106-126,146-153,187-191,213-248,254-283,286-291
+kernel/src/trap/mod.rs
+  s_4f5164fcd853bc::t_1165e851a1245e 24-26
+scripts/fixtures/musl-process-spawn.c
+  s_4f5164fcd853bc::t_541615631be90d 1-183
+scripts/verify_busybox.py
+  s_4f5164fcd853bc::t_eb48debb74b92e 713,717,754,938,1210-1217
+syscall-abi/src/lib.rs
+  s_4f5164fcd853bc::t_77593223912751 105
+user/dynamic-smoke.c
+  s_4f5164fcd853bc::t_31f7c8ba349f64 25-26,202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6383b5e35b2a4289aaaf78f38181a885c6f3b5e9",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
