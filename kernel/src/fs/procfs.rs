@@ -64,6 +64,7 @@ pub(crate) struct ProcNetworkSnapshot {
 
 pub(crate) struct ProcSnapshot {
     pub(crate) uptime_us: u64,
+    pub(crate) boot_epoch_seconds: u64,
     pub(crate) total_pages: usize,
     pub(crate) free_pages: usize,
     pub(crate) runnable_tasks: usize,

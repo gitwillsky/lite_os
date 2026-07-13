@@ -36,6 +36,7 @@ pub(super) fn format_cpu_stat(snapshot: &ProcSnapshot) -> String {
             ticks(snapshot.uptime_us - busy)
         );
     }
+    let _ = writeln!(output, "btime {}", snapshot.boot_epoch_seconds);
     let _ = writeln!(
         output,
         "processes {}\nprocs_running {}\nprocs_blocked 0",

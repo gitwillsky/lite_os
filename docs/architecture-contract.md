@@ -66,7 +66,7 @@
 | 1/5/15 minute load average | TaskManager 的单一 fixed-point EWMA state |
 | system information snapshot | task façade 只投影 allocator、process graph、load average 与 timer 的权威状态；procfs/sysinfo 不另建 counter |
 | immutable system/build identity | system module；uname 只编码，不复制 hostname/release/machine state |
-| realtime offset 与固定 UTC timezone policy | timer module；clock_gettime/gettimeofday 共用同一 realtime owner |
+| realtime offset、boot epoch 与固定 UTC timezone policy | timer module；clock_gettime/gettimeofday 和 task/procfs 启动时刻投影共用同一 realtime owner |
 | root mount、source/filesystem association、boot-time mount table、mount enter/leave、pathname traversal 与 namespace mutation publication order | VFS；mutation lock 覆盖 adapter commit 到 opened-entry registry publication |
 | opened-entry parent/name/deleted 关系与 live weak registry | VFS；cwd/OFD/procfs 只持 Arc 或读取投影，rename/unlink 只在 VFS 更新 |
 | boot 内 anonymous Pipe/Socket object identity allocation | id module 分配机制；具体 object owner 持有，fd table/procfs 不复制 |
@@ -115,7 +115,7 @@
 - BSD `flock` state 只由 VFS 以 mounted inode identity 持有，OFD pointer 只作为 open-file-description lifetime identity；Task wait registry 只拥有 interruptible membership，VFS notifier 只投递发生变化的 key。唯一 VFS lock-table mutex 覆盖 shared/exclusive 转换，释放后才调用 notifier；缺失该锁会让两个 exclusive holder 同时成功，反向持锁或在锁内通知会与 wait publication 死锁。最后 descriptor close 必须经 OFD descriptor_refs 释放，禁止按 Process/fd 复制 lock state或让 ext2 维护第二套 advisory lock。
 - POSIX record lock 只由 VFS 以 mounted inode identity + Process TGID 持有；同 owner 的相交 range 在一次锁内拆分、替换、排序并合并。`F_SETLKW` 只把 membership 交给统一 indexed wait owner，VFS 锁外通知；任一该 inode descriptor close、CLOEXEC close 或 Process exit 必须释放 Linux process-associated locks，禁止按 fd/OFD/ext2 复制 lock table。
 - Process exit 只负责关闭本 Process 的 descriptor/OFD lifecycle；禁止在 exit/close cleanup 隐式执行全局 filesystem sync。durability 只能经 ext2 journal/writeback owner 与显式 `fsync/sync` seam 提交，否则任意短命进程都能阻塞全系统 I/O，并把 close 语义错误扩大为全局持久化屏障。
-- procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
+- procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；`/proc/stat` 的 `btime` 只投影 timer 唯一拥有的 boot epoch。syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - `uname` 只投影 system module 的 immutable identity；`riscv_hwprobe` 只通过 system façade 投影 DTB/HartTopology 的平台事实；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、ISA、hart mask、release、timezone 或第二份 wallclock offset。
 - MMIO/volatile 只存在于 arch/driver HAL；user pointer 只通过 AddressSpace copy；磁盘 packed layout 只存在于 filesystem adapter。
 - syscall memory handler 只解析 Linux flags/prot/errno；TaskControlBlock/AddressSpace 只持锁转发；VMA 选址、冲突、split/merge、frame rollback 与 PTE 提交只存在于 MemorySet。

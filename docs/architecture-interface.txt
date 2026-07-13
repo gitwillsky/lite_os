@@ -680,6 +680,7 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: state : u8
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: threads : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: uids : [u32 ; 3]
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: cpus : Vec < ProcCpuSnapshot >
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: free_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: last_pid : usize
@@ -2129,6 +2130,7 @@ kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: x : [usize ; 32]
 kernel/src/task/trap_context.rs :: pub (crate) impl TrapContext :: fn app_init_context (entry : usize , sp : usize , kernel_satp : usize , kernel_sp : usize , trap_handler : usize ,) -> Self
 kernel/src/task/trap_context.rs :: pub (crate) impl TrapContext :: fn set_sp (& mut self , sp : usize)
 kernel/src/task/trap_context.rs :: pub (crate) struct TrapContext
+kernel/src/timer.rs :: pub (crate) fn boot_epoch_seconds () -> u64
 kernel/src/timer.rs :: pub (crate) fn enable_timer_interrupt ()
 kernel/src/timer.rs :: pub (crate) fn get_realtime_ns () -> u64
 kernel/src/timer.rs :: pub (crate) fn get_time_ns () -> u64
