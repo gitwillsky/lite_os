@@ -14,7 +14,15 @@ impl VirtualFileSystem {
         identity: &AccessIdentity,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
         let start = start.unwrap_or(self.root_inode()?);
+        // `/` 是已存在的 namespace entry；若继续交给 parent/name 分割，空末项会被
+        // 误报为 EINVAL，导致标准 `mkdir -p /absolute/path` 无法跳过 root。
+        if path.iter().all(|byte| *byte == b'/') {
+            return Err(FileSystemError::AlreadyExists);
+        }
         let (parent, name) = self.parent_from(start, path, identity)?;
+        if matches!(name.as_slice(), b"." | b"..") {
+            return Err(FileSystemError::AlreadyExists);
+        }
         let parent_metadata = parent.metadata()?;
         identity.require(parent_metadata, 3)?;
         let gid = if parent_metadata.mode & 0o2000 != 0 {

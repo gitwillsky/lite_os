@@ -82,7 +82,7 @@ Please press Enter to activate this console.
 
 默认 rootfs 只包含固定 config 选中的 BusyBox applet；全部入口是同一 ELF inode 的 hardlink。
 
-当前工具集除 `init + ash` 与基础文件命令外，还包含 `awk/sed`、`head/tail/cut/sort/uniq/tr/tee`、`find`、`basename/dirname/expr/seq/sleep`、`gzip/gunzip/zcat` 与 `sha256sum`。每个入口都由 BusyBox UART gate 执行真实文件、pipe、压缩或校验路径，不以“编译进 ELF”代替运行支持。
+当前工具集除 `init + ash` 与基础文件命令外，还包含 `awk/sed`、`head/tail/cut/sort/uniq/tr/tee`、`find/xargs`、`basename/dirname/readlink/realpath/which/env/expr/seq/sleep`、`tar/unzip`、`gzip/bzip2`、XZ 解压与 `sha256sum`。每个入口都由 BusyBox UART gate 执行真实文件、pipe、归档、压缩或校验路径，不以“编译进 ELF”代替运行支持。BusyBox `xz` 上游 applet 仅提供解压，不声明 XZ 压缩能力。
 
 分组构建：
 

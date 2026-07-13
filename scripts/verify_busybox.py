@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import io
+import lzma
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 from build_cache import (
@@ -57,14 +61,20 @@ BUSYBOX_LINKS = (
     "awk",
     "basename",
     "busybox",
+    "bunzip2",
+    "bzip2",
+    "bzcat",
     "cat",
+    "cmp",
     "cp",
     "cut",
     "date",
     "dd",
     "df",
     "dirname",
+    "du",
     "echo",
+    "env",
     "expr",
     "false",
     "find",
@@ -88,6 +98,8 @@ BUSYBOX_LINKS = (
     "printf",
     "ps",
     "pwd",
+    "readlink",
+    "realpath",
     "rm",
     "rmdir",
     "route",
@@ -100,6 +112,7 @@ BUSYBOX_LINKS = (
     "sort",
     "stty",
     "sync",
+    "tar",
     "tail",
     "tee",
     "touch",
@@ -110,8 +123,14 @@ BUSYBOX_LINKS = (
     "uname",
     "uptime",
     "udhcpc",
+    "unxz",
+    "unzip",
     "wc",
     "wget",
+    "which",
+    "xargs",
+    "xz",
+    "xzcat",
     "zcat",
 )
 
@@ -202,6 +221,28 @@ def install_runtime_tls_identity(image: Path, public_bundle: Path, gate_ca: Path
         "rm /etc/ssl/cert.pem\n"
         f"write {bundle} /etc/ssl/cert.pem\n"
         f"write {hosts} /etc/hosts\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_archive_fixtures(image: Path, directory: Path) -> None:
+    """向 disposable runtime image 注入上游格式 fixture，不把宿主解包结果当作 guest 验收。"""
+    xz_fixture = directory / "phase53.xz"
+    xz_fixture.write_bytes(lzma.compress(b"xz-phase-53\n", format=lzma.FORMAT_XZ))
+    zip_fixture = directory / "phase53.zip"
+    with zipfile.ZipFile(zip_fixture, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("nested/zip.txt", "zip-phase-53\n")
+    traversal_fixture = directory / "phase53-traversal.tar"
+    with tarfile.open(traversal_fixture, "w") as archive:
+        payload = b"must-not-escape\n"
+        entry = tarfile.TarInfo("../../phase53-escape")
+        entry.size = len(payload)
+        archive.addfile(entry, io.BytesIO(payload))
+    commands = directory / "archive-fixtures.debugfs"
+    commands.write_text(
+        f"write {xz_fixture} /run/phase53.xz\n"
+        f"write {zip_fixture} /run/phase53.zip\n"
+        f"write {traversal_fixture} /run/phase53-traversal.tar\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -682,7 +723,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            5,
+            6,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -714,6 +755,7 @@ def main() -> int:
         http_server, http_port = start_http_gate()
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, openssl.ca_bundle, gate_ca, runtime_path)
+        install_archive_fixtures(runtime_image, runtime_path)
         boot(
             runtime_image,
             1,
@@ -730,6 +772,10 @@ def main() -> int:
                 "LITEOS_HTTP_51",
                 "LITEOS_TLS_REJECT_52",
                 "LITEOS_HTTPS_52",
+                "LITEOS_TAR_53",
+                "LITEOS_COMPRESSION_53",
+                "LITEOS_TOOLS_53",
+                "LITEOS_ARCHIVE_53",
                 "LITEOS_LS_42",
                 "LITEOS_NULL_42",
                 "LITEOS_ZERO_4",
@@ -818,6 +864,22 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_HTTPS_52",
+                    b"mkdir -p /phase53/src /phase53/out /phase53/zip; name=long-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; printf payload53 > /phase53/src/$name; chmod 640 /phase53/src/$name; ln /phase53/src/$name /phase53/src/hard; ln -s $name /phase53/src/soft; tar -czf /phase53/bundle.tar.gz -C /phase53/src . && tar -xzf /phase53/bundle.tar.gz -C /phase53/out; first=$(ls -i /phase53/out/hard | awk '{print $1}'); second=$(ls -i /phase53/out/$name | awk '{print $1}'); mode=$(ls -l /phase53/out/$name | awk '{print $1}'); cmp /phase53/src/$name /phase53/out/$name && [ \"$first\" = \"$second\" ] && [ \"$mode\" = -rw-r----- ] && [ \"$(readlink /phase53/out/soft)\" = \"$name\" ] && [ \"$(realpath /phase53/out/soft)\" = /phase53/out/$name ] && echo LITEOS_TAR_$((7*7+4))\n",
+                ),
+                (
+                    "LITEOS_TAR_53",
+                    b"printf bzip-phase-53 > /phase53/bzip.txt; bzip2 -c /phase53/bzip.txt > /phase53/bzip.txt.bz2; bzcat /phase53/bzip.txt.bz2 | cmp - /phase53/bzip.txt && xzcat /run/phase53.xz | grep -q '^xz-phase-53$' && unzip -q /run/phase53.zip -d /phase53/zip && grep -q '^zip-phase-53$' /phase53/zip/nested/zip.txt && echo LITEOS_COMPRESSION_$((7*7+4))\n",
+                ),
+                (
+                    "LITEOS_COMPRESSION_53",
+                    b"env PHASE=53 sh -c 'printf %s \"$PHASE\"' | grep -q '^53$' && printf 'one\\ntwo\\n' | xargs printf '%s-' | grep -q 'one-two-' && [ \"$(which tar)\" = /bin/tar ] && du -k /phase53/out >/phase53/du.out && echo LITEOS_TOOLS_$((7*7+4))\n",
+                ),
+                (
+                    "LITEOS_TOOLS_53",
+                    b"tar -xf /run/phase53-traversal.tar -C /phase53/out 2>/dev/null || true; [ ! -e /phase53-escape ] && [ ! -e /phase53/phase53-escape ] && echo LITEOS_ARCHIVE_$((7*7+4))\n",
+                ),
+                (
+                    "LITEOS_ARCHIVE_53",
                     b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
                 ),
                 (
