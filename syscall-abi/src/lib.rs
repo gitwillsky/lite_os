@@ -15,6 +15,7 @@ pub const SYSCALL_UNLINKAT: usize = 35;
 pub const SYSCALL_SYMLINKAT: usize = 36;
 pub const SYSCALL_LINKAT: usize = 37;
 pub const SYSCALL_FACCESSAT: usize = 48;
+pub const SYSCALL_FCHMOD: usize = 52;
 pub const SYSCALL_FCHMODAT: usize = 53;
 pub const SYSCALL_FCHOWNAT: usize = 54;
 pub const SYSCALL_STATFS: usize = 43;

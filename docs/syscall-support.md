@@ -1,6 +1,6 @@
 # LiteOS Linux/riscv64 syscall 支持矩阵
 
-> 更新日期：2026-07-12（Asia/Shanghai）
+> 更新日期：2026-07-13（Asia/Shanghai）
 >
 > Linux UAPI 基线：Linux `v7.1`，commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`
 >
@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 105 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 106 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 105 个入口
+## 2. 当前暴露的 106 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -41,7 +41,7 @@
 | 43/44 | `statfs` / `fstatfs` | pathname/fd、RV64 120-byte `struct statfs` | 0；`EFAULT/EBADF` 及 pathname/filesystem errno | Linux filesystem statistics；musl statvfs；BusyBox df | **Complete**（当前 VFS/OFD kinds）。VFS 唯一解析 mount→filesystem；ext2 返回扣除 metadata overhead 的总块、reserved-adjusted available、superblock inode 计数与 UUID fsid，procfs/devfs/pipefs 返回 Linux simple-statfs 形状；character fd 保留 backing inode。 | `kernel/src/syscall/fs/statistics.rs`, `kernel/src/fs/vfs.rs`, `kernel/src/fs/ext2/filesystem.rs` |
 | 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EISDIR/ENOSPC/EIO` | POSIX ftruncate | **Complete**。支持稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
 | 48 | `faccessat` | dirfd、pathname、`F_OK/R_OK/W_OK/X_OK` | 0；`EACCES/EROFS/EINVAL` 与 pathname errno | musl access；BusyBox rm/command lookup | **Complete**。使用 real UID/GID 与 supplementary groups；VFS traversal 和 owner/group/other rwx、root execute、只读 `W_OK` 均成立。 | `kernel/src/syscall/fs/access.rs`, `kernel/src/fs/permission.rs` |
-| 53/54 | `fchmodat/fchownat` | dirfd、pathname、mode/UID/GID/flags | 0；标准 permission/path errno | POSIX chmod/chown；BusyBox chmod/chown | **Complete**（当前 ext2/devfs/procfs）。owner/root、supplementary group、set-id clearing、symlink no-follow/empty-path chown 与 ext2 journal metadata commit 成立。 | `kernel/src/syscall/fs/attributes.rs`, `kernel/src/fs/ext2/metadata.rs` |
+| 52-54 | `fchmod/fchmodat/fchownat` | fd 或 dirfd/pathname、mode/UID/GID/flags | 0；标准 fd/permission/path errno | POSIX chmod/chown；BusyBox chmod/chown/patch | **Complete**（当前 inode-backed fd 与 ext2/devfs/procfs）。fd/path chmod 共用唯一 owner/root、supplementary group 与 set-id clearing 语义；symlink no-follow/empty-path chown 与 ext2 journal metadata commit 成立。 | `kernel/src/syscall/fs/attributes.rs`, `kernel/src/fs/ext2/metadata.rs` |
 | 49 | `chdir` | NUL 结尾 raw pathname | 0；pathname/permission errno | POSIX chdir；musl direct wrapper | **Complete**（当前单 mount namespace）。所有 component 与最终目录执行 search permission，cwd 仍只保存 inode。 | `kernel/src/syscall/fs/open.rs`, `kernel/src/fs/vfs.rs` |
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path/permission errno | POSIX openat/close | **Partial**。既有 OFD/device/flag 语义加 VFS traversal、final rwx、create parent 与 umask；尚无 `O_NOFOLLOW/O_PATH`。 | `kernel/src/syscall/fs/open.rs` |
 | 59 | `pipe2` | `int[2]`、`O_CLOEXEC/O_NONBLOCK` | 0；`EFAULT/EINVAL/EMFILE/ENOMEM` | POSIX pipe；BusyBox pipeline | **Complete**（当前 fd/wait 模型）。64 KiB ring、4096-byte PIPE_BUF atomic write、blocking/nonblocking、EOF、EPIPE+SIGPIPE、fork/dup endpoint lifecycle 与 exit-time fd close 共用单一 Pipe owner。 | `kernel/src/ipc.rs`, `kernel/src/syscall/fs.rs` |
@@ -107,7 +107,7 @@
 
 ## 4. musl 结论
 
-当前 105 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP 与 OpenSSL HTTPS consumer。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 106 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP 与 OpenSSL HTTPS consumer。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex requeue/PI/bitset与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack 与 queued realtime signal；

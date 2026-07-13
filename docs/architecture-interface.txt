@@ -1279,13 +1279,14 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
 kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
-kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmodat , sys_fchownat }
+kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchownat }
 kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_read , sys_readv , sys_write , sys_writev }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_renameat2 , sys_unlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_openat }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
+kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmod (fd : usize , mode : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmodat (dirfd : isize , name : * const u8 , mode : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchownat (dirfd : isize , name : * const u8 , owner : u32 , group : u32 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize

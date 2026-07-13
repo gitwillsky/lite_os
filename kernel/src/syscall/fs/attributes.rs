@@ -39,17 +39,7 @@ fn target(
     result.map_err(ferr)
 }
 
-/// @description 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
-/// @param dirfd 相对 pathname 的目录 fd。
-/// @param name NUL 结尾 pathname。
-/// @param mode 新的低 12-bit mode。
-/// @return 成功为零，失败返回负 errno。
-pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
-    let task = current_task().expect("fchmodat requires current task");
-    let inode = match target(&task, dirfd, name, 0) {
-        Ok(inode) => inode,
-        Err(error) => return error,
-    };
+fn chmod_inode(task: &TaskControlBlock, inode: alloc::sync::Arc<dyn Inode>, mode: u32) -> isize {
     let metadata = match inode.metadata() {
         Ok(value) => value,
         Err(error) => return ferr(error),
@@ -65,6 +55,36 @@ pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
     inode
         .set_owner_mode(Some(mode), None, None)
         .map_or_else(ferr, |()| 0)
+}
+
+/// @description 按 Linux fchmod ABI 修改已打开 inode 的 permission 与 special bits。
+/// @param fd 指向 inode-backed open file description 的文件描述符。
+/// @param mode 新的低 12-bit mode。
+/// @return 成功为零，fd 无效返回 EBADF，其他失败返回对应负 errno。
+pub(crate) fn sys_fchmod(fd: usize, mode: u32) -> isize {
+    let task = current_task().expect("fchmod requires current task");
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let inode = match ofd.inode_ref() {
+        Some(inode) => inode,
+        None => return -errno::EINVAL,
+    };
+    chmod_inode(&task, inode, mode)
+}
+
+/// @description 按 Linux fchmodat ABI 修改 inode permission 与 special bits。
+/// @param dirfd 相对 pathname 的目录 fd。
+/// @param name NUL 结尾 pathname。
+/// @param mode 新的低 12-bit mode。
+/// @return 成功为零，失败返回负 errno。
+pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
+    let task = current_task().expect("fchmodat requires current task");
+    let inode = match target(&task, dirfd, name, 0) {
+        Ok(inode) => inode,
+        Err(error) => return error,
+    };
+    chmod_inode(&task, inode, mode)
 }
 
 /// @description 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。

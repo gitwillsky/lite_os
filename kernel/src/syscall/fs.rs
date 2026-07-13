@@ -11,7 +11,7 @@ mod pathname;
 mod readlink;
 pub(crate) mod statistics;
 pub(crate) use access::sys_faccessat;
-pub(crate) use attributes::{sys_fchmodat, sys_fchownat};
+pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchownat};
 pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_renameat2, sys_unlinkat};

@@ -19,6 +19,7 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 SERIAL_WRITE_CHUNK = 4
 SERIAL_WRITE_INTERVAL_SECONDS = 0.001
 SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
+SERIAL_ESCAPE_SETTLE_SECONDS = 0.1
 
 
 def send_interaction(stream: BinaryIO, data: bytes) -> None:
@@ -33,10 +34,15 @@ def send_interaction(stream: BinaryIO, data: bytes) -> None:
     """
     # QEMU stdio pipe 没有 guest UART 的硬件流控；一次写入长命令会让字符在 IRQ drain 前溢出，
     # ash 随后收到残缺引号并停在 continuation prompt，令 gate 误报 kernel 功能失败。
-    for offset in range(0, len(data), SERIAL_WRITE_CHUNK):
-        stream.write(data[offset : offset + SERIAL_WRITE_CHUNK])
+    # raw-mode applet 的 ESC command sequence 不能依赖 canonical line buffering；逐字节注入可避免
+    # 16550 FIFO 在 editor 尚未完成 mode transition 时吞掉尾部控制字符。普通 shell 命令仍使用批次。
+    chunk_size = 1 if b"\x1b" in data else SERIAL_WRITE_CHUNK
+    for offset in range(0, len(data), chunk_size):
+        if offset != 0 and (data[offset] == 0x1B or data[offset - 1] == 0x1B):
+            time.sleep(SERIAL_ESCAPE_SETTLE_SECONDS)
+        stream.write(data[offset : offset + chunk_size])
         stream.flush()
-        if offset + SERIAL_WRITE_CHUNK < len(data):
+        if offset + chunk_size < len(data):
             time.sleep(SERIAL_WRITE_INTERVAL_SECONDS)
 
 
