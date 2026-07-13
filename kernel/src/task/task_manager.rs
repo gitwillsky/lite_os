@@ -406,7 +406,7 @@ fn wake_console_waiters() -> usize {
 ///
 /// @param keys 去重前的 Pipe/Console readiness keys。
 /// @param deadline 可选 absolute monotonic timeout。
-/// @param ready 在 registry owner lock 内执行的无阻塞 readiness 复查。
+/// @param ready 在 registry owner lock 内清理内部 edge token 并执行无阻塞 level readiness 复查。
 /// @return source ready、timeout 或 signal interruption。
 pub(crate) fn wait_for_poll(
     mut keys: alloc::vec::Vec<PollWaitKey>,

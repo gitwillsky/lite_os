@@ -793,12 +793,13 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
-kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readable (& self) -> bool
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
+kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn drain_readiness (& self)
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mut [u8]) -> PipeRead
+kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn signal_readiness (& self)
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write (& self , input : & [u8]) -> PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn write_stream (& self , input : & [u8]) -> PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl PipePollState :: fn satisfies (self , condition : PipeWaitCondition) -> bool
@@ -1138,6 +1139,8 @@ kernel/src/socket.rs :: enum SocketError :: WrongType
 kernel/src/socket.rs :: enum SocketType :: Datagram
 kernel/src/socket.rs :: enum SocketType :: Raw
 kernel/src/socket.rs :: enum SocketType :: Stream
+kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " AF_UNIX stream 的真实 data Pipe，direction 与 poll event 一致。"] Data { pipe : Arc < Pipe > , direction : PipeDirection , }
+kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " 内部 notification Pipe 只表示“socket 状态发生变化”，不继承 userspace event mask。"] Notification (Arc < Pipe >)
 kernel/src/socket.rs :: pub (crate) InetAddress :: address : Ipv4Addr
 kernel/src/socket.rs :: pub (crate) InetAddress :: port : u16
 kernel/src/socket.rs :: pub (crate) PacketAddress :: address : [u8 ; 8]
@@ -1161,6 +1164,7 @@ kernel/src/socket.rs :: pub (crate) enum SocketAddress
 kernel/src/socket.rs :: pub (crate) enum SocketDomain
 kernel/src/socket.rs :: pub (crate) enum SocketError
 kernel/src/socket.rs :: pub (crate) enum SocketType
+kernel/src/socket.rs :: pub (crate) enum SocketWaitSource
 kernel/src/socket.rs :: pub (crate) fn init ()
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn accept_with_notify (& self , notify : Option < (Arc < PipeEnd > , Arc < PipeEnd >) > ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
@@ -1176,6 +1180,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn object_id (& self) -> u64
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn pair (first : & Arc < Self > , second : & Arc < Self > , first_to_second : (Arc < PipeEnd > , Arc < PipeEnd >) , second_to_first : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn peer_address (& self) -> Result < Option < SocketAddress > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn poll_state (& self) -> SocketPollState
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn prepare_wait (& self)
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn read (& self , output : & mut [u8]) -> Result < usize , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive (& self , output : & mut [u8] ,) -> Result < (usize , Option < SocketAddress >) , SocketError >
@@ -1189,7 +1194,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn set_tcp_no_delay (& self ,
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> SocketType
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn take_error (& self) -> Option < SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
+kernel/src/socket.rs :: pub (crate) impl Socket :: fn wait_sources (& self) -> Vec < SocketWaitSource >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn write (& self , input : & [u8]) -> Result < usize , SocketError >
 kernel/src/socket.rs :: pub (crate) impl SocketPollState :: const fn error () -> Self
 kernel/src/socket.rs :: pub (crate) struct InetAddress
@@ -1300,22 +1305,24 @@ kernel/src/socket/inet/udp.rs :: pub (super) fn poll_state (handle : SocketHandl
 kernel/src/socket/inet/udp.rs :: pub (super) fn receive (endpoint : & InetSocket , handle : SocketHandle , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , InetAddress , Option < Ipv4Addr >) , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn send (handle : SocketHandle , input : & [u8] , target : Option < InetAddress > ,) -> Result < usize , SocketError >
 kernel/src/socket/inet/udp.rs :: pub (super) fn set_packet_info (handle : SocketHandle , enabled : bool)
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn consume_wait_notifications (& self)
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn readiness_generation (& self) -> u64
-kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
+kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn wait_sources (& self) -> Vec < SocketWaitSource >
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn consume_notify (& self)
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn notify (& self)
 kernel/src/socket/packet.rs :: pub (super) fn deliver (frame : & [u8]) -> Vec < Arc < PacketSocket > >
 kernel/src/socket/packet.rs :: pub (super) fn init ()
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn bind (& self , address : PacketAddress) -> Result < () , SocketError >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn consume_wait_notifications (& self)
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn new (protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn notify (& self)
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn poll_state (& self) -> SocketPollState
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn readiness_generation (& self) -> u64
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn receive (& self , output : & mut [u8] , peek : bool ,) -> Result < (usize , usize , PacketAddress) , SocketError >
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn send_to (& self , input : & [u8] , target : Option < PacketAddress > ,) -> Result < usize , SocketError >
-kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
+kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn wait_sources (& self) -> Vec < SocketWaitSource >
 kernel/src/socket/packet.rs :: pub (super) struct PacketSocket
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn bytes (& self) -> & [u8]
 kernel/src/socket/unix.rs :: pub (crate) impl UnixAddress :: fn new (bytes : & [u8]) -> Result < Self , SocketError >
@@ -1335,10 +1342,11 @@ kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn receive (& self ,
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn send_to (& self , input : & [u8] , target : Option < & Arc < Self > > ,) -> Result < usize , SocketError >
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn socket_type (& self) -> SocketType
-kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn wait_pipes (& self) -> Vec < (Arc < Pipe > , PipeDirection) >
 kernel/src/socket/unix.rs :: pub (crate) impl UnixSocket :: fn write (& self , input : & [u8]) -> Result < usize , SocketError >
 kernel/src/socket/unix.rs :: pub (crate) struct UnixAddress
 kernel/src/socket/unix.rs :: pub (crate) struct UnixSocket
+kernel/src/socket/unix.rs :: pub (in crate :: socket) impl UnixSocket :: fn consume_wait_notifications (& self)
+kernel/src/socket/unix.rs :: pub (in crate :: socket) impl UnixSocket :: fn wait_sources (& self) -> Vec < SocketWaitSource >
 kernel/src/sync/mod.rs :: pub (crate) fn next_readiness_generation () -> u64
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: const fn new (value : T) -> Self
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn lock (& self) -> IrqMutexGuard < '_ , T >
@@ -1481,8 +1489,8 @@ kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_pselect6 (count : usize , read_set : usize , write_set : usize , except_set : usize , timeout : usize , signal_argument : usize ,) -> isize
-kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys (ofd : & Arc < OpenFileDescription >) -> Vec < PollWaitKey >
 kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys_for_interest (ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Vec < PollWaitKey >
+kernel/src/syscall/poll.rs :: pub (super) fn wait_for_ofd (ofd : & Arc < OpenFileDescription > , events : i16) -> WaitResult
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !

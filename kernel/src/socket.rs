@@ -137,6 +137,17 @@ pub(crate) struct UnixConnectResources {
     pub(crate) server_to_client: (Arc<PipeEnd>, Arc<PipeEnd>),
 }
 
+/// @description socket adapter 暴露给 poll 层的 wait source；内部 edge 通知与真实 data Pipe 保持语义分离。
+pub(crate) enum SocketWaitSource {
+    /// 内部 notification Pipe 只表示“socket 状态发生变化”，不继承 userspace event mask。
+    Notification(Arc<Pipe>),
+    /// AF_UNIX stream 的真实 data Pipe，direction 与 poll event 一致。
+    Data {
+        pipe: Arc<Pipe>,
+        direction: PipeDirection,
+    },
+}
+
 impl Socket {
     /// @description 创建 AF_UNIX、AF_INET 或 AF_PACKET endpoint，并一次性校验组合。
     ///
@@ -510,12 +521,27 @@ impl Socket {
         }
     }
 
-    pub(crate) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
+    /// @description 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
+    ///
+    /// @return 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
+    pub(crate) fn wait_sources(&self) -> Vec<SocketWaitSource> {
         match &self.backend {
-            SocketBackend::Unix(socket) => socket.wait_pipes(),
-            SocketBackend::Inet(socket) => socket.wait_pipes(),
-            SocketBackend::Packet(socket) => socket.wait_pipes(),
+            SocketBackend::Unix(socket) => socket.wait_sources(),
+            SocketBackend::Inet(socket) => socket.wait_sources(),
+            SocketBackend::Packet(socket) => socket.wait_sources(),
             SocketBackend::InterfaceControl => Vec::new(),
+        }
+    }
+
+    /// @description 在 poll registry owner lock 内清理 socket adapter 的内部 edge token，为同一临界区的 level recheck 做准备。
+    ///
+    /// @return 无返回值；AF_UNIX stream 保留真实 data Pipe 内容。
+    pub(crate) fn prepare_wait(&self) {
+        match &self.backend {
+            SocketBackend::Unix(socket) => socket.consume_wait_notifications(),
+            SocketBackend::Inet(socket) => socket.consume_wait_notifications(),
+            SocketBackend::Packet(socket) => socket.consume_wait_notifications(),
+            SocketBackend::InterfaceControl => {}
         }
     }
 

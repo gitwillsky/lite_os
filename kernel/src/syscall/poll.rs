@@ -2,6 +2,7 @@ use alloc::{sync::Arc, vec, vec::Vec};
 
 use crate::{
     fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
+    socket::SocketWaitSource,
     syscall::errno,
     task::{
         PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
@@ -36,7 +37,7 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
     ofd.poll_events(descriptor.events)
 }
 
-pub(super) fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> {
+fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> {
     ofd_wait_keys_for_interest(ofd, i16::MAX, false, None)
 }
 
@@ -59,9 +60,23 @@ pub(super) fn ofd_wait_keys_for_interest(
             wake_group,
         )),
         OpenFileKind::Socket(socket) => {
-            keys.extend(socket.wait_pipes().into_iter().map(|(pipe, direction)| {
-                PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
-            }));
+            keys.extend(
+                socket
+                    .wait_sources()
+                    .into_iter()
+                    .map(|source| match source {
+                        SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
+                            &pipe,
+                            crate::ipc::PipeDirection::Read,
+                            POLLIN,
+                            exclusive,
+                            wake_group,
+                        ),
+                        SocketWaitSource::Data { pipe, direction } => {
+                            PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
+                        }
+                    }),
+            );
         }
         OpenFileKind::Epoll(epoll) => {
             debug_assert!(!exclusive, "EPOLLEXCLUSIVE cannot target an epoll fd");
@@ -153,8 +168,21 @@ fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
                 }
             }
         }
+        OpenFileKind::Socket(socket) => socket.prepare_wait(),
         _ => {}
     }
+}
+
+/// @description 通过统一 wait registry 等待一个 OFD 达到指定 level readiness。
+///
+/// @param ofd 要等待的唯一 open-file description。
+/// @param events Linux poll event mask。
+/// @return source wake、signal interruption；无 deadline，因此不会 timeout。
+pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitResult {
+    wait_for_poll(ofd_wait_keys(ofd), None, || {
+        prepare_ofd(ofd);
+        ofd.poll_events(events) != 0
+    })
 }
 
 /// @description 实现 Linux RV64 ppoll 的 fd readiness、timeout 与临时 signal mask。
@@ -252,7 +280,10 @@ pub(crate) fn sys_ppoll(
                 .map_or(-errno::EFAULT, |count| count as isize);
         }
         let keys = collect_wait_keys(&descriptors);
-        match wait_for_poll(keys, deadline, || any_ready(&descriptors)) {
+        match wait_for_poll(keys, deadline, || {
+            prepare_descriptors(&descriptors);
+            any_ready(&descriptors)
+        }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {
                 evaluate(&mut descriptors);
@@ -358,7 +389,10 @@ pub(crate) fn sys_pselect6(
             );
         }
         let keys = collect_wait_keys(&descriptors);
-        match wait_for_poll(keys, deadline, || any_ready(&descriptors)) {
+        match wait_for_poll(keys, deadline, || {
+            prepare_descriptors(&descriptors);
+            any_ready(&descriptors)
+        }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {
                 evaluate(&mut descriptors);

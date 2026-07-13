@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 
 use crate::{
-    ipc::{Pipe, PipeDirection, PipeRead},
-    socket::SocketPollState,
+    ipc::PipeDirection,
+    socket::{SocketPollState, SocketWaitSource},
 };
 
 use super::{InetEndpoint, InetSocket, raw_endpoint, tcp, udp_endpoint};
@@ -27,18 +27,25 @@ impl InetSocket {
             .readiness_generation(PipeDirection::Read)
     }
 
-    pub(in crate::socket) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
-        vec![(self.notify_read.pipe(), PipeDirection::Read)]
+    /// @description 把 Internet socket 的内部 edge notification 投影给统一 wait seam。
+    ///
+    /// @return 单一 source-native read notification source。
+    pub(in crate::socket) fn wait_sources(&self) -> Vec<SocketWaitSource> {
+        vec![SocketWaitSource::Notification(self.notify_read.pipe())]
     }
 
     pub(super) fn notify(&self) {
-        if !self.notify_read.pipe().readable() {
-            let _ = self.notify_write.write(&[1]);
-        }
+        self.notify_write.signal_readiness();
     }
 
     pub(super) fn consume_notify(&self) {
-        let mut byte = [0];
-        if matches!(self.notify_read.read(&mut byte), PipeRead::Bytes(_)) {}
+        self.consume_wait_notifications();
+    }
+
+    /// @description 排空已经观察过的 readiness edge，使下一次 wait registration 不会挂到陈旧 token 上。
+    ///
+    /// @return 无返回值；并发状态变化要么被随后的 level recheck 看到，要么在注册后再次通知。
+    pub(in crate::socket) fn consume_wait_notifications(&self) {
+        self.notify_read.drain_readiness();
     }
 }

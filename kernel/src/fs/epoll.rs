@@ -6,7 +6,7 @@ use alloc::{
 use spin::{Mutex, Once};
 
 use super::{OpenFileDescription, OpenFileKind};
-use crate::ipc::{Pipe, PipeEnd, PipeRead};
+use crate::ipc::{Pipe, PipeEnd};
 
 const MAX_NESTING_DEPTH: usize = 5;
 const EPOLL_EXCLUSIVE: u32 = 1 << 28;
@@ -302,8 +302,7 @@ impl Epoll {
 
     /// @description 在重新求值前排空已消费的 ctl/close notification。
     pub(crate) fn consume_notifications(&self) {
-        let mut bytes = [0u8; 64];
-        while matches!(self.notification_read.read(&mut bytes), PipeRead::Bytes(_)) {}
+        self.notification_read.drain_readiness();
     }
 
     /// @description 最后一个 descriptor 引用消失时，从所有 live epoll 删除目标 OFD。
@@ -329,7 +328,7 @@ impl Epoll {
     }
 
     fn notify_change(&self) {
-        let _ = self.notification_write.write(&[1]);
+        self.notification_write.signal_readiness();
     }
 
     fn live_epolls() -> Result<Vec<Arc<Self>>, EpollChangeError> {

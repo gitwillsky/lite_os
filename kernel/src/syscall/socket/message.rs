@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 
 use super::{
     MSG_DONTWAIT, MSG_NOSIGNAL, MSG_PEEK, MSG_TRUNC, O_NONBLOCK, SocketAddress, SocketError,
-    TaskControlBlock, WaitResult, encode_address, errno, interface_snapshot, ofd_wait_keys,
-    read_address, socket_error, socket_ofd, wait_for_poll,
+    TaskControlBlock, WaitResult, encode_address, errno, interface_snapshot, read_address,
+    socket_error, socket_ofd, wait_for_ofd,
 };
 use crate::task::current_task;
 
@@ -174,13 +174,11 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
         match socket.send_to(&bytes, target.clone()) {
             Ok(count) => return count as isize,
             Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
-            Err(SocketError::Again) => {
-                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(4) != 0) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                }
-            }
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 4) {
+                WaitResult::Woken => {}
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            },
             Err(error) => return socket_error(error),
         }
     }
@@ -274,13 +272,11 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 };
             }
             Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
-            Err(SocketError::Again) => {
-                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(1) != 0) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                }
-            }
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
+                WaitResult::Woken => {}
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            },
             Err(error) => return socket_error(error),
         }
     }

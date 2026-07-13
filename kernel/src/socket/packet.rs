@@ -8,10 +8,10 @@ use spin::{Mutex, Once};
 
 use crate::{
     drivers::network::{NetworkDevice, NetworkError, network_device},
-    ipc::{Pipe, PipeDirection, PipeEnd, PipeRead},
+    ipc::{PipeDirection, PipeEnd},
 };
 
-use super::{PacketAddress, SocketError, SocketPollState};
+use super::{PacketAddress, SocketError, SocketPollState, SocketWaitSource};
 
 const ETH_HEADER_LENGTH: usize = 14;
 const ETH_PAYLOAD_MTU: usize = 1500;
@@ -258,22 +258,26 @@ impl PacketSocket {
     /// @description 把 packet notification Pipe 投影给统一 OFD wait seam。
     /// @return 单一 read-direction wait source。
     /// @errors 无错误。
-    pub(super) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
-        vec![(self.notify_read.pipe(), PipeDirection::Read)]
+    pub(super) fn wait_sources(&self) -> Vec<SocketWaitSource> {
+        vec![SocketWaitSource::Notification(self.notify_read.pipe())]
     }
 
     /// @description 在 registry lock 已释放后发布一次 level-triggered readable 通知。
     /// @return 无返回值。
     /// @errors notification 已存在或 Pipe 已关闭时幂等忽略。
     pub(super) fn notify(&self) {
-        if !self.notify_read.pipe().readable() {
-            let _ = self.notify_write.write(&[1]);
-        }
+        self.notify_write.signal_readiness();
     }
 
     fn consume_notify(&self) {
-        let mut byte = [0];
-        if matches!(self.notify_read.read(&mut byte), PipeRead::Bytes(_)) {}
+        self.consume_wait_notifications();
+    }
+
+    /// @description 排空已观察的 packet readiness edge，供统一 poll registration 在 owner lock 内执行。
+    ///
+    /// @return 无返回值；实际 queue readiness 由随后的 level recheck 决定。
+    pub(super) fn consume_wait_notifications(&self) {
+        self.notify_read.drain_readiness();
     }
 }
 

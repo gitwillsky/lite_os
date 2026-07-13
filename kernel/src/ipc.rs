@@ -142,11 +142,6 @@ impl Pipe {
         self.object_id
     }
 
-    pub(crate) fn readable(&self) -> bool {
-        let state = self.state.lock();
-        state.length != 0 || state.writers == 0
-    }
-
     /// @description 在 Pipe owner lock 下复查 blocking I/O 的精确完成条件。
     ///
     /// @param condition read data/EOF 或一笔原子写所需的完整容量。
@@ -262,6 +257,43 @@ impl Pipe {
         }
         self.notifier.notify(self);
     }
+
+    /// @description 发布一次合并的内核 readiness edge，并无条件通知 wait registry。
+    ///
+    /// @return 无返回值；Pipe 已无 reader 时幂等忽略。
+    fn signal_readiness(self: &Arc<Self>) {
+        let notify = {
+            let mut state = self.state.lock();
+            if state.readers == 0 {
+                false
+            } else {
+                // token 只表示“至少有一次 edge”；每次 signal 仍推进 generation 并唤醒
+                // registry。缺少无条件 wake 会使旧 token 压制新的、不同方向的 socket readiness。
+                if state.length == 0 {
+                    state.bytes[0] = 1;
+                    state.head = 0;
+                    state.length = 1;
+                }
+                state.read_generation = crate::sync::next_readiness_generation();
+                true
+            }
+        };
+        if notify {
+            self.notifier.notify(self);
+        }
+    }
+
+    /// @description 在 wait registry owner lock 内消费合并 readiness token，不反向通知同一 registry。
+    ///
+    /// @return 无返回值；下一次真实 edge 会通过 `signal_readiness` 再次发布。
+    fn drain_readiness(self: &Arc<Self>) {
+        let mut state = self.state.lock();
+        if state.length != 0 {
+            state.head = 0;
+            state.length = 0;
+            state.write_generation = crate::sync::next_readiness_generation();
+        }
+    }
 }
 
 /// @description 一个 OFD-owned anonymous pipe endpoint；dup/fork 共享同一 endpoint Arc。
@@ -293,6 +325,24 @@ impl PipeEnd {
     /// @return 写入字节数、无容量或 peer 已关闭。
     pub(crate) fn write_stream(&self, input: &[u8]) -> PipeWrite {
         self.pipe.write(input, PipeWriteMode::Stream)
+    }
+
+    /// @description 将本 Pipe 作为内核 readiness notification source 发布一次 edge。
+    ///
+    /// @return 无返回值。
+    /// @errors 只允许 write endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
+    pub(crate) fn signal_readiness(&self) {
+        assert_eq!(self.direction, PipeDirection::Write);
+        self.pipe.signal_readiness();
+    }
+
+    /// @description 在内核 wait owner 临界区排空 readiness token，不消费任何 userspace data Pipe。
+    ///
+    /// @return 无返回值。
+    /// @errors 只允许 read endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
+    pub(crate) fn drain_readiness(&self) {
+        assert_eq!(self.direction, PipeDirection::Read);
+        self.pipe.drain_readiness();
     }
 }
 

@@ -6,9 +6,9 @@ use alloc::{
 };
 use spin::{Mutex, Once};
 
-use crate::ipc::{Pipe, PipeDirection, PipeEnd, PipeRead, PipeWrite};
+use crate::ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite};
 
-use super::{SocketError, SocketPollState, SocketType};
+use super::{SocketError, SocketPollState, SocketType, SocketWaitSource};
 
 const UNIX_PATH_MAX: usize = 108;
 
@@ -409,33 +409,47 @@ impl UnixSocket {
         }
     }
 
-    pub(crate) fn wait_pipes(&self) -> Vec<(Arc<Pipe>, PipeDirection)> {
+    /// @description 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
+    ///
+    /// @return 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
+    pub(in crate::socket) fn wait_sources(&self) -> Vec<SocketWaitSource> {
         let state = self.state.lock();
         match &*state {
             SocketState::Stream {
                 receive, transmit, ..
             } => vec![
-                receive
-                    .as_ref()
-                    .map(|end| (end.pipe(), PipeDirection::Read)),
-                transmit
-                    .as_ref()
-                    .map(|end| (end.pipe(), PipeDirection::Write)),
+                receive.as_ref().map(|end| SocketWaitSource::Data {
+                    pipe: end.pipe(),
+                    direction: PipeDirection::Read,
+                }),
+                transmit.as_ref().map(|end| SocketWaitSource::Data {
+                    pipe: end.pipe(),
+                    direction: PipeDirection::Write,
+                }),
             ]
             .into_iter()
             .flatten()
             .collect(),
-            _ => vec![(self.notify_read.pipe(), PipeDirection::Read)],
+            _ => vec![SocketWaitSource::Notification(self.notify_read.pipe())],
         }
     }
 
     fn notify(&self) {
-        let _ = self.notify_write.write(&[1]);
+        self.notify_write.signal_readiness();
     }
 
     fn consume_notify(&self) {
-        let mut byte = [0];
-        let _ = self.notify_read.read(&mut byte);
+        self.consume_wait_notifications();
+    }
+
+    /// @description 排空 listener/datagram 的内部 readiness edge；stream 的 wait source 是真实 data Pipe，禁止从此消费。
+    ///
+    /// @return 无返回值；实际 socket readiness 由随后的 level recheck 决定。
+    pub(in crate::socket) fn consume_wait_notifications(&self) {
+        if matches!(*self.state.lock(), SocketState::Stream { .. }) {
+            return;
+        }
+        self.notify_read.drain_readiness();
     }
 
     pub(crate) fn shutdown(&self, how: usize) -> Result<(), SocketError> {

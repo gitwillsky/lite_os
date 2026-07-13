@@ -1,6 +1,4 @@
 use super::*;
-use crate::task::wait_for_poll;
-
 mod write_limit;
 use write_limit::{bounded_regular_write, file_size_exceeded};
 mod vector;
@@ -140,8 +138,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
                     return -errno::EAGAIN;
                 }
                 Err(crate::socket::SocketError::Again) => {
-                    let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
-                    match wait_for_poll(keys, None, || ofd.poll_events(1) != 0) {
+                    match crate::syscall::poll::wait_for_ofd(&ofd, 1) {
                         WaitResult::Woken => {}
                         WaitResult::Interrupted => return -errno::EINTR,
                         WaitResult::TimedOut => unreachable!(),
@@ -275,8 +272,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
                     return -errno::EAGAIN;
                 }
                 Err(crate::socket::SocketError::Again) => {
-                    let keys = crate::syscall::poll::ofd_wait_keys(&ofd);
-                    match wait_for_poll(keys, None, || ofd.poll_events(4) != 0) {
+                    match crate::syscall::poll::wait_for_ofd(&ofd, 4) {
                         WaitResult::Woken => {}
                         WaitResult::Interrupted => return -errno::EINTR,
                         WaitResult::TimedOut => unreachable!(),

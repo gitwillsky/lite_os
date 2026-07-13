@@ -23,8 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "apk-runtime"
 ALPINE_BRANCH = "v3.22"
 ALPINE_ARCH = "riscv64"
+ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
 ALPINE_REPOSITORY = (
-    f"https://dl-cdn.alpinelinux.org/alpine/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
+    f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
 )
 APK_TOOLS_STATIC = (
     "apk-tools-static-2.14.10-r0.apk",

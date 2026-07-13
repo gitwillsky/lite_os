@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from apk_cache import ALPINE_BRANCH, cached_apk_bootstrap
+from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, cached_apk_bootstrap
 from apk_package import ApkPackageMetadata, build_signed_apk, tamper_signed_apk_control
 from qemu_gate import boot
 
@@ -38,9 +38,7 @@ def _inject_bootstrap_files(image: Path, debugfs: Path, workspace: Path) -> tupl
     """把 apk.static、trust roots 和 repository policy 加入 package staging 前的镜像。"""
     bootstrap = cached_apk_bootstrap()
     repositories = workspace / "repositories"
-    repositories.write_text(
-        f"https://dl-cdn.alpinelinux.org/alpine/{ALPINE_BRANCH}/main\n"
-    )
+    repositories.write_text(f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main\n")
     commands = [
         "mkdir /sbin",
         "mkdir /etc/apk",

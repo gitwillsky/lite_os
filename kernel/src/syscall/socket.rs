@@ -7,10 +7,10 @@ use crate::{
         UnixAddress, UnixConnectResources, configure_address, configure_gateway, configure_netmask,
         configure_up, interface_snapshot,
     },
-    task::{TaskControlBlock, WaitResult, create_pipe_endpoints, current_task, wait_for_poll},
+    task::{TaskControlBlock, WaitResult, create_pipe_endpoints, current_task},
 };
 
-use super::{errno, poll::ofd_wait_keys};
+use super::{errno, poll::wait_for_ofd};
 
 mod interface;
 mod message;
@@ -341,7 +341,7 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         Ok(()) => 0,
         Err(SocketError::InProgress) if *ofd.flags.lock() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
         Err(SocketError::InProgress) => loop {
-            match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(4 | 8) != 0) {
+            match wait_for_ofd(&ofd, 4 | 8) {
                 WaitResult::Woken => match client.connection_result() {
                     Ok(()) => return 0,
                     Err(SocketError::InProgress) => {}
@@ -398,13 +398,11 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
             Err(SocketError::Again) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
                 return -errno::EAGAIN;
             }
-            Err(SocketError::Again) => {
-                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(1) != 0) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                }
-            }
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
+                WaitResult::Woken => {}
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            },
             Err(error) => return socket_error(error),
         }
     }
@@ -478,13 +476,11 @@ pub(crate) fn sys_sendto(
         match socket.send_to(&input, target.clone()) {
             Ok(count) => return count as isize,
             Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
-            Err(SocketError::Again) => {
-                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(4) != 0) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                }
-            }
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 4) {
+                WaitResult::Woken => {}
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            },
             Err(error) => return socket_error(error),
         }
     }
@@ -534,13 +530,11 @@ pub(crate) fn sys_recvfrom(
             {
                 return -errno::EAGAIN;
             }
-            Err(SocketError::Again) => {
-                match wait_for_poll(ofd_wait_keys(&ofd), None, || ofd.poll_events(1) != 0) {
-                    WaitResult::Woken => {}
-                    WaitResult::Interrupted => return -errno::EINTR,
-                    WaitResult::TimedOut => unreachable!(),
-                }
-            }
+            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
+                WaitResult::Woken => {}
+                WaitResult::Interrupted => return -errno::EINTR,
+                WaitResult::TimedOut => unreachable!(),
+            },
             Err(error) => return socket_error(error),
         }
     }

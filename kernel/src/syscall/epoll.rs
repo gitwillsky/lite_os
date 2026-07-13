@@ -169,7 +169,7 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
         .try_reserve_exact(maximum.min(snapshot.len()))
         .map_err(|_| -errno::ENOMEM)?;
     for interest in snapshot {
-        drain_terminals(&interest.ofd)?;
+        prepare_sources(&interest.ofd)?;
         keys.extend(ofd_wait_keys_for_interest(
             &interest.ofd,
             interest.event.events as i16,
@@ -207,7 +207,7 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
     Ok(Evaluation { ready, keys })
 }
 
-fn drain_terminals(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
+fn prepare_sources(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
             drain_terminal_input(terminal).map_err(|()| -errno::EIO)
@@ -215,8 +215,12 @@ fn drain_terminals(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
         OpenFileKind::Epoll(epoll) => {
             epoll.consume_notifications();
             for interest in epoll.snapshot().map_err(|()| -errno::ENOMEM)? {
-                drain_terminals(&interest.ofd)?;
+                prepare_sources(&interest.ofd)?;
             }
+            Ok(())
+        }
+        OpenFileKind::Socket(socket) => {
+            socket.prepare_wait();
             Ok(())
         }
         _ => Ok(()),
