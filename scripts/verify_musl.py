@@ -46,7 +46,7 @@ MAKE_URL = f"https://mirrors.kernel.org/gnu/make/make-{MAKE_VERSION}.tar.lz"
 MAKE_SHA256 = "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 4
-SMOKE_RECIPE_VERSION = 3
+SMOKE_RECIPE_VERSION = 4
 CONFIGURE_ARGUMENTS = ("--target=riscv64", "--prefix=/usr", "--syslibdir=/lib")
 SMOKE_LINK_ARGUMENTS = (
     "-static",
@@ -371,6 +371,7 @@ def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> di
         "sysroot_fingerprint": sysroot_fingerprint,
         "compiler": compiler_identity(compiler),
         "source_sha256": sha256(ROOT / "user" / "musl-smoke.c"),
+        "shared_sync_sha256": sha256(ROOT / "scripts/fixtures/musl-shared-sync.c"),
         "link_arguments": list(SMOKE_LINK_ARGUMENTS),
         "libgcc": {"path": str(libgcc), "sha256": sha256(libgcc)},
         "install": str(install),
@@ -407,6 +408,7 @@ def link_smoke(
                 str(install / "usr/lib" / "crt1.o"),
                 str(install / "usr/lib" / "crti.o"),
                 str(ROOT / "user" / "musl-smoke.c"),
+                str(ROOT / "scripts/fixtures/musl-shared-sync.c"),
                 f"-L{install / 'usr/lib'}",
                 "-Wl,--start-group",
                 str(install / "usr/lib/libc.a"),

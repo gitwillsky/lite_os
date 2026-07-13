@@ -34,6 +34,7 @@ fn clone_shared_file_area(
         map_permission: area.map_permission,
         global: area.global,
         kind: area.kind,
+        shared_anonymous: None,
         shared_file: Some(SharedFileArea {
             mapping: shared.mapping.clone(),
             file_offset: shared.file_offset,
@@ -85,13 +86,18 @@ impl MemorySet {
                     map_permission: area.map_permission,
                     global: area.global,
                     kind: area.kind,
+                    shared_anonymous: area.shared_anonymous.clone(),
                     shared_file: None,
                 };
                 if MapArea::has_leaf_permission(area.map_permission) {
                     let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
-                    flags.remove(PTEFlags::W);
+                    if area.shared_anonymous.is_none() {
+                        flags.remove(PTEFlags::W);
+                    }
                     for (&vpn, frame) in &area.data_frames {
-                        if area.map_permission.contains(MapPermission::W) {
+                        if area.map_permission.contains(MapPermission::W)
+                            && area.shared_anonymous.is_none()
+                        {
                             self.page_table.set_flags(vpn, flags)?;
                         }
                         cloned.page_table.map(vpn, frame.ppn, flags)?;
@@ -124,6 +130,7 @@ impl MemorySet {
                 area.map_permission
                     .contains(MapPermission::U | MapPermission::W)
                     && area.shared_file.is_none()
+                    && area.shared_anonymous.is_none()
             })
             .flat_map(|area| area.data_frames.keys().copied())
             .collect();
@@ -149,6 +156,7 @@ impl MemorySet {
                         map_permission: area.map_permission,
                         global: area.global,
                         kind: area.kind,
+                        shared_anonymous: area.shared_anonymous.clone(),
                         shared_file: None,
                     };
                     if MapArea::has_leaf_permission(area.map_permission) {
@@ -184,6 +192,12 @@ impl MemorySet {
             || area.map_type != MapType::Framed
         {
             return Ok(false);
+        }
+        if area.shared_anonymous.is_some() {
+            return Ok(self
+                .page_table
+                .translate(vpn)
+                .is_some_and(|pte| pte.flags().contains(PTEFlags::W)));
         }
         let frame = area
             .data_frames

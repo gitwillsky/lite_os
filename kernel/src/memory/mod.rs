@@ -21,8 +21,8 @@ pub(crate) use executable::{
 pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
-    ElfLoadError, MapPermission, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome,
-    UserAccessError,
+    ElfLoadError, FutexKey, MapPermission, MemoryError, MemorySet, PageFaultAccess,
+    PageFaultOutcome, UserAccessError,
 };
 pub(crate) use shared_file::{
     SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedMappingInvalidator,

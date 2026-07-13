@@ -284,7 +284,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
     if let Some(address) = task.take_clear_child_tid()
         && task.copy_to_user(address, &0u32.to_ne_bytes()).is_ok()
     {
-        futex_wake(task.tgid(), address, 1);
+        let _ = futex_wake(&task, address, false, 1, u32::MAX);
     }
     if process_status.is_some() {
         task.close_all_files();

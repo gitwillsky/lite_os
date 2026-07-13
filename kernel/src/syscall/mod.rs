@@ -130,7 +130,14 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_EXIT => sys_exit(args[0] as i32),
         SYSCALL_EXIT_GROUP => sys_exit_group(args[0] as i32),
         SYSCALL_SET_TID_ADDRESS => sys_set_tid_address(args[0]),
-        SYSCALL_FUTEX => sys_futex(args[0], args[1], args[2] as u32, args[3]),
+        SYSCALL_FUTEX => sys_futex(
+            args[0],
+            args[1],
+            args[2] as u32,
+            args[3],
+            args[4],
+            args[5] as u32,
+        ),
         SYSCALL_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
         SYSCALL_NANOSLEEP => sys_nanosleep(
             args[0] as *const timer::TimeSpec,

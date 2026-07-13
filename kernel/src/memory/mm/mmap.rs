@@ -1,5 +1,7 @@
 use super::*;
 
+mod anonymous_shared;
+
 impl MemorySet {
     fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
         start < end
@@ -342,10 +344,7 @@ impl MemorySet {
             let Some((left_key, right_key)) = keys.windows(2).find_map(|pair| {
                 let left = &self.areas[&pair[0]];
                 let right = &self.areas[&pair[1]];
-                (left.kind == VmaKind::Anonymous
-                    && right.kind == VmaKind::Anonymous
-                    && left.vpn_range.end == right.vpn_range.start
-                    && left.map_permission == right.map_permission)
+                left.anonymous_mergeable(right)
                     .then_some((pair[0], pair[1]))
             }) else {
                 break;
@@ -511,6 +510,7 @@ impl MemorySet {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
                 let mut pte_flags = PTEFlags::from_bits(permission.bits()).unwrap();
                 if permission.contains(MapPermission::W)
+                    && middle.shared_anonymous.is_none()
                     && middle
                         .data_frames
                         .get(&vpn)

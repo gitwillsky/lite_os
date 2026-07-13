@@ -64,13 +64,13 @@ pub(crate) fn sys_brk(new_brk: usize) -> isize {
     task.set_program_break(new_brk).unwrap_or(current) as isize
 }
 
-/// @description 建立 Linux/riscv64 anonymous private eager mapping。
+/// @description 建立 Linux/riscv64 anonymous/file private 或 shared mapping。
 ///
 /// @param address 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
 /// @param length 非零映射长度。
 /// @param prot `PROT_NONE/READ/WRITE/EXEC` 子集，强制 W^X。
-/// @param flags 必须为 `MAP_PRIVATE|MAP_ANONYMOUS`，可附加 `MAP_FIXED_NOREPLACE`。
-/// @param fd anonymous mapping 必须传 `-1`。
+/// @param flags 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加 anonymous/fixed variants。
+/// @param fd anonymous mapping 必须传 `-1`；file mapping 为 readable regular-file fd。
 /// @param offset anonymous mapping 必须传零。
 /// @return 成功返回映射地址；失败返回负 Linux errno。
 pub(crate) fn sys_mmap(
@@ -105,15 +105,15 @@ pub(crate) fn sys_mmap(
     }
     let exact_address = fixed || flags & MAP_FIXED_NOREPLACE != 0;
     if flags & MAP_ANONYMOUS != 0 {
-        if sharing == MAP_SHARED {
-            return -errno::EINVAL;
-        }
         if fd != -1 || offset != 0 {
             return -errno::EINVAL;
         }
-        return task
-            .map_anonymous(address, length, permission, exact_address)
-            .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
+        let result = if sharing == MAP_SHARED {
+            task.map_shared_anonymous(address, length, permission, exact_address)
+        } else {
+            task.map_anonymous(address, length, permission, exact_address)
+        };
+        return result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
     }
     if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
         return -errno::EINVAL;

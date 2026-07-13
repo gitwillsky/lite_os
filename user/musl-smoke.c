@@ -26,6 +26,8 @@ static volatile sig_atomic_t signal_count;
 
 enum { FUTEX_WAIT_PRIVATE = 128, FUTEX_WAKE_PRIVATE = 129 };
 
+int verify_shared_sync(void);
+
 static void signal_handler(int signal)
 {
 	if (signal == SIGUSR1) signal_count++;
@@ -89,6 +91,7 @@ int main(int argc, char **argv, char **envp)
 	static const char restart_sleep_failed[] = "LiteOS musl restart sleep failed\n";
 	static const char sigwait_failed[] = "LiteOS musl sigwait failed\n";
 	static const char group_exit_failed[] = "LiteOS musl group exit failed\n";
+	static const char shared_sync_failed[] = "LiteOS musl shared sync failed\n";
 	static const char tty_failed[] = "LiteOS musl tty session failed\n";
 	static const char pipe_failed[] = "LiteOS musl pipe readv failed\n";
 	static const char cwd_failed[] = "LiteOS musl cwd failed\n";
@@ -419,6 +422,17 @@ int main(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
 		return 12;
 	}
-	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 11;
+	int shared_sync_result = verify_shared_sync();
+	if (shared_sync_result != 0) {
+		char result_code[3] = {
+			(char)('0' + shared_sync_result / 10),
+			(char)('0' + shared_sync_result % 10),
+			'\n',
+		};
+		write(STDOUT_FILENO, shared_sync_failed, sizeof shared_sync_failed - 1);
+		write(STDOUT_FILENO, result_code, sizeof result_code);
+		return 13;
+	}
+	if (write(STDOUT_FILENO, message, sizeof message - 1) != sizeof message - 1) return 14;
 	return 0;
 }

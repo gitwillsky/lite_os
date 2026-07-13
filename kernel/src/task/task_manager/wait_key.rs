@@ -1,14 +1,15 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::ipc::{Pipe, PipeDirection};
+use crate::memory::FutexKey;
 
 /// @description IndexedWaitQueue entry 的唯一 wait kind discriminator。
 #[derive(Clone, Copy)]
 pub(super) enum IndexedWaitKind {
     Deadline,
     Futex {
-        tgid: usize,
-        address: usize,
+        key: FutexKey,
+        bitset: u32,
     },
     Console,
     Signal {

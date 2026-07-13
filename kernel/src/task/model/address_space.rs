@@ -51,6 +51,86 @@ impl AddressSpace {
             .map_anonymous(address, length, permission, fixed_noreplace)
     }
 
+    /// @description 在 AddressSpace owner 下建立唯一 anonymous shared mapping。
+    ///
+    /// @param address 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
+    /// @param length 非零 mapping 字节长度。
+    /// @param permission 用户页权限。
+    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
+    /// @return 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
+    pub(super) fn map_shared_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+    ) -> Result<usize, MemoryError> {
+        self.memory_set
+            .lock()
+            .map_shared_anonymous(address, length, permission, fixed_noreplace)
+    }
+
+    /// @description 在 AddressSpace owner lock 内验证 futex word 并生成稳定 key。
+    ///
+    /// @param address 用户 futex 地址。
+    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
+    /// @param consume 在 AddressSpace lock 内消费稳定 key 的闭包。
+    /// @return 成功返回 memory-domain key；不可读映射返回 user access error。
+    pub(super) fn with_futex_key<R>(
+        &self,
+        address: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey) -> R,
+    ) -> Result<R, UserAccessError> {
+        let identity = self as *const Self as usize;
+        let mut memory = self.memory_set.lock();
+        let key = memory.futex_key(address, identity, private)?;
+        Ok(consume(key))
+    }
+
+    /// @description 在同一个 AddressSpace owner lock 内解析 futex key 并读取当前 word。
+    ///
+    /// @param address 用户 futex 地址。
+    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
+    /// @param consume 在锁内消费稳定 key 与当前 u32 value 的闭包。
+    /// @return 成功返回闭包结果；不可读映射返回 user access error。
+    pub(super) fn with_futex_word<R>(
+        &self,
+        address: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey, u32) -> R,
+    ) -> Result<R, UserAccessError> {
+        let identity = self as *const Self as usize;
+        let mut memory = self.memory_set.lock();
+        let key = memory.futex_key(address, identity, private)?;
+        let mut bytes = [0u8; core::mem::size_of::<u32>()];
+        memory.copy_from_user(address, &mut bytes)?;
+        Ok(consume(key, u32::from_ne_bytes(bytes)))
+    }
+
+    /// @description 在同一个 AddressSpace owner lock 内解析两个 futex key 并读取 source word。
+    ///
+    /// @param source source futex 用户地址。
+    /// @param target target futex 用户地址。
+    /// @param private true 强制 address-space scope，false 允许共享 backing scope。
+    /// @param consume 在锁内消费两个 key 与 source u32 value 的闭包。
+    /// @return 成功返回闭包结果；任一映射不可读时返回 user access error。
+    pub(super) fn with_futex_requeue<R>(
+        &self,
+        source: usize,
+        target: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
+    ) -> Result<R, UserAccessError> {
+        let identity = self as *const Self as usize;
+        let mut memory = self.memory_set.lock();
+        let source_key = memory.futex_key(source, identity, private)?;
+        let target_key = memory.futex_key(target, identity, private)?;
+        let mut bytes = [0u8; core::mem::size_of::<u32>()];
+        memory.copy_from_user(source, &mut bytes)?;
+        Ok(consume(source_key, target_key, u32::from_ne_bytes(bytes)))
+    }
+
     pub(super) fn map_private_file(
         &self,
         address: usize,
@@ -166,6 +246,81 @@ impl AddressSpace {
 }
 
 impl TaskControlBlock {
+    /// @description 通过 calling Process 的唯一 AddressSpace owner 建立 anonymous shared mapping。
+    ///
+    /// @param address 零为内核选址，非零为 hint 或 fixed_noreplace exact address。
+    /// @param length 非零 mapping 字节长度。
+    /// @param permission 用户页权限。
+    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
+    /// @return 成功返回 mapping 起点；非法范围、冲突或内存不足返回 MemoryError。
+    pub(crate) fn map_shared_anonymous(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+    ) -> Result<usize, MemoryError> {
+        self.process.address_space.map_shared_anonymous(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+        )
+    }
+
+    /// @description 使用当前 Process AddressSpace 解析并消费 futex key。
+    ///
+    /// @param address 用户 futex 地址。
+    /// @param private 是否强制 address-space scope。
+    /// @param consume 在 AddressSpace lock 内消费 key 的闭包。
+    /// @return 成功返回闭包结果；地址不可读返回 user access error。
+    pub(crate) fn with_futex_key<R>(
+        &self,
+        address: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey) -> R,
+    ) -> Result<R, UserAccessError> {
+        self.process
+            .address_space
+            .with_futex_key(address, private, consume)
+    }
+
+    /// @description 使用当前 Process AddressSpace 原子解析 futex key 与当前 word。
+    ///
+    /// @param address 用户 futex 地址。
+    /// @param private 是否强制 address-space scope。
+    /// @param consume 在 AddressSpace lock 内消费 key 与 u32 value 的闭包。
+    /// @return 成功返回闭包结果；地址不可读返回 user access error。
+    pub(crate) fn with_futex_word<R>(
+        &self,
+        address: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey, u32) -> R,
+    ) -> Result<R, UserAccessError> {
+        self.process
+            .address_space
+            .with_futex_word(address, private, consume)
+    }
+
+    /// @description 使用当前 Process AddressSpace 原子解析 requeue 两端 key 与 source word。
+    ///
+    /// @param source source futex 用户地址。
+    /// @param target target futex 用户地址。
+    /// @param private 是否强制 address-space scope。
+    /// @param consume 在 AddressSpace lock 内消费两个 key 与 source u32 value 的闭包。
+    /// @return 成功返回闭包结果；任一地址不可读返回 user access error。
+    pub(crate) fn with_futex_requeue<R>(
+        &self,
+        source: usize,
+        target: usize,
+        private: bool,
+        consume: impl FnOnce(FutexKey, FutexKey, u32) -> R,
+    ) -> Result<R, UserAccessError> {
+        self.process
+            .address_space
+            .with_futex_requeue(source, target, private, consume)
+    }
+
     /// @description 通过 Process address-space owner 读取实时 argv bytes。
     /// @return argument range 可读时返回 NUL 分隔 bytes；否则返回 None。
     pub(in crate::task) fn process_arguments(&self) -> Option<alloc::vec::Vec<u8>> {

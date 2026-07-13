@@ -21,6 +21,7 @@ use crate::{
 };
 
 mod deferred;
+mod futex;
 mod process_exit;
 mod process_group;
 mod procfs;
@@ -32,6 +33,7 @@ mod wait_key;
 mod wait_registry;
 
 pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_timer};
+pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
@@ -337,106 +339,6 @@ pub(crate) fn clone_current_thread(
         enqueue_new_task(child);
     }
     Ok(tid)
-}
-
-/// @description futex WAIT 在 task layer 的精确结果分类。
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum FutexWaitError {
-    Again,
-    Fault,
-    Invalid,
-    TimedOut,
-    Interrupted,
-}
-
-/// @description 按 `(tgid,uaddr)` 等待用户 u32 改变，队列锁覆盖比较与 membership 发布。
-///
-/// @param address 4-byte aligned 用户地址。
-/// @param expected 入队前必须匹配的当前值。
-/// @param deadline 可选的绝对 monotonic 纳秒 deadline。
-/// @return 被 wake 后返回成功；值不等、fault、对齐错误、超时或 signal interruption 返回明确分类。
-pub(crate) fn futex_wait(
-    address: usize,
-    expected: u32,
-    deadline: Option<u64>,
-) -> Result<(), FutexWaitError> {
-    if address == 0 || address & 3 != 0 {
-        return Err(FutexWaitError::Invalid);
-    }
-    let task = current_task().expect("futex wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let mut bytes = [0u8; 4];
-    task.copy_from_user(address, &mut bytes)
-        .map_err(|_| FutexWaitError::Fault)?;
-    if u32::from_ne_bytes(bytes) != expected {
-        return Err(FutexWaitError::Again);
-    }
-    if deadline.is_some_and(|value| value <= get_time_ns()) {
-        return Err(FutexWaitError::TimedOut);
-    }
-    if task.has_deliverable_signal() {
-        return Err(FutexWaitError::Interrupted);
-    }
-
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("futex wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
-        let wait_id = queue.insert_futex(task.tgid(), address, deadline, current);
-        scheduling.wait = Some(WaitMembership::Futex(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    let result = task
-        .scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("futex waiter resumed without a wake result");
-    match result {
-        WaitResult::Woken => Ok(()),
-        WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
-        WaitResult::Interrupted => Err(FutexWaitError::Interrupted),
-    }
-}
-
-/// @description 唤醒同一地址空间 key 上最多 `count` 个 futex waiter。
-///
-/// @param tgid 地址空间 identity。
-/// @param address 4-byte aligned 用户地址。
-/// @param count 最大唤醒数。
-/// @return 实际消费的 waiter 数。
-pub(crate) fn futex_wake(tgid: usize, address: usize, count: usize) -> usize {
-    if address == 0 || address & 3 != 0 || count == 0 {
-        return 0;
-    }
-    let mut waiters = alloc::vec::Vec::new();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    for _ in 0..count {
-        let Some(waiter) = queue.take_futex(tgid, address) else {
-            break;
-        };
-        waiters.push(waiter);
-    }
-    drop(queue);
-    let count = waiters.len();
-    for (wait_id, task) in waiters {
-        crate::task::processor::wake_futex_task(task, wait_id, WaitResult::Woken);
-    }
-    count
 }
 
 /// @description 从统一 wait registry 消费所有到期 task。

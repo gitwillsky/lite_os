@@ -12,7 +12,7 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, OpenFileDescription, OpenedFile, Terminal, vfs},
     memory::{
-        ElfLoadError, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
+        ElfLoadError, FutexKey, KERNEL_SPACE, KernelStack, MapPermission, MemoryError, MemorySet,
         PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
         SharedMappingInvalidator, TRAP_CONTEXT, UserAccessError, VirtualAddress,
     },
@@ -594,7 +594,7 @@ impl TaskControlBlock {
                 .compare_exchange_user_u32(address, old, new)
                 .is_ok_and(|result| result.is_ok());
             if exchanged {
-                crate::task::futex_wake(self.tgid(), address, 1);
+                let _ = crate::task::futex_wake(self, address, false, 1, u32::MAX);
             }
         };
         for _ in 0..2048 {

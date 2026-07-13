@@ -1,8 +1,10 @@
 mod cow;
 mod executable_load;
+mod futex_key;
 mod initial_stack;
 mod mmap;
 mod process;
+mod shared_area;
 use super::config;
 use super::executable::{ElfKind, ExecutableImage};
 use super::{address::VirtualPageNumber, page_table::PageTable};
@@ -17,8 +19,10 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{arch::asm, error::Error, ops::Range};
+pub(crate) use futex_key::FutexKey;
 use initial_stack::ElfAuxInfo;
 use riscv::register::satp::{self, Satp};
+use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum MemoryError {
     OutOfMemory,
@@ -170,36 +174,6 @@ enum VmaKind {
 }
 
 #[derive(Debug)]
-struct SharedResident {
-    page: Arc<dyn SharedPage>,
-    writer: bool,
-}
-
-impl SharedResident {
-    fn new(page: Arc<dyn SharedPage>, writer: bool) -> Self {
-        if writer {
-            page.acquire_writer();
-        }
-        Self { page, writer }
-    }
-}
-
-impl Drop for SharedResident {
-    fn drop(&mut self) {
-        if self.writer {
-            self.page.release_writer();
-        }
-    }
-}
-
-#[derive(Debug)]
-struct SharedFileArea {
-    mapping: Arc<dyn SharedFileMapping>,
-    file_offset: u64,
-    resident: BTreeMap<VirtualPageNumber, SharedResident>,
-}
-
-#[derive(Debug)]
 pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_page_offset: usize,
@@ -209,6 +183,7 @@ pub(crate) struct MapArea {
     /// 是否标记为全局页（G位）。仅用于内核空间映射。
     global: bool,
     kind: VmaKind,
+    shared_anonymous: Option<SharedAnonymousArea>,
     shared_file: Option<SharedFileArea>,
 }
 
@@ -236,6 +211,7 @@ impl MapArea {
             map_type,
             global: false,
             kind: VmaKind::System,
+            shared_anonymous: None,
             shared_file: None,
         }
     }
@@ -259,22 +235,6 @@ impl MapArea {
     fn file(start_va: VirtualAddress, end_va: VirtualAddress, permissions: MapPermission) -> Self {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
         area.kind = VmaKind::File;
-        area
-    }
-
-    fn shared_file(
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        permissions: MapPermission,
-        mapping: Arc<dyn SharedFileMapping>,
-        file_offset: u64,
-    ) -> Self {
-        let mut area = Self::file(start_va, end_va, permissions);
-        area.shared_file = Some(SharedFileArea {
-            mapping,
-            file_offset,
-            resident: BTreeMap::new(),
-        });
         area
     }
 
@@ -335,6 +295,9 @@ impl MapArea {
             for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
                 page_table.reserve(VirtualPageNumber::from_vpn(vpn))?;
             }
+            return Ok(());
+        }
+        if self.map_shared_anonymous(page_table)? {
             return Ok(());
         }
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
@@ -483,22 +446,38 @@ impl MapArea {
         } else {
             (None, None, None)
         };
+        let (left_anonymous, middle_anonymous, right_anonymous) =
+            SharedAnonymousArea::partition(self.shared_anonymous, original_start, start, end);
         let kind = self.kind;
-        let build = |range: Range<VirtualPageNumber>, data_frames, shared_file| Self {
-            vpn_range: range,
-            data_page_offset: 0,
-            data_frames,
-            map_type: MapType::Framed,
-            map_permission: self.map_permission,
-            global: false,
-            kind,
-            shared_file,
-        };
-        let left = (original_start < start)
-            .then(|| build(original_start..start, self.data_frames, left_shared));
-        let middle = build(start..end, middle_frames, middle_shared);
-        let right =
-            (end < original_end).then(|| build(end..original_end, right_frames, right_shared));
+        let build =
+            |range: Range<VirtualPageNumber>, data_frames, shared_anonymous, shared_file| Self {
+                vpn_range: range,
+                data_page_offset: 0,
+                data_frames,
+                map_type: MapType::Framed,
+                map_permission: self.map_permission,
+                global: false,
+                kind,
+                shared_anonymous,
+                shared_file,
+            };
+        let left = (original_start < start).then(|| {
+            build(
+                original_start..start,
+                self.data_frames,
+                left_anonymous,
+                left_shared,
+            )
+        });
+        let middle = build(start..end, middle_frames, middle_anonymous, middle_shared);
+        let right = (end < original_end).then(|| {
+            build(
+                end..original_end,
+                right_frames,
+                right_anonymous,
+                right_shared,
+            )
+        });
         (left, middle, right)
     }
 
@@ -521,6 +500,7 @@ impl MapArea {
             map_permission: self.map_permission,
             global: self.global,
             kind: self.kind,
+            shared_anonymous: None,
             shared_file: None,
         };
         if let Err(error) = cloned.map(page_table) {

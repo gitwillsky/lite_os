@@ -8,6 +8,7 @@ use lazy_static::lazy_static;
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
     ipc::{Pipe, PipeDirection},
+    memory::FutexKey,
     sync::IrqMutex,
     task::TaskControlBlock,
 };
@@ -61,7 +62,7 @@ impl IndexedWaitEntry {
 pub(super) struct IndexedWaitQueue {
     next_id: u64,
     entries: BTreeMap<u64, IndexedWaitEntry>,
-    futex_index: BTreeSet<(usize, usize, u64)>,
+    futex_index: BTreeSet<(FutexKey, u64)>,
     deadline_index: BTreeSet<(u64, u64)>,
     // bool 是 exclusive mode；缺失它会把普通 wake-all 和 EPOLLEXCLUSIVE wake-one 混为一轨。
     console_index: BTreeSet<(bool, u64)>,
@@ -116,15 +117,22 @@ impl IndexedWaitQueue {
         id
     }
 
+    /// @description 把 futex waiter 发布到 key 与可选 deadline 的唯一索引。
+    ///
+    /// @param key memory domain 已归一化的 futex identity。
+    /// @param bitset waiter 接受的非零 wake mask。
+    /// @param deadline 可选 absolute monotonic deadline。
+    /// @param task 被阻塞的 Thread owner。
+    /// @return 新 wait membership ID。
     pub(super) fn insert_futex(
         &mut self,
-        tgid: usize,
-        address: usize,
+        key: FutexKey,
+        bitset: u32,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> u64 {
         let id = self.allocate_id();
-        assert!(self.futex_index.insert((tgid, address, id)));
+        assert!(self.futex_index.insert((key, id)));
         if let Some(deadline) = deadline {
             assert!(self.deadline_index.insert((deadline, id)));
         }
@@ -134,7 +142,7 @@ impl IndexedWaitQueue {
                     id,
                     IndexedWaitEntry {
                         task,
-                        kind: IndexedWaitKind::Futex { tgid, address },
+                        kind: IndexedWaitKind::Futex { key, bitset },
                         deadline,
                         poll_keys: None,
                     },
@@ -264,8 +272,8 @@ impl IndexedWaitQueue {
 
     pub(super) fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
         let entry = self.entries.remove(&id)?;
-        if let IndexedWaitKind::Futex { tgid, address } = entry.kind {
-            assert!(self.futex_index.remove(&(tgid, address, id)));
+        if let IndexedWaitKind::Futex { key, .. } = entry.kind {
+            assert!(self.futex_index.remove(&(key, id)));
         }
         if matches!(entry.kind, IndexedWaitKind::Console) {
             assert!(self.console_index.remove(&(false, id)));
@@ -306,16 +314,64 @@ impl IndexedWaitQueue {
         Some(entry)
     }
 
+    /// @description 取出指定 key 上最早且 bitset 相交的 waiter。
+    ///
+    /// @param key memory domain 已归一化的 futex identity。
+    /// @param bitset wake operation 的非零匹配 mask。
+    /// @return 命中时返回 wait ID 与 task，并从所有索引移除；否则返回 None。
     pub(super) fn take_futex(
         &mut self,
-        tgid: usize,
-        address: usize,
+        key: FutexKey,
+        bitset: u32,
     ) -> Option<(u64, Arc<TaskControlBlock>)> {
-        let (_, _, id) = *self
+        let (_, id) = *self
             .futex_index
-            .range((tgid, address, 0)..=(tgid, address, u64::MAX))
-            .next()?;
+            .range((key, 0)..=(key, u64::MAX))
+            .find(|(_, id)| {
+                matches!(
+                    self.entries.get(id).map(|entry| entry.kind),
+                    Some(IndexedWaitKind::Futex { bitset: waiter, .. })
+                        if waiter & bitset != 0
+                )
+            })?;
         self.remove(id).map(|entry| (id, entry.task))
+    }
+
+    /// @description 在唯一 registry owner 内把 source key 的 waiter 改挂到 target key。
+    ///
+    /// @param source 原 futex key。
+    /// @param target 新 futex key。
+    /// @param count 最大迁移数。
+    /// @return 实际迁移数；wait ID、deadline、task membership 与 bitset 保持不变。
+    pub(super) fn requeue_futex(
+        &mut self,
+        source: FutexKey,
+        target: FutexKey,
+        count: usize,
+    ) -> usize {
+        if count == 0 || source == target {
+            return 0;
+        }
+        let ids: Vec<_> = self
+            .futex_index
+            .range((source, 0)..=(source, u64::MAX))
+            .take(count)
+            .map(|(_, id)| *id)
+            .collect();
+        for id in &ids {
+            assert!(self.futex_index.remove(&(source, *id)));
+            let entry = self
+                .entries
+                .get_mut(id)
+                .expect("futex index must reference a live entry");
+            let IndexedWaitKind::Futex { key, .. } = &mut entry.kind else {
+                panic!("futex index referenced a non-futex entry");
+            };
+            assert_eq!(*key, source);
+            *key = target;
+            assert!(self.futex_index.insert((target, *id)));
+        }
+        ids.len()
     }
 
     pub(super) fn pop_expired(
