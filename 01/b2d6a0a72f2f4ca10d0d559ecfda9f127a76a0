@@ -1,0 +1,36 @@
+README.md
+  s_4f5164fcd853bc::t_7b0d82f27ecab3 76,79
+docs/architecture.md
+  s_4f5164fcd853bc::t_f7459da1c499dd 190
+scripts/qemu_gate.py
+  s_4f5164fcd853bc::t_a847acfb40fd53 284
+scripts/verify_busybox.py
+  s_4f5164fcd853bc::t_57fc290b84ce80 60-61,230
+user/inittab
+  s_4f5164fcd853bc::t_f21168a0ad8129 2
+user/network-service
+  s_4f5164fcd853bc::t_ed7c3982dcbfc8 4-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "01b2d6a0a72f2f4ca10d0d559ecfda9f127a76a0",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
