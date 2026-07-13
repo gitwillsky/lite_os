@@ -265,7 +265,6 @@ def power_cut(
     )
     assert process.stdin is not None and process.stdout is not None
     output = bytearray()
-    activated = False
     command_sent = False
     deadline = time.monotonic() + timeout_seconds
     try:
@@ -282,11 +281,7 @@ def power_cut(
             text = ANSI.sub("", output.decode(errors="replace"))
             if "panicked at" in text or "[ERROR]" in text:
                 raise RuntimeError("power-cut guest reached a kernel fatal path")
-            if not activated and "Please press Enter to activate this console." in text:
-                time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
-                send_interaction(process.stdin, b"\n")
-                activated = True
-            if activated and not command_sent and "Enter 'help' for a list of built-in commands." in text:
+            if not command_sent and "Enter 'help' for a list of built-in commands." in text:
                 time.sleep(SERIAL_TRIGGER_SETTLE_SECONDS)
                 send_interaction(process.stdin, command)
                 command_sent = True

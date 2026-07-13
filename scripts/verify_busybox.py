@@ -57,6 +57,8 @@ FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
     "unsupported syscall_id:",
+    "Please press Enter to activate this console.",
+    "udhcpc:",
 )
 BUSYBOX_LINKS = (
     "[",
@@ -225,6 +227,7 @@ def install_dhcp_gate_script(image: Path, directory: Path) -> None:
         "done\n"
         "/bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15'\n"
         "/bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'\n"
+        "/bin/grep -q 'lease of 10.0.2.15 obtained' /run/network-service.log\n"
         "echo LITEOS_DHCP_$((7*7+2))\n"
     )
     commands = directory / "dhcp-gate.debugfs"
@@ -1025,10 +1028,6 @@ def main() -> int:
             ),
             interactions=(
                 (
-                    "Please press Enter to activate this console.",
-                    b"\n",
-                ),
-                (
                     "Enter 'help' for a list of built-in commands.",
                     b"echo LITEOS_BUSYBOX_SHELL_$((6*7))\n",
                 ),
@@ -1349,10 +1348,6 @@ def main() -> int:
                     b"exit\n",
                 ),
                 (
-                    "Please press Enter to activate this console.",
-                    b"\n",
-                ),
-                (
                     "Enter 'help' for a list of built-in commands.",
                     b"while [ ! -s /orphan-result ]; do /bin/sleep 1; done; /bin/cat /orphan-result\n",
                 ),
@@ -1363,10 +1358,6 @@ def main() -> int:
                 (
                     "/ # ",
                     b"/bin/rm -f /session-hup; /bin/sh -c 'trap \"echo LITEOS_SESSION_HUP_42 >/session-hup; exit 0\" 1; /bin/kill -KILL $PPID; while :; do /bin/sleep 1; done'\n",
-                ),
-                (
-                    "Please press Enter to activate this console.",
-                    b"\n",
                 ),
                 (
                     "Enter 'help' for a list of built-in commands.",
@@ -1428,7 +1419,6 @@ def main() -> int:
                 "LITEOS_STREAMING_EXEC_42",
             ),
             interactions=(
-                ("Please press Enter to activate this console.", b"\n"),
                 (
                     "Enter 'help' for a list of built-in commands.",
                     b"/bin/cat /persist\n",
@@ -1484,7 +1474,6 @@ def main() -> int:
             1,
             ("LITEOS_APK_CRASH_RECOVERY_58",),
             interactions=(
-                ("Please press Enter to activate this console.", b"\n"),
                 (
                     "Enter 'help' for a list of built-in commands.",
                     (
@@ -1534,7 +1523,6 @@ def main() -> int:
             1,
             ("LITEOS_JOURNAL_RECOVERY_43",),
             interactions=(
-                ("Please press Enter to activate this console.", b"\n"),
                 (
                     "Enter 'help' for a list of built-in commands.",
                     b"/bin/rm -rf /crash; /bin/mkdir /crash; echo recovered >/crash/state; sync; [ \"$(/bin/cat /crash/state)\" = recovered ] && echo LITEOS_JOURNAL_RECOVERY_$((6*7+1))\n",

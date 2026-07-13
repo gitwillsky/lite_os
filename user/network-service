@@ -1,6 +1,9 @@
 #!/bin/sh
 
 # @description BusyBox init 唯一监督的 DHCP service entry；进程本身保持前台运行。
+# 1. 服务输出写入单一诊断文件；否则后台续租日志会破坏交互 console 的当前命令行。
+exec >/run/network-service.log 2>&1
+# 2. 保持前台 udhcpc 作为本进程，使 init 能观察退出并执行唯一 respawn policy。
 rm -f /run/udhcpc.eth0.pid
 exec /bin/udhcpc \
     -f \

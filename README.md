@@ -73,11 +73,10 @@ make build
 make run
 ```
 
-成功启动后会看到 RustSBI/kernel 日志、BusyBox init 启动信息和 UART console 激活提示；按 Enter 后进入 ash：
+成功启动后会看到 RustSBI/kernel 与必要的 BusyBox init 信息，随后直接进入 ash；无需额外按 Enter。DHCP 服务仍由 init 监督，其输出保存在 `/run/network-service.log`，不会打断当前命令行：
 
 ```text
-Please press Enter to activate this console.
-~ #
+/ #
 ```
 
 镜像固定为 ext2 revision 1、4 KiB block、256-byte inode、4 MiB 内置 journal inode，并只启用驱动完整处理的 `has_journal,filetype,sparse_super,large_file` 特性。journal 固定为无 checksum/64-bit/revoke 扩展的 JBD2 v2 格式，不依赖宿主机随版本变化的 mke2fs 默认 feature 集合。
