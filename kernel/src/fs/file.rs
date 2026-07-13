@@ -346,6 +346,7 @@ impl Drop for FileDescriptor {
         if self.ofd.descriptor_refs.fetch_sub(1, Ordering::Release) == 1 {
             fence(Ordering::Acquire);
             Epoll::release_file(&self.ofd);
+            vfs().release_advisory_lock(&self.ofd);
         }
     }
 }

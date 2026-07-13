@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -276,6 +277,30 @@ def install_archive_fixtures(image: Path, directory: Path) -> None:
         f"write {xz_fixture} /run/phase53.xz\n"
         f"write {zip_fixture} /run/phase53.zip\n"
         f"write {traversal_fixture} /run/phase53-traversal.tar\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
+
+
+def install_dhcp_gate_script(image: Path, directory: Path) -> None:
+    """将 DHCP 断言放在 guest 内执行，避免后台日志打断 UART 长命令注入。"""
+    fixture = directory / "dhcp-gate.sh"
+    fixture.write_text(
+        "#!/bin/sh\n"
+        "set -e\n"
+        "attempt=0\n"
+        "while [ ! -s /etc/resolv.conf ]; do\n"
+        "  attempt=$((attempt+1))\n"
+        "  [ \"$attempt\" -lt 20 ] || exit 1\n"
+        "  /bin/sleep 1\n"
+        "done\n"
+        "/bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15'\n"
+        "/bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'\n"
+        "echo LITEOS_DHCP_$((7*7+2))\n"
+    )
+    commands = directory / "dhcp-gate.debugfs"
+    commands.write_text(
+        f"write {fixture} /run/dhcp-gate.sh\n"
+        "set_inode_field /run/dhcp-gate.sh mode 0100755\n"
     )
     run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
@@ -849,6 +874,14 @@ def create_image(
             script_path.unlink(missing_ok=True)
         if executable_script_path is not None:
             executable_script_path.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory(prefix="liteos-apk-rootfs-") as workspace:
+        assemble_apk_rootfs(
+            image,
+            find_debugfs(),
+            Path(workspace),
+            BUSYBOX_LINKS,
+            FORBIDDEN_BOOT_MARKERS,
+        )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
     for line in listing.splitlines():
@@ -895,6 +928,21 @@ def create_image(
     return image
 
 
+def create_published_image(
+    binary: Path,
+    musl: MuslCachePaths,
+    openssl: OpenSslPaths,
+    output: Path,
+) -> Path:
+    """在私有 inode 完成全部 assembly 后原子发布 rootfs，避免与运行实例争锁。"""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".liteos-rootfs-", dir=output.parent) as directory:
+        temporary = Path(directory) / "fs.img"
+        create_image(binary, musl, openssl, temporary)
+        temporary.replace(output)
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -928,7 +976,7 @@ def main() -> int:
             musl = cached_musl_paths(compiler)
             openssl = build_openssl(musl, jobs_override, args.rebuild)
         if args.build_only:
-            image = create_image(binary, musl, openssl, args.image.resolve())
+            image = create_published_image(binary, musl, openssl, args.image.resolve())
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
@@ -953,6 +1001,9 @@ def main() -> int:
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 ROOT / "scripts/https_gate.py",
+                ROOT / "scripts/apk_cache.py",
+                ROOT / "scripts/apk_package.py",
+                ROOT / "scripts/apk_rootfs.py",
                 ROOT / "scripts/openssl_cache.py",
                 ROOT / "scripts/qemu_gate.py",
             ),
@@ -961,7 +1012,7 @@ def main() -> int:
         if runtime_gate_hit(stamp, payload, (image,)):
             print(f"BusyBox {BUSYBOX_VERSION} init+ash verification cache hit")
             return 0
-        image = create_image(binary, musl, openssl, image)
+        image = create_published_image(binary, musl, openssl, image)
         runtime_directory = tempfile.TemporaryDirectory(prefix="liteos-busybox-gate-")
         runtime_path = Path(runtime_directory.name)
         runtime_image = runtime_path / "fs.img"
@@ -970,6 +1021,7 @@ def main() -> int:
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, openssl.ca_bundle, gate_ca, runtime_path)
         install_archive_fixtures(runtime_image, runtime_path)
+        install_dhcp_gate_script(runtime_image, runtime_path)
         install_phase55_script(runtime_image, runtime_path)
         install_phase56_script(runtime_image, runtime_path)
         install_phase57_script(runtime_image, runtime_path)
@@ -1061,7 +1113,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_BUSYBOX_SHELL_42",
-                    b"while [ ! -s /etc/resolv.conf ]; do /bin/sleep 1; done; /bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15' && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_$((7*7+2))\n",
+                    b"/bin/sh /run/dhcp-gate.sh\n",
                 ),
                 (
                     "LITEOS_DHCP_51",
@@ -1483,6 +1535,43 @@ def main() -> int:
                 (
                     "LITEOS_SCHED_8_HARTS_42",
                     b"n=$(for p in $pids; do /bin/awk '{print $1}' /proc/$p/stat; done | /bin/sort -n | /bin/wc -l); [ \"$n\" -eq 8 ] && echo LITEOS_STREAMING_EXEC_$((6*7))\n",
+                ),
+            ),
+            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            persistent_writes=True,
+        )
+        apk_crash_image = runtime_path / "apk-crash.img"
+        shutil.copyfile(image, apk_crash_image)
+        apk_crash_v1, apk_crash_v2, apk_crash_v3 = install_apk_crash_fixtures(
+            apk_crash_image,
+            find_debugfs(),
+            runtime_path,
+        )
+        power_cut(
+            apk_crash_image,
+            4,
+            (
+                f"echo LITEOS_APK_CRASH_ACTIVE; while :; do "
+                f"/sbin/apk --no-network add --allow-downgrades /run/{apk_crash_v1}; "
+                f"/sbin/apk --no-network add --upgrade /run/{apk_crash_v2}; done\n"
+            ).encode(),
+            "LITEOS_APK_CRASH_ACTIVE",
+            0.02,
+        )
+        boot(
+            apk_crash_image,
+            1,
+            ("LITEOS_APK_CRASH_RECOVERY_58",),
+            interactions=(
+                ("Please press Enter to activate this console.", b"\n"),
+                (
+                    "Enter 'help' for a list of built-in commands.",
+                    (
+                        f"/sbin/apk --no-network add --upgrade /run/{apk_crash_v3}; "
+                        "[ \"$(/bin/dd if=/usr/share/liteos-apk/crash bs=8 count=1 2>/dev/null)\" = crash-v3 ] && "
+                        "/sbin/apk info -e liteos-apk-crash && "
+                        "echo LITEOS_APK_CRASH_RECOVERY_$((6*9+4))\n"
+                    ).encode(),
                 ),
             ),
             forbidden_markers=FORBIDDEN_BOOT_MARKERS,

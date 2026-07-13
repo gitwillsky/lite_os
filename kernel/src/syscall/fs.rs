@@ -3,6 +3,7 @@ use core::mem;
 
 mod access;
 mod attributes;
+mod flock;
 mod io;
 mod links;
 mod namespace;
@@ -12,9 +13,10 @@ mod readlink;
 pub(crate) mod statistics;
 pub(crate) use access::sys_faccessat;
 pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchownat};
+pub(crate) use flock::sys_flock;
 pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
 pub(crate) use links::{sys_linkat, sys_symlinkat};
-pub(crate) use namespace::{sys_mkdirat, sys_renameat2, sys_unlinkat};
+pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
 pub(crate) use open::{sys_chdir, sys_openat};
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
@@ -122,6 +124,52 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         .and_then(|i| crate::fs::truncate(i, size).map_err(ferr))
         .map_or_else(|e| e, |_| 0)
 }
+
+/// @description 实现 Linux fallocate mode=0 的 regular-file space reservation。
+/// @param fd 必须以 write access 打开的 regular-file descriptor。
+/// @param mode 当前只接受零；其他 Linux allocation mode 明确返回 EOPNOTSUPP。
+/// @param offset 非负 byte range 起点。
+/// @param length 正数 byte range 长度。
+/// @return 成功返回零；fd、range、RLIMIT_FSIZE、空间或 I/O 错误返回负 errno。
+pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) -> isize {
+    if mode != 0 {
+        return -errno::EOPNOTSUPP;
+    }
+    if offset < 0 || length <= 0 {
+        return -errno::EINVAL;
+    }
+    let Some(end) = offset
+        .checked_add(length)
+        .and_then(|value| u64::try_from(value).ok())
+    else {
+        return -errno::EFBIG;
+    };
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
+        return -errno::EBADF;
+    }
+    let Some(inode) = ofd.inode_ref() else {
+        return -errno::ENODEV;
+    };
+    if inode.inode_type() == InodeType::Directory {
+        return -errno::EISDIR;
+    }
+    if inode.inode_type() != InodeType::File {
+        return -errno::ENODEV;
+    }
+    if end > task.file_size_limit() {
+        send_kernel_thread_signal(task.tgid(), task.tid(), 25)
+            .expect("current fallocate caller must exist");
+        return -errno::EFBIG;
+    }
+    crate::fs::allocate(inode, offset as u64, length as u64).map_or_else(ferr, |_| 0)
+}
+
 pub(crate) fn sys_fsync(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;

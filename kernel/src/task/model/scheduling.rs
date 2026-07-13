@@ -2,6 +2,28 @@ use super::*;
 use crate::task::processor::account_current_hart_runtime;
 use core::sync::atomic::Ordering;
 
+/// @description blocked task 的唯一 wait registration membership ID。
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum WaitMembership {
+    Deadline(u64),
+    Child,
+    Vfork(usize),
+    Futex(u64),
+    Console(u64),
+    Signal(u64),
+    Pipe(u64),
+    AdvisoryLock(u64),
+    Poll(u64),
+}
+
+/// @description blocked task 恢复时由唯一 wait registration 发布的结果。
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum WaitResult {
+    Woken,
+    TimedOut,
+    Interrupted,
+}
+
 #[derive(Debug)]
 pub(crate) struct Sched {
     /// 本次运行开始的 monotonic 时间，只在 sched mutex 内访问。

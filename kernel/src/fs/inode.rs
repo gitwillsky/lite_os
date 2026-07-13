@@ -119,6 +119,15 @@ pub(crate) trait Inode: Send + Sync {
 
     fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError>;
 
+    /// @description 为 byte range 预分配 backing blocks，不修改已有文件内容。
+    /// @param offset range 起始 byte offset。
+    /// @param length 非零 range 长度；调用方保证 offset+length 可表示。
+    /// @return 成功时 range 内不存在 hole，且 i_size 至少到达 range end。
+    /// @errors 非 regular inode、空间不足、只读或底层 I/O 错误。
+    fn allocate_storage(&self, _offset: u64, _length: u64) -> Result<(), FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
+
     fn sync_storage(&self) -> Result<(), FileSystemError>;
 
     /// @description 原子更新 inode 的 atime/mtime，并由 filesystem 更新 ctime。

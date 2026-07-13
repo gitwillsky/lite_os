@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 109 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 112 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 109 个入口
+## 2. 当前暴露的 112 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -37,9 +37,12 @@
 | 23/24 | `dup` / `dup3` | fd、目标 fd、`O_CLOEXEC` | 新 fd；`EBADF/EINVAL` | POSIX dup；Linux dup3 | **Complete**。fd entry 复制后共享同一 OFD offset/status flags；descriptor flag 独立。 | `kernel/src/syscall/fs.rs` |
 | 25 | `fcntl` | fd、command、argument | command 对应值；`EBADF/EINVAL` | POSIX fcntl | **Partial**。实现 `F_DUPFD/F_GETFD/F_SETFD/F_GETFL/F_SETFL/F_DUPFD_CLOEXEC`；`F_SETFL` 当前只允许修改 `O_APPEND`。 | `kernel/src/syscall/fs.rs` |
 | 29 | `ioctl` | fd、request、request-specific argument | 0；标准 TTY/socket errno | musl termios；BusyBox init/ash/stty/ifconfig/route | **Partial**。TTY 支持既有 termios/session/job-control 集合；AF_INET socket 支持单 `eth0` 的 `SIOCGIFCONF/name/flags/address/netmask/broadcast/MTU/HWADDR/index` 与 default-route `SIOCADDRT/SIOCDELRT`，配置直接提交给唯一 NetworkStack。尚无完整 VMIN/VTIME、TCSETSW drain、TCSETSF flush、TIOCNOTTY、rtnetlink 与多 interface。 | `kernel/src/syscall/ioctl.rs`, `kernel/src/syscall/tty.rs`, `kernel/src/syscall/socket/interface.rs` |
+| 32 | `flock` | fd、`LOCK_SH/EX/UN[\|LOCK_NB]` | 0；`EBADF/EINVAL/EINTR/EWOULDBLOCK/ENOLCK/EOPNOTSUPP` | BSD whole-file lock；apk-tools database serialization | **Complete（当前 pathname-backed OFD scope）**。VFS 以 mounted inode identity 唯一拥有 shared/exclusive lock table；lock identity 属于 OFD，dup/fork 共享、独立 open 互斥、exec 保留、显式 unlock 或最后 descriptor close 释放。转换先释放旧模式；blocking wait 经统一 interruptible registry 封闭 lost-wakeup race并支持 `SA_RESTART`。anonymous pipe/socket/epoll 尚无 VFS inode，明确返回 `EOPNOTSUPP`。 | `kernel/src/fs/vfs/advisory_lock.rs`, `kernel/src/task/task_manager/advisory_lock.rs`, `kernel/src/syscall/fs/flock.rs` |
+| 33 | `mknodat` | dirfd、pathname、mode、device | 0；标准 pathname/permission errno；未支持类型返回 `EOPNOTSUPP` | musl mknod；apk-tools package extraction | **Partial（普通文件 scope）**。type 为零或 `S_IFREG` 时复用 VFS 的 parent permission、umask、setgid inheritance 与 ext2 journal mutation；FIFO/socket/character/block device node 尚无完整 persistent object/open 语义，不伪造创建成功。 | `kernel/src/syscall/fs/namespace.rs`, `kernel/src/fs/vfs/mutation.rs` |
 | 34-37 | `mkdirat/unlinkat/symlinkat/linkat` | dirfd、raw path/target、mode/flags | 0；标准 pathname/link errno | POSIX namespace mutation；musl；BusyBox mkdir/rm/ln | **Complete**（当前单 mount namespace）。VFS 统一执行 parent write+search、umask、setgid inheritance、sticky directory 与 protected hardlink policy；所有 ext2 mutation 经同一 journal transaction。 | `kernel/src/syscall/fs/namespace.rs`, `kernel/src/syscall/fs/links.rs`, `kernel/src/fs/vfs/mutation.rs` |
 | 43/44 | `statfs` / `fstatfs` | pathname/fd、RV64 120-byte `struct statfs` | 0；`EFAULT/EBADF` 及 pathname/filesystem errno | Linux filesystem statistics；musl statvfs；BusyBox df | **Complete**（当前 VFS/OFD kinds）。VFS 唯一解析 mount→filesystem；ext2 返回扣除 metadata overhead 的总块、reserved-adjusted available、superblock inode 计数与 UUID fsid，procfs/devfs/pipefs 返回 Linux simple-statfs 形状；character fd 保留 backing opened entry。 | `kernel/src/syscall/fs/statistics.rs`, `kernel/src/fs/vfs.rs`, `kernel/src/fs/ext2/filesystem.rs` |
 | 46 | `ftruncate` | fd、64-bit length | 0；`EBADF/EFBIG/EISDIR/ENOSPC/EIO`；越过 limit 投递 SIGXFSZ | POSIX ftruncate | **Complete**。支持 `RLIMIT_FSIZE`、稀疏扩展、尾块清零、direct/三级 indirect 回收并维护 `i_blocks`。 | `kernel/src/syscall/fs.rs` |
+| 47 | `fallocate` | fd、mode、signed offset/length | 0；`EBADF/EINVAL/EFBIG/ENOSPC/EIO/EOPNOTSUPP`；越过 limit 投递 SIGXFSZ | Linux space reservation；apk-tools extraction | **Partial（mode=0 complete）**。page-cache operation lock 与 ext2 mutation owner 串行化；只为 range 中的 hole 分配清零 block，不覆盖已有内容，必要时扩展 i_size。大 range 分成有界 JBD2 transaction，已提交 chunk crash-consistent；其他 allocation mode 明确返回 `EOPNOTSUPP`。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/page_cache.rs`, `kernel/src/fs/ext2.rs` |
 | 48 | `faccessat` | dirfd、pathname、`F_OK/R_OK/W_OK/X_OK` | 0；`EACCES/EROFS/EINVAL` 与 pathname errno | musl access；BusyBox rm/command lookup | **Complete**。使用 real UID/GID 与 supplementary groups；VFS traversal 和 owner/group/other rwx、root execute、只读 `W_OK` 均成立。 | `kernel/src/syscall/fs/access.rs`, `kernel/src/fs/permission.rs` |
 | 52-54 | `fchmod/fchmodat/fchownat` | fd 或 dirfd/pathname、mode/UID/GID/flags | 0；标准 fd/permission/path errno | POSIX chmod/chown；BusyBox chmod/chown/patch | **Complete**（当前 inode-backed fd 与 ext2/devfs/procfs）。fd/path chmod 共用唯一 owner/root、supplementary group 与 set-id clearing 语义；symlink no-follow/empty-path chown 与 ext2 journal metadata commit 成立。 | `kernel/src/syscall/fs/attributes.rs`, `kernel/src/fs/ext2/metadata.rs` |
 | 49 | `chdir` | NUL 结尾 raw pathname | 0；pathname/permission errno | POSIX chdir；musl direct wrapper | **Complete**（当前单 mount namespace）。所有 component 与最终目录执行 search permission，cwd 仍只保存 inode。 | `kernel/src/syscall/fs/open.rs`, `kernel/src/fs/vfs.rs` |
@@ -104,7 +107,7 @@
 
 ## 4. musl 结论
 
-当前 109 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP 与 OpenSSL HTTPS consumer。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 112 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer 与 apk-tools 的普通文件创建、数据库锁和空间预留路径。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex PI/PI-requeue/WAKE_OP 与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间、altstack 与 queued realtime signal；

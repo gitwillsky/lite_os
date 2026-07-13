@@ -4,6 +4,40 @@ use super::pathname::{base, ferr, path};
 
 const AT_REMOVEDIR: usize = 0x200;
 const RENAME_NOREPLACE: u32 = 1;
+const S_IFMT: u32 = 0o170000;
+const S_IFREG: u32 = 0o100000;
+
+/// @description 按 Linux mknodat ABI 创建普通文件 inode。
+/// @param dirfd 相对 pathname 的目录 fd，或 AT_FDCWD。
+/// @param name NUL 结尾且非空的 pathname。
+/// @param mode inode type 与 permission/special bits；type 为零或 S_IFREG 时创建普通文件。
+/// @param device character/block device 的编码；普通文件不使用该参数。
+/// @return 成功返回零；不支持的 inode type、pathname、权限、空间或 I/O 错误返回负 errno。
+pub(crate) fn sys_mknodat(dirfd: isize, name: *const u8, mode: u32, _device: u64) -> isize {
+    if !matches!(mode & S_IFMT, 0 | S_IFREG) {
+        return -errno::EOPNOTSUPP;
+    }
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match path(&task, name) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let start = match base(&task, dirfd, &path) {
+        Ok(start) => start,
+        Err(error) => return error,
+    };
+    vfs()
+        .create_at(
+            start,
+            &path,
+            InodeType::File,
+            task.creation_mode(mode),
+            &task.access_identity(true),
+        )
+        .map_or_else(ferr, |_| 0)
+}
 
 /// @description 按 Linux mkdirat ABI 创建目录。
 /// @param dirfd 相对 pathname 的目录 fd，或 AT_FDCWD。

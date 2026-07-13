@@ -15,6 +15,7 @@ mod filesystem;
 mod journal;
 mod metadata;
 mod orphan;
+mod storage_mutation;
 use journal::{Journal, MutationGuard};
 
 // Utility function to align value up to the next multiple of align_to
@@ -1946,21 +1947,17 @@ impl Inode for Ext2Inode {
     }
 
     fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
-        if self.inode_type() == InodeType::Directory {
-            return Err(FileSystemError::IsDirectory);
-        }
-        let mutation = self.fs.begin_mutation()?;
-        let offset = self.size();
-        let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        let written = self.write_at_locked(offset_usize, buf)?;
-        mutation.commit()?;
-        Ok((offset, written))
+        self.append_bytes(buf)
     }
 
     fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
         let mutation = self.fs.begin_mutation()?;
         self.truncate_locked(size)?;
         mutation.commit()
+    }
+
+    fn allocate_storage(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+        self.allocate_range(offset, length)
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {

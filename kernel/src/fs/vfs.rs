@@ -14,6 +14,11 @@ mod mutation;
 mod opened;
 use mount_table::write_mount_record;
 pub(crate) use opened::OpenedFile;
+#[path = "vfs/advisory_lock.rs"]
+mod advisory_lock;
+pub(crate) use advisory_lock::{
+    AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode, AdvisoryLockNotifier,
+};
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
@@ -25,6 +30,11 @@ pub(crate) struct VirtualFileSystem {
     // OWNER: VFS 只以 Weak 注册 live opened-entry，供 namespace mutation 原子更新身份；
     // 缺失该 registry 会使 rename/unlink 后的 OFD path 永久停留在旧目录项。
     opened: Mutex<Vec<Weak<OpenedFile>>>,
+    // OWNER: VFS inode identity → OFD-owned BSD flock state；若放进 fd table，fork 后的独立
+    // table 会复制锁，若放进 ext2 adapter，devfs 与其他 mounted inode 会形成第二套语义。
+    advisory_locks: Mutex<Vec<advisory_lock::AdvisoryFileLock>>,
+    // 唯一反向 adapter 只投递 key，不保存 task 状态；缺失时最后 descriptor close 无法唤醒 waiter。
+    advisory_lock_notifier: Mutex<Option<Arc<dyn AdvisoryLockNotifier>>>,
 }
 
 struct RootMount {
@@ -266,6 +276,8 @@ impl VirtualFileSystem {
             mounts: Mutex::new(Vec::new()),
             namespace_mutation: Mutex::new(()),
             opened: Mutex::new(Vec::new()),
+            advisory_locks: Mutex::new(Vec::new()),
+            advisory_lock_notifier: Mutex::new(None),
         }
     }
 

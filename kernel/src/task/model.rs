@@ -33,7 +33,7 @@ pub(crate) use resource_limits::{
     RLIM_INFINITY, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NPROC, RLIMIT_STACK, ResourceLimit,
     ResourceLimitError,
 };
-pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState};
+pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
 
@@ -80,27 +80,6 @@ pub(crate) enum StopResume {
     Runnable,
     Blocked,
 }
-/// @description blocked task 的唯一 wait registration membership ID。
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum WaitMembership {
-    Deadline(u64),
-    Child,
-    Vfork(usize),
-    Futex(u64),
-    Console(u64),
-    Signal(u64),
-    Pipe(u64),
-    Poll(u64),
-}
-
-/// @description blocked task 恢复时由唯一 wait registration 发布的结果。
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum WaitResult {
-    Woken,
-    TimedOut,
-    Interrupted,
-}
-
 #[derive(Debug)]
 struct ThreadContext {
     tid: usize,
@@ -633,7 +612,6 @@ impl TaskControlBlock {
     ///
     /// @return 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
     pub(super) fn close_all_files(&self) {
-        let _ = crate::fs::sync_all();
         let files = self.process.files.lock().take_all();
         drop(files);
     }

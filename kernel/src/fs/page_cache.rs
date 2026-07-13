@@ -292,6 +292,24 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
     invalidate_shared_file(file.id, size).map_err(shared_error)
 }
 
+/// @description 在 page-cache operation domain 内预分配 regular-file backing blocks。
+/// @param inode 目标 regular inode。
+/// @param offset byte range 起点。
+/// @param length 非零 byte range 长度。
+/// @return allocation 与可能的 size extension 完成；cached contents 保持不变。
+pub(crate) fn allocate(
+    inode: Arc<dyn Inode>,
+    offset: u64,
+    length: u64,
+) -> Result<(), FileSystemError> {
+    if inode.inode_type() != InodeType::File {
+        return inode.allocate_storage(offset, length);
+    }
+    let file = cached_file(inode)?;
+    let _operation = file.operation.lock();
+    file.inode.allocate_storage(offset, length)
+}
+
 pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
         return inode.sync_storage();

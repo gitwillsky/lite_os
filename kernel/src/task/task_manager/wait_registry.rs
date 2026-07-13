@@ -7,6 +7,7 @@ use lazy_static::lazy_static;
 
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
+    fs::AdvisoryLockKey,
     ipc::{Pipe, PipeDirection, PipePollState, PipeWaitCondition},
     memory::FutexKey,
     sync::IrqMutex,
@@ -73,6 +74,7 @@ pub(super) struct IndexedWaitQueue {
     // bool 是 exclusive mode；缺失它会把普通 wake-all 和 EPOLLEXCLUSIVE wake-one 混为一轨。
     console_index: BTreeSet<(bool, u64)>,
     pipe_index: BTreeSet<(usize, u8, bool, u64)>,
+    advisory_lock_index: BTreeSet<(AdvisoryLockKey, u64)>,
 }
 
 impl IndexedWaitQueue {
@@ -84,6 +86,7 @@ impl IndexedWaitQueue {
             deadline_index: BTreeSet::new(),
             console_index: BTreeSet::new(),
             pipe_index: BTreeSet::new(),
+            advisory_lock_index: BTreeSet::new(),
         }
     }
 
@@ -235,6 +238,29 @@ impl IndexedWaitQueue {
         id
     }
 
+    pub(super) fn insert_advisory_lock(
+        &mut self,
+        key: AdvisoryLockKey,
+        task: Arc<TaskControlBlock>,
+    ) -> u64 {
+        let id = self.allocate_id();
+        assert!(self.advisory_lock_index.insert((key, id)));
+        assert!(
+            self.entries
+                .insert(
+                    id,
+                    IndexedWaitEntry {
+                        task,
+                        kind: IndexedWaitKind::AdvisoryLock { key },
+                        deadline: None,
+                        poll_keys: None,
+                    },
+                )
+                .is_none()
+        );
+        id
+    }
+
     pub(super) fn insert_poll(
         &mut self,
         keys: Vec<PollWaitKey>,
@@ -296,6 +322,9 @@ impl IndexedWaitQueue {
                     .remove(&(identity, direction as u8, false, id))
             );
         }
+        if let IndexedWaitKind::AdvisoryLock { key } = entry.kind {
+            assert!(self.advisory_lock_index.remove(&(key, id)));
+        }
         if let Some(keys) = &entry.poll_keys {
             for key in keys {
                 match *key {
@@ -343,6 +372,17 @@ impl IndexedWaitQueue {
                 )
             })?;
         self.remove(id).map(|entry| (id, entry.task))
+    }
+
+    pub(super) fn take_advisory_lock(
+        &mut self,
+        key: AdvisoryLockKey,
+    ) -> Option<(u64, IndexedWaitEntry)> {
+        let (_, id) = *self
+            .advisory_lock_index
+            .range((key, 0)..=(key, u64::MAX))
+            .next()?;
+        self.remove(id).map(|entry| (id, entry))
     }
 
     /// @description 在唯一 registry owner 内把 source key 的 waiter 改挂到 target key。

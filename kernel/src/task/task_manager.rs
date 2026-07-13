@@ -19,6 +19,7 @@ use crate::{
     timer::{get_time_ns, get_time_us},
 };
 
+pub(in crate::task) mod advisory_lock;
 mod context_switch;
 mod deferred;
 mod futex;
@@ -311,14 +312,13 @@ pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
             IndexedWaitKind::Futex { .. } => {
                 crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
             }
-            IndexedWaitKind::Console => panic!("console wait cannot carry a deadline"),
             IndexedWaitKind::Signal { .. } => {
                 crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
             }
-            IndexedWaitKind::Pipe { .. } => panic!("pipe wait cannot carry a deadline"),
             IndexedWaitKind::Poll => {
                 crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
             }
+            _ => panic!("non-deadline wait carried a deadline"),
         };
         if woke {
             count += 1;

@@ -19,13 +19,18 @@ pub(crate) use file::{
     TerminalAccess, TerminalRead,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
-pub(crate) use page_cache::{append, mapping, read, sync_all, sync_inode, truncate, write};
+pub(crate) use page_cache::{
+    allocate, append, mapping, read, sync_all, sync_inode, truncate, write,
+};
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcNetworkSnapshot,
     ProcProcessSnapshot, ProcSnapshot, ProcSource,
 };
-pub(crate) use vfs::{OpenedFile, init as init_vfs, vfs};
+pub(crate) use vfs::{
+    AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
+    AdvisoryLockNotifier, OpenedFile, init as init_vfs, vfs,
+};
 
 /// @description filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
 pub(crate) struct FileSystemStatistics {

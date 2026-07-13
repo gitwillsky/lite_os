@@ -1,5 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
+use crate::fs::AdvisoryLockKey;
 use crate::ipc::{Pipe, PipeDirection, PipeWaitCondition};
 use crate::memory::FutexKey;
 
@@ -18,6 +19,9 @@ pub(super) enum IndexedWaitKind {
     Pipe {
         identity: usize,
         condition: PipeWaitCondition,
+    },
+    AdvisoryLock {
+        key: AdvisoryLockKey,
     },
     Poll,
 }

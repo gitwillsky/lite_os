@@ -50,6 +50,8 @@ pub(crate) const ENOSPC: isize = 28;
 pub(crate) const EROFS: isize = 30;
 /// inode hard-link count 已达到 on-disk 表达上限。
 pub(crate) const EMLINK: isize = 31;
+/// kernel 无法分配 advisory lock record。
+pub(crate) const ENOLCK: isize = 37;
 /// pipe 没有 reader。
 pub(crate) const EPIPE: isize = 32;
 pub(crate) const ESPIPE: isize = 29;

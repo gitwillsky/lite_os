@@ -21,6 +21,9 @@ pub(crate) use model::{
     WaitResult,
 };
 pub(crate) use processor::*;
+pub(crate) use task_manager::advisory_lock::{
+    AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
+};
 pub(crate) use task_manager::*;
 pub(crate) use trap_context::TrapContext;
 
@@ -44,6 +47,7 @@ pub(crate) fn init(
     kernel_trap_return: usize,
     console: Arc<dyn Console>,
 ) {
+    install_advisory_lock_notifier();
     processor::init_topology();
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())

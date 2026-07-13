@@ -523,6 +523,7 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                     | WaitMembership::Console(id)
                     | WaitMembership::Signal(id)
                     | WaitMembership::Pipe(id)
+                    | WaitMembership::AdvisoryLock(id)
                     | WaitMembership::Poll(id)),
                 ) => queue.remove(id).map(|entry| (id, wait, entry)),
                 _ => None,
@@ -560,6 +561,9 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             (WaitMembership::Pipe(id), IndexedWaitKind::Pipe { .. }) => {
                 assert_eq!(id, wait_id);
                 crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
+            }
+            (WaitMembership::AdvisoryLock(id), IndexedWaitKind::AdvisoryLock { .. }) => {
+                super::advisory_lock::interrupt_waiter(entry, wait_id, id)
             }
             (WaitMembership::Poll(id), IndexedWaitKind::Poll) => {
                 assert_eq!(id, wait_id);
