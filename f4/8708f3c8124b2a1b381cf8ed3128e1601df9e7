@@ -1,0 +1,36 @@
+kernel/src/fs/epoll.rs
+  s_4f5164fcd853bc::t_dca5cccf184d87 9,305,331
+kernel/src/ipc.rs
+  s_4f5164fcd853bc::t_f5be5bd31f7c39 260-296,329-346
+kernel/src/socket/packet.rs
+  s_4f5164fcd853bc::t_5f5d34ba8c68be 11,14,261-262,269,273-280
+kernel/src/task/task_manager.rs
+  s_4f5164fcd853bc::t_e608b464df9796 409
+scripts/apk_cache.py
+  s_4f5164fcd853bc::t_fbeafb15663181 26,28
+scripts/apk_rootfs.py
+  s_4f5164fcd853bc::t_1c5e81190a7a59 11,41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f48708f3c8124b2a1b381cf8ed3128e1601df9e7",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_4f5164fcd853bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f58dd-8da1-7270-8ef6-d71c85be5ecb",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
