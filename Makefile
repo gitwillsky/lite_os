@@ -1,4 +1,4 @@
-.PHONY: build-kernel build-bootloader build-musl build-rootfs run run-gdb clean clean-musl clean-busybox build verify verify-musl verify-busybox gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-musl verify-busybox verify-apk-apps gdb addr2line
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -11,6 +11,9 @@ build-musl:
 
 build-rootfs: build-kernel build-bootloader build-musl
 	python3 scripts/verify_busybox.py --build-only --image fs.img
+
+build-apk-apps: build-rootfs
+	python3 scripts/verify_apk_apps.py --build-only --image fs.img --output target/apk-apps.img
 
 run: build
 	qemu-system-riscv64 \
@@ -54,6 +57,7 @@ verify:
 	python3 scripts/verify_boot.py
 	python3 scripts/verify_musl.py
 	python3 scripts/verify_busybox.py
+	python3 scripts/verify_apk_apps.py --image fs.img
 	git diff --check
 
 verify-musl: build-kernel build-bootloader
@@ -61,6 +65,9 @@ verify-musl: build-kernel build-bootloader
 
 verify-busybox: build-kernel build-bootloader build-musl
 	python3 scripts/verify_busybox.py
+
+verify-apk-apps: build-kernel build-bootloader build-rootfs
+	python3 scripts/verify_apk_apps.py --image fs.img
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'

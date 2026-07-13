@@ -57,6 +57,7 @@
 | AF_PACKET binding、protocol 与有界 receive queue | socket::PacketRegistry；RX frame 在 smoltcp ingress 前只镜像一次，packet endpoint 与 L3 NetworkStack 不复制彼此状态 |
 | VirtIO-net RX/TX queue、DMA buffers 与 packet/byte counters | VirtIONetworkDevice；hardirq 只确认并发布 network softirq，deferred context 才解析协议与唤醒 Pipe waiter |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam |
+| eventfd 64-bit counter、semaphore mode 与 read/write readiness generation | ipc::EventFd；OFD/fd table 只持 Arc，notification Pipe 只承载 edge，不复制 counter |
 | VMA 区间、类型、权限、private dirty/discardable residency、anonymous shared backing 与 framed page lifetime | MemorySet 的有序 VMA 表；ELF/anonymous/brk/stack/file 页按 fault 驻留，anonymous shared backing 按索引唯一发布跨 fork frame，PageTable 只保存硬件 translation |
 | physical frame lifetime | FrameTracker/frame allocator |
 | process comm/创建时刻、mm argument range、thread runtime 与 run state | Process、MemorySet、SchedulingEntity；procfs 只读取快照或 mm 中的实时 argv bytes |
@@ -76,6 +77,7 @@
 | interrupt registration/affinity | interrupt controller |
 | syscall number | syscall-abi |
 | mounted inode 的 BSD advisory flock state | VFS；key 为 filesystem+inode，holder 为 OFD identity |
+| mounted inode 的 POSIX byte-range record-lock state | VFS；key 为 filesystem+inode，holder 为 Process TGID；TaskManager 只拥有 interruptible wait membership |
 | user pointer与 errno translation | syscall module |
 
 新增 global、Atomic、lock、cache 或 flag 必须在声明附近写 `OWNER:`，并说明缺失该 owner 会造成的具体状态分裂。
@@ -89,7 +91,8 @@
 | `kernel/src/fs/ext2.rs` | 2288 | `fs::ext2` | ext2 inode、allocator 与 packed layout 仍共享同一 mutation domain；storage mutation 已下沉 | 提取不泄漏 packed layout 的 inode/allocator 深 module 后下调额度 |
 | `kernel/src/task/task_manager.rs` | 744 | `task::TaskManager` | process graph 与非 futex wait orchestration 仍集中维护跨锁不变量；context switch、thread clone、futex、pipe wait、wait key/index、child wait/vfork lifecycle 与 deferred work storage 已下沉 | 按 process graph 与剩余 lifecycle 的真实 seam 继续分离后下调额度 |
 | `kernel/src/memory/mm.rs` | 1087 | `memory::MemorySet` | 核心 VMA 表示、页表提交与 kernel/system mapping 仍共享底层 PageTable/frame 不变量；mapping request、mmap、user-copy、shared/private area 与 futex key lifecycle 已下沉 | 提取不泄漏 PageTable/frame 的 kernel mapping 与 VMA mutation 深 module 后下调额度 |
-| `kernel/src/task/model.rs` | 681 | `task::Process/Thread` | process 与 thread 核心生命周期仍共处一文件；wait membership 已归入 scheduling，其他 façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
+| `kernel/src/task/model.rs` | 612 | `task::Process/Thread` | process 与 thread 核心生命周期仍共处一文件；fd lifecycle 与 wait membership 已分别归入 file-descriptions/scheduling，其他 façade 已下沉 | 沿 Process/Thread 领域 seam 拆分且不扩大 scoped interface 后继续下调额度 |
+| `kernel/src/fs/file.rs` | 613 | `fs::OpenFileDescription/FileDescriptorTable` | OFD kind dispatch 与 descriptor table 仍共享 close/dup/readiness 生命周期；terminal/proc projection 已下沉，当前再拆会建立 pass-through dispatch | 当 anonymous descriptor kind 可由统一 backend trait 封闭 readiness/stat/proc projection 时下沉并删除中央枚举分派 |
 
 ## 5. Interface and capability contract
 
@@ -98,10 +101,10 @@
 - 默认 private；Rust AST 围栏解析所有 scoped visibility declaration、字段、方法、trait item 与 enum variant，连同可见域由 `architecture-interface.txt` 完整记录。
 - `task_manager::wait_registry` 的 scoped interface 只允许 parent orchestration 与 sibling signal cancellation 使用；它唯一执行 membership/index 的 insert/remove/take，caller 不直接修改 `entries` 或 source index。
 - `ipc::PipeWaitCondition` 只允许 syscall I/O 构造、`task_manager::pipe_wait` 消费；它把 `PIPE_BUF` 原子写的容量条件带入唯一 wait registration，poll key 不得复制这项 blocking-write policy。
-- `ipc::PipeEnd::{signal_readiness,drain_readiness}` 只允许 epoll 与 socket adapter 的内部 notification Pipe 使用；anonymous Pipe 和 AF_UNIX stream data Pipe 禁止调用。`socket::SocketWaitSource` 是 socket façade 到 syscall poll 的唯一 wait-source seam：`Notification` 固定映射 source-native read key，`Data` 只投影 AF_UNIX stream endpoint；backend 的 `wait_sources/consume_wait_notifications` 只向 parent socket module 开放。syscall blocking I/O 只经 `poll::wait_for_ofd` 执行 token drain、registry publication 与 level recheck，不得复制该序列。若后续用独立非 Pipe notification primitive 取代 token，该 primitive 必须接管同一 generation/notifier owner，并删除这些 Pipe 专用 scoped interface。
+- `ipc::PipeEnd::{signal_readiness,drain_readiness}` 只允许 epoll、eventfd 与 socket adapter 的内部 notification Pipe 使用；anonymous Pipe 和 AF_UNIX stream data Pipe 禁止调用。eventfd 的 Pipe 只发布 read/write edge，counter 仍由 `ipc::EventFd` 单锁唯一拥有；零值 write 不得制造虚假 readable edge。`socket::SocketWaitSource` 是 socket façade 到 syscall poll 的唯一 wait-source seam：`Notification` 固定映射 source-native read key，`Data` 只投影 AF_UNIX stream endpoint；backend 的 `wait_sources/consume_wait_notifications` 只向 parent socket module 开放。syscall blocking I/O 只经 `poll::wait_for_ofd` 执行 token drain、registry publication 与 level recheck，不得复制该序列。若后续用独立非 Pipe notification primitive 取代 token，该 primitive 必须接管同一 generation/notifier owner，并删除这些 Pipe 专用 scoped interface。
 - `socket::UnixSocket` 只在 state lock 内选择/转移 endpoint；Pipe I/O、endpoint Drop 与 notification 必须在释放 state lock 后执行。AF_UNIX stream 必须使用 ipc owner 的 short-write mode，禁止复制 pipe atomicity 或在 socket 层维护第二份容量状态。
 - filesystem 只能看到 `drivers::block` seam，不得看到 VirtIO adapter。
-- ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。rootfs builder 只能把完整 tree 转成一个 signed `liteos-base` package，再由 target `apk.static` 创建最终 installed DB；host 不得直接解包最终 runtime、伪造数据库或保留 package 外的同名文件 owner。本地 private key 只允许位于 ignored `target/apk-runtime`，镜像只安装 public trust root。运行时 devfs/procfs 只经 VFS mount table 发布；`/dev/fd` 与 stdio aliases 只由 devfs 指向 `/proc/self/fd`，禁止写入会被 mount 遮蔽的 ext2 节点。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory/fd 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
+- ext2 只提供 persistent root；`/tmp`、`/root`、passwd/group 与 `/dev`、`/proc` mountpoint 都由唯一 rootfs builder 固化，禁止 kernel/syscall/applet 按路径补造。rootfs builder 只能把完整 tree 转成一个 signed `liteos-base` package，再由 target `apk.static` 创建最终 installed DB；官方 `ca-certificates-bundle` APK 唯一拥有系统 trust bundle，host 不得覆盖其路径。host 不得直接解包最终 runtime、伪造数据库或保留 package 外的同名文件 owner。本地 private key 只允许位于 ignored `target/apk-runtime`，镜像只安装 public trust root。运行时 devfs/procfs 只经 VFS mount table发布；`/dev/fd` 与 stdio aliases 只由 devfs 指向 `/proc/self/fd`，禁止写入会被 mount 遮蔽的 ext2 节点。VFS 唯一保留 mount source 到 filesystem adapter 的关联，并向 procfs 发布 `/proc/mounts`；procfs 通过 `ProcSource` 反转依赖消费 task/memory/fd 快照，禁止 fs 反向依赖 task、syscall pathname 特判或伪 regular-file 节点。
 - cwd、directory fd 与 pathname-backed OFD 必须持有同一 VFS `OpenedFile` seam；VFS weak registry 唯一提交 rename/unlink 对 parent/name/deleted 的更新。禁止缓存绝对路径、由 inode 扫描猜测 hardlink 名称，或把 procfs ` (deleted)` target 当普通 pathname 重新解析。`/proc/<pid>/fd` magic link 可跟随 live opened entry，Pipe/Socket target 与 `fstat` 只投影其 object owner identity，eventpoll 使用标准 anon-inode label。
 - `/proc/<pid>/fd` 只允许同 TGID、effective root，或 caller effective UID 与目标 real/effective/saved UID 全部相同的访问；credential 判定留在 task façade，procfs 不复制 Process credential state。未建模 fsuid/capability/dumpable 前不得扩大该边界。
 - `statfs/fstatfs` 只经 VFS/OFD seam 选择 filesystem；ext2 从同一 mutation domain 投影 superblock 容量，procfs/devfs/anonymous pipe 使用 Linux simple-statfs 形状。禁止 syscall 识别具体 adapter、按 filesystem id 复制统计或伪造可分配容量。
@@ -110,6 +113,7 @@
 - VFS permission evaluator 只消费 Process 发布的 immutable identity snapshot，唯一决定 traversal、inode rwx、parent mutation、sticky directory、protected hardlink 与 setgid-directory inheritance；syscall 和 filesystem adapter 不得复制权限 policy。ext2 只持久化 VFS 已决定的 mode/UID/GID/ctime。
 - regular-file `fallocate` 与 write/append/truncate/mmap writeback 必须共用 page-cache operation lock；ext2 只在同一 mutation/JBD2 owner 内分配 hole、更新 block pointers/i_blocks/i_size。大 range 允许拆成有界且各自完整提交的 transaction，禁止 syscall 写零覆盖已有内容、伪造成功或维护第二份 allocation map。
 - BSD `flock` state 只由 VFS 以 mounted inode identity 持有，OFD pointer 只作为 open-file-description lifetime identity；Task wait registry 只拥有 interruptible membership，VFS notifier 只投递发生变化的 key。唯一 VFS lock-table mutex 覆盖 shared/exclusive 转换，释放后才调用 notifier；缺失该锁会让两个 exclusive holder 同时成功，反向持锁或在锁内通知会与 wait publication 死锁。最后 descriptor close 必须经 OFD descriptor_refs 释放，禁止按 Process/fd 复制 lock state或让 ext2 维护第二套 advisory lock。
+- POSIX record lock 只由 VFS 以 mounted inode identity + Process TGID 持有；同 owner 的相交 range 在一次锁内拆分、替换、排序并合并。`F_SETLKW` 只把 membership 交给统一 indexed wait owner，VFS 锁外通知；任一该 inode descriptor close、CLOEXEC close 或 Process exit 必须释放 Linux process-associated locks，禁止按 fd/OFD/ext2 复制 lock table。
 - Process exit 只负责关闭本 Process 的 descriptor/OFD lifecycle；禁止在 exit/close cleanup 隐式执行全局 filesystem sync。durability 只能经 ext2 journal/writeback owner 与显式 `fsync/sync` seam 提交，否则任意短命进程都能阻塞全系统 I/O，并把 close 语义错误扩大为全局持久化屏障。
 - procfs 与 `sysinfo` 必须消费 task façade 的同一采集边界；syscall 只编码 Linux UAPI，禁止解析 `/proc` 文本、复制统计状态或在 ABI 层维护第二套 uptime/load/memory/task counter。
 - `uname` 只投影 system module 的 immutable identity；`riscv_hwprobe` 只通过 system façade 投影 DTB/HartTopology 的平台事实；`gettimeofday` 与 `clock_gettime(CLOCK_REALTIME)` 只投影 timer realtime owner。禁止 syscall module 维护 hostname、ISA、hart mask、release、timezone 或第二份 wallclock offset。

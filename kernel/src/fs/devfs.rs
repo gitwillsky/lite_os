@@ -79,6 +79,8 @@ impl DevInode {
             b"." | b".." => DevNode::Root,
             b"null" => DevNode::Device(DeviceKind::Null),
             b"zero" => DevNode::Device(DeviceKind::Zero),
+            b"random" => DevNode::Device(DeviceKind::Random),
+            b"urandom" => DevNode::Device(DeviceKind::Urandom),
             b"tty" => DevNode::Device(DeviceKind::Tty),
             b"console" => DevNode::Device(DeviceKind::Console),
             b"fd" => DevNode::Link(DevLink::Fd),
@@ -214,6 +216,16 @@ impl Inode for DevInode {
                 inode: 4,
                 kind: InodeType::CharacterDevice,
                 name: b"tty".to_vec(),
+            },
+            DirectoryEntry {
+                inode: 10,
+                kind: InodeType::CharacterDevice,
+                name: b"random".to_vec(),
+            },
+            DirectoryEntry {
+                inode: 11,
+                kind: InodeType::CharacterDevice,
+                name: b"urandom".to_vec(),
             },
             DirectoryEntry {
                 inode: 5,

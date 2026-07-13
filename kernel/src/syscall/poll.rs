@@ -98,6 +98,26 @@ pub(super) fn ofd_wait_keys_for_interest(
                 }
             }
         }
+        OpenFileKind::EventFd(event) => {
+            if events & POLLIN != 0 {
+                keys.push(PollWaitKey::pipe(
+                    &event.notification_pipe(true),
+                    crate::ipc::PipeDirection::Read,
+                    POLLIN,
+                    exclusive,
+                    wake_group,
+                ));
+            }
+            if events & POLLOUT != 0 {
+                keys.push(PollWaitKey::pipe(
+                    &event.notification_pipe(false),
+                    crate::ipc::PipeDirection::Read,
+                    POLLOUT,
+                    exclusive,
+                    wake_group,
+                ));
+            }
+        }
         _ => {}
     }
     keys

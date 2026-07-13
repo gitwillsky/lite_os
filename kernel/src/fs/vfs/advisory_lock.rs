@@ -52,7 +52,7 @@ pub(super) struct AdvisoryFileLock {
 }
 
 impl VirtualFileSystem {
-    fn advisory_identity(
+    pub(super) fn advisory_identity(
         ofd: &Arc<OpenFileDescription>,
     ) -> Result<(AdvisoryLockKey, usize), AdvisoryLockError> {
         let inode = ofd

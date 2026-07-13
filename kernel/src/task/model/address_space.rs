@@ -278,6 +278,22 @@ impl AddressSpace {
             .copy_to_user(user_address, source, limits)
     }
 
+    /// @description 在不修改内容的前提下准备并验证完整 userspace write range。
+    /// @param user_address 用户目标首地址。
+    /// @param length 必须可写的 byte 数。
+    /// @param limits fault-in 可消耗的资源上限。
+    /// @return 完整范围可写返回 Ok；fault、权限或资源失败返回错误。
+    pub(super) fn validate_user_write(
+        &self,
+        user_address: usize,
+        length: usize,
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
+        self.memory_set
+            .lock()
+            .validate_user_write(user_address, length, limits)
+    }
+
     /// @description 从用户空间复制有上限的 NUL 结尾字节串。
     ///
     /// @param user_address 用户字符串首地址。
@@ -417,6 +433,18 @@ impl TaskControlBlock {
         self.process
             .address_space()
             .copy_to_user(user_address, source, self.user_fault_limits())
+    }
+
+    pub(crate) fn validate_user_write(
+        &self,
+        user_address: usize,
+        length: usize,
+    ) -> Result<(), UserAccessError> {
+        self.process.address_space().validate_user_write(
+            user_address,
+            length,
+            self.user_fault_limits(),
+        )
     }
 
     pub(in crate::task) fn write_clone_tid_values(

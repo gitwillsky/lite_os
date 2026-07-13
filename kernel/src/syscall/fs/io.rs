@@ -1,9 +1,13 @@
 use super::*;
 mod write_limit;
 use write_limit::{bounded_regular_write, file_size_exceeded};
+mod positioned;
+pub(crate) use positioned::{
+    sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2,
+};
 mod vector;
+use vector::import_iovecs;
 pub(crate) use vector::sys_readv;
-use vector::{IOV_MAX, UserIoVec};
 
 /// @description 把 task-layer pipe wait result 统一翻译为 syscall control flow。
 ///
@@ -46,6 +50,36 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
                         .copy_to_user(pointer as usize + copied, &zeroes[..count])
                         .is_err()
                     {
+                        return if copied == 0 {
+                            -errno::EFAULT
+                        } else {
+                            copied as isize
+                        };
+                    }
+                    copied += count;
+                }
+                return copied as isize;
+            }
+            CharacterDevice::Entropy(_) => {
+                let mut copied = 0;
+                let mut chunk = [0u8; 256];
+                while copied < length {
+                    let count = chunk.len().min(length - copied);
+                    if crate::random::fill(&mut chunk[..count]).is_err() {
+                        return if copied == 0 {
+                            -errno::EIO
+                        } else {
+                            copied as isize
+                        };
+                    }
+                    let Some(address) = (pointer as usize).checked_add(copied) else {
+                        return if copied == 0 {
+                            -errno::EFAULT
+                        } else {
+                            copied as isize
+                        };
+                    };
+                    if task.copy_to_user(address, &chunk[..count]).is_err() {
                         return if copied == 0 {
                             -errno::EFAULT
                         } else {
@@ -116,6 +150,36 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
                     if let Err(error) = block_on_pipe(&endpoint.pipe(), PipeWaitCondition::Readable)
                     {
                         return error;
+                    }
+                }
+            }
+        }
+    }
+    if let OpenFileKind::EventFd(event) = &ofd.kind {
+        if length != mem::size_of::<u64>() {
+            return -errno::EINVAL;
+        }
+        if task
+            .validate_user_write(pointer as usize, mem::size_of::<u64>())
+            .is_err()
+        {
+            return -errno::EFAULT;
+        }
+        loop {
+            match event.read() {
+                crate::ipc::EventFdRead::Value(value) => {
+                    return task
+                        .copy_to_user(pointer as usize, &value.to_ne_bytes())
+                        .map_or(-errno::EFAULT, |()| mem::size_of::<u64>() as isize);
+                }
+                crate::ipc::EventFdRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    return -errno::EAGAIN;
+                }
+                crate::ipc::EventFdRead::Empty => {
+                    match crate::syscall::poll::wait_for_ofd(&ofd, 1) {
+                        WaitResult::Woken => {}
+                        WaitResult::Interrupted => return -errno::EINTR,
+                        WaitResult::TimedOut => unreachable!(),
                     }
                 }
             }
@@ -287,6 +351,34 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             }
         }
     }
+    if let OpenFileKind::EventFd(event) = &ofd.kind {
+        if length != mem::size_of::<u64>() {
+            return -errno::EINVAL;
+        }
+        let mut bytes = [0u8; mem::size_of::<u64>()];
+        if task.copy_from_user(pointer as usize, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        let value = u64::from_ne_bytes(bytes);
+        if value == u64::MAX {
+            return -errno::EINVAL;
+        }
+        loop {
+            match event.write(value) {
+                crate::ipc::EventFdWrite::Written => return mem::size_of::<u64>() as isize,
+                crate::ipc::EventFdWrite::Full if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                    return -errno::EAGAIN;
+                }
+                crate::ipc::EventFdWrite::Full => {
+                    match crate::syscall::poll::wait_for_ofd(&ofd, 4) {
+                        WaitResult::Woken => {}
+                        WaitResult::Interrupted => return -errno::EINTR,
+                        WaitResult::TimedOut => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
     if matches!(&ofd.kind, OpenFileKind::Epoll(_)) {
         return -errno::EINVAL;
     }
@@ -324,11 +416,18 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         }
         let wrote = match &ofd.kind {
             OpenFileKind::Pipe(_) => unreachable!("pipe handled before offset-backed write"),
-            OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => {
+            OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) => {
                 unreachable!("anonymous descriptor handled above")
             }
             OpenFileKind::Character(device) => match device {
                 CharacterDevice::Null | CharacterDevice::Zero => count,
+                CharacterDevice::Entropy(_) => {
+                    return if total == 0 {
+                        -errno::EOPNOTSUPP
+                    } else {
+                        total as isize
+                    };
+                }
                 CharacterDevice::Terminal {
                     terminal: console, ..
                 } => match console.write(&chunk[..count]) {
@@ -393,14 +492,8 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
 /// @param count iovec 数量，最大 1024。
 /// @return 总写入字节数；导入失败或首个 write 失败返回负 errno，已有进度后返回 partial count。
 pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
-    if count > IOV_MAX {
-        return -errno::EINVAL;
-    }
     if count == 0 {
         return sys_write(fd, core::ptr::null(), 0);
-    }
-    if iovector == 0 {
-        return -errno::EFAULT;
     }
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -408,34 +501,10 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
     };
-    let mut vectors = Vec::new();
-    if vectors.try_reserve_exact(count).is_err() {
-        return -errno::ENOMEM;
-    }
-    let mut total_length = 0usize;
-    for index in 0..count {
-        let offset = match index.checked_mul(mem::size_of::<UserIoVec>()) {
-            Some(offset) => offset,
-            None => return -errno::EFAULT,
-        };
-        let address = match iovector.checked_add(offset) {
-            Some(address) => address,
-            None => return -errno::EFAULT,
-        };
-        let mut bytes = [0u8; mem::size_of::<UserIoVec>()];
-        if task.copy_from_user(address, &mut bytes).is_err() {
-            return -errno::EFAULT;
-        }
-        let vector = UserIoVec {
-            base: usize::from_ne_bytes(bytes[..mem::size_of::<usize>()].try_into().unwrap()),
-            length: usize::from_ne_bytes(bytes[mem::size_of::<usize>()..].try_into().unwrap()),
-        };
-        total_length = match total_length.checked_add(vector.length) {
-            Some(length) if length <= isize::MAX as usize => length,
-            _ => return -errno::EINVAL,
-        };
-        vectors.push(vector);
-    }
+    let (vectors, total_length) = match import_iovecs(&task, iovector, count) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
     if total_length == 0 {
         return 0;
     }

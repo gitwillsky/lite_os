@@ -87,28 +87,12 @@ pub(crate) fn sys_fchmodat(dirfd: isize, name: *const u8, mode: u32) -> isize {
     chmod_inode(&task, inode, mode)
 }
 
-/// @description 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。
-/// @param dirfd 相对 pathname 的目录 fd，或 AT_EMPTY_PATH 时的 fd。
-/// @param name pathname；AT_EMPTY_PATH 时可为空。
-/// @param owner u32::MAX 保留 UID，否则为新 owner。
-/// @param group u32::MAX 保留 GID，否则为新 group。
-/// @param flags 只接受 AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH。
-/// @return 成功为零，失败返回负 errno。
-pub(crate) fn sys_fchownat(
-    dirfd: isize,
-    name: *const u8,
+fn chown_inode(
+    task: &TaskControlBlock,
+    inode: alloc::sync::Arc<dyn Inode>,
     owner: u32,
     group: u32,
-    flags: u32,
 ) -> isize {
-    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
-        return -errno::EINVAL;
-    }
-    let task = current_task().expect("fchownat requires current task");
-    let inode = match target(&task, dirfd, name, flags) {
-        Ok(inode) => inode,
-        Err(error) => return error,
-    };
     let metadata = match inode.metadata() {
         Ok(value) => value,
         Err(error) => return ferr(error),
@@ -132,4 +116,45 @@ pub(crate) fn sys_fchownat(
         },
         |()| 0,
     )
+}
+
+/// @description 按 Linux fchown ABI 修改已打开 inode 的 owner/group 并更新 ctime。
+/// @param fd 指向 inode-backed open file description 的文件描述符。
+/// @param owner u32::MAX 保留 UID，否则为新 owner。
+/// @param group u32::MAX 保留 GID，否则为新 group。
+/// @return 成功为零；fd 无效或 anonymous fd 返回 EBADF，其他失败返回负 errno。
+pub(crate) fn sys_fchown(fd: usize, owner: u32, group: u32) -> isize {
+    let task = current_task().expect("fchown requires current task");
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let Some(inode) = ofd.inode_ref() else {
+        return -errno::EBADF;
+    };
+    chown_inode(&task, inode, owner, group)
+}
+
+/// @description 按 Linux fchownat ABI 原子修改 inode owner/group 并更新 ctime。
+/// @param dirfd 相对 pathname 的目录 fd，或 AT_EMPTY_PATH 时的 fd。
+/// @param name pathname；AT_EMPTY_PATH 时可为空。
+/// @param owner u32::MAX 保留 UID，否则为新 owner。
+/// @param group u32::MAX 保留 GID，否则为新 group。
+/// @param flags 只接受 AT_SYMLINK_NOFOLLOW/AT_EMPTY_PATH。
+/// @return 成功为零，失败返回负 errno。
+pub(crate) fn sys_fchownat(
+    dirfd: isize,
+    name: *const u8,
+    owner: u32,
+    group: u32,
+    flags: u32,
+) -> isize {
+    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+        return -errno::EINVAL;
+    }
+    let task = current_task().expect("fchownat requires current task");
+    let inode = match target(&task, dirfd, name, flags) {
+        Ok(inode) => inode,
+        Err(error) => return error,
+    };
+    chown_inode(&task, inode, owner, group)
 }

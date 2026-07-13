@@ -29,7 +29,7 @@ pub(crate) use procfs::{
 };
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, OpenedFile, init as init_vfs, vfs,
+    AdvisoryLockNotifier, OpenedFile, RecordLockMode, RecordLockRange, init as init_vfs, vfs,
 };
 
 /// @description filesystem adapter 向 VFS 投影的容量、inode 与类型快照。

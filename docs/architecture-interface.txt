@@ -438,11 +438,13 @@ kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn recover_or
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn allocate_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn append_bytes (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/file.rs :: enum CharacterDevice :: Entropy (DeviceKind)
 kernel/src/fs/file.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
 kernel/src/fs/file.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
+kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Inode (Arc < OpenedFile >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Pipe (Arc < PipeEnd >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
@@ -464,7 +466,6 @@ kernel/src/fs/file.rs :: pub (crate) impl CharacterDevice :: fn terminal (& self
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool , limit : usize ,) -> Result < (usize , usize) , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close (& mut self , fd : usize) -> Result < () , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close_cloexec (& mut self)
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn descriptor_flags (& self , fd : usize) -> Result < u32 , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (& mut self , old : usize , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool , limit : usize ,) -> Result < usize , () >
@@ -472,11 +473,13 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self 
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn slot_capacity (& self) -> usize
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
+kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_cloexec (& mut self) -> Option < Arc < OpenFileDescription > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Self
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode (opened : Arc < OpenedFile > , flags : u32) -> Arc < Self >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Option < Arc < dyn Inode > >
@@ -524,7 +527,9 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn write (& self 
 kernel/src/fs/file/terminal.rs :: pub (crate) struct Terminal
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
+kernel/src/fs/inode.rs :: enum DeviceKind :: Random
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
+kernel/src/fs/inode.rs :: enum DeviceKind :: Urandom
 kernel/src/fs/inode.rs :: enum DeviceKind :: Zero
 kernel/src/fs/inode.rs :: enum InodeType :: CharacterDevice = 3
 kernel/src/fs/inode.rs :: enum InodeType :: Directory = 1
@@ -621,7 +626,7 @@ kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry ,
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { allocate , append , mapping , read , sync_all , sync_inode , truncate , write , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , }
-kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , init as init_vfs , vfs , }
+kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> FileSystemStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 ,) -> Result < () , FileSystemError >
@@ -726,6 +731,7 @@ kernel/src/fs/vfs.rs :: pub (crate) static VFS_MANAGER : Once < VirtualFileSyste
 kernel/src/fs/vfs.rs :: pub (crate) struct VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) use advisory_lock :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , }
 kernel/src/fs/vfs.rs :: pub (crate) use opened :: OpenedFile
+kernel/src/fs/vfs.rs :: pub (crate) use record_lock :: { RecordLockMode , RecordLockRange }
 kernel/src/fs/vfs/advisory_lock.rs :: enum AdvisoryLockAttempt :: Acquired { key : AdvisoryLockKey , wake_waiters : bool , }
 kernel/src/fs/vfs/advisory_lock.rs :: enum AdvisoryLockAttempt :: Blocked { key : AdvisoryLockKey , wake_waiters : bool , }
 kernel/src/fs/vfs/advisory_lock.rs :: enum AdvisoryLockError :: FileSystem (FileSystemError)
@@ -743,6 +749,7 @@ kernel/src/fs/vfs/advisory_lock.rs :: pub (crate) impl VirtualFileSystem :: fn t
 kernel/src/fs/vfs/advisory_lock.rs :: pub (crate) impl VirtualFileSystem :: fn unlock_advisory_lock (& self , ofd : & Arc < OpenFileDescription > ,) -> Result < () , AdvisoryLockError >
 kernel/src/fs/vfs/advisory_lock.rs :: pub (crate) struct AdvisoryLockKey
 kernel/src/fs/vfs/advisory_lock.rs :: pub (crate) trait AdvisoryLockNotifier
+kernel/src/fs/vfs/advisory_lock.rs :: pub (super) impl VirtualFileSystem :: fn advisory_identity (ofd : & Arc < OpenFileDescription > ,) -> Result < (AdvisoryLockKey , usize) , AdvisoryLockError >
 kernel/src/fs/vfs/advisory_lock.rs :: pub (super) struct AdvisoryFileLock
 kernel/src/fs/vfs/advisory_lock.rs :: trait AdvisoryLockNotifier :: fn notify (& self , key : AdvisoryLockKey)
 kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , source : & [u8] , target : & [u8] , statistics : & FileSystemStatistics ,) -> Result < () , FileSystemError >
@@ -764,6 +771,21 @@ kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn root (inode : A
 kernel/src/fs/vfs/opened.rs :: pub (super) impl OpenedFile :: fn same_inode (& self , other : & Arc < OpenedFile >) -> bool
 kernel/src/fs/vfs/opened.rs :: pub (super) impl VirtualFileSystem :: fn mark_unlinked (& self , parent : & Arc < OpenedFile > , name : & [u8] , inode_identity : (usize , u64) ,)
 kernel/src/fs/vfs/opened.rs :: pub (super) impl VirtualFileSystem :: fn move_opened_entries (& self , old_parent : & Arc < OpenedFile > , old_name : & [u8] , source_identity : (usize , u64) , new_parent : Arc < OpenedFile > , new_name : & [u8] ,)
+kernel/src/fs/vfs/record_lock.rs :: enum RecordLockMode :: Read
+kernel/src/fs/vfs/record_lock.rs :: enum RecordLockMode :: Write
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockConflict :: mode : RecordLockMode
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockConflict :: owner : usize
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockConflict :: range : RecordLockRange
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockRange :: end : Option < u64 >
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockRange :: start : u64
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) enum RecordLockMode
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) impl VirtualFileSystem :: fn record_lock_conflict (& self , ofd : & Arc < OpenFileDescription > , owner : usize , mode : RecordLockMode , range : RecordLockRange ,) -> Result < Option < RecordLockConflict > , AdvisoryLockError >
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) impl VirtualFileSystem :: fn release_process_record_locks (& self , owner : usize)
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) impl VirtualFileSystem :: fn release_record_locks_for_file (& self , owner : usize , ofd : & Arc < OpenFileDescription > ,)
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) impl VirtualFileSystem :: fn try_record_lock (& self , ofd : & Arc < OpenFileDescription > , owner : usize , requested : Option < RecordLockMode > , range : RecordLockRange ,) -> Result < AdvisoryLockAttempt , AdvisoryLockError >
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) struct RecordLockConflict
+kernel/src/fs/vfs/record_lock.rs :: pub (crate) struct RecordLockRange
+kernel/src/fs/vfs/record_lock.rs :: pub (super) struct RecordLock
 kernel/src/id.rs :: pub (crate) fn next_runtime_object_id () -> u64
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn alloc (& mut self) -> usize
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn dealloc (& mut self , id : usize)
@@ -808,7 +830,22 @@ kernel/src/ipc.rs :: pub (crate) struct Pipe
 kernel/src/ipc.rs :: pub (crate) struct PipeEnd
 kernel/src/ipc.rs :: pub (crate) struct PipePollState
 kernel/src/ipc.rs :: pub (crate) trait PipeNotifier
+kernel/src/ipc.rs :: pub (crate) use eventfd :: { EventFd , EventFdRead , EventFdWrite }
 kernel/src/ipc.rs :: trait PipeNotifier :: fn notify (& self , pipe : & Arc < Pipe >)
+kernel/src/ipc/eventfd.rs :: enum EventFdRead :: Empty
+kernel/src/ipc/eventfd.rs :: enum EventFdRead :: Value (u64)
+kernel/src/ipc/eventfd.rs :: enum EventFdWrite :: Full
+kernel/src/ipc/eventfd.rs :: enum EventFdWrite :: Written
+kernel/src/ipc/eventfd.rs :: pub (crate) enum EventFdRead
+kernel/src/ipc/eventfd.rs :: pub (crate) enum EventFdWrite
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn new (initial : u64 , semaphore : bool , read_pair : (Arc < PipeEnd > , Arc < PipeEnd >) , write_pair : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Arc < Self >
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn notification_pipe (& self , read : bool) -> Arc < Pipe >
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn read (& self) -> EventFdRead
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn readable (& self) -> bool
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn readiness_generation (& self , events : i16) -> u64
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn writable (& self) -> bool
+kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn write (& self , value : u64) -> EventFdWrite
+kernel/src/ipc/eventfd.rs :: pub (crate) struct EventFd
 kernel/src/log.rs :: enum LogLevel :: Debug = 0
 kernel/src/log.rs :: enum LogLevel :: Error = 3
 kernel/src/log.rs :: enum LogLevel :: Info = 1
@@ -1418,11 +1455,12 @@ kernel/src/syscall/errno.rs :: pub (crate) const ESPIPE : isize = 29
 kernel/src/syscall/errno.rs :: pub (crate) const ESRCH : isize = 3
 kernel/src/syscall/errno.rs :: pub (crate) const ETIMEDOUT : isize = 110
 kernel/src/syscall/errno.rs :: pub (crate) const EXDEV : isize = 18
+kernel/src/syscall/eventfd.rs :: pub (crate) fn sys_eventfd2 (initial : u32 , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup3 (old : usize , new : usize , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fallocate (fd : usize , mode : usize , offset : i64 , length : i64) -> isize
-kernel/src/syscall/fs.rs :: pub (crate) fn sys_fcntl (fd : usize , cmd : u32 , arg : usize) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_fdatasync (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fstat (fd : usize , pointer : * mut u8) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fsync (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_ftruncate (fd : usize , size : u64) -> isize
@@ -1435,26 +1473,38 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
 kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
-kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchownat }
+kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchown , sys_fchownat }
+kernel/src/syscall/fs.rs :: pub (crate) use fcntl :: sys_fcntl
 kernel/src/syscall/fs.rs :: pub (crate) use flock :: sys_flock
-kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_read , sys_readv , sys_write , sys_writev }
+kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_write , sys_writev , }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mknodat , sys_renameat2 , sys_unlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_openat }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
+kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
 kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmod (fd : usize , mode : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchmodat (dirfd : isize , name : * const u8 , mode : u32) -> isize
+kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchown (fd : usize , owner : u32 , group : u32) -> isize
 kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchownat (dirfd : isize , name : * const u8 , owner : u32 , group : u32 , flags : u32 ,) -> isize
+kernel/src/syscall/fs/fcntl.rs :: pub (crate) fn sys_fcntl (fd : usize , command : u32 , argument : usize) -> isize
 kernel/src/syscall/fs/flock.rs :: pub (crate) fn sys_flock (fd : usize , operation : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
+kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , }
 kernel/src/syscall/fs/io.rs :: pub (crate) use vector :: sys_readv
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pread64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwrite64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
+kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io/vector.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io/vector.rs :: pub (super) UserIoVec :: base : usize
 kernel/src/syscall/fs/io/vector.rs :: pub (super) UserIoVec :: length : usize
 kernel/src/syscall/fs/io/vector.rs :: pub (super) const IOV_MAX : usize = 1024
+kernel/src/syscall/fs/io/vector.rs :: pub (super) fn import_iovecs (task : & TaskControlBlock , iovector : usize , count : usize ,) -> Result < (Vec < UserIoVec > , usize) , isize >
 kernel/src/syscall/fs/io/vector.rs :: pub (super) struct UserIoVec
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn bounded_regular_write (task : & TaskControlBlock , ofd : & OpenFileDescription , offset : u64 , requested : usize , completed : usize ,) -> Result < usize , isize >
 kernel/src/syscall/fs/io/write_limit.rs :: pub (super) fn file_size_exceeded (task : & TaskControlBlock) -> isize
@@ -1587,7 +1637,7 @@ kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { register_private_m
 kernel/src/task/mod.rs :: pub (crate) use model :: { PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
-kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , }
+kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
 kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : usize , }
@@ -1612,13 +1662,6 @@ kernel/src/task/model.rs :: pub (crate) enum StopTransition
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , ecall_pc : usize)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal_suspend (& self , temporary : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : alloc :: sync :: Arc < OpenFileDescription > , cloexec : bool ,) -> Result < usize , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate_pair (& self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate (& self , old : usize , minimum : usize , cloexec : bool ,) -> Result < usize , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate_to (& self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_flags (& self , fd : usize) -> Result < u32 , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
@@ -1637,7 +1680,6 @@ kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , Si
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn close_all_files (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
@@ -1652,6 +1694,7 @@ kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: f
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
+kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn validate_user_write (& self , user_address : usize , length : usize ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_key < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_word < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
@@ -1677,6 +1720,7 @@ kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn pr
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn unmap_user_mapping (& self , address : usize , length : usize ,) -> Result < () , MemoryError >
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn validate_user_write (& self , user_address : usize , length : usize , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_key < R > (& self , address : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn with_futex_word < R > (& self , address : usize , private : bool , limits : UserFaultLimits , consume : impl FnOnce (FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
@@ -1721,9 +1765,18 @@ kernel/src/task/model/credentials.rs :: pub (super) impl Credentials :: fn set_u
 kernel/src/task/model/credentials.rs :: pub (super) impl Credentials :: fn uid (& self , effective : bool) -> u32
 kernel/src/task/model/credentials.rs :: pub (super) impl TaskControlBlock :: fn apply_exec_setid (& self , mode : u32 , uid : u32 , gid : u32)
 kernel/src/task/model/credentials.rs :: pub (super) struct Credentials
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn close_all_files (& self)
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < usize , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate_pair (& self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool ,) -> Result < (usize , usize) , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate (& self , old : usize , minimum : usize , cloexec : bool ,) -> Result < usize , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate_to (& self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_flags (& self , fd : usize) -> Result < u32 , () >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_set_flags (& self , fd : usize , flags : u32) -> Result < () , () >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn process_file_descriptors (& self ,) -> Option < alloc :: vec :: Vec < ProcFileDescriptorSnapshot > >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn with_file_descriptions < R > (& self , first : usize , second : usize , operation : impl FnOnce (Arc < OpenFileDescription > , Arc < OpenFileDescription >) -> R ,) -> Option < R >
+kernel/src/task/model/file_descriptions.rs :: pub (super) impl TaskControlBlock :: fn close_cloexec_files (& self)
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
@@ -1917,6 +1970,7 @@ kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: U
 kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) enum AdvisoryLockWaitError
 kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn install_advisory_lock_notifier ()
 kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn wait_for_advisory_lock (ofd : & Arc < OpenFileDescription > , mode : AdvisoryLockMode ,) -> Result < () , AdvisoryLockWaitError >
+kernel/src/task/task_manager/advisory_lock.rs :: pub (crate) fn wait_for_record_lock (ofd : & Arc < OpenFileDescription > , owner : usize , mode : RecordLockMode , range : RecordLockRange ,) -> Result < () , AdvisoryLockWaitError >
 kernel/src/task/task_manager/advisory_lock.rs :: pub (super) fn interrupt_waiter (entry : IndexedWaitEntry , wait_id : u64 , membership_id : u64) -> bool
 kernel/src/task/task_manager/context_switch.rs :: pub (super) fn schedule_with_task_context (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()

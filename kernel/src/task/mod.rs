@@ -23,6 +23,7 @@ pub(crate) use model::{
 pub(crate) use processor::*;
 pub(crate) use task_manager::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
+    wait_for_record_lock,
 };
 pub(crate) use task_manager::*;
 pub(crate) use trap_context::TrapContext;

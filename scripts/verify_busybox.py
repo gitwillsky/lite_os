@@ -35,6 +35,8 @@ from build_cache import (
 )
 from qemu_gate import boot, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
+from ext2_image import find_debugfs
+from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
     cached_musl_paths,
@@ -122,6 +124,7 @@ BUSYBOX_LINKS = (
     "pwd",
     "readlink",
     "realpath",
+    "reboot",
     "reset",
     "rm",
     "rmdir",
@@ -184,79 +187,6 @@ def start_http_gate() -> tuple[subprocess.Popen[bytes], int]:
         if server.returncode == 0:
             raise RuntimeError("HTTP gate server exited without serving")
     raise RuntimeError("no free HTTP gate port in 18080..18180")
-
-
-def start_https_gate(directory: Path) -> tuple[subprocess.Popen[bytes], int, Path]:
-    """创建临时 CA/server identity，并启动只供 QEMU gate 消费的 HTTPS origin。"""
-    ca_key = directory / "ca.key"
-    ca_cert = directory / "ca.pem"
-    server_key = directory / "server.key"
-    server_csr = directory / "server.csr"
-    server_cert = directory / "server.pem"
-    extensions = directory / "server.ext"
-    extensions.write_text(
-        "basicConstraints=CA:FALSE\n"
-        "keyUsage=digitalSignature,keyEncipherment\n"
-        "extendedKeyUsage=serverAuth\n"
-        "subjectAltName=DNS:liteos-gate.test\n"
-    )
-    run(
-        [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-nodes",
-            "-days", "1", "-subj", "/CN=LiteOS Gate CA", "-keyout", str(ca_key),
-            "-out", str(ca_cert),
-        ],
-        ROOT,
-    )
-    run(
-        [
-            "openssl", "req", "-newkey", "rsa:2048", "-sha256", "-nodes",
-            "-subj", "/CN=liteos-gate.test", "-keyout", str(server_key),
-            "-out", str(server_csr),
-        ],
-        ROOT,
-    )
-    run(
-        [
-            "openssl", "x509", "-req", "-in", str(server_csr), "-CA", str(ca_cert),
-            "-CAkey", str(ca_key), "-CAcreateserial", "-days", "1", "-sha256",
-            "-extfile", str(extensions), "-out", str(server_cert),
-        ],
-        ROOT,
-    )
-    for port in range(18443, 18544):
-        server = subprocess.Popen(
-            [
-                sys.executable,
-                str(ROOT / "scripts/https_gate.py"),
-                "--cert", str(server_cert),
-                "--key", str(server_key),
-                "--port", str(port),
-            ],
-            cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-        )
-        try:
-            server.wait(timeout=0.05)
-        except subprocess.TimeoutExpired:
-            return server, port, ca_cert
-    raise RuntimeError("no free HTTPS gate port in 18443..18543")
-
-
-def install_runtime_tls_identity(image: Path, public_bundle: Path, gate_ca: Path, directory: Path) -> None:
-    """只在 disposable runtime image 注入 gate CA/hostname，不污染发布 rootfs trust policy。"""
-    bundle = directory / "gate-cert.pem"
-    bundle.write_bytes(public_bundle.read_bytes() + b"\n" + gate_ca.read_bytes())
-    hosts = directory / "hosts"
-    hosts.write_text("10.0.2.2 liteos-gate.test\n")
-    commands = directory / "tls.debugfs"
-    commands.write_text(
-        "rm /etc/ssl/cert.pem\n"
-        f"write {bundle} /etc/ssl/cert.pem\n"
-        f"write {hosts} /etc/hosts\n"
-    )
-    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
 
 def install_archive_fixtures(image: Path, directory: Path) -> None:
@@ -719,19 +649,6 @@ def verify_elf(binary: Path, compiler: Path) -> None:
             raise RuntimeError("BusyBox requests an executable stack")
 
 
-def find_debugfs() -> Path:
-    candidates = (
-        shutil.which("debugfs"),
-        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
-        "/usr/local/opt/e2fsprogs/sbin/debugfs",
-        "/usr/sbin/debugfs",
-    )
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return Path(candidate)
-    raise RuntimeError("debugfs from e2fsprogs is required")
-
-
 def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     payload = {
         "kind": "dynamic-loader-probe",
@@ -836,7 +753,6 @@ def create_image(
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
-        f"write {openssl.ca_bundle} /etc/ssl/cert.pem",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
@@ -923,8 +839,12 @@ def create_image(
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
-    if "Type: regular" not in ca_bundle:
-        raise RuntimeError("BusyBox rootfs lacks the Mozilla CA trust bundle")
+    ca_store = run(
+        [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
+        ROOT,
+    )
+    if "Type: symlink" not in ca_bundle or "Type: regular" not in ca_store:
+        raise RuntimeError("BusyBox rootfs lacks the package-owned Mozilla CA trust bundle")
     return image
 
 
@@ -983,7 +903,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            11,
+            12,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -992,7 +912,6 @@ def main() -> int:
                 dynamic_probe,
                 dynamic_library,
                 openssl.binary,
-                openssl.ca_bundle,
                 ROOT / "user/passwd",
                 ROOT / "user/group",
                 ROOT / "user/inittab",
@@ -1001,6 +920,8 @@ def main() -> int:
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 ROOT / "scripts/https_gate.py",
+                ROOT / "scripts/tls_gate.py",
+                ROOT / "scripts/ext2_image.py",
                 ROOT / "scripts/apk_cache.py",
                 ROOT / "scripts/apk_package.py",
                 ROOT / "scripts/apk_rootfs.py",
@@ -1019,7 +940,7 @@ def main() -> int:
         shutil.copyfile(image, runtime_image)
         http_server, http_port = start_http_gate()
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
-        install_runtime_tls_identity(runtime_image, openssl.ca_bundle, gate_ca, runtime_path)
+        install_runtime_tls_identity(runtime_image, gate_ca, runtime_path, find_debugfs())
         install_archive_fixtures(runtime_image, runtime_path)
         install_dhcp_gate_script(runtime_image, runtime_path)
         install_phase55_script(runtime_image, runtime_path)

@@ -9,7 +9,10 @@ use spin::Mutex;
 
 use super::Epoll;
 use super::{DeviceKind, FileSystemError, FileSystemStatistics, Inode, OpenedFile, vfs};
-use crate::{ipc::PipeEnd, socket::Socket};
+use crate::{
+    ipc::{EventFd, PipeEnd},
+    socket::Socket,
+};
 
 pub(crate) const O_ACCMODE: u32 = 3;
 pub(crate) const O_RDONLY: u32 = 0;
@@ -24,6 +27,7 @@ pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1_048_576;
 pub(crate) enum CharacterDevice {
     Null,
     Zero,
+    Entropy(DeviceKind),
     Terminal {
         terminal: Arc<Terminal>,
         kind: DeviceKind,
@@ -35,6 +39,7 @@ impl CharacterDevice {
         match self {
             Self::Null => DeviceKind::Null,
             Self::Zero => DeviceKind::Zero,
+            Self::Entropy(kind) => *kind,
             Self::Terminal { kind, .. } => *kind,
         }
     }
@@ -42,7 +47,7 @@ impl CharacterDevice {
     pub(crate) fn terminal(&self) -> Option<&Arc<Terminal>> {
         match self {
             Self::Terminal { terminal, .. } => Some(terminal),
-            Self::Null | Self::Zero => None,
+            Self::Null | Self::Zero | Self::Entropy(_) => None,
         }
     }
 }
@@ -53,6 +58,7 @@ pub(crate) enum OpenFileKind {
     Pipe(Arc<PipeEnd>),
     Socket(Arc<Socket>),
     Epoll(Arc<Epoll>),
+    EventFd(Arc<EventFd>),
     Inode(Arc<OpenedFile>),
 }
 
@@ -98,6 +104,7 @@ impl OpenFileDescription {
             OpenFileKind::Inode(_) => result = events & (INPUT | OUTPUT),
             OpenFileKind::Character(device) => match device {
                 CharacterDevice::Null | CharacterDevice::Zero => result = events & (INPUT | OUTPUT),
+                CharacterDevice::Entropy(_) => result = events & INPUT,
                 CharacterDevice::Terminal { terminal, .. } => {
                     result = events & OUTPUT;
                     if events & INPUT != 0 && terminal.wait_ready() {
@@ -143,6 +150,14 @@ impl OpenFileDescription {
                     result |= INPUT;
                 }
             }
+            OpenFileKind::EventFd(event) => {
+                if events & INPUT != 0 && event.readable() {
+                    result |= INPUT;
+                }
+                if events & OUTPUT != 0 && event.writable() {
+                    result |= OUTPUT;
+                }
+            }
         }
         result
     }
@@ -161,7 +176,10 @@ impl OpenFileDescription {
             }
             OpenFileKind::Socket(socket) => socket.readiness_generation(events),
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
-            OpenFileKind::Character(CharacterDevice::Null | CharacterDevice::Zero)
+            OpenFileKind::EventFd(event) => event.readiness_generation(events),
+            OpenFileKind::Character(
+                CharacterDevice::Null | CharacterDevice::Zero | CharacterDevice::Entropy(_),
+            )
             | OpenFileKind::Inode(_) => 0,
         }
     }
@@ -176,6 +194,7 @@ impl OpenFileDescription {
                 | OpenFileKind::Pipe(_)
                 | OpenFileKind::Socket(_)
                 | OpenFileKind::Epoll(_)
+                | OpenFileKind::EventFd(_)
         )
     }
 
@@ -218,6 +237,7 @@ impl OpenFileDescription {
         let device = match kind {
             DeviceKind::Null => CharacterDevice::Null,
             DeviceKind::Zero => CharacterDevice::Zero,
+            DeviceKind::Random | DeviceKind::Urandom => CharacterDevice::Entropy(kind),
             DeviceKind::Tty | DeviceKind::Console => CharacterDevice::Terminal { terminal, kind },
         };
         Arc::new(Self {
@@ -269,11 +289,24 @@ impl OpenFileDescription {
         })
     }
 
+    pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Arc<Self> {
+        Arc::new(Self {
+            kind: OpenFileKind::EventFd(event),
+            offset: Mutex::new(0),
+            flags: Mutex::new(O_RDWR | flags),
+            character_opened: None,
+            descriptor_refs: AtomicUsize::new(0),
+        })
+    }
+
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.inode()),
             OpenFileKind::Character(_) => None,
-            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => None,
+            OpenFileKind::Pipe(_)
+            | OpenFileKind::Socket(_)
+            | OpenFileKind::Epoll(_)
+            | OpenFileKind::EventFd(_) => None,
         }
     }
 
@@ -283,7 +316,10 @@ impl OpenFileDescription {
         match &self.kind {
             OpenFileKind::Inode(opened) => Some(opened.clone()),
             OpenFileKind::Character(_) => self.character_opened.clone(),
-            OpenFileKind::Pipe(_) | OpenFileKind::Socket(_) | OpenFileKind::Epoll(_) => None,
+            OpenFileKind::Pipe(_)
+            | OpenFileKind::Socket(_)
+            | OpenFileKind::Epoll(_)
+            | OpenFileKind::EventFd(_) => None,
         }
     }
 
@@ -314,7 +350,9 @@ impl OpenFileDescription {
                 fragment_size: 4096,
                 flags: 0x20,
             }),
-            OpenFileKind::Epoll(_) => Err(FileSystemError::InvalidFileSystem),
+            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) => {
+                Err(FileSystemError::InvalidFileSystem)
+            }
         }
     }
 }
@@ -558,11 +596,18 @@ impl FileDescriptorTable {
         Ok(())
     }
 
-    pub(crate) fn close_cloexec(&mut self) {
-        for entry in &mut self.entries {
-            if entry.as_ref().is_some_and(|entry| entry.cloexec) {
-                drop(entry.take());
-            }
-        }
+    /// @description 取走一个 FD_CLOEXEC entry，让 Process owner 在 files lock 外执行 close cleanup。
+    ///
+    /// @return 被关闭 entry 的 OFD；不存在更多 CLOEXEC entry 时返回 None。
+    pub(crate) fn take_cloexec(&mut self) -> Option<Arc<OpenFileDescription>> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.as_ref().is_some_and(|entry| entry.cloexec))?
+            .take()
+            .expect("matched cloexec entry disappeared");
+        let ofd = entry.ofd.clone();
+        drop(entry);
+        Some(ofd)
     }
 }

@@ -1,11 +1,107 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::fs::{OpenFileDescription, ProcFileDescriptorSnapshot};
+use crate::fs::{OpenFileDescription, ProcFileDescriptorSnapshot, vfs};
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
         self.process.files.lock().get(fd)
+    }
+
+    pub(crate) fn fd_allocate(
+        &self,
+        ofd: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
+        self.process
+            .files
+            .lock()
+            .allocate(ofd, 0, cloexec, self.file_descriptor_limit())
+    }
+
+    pub(crate) fn fd_allocate_pair(
+        &self,
+        first: Arc<OpenFileDescription>,
+        second: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<(usize, usize), ()> {
+        self.process.files.lock().allocate_pair(
+            first,
+            second,
+            cloexec,
+            self.file_descriptor_limit(),
+        )
+    }
+
+    pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
+        let ofd = {
+            let mut files = self.process.files.lock();
+            let ofd = files.get(fd).ok_or(())?;
+            files.close(fd)?;
+            ofd
+        };
+        vfs().release_record_locks_for_file(self.tgid(), &ofd);
+        Ok(())
+    }
+
+    /// @description 在最后一个 Thread exit commit 后立即关闭 Process 的全部 fd。
+    ///
+    /// @return 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
+    pub(crate) fn close_all_files(&self) {
+        let files = self.process.files.lock().take_all();
+        vfs().release_process_record_locks(self.tgid());
+        drop(files);
+    }
+
+    /// @description exec commit 逐个关闭 CLOEXEC descriptors，并执行 process-owned record-lock cleanup。
+    ///
+    /// @return 无返回值；非 CLOEXEC descriptors 与其 record locks 保持跨 exec 存活。
+    pub(super) fn close_cloexec_files(&self) {
+        loop {
+            let ofd = self.process.files.lock().take_cloexec();
+            let Some(ofd) = ofd else {
+                break;
+            };
+            vfs().release_record_locks_for_file(self.tgid(), &ofd);
+        }
+    }
+
+    pub(crate) fn fd_duplicate(
+        &self,
+        old: usize,
+        minimum: usize,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
+        self.process
+            .files
+            .lock()
+            .duplicate(old, minimum, cloexec, self.file_descriptor_limit())
+    }
+
+    pub(crate) fn fd_duplicate_to(
+        &self,
+        old: usize,
+        new: usize,
+        cloexec: bool,
+    ) -> Result<usize, ()> {
+        let replaced = {
+            let mut files = self.process.files.lock();
+            let replaced = files.get(new);
+            files.duplicate_to(old, new, cloexec, self.file_descriptor_limit())?;
+            replaced
+        };
+        if let Some(ofd) = replaced {
+            vfs().release_record_locks_for_file(self.tgid(), &ofd);
+        }
+        Ok(new)
+    }
+
+    pub(crate) fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
+        self.process.files.lock().descriptor_flags(fd)
+    }
+
+    pub(crate) fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
+        self.process.files.lock().set_descriptor_flags(fd, flags)
     }
 
     /// @description 在 Process fd-table owner lock 内解析两个 descriptor 并执行一次操作。

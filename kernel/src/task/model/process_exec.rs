@@ -43,7 +43,7 @@ impl TaskControlBlock {
         let old_address_space = self.process.replace_address_space(new_address_space);
         *self.process.comm.lock() = new_comm;
         *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
-        self.process.files.lock().close_cloexec();
+        self.close_cloexec_files();
         self.process
             .signal_state
             .lock()

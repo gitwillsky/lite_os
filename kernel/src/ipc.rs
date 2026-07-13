@@ -1,6 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
+mod eventfd;
+pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
+
 pub(crate) const PIPE_BUF: usize = 4096;
 const PIPE_CAPACITY: usize = 64 * 1024;
 

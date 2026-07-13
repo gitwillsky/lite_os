@@ -13,7 +13,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
-    fs::{Console, FileDescriptorTable, OpenFileDescription, OpenedFile, Terminal, vfs},
+    fs::{Console, FileDescriptorTable, OpenedFile, Terminal, vfs},
     memory::{
         ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack, MapPermission,
         MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer, MemorySet,
@@ -577,75 +577,6 @@ impl TaskControlBlock {
     /// @return 与 console OFD 指向同一 TTY owner 的 Arc。
     pub(crate) fn terminal(&self) -> Arc<Terminal> {
         self.process.terminal.clone()
-    }
-
-    pub(crate) fn fd_allocate(
-        &self,
-        ofd: alloc::sync::Arc<OpenFileDescription>,
-        cloexec: bool,
-    ) -> Result<usize, ()> {
-        self.process
-            .files
-            .lock()
-            .allocate(ofd, 0, cloexec, self.file_descriptor_limit())
-    }
-
-    pub(crate) fn fd_allocate_pair(
-        &self,
-        first: Arc<OpenFileDescription>,
-        second: Arc<OpenFileDescription>,
-        cloexec: bool,
-    ) -> Result<(usize, usize), ()> {
-        self.process.files.lock().allocate_pair(
-            first,
-            second,
-            cloexec,
-            self.file_descriptor_limit(),
-        )
-    }
-
-    pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
-        self.process.files.lock().close(fd)
-    }
-
-    /// @description 在最后一个 Thread exit commit 后立即关闭 Process 的全部 fd。
-    ///
-    /// @return 无返回值；OFD Drop 在 files lock 外执行并可唤醒 pipe peer。
-    pub(super) fn close_all_files(&self) {
-        let files = self.process.files.lock().take_all();
-        drop(files);
-    }
-
-    pub(crate) fn fd_duplicate(
-        &self,
-        old: usize,
-        minimum: usize,
-        cloexec: bool,
-    ) -> Result<usize, ()> {
-        self.process
-            .files
-            .lock()
-            .duplicate(old, minimum, cloexec, self.file_descriptor_limit())
-    }
-
-    pub(crate) fn fd_duplicate_to(
-        &self,
-        old: usize,
-        new: usize,
-        cloexec: bool,
-    ) -> Result<usize, ()> {
-        self.process
-            .files
-            .lock()
-            .duplicate_to(old, new, cloexec, self.file_descriptor_limit())
-    }
-
-    pub(crate) fn fd_flags(&self, fd: usize) -> Result<u32, ()> {
-        self.process.files.lock().descriptor_flags(fd)
-    }
-
-    pub(crate) fn fd_set_flags(&self, fd: usize, flags: u32) -> Result<(), ()> {
-        self.process.files.lock().set_descriptor_flags(fd, flags)
     }
 
     /// @description 返回当前 Process/thread group ID。

@@ -17,6 +17,8 @@ pub(crate) enum InodeType {
 pub(crate) enum DeviceKind {
     Null,
     Zero,
+    Random,
+    Urandom,
     Tty,
     Console,
 }
@@ -27,6 +29,8 @@ impl DeviceKind {
         match self {
             Self::Null => (1, 3),
             Self::Zero => (1, 5),
+            Self::Random => (1, 8),
+            Self::Urandom => (1, 9),
             Self::Tty => (5, 0),
             Self::Console => (5, 1),
         }
@@ -36,6 +40,8 @@ impl DeviceKind {
         match self {
             Self::Null => 2,
             Self::Zero => 3,
+            Self::Random => 10,
+            Self::Urandom => 11,
             Self::Tty => 4,
             Self::Console => 5,
         }
@@ -44,7 +50,7 @@ impl DeviceKind {
     pub(crate) fn mode(self) -> u32 {
         match self {
             Self::Console => 0o020600,
-            Self::Null | Self::Zero | Self::Tty => 0o020666,
+            Self::Null | Self::Zero | Self::Random | Self::Urandom | Self::Tty => 0o020666,
         }
     }
 }

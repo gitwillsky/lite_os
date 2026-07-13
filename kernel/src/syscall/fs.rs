@@ -3,6 +3,7 @@ use core::mem;
 
 mod access;
 mod attributes;
+mod fcntl;
 mod flock;
 mod io;
 mod links;
@@ -12,9 +13,13 @@ mod pathname;
 mod readlink;
 pub(crate) mod statistics;
 pub(crate) use access::sys_faccessat;
-pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchownat};
+pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat};
+pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
-pub(crate) use io::{sys_read, sys_readv, sys_write, sys_writev};
+pub(crate) use io::{
+    sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2, sys_read,
+    sys_readv, sys_write, sys_writev,
+};
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
 pub(crate) use open::{sys_chdir, sys_openat};
@@ -170,7 +175,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
     crate::fs::allocate(inode, offset as u64, length as u64).map_or_else(ferr, |_| 0)
 }
 
-pub(crate) fn sys_fsync(fd: usize) -> isize {
+pub(super) fn sync_file(fd: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
@@ -180,6 +185,22 @@ pub(crate) fn sys_fsync(fd: usize) -> isize {
     ofd.inode_ref().map_or(-errno::EINVAL, |i| {
         crate::fs::sync_inode(i).map_or_else(ferr, |_| 0)
     })
+}
+
+/// @description 把一个 inode-backed OFD 的数据与 metadata 提交到 stable storage。
+///
+/// @param fd 要同步的 descriptor。
+/// @return 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
+pub(crate) fn sys_fsync(fd: usize) -> isize {
+    sync_file(fd)
+}
+
+/// @description 提交文件数据及恢复该数据所需 metadata；当前同步 journal 模型与 fsync 共用提交边界。
+///
+/// @param fd 要同步的 descriptor。
+/// @return 成功返回零；非 inode fd 或底层 I/O 失败返回负 errno。
+pub(crate) fn sys_fdatasync(fd: usize) -> isize {
+    sync_file(fd)
 }
 
 /// @description 将唯一 mounted filesystem 的已提交写入同步到 stable storage。
@@ -332,6 +353,7 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
                 copy_stat(&task, pointer, None, 0o140777, socket.object_id())
             }
             OpenFileKind::Epoll(_) => copy_stat(&task, pointer, None, 0o100600, 0),
+            OpenFileKind::EventFd(_) => copy_stat(&task, pointer, None, 0o100600, 0),
             OpenFileKind::Inode(_) => unreachable!("inode_ref lost inode OFD"),
         },
     }
@@ -529,41 +551,6 @@ pub(crate) fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
     task.fd_duplicate_to(old, new, flags & O_CLOEXEC != 0)
         .map_or(-errno::EBADF, |value| value as isize)
 }
-pub(crate) fn sys_fcntl(fd: usize, cmd: u32, arg: usize) -> isize {
-    let Some(t) = current_task() else {
-        return -errno::ESRCH;
-    };
-    match cmd {
-        0 if arg < t.file_descriptor_limit() => {
-            if t.fd_get(fd).is_none() {
-                -errno::EBADF
-            } else {
-                t.fd_duplicate(fd, arg, false)
-                    .map_or(-errno::EMFILE, |value| value as isize)
-            }
-        }
-        1 => t.fd_flags(fd).map_or(-errno::EBADF, |v| v as isize),
-        2 => t.fd_set_flags(fd, arg as u32).map_or(-errno::EBADF, |_| 0),
-        3 => t
-            .fd_get(fd)
-            .map_or(-errno::EBADF, |v| *v.flags.lock() as isize),
-        4 => t.fd_get(fd).map_or(-errno::EBADF, |ofd| {
-            let mut flags = ofd.flags.lock();
-            *flags = (*flags & !(O_APPEND | O_NONBLOCK)) | (arg as u32 & (O_APPEND | O_NONBLOCK));
-            0
-        }),
-        1030 if arg < t.file_descriptor_limit() => {
-            if t.fd_get(fd).is_none() {
-                -errno::EBADF
-            } else {
-                t.fd_duplicate(fd, arg, true)
-                    .map_or(-errno::EMFILE, |value| value as isize)
-            }
-        }
-        _ => -errno::EINVAL,
-    }
-}
-
 pub(crate) fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;

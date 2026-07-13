@@ -35,7 +35,11 @@ ALPINE_KEYS = (
     "alpine-keys-2.5-r0.apk",
     "ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200",
 )
-BOOTSTRAP_RECIPE_VERSION = 1
+CA_CERTIFICATES_BUNDLE = (
+    "ca-certificates-bundle-20260611-r0.apk",
+    "537dcb625ede1cb81e751dd92552b2715a35fdd72cdb43a965a055f14900d529",
+)
+BOOTSTRAP_RECIPE_VERSION = 2
 LOCAL_KEY_NAME = "liteos-local.rsa"
 
 
@@ -45,6 +49,7 @@ class ApkBootstrapPaths:
 
     apk_static: Path
     alpine_keys: Path
+    ca_certificates_bundle: Path
     private_key: Path
     public_key: Path
     fingerprint: str
@@ -97,6 +102,7 @@ def bootstrap_payload() -> dict[str, object]:
         "packages": {
             APK_TOOLS_STATIC[0]: APK_TOOLS_STATIC[1],
             ALPINE_KEYS[0]: ALPINE_KEYS[1],
+            CA_CERTIFICATES_BUNDLE[0]: CA_CERTIFICATES_BUNDLE[1],
         },
     }
 
@@ -168,6 +174,7 @@ def cached_apk_bootstrap() -> ApkBootstrapPaths:
     return ApkBootstrapPaths(
         apk_static=apk_static.resolve(),
         alpine_keys=alpine_keys.resolve(),
+        ca_certificates_bundle=download(*CA_CERTIFICATES_BUNDLE).resolve(),
         private_key=private_key.resolve(),
         public_key=public_key.resolve(),
         fingerprint=identity,

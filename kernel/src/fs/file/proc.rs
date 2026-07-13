@@ -17,6 +17,7 @@ impl OpenFileDescription {
             }
             OpenFileKind::Socket(socket) => format!("socket:[{}]", socket.object_id()).into_bytes(),
             OpenFileKind::Epoll(_) => b"anon_inode:[eventpoll]".to_vec(),
+            OpenFileKind::EventFd(_) => b"anon_inode:[eventfd]".to_vec(),
             OpenFileKind::Character(_) | OpenFileKind::Inode(_) => {
                 unreachable!("pathname-backed OFD lost opened identity")
             }

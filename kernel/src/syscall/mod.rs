@@ -1,6 +1,7 @@
 mod credentials;
 mod epoll;
 mod errno;
+mod eventfd;
 mod fs;
 mod futex;
 mod ioctl;
@@ -23,6 +24,7 @@ use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
     reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
+use eventfd::sys_eventfd2;
 use membarrier::sys_membarrier;
 use resource_limit::sys_prlimit64;
 use riscv_hwprobe::sys_riscv_hwprobe;
@@ -57,6 +59,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[5],
         ),
         SYSCALL_GETCWD => sys_get_cwd(args[0] as *mut u8, args[1]),
+        SYSCALL_EVENTFD2 => sys_eventfd2(args[0] as u32, args[1] as u32),
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as u32, args[2]),
@@ -90,6 +93,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[3] as u32,
             args[4] as u32,
         ),
+        SYSCALL_FCHOWN => sys_fchown(args[0], args[1] as u32, args[2] as u32),
         SYSCALL_STATFS => fs::statistics::sys_statfs(args[0] as *const u8, args[1]),
         SYSCALL_FSTATFS => fs::statistics::sys_fstatfs(args[0], args[1]),
         SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
@@ -109,6 +113,10 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
         SYSCALL_READV => sys_readv(args[0], args[1], args[2]),
         SYSCALL_WRITEV => sys_writev(args[0], args[1], args[2]),
+        SYSCALL_PREAD64 => sys_pread64(args[0], args[1], args[2], args[3] as i64),
+        SYSCALL_PWRITE64 => sys_pwrite64(args[0], args[1], args[2], args[3] as i64),
+        SYSCALL_PREADV => sys_preadv(args[0], args[1], args[2], args[3] as i64),
+        SYSCALL_PWRITEV => sys_pwritev(args[0], args[1], args[2], args[3] as i64),
         SYSCALL_PPOLL => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_PSELECT6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
         SYSCALL_READLINKAT => sys_readlinkat(
@@ -126,6 +134,9 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_FSTAT => sys_fstat(args[0], args[1] as *mut u8),
         SYSCALL_SYNC => sys_sync(),
         SYSCALL_FSYNC => sys_fsync(args[0]),
+        SYSCALL_FDATASYNC => sys_fdatasync(args[0]),
+        SYSCALL_PREADV2 => sys_preadv2(args[0], args[1], args[2], args[3] as i64, args[5] as u32),
+        SYSCALL_PWRITEV2 => sys_pwritev2(args[0], args[1], args[2], args[3] as i64, args[5] as u32),
         SYSCALL_UTIMENSAT => sys_utimensat(
             args[0] as isize,
             args[1] as *const u8,

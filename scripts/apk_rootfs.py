@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""让签名 liteos-base package 成为最终 rootfs 文件与 package database 的唯一 owner。"""
+"""让签名 APK 成为最终 rootfs 文件与 package database 的唯一 owner。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, cached_apk_bootstrap
+from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, ApkBootstrapPaths, cached_apk_bootstrap
 from apk_package import ApkPackageMetadata, build_signed_apk, tamper_signed_apk_control
 from qemu_gate import boot
 
@@ -34,7 +34,9 @@ def run(command: list[str]) -> str:
     return result.stdout
 
 
-def _inject_bootstrap_files(image: Path, debugfs: Path, workspace: Path) -> tuple[Path, Path]:
+def _inject_bootstrap_files(
+    image: Path, debugfs: Path, workspace: Path
+) -> ApkBootstrapPaths:
     """把 apk.static、trust roots 和 repository policy 加入 package staging 前的镜像。"""
     bootstrap = cached_apk_bootstrap()
     repositories = workspace / "repositories"
@@ -58,7 +60,7 @@ def _inject_bootstrap_files(image: Path, debugfs: Path, workspace: Path) -> tupl
     script = workspace / "inject-apk.debugfs"
     script.write_text("\n".join(commands) + "\n")
     run([str(debugfs), "-w", "-f", str(script), str(image)])
-    return bootstrap.private_key, bootstrap.public_key
+    return bootstrap
 
 
 def _stage_package_root(
@@ -257,6 +259,7 @@ def _inject_package_bootstrap(
     debugfs: Path,
     workspace: Path,
     package: Path,
+    ca_certificates_bundle: Path,
     fixtures: tuple[Path, ...],
 ) -> None:
     """临时替换 init policy，并在同一次 guest boot 验证 package-manager contract。"""
@@ -267,14 +270,16 @@ def _inject_package_bootstrap(
     concurrent_a = next(path for path in fixtures if path.name.startswith("liteos-apk-concurrent-a-"))
     concurrent_b = next(path for path in fixtures if path.name.startswith("liteos-apk-concurrent-b-"))
     tampered = next(path for path in fixtures if path.name.startswith("liteos-apk-tamper-invalid-"))
-    run_paths = " ".join(f"/run/{name}" for name in (package.name, *fixture))
+    run_paths = " ".join(
+        f"/run/{name}" for name in (package.name, ca_certificates_bundle.name, *fixture)
+    )
     bootstrap_script = workspace / "apk-bootstrap.sh"
     bootstrap_script.write_text(
         "#!/bin/sh\n"
         "set -e\n"
         "APK='/sbin/apk.static --no-network'\n"
         "rm -f /etc/inittab\n"
-        f"$APK --initdb add /run/{package.name}\n"
+        f"$APK --initdb add /run/{ca_certificates_bundle.name} /run/{package.name}\n"
         f"if $APK add /run/{probe_v1.name}; then exit 71; fi\n"
         f"$APK add /run/{dependency.name} /run/{probe_v1.name}\n"
         "[ \"$(cat /usr/share/liteos-apk/dependency)\" = dependency ]\n"
@@ -308,6 +313,7 @@ def _inject_package_bootstrap(
     commands = workspace / "bootstrap.debugfs"
     commands.write_text(
         f"write {package} /run/{package.name}\n"
+        f"write {ca_certificates_bundle} /run/{ca_certificates_bundle.name}\n"
         + "".join(f"write {path} /run/{path.name}\n" for path in fixtures)
         + f"write {bootstrap_script} /run/apk-bootstrap.sh\n"
         "set_inode_field /run/apk-bootstrap.sh mode 0100755\n"
@@ -322,6 +328,8 @@ def _verify_package_ownership(image: Path, debugfs: Path) -> None:
     installed = run([str(debugfs), "-R", "cat /lib/apk/db/installed", str(image)])
     if f"P:{BASE_PACKAGE_NAME}" not in installed or f"V:{BASE_PACKAGE_VERSION}" not in installed:
         raise RuntimeError("final rootfs is not owned by the liteos-base APK database entry")
+    if "P:ca-certificates-bundle" not in installed:
+        raise RuntimeError("final TLS trust store is not owned by the Alpine CA bundle package")
     listing = run([str(debugfs), "-R", "ls -l /run", str(image)])
     if ".apk" in listing or "apk-bootstrap.sh" in listing:
         raise RuntimeError("final rootfs retains temporary APK bootstrap artifacts")
@@ -344,11 +352,22 @@ def assemble_apk_rootfs(
     forbidden_markers: tuple[str, ...],
 ) -> Path:
     """执行 image → signed package → real apk install → final image 的唯一 assembly。"""
-    private_key, public_key = _inject_bootstrap_files(image, debugfs, workspace)
+    bootstrap = _inject_bootstrap_files(image, debugfs, workspace)
     staging = _stage_package_root(image, debugfs, workspace, busybox_links)
-    package = _build_base_package(staging, workspace, private_key, public_key)
-    fixtures = _build_package_fixtures(workspace, private_key, public_key)
-    _inject_package_bootstrap(image, debugfs, workspace, package, fixtures)
+    package = _build_base_package(
+        staging, workspace, bootstrap.private_key, bootstrap.public_key
+    )
+    fixtures = _build_package_fixtures(
+        workspace, bootstrap.private_key, bootstrap.public_key
+    )
+    _inject_package_bootstrap(
+        image,
+        debugfs,
+        workspace,
+        package,
+        bootstrap.ca_certificates_bundle,
+        fixtures,
+    )
     boot(
         image,
         1,

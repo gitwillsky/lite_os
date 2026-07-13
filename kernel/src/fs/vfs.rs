@@ -16,9 +16,12 @@ use mount_table::write_mount_record;
 pub(crate) use opened::OpenedFile;
 #[path = "vfs/advisory_lock.rs"]
 mod advisory_lock;
+#[path = "vfs/record_lock.rs"]
+mod record_lock;
 pub(crate) use advisory_lock::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode, AdvisoryLockNotifier,
 };
+pub(crate) use record_lock::{RecordLockMode, RecordLockRange};
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {
@@ -33,6 +36,9 @@ pub(crate) struct VirtualFileSystem {
     // OWNER: VFS inode identity → OFD-owned BSD flock state；若放进 fd table，fork 后的独立
     // table 会复制锁，若放进 ext2 adapter，devfs 与其他 mounted inode 会形成第二套语义。
     advisory_locks: Mutex<Vec<advisory_lock::AdvisoryFileLock>>,
+    // OWNER: VFS inode identity → process-owned POSIX byte-range locks；若归 fd/OFD 所有，dup、fork
+    // 与任一 descriptor close 会产生错误的锁生命周期。
+    record_locks: Mutex<Vec<record_lock::RecordLock>>,
     // 唯一反向 adapter 只投递 key，不保存 task 状态；缺失时最后 descriptor close 无法唤醒 waiter。
     advisory_lock_notifier: Mutex<Option<Arc<dyn AdvisoryLockNotifier>>>,
 }
@@ -277,6 +283,7 @@ impl VirtualFileSystem {
             namespace_mutation: Mutex::new(()),
             opened: Mutex::new(Vec::new()),
             advisory_locks: Mutex::new(Vec::new()),
+            record_locks: Mutex::new(Vec::new()),
             advisory_lock_notifier: Mutex::new(None),
         }
     }
