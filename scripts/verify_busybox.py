@@ -92,6 +92,7 @@ BUSYBOX_LINKS = (
     "chmod",
     "chown",
     "kill",
+    "killall",
     "ln",
     "ls",
     "less",
@@ -100,9 +101,13 @@ BUSYBOX_LINKS = (
     "mv",
     "nc",
     "netstat",
+    "nohup",
     "od",
     "patch",
+    "pgrep",
     "ping",
+    "pidof",
+    "pkill",
     "printf",
     "ps",
     "pwd",
@@ -126,6 +131,7 @@ BUSYBOX_LINKS = (
     "tail",
     "tee",
     "touch",
+    "timeout",
     "top",
     "tr",
     "true",
@@ -136,6 +142,7 @@ BUSYBOX_LINKS = (
     "unxz",
     "unzip",
     "wc",
+    "watch",
     "wget",
     "which",
     "vi",
@@ -734,7 +741,7 @@ def main() -> int:
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
-            7,
+            8,
             (
                 ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
@@ -790,6 +797,11 @@ def main() -> int:
                 "LITEOS_VI_54",
                 "LITEOS_LESS_54",
                 "LITEOS_TEXT_DIAG_54",
+                "LITEOS_PROCFS_55",
+                "LITEOS_PROCESS_SIGNAL_55",
+                "LITEOS_PROCESS_LIFECYCLE_55",
+                "LITEOS_WATCH_55",
+                "LITEOS_PROCESS_TOOLS_55",
                 "LITEOS_LS_42",
                 "LITEOS_NULL_42",
                 "LITEOS_ZERO_4",
@@ -914,6 +926,18 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TEXT_DIAG_54",
+                    b"/bin/sleep 30 & p1=$!; /bin/sleep 30 & p2=$!; /bin/grep -q '^Name:[[:space:]]*sleep$' /proc/$p1/status && [ \"$(/bin/cat /proc/$p1/comm)\" = sleep ] && /bin/tr '\\000' ' ' </proc/$p1/cmdline | /bin/grep -q '/bin/sleep 30 ' && /bin/readlink /proc/self | /bin/grep -Eq '^[0-9]+$' && case \" $(/bin/pidof sleep) \" in *\" $p1 \"*) true;; *) false;; esac && /bin/pgrep sleep | /bin/grep -qx \"$p2\" && /bin/pgrep -f '/bin/sleep 30' | /bin/grep -qx \"$p1\" && echo LITEOS_PROCFS_$((5*11))\n",
+                ),
+                (
+                    "LITEOS_PROCFS_55",
+                    b"/bin/pkill -TERM -P $$ sleep; wait $p1; s1=$?; wait $p2; s2=$?; /bin/tail -f /dev/null & tail55=$!; /bin/killall tail; wait $tail55; st=$?; [ \"$s1:$s2:$st\" = 143:143:143 ] && [ ! -d /proc/$p1 ] && echo LITEOS_PROCESS_SIGNAL_$((5*11))\n",
+                ),
+                (
+                    "LITEOS_PROCESS_SIGNAL_55",
+                    b"/bin/rm -f /watch55; /bin/timeout 1 /bin/sleep 30 & timeout55=$!; /bin/nohup /bin/sleep 2 >/dev/null 2>&1 & nohup55=$!; /bin/watch -n 1 -t '/bin/echo refresh' >/watch55 & watch55=$!; while [ \"$(/bin/cat /proc/$nohup55/comm 2>/dev/null)\" != sleep ]; do :; done; /bin/kill -HUP $nohup55; wait $timeout55; timed=$?; wait $nohup55; nohup_status=$?; /bin/kill -INT $watch55; wait $watch55; watch_status=$?; refreshes=$(/bin/grep -c refresh /watch55); [ \"$timed:$nohup_status\" = 143:0 ] && echo LITEOS_PROCESS_LIFECYCLE_$((5*11)) && [ \"$watch_status\" -eq 130 ] && [ \"$refreshes\" -ge 2 ] && /bin/stty -a | /bin/grep -q echo && echo LITEOS_WATCH_$((5*11)) && echo LITEOS_PROCESS_TOOLS_$((5*11))\n",
+                ),
+                (
+                    "LITEOS_PROCESS_TOOLS_55",
                     b"/bin/ls /; echo LITEOS_LS_$((6*7))\n",
                 ),
                 (
@@ -990,6 +1014,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DLOPEN_42",
+                    b"",
+                ),
+                (
+                    "/ # ",
                     b"/bin/liteos-script 'alpha beta' omega\n",
                 ),
                 (

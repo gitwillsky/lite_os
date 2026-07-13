@@ -2,13 +2,10 @@ mod cow;
 mod executable_load;
 mod initial_stack;
 mod mmap;
-use core::sync::atomic::{AtomicU32, Ordering};
-use core::{arch::asm, error::Error, ops::Range};
-
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use bitflags::bitflags;
-use riscv::register::satp::{self, Satp};
-
+mod process;
+use super::config;
+use super::executable::{ElfKind, ExecutableImage};
+use super::{address::VirtualPageNumber, page_table::PageTable};
 use crate::memory::{
     SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
@@ -16,12 +13,12 @@ use crate::memory::{
     page_table::{PTEFlags, PageTableEntry, PageTableError},
     strampoline,
 };
-
-use super::config;
-use super::executable::{ElfKind, ExecutableImage};
-use super::{address::VirtualPageNumber, page_table::PageTable};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use bitflags::bitflags;
+use core::sync::atomic::{AtomicU32, Ordering};
+use core::{arch::asm, error::Error, ops::Range};
 use initial_stack::ElfAuxInfo;
-
+use riscv::register::satp::{self, Satp};
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum MemoryError {
     OutOfMemory,
@@ -31,7 +28,6 @@ pub(crate) enum MemoryError {
     PermissionDenied,
     Io,
 }
-
 /// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UserAccessError {
@@ -550,6 +546,8 @@ impl MapArea {
 pub(crate) struct MemorySet {
     page_table: PageTable,
     areas: BTreeMap<VirtualPageNumber, MapArea>,
+    // OWNER: Linux mm 的 arg_start/arg_end；缺失时 procfs 只能伪造静态 argv，无法反映用户栈修改。
+    argument_range: Range<usize>,
 }
 
 impl MemorySet {
@@ -559,6 +557,7 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: BTreeMap::new(),
+            argument_range: 0..0,
         }
     }
 
@@ -566,6 +565,7 @@ impl MemorySet {
         Ok(Self {
             page_table: PageTable::try_new()?,
             areas: BTreeMap::new(),
+            argument_range: 0..0,
         })
     }
 

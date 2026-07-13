@@ -343,6 +343,12 @@ pub(crate) struct FileDescriptorTable {
 }
 
 impl FileDescriptorTable {
+    /// @description 返回当前 fd table 已分配的 descriptor slot 数。
+    /// @return 包含空洞的 slot 容量，对应 Linux `/proc/<pid>/status` FDSize。
+    pub(crate) fn slot_capacity(&self) -> usize {
+        self.entries.len()
+    }
+
     /// @description 复制 fd entries，同时保持每个 entry 共享原 OFD Arc。
     ///
     /// @return 成功返回独立 descriptor table；kernel heap 耗尽返回错误。

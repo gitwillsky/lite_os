@@ -113,6 +113,7 @@ impl MemorySet {
             .try_reserve_exact(envs.len())
             .map_err(|_| ElfLoadError::OutOfMemory)?;
 
+        let argument_start = string_ptr;
         for arg in args {
             argv_ptrs.push(string_ptr);
             self.write_c_string_to_user_stack(string_ptr, arg)?;
@@ -121,6 +122,7 @@ impl MemorySet {
                 .and_then(|address| address.checked_add(1))
                 .ok_or(ElfLoadError::InvalidElf)?;
         }
+        let argument_end = string_ptr;
         for env in envs {
             envp_ptrs.push(string_ptr);
             self.write_c_string_to_user_stack(string_ptr, env)?;
@@ -176,6 +178,7 @@ impl MemorySet {
 
         debug_assert_eq!(writer, stack_ptr + pointer_space);
         debug_assert_eq!(stack_ptr & 15, 0);
+        self.argument_range = argument_start..argument_end;
         Ok(stack_ptr)
     }
 

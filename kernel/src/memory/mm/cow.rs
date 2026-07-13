@@ -68,6 +68,7 @@ impl MemorySet {
     /// @description 为 fork 共享用户 frame 并把可写映射转换为 COW；supervisor frame 仍独立复制。
     pub(crate) fn try_clone_for_fork(&mut self) -> Result<Self, MemoryError> {
         let mut cloned = Self::try_new()?;
+        cloned.argument_range = self.argument_range.clone();
         cloned.map_trampoline()?;
         for (key, area) in &mut self.areas {
             let cloned_area = if area.map_permission.contains(MapPermission::U) {
@@ -133,6 +134,7 @@ impl MemorySet {
         // 2. child page table 映射同一 user frame；supervisor trap context 仍独立复制，
         //    因而 child exec 可替换自身 MemorySet 而不破坏 suspended parent 的返回现场。
         let mut cloned = Self::try_new()?;
+        cloned.argument_range = self.argument_range.clone();
         cloned.map_trampoline()?;
         for (key, area) in &mut self.areas {
             let cloned_area = if area.map_permission.contains(MapPermission::U) {

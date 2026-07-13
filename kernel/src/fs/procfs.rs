@@ -7,6 +7,9 @@ use alloc::{
 };
 use core::fmt::Write;
 
+mod process;
+use process::{format_process_comm, format_process_stat, format_process_status};
+
 use super::{
     DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
     InodeType, vfs,
@@ -22,6 +25,9 @@ pub(crate) struct ProcProcessSnapshot {
     pub(crate) process_group: usize,
     pub(crate) session: usize,
     pub(crate) comm: Vec<u8>,
+    pub(crate) uids: [u32; 3],
+    pub(crate) gids: [u32; 3],
+    pub(crate) groups: Vec<u32>,
     pub(crate) state: u8,
     pub(crate) nice: i32,
     pub(crate) priority: i32,
@@ -30,6 +36,7 @@ pub(crate) struct ProcProcessSnapshot {
     pub(crate) start_time_us: u64,
     pub(crate) virtual_pages: usize,
     pub(crate) resident_pages: usize,
+    pub(crate) fd_size: usize,
     pub(crate) last_cpu: usize,
 }
 
@@ -69,6 +76,15 @@ pub(crate) struct ProcSnapshot {
 pub(crate) trait ProcSource: Send + Sync {
     /// @description 在一次读取边界取得自洽的只读快照。
     fn snapshot(&self) -> ProcSnapshot;
+
+    /// @description 返回正在解析 `/proc/self` 的 calling process TGID。
+    /// @return user process context 返回 TGID；无 current task 返回 None。
+    fn current_pid(&self) -> Option<usize>;
+
+    /// @description 按 TGID 从目标 MemorySet argument range 读取实时 argv bytes。
+    /// @param pid live process TGID。
+    /// @return 存在且 argument range 可读时返回 NUL 分隔 bytes；否则返回 None。
+    fn process_arguments(&self, pid: usize) -> Option<Vec<u8>>;
 }
 
 #[derive(Clone, Copy)]
@@ -82,8 +98,12 @@ enum ProcNode {
     NetDir,
     NetDev,
     NetRoute,
+    SelfLink,
     ProcessDir(usize),
     ProcessStat(usize),
+    ProcessStatus(usize),
+    ProcessCmdline(usize),
+    ProcessComm(usize),
 }
 
 impl ProcNode {
@@ -98,14 +118,19 @@ impl ProcNode {
             Self::NetDir => 7,
             Self::NetDev => 8,
             Self::NetRoute => 9,
-            Self::ProcessDir(pid) => 0x1_0000 + (pid as u64) * 2,
-            Self::ProcessStat(pid) => 0x1_0001 + (pid as u64) * 2,
+            Self::SelfLink => 10,
+            Self::ProcessDir(pid) => 0x1_0000 + (pid as u64) * 8,
+            Self::ProcessStat(pid) => 0x1_0001 + (pid as u64) * 8,
+            Self::ProcessStatus(pid) => 0x1_0002 + (pid as u64) * 8,
+            Self::ProcessCmdline(pid) => 0x1_0003 + (pid as u64) * 8,
+            Self::ProcessComm(pid) => 0x1_0004 + (pid as u64) * 8,
         }
     }
 
     fn kind(self) -> InodeType {
         match self {
             Self::Root | Self::NetDir | Self::ProcessDir(_) => InodeType::Directory,
+            Self::SelfLink => InodeType::SymLink,
             _ => InodeType::File,
         }
     }
@@ -125,6 +150,12 @@ impl ProcInode {
         if matches!(self.node, ProcNode::Mounts) {
             return vfs().mount_table();
         }
+        if let ProcNode::ProcessCmdline(pid) = self.node {
+            return self
+                .source
+                .process_arguments(pid)
+                .ok_or(FileSystemError::NotFound);
+        }
         let snapshot = self.source.snapshot();
         let text = match self.node {
             ProcNode::Stat => format_cpu_stat(&snapshot),
@@ -140,9 +171,22 @@ impl ProcInode {
                 .find(|process| process.pid == pid)
                 .map(format_process_stat)
                 .ok_or(FileSystemError::NotFound)?,
-            ProcNode::Root | ProcNode::NetDir | ProcNode::ProcessDir(_) => {
+            ProcNode::ProcessStatus(pid) => snapshot
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .map(format_process_status)
+                .ok_or(FileSystemError::NotFound)?,
+            ProcNode::ProcessComm(pid) => snapshot
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .map(format_process_comm)
+                .ok_or(FileSystemError::NotFound)?,
+            ProcNode::Root | ProcNode::NetDir | ProcNode::SelfLink | ProcNode::ProcessDir(_) => {
                 return Err(FileSystemError::IsDirectory);
             }
+            ProcNode::ProcessCmdline(_) => unreachable!("cmdline handled as binary data"),
         };
         Ok(text.into_bytes())
     }
@@ -155,10 +199,10 @@ impl Inode for ProcInode {
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let kind = self.node.kind();
-        let size = if kind == InodeType::File {
-            self.file_contents()?.len() as u64
-        } else {
-            0
+        let size = match kind {
+            InodeType::File => self.file_contents()?.len() as u64,
+            InodeType::SymLink => self.read_link()?.len() as u64,
+            _ => 0,
         };
         Ok(InodeMetadata {
             filesystem: PROC_FILESYSTEM_ID as u64,
@@ -208,6 +252,16 @@ impl Inode for ProcInode {
         Ok(length)
     }
 
+    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+        if !matches!(self.node, ProcNode::SelfLink) {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        self.source
+            .current_pid()
+            .map(|pid| pid.to_string().into_bytes())
+            .ok_or(FileSystemError::NotFound)
+    }
+
     fn write_storage(&self, _offset: u64, _buf: &[u8]) -> Result<usize, FileSystemError> {
         Err(FileSystemError::ReadOnly)
     }
@@ -235,6 +289,7 @@ impl Inode for ProcInode {
                     directory_entry(5, InodeType::File, b"uptime"),
                     directory_entry(6, InodeType::File, b"mounts"),
                     directory_entry(7, InodeType::Directory, b"net"),
+                    directory_entry(10, InodeType::SymLink, b"self"),
                 ]);
                 entries.extend(self.source.snapshot().processes.into_iter().map(|process| {
                     directory_entry(
@@ -244,11 +299,20 @@ impl Inode for ProcInode {
                     )
                 }));
             }
-            ProcNode::ProcessDir(pid) => entries.push(directory_entry(
-                ProcNode::ProcessStat(pid).inode(),
-                InodeType::File,
-                b"stat",
-            )),
+            ProcNode::ProcessDir(pid) => entries.extend([
+                directory_entry(ProcNode::ProcessStat(pid).inode(), InodeType::File, b"stat"),
+                directory_entry(
+                    ProcNode::ProcessStatus(pid).inode(),
+                    InodeType::File,
+                    b"status",
+                ),
+                directory_entry(
+                    ProcNode::ProcessCmdline(pid).inode(),
+                    InodeType::File,
+                    b"cmdline",
+                ),
+                directory_entry(ProcNode::ProcessComm(pid).inode(), InodeType::File, b"comm"),
+            ]),
             ProcNode::NetDir => entries.extend([
                 directory_entry(8, InodeType::File, b"dev"),
                 directory_entry(9, InodeType::File, b"route"),
@@ -268,6 +332,7 @@ impl Inode for ProcInode {
                 b"uptime" => ProcNode::Uptime,
                 b"mounts" => ProcNode::Mounts,
                 b"net" => ProcNode::NetDir,
+                b"self" => ProcNode::SelfLink,
                 _ => {
                     let pid = parse_pid(name).ok_or(FileSystemError::NotFound)?;
                     if !self
@@ -286,6 +351,9 @@ impl Inode for ProcInode {
                 b"." => ProcNode::ProcessDir(pid),
                 b".." => ProcNode::Root,
                 b"stat" => ProcNode::ProcessStat(pid),
+                b"status" => ProcNode::ProcessStatus(pid),
+                b"cmdline" => ProcNode::ProcessCmdline(pid),
+                b"comm" => ProcNode::ProcessComm(pid),
                 _ => return Err(FileSystemError::NotFound),
             },
             ProcNode::NetDir => match name {
@@ -504,26 +572,4 @@ fn format_network_routes(network: Option<ProcNetworkSnapshot>) -> String {
         );
     }
     output
-}
-
-fn format_process_stat(process: &ProcProcessSnapshot) -> String {
-    let comm = String::from_utf8_lossy(&process.comm).replace(['(', ')', '\n'], "?");
-    let virtual_size = process.virtual_pages.saturating_mul(4096);
-    format!(
-        "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
-        process.pid,
-        comm,
-        process.state as char,
-        process.ppid,
-        process.process_group,
-        process.session,
-        ticks(process.runtime_us),
-        process.priority,
-        process.nice,
-        process.threads,
-        ticks(process.start_time_us),
-        virtual_size,
-        process.resident_pages,
-        process.last_cpu
-    )
 }

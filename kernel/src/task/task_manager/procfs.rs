@@ -30,6 +30,22 @@ impl ProcSource for KernelProcSource {
     fn snapshot(&self) -> ProcSnapshot {
         process_snapshot()
     }
+
+    fn current_pid(&self) -> Option<usize> {
+        crate::task::current_task().map(|task| task.tgid())
+    }
+
+    fn process_arguments(&self, pid: usize) -> Option<alloc::vec::Vec<u8>> {
+        let representative = {
+            let graph = TASK_MANAGER.graph.lock();
+            let node = graph.nodes.get(&pid)?;
+            let ProcessState::Live(threads) = &node.state else {
+                return None;
+            };
+            threads.values().next()?.clone()
+        };
+        representative.process_arguments()
+    }
 }
 
 fn process_snapshot() -> ProcSnapshot {
@@ -93,14 +109,20 @@ fn process_snapshot() -> ProcSnapshot {
         let nice = policy.nice;
         let priority = policy.get_dynamic_priority();
         drop(policy);
-        let (comm, start_time_us, virtual_pages, resident_pages) =
+        let (comm, start_time_us, virtual_pages, resident_pages, fd_size) =
             representative.process_statistics();
+        let uids = representative.credential_res_ids(true);
+        let gids = representative.credential_res_ids(false);
+        let groups = representative.supplementary_groups();
         processes.push(ProcProcessSnapshot {
             pid,
             ppid,
             process_group,
             session,
             comm,
+            uids,
+            gids,
+            groups,
             state,
             nice,
             priority,
@@ -109,6 +131,7 @@ fn process_snapshot() -> ProcSnapshot {
             start_time_us,
             virtual_pages,
             resident_pages,
+            fd_size,
             last_cpu: representative.scheduling.last_cpu.load(Ordering::Relaxed),
         });
     }

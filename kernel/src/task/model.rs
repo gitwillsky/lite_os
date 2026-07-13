@@ -907,16 +907,6 @@ impl TaskControlBlock {
         self.process.tgid.0
     }
 
-    pub(super) fn process_statistics(&self) -> (Vec<u8>, u64, usize, usize) {
-        let (virtual_pages, resident_pages) = self.process.address_space.page_statistics();
-        (
-            self.process.comm.lock().clone(),
-            self.process.start_time_us,
-            virtual_pages,
-            resident_pages,
-        )
-    }
-
     /// @description 返回当前 Thread ID。
     ///
     /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。

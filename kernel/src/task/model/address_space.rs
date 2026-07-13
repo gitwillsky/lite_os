@@ -18,6 +18,12 @@ impl AddressSpace {
     pub(super) fn page_statistics(&self) -> (usize, usize) {
         self.memory_set.lock().user_page_statistics()
     }
+
+    /// @description 按 Linux mm argument range 复制当前 Process 的实时 argv bytes。
+    /// @return range 可读时返回 NUL 分隔 bytes；unmap/protection/resource 失败返回 None。
+    pub(super) fn process_arguments(&self) -> Option<alloc::vec::Vec<u8>> {
+        self.memory_set.lock().process_arguments().ok()
+    }
     pub(super) fn write_clone_tid_values(
         &self,
         addresses: [Option<usize>; 2],
@@ -156,6 +162,25 @@ impl AddressSpace {
         self.memory_set
             .lock()
             .copy_user_c_string(user_address, max_len)
+    }
+}
+
+impl TaskControlBlock {
+    /// @description 通过 Process address-space owner 读取实时 argv bytes。
+    /// @return argument range 可读时返回 NUL 分隔 bytes；否则返回 None。
+    pub(in crate::task) fn process_arguments(&self) -> Option<alloc::vec::Vec<u8>> {
+        self.process.address_space.process_arguments()
+    }
+
+    pub(in crate::task) fn process_statistics(&self) -> (Vec<u8>, u64, usize, usize, usize) {
+        let (virtual_pages, resident_pages) = self.process.address_space.page_statistics();
+        (
+            self.process.comm.lock().clone(),
+            self.process.start_time_us,
+            virtual_pages,
+            resident_pages,
+            self.process.files.lock().slot_capacity(),
+        )
     }
 }
 
