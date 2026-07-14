@@ -1,0 +1,39 @@
+README.md
+  s_f0a69312287991::t_98ac706cf56fb3 17
+docs/architecture-contract.md
+  s_f0a69312287991::t_f72f3dfd2e0c75 123,130
+docs/architecture-interface.txt
+  s_f0a69312287991::t_7e7160f3c30224 1483,1529
+docs/architecture.md
+  s_f0a69312287991::t_cb4b6f148fa6a4 108,204
+docs/syscall-support.md
+  s_f0a69312287991::t_cdf50162ed430b 15,31,49,121
+kernel/src/fs/page_cache.rs
+  s_f0a69312287991::t_8043df94864a60 2,12-15,19-41,50-58,62-67,127,164-189,191-192,194-210,212-213,253
+kernel/src/syscall/fs.rs
+  s_f0a69312287991::t_557de7ed641d43 25
+kernel/src/syscall/fs/open.rs
+  s_f0a69312287991::t_e1d9232da98725 1-2,5-6,9,19-44,60-75,78-79
+kernel/src/syscall/mod.rs
+  s_f0a69312287991::t_f04992bbdedf10 103
+syscall-abi/src/lib.rs
+  s_f0a69312287991::t_c2744d0f8a475e 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d5292e65cda0fc9c102d91d1899491f0f3a83903",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
