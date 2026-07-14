@@ -1,0 +1,105 @@
+README.md
+  s_f0a69312287991::t_36e59875e5ee28 13,17
+create_fs.py
+  s_f0a69312287991::t_2bf637917594ef 10
+docs/architecture-contract.md
+  s_f0a69312287991::t_40852d72167495 47,67,79,99,116,126,130,132
+docs/architecture-interface.txt
+  s_f0a69312287991::t_ab55d1376b4f66 497,509-510,513,522,630,632,634-635,639-643,646,653,657,659,676,696,707,715,722-792,800-801,1123,1655-1656,1747,1789,1920-1938,2011,2082,2119,2128,2196,2316
+docs/architecture.md
+  s_f0a69312287991::t_cd0bf9209e1e5c 63,148-149,179,205,237
+docs/standards-baseline.md
+  s_f0a69312287991::t_cfa8e9aa0591f8 73-77
+docs/syscall-support.md
+  s_f0a69312287991::t_d13cfb2af7b076 15,31,40-41,55,98,123
+kernel/src/fs/file.rs
+  s_f0a69312287991::t_94bd0880240dbe 4
+kernel/src/fs/file/terminal.rs
+  s_f0a69312287991::t_c5478862cf1d18 24-37,148-168
+kernel/src/fs/mod.rs
+  s_f0a69312287991::t_03f30574aae511 11,20,24-25,29-30,32
+kernel/src/fs/page_cache.rs
+  s_f0a69312287991::t_27c15f500d96a4 16-26,105,107,115,142,241-242,305-313,352-356,362,365-366,372-375,500-521
+kernel/src/fs/procfs.rs
+  s_f0a69312287991::t_874204ce3a48f8 6,11-16,115-120,139-142,312,365-369,429,453
+kernel/src/fs/procfs/node.rs
+  s_f0a69312287991::t_5d0a479558b255 21,31,55,63
+kernel/src/fs/procfs/process.rs
+  s_f0a69312287991::t_73359a82bc6a88 4-19
+kernel/src/fs/procfs/snapshot.rs
+  s_f0a69312287991::t_f64cbecf3591f5 1-93
+kernel/src/fs/procfs/system.rs
+  s_f0a69312287991::t_7580e8e5ba14b3 49-52,54,57-59
+kernel/src/fs/sysfs.rs
+  s_f0a69312287991::t_79c1304c6c7c3b 1-309
+kernel/src/main.rs
+  s_f0a69312287991::t_7024d41a3e1d88 112-119
+kernel/src/memory/mm/private_area.rs
+  s_f0a69312287991::t_d55f470610017d 81-98
+kernel/src/memory/mm/statistics.rs
+  s_f0a69312287991::t_79d01a4ce7191a 27-34,53
+kernel/src/syscall/fs/io/positioned.rs
+  s_f0a69312287991::t_b768b0ba2bd09c 32-34,99-101
+kernel/src/syscall/fs/io/regular.rs
+  s_f0a69312287991::t_d7c3f9b148ea66 34-35,153
+kernel/src/syscall/fs/io/sendfile.rs
+  s_f0a69312287991::t_0c2cac6640720b 56-57,71,220-223,241-242
+kernel/src/syscall/fs/io/sequential.rs
+  s_f0a69312287991::t_2ff5eae2829c5b 91,99-101,118-120,133,141-143,160-162
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_f0a69312287991::t_808ab18c5ae126 2,177-192,201,203-218,220-221,223-224,227-246,248
+kernel/src/syscall/mod.rs
+  s_f0a69312287991::t_acc85f88085772 68-69
+kernel/src/syscall/scheduler.rs
+  s_f0a69312287991::t_a50e56cbe873c4 7-8,23-26,54-90
+kernel/src/task/loader.rs
+  s_f0a69312287991::t_8793809d9d1c29 94
+kernel/src/task/mod.rs
+  s_f0a69312287991::t_a4fd642a1a96a3 20-22
+kernel/src/task/model.rs
+  s_f0a69312287991::t_982c7974f433b4 4,6,35-36,115-117,149-151,185,197,221,295
+kernel/src/task/model/debug.rs
+  s_f0a69312287991::t_28dfccbc52f17c 1-18
+kernel/src/task/model/io_accounting.rs
+  s_f0a69312287991::t_9bf0fd3d9a593f 1-115
+kernel/src/task/model/process_clone.rs
+  s_f0a69312287991::t_ecb7fa9b66dbb6 57,98,120
+kernel/src/task/model/scheduling.rs
+  s_f0a69312287991::t_ecafeb318e03ee 129-131,222,241,274-285
+kernel/src/task/processor.rs
+  s_f0a69312287991::t_f3bfcd05e76635 444,446-451
+kernel/src/task/task_manager.rs
+  s_f0a69312287991::t_c46cf95bbb46e4 49-51,244,246-250,256-258,263,288
+kernel/src/task/task_manager/deferred.rs
+  s_f0a69312287991::t_73a44503ed9a5e 248-250
+kernel/src/task/task_manager/policy.rs
+  s_f0a69312287991::t_3c3fb83ac93b0f 146-165
+kernel/src/task/task_manager/procfs.rs
+  s_f0a69312287991::t_2abf014da0fd21 6-7,159,204,210,234-236,248-258
+kernel/src/task/task_manager/signal.rs
+  s_f0a69312287991::t_b0df2c4cc6fb3a 534,555
+kernel/src/task/task_manager/wait_registry.rs
+  s_f0a69312287991::t_a587c4961e3d9a 164-173,176-178,186
+scripts/apk_rootfs.py
+  s_f0a69312287991::t_0b84295af3eb73 76
+syscall-abi/src/lib.rs
+  s_f0a69312287991::t_d33b5e00711440 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dc75d0b8978ee8a6861b5255f7df568a4065deb3",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
