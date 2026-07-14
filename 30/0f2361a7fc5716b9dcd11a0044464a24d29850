@@ -1,0 +1,37 @@
+docs/architecture-contract.md
+  s_f0a69312287991::t_5859887adaa153 138
+docs/architecture-interface.txt
+  s_f0a69312287991::t_19c5e2a2e8d465 580,651,653
+docs/architecture.md
+  s_f0a69312287991::t_73cd6215b0ac6f 108-109
+kernel/src/fs/inode.rs
+  s_f0a69312287991::t_482ba06f2ec0a0 97-103
+kernel/src/fs/page_cache.rs
+  s_f0a69312287991::t_6cc50de1c83523 276,299,303-308,328,330,335-341,344-350,356-359,362,374-385,393,408-416
+kernel/src/fs/procfs.rs
+  s_f0a69312287991::t_f79c9e0f05a072 206-209
+kernel/src/syscall/fs/io/positioned.rs
+  s_f0a69312287991::t_ff2ebb3ebb8358 98-101
+kernel/src/syscall/fs/io/sendfile.rs
+  s_f0a69312287991::t_6828e1b7e87a13 33-35,43-46
+kernel/src/syscall/fs/io/sequential/write.rs
+  s_f0a69312287991::t_08d5e106c576aa 30-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "300f2361a7fc5716b9dcd11a0044464a24d29850",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
