@@ -1,0 +1,29 @@
+README.md
+  s_f0a69312287991::t_3bee3d7ca769c6 69,72,86-93,105,125
+docs/architecture-contract.md
+  s_f0a69312287991::t_513da8c34403fa 122,169
+docs/architecture.md
+  s_f0a69312287991::t_0422b07acfcff4 198,200
+scripts/verify_boot.py
+  s_f0a69312287991::t_8972eacb014095 6,20-32,39,43-51,53-54,62,64,78,82
+tools/architecture-check/src/main.rs
+  s_f0a69312287991::t_2f3ff0b9cd491d 301
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "68297b6f577e713d8dda1cea80e073601b914388",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
