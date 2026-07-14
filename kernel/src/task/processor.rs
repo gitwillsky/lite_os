@@ -5,7 +5,8 @@ use crate::{
         sbi,
     },
     task::{
-        RunState, StopResume, StopTransition, TaskControlBlock, WaitMembership, WaitResult,
+        CpuAffinity, RunState, StopResume, StopTransition, TaskControlBlock, WaitMembership,
+        WaitResult,
         context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
@@ -19,6 +20,7 @@ use core::{
 
 mod job_control;
 mod placement;
+pub(in crate::task) use job_control::request_tick_reschedule;
 pub(super) use job_control::{
     begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
 };
@@ -67,23 +69,18 @@ impl Processor {
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
     /// @return 无返回值。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
+        let slot = current_per_hart();
         self.runqueue.push(entry);
         let floor = self
             .runqueue
             .minimum_vruntime()
             .expect("non-empty runqueue lost placement floor");
-        per_hart(self.hart_id)
-            .placement_vruntime
-            .store(floor, Ordering::Release);
+        slot.placement_vruntime.store(floor, Ordering::Release);
         // queued_entries 与 local heap 每次 push/pop 一一对应，不统计 mailbox/current。
-        per_hart(self.hart_id)
-            .queued_entries
-            .fetch_add(1, Ordering::Relaxed);
+        slot.queued_entries.fetch_add(1, Ordering::Relaxed);
         debug_assert_eq!(
             self.runqueue.len(),
-            per_hart(self.hart_id)
-                .queued_entries
-                .load(Ordering::Relaxed)
+            slot.queued_entries.load(Ordering::Relaxed)
         );
     }
 
@@ -92,11 +89,10 @@ impl Processor {
     /// @return 队列为空时返回 `None`，否则返回唯一取出的任务引用。
     pub(crate) fn select_task(&mut self) -> Option<Arc<TaskControlBlock>> {
         assert!(self.current.is_none(), "CPU already owns a current task");
+        let slot = current_per_hart();
         loop {
             let entry = self.runqueue.pop()?;
-            per_hart(self.hart_id)
-                .queued_entries
-                .fetch_sub(1, Ordering::Relaxed);
+            slot.queued_entries.fetch_sub(1, Ordering::Relaxed);
             let mut scheduling = entry.task.scheduling.state.lock();
             match scheduling.run_state {
                 RunState::Ready { cpu, generation }
@@ -106,12 +102,8 @@ impl Processor {
                     drop(scheduling);
                     self.current = Some(entry.task.clone());
                     let floor = self.runqueue.minimum_vruntime().unwrap_or(entry.vruntime);
-                    per_hart(self.hart_id)
-                        .placement_vruntime
-                        .store(floor, Ordering::Release);
-                    per_hart(self.hart_id)
-                        .running_entries
-                        .fetch_add(1, Ordering::Relaxed);
+                    slot.placement_vruntime.store(floor, Ordering::Release);
+                    slot.running_entries.fetch_add(1, Ordering::Relaxed);
                     return Some(entry.task);
                 }
                 _ => {
@@ -126,7 +118,7 @@ impl Processor {
     /// @return 当前 Task；空 current 表示调用路径破坏调度状态并返回 None。
     pub(crate) fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
         let current = self.current.take()?;
-        let previous = per_hart(self.hart_id)
+        let previous = current_per_hart()
             .running_entries
             .fetch_sub(1, Ordering::Relaxed);
         assert_eq!(previous, 1, "running load counter lost current ownership");
@@ -137,28 +129,16 @@ impl Processor {
     ///
     /// @return 无返回值。
     pub(crate) fn drain_inbound_to_local(&mut self) {
-        let slot = per_hart(self.hart_id);
+        let slot = current_per_hart();
         let mut inbound = slot.inbound.lock();
         let mut local = VecDeque::new();
         core::mem::swap(&mut *inbound, &mut local);
         drop(inbound);
-        per_hart(self.hart_id)
-            .inbound_entries
+        slot.inbound_entries
             .fetch_sub(local.len(), Ordering::Relaxed);
         for entry in local {
             self.add_ready_entry(entry);
         }
-    }
-
-    /// @description 发布当前 processor 已进入 idle/scheduler 循环。
-    ///
-    /// @return 无返回值。
-    pub(crate) fn mark_active(&self) {
-        // Release 发布 local Processor 初始化；远端负载均衡读取 active(Acquire) 后
-        // 才能向 inbound 入队。缺失时会向尚未开始 drain 的 hart 投递任务。
-        hart::state(self.hart_id)
-            .expect("processor hart disappeared from topology")
-            .mark_active();
     }
 
     fn defer_reap(&mut self, task: Arc<TaskControlBlock>) {
@@ -217,7 +197,7 @@ impl PerHartProcessor {
 }
 
 pub(super) fn account_current_hart_runtime(runtime_us: u64) {
-    per_hart(hart_id())
+    current_per_hart()
         .busy_us
         .fetch_add(runtime_us, Ordering::Relaxed);
 }
@@ -247,6 +227,10 @@ struct ProcessorTopology {
 // OWNER: processor module owns scheduler-local state for every DTB hart.
 static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
 
+/// @description 按 HartTopology 的 compact-index 顺序构造唯一 scheduler processor slots。
+///
+/// @return 无返回值。
+/// @errors 重复初始化或 arch/task topology 顺序分裂时 fail-stop。
 pub(super) fn init_topology() {
     assert!(
         PROCESSOR_TOPOLOGY.get().is_none(),
@@ -254,6 +238,12 @@ pub(super) fn init_topology() {
     );
     let mut slots = Vec::with_capacity(hart::hart_count());
     for state in hart::states() {
+        let index = slots.len();
+        assert_eq!(
+            hart::hart_index(state.hart_id()),
+            Some(index),
+            "processor topology order diverged from compact hart index"
+        );
         slots.push(ProcessorSlot {
             hart_id: state.hart_id(),
             processor: PerHartProcessor::new(),
@@ -268,25 +258,32 @@ pub(super) fn init_topology() {
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-fn per_hart(hart: usize) -> &'static PerHartProcessor {
-    let slots = &PROCESSOR_TOPOLOGY.wait().slots;
-    let index = slots
-        .binary_search_by_key(&hart, |slot| slot.hart_id)
-        .unwrap_or_else(|_| panic!("processor hart {} is absent from DTB topology", hart));
-    &slots[index].processor
+fn processor_at(index: usize) -> &'static PerHartProcessor {
+    &PROCESSOR_TOPOLOGY.wait().slots[index].processor
+}
+
+#[inline(always)]
+fn current_slot() -> &'static ProcessorSlot {
+    &PROCESSOR_TOPOLOGY.wait().slots[hart::current_hart_index()]
+}
+
+#[inline(always)]
+fn current_per_hart() -> &'static PerHartProcessor {
+    processor_at(hart::current_hart_index())
 }
 
 fn local_processor() -> &'static mut Processor {
-    let hart = hart_id();
-    let slot = per_hart(hart);
+    let slot = current_slot();
+    let hart = slot.hart_id;
+    let processor = &slot.processor;
     // initialized 只由本 hart 在关闭 SIE 时读写，不承担跨 hart 发布；缺失该分支会重复构造 Processor。
-    if !slot.initialized.load(Ordering::Relaxed) {
+    if !processor.initialized.load(Ordering::Relaxed) {
         // SAFETY: 只有 hart `hart` 能到达自己的 slot.local，且 S-mode trap 不开启嵌套中断。
-        unsafe { (*slot.local.get()).write(Processor::new(hart)) };
-        slot.initialized.store(true, Ordering::Relaxed);
+        unsafe { (*processor.local.get()).write(Processor::new(hart)) };
+        processor.initialized.store(true, Ordering::Relaxed);
     }
     // SAFETY: 与上面的 per-hart 唯一所有权约束相同，initialized 证明对象已构造。
-    unsafe { (*slot.local.get()).assume_init_mut() }
+    unsafe { (*processor.local.get()).assume_init_mut() }
 }
 
 /// @description 在关闭本地 S-mode 中断期间访问当前 hart 独占的 processor。
@@ -320,7 +317,7 @@ pub(super) fn reap_deferred_task() {
 ///
 /// @return 无返回值；flag 仅由本 hart 在关中断临界区访问。
 pub(crate) fn request_reschedule() {
-    per_hart(hart_id())
+    current_per_hart()
         .reschedule_requested
         .store(true, Ordering::Release);
 }
@@ -329,9 +326,21 @@ pub(crate) fn request_reschedule() {
 ///
 /// @return 本次用户态返回是否应先 yield。
 pub(crate) fn take_reschedule() -> bool {
-    per_hart(hart_id())
+    current_per_hart()
         .reschedule_requested
         .swap(false, Ordering::AcqRel)
+}
+
+fn publish_reschedule_at(cpu_index: usize) {
+    let target = &PROCESSOR_TOPOLOGY.wait().slots[cpu_index];
+    target
+        .processor
+        .reschedule_requested
+        .store(true, Ordering::Release);
+    if target.hart_id != hart_id() {
+        sbi::sbi_send_ipi(1usize << target.hart_id, 0)
+            .expect("SBI IPI failed for remote reschedule");
+    }
 }
 
 /// @description 投递 Ready entry；busy target 同步 reschedule，避免 syscall writer 饿死 Ready reader。
@@ -341,24 +350,54 @@ pub(crate) fn take_reschedule() -> bool {
 /// @return 无返回值。
 /// @errors 目标越界、未 active 或 SBI IPI 失败均触发内核不变量失败，不做 CPU fallback。
 fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
-    let target_state = hart::state(cpu_id)
-        .unwrap_or_else(|| panic!("target CPU {} is absent from DTB topology", cpu_id));
     let current = hart_id();
     if cpu_id == current {
         with_current_processor(|processor| processor.add_ready_entry(entry));
-        if per_hart(current).running_entries.load(Ordering::Relaxed) != 0 {
+        if current_per_hart().running_entries.load(Ordering::Relaxed) != 0 {
             request_reschedule();
         }
         return;
     }
 
-    let target = per_hart(cpu_id);
+    let target_index = hart::hart_index(cpu_id)
+        .unwrap_or_else(|| panic!("target CPU {} is absent from DTB topology", cpu_id));
+    let target_state = &hart::states()[target_index];
+    let target = processor_at(target_index);
     assert!(target_state.is_active());
     let mut inbound = target.inbound.lock();
     inbound.push_back(entry);
     target.inbound_entries.fetch_add(1, Ordering::Relaxed);
     drop(inbound);
-    job_control::request_reschedule_on(cpu_id);
+    publish_reschedule_at(target_index);
+}
+
+/// @description 原子替换 Thread affinity，并迁移位于已禁止 CPU 的 Ready membership。
+///
+/// @param task TaskManager process graph 定位并保活的 live Thread。
+/// @param affinity 已与 active topology 相交且非空的新 affinity。
+/// @return 无返回值；Ready entry 已迁移，Running migration 由 affinity orchestration 同步完成。
+/// @errors 无可恢复错误；无 active CPU 或状态不变量破坏时 fail-stop。
+pub(in crate::task) fn replace_task_affinity(task: &Arc<TaskControlBlock>, affinity: CpuAffinity) {
+    let mut replacement = None;
+    let mut stale_cpu = None;
+    {
+        let mut scheduling = task.scheduling.state.lock();
+        scheduling.cpu_affinity = affinity;
+        if let RunState::Ready { cpu, .. } = scheduling.run_state
+            && !affinity.allows_hart(cpu)
+        {
+            let target = select_cpu(task, affinity);
+            let generation = scheduling.transition_to_ready(target);
+            replacement = Some((target, generation));
+            stale_cpu = Some(cpu);
+        }
+    }
+    if let Some((cpu, generation)) = replacement {
+        deliver_ready_entry(cpu, ready_entry(task.clone(), generation));
+    }
+    if let Some(cpu) = stale_cpu {
+        job_control::request_reschedule_on(cpu);
+    }
 }
 
 /// @description 消费一个明确 deadline wait membership，并完成无丢失唤醒转换。
@@ -459,7 +498,6 @@ pub(in crate::task) fn wake_waiting_task(
     expected: WaitMembership,
     result: Option<WaitResult>,
 ) -> bool {
-    let target_cpu = select_cpu(&task);
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
         if scheduling.wait != Some(expected) {
@@ -474,6 +512,7 @@ pub(in crate::task) fn wake_waiting_task(
                 None
             }
             RunState::Blocked => {
+                let target_cpu = select_cpu(&task, scheduling.cpu_affinity);
                 let generation = scheduling.transition_to_ready(target_cpu);
                 Some((target_cpu, generation))
             }
@@ -522,11 +561,16 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
             }
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending task returned on another CPU");
-                Some((cpu, scheduling.transition_to_ready(cpu)))
+                let target = if scheduling.cpu_affinity.allows_hart(cpu) {
+                    cpu
+                } else {
+                    select_cpu(task, scheduling.cpu_affinity)
+                };
+                Some((target, scheduling.transition_to_ready(target)))
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting task returned on another CPU");
-                let target_cpu = select_cpu(task);
+                let target_cpu = select_cpu(task, scheduling.cpu_affinity);
                 Some((target_cpu, scheduling.transition_to_ready(target_cpu)))
             }
             RunState::StopPending {

@@ -23,7 +23,7 @@ fn next_generation() -> u64 {
 /// @return 无待处理请求时不执行 fence；否则在 completion 发布前执行 full memory barrier。
 /// @errors 当前 hart 不属于 DTB topology 时 fail-stop。
 pub(crate) fn complete_pending_memory_barrier() {
-    let state = super::state(hart_id()).expect("memory-barrier hart disappeared from topology");
+    let state = super::current_state();
     let requested = state.memory_barrier_request.load(Ordering::Acquire);
     if requested <= state.memory_barrier_complete.load(Ordering::Relaxed) {
         return;

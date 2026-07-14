@@ -13,6 +13,7 @@ mod random;
 mod reboot;
 mod resource_limit;
 mod riscv_hwprobe;
+mod scheduler;
 mod signal;
 mod socket;
 mod system_identity;
@@ -22,7 +23,7 @@ mod tty;
 
 use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,
-    reboot::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
+    reboot::*, scheduler::*, signal::*, socket::*, system_identity::*, system_info::*, timer::*,
 };
 use eventfd::sys_eventfd2;
 use membarrier::sys_membarrier;
@@ -167,15 +168,36 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[1] as *mut timer::TimeSpec,
         ),
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut timer::TimeSpec),
+        SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as i32, args[1] as *mut timer::TimeSpec),
+        SYSCALL_CLOCK_NANOSLEEP => sys_clock_nanosleep(
+            args[0] as i32,
+            args[1] as i32,
+            args[2] as *const timer::TimeSpec,
+            args[3] as *mut timer::TimeSpec,
+        ),
+        SYSCALL_SCHED_SETPARAM => sys_sched_setparam(args[0] as i32, args[1]),
+        SYSCALL_SCHED_SETSCHEDULER => {
+            sys_sched_setscheduler(args[0] as i32, args[1] as i32, args[2])
+        }
+        SYSCALL_SCHED_GETSCHEDULER => sys_sched_getscheduler(args[0] as i32),
+        SYSCALL_SCHED_GETPARAM => sys_sched_getparam(args[0] as i32, args[1]),
+        SYSCALL_SCHED_SETAFFINITY => sys_sched_setaffinity(args[0] as i32, args[1] as u32, args[2]),
+        SYSCALL_SCHED_GETAFFINITY => sys_sched_getaffinity(args[0] as i32, args[1] as u32, args[2]),
         SYSCALL_SCHED_YIELD => sys_sched_yield(),
+        SYSCALL_SCHED_GET_PRIORITY_MAX => sys_sched_get_priority_max(args[0] as i32),
+        SYSCALL_SCHED_GET_PRIORITY_MIN => sys_sched_get_priority_min(args[0] as i32),
+        SYSCALL_SCHED_RR_GET_INTERVAL => sys_sched_rr_get_interval(args[0] as i32, args[1]),
         SYSCALL_KILL => sys_kill(args[0] as i32, args[1]),
         SYSCALL_TKILL => sys_tkill(args[0], args[1]),
         SYSCALL_TGKILL => sys_tgkill(args[0], args[1], args[2]),
+        SYSCALL_SIGALTSTACK => sys_sigaltstack(args[0], args[1]),
         SYSCALL_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0], args[1]),
         SYSCALL_RT_SIGACTION => sys_rt_sigaction(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGTIMEDWAIT => sys_rt_sigtimedwait(args[0], args[1], args[2], args[3]),
         SYSCALL_RT_SIGRETURN => sys_rt_sigreturn(),
+        SYSCALL_SETPRIORITY => sys_setpriority(args[0] as i32, args[1] as u32, args[2] as i32),
+        SYSCALL_GETPRIORITY => sys_getpriority(args[0] as i32, args[1] as u32),
         SYSCALL_REBOOT => sys_reboot(args[0], args[1], args[2], args[3]),
         SYSCALL_SETGID => sys_set_id(false, args[0] as u32),
         SYSCALL_SETUID => sys_set_id(true, args[0] as u32),
@@ -198,6 +220,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_GETITIMER => sys_getitimer(args[0], args[1]),
         SYSCALL_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
         SYSCALL_UMASK => sys_umask(args[0] as u32),
+        SYSCALL_GETCPU => sys_getcpu(args[0], args[1], args[2]),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),
         SYSCALL_GETUID => sys_get_id(true, false),

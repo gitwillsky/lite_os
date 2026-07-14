@@ -4,7 +4,7 @@ use riscv::register;
 use spin::Mutex;
 
 use crate::{
-    arch::{dtb, sbi},
+    arch::{dtb, hart, sbi},
     config,
     drivers::GoldfishRTCDevice,
 };
@@ -103,6 +103,19 @@ pub(crate) fn boot_epoch_seconds() -> u64 {
     REALTIME_OFFSET_NS.load(Ordering::Relaxed) / NSEC_PER_SEC
 }
 
+/// @description 将 absolute realtime timestamp 转换为同一启动域的 monotonic deadline。
+///
+/// @param realtime_ns Unix epoch 纳秒 timestamp。
+/// @return 减去 immutable boot offset 的 monotonic deadline；已早于 monotonic epoch 时返回零。
+/// @panics `init_rtc` 尚未发布 realtime offset 时 panic，避免用未校准时钟安排 sleep。
+pub(crate) fn realtime_deadline_to_monotonic_ns(realtime_ns: u64) -> u64 {
+    assert!(
+        REALTIME_INITIALIZED.load(Ordering::Acquire),
+        "realtime deadline converted before RTC initialization"
+    );
+    realtime_ns.saturating_sub(REALTIME_OFFSET_NS.load(Ordering::Relaxed))
+}
+
 pub(crate) fn get_time_us() -> u64 {
     let current_mtime = register::time::read64();
     let time_base_freq = dtb::board_info().time_base_freq;
@@ -117,16 +130,40 @@ pub(crate) fn get_time_ns() -> u64 {
     ((current_mtime as u128 * NSEC_PER_SEC as u128) / time_base_freq as u128) as u64
 }
 
+/// @description 返回 DTB time counter 经整数纳秒换算后的最小可观察粒度。
+///
+/// @return 单个 timebase tick 的纳秒数，向上取整且至少为 1ns。
+/// @panics DTB `timebase-frequency` 为零时 panic；该平台契约缺失时不能伪造分辨率。
+pub(crate) fn monotonic_resolution_ns() -> u64 {
+    let frequency = dtb::board_info().time_base_freq;
+    assert!(frequency != 0, "DTB timebase-frequency must be non-zero");
+    (NSEC_PER_SEC as u128).div_ceil(frequency as u128) as u64
+}
+
+/// @description 返回 timer owner 实际用于 scheduler preemption 的基础时间片。
+///
+/// @return 已校准 tick interval 对应的纳秒数，向上取整。
+/// @errors timer 尚未初始化或 DTB timebase-frequency 为零时 fail-stop。
+pub(crate) fn scheduler_quantum_ns() -> u64 {
+    let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
+    assert_ne!(
+        interval, 0,
+        "scheduler quantum read before timer initialization"
+    );
+    let frequency = dtb::board_info().time_base_freq;
+    assert_ne!(frequency, 0, "DTB timebase-frequency must be non-zero");
+    (interval as u128 * NSEC_PER_SEC as u128).div_ceil(frequency as u128) as u64
+}
+
 #[inline(always)]
 pub(crate) fn set_next_timer_interrupt() {
     let current_mtime = register::time::read64();
-    // 避免在 debug 构建下触发算术溢出 panic：采用 wrapping 加法
     let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
     assert!(
         interval != 0,
         "timer interval used before per-hart initialization"
     );
-    let next_mtime = current_mtime.wrapping_add(interval);
+    let next_mtime = hart::advance_timer_deadline(current_mtime, interval);
 
     sbi::set_timer(next_mtime).expect("SBI TIME set_timer failed");
 }

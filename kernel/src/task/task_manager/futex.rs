@@ -35,50 +35,30 @@ pub(crate) fn futex_wait(
     if address == 0 || address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    task.with_futex_word(address, private, |key, current_value| {
-        if current_value != expected {
-            return Err(FutexWaitError::Again);
-        }
-        if deadline.is_some_and(|value| value <= get_time_ns()) {
-            return Err(FutexWaitError::TimedOut);
-        }
-        if task.has_deliverable_signal() {
-            return Err(FutexWaitError::Interrupted);
-        }
+    let queue = INDEXED_WAIT_QUEUE.lock();
+    let prepared = task
+        .with_futex_word(address, private, |key, current_value| {
+            if current_value != expected {
+                return Err(FutexWaitError::Again);
+            }
+            if deadline.is_some_and(|value| value <= get_time_ns()) {
+                return Err(FutexWaitError::TimedOut);
+            }
+            if task.has_deliverable_signal() {
+                return Err(FutexWaitError::Interrupted);
+            }
 
-        let end_time = get_time_us();
-        let mut sched = task.scheduling.policy.lock();
-        let runtime = end_time.saturating_sub(sched.last_runtime);
-        sched.update_vruntime(runtime);
-        drop(sched);
-        with_current_processor(|processor| {
-            let current = processor
-                .take_current()
-                .expect("futex wait requires current task");
-            assert!(Arc::ptr_eq(&current, &task));
-            let mut scheduling = task.scheduling.state.lock();
-            assert_eq!(scheduling.run_state, RunState::Running { cpu });
-            assert!(scheduling.wait.is_none());
-            assert!(scheduling.wait_result.is_none());
-            let wait_id = queue.insert_futex(key, bitset, deadline, current);
-            scheduling.wait = Some(WaitMembership::Futex(wait_id));
-            scheduling.run_state = RunState::Blocking { cpu };
-        });
-        Ok(())
-    })
-    .map_err(|_| FutexWaitError::Fault)??;
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    let result = task
-        .scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("futex waiter resumed without a wake result");
-    match result {
+            Ok(super::context_switch::prepare_current_block(
+                &task,
+                queue,
+                |queue, current| {
+                    let wait_id = queue.insert_futex(key, bitset, deadline, current);
+                    WaitMembership::Futex(wait_id)
+                },
+            ))
+        })
+        .map_err(|_| FutexWaitError::Fault)??;
+    match prepared.suspend() {
         WaitResult::Woken => Ok(()),
         WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
         WaitResult::Interrupted => Err(FutexWaitError::Interrupted),

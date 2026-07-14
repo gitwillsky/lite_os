@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 use core::ops::Bound::{Excluded, Unbounded};
 
+use super::thread_selector::thread_by_tid;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,13 +93,8 @@ fn send_selected_thread_signal(
         let mut graph = TASK_MANAGER.graph.lock();
         let tgid = match expected_tgid {
             Some(tgid) => tgid,
-            None => graph
-                .nodes
-                .iter()
-                .find_map(|(&tgid, node)| match &node.state {
-                    ProcessState::Live(threads) if threads.contains_key(&tid) => Some(tgid),
-                    _ => None,
-                })
+            None => thread_by_tid(&graph, tid)
+                .map(|(tgid, _)| tgid)
                 .ok_or(SignalSendError::NotFound)?,
         };
         let Some(ProcessState::Live(threads)) = graph.nodes.get(&tgid).map(|node| &node.state)
@@ -144,9 +140,10 @@ fn send_selected_thread_signal(
         (target, queued, notification)
     };
     publish_job_notification(notification);
-    if queued {
-        wake_signal_waiter(&target);
-        interrupt_waiting_task(&target);
+    // 1. 未命中 wait membership 的 Running target 必须显式进入调度点；否则移除周期性
+    // tick yield 后，纯用户态远端线程可能无限期不观察 pending signal。
+    if queued && !wake_signal_waiter(&target) && !interrupt_waiting_task(&target) {
+        crate::task::processor::request_task_reschedule(&target);
     }
     Ok(())
 }
@@ -224,11 +221,13 @@ fn send_selected_processes(
         }
         let generated = generate_process_signal(tgid, signal, info)?;
         publish_job_notification(generated.notification);
+        // 2. process-directed signal 选择的 Running Thread 遵循同一显式抢占协议。
         if generated.queued
             && !wake_process_signal_waiter(tgid)
             && let Some(target) = generated.eligible
+            && !interrupt_waiting_task(&target)
         {
-            interrupt_waiting_task(&target);
+            crate::task::processor::request_task_reschedule(&target);
         }
     }
     if delivered != 0 {

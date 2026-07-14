@@ -4,6 +4,28 @@ mod advice;
 mod anonymous_shared;
 mod protection;
 
+/// @description 用户 page fault 请求的访问类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageFaultAccess {
+    /// 读取用户页。
+    Read,
+    /// 写入用户页。
+    Write,
+    /// 执行用户页指令。
+    Execute,
+}
+
+/// @description 一次用户页访问 fault 的领域结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageFaultOutcome {
+    /// 请求的访问权限已经由 live leaf PTE 满足，原指令可直接重试。
+    Handled,
+    /// 地址不属于允许该访问的用户 VMA。
+    SegmentationFault,
+    /// file mapping 地址属于 VMA，但已越过 backing object 的有效范围。
+    BusError,
+}
+
 impl MemorySet {
     fn range_is_free(&self, start: VirtualPageNumber, end: VirtualPageNumber) -> bool {
         start < end

@@ -53,16 +53,14 @@ impl TaskControlBlock {
         let resource_limits = self.process.resource_limits.lock().forked();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let (nice, vruntime) = {
-            let policy = self.scheduling.policy.lock();
-            (policy.nice, policy.vruntime)
-        };
+        let cpu_runtime_us = Arc::new(core::sync::atomic::AtomicU64::new(0));
+        let child_policy = self.scheduling.policy.lock().forked(cpu_runtime_us.clone());
         let last_cpu = self
             .scheduling
             .last_cpu
             .load(core::sync::atomic::Ordering::Relaxed);
-        let cpu_runtime_us = Arc::new(core::sync::atomic::AtomicU64::new(0));
-
+        let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
+        let alternate_signal_stack = *self.thread.alternate_signal_stack.lock();
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
@@ -114,21 +112,11 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                alternate_signal_stack: Mutex::new(alternate_signal_stack),
             },
             scheduling: SchedulingEntity {
-                state: IrqMutex::new(SchedulingState {
-                    run_state: RunState::New,
-                    next_generation: 0,
-                    wait: None,
-                    wait_result: None,
-                }),
-                policy: Mutex::new(Sched {
-                    last_runtime: 0,
-                    nice,
-                    vruntime,
-                    total_runtime_us: 0,
-                    process_runtime_us: cpu_runtime_us,
-                }),
+                state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
+                policy: Mutex::new(child_policy),
                 last_cpu: AtomicUsize::new(last_cpu),
             },
         };

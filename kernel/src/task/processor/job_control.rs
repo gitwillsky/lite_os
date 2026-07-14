@@ -24,11 +24,26 @@ pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) 
 }
 
 pub(super) fn request_reschedule_on(cpu: usize) {
-    per_hart(cpu)
-        .reschedule_requested
-        .store(true, Ordering::Release);
-    if cpu != hart_id() {
-        sbi::sbi_send_ipi(1usize << cpu, 0).expect("SBI IPI failed for remote reschedule");
+    let cpu_index = if cpu == hart_id() {
+        hart::current_hart_index()
+    } else {
+        hart::hart_index(cpu)
+            .unwrap_or_else(|| panic!("reschedule CPU {} is absent from DTB topology", cpu))
+    };
+    publish_reschedule_at(cpu_index);
+}
+
+/// @description timer tick 到期时仅在本 hart 存在 runnable 竞争者才请求抢占。
+///
+/// @return 无返回值；单一 Running task 不产生无意义的自我 context switch。
+pub(in crate::task) fn request_tick_reschedule() {
+    let slot = current_per_hart();
+    let competitors = slot
+        .queued_entries
+        .load(Ordering::Relaxed)
+        .saturating_add(slot.inbound_entries.load(Ordering::Relaxed));
+    if slot.running_entries.load(Ordering::Relaxed) != 0 && competitors != 0 {
+        request_reschedule();
     }
 }
 
@@ -127,7 +142,7 @@ pub(in crate::task) fn continue_stopped_task(task: Arc<TaskControlBlock>) {
             RunState::Stopped {
                 resume: StopResume::Runnable,
             } => {
-                let cpu = select_cpu(&task);
+                let cpu = select_cpu(&task, scheduling.cpu_affinity);
                 Some((cpu, scheduling.transition_to_ready(cpu)))
             }
             RunState::Stopped {

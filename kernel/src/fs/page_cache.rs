@@ -1,6 +1,6 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::{Mutex, Once};
+use spin::{Mutex, MutexGuard, Once};
 
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame,
@@ -41,8 +41,13 @@ impl SharedPage for CachedPage {
 struct CachedFile {
     id: SharedFileId,
     inode: Arc<dyn Inode>,
-    // OWNER: 单 inode operation lock 串行化 append、truncate 与 writeback 的 size 边界。
+    // OWNER: 单 inode operation lock 串行化 cache fill、write/append、truncate 与 writeback；
+    // 缺失 fill 归属会让并发旧 storage read 在 write/truncate 后插入 stale cache page。
     operation: Mutex<()>,
+    // OWNER: 单 inode write_sequence gate 排序完整 regular write、truncate、allocate 与 fd/global sync；
+    // 缺失时 512-byte user-copy chunks 可被另一 OFD write 穿插，破坏 writev/append 连续性。
+    // page fault 不获取该 gate，只取内层 operation，因此同文件 mmap buffer fault 不会自死锁。
+    write_sequence: Mutex<()>,
     pages: Mutex<BTreeMap<u64, Arc<CachedPage>>>,
 }
 
@@ -60,44 +65,66 @@ impl CachedFile {
         if let Some(page) = self.pages.lock().get(&index).cloned() {
             return Ok(page);
         }
-        let frame = SharedFrame::allocate().map_err(shared_error)?;
+        // 1. miss fill 与 storage mutation 共用 operation domain，保证读出的 bytes 和最终
+        // cache publication 之间没有 write/truncate 可以穿过。
+        let _operation = self.operation.lock();
+        // 2. 等锁期间另一个 filler 可能已经发布同一 page；必须复查，否则会重复 I/O，
+        // 并让后完成者覆盖先完成者的唯一 cache owner。
+        if let Some(page) = self.pages.lock().get(&index).cloned() {
+            return Ok(page);
+        }
+        let mut frame = SharedFrame::allocate().map_err(shared_error)?;
         let offset = index
             .checked_mul(PAGE_SIZE as u64)
             .ok_or(FileSystemError::InvalidOperation)?;
-        if offset >= self.inode.size() {
+        let size = self.inode.size();
+        if offset >= size {
             return Err(FileSystemError::InvalidOperation);
         }
-        let available = usize::try_from(self.inode.size() - offset)
+        let available = usize::try_from(size - offset)
             .unwrap_or(usize::MAX)
             .min(PAGE_SIZE);
-        let mut contents = vec![0; available];
-        let read = self.inode.read_storage(offset, &mut contents)?;
+        // 3. frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
+        // cache miss 增加一次 heap allocation 和一次最多整页 memcpy。
+        let read = self
+            .inode
+            .read_storage(offset, &mut frame.bytes_mut()[..available])?;
         if read != available {
             return Err(FileSystemError::IoError);
         }
-        frame.write(0, &contents);
         let page = Arc::new(CachedPage {
             frame,
             dirty: AtomicBool::new(false),
             writers: AtomicUsize::new(0),
         });
         let mut pages = self.pages.lock();
-        Ok(pages.entry(index).or_insert_with(|| page.clone()).clone())
+        assert!(pages.insert(index, page.clone()).is_none());
+        Ok(page)
     }
 
-    fn update_cached(&self, offset: u64, input: &[u8]) -> Result<(), FileSystemError> {
-        let mut done = 0;
-        while done < input.len() {
-            let current = offset + done as u64;
-            let index = current / PAGE_SIZE as u64;
-            let page_offset = current as usize % PAGE_SIZE;
-            let count = (PAGE_SIZE - page_offset).min(input.len() - done);
-            if let Some(page) = self.pages.lock().get(&index).cloned() {
-                page.frame.write(page_offset, &input[done..done + count]);
-            }
-            done += count;
+    fn update_cached(&self, offset: u64, input: &[u8]) {
+        if input.is_empty() {
+            return;
         }
-        Ok(())
+        // 1. storage adapter 已确认完整写区间；overflow 表示其返回值破坏内部契约，必须 fail-stop。
+        let end = offset
+            .checked_add(input.len() as u64)
+            .expect("storage write returned an overflowing byte range");
+        let first = offset / PAGE_SIZE as u64;
+        let last = (end - 1) / PAGE_SIZE as u64;
+        let pages = self.pages.lock();
+        // 2. 从 page index 反向遍历实际 resident pages，跳过大写入区间中的 cache holes。
+        for (&index, page) in pages.range(first..=last) {
+            let page_start = index * PAGE_SIZE as u64;
+            let copy_start = offset.max(page_start);
+            let copy_end = end.min(page_start.saturating_add(PAGE_SIZE as u64));
+            // 3. 首尾 page 只覆盖交集；中间 page 自然复制完整 PAGE_SIZE。
+            let source_start = (copy_start - offset) as usize;
+            let page_offset = (copy_start - page_start) as usize;
+            let count = (copy_end - copy_start) as usize;
+            page.frame
+                .write(page_offset, &input[source_start..source_start + count]);
+        }
     }
 
     fn writeback_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
@@ -108,20 +135,31 @@ impl CachedFile {
             .range((offset / PAGE_SIZE as u64)..=((end.saturating_sub(1)) / PAGE_SIZE as u64))
             .map(|(index, page)| (*index, page.clone()))
             .collect();
+        // 1. operation lock 保证本次 writeback 的 EOF 不被 write/truncate 改动；只读取一次，
+        // 避免每个 resident page 都进入 filesystem metadata owner。
+        let size = self.inode.size();
+        // 2. 首个实际 dirty page 才分配 scratch，之后覆盖复用；缺失复用会让大文件 fsync
+        // 对每个脏页重复 heap allocation/free，把顺序写回变成 allocator 热点。
+        let mut data = Vec::new();
         for (index, page) in pages {
             if !page.dirty.load(Ordering::Acquire) {
                 continue;
             }
             let page_start = index * PAGE_SIZE as u64;
-            let count = usize::try_from(self.inode.size().saturating_sub(page_start))
+            let count = usize::try_from(size.saturating_sub(page_start))
                 .unwrap_or(usize::MAX)
                 .min(PAGE_SIZE);
             if count == 0 {
                 continue;
             }
-            let mut data = vec![0; count];
-            page.frame.read(0, &mut data);
-            if self.inode.write_storage(page_start, &data)? != count {
+            if data.is_empty() {
+                data.try_reserve_exact(PAGE_SIZE)
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                data.resize(PAGE_SIZE, 0);
+            }
+            // 3. EOF page 只提交有效前缀；后续完整页会覆盖 scratch 的对应区间。
+            page.frame.read(0, &mut data[..count]);
+            if self.inode.write_storage(page_start, &data[..count])? != count {
                 return Err(FileSystemError::IoError);
             }
             if page.writers.load(Ordering::Acquire) == 0 {
@@ -148,6 +186,8 @@ impl SharedFileMapping for CachedFile {
     }
 
     fn sync_range(&self, offset: u64, length: u64) -> Result<(), SharedFileError> {
+        // AddressSpace owner 在调用 mapping sync 时已持 mm lock；这里只取内层 operation，
+        // 否则会与 write_sequence → user-copy(AddressSpace) 形成反向锁序。
         let _operation = self.operation.lock();
         self.writeback_range(offset, length).map_err(fs_error)
     }
@@ -158,16 +198,17 @@ impl MemoryReclaimer for CachedFile {
         let Some(mut pages) = self.pages.try_lock() else {
             return 0;
         };
-        let mut reclaimed = 0;
-        pages.retain(|_, page| {
-            let reclaim = reclaimed < limit
-                && !page.dirty.load(Ordering::Acquire)
-                && page.writers.load(Ordering::Acquire) == 0
-                && Arc::strong_count(page) == 1;
-            reclaimed += usize::from(reclaim);
-            !reclaim
-        });
-        reclaimed
+        // 1. extract_if 只移除无外部引用的 clean page；dirty/writer owner 继续留在 cache。
+        // 2. take 达到 quota 后立即 drop iterator，未访问 entry 保留。若使用 retain，即使
+        // 已回收足额页仍会扫描整个大文件 cache，把一次 OOM recovery 退化为 O(cache pages)。
+        pages
+            .extract_if(.., |_, page| {
+                !page.dirty.load(Ordering::Acquire)
+                    && page.writers.load(Ordering::Acquire) == 0
+                    && Arc::strong_count(page) == 1
+            })
+            .take(limit)
+            .count()
     }
 }
 
@@ -191,11 +232,108 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
         id,
         inode,
         operation: Mutex::new(()),
+        write_sequence: Mutex::new(()),
         pages: Mutex::new(BTreeMap::new()),
     });
     register_memory_reclaimer(file.clone()).map_err(shared_error)?;
     files.insert(id, file.clone());
     Ok(file)
+}
+
+/// @description 已解析 page-cache identity 的 regular-file I/O facade。
+///
+/// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
+/// metadata、获取全局 FILES lock 并查找同一个 BTree entry。
+pub(crate) struct RegularFile(Arc<CachedFile>);
+
+/// @description 持有单 inode write-sequence ownership 的一次 regular-file mutation。
+///
+/// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
+pub(crate) struct RegularFileWrite<'a> {
+    file: &'a CachedFile,
+    _sequence: MutexGuard<'a, ()>,
+}
+
+impl RegularFile {
+    /// @description 将 regular inode 解析为唯一 page-cache owner。
+    /// @param inode 目标 regular inode。
+    /// @return 可在本次 I/O 内复用的 facade。
+    /// @error `InvalidOperation` 表示 inode 不是 regular file。
+    /// @error inode metadata 读取失败时透传 filesystem error。
+    /// @error 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
+    pub(crate) fn from_inode(inode: Arc<dyn Inode>) -> Result<Self, FileSystemError> {
+        cached_file(inode).map(Self)
+    }
+
+    /// @description 从 page cache 读取 regular-file bytes。
+    /// @param offset 文件 byte offset。
+    /// @param output kernel-owned 输出缓冲区。
+    /// @return 实际读取字节数；EOF 返回零。
+    /// @error cache fill 分配失败时返回 `OutOfMemory`。
+    /// @error size snapshot 后并发 truncate 越过当前 page 时返回 `InvalidOperation`。
+    /// @error storage read 失败或短读时返回对应 filesystem error。
+    pub(crate) fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
+        let size = self.0.inode.size();
+        let count = usize::try_from(size.saturating_sub(offset))
+            .unwrap_or(usize::MAX)
+            .min(output.len());
+        let mut done = 0;
+        while done < count {
+            let current = offset + done as u64;
+            let page = self.0.page(current / PAGE_SIZE as u64)?;
+            let page_offset = current as usize % PAGE_SIZE;
+            let part = (PAGE_SIZE - page_offset).min(count - done);
+            page.frame.read(page_offset, &mut output[done..done + part]);
+            done += part;
+        }
+        Ok(done)
+    }
+
+    /// @description 开始一次不可被其他 regular-file mutation 穿插的 write operation。
+    /// @return 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
+    pub(crate) fn begin_write(&self) -> RegularFileWrite<'_> {
+        RegularFileWrite {
+            file: &self.0,
+            _sequence: self.0.write_sequence.lock(),
+        }
+    }
+}
+
+impl RegularFileWrite<'_> {
+    /// @description 向 regular-file storage 写入并同步更新 resident cache pages。
+    /// @param offset 文件 byte offset。
+    /// @param input kernel-owned 输入缓冲区。
+    /// @return storage 实际写入字节数。
+    /// @error storage mutation 失败时透传 filesystem error。
+    pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
+        let _operation = self.file.operation.lock();
+        let written = self.file.inode.write_storage(offset, input)?;
+        self.file.update_cached(offset, &input[..written]);
+        Ok(written)
+    }
+
+    /// @description 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
+    /// @param input 待追加数据。
+    /// @param size_limit caller 的 RLIMIT_FSIZE soft limit。
+    /// @return append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
+    /// @error storage mutation 失败时透传 filesystem error。
+    pub(crate) fn append(
+        &self,
+        input: &[u8],
+        size_limit: u64,
+    ) -> Result<(u64, usize), FileSystemError> {
+        let _operation = self.file.operation.lock();
+        let offset = self.file.inode.size();
+        let allowed = usize::try_from(size_limit.saturating_sub(offset))
+            .unwrap_or(usize::MAX)
+            .min(input.len());
+        if allowed == 0 {
+            return Ok((offset, 0));
+        }
+        let (offset, written) = self.file.inode.append_storage(&input[..allowed])?;
+        self.file.update_cached(offset, &input[..written]);
+        Ok((offset, written))
+    }
 }
 
 pub(crate) fn mapping(
@@ -204,79 +342,12 @@ pub(crate) fn mapping(
     cached_file(inode).map(|file| file as Arc<dyn SharedFileMapping>)
 }
 
-pub(crate) fn read(
-    inode: Arc<dyn Inode>,
-    offset: u64,
-    output: &mut [u8],
-) -> Result<usize, FileSystemError> {
-    if inode.inode_type() != InodeType::File {
-        return inode.read_storage(offset, output);
-    }
-    let file = cached_file(inode)?;
-    let size = file.inode.size();
-    let count = usize::try_from(size.saturating_sub(offset))
-        .unwrap_or(usize::MAX)
-        .min(output.len());
-    let mut done = 0;
-    while done < count {
-        let current = offset + done as u64;
-        let page = file.page(current / PAGE_SIZE as u64)?;
-        let page_offset = current as usize % PAGE_SIZE;
-        let part = (PAGE_SIZE - page_offset).min(count - done);
-        page.frame.read(page_offset, &mut output[done..done + part]);
-        done += part;
-    }
-    Ok(done)
-}
-
-pub(crate) fn write(
-    inode: Arc<dyn Inode>,
-    offset: u64,
-    input: &[u8],
-) -> Result<usize, FileSystemError> {
-    if inode.inode_type() != InodeType::File {
-        return inode.write_storage(offset, input);
-    }
-    let file = cached_file(inode)?;
-    let _operation = file.operation.lock();
-    let written = file.inode.write_storage(offset, input)?;
-    file.update_cached(offset, &input[..written])?;
-    Ok(written)
-}
-
-/// @description 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
-///
-/// @param inode 目标 inode。
-/// @param input 待追加数据。
-/// @param size_limit caller 的 RLIMIT_FSIZE soft limit。
-/// @return append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
-pub(crate) fn append(
-    inode: Arc<dyn Inode>,
-    input: &[u8],
-    size_limit: u64,
-) -> Result<(u64, usize), FileSystemError> {
-    if inode.inode_type() != InodeType::File {
-        return inode.append_storage(input);
-    }
-    let file = cached_file(inode)?;
-    let _operation = file.operation.lock();
-    let offset = file.inode.size();
-    let allowed = usize::try_from(size_limit.saturating_sub(offset))
-        .unwrap_or(usize::MAX)
-        .min(input.len());
-    if allowed == 0 {
-        return Ok((offset, 0));
-    }
-    let (offset, written) = file.inode.append_storage(&input[..allowed])?;
-    file.update_cached(offset, &input[..written])?;
-    Ok((offset, written))
-}
-
 pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
         return inode.truncate_storage(size);
     }
     let file = cached_file(inode)?;
+    let _sequence = file.write_sequence.lock();
     let _operation = file.operation.lock();
     file.inode.truncate_storage(size)?;
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
@@ -306,6 +377,7 @@ pub(crate) fn allocate(
         return inode.allocate_storage(offset, length);
     }
     let file = cached_file(inode)?;
+    let _sequence = file.write_sequence.lock();
     let _operation = file.operation.lock();
     file.inode.allocate_storage(offset, length)
 }
@@ -315,6 +387,7 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         return inode.sync_storage();
     }
     let file = cached_file(inode)?;
+    let _sequence = file.write_sequence.lock();
     let _operation = file.operation.lock();
     file.writeback_range(0, u64::MAX)
 }
@@ -327,6 +400,7 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
         .cloned()
         .collect();
     for file in files {
+        let _sequence = file.write_sequence.lock();
         let _operation = file.operation.lock();
         file.writeback_range(0, u64::MAX)?;
     }

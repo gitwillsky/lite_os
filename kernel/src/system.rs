@@ -42,10 +42,28 @@ pub(crate) fn riscv_hwprobe_value(key: i64) -> Option<u64> {
     }
 }
 
-/// @description 投影 HartTopology 的 online mask，供 RISC-V userspace ABI 校验 CPU selector。
-/// @return 当前已 online 的 DTB hart mask。
-pub(crate) fn online_hart_mask() -> usize {
-    crate::arch::hart::online_hart_mask()
+/// @description 返回 calling hart 对应的紧凑 Linux logical CPU index。
+///
+/// @return 按 DTB hart ID 升序排列的零基 CPU index。
+/// @panics calling hart 不属于已发布 topology 时 fail-stop。
+pub(crate) fn current_cpu_index() -> usize {
+    crate::arch::hart::current_hart_index()
+}
+
+/// @description 投影 HartTopology 的 logical online CPU mask，供 Linux userspace ABI 校验 selector。
+///
+/// @return bit N 表示 logical CPU N 对应的 hart 已 online。
+pub(crate) fn online_cpu_mask() -> usize {
+    crate::arch::hart::states()
+        .iter()
+        .enumerate()
+        .fold(0, |mask, (cpu, state)| {
+            if state.is_online() {
+                mask | (1usize << cpu)
+            } else {
+                mask
+            }
+        })
 }
 
 /// @description 通过唯一 SBI SRST seam 关闭或冷重启整个 SMP system。

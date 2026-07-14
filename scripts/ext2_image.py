@@ -10,6 +10,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def find_mke2fs() -> Path:
+    """返回可执行 mke2fs；PATH 与常见 Homebrew/system 路径均不存在时 fail-stop。"""
+    candidates = (
+        shutil.which("mke2fs"),
+        "/opt/homebrew/opt/e2fsprogs/sbin/mke2fs",
+        "/usr/local/opt/e2fsprogs/sbin/mke2fs",
+        "/usr/sbin/mke2fs",
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise RuntimeError("mke2fs from e2fsprogs is required")
+
+
 def find_debugfs() -> Path:
     """返回可执行 debugfs；PATH 与常见 Homebrew/system 路径均不存在时 fail-stop。"""
     candidates = (

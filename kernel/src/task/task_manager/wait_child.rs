@@ -159,50 +159,23 @@ pub(crate) fn wait_child(
             return Err(WaitChildError::Interrupted);
         }
 
-        let cpu = hart_id();
-        let end_time = get_time_us();
-        let mut sched = task.scheduling.policy.lock();
-        let runtime = end_time.saturating_sub(sched.last_runtime);
-        sched.update_vruntime(runtime);
-        drop(sched);
-
         // graph lock 覆盖 child 复查与 waiter 发布；exit/job event 使用同一 owner，因此不会丢唤醒。
-        with_current_processor(|processor| {
-            let current = processor
-                .take_current()
-                .expect("child wait requires current task");
-            assert!(Arc::ptr_eq(&current, &task));
-            let mut scheduling = task.scheduling.state.lock();
-            assert_eq!(scheduling.run_state, RunState::Running { cpu });
-            assert!(
-                scheduling.wait.is_none(),
-                "task already owns wait membership"
-            );
-            assert!(scheduling.wait_result.is_none());
-            let parent_node = graph
-                .nodes
-                .get_mut(&parent)
-                .expect("waiting parent missing from process graph");
-            assert!(
-                parent_node
-                    .child_waiters
-                    .insert(task.tid(), current)
-                    .is_none(),
-                "Thread already owns child waiter"
-            );
-            scheduling.wait = Some(WaitMembership::Child);
-            scheduling.run_state = RunState::Blocking { cpu };
-        });
-        drop(graph);
-        schedule_with_task_context(task.clone());
-        match task
-            .scheduling
-            .state
-            .lock()
-            .wait_result
-            .take()
-            .expect("child waiter resumed without a wake result")
-        {
+        let prepared =
+            super::context_switch::prepare_current_block(&task, graph, |graph, current| {
+                let parent_node = graph
+                    .nodes
+                    .get_mut(&parent)
+                    .expect("waiting parent missing from process graph");
+                assert!(
+                    parent_node
+                        .child_waiters
+                        .insert(task.tid(), current)
+                        .is_none(),
+                    "Thread already owns child waiter"
+                );
+                WaitMembership::Child
+            });
+        match prepared.suspend() {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(WaitChildError::Interrupted),
             WaitResult::TimedOut => panic!("child waiter cannot time out"),

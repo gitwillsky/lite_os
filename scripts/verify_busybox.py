@@ -15,6 +15,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_cache import (
     build_environment,
@@ -35,7 +36,7 @@ from build_cache import (
 )
 from qemu_gate import boot, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
-from ext2_image import find_debugfs
+from ext2_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
@@ -53,6 +54,12 @@ BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
 SOURCE_RECIPE_VERSION = 1
 BINARY_RECIPE_VERSION = 5
+# OWNER: verify_busybox 唯一发布 content-addressed rootfs image cache。
+# PROOF: 单一文件锁串行化 writer；create_image 完成全部 ownership 断言后才写 manifest，并把
+# 完整 fingerprint directory 原子发布为不可变 generation。
+# FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
+# 使全部下游 APK install/runtime gate 失效。
+ROOTFS_RECIPE_VERSION = 1
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -857,11 +864,80 @@ def create_published_image(
     openssl: OpenSslPaths,
     output: Path,
 ) -> Path:
-    """在私有 inode 完成全部 assembly 后原子发布 rootfs，避免与运行实例争锁。"""
+    """从内容寻址缓存原子发布一份可写 rootfs。
+
+    Args:
+        binary: 已校验的 BusyBox ELF。
+        musl: 已校验的 musl sysroot 与工具链 identity。
+        openssl: 已校验的 target OpenSSL 产物。
+        output: 调用方独占的可写镜像路径。
+
+    Returns:
+        已原子替换为完整缓存镜像的 output。
+
+    Raises:
+        RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
+        OSError: cache publication 或 output copy 失败。
+    """
+    dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+    bootstrap = cached_apk_bootstrap()
+    host_openssl = shutil.which("openssl")
+    if host_openssl is None:
+        raise RuntimeError("host OpenSSL is required to sign the rootfs package")
+    alpine_keys = tuple(
+        sorted(path for path in bootstrap.alpine_keys.iterdir() if path.is_file())
+    )
+    payload = runtime_gate_payload(
+        "busybox-rootfs-image",
+        ROOTFS_RECIPE_VERSION,
+        (
+            ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
+            ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+            binary,
+            musl.install / "usr/lib/libc.so",
+            dynamic_probe,
+            dynamic_library,
+            openssl.binary,
+            bootstrap.apk_static,
+            bootstrap.ca_certificates_bundle,
+            bootstrap.private_key,
+            bootstrap.public_key,
+            *alpine_keys,
+            ROOT / "user/passwd",
+            ROOT / "user/group",
+            ROOT / "user/inittab",
+            ROOT / "user/network-service",
+            ROOT / "user/udhcpc.script",
+            ROOT / "create_fs.py",
+            Path(__file__).resolve(),
+            ROOT / "scripts/apk_cache.py",
+            ROOT / "scripts/apk_package.py",
+            ROOT / "scripts/apk_rootfs.py",
+            ROOT / "scripts/ext2_image.py",
+            ROOT / "scripts/qemu_gate.py",
+            find_mke2fs(),
+            find_debugfs(),
+            Path(host_openssl),
+        ),
+    )
+    identity = fingerprint(payload)
+    cache = WORK / "rootfs-images" / identity
+    with cache_lock(WORK / ".rootfs.lock"):
+        if manifest_matches(cache, payload, ("fs.img",)):
+            print(f"BusyBox rootfs cache hit: {identity[:12]}")
+        else:
+            temporary = temporary_directory(WORK / "rootfs-images", "rootfs")
+            try:
+                create_image(binary, musl, openssl, temporary / "fs.img")
+                write_manifest(temporary, payload)
+                publish_directory(temporary, cache)
+            finally:
+                shutil.rmtree(temporary, ignore_errors=True)
+
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".liteos-rootfs-", dir=output.parent) as directory:
         temporary = Path(directory) / "fs.img"
-        create_image(binary, musl, openssl, temporary)
+        shutil.copyfile(cache / "fs.img", temporary)
         temporary.replace(output)
     return output
 

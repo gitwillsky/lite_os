@@ -20,7 +20,7 @@ pub(crate) use file::{
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use page_cache::{
-    allocate, append, mapping, read, sync_all, sync_inode, truncate, write,
+    RegularFile, RegularFileWrite, allocate, mapping, sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{

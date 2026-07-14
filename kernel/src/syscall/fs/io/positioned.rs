@@ -1,13 +1,6 @@
 use super::*;
 
-/// @description 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
-///
-/// @param fd 源 descriptor。
-/// @param pointer userspace 输出地址。
-/// @param length 最大读取长度。
-/// @param offset 非负文件偏移。
-/// @return byte count、EOF 零或负 errno。
-pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
+fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
     if offset < 0 {
         return -errno::EINVAL;
     }
@@ -28,56 +21,45 @@ pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64)
     if inode.inode_type() != InodeType::File {
         return -errno::ESPIPE;
     }
-
-    let mut position = offset as u64;
-    let mut total = 0;
-    let mut chunk = [0u8; 512];
-    while total < length {
-        let count = chunk.len().min(length - total);
-        let read = match crate::fs::read(inode.clone(), position, &mut chunk[..count]) {
-            Ok(read) => read,
-            Err(error) => {
-                return if total == 0 {
-                    ferr(error)
-                } else {
-                    total as isize
-                };
-            }
-        };
-        if read == 0 {
-            break;
-        }
-        let Some(address) = pointer.checked_add(total) else {
-            return if total == 0 {
-                -errno::EFAULT
-            } else {
-                total as isize
-            };
-        };
-        if task.copy_to_user(address, &chunk[..read]).is_err() {
-            return if total == 0 {
-                -errno::EFAULT
-            } else {
-                total as isize
-            };
-        }
-        position += read as u64;
-        total += read;
+    if vectors.iter().all(|vector| vector.length == 0) {
+        return 0;
     }
-    total as isize
+    let file = match RegularFile::from_inode(inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
+    let mut position = offset as u64;
+    read_regular_vectors(&task, &file, &mut position, vectors)
+}
+
+/// @description 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
+///
+/// @param fd 源 descriptor。
+/// @param pointer userspace 输出地址。
+/// @param length 最大读取长度。
+/// @param offset 非负文件偏移。
+/// @return byte count、EOF 零或负 errno。
+pub(crate) fn sys_pread64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
+    positioned_read(
+        fd,
+        &[UserIoVec {
+            base: pointer,
+            length,
+        }],
+        offset,
+    )
 }
 
 /// @description 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
 ///
 /// @param fd 目标 descriptor。
-/// @param pointer userspace 输入地址。
-/// @param length 待写入长度。
+/// @param vectors 按序消费的 userspace buffers。
 /// @param offset 非负文件偏移；Linux `O_APPEND` OFD 仍在 inode end 执行写入。
+/// @param append_override `pwritev2` 对 OFD O_APPEND 的 operation-local override。
 /// @return byte count、partial count 或负 errno。
 fn positioned_write(
     fd: usize,
-    pointer: usize,
-    length: usize,
+    vectors: &[UserIoVec],
     offset: i64,
     append_override: Option<bool>,
 ) -> isize {
@@ -101,68 +83,18 @@ fn positioned_write(
     if inode.inode_type() != InodeType::File {
         return -errno::ESPIPE;
     }
+    if vectors.iter().all(|vector| vector.length == 0) {
+        return 0;
+    }
+    let file = match RegularFile::from_inode(inode) {
+        Ok(file) => file,
+        Err(error) => return ferr(error),
+    };
 
     let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
     let mut position = offset as u64;
-    let mut total = 0;
-    let mut chunk = [0u8; 512];
-    while total < length {
-        let requested = chunk.len().min(length - total);
-        let count = match bounded_regular_write(&task, &ofd, position, requested, total) {
-            Ok(count) => count,
-            Err(result) => return result,
-        };
-        let Some(address) = pointer.checked_add(total) else {
-            return if total == 0 {
-                -errno::EFAULT
-            } else {
-                total as isize
-            };
-        };
-        if task.copy_from_user(address, &mut chunk[..count]).is_err() {
-            return if total == 0 {
-                -errno::EFAULT
-            } else {
-                total as isize
-            };
-        }
-        let written = if append {
-            match crate::fs::append(inode.clone(), &chunk[..count], task.file_size_limit()) {
-                Ok((_, 0)) if count != 0 => {
-                    return if total == 0 {
-                        file_size_exceeded(&task)
-                    } else {
-                        total as isize
-                    };
-                }
-                Ok((_, written)) => written,
-                Err(error) => {
-                    return if total == 0 {
-                        ferr(error)
-                    } else {
-                        total as isize
-                    };
-                }
-            }
-        } else {
-            match crate::fs::write(inode.clone(), position, &chunk[..count]) {
-                Ok(written) => written,
-                Err(error) => {
-                    return if total == 0 {
-                        ferr(error)
-                    } else {
-                        total as isize
-                    };
-                }
-            }
-        };
-        position += written as u64;
-        total += written;
-        if written < count {
-            break;
-        }
-    }
-    total as isize
+    let writer = file.begin_write();
+    write_regular_vectors(&task, &writer, &mut position, vectors, append)
 }
 
 /// @description 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。
@@ -173,7 +105,15 @@ fn positioned_write(
 /// @param offset 非负文件偏移；Linux legacy pwrite64 仍继承 OFD 的 O_APPEND。
 /// @return byte count、partial count 或负 errno。
 pub(crate) fn sys_pwrite64(fd: usize, pointer: usize, length: usize, offset: i64) -> isize {
-    positioned_write(fd, pointer, length, offset, None)
+    positioned_write(
+        fd,
+        &[UserIoVec {
+            base: pointer,
+            length,
+        }],
+        offset,
+        None,
+    )
 }
 
 fn positioned_readv(fd: usize, iovector: usize, count: usize, offset: i64) -> isize {
@@ -182,27 +122,7 @@ fn positioned_readv(fd: usize, iovector: usize, count: usize, offset: i64) -> is
         Ok(value) => value,
         Err(error) => return error,
     };
-    if vectors.is_empty() {
-        return sys_pread64(fd, 0, 0, offset);
-    }
-    let mut position = offset;
-    let mut total = 0usize;
-    for vector in vectors {
-        let result = sys_pread64(fd, vector.base, vector.length, position);
-        if result < 0 {
-            return if total == 0 { result } else { total as isize };
-        }
-        let result = result as usize;
-        total += result;
-        position = match position.checked_add(result as i64) {
-            Some(position) => position,
-            None => return total as isize,
-        };
-        if result < vector.length {
-            break;
-        }
-    }
-    total as isize
+    positioned_read(fd, &vectors, offset)
 }
 
 fn positioned_writev(
@@ -217,27 +137,7 @@ fn positioned_writev(
         Ok(value) => value,
         Err(error) => return error,
     };
-    if vectors.is_empty() {
-        return positioned_write(fd, 0, 0, offset, append_override);
-    }
-    let mut position = offset;
-    let mut total = 0usize;
-    for vector in vectors {
-        let result = positioned_write(fd, vector.base, vector.length, position, append_override);
-        if result < 0 {
-            return if total == 0 { result } else { total as isize };
-        }
-        let result = result as usize;
-        total += result;
-        position = match position.checked_add(result as i64) {
-            Some(position) => position,
-            None => return total as isize,
-        };
-        if result < vector.length {
-            break;
-        }
-    }
-    total as isize
+    positioned_write(fd, &vectors, offset, append_override)
 }
 
 /// @description 按 Linux preadv ABI 从显式 offset scatter read，不修改共享 OFD offset。

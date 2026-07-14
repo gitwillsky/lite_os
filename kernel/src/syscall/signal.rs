@@ -1,8 +1,9 @@
 use crate::{
     syscall::errno,
     task::{
-        SignalAction, SignalSendError, SignalWaitError, current_task, send_process_signal,
-        send_thread_signal, send_tid_signal, wait_for_signal, wait_for_signal_delivery,
+        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError,
+        current_task, send_process_signal, send_thread_signal, send_tid_signal, wait_for_signal,
+        wait_for_signal_delivery,
     },
 };
 
@@ -15,6 +16,17 @@ struct UserSigAction {
     flags: usize,
     mask: u64,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UserSignalStack {
+    sp: usize,
+    flags: i32,
+    padding: u32,
+    size: usize,
+}
+
+const _: () = assert!(core::mem::size_of::<UserSignalStack>() == 24);
 
 /// @description 实现 Linux process/process-group signal selector 与 signal-zero probe。
 ///
@@ -151,6 +163,55 @@ pub(crate) fn sys_tkill(tid: usize, signal: usize) -> isize {
         return -errno::EINVAL;
     }
     send_tid_signal(tid, signal).map_or_else(signal_send_errno, |()| 0)
+}
+
+/// @description 查询并可选替换当前 Thread 的 Linux RV64 alternate signal stack。
+///
+/// @param new_stack 新 24-byte `stack_t` 地址；零表示仅查询。
+/// @param old_stack 旧 `stack_t` 输出地址；零表示不输出。
+/// @return 成功返回零；用户地址、active stack、flags 或长度非法时返回负 errno。
+pub(crate) fn sys_sigaltstack(new_stack: usize, old_stack: usize) -> isize {
+    let task = current_task().expect("sigaltstack requires current task");
+    let replacement = if new_stack == 0 {
+        None
+    } else {
+        let mut bytes = [0u8; core::mem::size_of::<UserSignalStack>()];
+        if task.copy_from_user(new_stack, &mut bytes).is_err() {
+            return -errno::EFAULT;
+        }
+        // SAFETY: bytes has the exact RV64 stack_t size; read_unaligned yields an owned value.
+        let stack = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<UserSignalStack>()) };
+        Some(SignalStack {
+            sp: stack.sp,
+            flags: stack.flags,
+            size: stack.size,
+        })
+    };
+    let old = match task.signal_stack(replacement) {
+        Ok(old) => old,
+        Err(SignalStackError::Active) => return -errno::EPERM,
+        Err(SignalStackError::InvalidFlags) => return -errno::EINVAL,
+        Err(SignalStackError::TooSmall) => return -errno::ENOMEM,
+    };
+    if old_stack != 0 {
+        let old = UserSignalStack {
+            sp: old.sp,
+            flags: old.flags,
+            padding: 0,
+            size: old.size,
+        };
+        // SAFETY: UserSignalStack is repr(C), fully initialized, and copied only for this call.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&old as *const UserSignalStack).cast::<u8>(),
+                core::mem::size_of::<UserSignalStack>(),
+            )
+        };
+        if task.copy_to_user(old_stack, bytes).is_err() {
+            return -errno::EFAULT;
+        }
+    }
+    0
 }
 
 fn signal_send_errno(error: SignalSendError) -> isize {

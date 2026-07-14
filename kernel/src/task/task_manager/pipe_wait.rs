@@ -81,38 +81,16 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
 /// @return ready 返回 Woken；signal 返回 Interrupted。
 pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if pipe.wait_ready(condition) {
         return WaitResult::Woken;
     }
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("pipe wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
+    super::context_switch::prepare_current_block(&task, queue, |queue, current| {
         let wait_id = queue.insert_pipe(pipe, condition, current);
-        scheduling.wait = Some(WaitMembership::Pipe(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    task.scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("pipe waiter resumed without a wake result")
+        WaitMembership::Pipe(wait_id)
+    })
+    .suspend()
 }

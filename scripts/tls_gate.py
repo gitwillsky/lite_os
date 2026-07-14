@@ -25,9 +25,23 @@ def _run(command: list[str]) -> None:
 
 
 def start_https_gate(
-    directory: Path, root_directory: Path = ROOT
+    directory: Path,
+    root_directory: Path = ROOT,
+    ports: range = range(18443, 18544),
 ) -> tuple[subprocess.Popen[bytes], int, Path]:
-    """创建临时 CA/server identity，并启动只供 QEMU gate 消费的 HTTPS origin。"""
+    """创建临时 CA/server identity，并启动只供 QEMU gate 消费的 HTTPS origin。
+
+    Args:
+        directory: 调用方独占的 identity 与证书目录。
+        root_directory: HTTPS origin 的 document root。
+        ports: 当前 gate 独占的 host port domain。
+
+    Returns:
+        已监听的 server process、host port 与 CA certificate。
+
+    Raises:
+        RuntimeError: 证书生成失败或 port domain 中没有可用端口。
+    """
     ca_key = directory / "ca.key"
     ca_cert = directory / "ca.pem"
     server_key = directory / "server.key"
@@ -96,7 +110,7 @@ def start_https_gate(
             str(server_cert),
         ]
     )
-    for port in range(18443, 18544):
+    for port in ports:
         server = subprocess.Popen(
             [
                 sys.executable,
@@ -118,7 +132,7 @@ def start_https_gate(
             server.wait(timeout=0.05)
         except subprocess.TimeoutExpired:
             return server, port, ca_cert
-    raise RuntimeError("no free HTTPS gate port in 18443..18543")
+    raise RuntimeError(f"no free HTTPS gate port in {ports.start}..{ports.stop - 1}")
 
 
 def install_runtime_tls_identity(

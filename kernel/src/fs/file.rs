@@ -43,13 +43,6 @@ impl CharacterDevice {
             Self::Terminal { kind, .. } => *kind,
         }
     }
-
-    pub(crate) fn terminal(&self) -> Option<&Arc<Terminal>> {
-        match self {
-            Self::Terminal { terminal, .. } => Some(terminal),
-            Self::Null | Self::Zero | Self::Entropy(_) => None,
-        }
-    }
 }
 
 /// @description OFD 后端；character device、pipe 和 inode 共享同一 fd 表。

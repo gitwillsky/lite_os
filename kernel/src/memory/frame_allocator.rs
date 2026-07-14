@@ -7,7 +7,7 @@ use crate::sync::IrqMutex;
 
 // frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭本地 SIE。
 // OWNER: frame allocator module owns all allocatable physical-frame metadata.
-static FRAME_ALLOCATOR: Once<IrqMutex<StackFrameAllocator>> = Once::new();
+static FRAME_ALLOCATOR: Once<IrqMutex<FrameAllocator>> = Once::new();
 
 #[derive(Debug)]
 enum FrameAllocError {
@@ -15,9 +15,12 @@ enum FrameAllocError {
     Duplicate,
 }
 
+/// @description 一个或多个连续物理页的唯一 RAII owner。
 pub(crate) struct FrameTracker {
+    /// 连续区间的首个物理页号。
     pub(crate) ppn: PhysicalPageNumber,
-    pub(crate) pages: usize, // Number of pages (1 for single page, >1 for contiguous allocation)
+    /// 区间页数；始终非零。
+    pub(crate) pages: usize,
 }
 
 impl FrameTracker {
@@ -61,15 +64,15 @@ impl FrameTracker {
 
 impl Drop for FrameTracker {
     fn drop(&mut self) {
-        // For contiguous pages, deallocate each page individually
-        for i in 0..self.pages {
-            let current_ppn = PhysicalPageNumber::from(self.ppn.as_usize() + i);
-            if let Err(error) = FRAME_ALLOCATOR.wait().lock().dealloc(current_ppn) {
-                panic!(
-                    "invalid FrameTracker drop for {:?}: {:?}",
-                    current_ppn, error
-                );
-            }
+        if let Err(error) = FRAME_ALLOCATOR
+            .wait()
+            .lock()
+            .dealloc_contiguous(self.ppn, self.pages)
+        {
+            panic!(
+                "invalid FrameTracker drop for {:?}+{} pages: {:?}",
+                self.ppn, self.pages, error
+            );
         }
     }
 }
@@ -85,17 +88,19 @@ impl Debug for FrameTracker {
 }
 
 #[derive(Debug)]
-struct StackFrameAllocator {
+struct FrameAllocator {
     start_ppn: PhysicalPageNumber,
     current_start_ppn: PhysicalPageNumber,
     end_ppn: PhysicalPageNumber,
 
+    // OWNER: allocator lock 内的 recycled pages 以页首 usize 组成严格递增 intrusive list。
+    // 缺失顺序会让 contiguous fallback 反复全表 membership/remove，最坏退化为立方扫描。
     recycled_head: Option<PhysicalPageNumber>,
     recycled_len: usize,
 }
 
-impl StackFrameAllocator {
-    pub(crate) fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
+impl FrameAllocator {
+    fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
         let end = end_addr.floor();
         Self {
@@ -107,21 +112,13 @@ impl StackFrameAllocator {
         }
     }
 
-    pub(crate) fn alloc(&mut self) -> Option<PhysicalPageNumber> {
+    fn alloc(&mut self) -> Option<PhysicalPageNumber> {
         if let Some(ppn) = self.recycled_head {
             self.recycled_head = Self::recycled_next(ppn);
             self.recycled_len -= 1;
-            // Never return PPN 0 from recycled pages
-            if ppn.as_usize() == 0 {
-                panic!("Frame allocator recycled PPN 0, this should never happen");
-            }
             Some(ppn)
         } else if self.current_start_ppn < self.end_ppn {
             let current = self.current_start_ppn;
-            // Never return PPN 0 from allocation
-            if current.as_usize() == 0 {
-                panic!("Frame allocator current_start_ppn is 0, this should never happen");
-            }
             self.current_start_ppn = current.add_one();
             Some(current)
         } else {
@@ -129,7 +126,7 @@ impl StackFrameAllocator {
         }
     }
 
-    pub(crate) fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
+    fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
         if pages == 0 {
             return None;
         }
@@ -138,110 +135,118 @@ impl StackFrameAllocator {
         let allocation_end = self.current_start_ppn.as_usize().checked_add(pages)?;
         if allocation_end <= self.end_ppn.as_usize() {
             let start_ppn = self.current_start_ppn;
-            // Never return PPN 0 from contiguous allocation
-            if start_ppn.as_usize() == 0 {
-                panic!("Frame allocator current_start_ppn is 0, this should never happen");
-            }
             self.current_start_ppn = PhysicalPageNumber::from(allocation_end);
             Some(start_ppn)
         } else {
-            // 2. 尾部不足时扫描 recycled intrusive list；缺少此路径会让动态 heap 在
-            //    物理页总量充足但发生回收后仍因假性连续内存耗尽而失败。
-            let mut candidate = self.recycled_head;
-            while let Some(start) = candidate {
-                let start_value = start.as_usize();
-                let complete = (0..pages).all(|offset| {
-                    start_value
-                        .checked_add(offset)
-                        .filter(|page| *page < self.end_ppn.as_usize())
-                        .is_some_and(|page| self.recycled_contains(PhysicalPageNumber::from(page)))
-                });
-                if complete {
-                    for offset in 0..pages {
-                        self.remove_recycled(PhysicalPageNumber::from(
-                            start_value
-                                .checked_add(offset)
-                                .expect("validated contiguous recycled run"),
-                        ));
+            // 2. 有序 intrusive list 让连续 run 在链上相邻；单次扫描同时定位 run 与
+            // 前驱，找到后 O(1) splice。若恢复无序 list，此处会退化为重复全表查找。
+            if self.recycled_len < pages {
+                return None;
+            }
+            let mut cursor = self.recycled_head;
+            let mut previous = None;
+            let mut run_start = None;
+            let mut run_before = None;
+            let mut run_len = 0;
+            while let Some(page) = cursor {
+                let next = Self::recycled_next(page);
+                if previous.is_some_and(|previous: PhysicalPageNumber| {
+                    previous.as_usize().checked_add(1) == Some(page.as_usize())
+                }) {
+                    run_len += 1;
+                } else {
+                    run_start = Some(page);
+                    run_before = previous;
+                    run_len = 1;
+                }
+                if run_len == pages {
+                    let start = run_start.expect("non-empty recycled run lost its start");
+                    if let Some(before) = run_before {
+                        Self::set_recycled_next(before, next);
+                    } else {
+                        self.recycled_head = next;
                     }
+                    self.recycled_len -= pages;
                     return Some(start);
                 }
-                candidate = Self::recycled_next(start);
+                previous = Some(page);
+                cursor = next;
             }
             None
         }
     }
 
-    fn recycled_contains(&self, target: PhysicalPageNumber) -> bool {
-        let mut cursor = self.recycled_head;
-        while let Some(page) = cursor {
-            if page == target {
-                return true;
-            }
-            cursor = Self::recycled_next(page);
+    fn dealloc_contiguous(
+        &mut self,
+        start: PhysicalPageNumber,
+        pages: usize,
+    ) -> Result<(), FrameAllocError> {
+        let Some(end) = start.as_usize().checked_add(pages) else {
+            return Err(FrameAllocError::OutOfRange);
+        };
+        // 1. 整段必须属于 allocator 已发布区间；先完成验证，失败时 recycler 保持不变。
+        if pages == 0
+            || start < self.start_ppn
+            || end > self.current_start_ppn.as_usize()
+            || end > self.end_ppn.as_usize()
+        {
+            return Err(FrameAllocError::OutOfRange);
         }
-        false
-    }
 
-    fn remove_recycled(&mut self, target: PhysicalPageNumber) {
-        let mut previous: Option<PhysicalPageNumber> = None;
+        // 2. 有序 list 一次定位插入点；首个 >= start 的节点落在 end 前即证明区间重叠。
+        let mut previous = None;
         let mut cursor = self.recycled_head;
         while let Some(page) = cursor {
-            let next = Self::recycled_next(page);
-            if page == target {
-                if let Some(previous) = previous {
-                    // SAFETY: previous 仍在 recycled list 中，其页首 next 字段由 allocator lock 独占。
-                    unsafe {
-                        previous
-                            .as_page_mut_ptr()
-                            .cast::<usize>()
-                            .write(next.map_or(0, |page| page.as_usize()))
-                    };
-                } else {
-                    self.recycled_head = next;
-                }
-                self.recycled_len -= 1;
-                return;
+            if page >= start {
+                break;
             }
             previous = Some(page);
-            cursor = next;
+            cursor = Self::recycled_next(page);
         }
-        panic!("contiguous recycled run changed while allocator lock is held");
-    }
-
-    pub(crate) fn dealloc(&mut self, ppn: PhysicalPageNumber) -> Result<(), FrameAllocError> {
-        // 验证 PPN 在有效范围内
-        if ppn < self.start_ppn || ppn >= self.end_ppn {
-            return Err(FrameAllocError::OutOfRange);
+        if cursor.is_some_and(|page| page.as_usize() < end) {
+            return Err(FrameAllocError::Duplicate);
         }
+        let recycled_len = self
+            .recycled_len
+            .checked_add(pages)
+            .filter(|length| {
+                *length <= self.current_start_ppn.as_usize() - self.start_ppn.as_usize()
+            })
+            .expect("recycled frame count exceeds allocated range");
 
-        // 检查是否试图释放未分配的页面
-        // 如果 ppn >= current_start_ppn，说明这个页面还没有被分配过
-        if ppn >= self.current_start_ppn {
-            return Err(FrameAllocError::OutOfRange);
+        // 3. 一次 allocator transaction 串起整段页，并把它 splice 到唯一排序位置。
+        for offset in 0..pages {
+            let page = PhysicalPageNumber::from(start.as_usize() + offset);
+            let next = if offset + 1 == pages {
+                cursor
+            } else {
+                Some(PhysicalPageNumber::from(page.as_usize() + 1))
+            };
+            Self::set_recycled_next(page, next);
         }
-
-        // 检查重复释放 - 这是一个原子操作在单线程环境下
-        let mut cursor = self.recycled_head;
-        while let Some(recycled) = cursor {
-            if recycled == ppn {
-                return Err(FrameAllocError::Duplicate);
-            }
-            cursor = Self::recycled_next(recycled);
+        if let Some(previous) = previous {
+            Self::set_recycled_next(previous, Some(start));
+        } else {
+            self.recycled_head = Some(start);
         }
-
-        let next = self.recycled_head.map_or(0, |head| head.as_usize());
-        // SAFETY: dealloc 的范围/分配状态检查证明 ppn 是不再被 FrameTracker 拥有的完整页；
-        // frame lock 保证 intrusive free-list 只有一个写者，页首一个 usize 用作 next PPN。
-        unsafe { ppn.as_page_mut_ptr().cast::<usize>().write(next) };
-        self.recycled_head = Some(ppn);
-        self.recycled_len += 1;
+        self.recycled_len = recycled_len;
         Ok(())
     }
 
+    fn set_recycled_next(ppn: PhysicalPageNumber, next: Option<PhysicalPageNumber>) {
+        debug_assert!(next.is_none_or(|next| next > ppn));
+        // SAFETY: caller 持有唯一 allocator lock，且 ppn 是已在 recycler 中或正由
+        // FrameTracker Drop 交还的完整页；页首 usize 在重新分配前只存放 next PPN。
+        unsafe {
+            ppn.as_page_mut_ptr()
+                .cast::<usize>()
+                .write(next.map_or(0, |page| page.as_usize()))
+        };
+    }
+
     fn recycled_next(ppn: PhysicalPageNumber) -> Option<PhysicalPageNumber> {
-        // SAFETY: 只有 recycled_head 可达页会进入本函数；这些页由 dealloc 在相同 frame
-        // lock 下写入 next PPN，且在从链表移除前不会重新分配。
+        // SAFETY: 只有 recycled_head 可达页会进入本函数；这些页由 dealloc_contiguous 在
+        // 相同 allocator lock 下写入 next PPN，且在从链表移除前不会重新分配。
         let next = unsafe { ppn.as_page_ptr().cast::<usize>().read() };
         (next != 0).then(|| PhysicalPageNumber::from(next))
     }
@@ -253,7 +258,17 @@ impl StackFrameAllocator {
     }
 }
 
+/// @description 发布覆盖给定物理区间的唯一 frame allocator。
+///
+/// @param start_addr allocator 可用区间起点。
+/// @param end_addr allocator 可用区间 exclusive end。
+/// @return 无返回值。
+/// @errors 空区间、零页或重复初始化时 fail-stop。
 pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
+    assert!(
+        FRAME_ALLOCATOR.get().is_none(),
+        "frame allocator initialized twice"
+    );
     debug!(
         "frame_allocator::init: start_addr={:#x}, end_addr={:#x}",
         start_addr.as_usize(),
@@ -278,7 +293,7 @@ pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
         );
     }
 
-    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(StackFrameAllocator::new(start_addr, end_addr)));
+    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr)));
 }
 
 fn alloc_raw() -> Option<FrameTracker> {
@@ -295,7 +310,14 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
     alloc_raw()
 }
 
+/// @description 分配并清零指定数量的连续物理页。
+///
+/// @param pages 非零页数。
+/// @return 成功返回唯一 `FrameTracker`；回收后仍无连续区间返回 `None`。
 pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
+    if pages == 0 {
+        return None;
+    }
     let mut res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
     if res.is_none() {
         super::shared_file::reclaim_pages(pages.max(64));

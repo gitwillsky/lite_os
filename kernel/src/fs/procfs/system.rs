@@ -31,7 +31,7 @@ pub(super) fn format_cpu_stat(snapshot: &ProcSnapshot) -> String {
         let _ = writeln!(
             output,
             "cpu{} {} 0 0 {} 0 0 0 0",
-            cpu.hart_id,
+            cpu.cpu,
             ticks(busy),
             ticks(snapshot.uptime_us - busy)
         );

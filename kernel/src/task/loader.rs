@@ -1,7 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, OpenedFile, read, vfs},
+    fs::{
+        AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType, OpenedFile, RegularFile,
+        vfs,
+    },
     memory::{
         ElfLoadError, ExecutableImage, ExecutableParseError, ExecutableSource, MemorySet,
         parse_interpreter_elf, parse_main_elf,
@@ -75,7 +78,7 @@ pub(crate) enum ProgramLoadError {
 }
 
 struct InodeExecutableSource {
-    inode: Arc<dyn Inode>,
+    file: RegularFile,
     length: usize,
 }
 
@@ -85,7 +88,8 @@ impl ExecutableSource for InodeExecutableSource {
     }
 
     fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) -> Result<(), ()> {
-        read(self.inode.clone(), offset as u64, buffer)
+        self.file
+            .read(offset as u64, buffer)
             .ok()
             .filter(|read| *read == buffer.len())
             .map(|_| ())
@@ -174,7 +178,8 @@ fn source(inode: Arc<dyn Inode>) -> Result<Arc<dyn ExecutableSource>, ProgramLoa
     }
     let length = usize::try_from(inode.size())
         .map_err(|_| ProgramLoadError::FileSystem(FileSystemError::IoError))?;
-    Ok(Arc::new(InodeExecutableSource { inode, length }))
+    let file = RegularFile::from_inode(inode).map_err(ProgramLoadError::FileSystem)?;
+    Ok(Arc::new(InodeExecutableSource { file, length }))
 }
 
 fn parse_script_header(

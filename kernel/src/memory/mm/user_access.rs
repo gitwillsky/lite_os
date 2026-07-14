@@ -63,17 +63,69 @@ impl MemorySet {
         Ok((pte.ppn(), va.page_offset()))
     }
 
-    pub(super) fn validate_user_range(
-        &self,
-        start: usize,
-        len: usize,
-        required: PTEFlags,
+    fn fault_in_user_page(
+        &mut self,
+        address: usize,
+        access: PageFaultAccess,
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
+        match self.handle_page_fault_with_limits(address, access, limits) {
+            Ok(PageFaultOutcome::Handled) => Ok(()),
+            Err(MemoryError::OutOfMemory) => Err(UserAccessError::OutOfMemory),
+            _ => Err(UserAccessError::Fault),
+        }
+    }
+
+    /// @description Fault-in 并验证完整用户读取范围，不复制内容。
+    ///
+    /// @param address 用户范围首地址。
+    /// @param length 用户范围字节数。
+    /// @param limits lazy fault 可消耗的资源上限。
+    /// @return 完整范围已驻留且具备 `U|R` 权限时返回 exclusive end。
+    /// @errors 地址、权限、fault 或资源失败返回 `UserAccessError`。
+    pub(super) fn prepare_user_read(
+        &mut self,
+        address: usize,
+        length: usize,
+        limits: UserFaultLimits,
     ) -> Result<usize, UserAccessError> {
-        let end = Self::checked_user_end(start, len)?;
-        let mut current = start;
+        let end = Self::checked_user_end(address, length)?;
+        let mut current = address;
         while current < end {
-            let (_, offset) = self.user_page(current, required)?;
-            current += (config::PAGE_SIZE - offset).min(end - current);
+            if self.user_page(current, PTEFlags::R).is_err() {
+                self.fault_in_user_page(current, PageFaultAccess::Read, limits)?;
+            }
+            current = (current | (config::PAGE_SIZE - 1))
+                .saturating_add(1)
+                .min(end);
+        }
+        Ok(end)
+    }
+
+    /// @description 完成 COW/dirty 转换并验证完整用户写入范围，不复制内容。
+    ///
+    /// @param address 用户范围首地址。
+    /// @param length 用户范围字节数。
+    /// @param limits lazy fault 可消耗的资源上限。
+    /// @return 完整范围已驻留且具备 `U|W` 权限时返回 exclusive end。
+    /// @errors 地址、权限、fault 或资源失败返回 `UserAccessError`。
+    fn prepare_user_write(
+        &mut self,
+        address: usize,
+        length: usize,
+        limits: UserFaultLimits,
+    ) -> Result<usize, UserAccessError> {
+        let end = Self::checked_user_end(address, length)?;
+        let mut current = address;
+        while current < end {
+            // 1. write fault domain 唯一提交 COW、MADV_FREE 取消和 private-file dirty；
+            // 绕过它直接按 PTE copy 会让共享 frame 被覆盖或让已写页仍可被回收。
+            self.fault_in_user_page(current, PageFaultAccess::Write, limits)?;
+            // 2. Handled 的领域 postcondition 已证明 U|W leaf 可重试；再次查询只会让每个
+            // copyout 页多走一遍 Sv39 页表，不提供新的失败原子性或状态证明。
+            current = (current | (config::PAGE_SIZE - 1))
+                .saturating_add(1)
+                .min(end);
         }
         Ok(end)
     }
@@ -176,11 +228,7 @@ impl MemorySet {
         while bytes.len() < max_len {
             Self::checked_user_end(current, 1)?;
             if self.user_page(current, PTEFlags::R).is_err() {
-                match self.handle_page_fault_with_limits(current, PageFaultAccess::Read, limits) {
-                    Ok(PageFaultOutcome::Handled) => {}
-                    Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
-                    _ => return Err(UserAccessError::Fault),
-                }
+                self.fault_in_user_page(current, PageFaultAccess::Read, limits)?;
             }
             let (ppn, offset) = self.user_page(current, PTEFlags::R)?;
             let count = (config::PAGE_SIZE - offset).min(max_len - bytes.len());

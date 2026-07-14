@@ -1884,19 +1884,19 @@ impl Inode for Ext2Inode {
             let blk_index = (cur_off / bs) as u32;
             let blk_off = cur_off % bs;
             let blk = self.map_block_sparse(blk_index)?;
-
             let n = cmp::min(bs - blk_off, to_read - done);
-
             if blk == 0 {
                 // This is a hole - fill with zeros
                 buf[done..done + n].fill(0);
+            } else if blk_off == 0 && n == bs {
+                // 完整对齐块直接读入 caller，避免 page-cache miss 为每个块分配并复制 Vec。
+                self.fs.read_fs_block(blk, &mut buf[done..done + n])?;
             } else {
                 // Read from actual block
                 let mut b = vec![0u8; bs];
                 self.fs.read_fs_block(blk, &mut b)?;
                 buf[done..done + n].copy_from_slice(&b[blk_off..blk_off + n]);
             }
-
             done += n;
             cur_off += n;
         }

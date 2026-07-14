@@ -58,6 +58,21 @@ impl TaskControlBlock {
                 .any(|uid| *uid == target[0] || *uid == target[2])
     }
 
+    /// @description 以一次 caller credential 快照判断 Linux scheduler 修改权限。
+    ///
+    /// @param target 待修改的 Thread；credentials 由其所属 Process 唯一拥有。
+    /// @return 无权限返回 `None`；同 owner 返回 `Some(false)`；effective root 返回 `Some(true)`。
+    pub(in crate::task) fn scheduler_privilege_for(
+        &self,
+        target: &TaskControlBlock,
+    ) -> Option<bool> {
+        let caller_euid = self.process.credentials.lock().effective_uid;
+        let target = target.process.credentials.lock();
+        let privileged = caller_euid == ROOT_ID;
+        (privileged || caller_euid == target.real_uid || caller_euid == target.effective_uid)
+            .then_some(privileged)
+    }
+
     /// @description 原子执行 setuid 或 setgid credential transition。
     pub(crate) fn set_credential_id(&self, uid: bool, value: u32) -> Result<(), ()> {
         let mut credentials = self.process.credentials.lock();

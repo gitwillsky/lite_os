@@ -9,8 +9,8 @@ use crate::{
         TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
         consume_child_status, create_session, current_task, exit_current_group,
         exit_current_thread, fork_current_process, load_executable, parent_pid, process_group,
-        release_child_status, session_id, set_process_group, suspend_current_and_run_next,
-        thread_count, vfork_current_process, wait_child,
+        release_child_status, session_id, set_process_group, thread_count, vfork_current_process,
+        wait_child,
     },
 };
 
@@ -33,14 +33,6 @@ pub(crate) fn sys_exit(exit_code: i32) -> ! {
 /// @return 此函数不返回。
 pub(crate) fn sys_exit_group(exit_code: i32) -> ! {
     exit_current_group(exit_code)
-}
-
-/// @description 主动让出处理器。
-///
-/// @return 成功返回零。
-pub(crate) fn sys_sched_yield() -> isize {
-    suspend_current_and_run_next();
-    0
 }
 
 /// @description 返回当前进程标识。

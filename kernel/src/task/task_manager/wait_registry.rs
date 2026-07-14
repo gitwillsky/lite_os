@@ -422,6 +422,10 @@ impl IndexedWaitQueue {
         ids.len()
     }
 
+    /// @description 从唯一 deadline index 摘取一个已经到期的 registration。
+    ///
+    /// @param now 本批次固定的 absolute monotonic 纳秒时刻。
+    /// @return 最早 deadline 已到时返回完整 waiter ownership，否则返回 `None`。
     pub(super) fn pop_expired(
         &mut self,
         now: u64,
@@ -431,6 +435,16 @@ impl IndexedWaitQueue {
             return None;
         }
         self.remove(id).map(|entry| (id, entry.task, entry.kind))
+    }
+
+    /// @description 查询固定时刻是否仍有尚未摘取的到期 registration。
+    ///
+    /// @param now 与本批 `pop_expired` 共用的 absolute monotonic 纳秒时刻。
+    /// @return 最早 deadline 不晚于 `now` 时返回 true。
+    pub(super) fn has_expired_deadline(&self, now: u64) -> bool {
+        self.deadline_index
+            .first()
+            .is_some_and(|(deadline, _)| *deadline <= now)
     }
 
     pub(super) fn take_console(

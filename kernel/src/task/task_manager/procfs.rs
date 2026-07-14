@@ -1,16 +1,17 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
+    arch::hart,
     fs::{
         ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot,
         ProcSnapshot, ProcSource,
     },
     memory::frame_statistics,
-    task::{RunState, processor::cpu_runtime_snapshot},
+    task::{RunState, current_task, processor::cpu_runtime_snapshot},
     timer::{boot_epoch_seconds, get_time_us},
 };
 
-use super::{LoadAverage, ProcessState, TASK_MANAGER};
+use super::{ProcessState, TASK_MANAGER};
 
 /// @description task façade 对外提供的系统运行状态快照，不拥有任何统计状态。
 pub(crate) struct SystemInfoSnapshot {
@@ -85,7 +86,7 @@ impl ProcSource for KernelProcSource {
 
 fn process_snapshot() -> ProcSnapshot {
     let uptime_us = get_time_us();
-    update_load_average(uptime_us);
+    let current = current_task();
     // 1. graph lock 内只复制关系元数据与 Arc；后续不得带 graph lock 获取 task 内部锁。
     let (rows, last_pid, processes_created) = {
         let graph = TASK_MANAGER.graph.lock();
@@ -118,7 +119,6 @@ fn process_snapshot() -> ProcSnapshot {
     let mut total_tasks = 0;
     let mut processes = alloc::vec::Vec::with_capacity(rows.len());
     for (pid, ppid, process_group, session, representative, threads) in rows {
-        let mut runtime_us = 0u64;
         let mut state = b'S';
         for thread in &threads {
             total_tasks += 1;
@@ -137,9 +137,13 @@ fn process_snapshot() -> ProcSnapshot {
             } else if matches!(run_state, RunState::Stopped { .. }) {
                 state = b'T';
             }
-            runtime_us =
-                runtime_us.saturating_add(thread.scheduling.policy.lock().total_runtime_us);
         }
+        // 1. Linux 只刷新 same-thread-group 的 current task；其他 running sibling 由下一 tick 提交。
+        // 2. Process counter 保留 exited Thread；改回累加 live Thread 会让 /proc runtime 倒退。
+        let runtime_us = match current.as_ref() {
+            Some(task) if task.tgid() == pid => task.cpu_runtime_snapshot(uptime_us).0,
+            _ => representative.process_cpu_runtime_us(),
+        };
         let policy = representative.scheduling.policy.lock();
         let nice = policy.nice;
         let priority = policy.get_dynamic_priority();
@@ -167,16 +171,20 @@ fn process_snapshot() -> ProcSnapshot {
             virtual_pages,
             resident_pages,
             fd_size,
-            last_cpu: representative.scheduling.last_cpu.load(Ordering::Relaxed),
+            last_cpu: hart::hart_index(representative.scheduling.last_cpu.load(Ordering::Relaxed))
+                .expect("task last_cpu disappeared from topology"),
         });
     }
 
     // 3. allocator 与 per-hart processor 分别提供其唯一 owner 下的统计。
     let (total_pages, free_pages) = frame_statistics();
-    let load_milli = TASK_MANAGER.load_average.lock().values();
+    let load_milli = TASK_MANAGER.load_average.values();
     let cpus = cpu_runtime_snapshot()
         .into_iter()
-        .map(|(hart_id, busy_us)| ProcCpuSnapshot { hart_id, busy_us })
+        .map(|(hart_id, busy_us)| ProcCpuSnapshot {
+            cpu: hart::hart_index(hart_id).expect("processor hart disappeared from topology"),
+            busy_us,
+        })
         .collect();
     let network = crate::socket::network_snapshot().map(|snapshot| ProcNetworkSnapshot {
         address: snapshot.address.map(|address| address.octets()),
@@ -217,40 +225,4 @@ pub(crate) fn system_info_snapshot() -> SystemInfoSnapshot {
         task_count: snapshot.total_tasks,
         load_milli: snapshot.load_milli,
     }
-}
-
-pub(super) fn update_load_average(now_us: u64) {
-    if now_us.saturating_sub(TASK_MANAGER.load_average.lock().last_update_us)
-        < LoadAverage::INTERVAL_US
-    {
-        return;
-    }
-    // 采样时只复制 live Task Arc，避免同时持有 graph 与 SchedulingEntity state lock。
-    let tasks = {
-        let graph = TASK_MANAGER.graph.lock();
-        graph
-            .nodes
-            .values()
-            .filter_map(|node| match &node.state {
-                ProcessState::Live(threads) => Some(threads.values().cloned()),
-                ProcessState::Exited(_) => None,
-            })
-            .flatten()
-            .collect::<alloc::vec::Vec<_>>()
-    };
-    let runnable = tasks
-        .iter()
-        .filter(|task| {
-            matches!(
-                task.scheduling.state.lock().run_state,
-                RunState::New
-                    | RunState::Ready { .. }
-                    | RunState::Running { .. }
-                    | RunState::Preempting { .. }
-                    | RunState::WakePending { .. }
-                    | RunState::StopPending { .. }
-            )
-        })
-        .count();
-    TASK_MANAGER.load_average.lock().sample(now_us, runnable);
 }

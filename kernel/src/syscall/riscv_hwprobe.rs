@@ -7,10 +7,10 @@ const PAIR_SIZE: usize = 16;
 /// @description 实现 Linux/riscv64 `riscv_hwprobe` value-query ABI，并保守公布所有 hart 共同能力。
 /// @param pairs userspace `struct riscv_hwprobe` 数组地址。
 /// @param pair_count 数组元素数量。
-/// @param cpusetsize 可选 hart mask 的 byte 数；零且 cpus 为 null 表示全部 online hart。
-/// @param cpus 可选 little-endian hart mask 地址。
+/// @param cpusetsize 可选 logical CPU mask 的 byte 数；零且 cpus 为 null 表示全部 online CPU。
+/// @param cpus 可选 little-endian logical CPU mask 地址。
 /// @param flags 当前只接受 value-query 的零 flags。
-/// @return 成功返回零；无 online hart、flags、地址或长度无效时返回 Linux 负 errno。
+/// @return 成功返回零；无 online CPU、flags、地址或长度无效时返回 Linux 负 errno。
 pub(crate) fn sys_riscv_hwprobe(
     pairs: usize,
     pair_count: usize,
@@ -27,7 +27,7 @@ pub(crate) fn sys_riscv_hwprobe(
     if pair_count.checked_mul(PAIR_SIZE).is_none() {
         return -errno::EFAULT;
     }
-    if let Err(error) = validate_hart_mask(cpusetsize, cpus) {
+    if let Err(error) = validate_cpu_mask(cpusetsize, cpus) {
         return error;
     }
 
@@ -54,7 +54,7 @@ pub(crate) fn sys_riscv_hwprobe(
     0
 }
 
-fn validate_hart_mask(cpusetsize: usize, cpus: usize) -> Result<(), isize> {
+fn validate_cpu_mask(cpusetsize: usize, cpus: usize) -> Result<(), isize> {
     if cpusetsize == 0 && cpus == 0 {
         return Ok(());
     }
@@ -68,7 +68,7 @@ fn validate_hart_mask(cpusetsize: usize, cpus: usize) -> Result<(), isize> {
         .copy_from_user(cpus, &mut bytes[..count])
         .map_err(|_| -errno::EFAULT)?;
     let requested = usize::from_ne_bytes(bytes);
-    if requested & system::online_hart_mask() == 0 {
+    if requested & system::online_cpu_mask() == 0 {
         return Err(-errno::EINVAL);
     }
     Ok(())

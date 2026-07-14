@@ -48,6 +48,7 @@ impl TaskControlBlock {
             .signal_state
             .lock()
             .reset_dispositions_for_exec();
+        self.reset_signal_stack_for_exec();
         self.apply_exec_setid(
             credential_metadata.mode,
             credential_metadata.uid,

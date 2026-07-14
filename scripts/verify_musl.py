@@ -220,18 +220,53 @@ def find_compiler() -> Path:
 
 
 def find_runtime_toolchain() -> tuple[Path, Path, Path, Path]:
-    """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。"""
-    clang = shutil.which("clang") or "/opt/homebrew/opt/llvm/bin/clang"
+    """定位能产生 Linux ET_DYN 的 Clang/LLD，以及配套 LLVM archive 工具。
+
+    Returns:
+        Clang、pinned rust-lld、llvm-ar 与保留 argv[0] 的 llvm-ranlib 路径。
+
+    Raises:
+        RuntimeError: 任一固定工具不存在或 rustc 无法报告 sysroot。
+    """
+    clang: Path | None = None
+    for candidate in (
+        shutil.which("clang"),
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+    ):
+        if candidate is None or not Path(candidate).is_file():
+            continue
+        targets = subprocess.run(
+            [candidate, "--print-targets"],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        # PATH 在 macOS 非交互 shell 中通常先命中 Apple Clang；它没有 RISC-V backend，
+        # 若只检查文件存在，configure 会在首次编译时才失败并污染一次无效 cache generation。
+        if targets.returncode == 0 and any(
+            line.lstrip().startswith("riscv64 ") for line in targets.stdout.splitlines()
+        ):
+            clang = Path(candidate)
+            break
     archiver = shutil.which("llvm-ar") or "/opt/homebrew/opt/llvm/bin/llvm-ar"
     ranlib = shutil.which("llvm-ranlib") or "/opt/homebrew/opt/llvm/bin/llvm-ranlib"
-    rust_sysroot = Path(run(["rustc", "--print", "sysroot"], ROOT).strip())
+    rustc_environment = os.environ.copy()
+    # GNU Make 3.81 不向普通 recipe 传递 jobserver fd，却保留 MAKEFLAGS/MFLAGS；若继续传给
+    # rustc，它会把 bad-fd warning 混入 stdout，使 sysroot 路径解析为不存在的多行字符串。
+    rustc_environment.pop("MAKEFLAGS", None)
+    rustc_environment.pop("MFLAGS", None)
+    rust_sysroot = Path(
+        run(["rustc", "--print", "sysroot"], ROOT, env=rustc_environment).strip()
+    )
     linkers = sorted(rust_sysroot.glob("lib/rustlib/*/bin/rust-lld"))
-    tools = tuple(Path(tool) for tool in (clang, archiver, ranlib))
-    if not all(tool.is_file() for tool in tools) or not linkers:
+    tools = (clang, Path(archiver), Path(ranlib))
+    if clang is None or not all(tool.is_file() for tool in tools if tool) or not linkers:
         raise RuntimeError("Clang, LLVM archive tools, and the pinned Rust rust-lld are required")
     # llvm-ranlib may be a symlink to llvm-ar; resolving it changes argv[0] and makes LLVM parse
     # the archive pathname as an ar operation string instead of selecting ranlib mode.
-    return tools[0].resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].absolute()
+    return clang.resolve(), linkers[0].resolve(), tools[1].resolve(), tools[2].absolute()
 
 
 def compiler_identity(compiler: Path) -> dict[str, object]:

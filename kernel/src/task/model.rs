@@ -1,4 +1,5 @@
 mod address_space;
+mod alternate_signal_stack;
 mod credentials;
 mod file_descriptions;
 mod process_clone;
@@ -26,13 +27,17 @@ use crate::{
 };
 
 use address_space::AddressSpace;
+use alternate_signal_stack::AlternateSignalStack;
+pub(crate) use alternate_signal_stack::{SignalStack, SignalStackError};
 use credentials::Credentials;
 use process_exec::process_name;
+pub(in crate::task) use resource_limits::RLIMIT_NICE;
 use resource_limits::ResourceLimits;
 pub(crate) use resource_limits::{
     RLIM_INFINITY, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NPROC, RLIMIT_STACK, ResourceLimit,
     ResourceLimitError,
 };
+pub(in crate::task) use scheduling::CpuAffinity;
 pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
@@ -98,6 +103,8 @@ struct ThreadContext {
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
     // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<Option<SyscallRestart>>,
+    // OWNER: Thread 独占 altstack registration；active 只从 SP/range 推导，复制 flag 会与 sigreturn 分裂。
+    alternate_signal_stack: Mutex<AlternateSignalStack>,
 }
 
 /// @description signal handler 返回后重放一次 Linux/riscv64 ecall 的完整寄存输入。
@@ -193,22 +200,12 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
             },
             scheduling: SchedulingEntity {
-                state: IrqMutex::new(SchedulingState {
-                    run_state: RunState::New,
-                    next_generation: 0,
-                    wait: None,
-                    wait_result: None,
-                }),
-                policy: Mutex::new(Sched {
-                    last_runtime: 0,
-                    nice: 0,
-                    vruntime: 0,
-                    total_runtime_us: 0,
-                    process_runtime_us: cpu_runtime_us,
-                }),
-                last_cpu: AtomicUsize::new(0),
+                state: IrqMutex::new(SchedulingState::new(CpuAffinity::all_possible())),
+                policy: Mutex::new(Sched::new(0, 0, cpu_runtime_us)),
+                last_cpu: AtomicUsize::new(crate::arch::hart::hart_id()),
             },
         };
 
@@ -256,6 +253,7 @@ impl TaskControlBlock {
         child_trap.kernel_sp = kernel_stack_top;
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
+        let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let child = Self {
             process: self.process.clone(),
             thread: ThreadContext {
@@ -274,21 +272,11 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
             },
             scheduling: SchedulingEntity {
-                state: IrqMutex::new(SchedulingState {
-                    run_state: RunState::New,
-                    next_generation: 0,
-                    wait: None,
-                    wait_result: None,
-                }),
-                policy: Mutex::new(Sched {
-                    last_runtime: 0,
-                    nice: policy.nice,
-                    vruntime: policy.vruntime,
-                    total_runtime_us: 0,
-                    process_runtime_us: self.process.cpu_runtime_us.clone(),
-                }),
+                state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
+                policy: Mutex::new(policy.forked(self.process.cpu_runtime_us.clone())),
                 last_cpu: AtomicUsize::new(
                     self.scheduling
                         .last_cpu

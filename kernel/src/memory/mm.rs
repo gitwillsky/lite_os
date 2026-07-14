@@ -32,6 +32,7 @@ use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, S
 pub(crate) use {
     futex_key::FutexKey,
     mapping_request::{FileMappingSource, MappingResourceLimits, MemoryAdvice},
+    mmap::{PageFaultAccess, PageFaultOutcome},
     user_access::UserFaultLimits,
 };
 #[derive(Debug, Clone, Copy)]
@@ -126,20 +127,6 @@ impl From<MemoryError> for ElfLoadError {
             MemoryError::Io => Self::Io,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PageFaultAccess {
-    Read,
-    Write,
-    Execute,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PageFaultOutcome {
-    Handled,
-    SegmentationFault,
-    BusError,
 }
 
 impl core::fmt::Display for ElfLoadError {

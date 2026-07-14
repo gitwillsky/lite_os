@@ -7,7 +7,7 @@ use alloc::{
 use lazy_static::lazy_static;
 
 use crate::{
-    arch::hart::hart_id,
+    arch::hart::{self, hart_id},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
@@ -20,10 +20,13 @@ use crate::{
 };
 
 pub(in crate::task) mod advisory_lock;
+mod affinity;
 mod context_switch;
 mod deferred;
 mod futex;
+mod load_average;
 mod pipe_wait;
+mod policy;
 mod process_exit;
 mod process_group;
 mod procfs;
@@ -31,15 +34,19 @@ mod resource_limit;
 mod signal;
 mod terminal_access;
 mod thread_clone;
+mod thread_selector;
 pub(in crate::task) mod vfork;
 mod wait_child;
 mod wait_key;
 mod wait_registry;
 
-use context_switch::schedule_with_task_context;
+pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
+use context_switch::{prepare_current_block, schedule_with_task_context};
 pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_timer};
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe};
+pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
+pub(crate) use policy::{SchedulerPolicyError, SchedulerPolicyRequest, scheduler_policy};
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
@@ -52,9 +59,8 @@ pub(crate) use process_group::{
 };
 pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
-use resource_limit::check_process_slot;
-use resource_limit::enforce_cpu_limit;
 pub(crate) use resource_limit::process_resource_limit;
+use resource_limit::{check_process_slot, enforce_cpu_limit};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
     SignalSendError, send_kernel_thread_signal, send_process_signal, send_thread_signal,
@@ -63,6 +69,7 @@ pub(crate) use signal::{
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
+pub(crate) use thread_selector::{parent_pid, thread_count};
 use vfork::complete_vfork;
 pub(crate) use vfork::{fork_current_process, vfork_current_process};
 use wait_child::take_child_waiters;
@@ -70,10 +77,8 @@ pub(crate) use wait_child::{
     WaitChildError, consume_child_status, release_child_status, wait_child,
 };
 use wait_key::IndexedWaitKind;
-
 pub(crate) use wait_key::PollWaitKey;
 use wait_registry::INDEXED_WAIT_QUEUE;
-
 enum ProcessState {
     Live(BTreeMap<usize, Arc<TaskControlBlock>>),
     Exited(ProcessExitStatus),
@@ -103,49 +108,18 @@ struct ProcessGraph {
     next_pid: usize,
     processes_created: u64,
     nodes: BTreeMap<usize, ProcessNode>,
-    // OWNER: process graph owns ITIMER_REAL together with TGID lifecycle. A detached timer map
-    // without exit cleanup would deliver SIGALRM to a reused PID after the original Process exits.
-    real_timers: BTreeMap<usize, deferred::RealTimer>,
 }
 
 /// @description parent relation、live task 或最小 exit record 的唯一 process graph owner。
 struct TaskManager {
     graph: IrqMutex<ProcessGraph>,
-    load_average: IrqMutex<LoadAverage>,
+    // OWNER: RealTimerQueue 独占 record+deadline index；graph → timer 锁序把 TGID lifecycle
+    // 与 set/get/exit 串行化。缺失 exit cleanup 会向已经退出的 Process 投递 stale SIGALRM。
+    real_timers: IrqMutex<deferred::RealTimerQueue>,
+    load_average: load_average::LoadAverage,
     // OWNER: clone/fork/vfork 从 RLIMIT_NPROC 检查到 graph publish 的唯一串行化锁。
     // 缺失它会让并发创建者同时通过同一剩余 slot，越过 Process soft limit。
     process_creation: IrqMutex<()>,
-}
-
-struct LoadAverage {
-    last_update_us: u64,
-    fixed: [u64; 3],
-}
-
-impl LoadAverage {
-    const FIXED_ONE: u64 = 2048;
-    const INTERVAL_US: u64 = 5_000_000;
-    const EXP: [u64; 3] = [1884, 2014, 2037];
-
-    fn sample(&mut self, now_us: u64, runnable: usize) -> [u64; 3] {
-        while now_us.saturating_sub(self.last_update_us) >= Self::INTERVAL_US {
-            let active = (runnable as u64).saturating_mul(Self::FIXED_ONE);
-            for (load, exp) in self.fixed.iter_mut().zip(Self::EXP) {
-                *load = load
-                    .saturating_mul(exp)
-                    .saturating_add(active.saturating_mul(Self::FIXED_ONE - exp))
-                    / Self::FIXED_ONE;
-            }
-            self.last_update_us = self.last_update_us.saturating_add(Self::INTERVAL_US);
-        }
-        self.fixed
-            .map(|load| load.saturating_mul(1000) / Self::FIXED_ONE)
-    }
-
-    fn values(&self) -> [u64; 3] {
-        self.fixed
-            .map(|load| load.saturating_mul(1000) / Self::FIXED_ONE)
-    }
 }
 
 impl TaskManager {
@@ -155,12 +129,9 @@ impl TaskManager {
                 next_pid: INIT_PID + 1,
                 processes_created: 1,
                 nodes: BTreeMap::new(),
-                real_timers: BTreeMap::new(),
             }),
-            load_average: IrqMutex::new(LoadAverage {
-                last_update_us: 0,
-                fixed: [0; 3],
-            }),
+            real_timers: IrqMutex::new(deferred::RealTimerQueue::new()),
+            load_average: load_average::LoadAverage::new(),
             process_creation: IrqMutex::new(()),
         }
     }
@@ -216,15 +187,6 @@ impl TaskManager {
         }
         stopping
     }
-
-    fn parent_pid(&self, pid: usize) -> usize {
-        self.graph
-            .lock()
-            .nodes
-            .get(&pid)
-            .and_then(|node| node.parent)
-            .unwrap_or(0)
-    }
 }
 
 lazy_static! {
@@ -238,22 +200,6 @@ lazy_static! {
 /// @return 无返回值。
 pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.add_init(task);
-}
-
-/// @description 查询 process graph 中的 parent TGID。
-///
-/// @param pid 当前 live process TGID。
-/// @return init 或无 parent 返回零，否则返回 parent TGID。
-pub(crate) fn parent_pid(pid: usize) -> usize {
-    TASK_MANAGER.parent_pid(pid)
-}
-
-pub(crate) fn thread_count(tgid: usize) -> usize {
-    let graph = TASK_MANAGER.graph.lock();
-    match graph.nodes.get(&tgid).map(|node| &node.state) {
-        Some(ProcessState::Live(threads)) => threads.len(),
-        _ => 0,
-    }
 }
 
 fn process_terminal_input() {
@@ -291,82 +237,24 @@ pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(),
     Ok(())
 }
 
-/// @description 从统一 wait registry 消费所有到期 task。
-///
-/// @param current_time_ns 当前 monotonic 时间。
-/// @return 唤醒数量。
-pub(crate) fn wake_expired_tasks(current_time_ns: u64) -> usize {
-    const WAKE_BATCH: usize = 32;
-    let mut count = 0;
-    for _ in 0..WAKE_BATCH {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
-        let expired = queue.pop_expired(current_time_ns);
-        drop(queue);
-        let Some((wait_id, task, kind)) = expired else {
-            return count;
-        };
-        let woke = match kind {
-            IndexedWaitKind::Deadline => {
-                crate::task::processor::wake_deadline_task(task, wait_id, WaitResult::TimedOut)
-            }
-            IndexedWaitKind::Futex { .. } => {
-                crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
-            }
-            IndexedWaitKind::Signal { .. } => {
-                crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
-            }
-            IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
-            }
-            _ => panic!("non-deadline wait carried a deadline"),
-        };
-        if woke {
-            count += 1;
-        }
-    }
-    count
-}
-
 /// @description 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。
 ///
 /// @param input_ready 在 registry owner lock 内复查 UART ring 的短闭包。
 /// @return 输入已到达/IRQ 唤醒返回 `Woken`；signal cancellation 返回 `Interrupted`。
 pub(crate) fn wait_for_console(input_ready: impl FnOnce() -> bool) -> WaitResult {
     let task = current_task().expect("console wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if input_ready() {
         return WaitResult::Woken;
     }
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("console wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
+    prepare_current_block(&task, queue, |queue, current| {
         let wait_id = queue.insert_console(current);
-        scheduling.wait = Some(WaitMembership::Console(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    task.scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("console waiter resumed without a wake result")
+        WaitMembership::Console(wait_id)
+    })
+    .suspend()
 }
 
 fn wake_console_waiters() -> usize {
@@ -415,8 +303,7 @@ pub(crate) fn wait_for_poll(
 ) -> WaitResult {
     PollWaitKey::normalize(&mut keys);
     let task = current_task().expect("ppoll wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if ready() {
         return WaitResult::Woken;
     }
@@ -426,32 +313,11 @@ pub(crate) fn wait_for_poll(
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("ppoll wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
+    prepare_current_block(&task, queue, |queue, current| {
         let wait_id = queue.insert_poll(keys, deadline, current);
-        scheduling.wait = Some(WaitMembership::Poll(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    task.scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("ppoll waiter resumed without result")
+        WaitMembership::Poll(wait_id)
+    })
+    .suspend()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,9 +337,8 @@ pub(crate) fn wait_for_signal(
     deadline: Option<u64>,
 ) -> Result<(usize, PendingSignal), SignalWaitError> {
     let task = current_task().expect("signal wait requires current task");
-    let cpu = hart_id();
     loop {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let queue = INDEXED_WAIT_QUEUE.lock();
         if let Some(signal) = task.take_pending_signal(mask) {
             return Ok(signal);
         }
@@ -484,33 +349,11 @@ pub(crate) fn wait_for_signal(
             return Err(SignalWaitError::Interrupted);
         }
 
-        let end_time = get_time_us();
-        let mut sched = task.scheduling.policy.lock();
-        let runtime = end_time.saturating_sub(sched.last_runtime);
-        sched.update_vruntime(runtime);
-        drop(sched);
-        with_current_processor(|processor| {
-            let current = processor
-                .take_current()
-                .expect("signal wait requires current task");
-            assert!(Arc::ptr_eq(&current, &task));
-            let mut scheduling = task.scheduling.state.lock();
-            assert_eq!(scheduling.run_state, RunState::Running { cpu });
-            assert!(scheduling.wait.is_none());
-            assert!(scheduling.wait_result.is_none());
+        let result = prepare_current_block(&task, queue, |queue, current| {
             let wait_id = queue.insert_signal(mask, deadline, current);
-            scheduling.wait = Some(WaitMembership::Signal(wait_id));
-            scheduling.run_state = RunState::Blocking { cpu };
-        });
-        drop(queue);
-        schedule_with_task_context(task.clone());
-        let result = task
-            .scheduling
-            .state
-            .lock()
-            .wait_result
-            .take()
-            .expect("signal waiter resumed without a wake result");
+            WaitMembership::Signal(wait_id)
+        })
+        .suspend();
         match result {
             WaitResult::Woken => {}
             WaitResult::TimedOut => return Err(SignalWaitError::Again),
@@ -525,38 +368,15 @@ pub(crate) fn wait_for_signal(
 /// @return signal 发布后返回；pending signal 留给唯一 trap delivery path。
 pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
     let task = current_task().expect("signal delivery wait requires current task");
-    let cpu = hart_id();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if task.with_pending_signal(deliverable_set, || ()).is_some() {
         return;
     }
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("signal delivery wait requires current task");
-        assert!(Arc::ptr_eq(&current, &task));
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
+    let result = prepare_current_block(&task, queue, |queue, current| {
         let wait_id = queue.insert_signal(deliverable_set, None, current);
-        scheduling.wait = Some(WaitMembership::Signal(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    let result = task
-        .scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("signal delivery waiter resumed without result");
+        WaitMembership::Signal(wait_id)
+    })
+    .suspend();
     assert_eq!(
         result,
         WaitResult::Woken,
@@ -564,23 +384,21 @@ pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
     );
 }
 
-/// @description 在统一 wait registry 上阻塞当前 task。
+/// @description 在统一 wait registry 上阻塞到 absolute monotonic deadline。
 ///
-/// @param nanoseconds 相对 monotonic 睡眠时长。
-/// @return deadline 到期返回 0；提前唤醒返回 -EINTR，overflow 返回 -EINVAL。
-pub(crate) fn nanosleep(nanoseconds: u64) -> isize {
-    if nanoseconds == 0 {
-        return 0;
+/// @param deadline_ns absolute monotonic 纳秒 deadline。
+/// @return deadline 已到或到期返回 `TimedOut`；signal cancellation 返回 `Interrupted`。
+pub(crate) fn sleep_until(deadline_ns: u64) -> WaitResult {
+    if deadline_ns <= get_time_ns() {
+        return WaitResult::TimedOut;
     }
-    let start_time = get_time_ns();
-    let Some(deadline) = start_time.checked_add(nanoseconds) else {
-        return -22;
-    };
-    match block_current_until(deadline) {
-        WaitResult::TimedOut => 0,
-        WaitResult::Interrupted => -4,
-        WaitResult::Woken => panic!("deadline wait cannot complete through generic wake"),
-    }
+    let result = block_current_until(deadline_ns);
+    assert_ne!(
+        result,
+        WaitResult::Woken,
+        "deadline wait cannot complete through generic wake"
+    );
+    result
 }
 
 /// 获取并移除当前任务
@@ -594,7 +412,10 @@ pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
 }
 
 pub(crate) fn run_tasks() -> ! {
-    with_current_processor(|processor| processor.mark_active());
+    with_current_processor(|_| {
+        // Release 发布 local Processor 初始化；缺失时远端选核可能向尚未开始 drain 的 hart 投递任务。
+        hart::mark_active();
+    });
     loop {
         // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
@@ -629,13 +450,7 @@ pub(crate) fn suspend_current_and_run_next() {
     };
     // 更新 CFS 使用的运行时间。
     let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let last_runtime = sched.last_runtime;
-    if last_runtime > 0 && end_time > last_runtime {
-        let runtime = end_time - last_runtime;
-        sched.update_vruntime(runtime);
-    }
-    drop(sched);
+    task.scheduling.policy.lock().finish_runtime(end_time);
     begin_preempt_running_task(&task);
     schedule_with_task_context(task);
 }
@@ -646,50 +461,17 @@ pub(crate) fn suspend_current_and_run_next() {
 /// @return task 被重新调度后返回 timeout 或 signal interruption 结果。
 fn block_current_until(deadline: u64) -> WaitResult {
     let task = current_task().expect("deadline wait requires current task");
-    let cpu = hart_id();
-
-    let end_time = get_time_us();
-    let mut sched = task.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    // 1. wait owner lock 将 signal 复查与 membership 发布串行化，封闭 lost wakeup。
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("block requires current task");
-        assert!(
-            Arc::ptr_eq(&current, &task),
-            "processor current changed during block"
-        );
-        let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(
-            scheduling.run_state,
-            RunState::Running { cpu },
-            "only running task can block"
-        );
-        assert!(
-            scheduling.wait.is_none(),
-            "task already owns a wait membership"
-        );
-        assert!(scheduling.wait_result.is_none());
-        // state lock 覆盖 queue insertion；waker 看到 wait key 时 entry 必然已经存在。
+    // 2. deep blocking seam 同时提交 runtime、发布 membership 并在切换前释放 registry owner。
+    prepare_current_block(&task, queue, |queue, current| {
         let wait_id = queue.insert_deadline(deadline, current);
-        scheduling.wait = Some(WaitMembership::Deadline(wait_id));
-        scheduling.run_state = RunState::Blocking { cpu };
-    });
-    drop(queue);
-    schedule_with_task_context(task.clone());
-    task.scheduling
-        .state
-        .lock()
-        .wait_result
-        .take()
-        .expect("deadline waiter resumed without a wake result")
+        WaitMembership::Deadline(wait_id)
+    })
+    .suspend()
 }
 
 /// 切换到指定任务
@@ -712,9 +494,9 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     );
 
     let start_time = get_time_us();
-    task.scheduling.policy.lock().last_runtime = start_time;
+    task.scheduling.policy.lock().begin_runtime(start_time);
     // last_cpu 只记录下次调度 hint，不发布 task 内部状态。
-    task.scheduling.last_cpu.store(hart_id(), Ordering::Relaxed);
+    task.scheduling.last_cpu.store(cpu, Ordering::Relaxed);
 
     // 只保留 raw context 地址，避免 mutable Processor borrow 跨越切换。
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);

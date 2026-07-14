@@ -6,6 +6,26 @@ use crate::{
 const SYSINFO_BYTES: usize = 112;
 const LOAD_SCALE: u64 = 1 << 16;
 
+/// @description 返回 calling Thread 所在的 Linux logical CPU 与 NUMA node。
+///
+/// @param cpu 可选的用户态 `unsigned int` CPU 输出地址。
+/// @param node 可选的用户态 `unsigned int` NUMA node 输出地址。
+/// @param cache Linux 已废弃且忽略的 getcpu cache pointer。
+/// @return 成功返回 0；任一非空输出地址不可写返回 `-EFAULT`。
+pub(crate) fn sys_getcpu(cpu: usize, node: usize, cache: usize) -> isize {
+    let _ = cache;
+    let cpu_index = u32::try_from(crate::system::current_cpu_index())
+        .expect("logical CPU index exceeds Linux unsigned int");
+    let task = current_task().expect("getcpu requires a current task");
+    // 1. Linux 固定先写 CPU，再写 node；第二次 copyout 不回滚第一次已完成的写入。
+    let mut faulted = cpu != 0 && task.copy_to_user(cpu, &cpu_index.to_ne_bytes()).is_err();
+    // 2. 当前没有 NUMA domain，全部 logical CPU 属于 node 0；即使 CPU copyout fault 也尝试 node。
+    if node != 0 && task.copy_to_user(node, &0u32.to_ne_bytes()).is_err() {
+        faulted = true;
+    }
+    if faulted { -errno::EFAULT } else { 0 }
+}
+
 /// @description 按 Linux v7.1 RV64 `struct sysinfo` ABI 返回系统运行状态。
 ///
 /// @param address 用户态 112-byte `struct sysinfo` 输出地址。

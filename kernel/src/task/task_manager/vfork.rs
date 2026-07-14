@@ -78,29 +78,13 @@ pub(crate) fn vfork_current_process(
     publish_child(parent.tgid(), child.clone(), Some(parent.clone()));
     drop(creation);
 
-    let cpu = hart_id();
-    let end_time = get_time_us();
-    let mut sched = parent.scheduling.policy.lock();
-    let runtime = end_time.saturating_sub(sched.last_runtime);
-    sched.update_vruntime(runtime);
-    drop(sched);
-    with_current_processor(|processor| {
-        let current = processor
-            .take_current()
-            .expect("vfork wait requires current task");
-        assert!(Arc::ptr_eq(&current, &parent));
-        let mut scheduling = parent.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
-        assert!(scheduling.wait.is_none());
-        assert!(scheduling.wait_result.is_none());
-        scheduling.wait = Some(WaitMembership::Vfork(child_pid));
-        scheduling.run_state = RunState::Blocking { cpu };
+    let prepared = super::context_switch::prepare_current_block(&parent, (), |_, _| {
+        WaitMembership::Vfork(child_pid)
     });
     enqueue_new_task(child);
-    schedule_with_task_context(parent.clone());
     assert_eq!(
-        parent.scheduling.state.lock().wait_result.take(),
-        Some(WaitResult::Woken),
+        prepared.suspend(),
+        WaitResult::Woken,
         "vfork parent resumed without child exec/exit completion"
     );
     Ok(child_pid)

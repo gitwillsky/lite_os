@@ -42,6 +42,12 @@ impl SharedFrame {
         self.frame.ppn
     }
 
+    /// @description 独占借用尚未发布的共享页内容，供 page-cache miss 直接填充 storage bytes。
+    /// @return 生命周期绑定到 `SharedFrame` 独占借用的完整页切片。
+    pub(crate) fn bytes_mut(&mut self) -> &mut [u8] {
+        self.frame.bytes_mut()
+    }
+
     /// @description 从共享页复制到 kernel buffer。
     pub(crate) fn read(&self, offset: usize, output: &mut [u8]) {
         assert!(offset <= PAGE_SIZE && output.len() <= PAGE_SIZE - offset);

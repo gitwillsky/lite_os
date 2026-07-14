@@ -7,6 +7,7 @@ import argparse
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from apk_apps_cache import cached_application_apks
@@ -297,14 +298,28 @@ def main() -> int:
             return 0
 
         origin, commit = prepare_https_origin(directory)
-        server, port, gate_ca = start_https_gate(directory, origin)
+        server, port, gate_ca = start_https_gate(directory, origin, range(18544, 18645))
         try:
             trusted = directory / "trusted.img"
             shutil.copyfile(installed, trusted)
             install_runtime_tls_identity(trusted, gate_ca, directory, find_debugfs())
-            verify_curl(trusted, directory, port, sha256(origin / "payload.bin"))
-            verify_sqlite(installed, directory)
-            verify_git(trusted, directory, port, commit)
+            # 1. 三条 gate 只读取各自的输入镜像，并立即复制为独占 disposable image。
+            # 2. 并发启动可把冷验证墙钟时间压到最慢 gate；HTTPS origin 本身支持并发请求。
+            # 3. 逐个读取 future，确保任一断言失败都阻止 success stamp 发布。
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                gates = (
+                    executor.submit(
+                        verify_curl,
+                        trusted,
+                        directory,
+                        port,
+                        sha256(origin / "payload.bin"),
+                    ),
+                    executor.submit(verify_sqlite, installed, directory),
+                    executor.submit(verify_git, trusted, directory, port, commit),
+                )
+                for gate in gates:
+                    gate.result()
         finally:
             server.terminate()
             server.wait(timeout=3)

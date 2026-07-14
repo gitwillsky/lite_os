@@ -284,7 +284,7 @@ use super::*;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct SignalStack {
+struct UserSignalStack {
     sp: usize,
     flags: i32,
     padding: u32,
@@ -303,7 +303,7 @@ struct SignalMachineContext {
 struct SignalUserContext {
     flags: usize,
     link: usize,
-    stack: SignalStack,
+    stack: UserSignalStack,
     signal_mask: u64,
     unused: [u8; 120],
     context: SignalMachineContext,
@@ -346,6 +346,7 @@ impl TaskControlBlock {
     /// @errors 用户栈 frame 无法完整写入时返回 `UserAccessError`。
     pub(crate) fn prepare_signal_delivery(&self) -> Result<SignalDelivery, UserAccessError> {
         const SA_RESTART: usize = 0x1000_0000;
+        const SA_ONSTACK: usize = 0x0800_0000;
         const SA_NODEFER: usize = 0x4000_0000;
         const SA_RESETHAND: usize = 0x8000_0000;
         loop {
@@ -402,10 +403,8 @@ impl TaskControlBlock {
                 self.thread.syscall_restart.lock().take();
             }
             let frame_size = core::mem::size_of::<RtSignalFrame>();
-            let frame_address = context.x[2]
-                .checked_sub(frame_size)
-                .ok_or(UserAccessError::Fault)?
-                & !0xf;
+            let (frame_address, saved_stack) =
+                self.signal_frame_stack(context.x[2], action.flags & SA_ONSTACK != 0, frame_size)?;
             let mut registers = [0usize; 32];
             registers[0] = context.sepc;
             registers[1..].copy_from_slice(&context.x[1..]);
@@ -419,11 +418,11 @@ impl TaskControlBlock {
                 context: SignalUserContext {
                     flags: 0,
                     link: 0,
-                    stack: SignalStack {
-                        sp: 0,
-                        flags: 2,
+                    stack: UserSignalStack {
+                        sp: saved_stack.sp,
+                        flags: saved_stack.flags,
                         padding: 0,
-                        size: 0,
+                        size: saved_stack.size,
                     },
                     signal_mask: old_mask,
                     unused: [0; 120],
@@ -441,6 +440,7 @@ impl TaskControlBlock {
                 )
             };
             self.copy_to_user(frame_address, bytes)?;
+            self.commit_signal_stack_delivery();
             let mut new_mask = old_mask | action.mask;
             if action.flags & SA_NODEFER == 0 {
                 new_mask |= 1u64 << (signal - 1);
@@ -493,6 +493,14 @@ impl TaskControlBlock {
         context.fcsr =
             u32::from_ne_bytes(frame.context.context.fp[256..260].try_into().unwrap()) as usize;
         *self.thread.signal_mask.lock() = normalize_signal_mask(frame.context.signal_mask);
+        self.restore_signal_stack(
+            context.x[2],
+            SignalStack {
+                sp: frame.context.stack.sp,
+                flags: frame.context.stack.flags,
+                size: frame.context.stack.size,
+            },
+        );
         let result = context.x[10];
         self.set_trap_context(context);
         Ok(result)

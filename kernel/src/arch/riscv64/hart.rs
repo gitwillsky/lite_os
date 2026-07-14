@@ -12,12 +12,16 @@ mod memory_barrier;
 pub(crate) use memory_barrier::{complete_pending_memory_barrier, synchronize_memory_barrier};
 
 const UNPUBLISHED_TABLE: usize = usize::MAX;
+const HART_ID_CAPACITY: usize = usize::BITS as usize;
+const NO_HART_INDEX: u8 = u8::MAX;
 /// Timer deadline 到期后的 deferred work bit。
 pub(crate) const TIMER_SOFTIRQ: u32 = 1;
 /// UART RX hardirq 发布的 deferred console wake bit。
 pub(crate) const CONSOLE_SOFTIRQ: u32 = 1 << 1;
 /// VirtIO-net RX hardirq 发布的 deferred protocol work bit。
 pub(crate) const NETWORK_SOFTIRQ: u32 = 1 << 2;
+/// Timer/deadline batch 用尽后发布的有界续批 work bit。
+pub(crate) const TIMER_BACKLOG_SOFTIRQ: u32 = 1 << 3;
 
 // OWNER: hart module owns the immutable DTB-derived topology and per-hart states.
 static HART_TOPOLOGY: Once<HartTopology> = Once::new();
@@ -40,6 +44,9 @@ pub(crate) struct HartState {
     startup_stack_top: usize,
     _startup_stack: Box<StartupStack>,
     softirq_pending: AtomicU32,
+    // OWNER: 仅所属 hart 推进自己的 timer deadline；Atomic 为共享 HartState 提供 interior mutability。
+    // 若每次从中断处理完成时刻重新起算，handler 延迟会持续累积并让调度 tick 漂移。
+    timer_deadline: AtomicU64,
     // OWNER: HartTopology 的每个 slot 保存该 hart 应完成/已完成的同步屏障 generation。
     // 若请求或完成值另存于 syscall/task，会在 IPI 合并或并发调用时丢失确认并永久等待。
     memory_barrier_request: AtomicU64,
@@ -58,6 +65,7 @@ impl HartState {
             startup_stack_top,
             _startup_stack: startup_stack,
             softirq_pending: AtomicU32::new(0),
+            timer_deadline: AtomicU64::new(0),
             memory_barrier_request: AtomicU64::new(0),
             memory_barrier_complete: AtomicU64::new(0),
             online: AtomicBool::new(false),
@@ -77,7 +85,7 @@ impl HartState {
     ///
     /// @return 无返回值。
     /// @errors 无错误。
-    pub(crate) fn mark_online(&self) {
+    fn mark_online(&self) {
         self.online.store(true, Ordering::Release);
     }
 
@@ -93,7 +101,7 @@ impl HartState {
     ///
     /// @return 无返回值。
     /// @errors 无错误。
-    pub(crate) fn mark_active(&self) {
+    fn mark_active(&self) {
         self.active.store(true, Ordering::Release);
     }
 
@@ -103,6 +111,32 @@ impl HartState {
     /// @errors 无错误。
     pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    /// @description 沿固定时钟相位推进该 hart 的下一次 timer deadline。
+    ///
+    /// @param now 当前 DTB time counter。
+    /// @param interval 非零 timer tick 间隔。
+    /// @return 严格晚于 `now` 的下一 deadline；尚未初始化时从 `now` 起算首 tick。
+    /// @errors interval 为零或 time counter 可表达范围耗尽时 fail-stop。
+    fn advance_timer_deadline(&self, now: u64, interval: u64) -> u64 {
+        assert_ne!(interval, 0, "timer interval must be non-zero");
+        // 1. 零值只表示该 hart 尚未 arm 首次 tick；之后始终以上一次 deadline 为相位基准。
+        let previous = self.timer_deadline.load(Ordering::Relaxed);
+        // 2. 若 handler 跨过多个周期，一步跳到 now 之后，避免补发 interrupt storm。
+        let next = match previous {
+            0 => now.checked_add(interval),
+            deadline if deadline > now => Some(deadline),
+            deadline => (now - deadline)
+                .checked_div(interval)
+                .and_then(|elapsed| elapsed.checked_add(1))
+                .and_then(|periods| periods.checked_mul(interval))
+                .and_then(|advance| deadline.checked_add(advance)),
+        }
+        .expect("timer deadline exhausted the time counter");
+        // 3. 仅所属 hart 读写该 slot，Relaxed 足以维持本地 deadline 序列。
+        self.timer_deadline.store(next, Ordering::Relaxed);
+        next
     }
 }
 
@@ -116,7 +150,19 @@ pub(crate) struct HartTopology {
     hart_count: usize,
     max_hart_id: usize,
     boot_hart: usize,
+    // OWNER: HartTopology 与有序 states 一次性发布 raw-ID → compact-index immutable projection。
+    // 缺失 projection 会让每次 trap/scheduler hart-local 访问重复二分；若独立可变会把 raw ID
+    // 路由到错误 state。SBI 单字 mask 将 raw ID 限制在此固定 64-entry RV64 table 内。
+    index_by_hart: [u8; HART_ID_CAPACITY],
     states: Box<[HartState]>,
+}
+
+impl HartTopology {
+    #[inline(always)]
+    fn index_of(&self, hart_id: usize) -> Option<usize> {
+        let index = *self.index_by_hart.get(hart_id)?;
+        (index != NO_HART_INDEX).then_some(index as usize)
+    }
 }
 
 /// @description 在 allocator 可用前验证 cold-boot hart 与 DTB CPU 描述。
@@ -159,10 +205,13 @@ pub(crate) fn init_topology(board_info: &crate::arch::dtb::BoardInfo, boot_hart:
     );
 
     let mut states = Vec::with_capacity(board_info.hart_count);
+    let mut index_by_hart = [NO_HART_INDEX; HART_ID_CAPACITY];
     let mut mask = board_info.hart_mask;
     while mask != 0 {
         let hart_id = mask.trailing_zeros() as usize;
         mask &= mask - 1;
+        index_by_hart[hart_id] =
+            u8::try_from(states.len()).expect("hart compact index exceeds projection width");
         states.push(HartState::new(hart_id));
     }
     assert_eq!(states.len(), board_info.hart_count);
@@ -172,6 +221,7 @@ pub(crate) fn init_topology(board_info: &crate::arch::dtb::BoardInfo, boot_hart:
         hart_count: board_info.hart_count,
         max_hart_id: board_info.max_hart_id,
         boot_hart,
+        index_by_hart,
         states: states.into_boxed_slice(),
     });
 
@@ -208,20 +258,50 @@ pub(crate) fn raw_hart_id() -> usize {
     value
 }
 
+#[inline(always)]
+fn current_entry() -> (usize, &'static HartState) {
+    let hart = raw_hart_id();
+    let topology = topology();
+    let index = topology.index_of(hart).unwrap_or_else(|| {
+        panic!(
+            "hart invariant violated: tp={} not in DTB mask {:#x}",
+            hart, topology.hart_mask
+        )
+    });
+    (index, &topology.states[index])
+}
+
+#[inline(always)]
+fn current_state() -> &'static HartState {
+    current_entry().1
+}
+
 /// @description 获取已经过动态拓扑验证的当前 hart ID。
 ///
 /// @return 已存在于 DTB hart table 的 hart ID。
 /// @errors `tp` 不在 DTB table 中表示入口或 trap 上下文被破坏，将触发 panic。
 #[inline(always)]
 pub(crate) fn hart_id() -> usize {
-    let hart = raw_hart_id();
-    assert!(
-        state(hart).is_some(),
-        "hart invariant violated: tp={} not in DTB mask {:#x}",
-        hart,
-        possible_hart_mask()
-    );
-    hart
+    current_state().hart_id()
+}
+
+/// @description 获取已经过动态拓扑验证的 calling hart 紧凑 index。
+///
+/// @return 按原始 hart ID 升序排列的零基 index。
+/// @errors `tp` 不在 DTB table 中表示入口或 trap 上下文被破坏，将触发 panic。
+#[inline(always)]
+pub(crate) fn current_hart_index() -> usize {
+    current_entry().0
+}
+
+/// @description 沿 calling hart 的固定相位推进 timer deadline。
+///
+/// @param now 当前 DTB time counter。
+/// @param interval 非零 timer tick 间隔。
+/// @return 严格晚于 `now` 的下一 deadline；尚未初始化时从 `now` 起算首 tick。
+/// @errors `tp` 越界、interval 为零或 time counter 耗尽时 fail-stop。
+pub(crate) fn advance_timer_deadline(now: u64, interval: u64) -> u64 {
+    current_state().advance_timer_deadline(now, interval)
 }
 
 /// @description 发布当前 hart 的 deferred work bitset 并触发 supervisor software interrupt。
@@ -231,8 +311,7 @@ pub(crate) fn hart_id() -> usize {
 /// @errors 当前 hart 不在 DTB topology 时 fail-stop。
 fn raise_softirq(work: u32) {
     assert_ne!(work, 0, "cannot raise an empty softirq");
-    state(hart_id())
-        .expect("softirq hart disappeared from topology")
+    current_state()
         .softirq_pending
         .fetch_or(work, Ordering::Release);
     // SAFETY: kernel runs in S-mode and sets only the current hart's supervisor software pending bit.
@@ -263,6 +342,14 @@ pub(crate) fn raise_network_softirq() {
     raise_softirq(NETWORK_SOFTIRQ);
 }
 
+/// @description 发布当前 hart 的 timer/deadline backlog 续批工作。
+///
+/// @return 无返回值；pending bit 合并重复请求，避免无界 nested drain。
+/// @errors 当前 hart 不在 DTB topology 时 fail-stop。
+pub(crate) fn raise_timer_backlog_softirq() {
+    raise_softirq(TIMER_BACKLOG_SOFTIRQ);
+}
+
 /// @description 原子消费当前 hart 的全部 deferred work pending bits。
 ///
 /// @return 本次调用取得的 work bitset。
@@ -271,10 +358,7 @@ pub(crate) fn take_softirqs() -> u32 {
     // SAFETY: deferred-work consumer clears only the current hart's supervisor software bit;
     // ordinary IPI carries no payload and serves only to wake this same consumer.
     unsafe { riscv::register::sip::clear_ssoft() }
-    state(hart_id())
-        .expect("softirq hart disappeared from topology")
-        .softirq_pending
-        .swap(0, Ordering::AcqRel)
+    current_state().softirq_pending.swap(0, Ordering::AcqRel)
 }
 
 /// @description 获取 DTB 描述的 possible hart mask。
@@ -317,17 +401,13 @@ pub(crate) fn states() -> &'static [HartState] {
     &topology().states
 }
 
-/// @description 按原始 hart ID 查找动态 state。
+/// @description 将原始 DTB hart ID 映射为有序 topology 中的紧凑 index。
 ///
 /// @param hart_id 待查找的 DTB hart ID。
-/// @return hart 存在时返回 state，否则返回 `None`。
+/// @return hart 存在时返回按 hart ID 升序排列的零基 index，否则返回 `None`。
 /// @errors topology 尚未发布时 fail-stop。
-pub(crate) fn state(hart_id: usize) -> Option<&'static HartState> {
-    let states = states();
-    states
-        .binary_search_by_key(&hart_id, HartState::hart_id)
-        .ok()
-        .map(|index| &states[index])
+pub(crate) fn hart_index(hart_id: usize) -> Option<usize> {
+    topology().index_of(hart_id)
 }
 
 /// @description 发布当前 hart 已完成页表、timer 和中断初始化。
@@ -335,9 +415,15 @@ pub(crate) fn state(hart_id: usize) -> Option<&'static HartState> {
 /// @return 无返回值。
 /// @errors 当前 hart 不属于动态 topology 时 fail-stop。
 pub(crate) fn mark_online() {
-    state(hart_id())
-        .expect("current hart disappeared from topology")
-        .mark_online();
+    current_state().mark_online();
+}
+
+/// @description 发布 calling hart 已进入 scheduler/idle 循环。
+///
+/// @return 无返回值。
+/// @errors 当前 hart 不属于动态 topology 时 fail-stop。
+pub(crate) fn mark_active() {
+    current_state().mark_active();
 }
 
 /// @description 获取已完成 S-mode 初始化的 hart 集合。

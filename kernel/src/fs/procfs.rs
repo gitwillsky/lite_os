@@ -46,7 +46,7 @@ pub(crate) struct ProcFileDescriptorSnapshot {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ProcCpuSnapshot {
-    pub(crate) hart_id: usize,
+    pub(crate) cpu: usize,
     pub(crate) busy_us: u64,
 }
 

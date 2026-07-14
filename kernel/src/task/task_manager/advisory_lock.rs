@@ -67,11 +67,10 @@ fn wait_for_file_lock(
     mut attempt: impl FnMut() -> Result<AdvisoryLockAttempt, AdvisoryLockError>,
 ) -> Result<(), AdvisoryLockWaitError> {
     let task = current_task().expect("file-lock wait requires current task");
-    let cpu = hart_id();
     loop {
         // wait-registry → VFS lock-table 是唯一锁序。release 先放开 VFS table 再经 notifier
         // 获取 registry，因此 unlock 不可能落在 conflict recheck 与 membership publication 之间。
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let queue = INDEXED_WAIT_QUEUE.lock();
         let attempt = attempt()?;
         let (key, wake_waiters) = match attempt {
             AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
@@ -90,37 +89,15 @@ fn wait_for_file_lock(
             }
             return Err(AdvisoryLockWaitError::Interrupted);
         }
-        let end_time = get_time_us();
-        let mut sched = task.scheduling.policy.lock();
-        let runtime = end_time.saturating_sub(sched.last_runtime);
-        sched.update_vruntime(runtime);
-        drop(sched);
-        with_current_processor(|processor| {
-            let current = processor
-                .take_current()
-                .expect("file-lock wait requires current task");
-            assert!(Arc::ptr_eq(&current, &task));
-            let mut scheduling = task.scheduling.state.lock();
-            assert_eq!(scheduling.run_state, RunState::Running { cpu });
-            assert!(scheduling.wait.is_none());
-            assert!(scheduling.wait_result.is_none());
-            let wait_id = queue.insert_advisory_lock(key, current);
-            scheduling.wait = Some(WaitMembership::AdvisoryLock(wait_id));
-            scheduling.run_state = RunState::Blocking { cpu };
-        });
-        drop(queue);
+        let prepared =
+            super::context_switch::prepare_current_block(&task, queue, |queue, current| {
+                let wait_id = queue.insert_advisory_lock(key, current);
+                WaitMembership::AdvisoryLock(wait_id)
+            });
         if wake_waiters {
             vfs().notify_advisory_lock(key);
         }
-        schedule_with_task_context(task.clone());
-        match task
-            .scheduling
-            .state
-            .lock()
-            .wait_result
-            .take()
-            .expect("file-lock waiter resumed without result")
-        {
+        match prepared.suspend() {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(AdvisoryLockWaitError::Interrupted),
             WaitResult::TimedOut => panic!("file-lock wait cannot time out"),

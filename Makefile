@@ -1,4 +1,4 @@
-.PHONY: build-kernel build-bootloader build-musl build-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -54,11 +54,22 @@ verify:
 	$(MAKE) build
 	cargo run --quiet -p architecture-check
 	python3 scripts/verify_artifacts.py
-	python3 scripts/verify_boot.py
-	python3 scripts/verify_musl.py
-	python3 scripts/verify_busybox.py
-	python3 scripts/verify_apk_apps.py --image fs.img
+	$(MAKE) -j4 verify-runtime-gates
 	git diff --check
+
+verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
+
+verify-runtime-boot:
+	python3 scripts/verify_boot.py
+
+verify-runtime-musl:
+	python3 scripts/verify_musl.py
+
+verify-runtime-busybox:
+	python3 scripts/verify_busybox.py
+
+verify-runtime-apk-apps:
+	python3 scripts/verify_apk_apps.py --image fs.img
 
 verify-musl: build-kernel build-bootloader
 	python3 scripts/verify_musl.py

@@ -42,29 +42,6 @@ fn clone_shared_file_area(
 }
 
 impl MemorySet {
-    pub(super) fn prepare_user_read(
-        &mut self,
-        address: usize,
-        length: usize,
-        limits: UserFaultLimits,
-    ) -> Result<usize, UserAccessError> {
-        let end = Self::checked_user_end(address, length)?;
-        let mut current = address;
-        while current < end {
-            if self.user_page(current, PTEFlags::R).is_err() {
-                match self.handle_page_fault_with_limits(current, PageFaultAccess::Read, limits) {
-                    Ok(PageFaultOutcome::Handled) => {}
-                    Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
-                    _ => return Err(UserAccessError::Fault),
-                }
-            }
-            current = (current | (config::PAGE_SIZE - 1))
-                .saturating_add(1)
-                .min(end);
-        }
-        self.validate_user_range(address, length, PTEFlags::R)
-    }
-
     /// @description 为 fork 共享用户 frame 并把可写映射转换为 COW；supervisor frame 仍独立复制。
     pub(crate) fn try_clone_for_fork(&mut self) -> Result<Self, MemoryError> {
         let mut cloned = Self::try_new()?;
@@ -168,26 +145,5 @@ impl MemorySet {
         }
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after COW resolution");
         Ok(true)
-    }
-
-    pub(super) fn prepare_user_write(
-        &mut self,
-        address: usize,
-        length: usize,
-        limits: UserFaultLimits,
-    ) -> Result<usize, UserAccessError> {
-        let end = Self::checked_user_end(address, length)?;
-        let mut current = address;
-        while current < end {
-            match self.handle_page_fault_with_limits(current, PageFaultAccess::Write, limits) {
-                Ok(PageFaultOutcome::Handled) => {}
-                Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
-                _ => return Err(UserAccessError::Fault),
-            }
-            current = (current | (config::PAGE_SIZE - 1))
-                .saturating_add(1)
-                .min(end);
-        }
-        self.validate_user_range(address, length, PTEFlags::W)
     }
 }

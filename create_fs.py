@@ -2,19 +2,12 @@
 import subprocess
 import os
 import tempfile
-import shutil
 import argparse
 import sys
 
-BOOT_DIRECTORIES = ("/bin", "/dev", "/proc")
+from scripts.ext2_image import find_debugfs, find_mke2fs
 
-def find_tool(candidates):
-    for path in candidates:
-        if shutil.which(path):
-            return shutil.which(path)
-        if os.path.exists(path) and os.access(path, os.X_OK):
-            return path
-    return None
+BOOT_DIRECTORIES = ("/bin", "/dev", "/proc")
 
 def create_ext2_filesystem(filename, init_elf, size_mb=128):
     """创建带标准 JBD2 journal inode 的 4K ext2 revision 1 文件系统。"""
@@ -30,18 +23,14 @@ def create_ext2_filesystem(filename, init_elf, size_mb=128):
         f.write(b'\0')
 
     # 2. 格式化为 ext2（块大小 4096，卷标 LITEOS）
-    mke2fs = find_tool([
-        'mke2fs',
-        '/opt/homebrew/opt/e2fsprogs/sbin/mke2fs',
-        '/usr/local/opt/e2fsprogs/sbin/mke2fs',
-        '/usr/sbin/mke2fs',
-    ])
-    if not mke2fs:
+    try:
+        mke2fs = find_mke2fs()
+    except RuntimeError:
         print("✗ 未找到 mke2fs（e2fsprogs）。请安装: brew install e2fsprogs 或 apt install e2fsprogs")
         return False
 
     try:
-        subprocess.run([mke2fs, '-t', 'ext2', '-b', '4096', '-I', '256',
+        subprocess.run([str(mke2fs), '-t', 'ext2', '-b', '4096', '-I', '256',
                         '-O', '^ext_attr,^resize_inode,^dir_index,filetype,sparse_super,large_file,has_journal',
                         '-J', 'size=4',
                         '-L', 'LITEOS', filename],
@@ -52,17 +41,13 @@ def create_ext2_filesystem(filename, init_elf, size_mb=128):
         return False
 
     # 3. 使用 debugfs 写入文件（macOS 无法直接挂载 ext2）
-    debugfs = find_tool([
-        'debugfs',
-        '/opt/homebrew/opt/e2fsprogs/sbin/debugfs',
-        '/usr/local/opt/e2fsprogs/sbin/debugfs',
-        '/usr/sbin/debugfs',
-    ])
-    if not debugfs:
+    try:
+        debugfs = find_debugfs()
+    except RuntimeError:
         print("✗ 未找到 debugfs（e2fsprogs）。请安装: brew install e2fsprogs 或 apt install e2fsprogs")
         return False
 
-    return copy_files_to_ext2(filename, debugfs, init_elf)
+    return copy_files_to_ext2(filename, str(debugfs), init_elf)
 
 def collect_binaries(init_elf):
     """底层 ext2 primitive 只安装调用方显式指定的 init ELF。"""

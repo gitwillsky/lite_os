@@ -29,8 +29,8 @@ pub(crate) use readlink::sys_readlinkat;
 use crate::{
     fs::{
         CharacterDevice, DeviceKind, InodeMetadata, InodeType, O_ACCMODE, O_APPEND, O_CLOEXEC,
-        O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, TerminalAccess,
-        TerminalRead, vfs,
+        O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, RegularFile,
+        RegularFileWrite, TerminalAccess, TerminalRead, vfs,
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
