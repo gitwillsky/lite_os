@@ -298,7 +298,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             ));
         }
     }
-    let required = "python3 scripts/verify_busybox.py --build-only --image fs.img";
+    let required = "python3 scripts/verify_busybox.py --build-only --image $(ROOTFS_IMAGE)";
     if !makefile.contains(required) {
         errors.push(format!(
             "Makefile: default rootfs must be built through `{required}`"

@@ -1,4 +1,6 @@
-.PHONY: build-kernel build-bootloader build-musl build-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+ROOTFS_IMAGE := target/rootfs.img
+
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -9,13 +11,25 @@ build-bootloader:
 build-musl:
 	python3 scripts/verify_musl.py --build-only
 
-build-rootfs: build-kernel build-bootloader build-musl
-	python3 scripts/verify_busybox.py --build-only --image fs.img
+build-rootfs: build-musl
+	python3 scripts/verify_busybox.py --build-only --image $(ROOTFS_IMAGE)
 
-build-apk-apps: build-rootfs
-	python3 scripts/verify_apk_apps.py --build-only --image fs.img --output target/apk-apps.img
+# target/rootfs.img 是可复现基线；fs.img 是 guest 可持续修改的开发实例。
+reset-rootfs: build-rootfs
+	@temporary="fs.img.$$$$.tmp"; \
+	trap 'rm -f "$$temporary"' 0 1 2 3 15; \
+	cp "$(ROOTFS_IMAGE)" "$$temporary"; \
+	mv -f "$$temporary" fs.img; \
+	trap - 0 1 2 3 15
 
-run: build
+# 仅在开发镜像不存在时初始化；已有 fs.img 不以 mtime 与基线同步。
+fs.img:
+	$(MAKE) reset-rootfs
+
+build-apk-apps: build-kernel build-bootloader build-rootfs
+	python3 scripts/verify_apk_apps.py --build-only --image $(ROOTFS_IMAGE) --output target/apk-apps.img
+
+run: build-kernel build-bootloader fs.img
 	qemu-system-riscv64 \
 	-machine virt \
 	-nographic \
@@ -30,7 +44,7 @@ run: build
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
-run-gdb: build
+run-gdb: build-kernel build-bootloader fs.img
 	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
@@ -60,25 +74,25 @@ verify:
 verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
 
 verify-runtime-boot:
-	python3 scripts/verify_boot.py
+	python3 scripts/verify_boot.py --image $(ROOTFS_IMAGE)
 
 verify-runtime-musl:
 	python3 scripts/verify_musl.py
 
 verify-runtime-busybox:
-	python3 scripts/verify_busybox.py
+	python3 scripts/verify_busybox.py --image $(ROOTFS_IMAGE)
 
 verify-runtime-apk-apps:
-	python3 scripts/verify_apk_apps.py --image fs.img
+	python3 scripts/verify_apk_apps.py --image $(ROOTFS_IMAGE)
 
 verify-musl: build-kernel build-bootloader
 	python3 scripts/verify_musl.py
 
-verify-busybox: build-kernel build-bootloader build-musl
-	python3 scripts/verify_busybox.py
+verify-busybox: build-kernel build-bootloader build-rootfs
+	python3 scripts/verify_busybox.py --image $(ROOTFS_IMAGE)
 
 verify-apk-apps: build-kernel build-bootloader build-rootfs
-	python3 scripts/verify_apk_apps.py --image fs.img
+	python3 scripts/verify_apk_apps.py --image $(ROOTFS_IMAGE)
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'

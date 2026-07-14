@@ -66,10 +66,10 @@ sudo apt-get install qemu-system-misc e2fsprogs binutils-riscv64-unknown-elf gcc
 ## 构建与启动
 
 ```bash
-# 构建 bootloader、kernel、固定 musl/BusyBox，并生成 ext2 镜像
+# 构建 bootloader、kernel、固定 musl/BusyBox，并生成基准镜像 target/rootfs.img
 make build
 
-# 以默认的 8-hart QEMU 配置启动；8 是运行示例，不是 kernel 容量常量
+# 以默认的 8-hart QEMU 配置启动；已有 fs.img 的 guest 状态保持不变
 make run
 ```
 
@@ -83,6 +83,14 @@ make run
 
 默认 rootfs 只包含固定 config 选中的 BusyBox applet；全部入口是同一 ELF inode 的 hardlink。
 
+`target/rootfs.img` 是固定输入生成的可复现基准，`fs.img` 是 QEMU 持续写入的开发实例。普通 `make build`、`make run`、`make run-gdb` 和 `make verify` 均不覆盖已有 `fs.img`；开发镜像缺失时，`make run` 会按需初始化。需要明确丢弃 guest 内安装的软件和文件改动时执行：
+
+```bash
+make reset-rootfs
+```
+
+验证门只消费基准镜像并为每条 QEMU 路径创建私有副本，不把验证状态写回开发镜像。
+
 当前工具集除 `init + ash` 与基础文件命令外，还包含外部 `test`/`[`/`[[`、`stat/mktemp/install/printenv/whoami/groups/yes/tty`、`cksum/md5sum/sha1sum/sha256sum/sha512sum`、`pidof/pgrep/pkill/killall/timeout/nohup/watch`、`vi/less/more`、`diff/patch/cmp`、`hexdump/hd/od/strings`、`awk/sed`、`head/tail/cut/sort/uniq/tr/tee`、`find/xargs`、`basename/dirname/readlink/realpath/which/env/expr/seq/sleep`、`tar/unzip` 与 `gzip/bzip2/XZ` 解压。每个入口都由 guest self-checking script 或 BusyBox UART gate 执行真实 procfs、opened-file、signal、文件、终端、pipe、安装、差异应用、归档、压缩或校验路径，不以“编译进 ELF”代替运行支持。BusyBox `xz` 上游 applet 仅提供解压，不声明 XZ 压缩能力。
 
 分组构建：
@@ -94,7 +102,7 @@ make build-musl
 make build-rootfs
 ```
 
-`create_fs.py` 是 rootfs builder 的底层工具，必须显式传入 `--init`；默认入口是 `make build-rootfs`，它还会写入 inittab 和 BusyBox hardlink applet。
+`create_fs.py` 是 rootfs builder 的底层工具，必须显式传入 `--init`；默认入口是 `make build-rootfs`，它将 inittab 和 BusyBox hardlink applet 写入 `target/rootfs.img`，不修改开发中的 `fs.img`。
 
 固定 musl v1.2.6 pthread 验收可单独执行：
 
@@ -114,7 +122,7 @@ make verify-busybox
 
 该目标构建 RISC-V 动态 PIE BusyBox 和单 inode hardlink applet rootfs，再把完整 userspace 制作为本地 RSA256 签名的 `liteos-base` APK，由 guest 内真实 `apk.static --initdb add` 生成最终 package database。gate 同时覆盖 dependency failure rollback、add/del、v1→v2 upgrade、篡改签名拒绝、并发 database lock、掉电后继续升级，以及 `dlopen/dlsym/dlclose`、getrandom、ash、pipeline、后台 wait、VINTR 和 1-hart 写入/8-hart 冷启动读回。
 
-BusyBox source、动态 ELF、unstripped diagnostics 与共享对象 probe 按官方 archive SHA-256、唯一 config、musl sysroot fingerprint、toolchain identity 和 recipe 做内容寻址缓存。命中后仍执行 ELF 围栏并重新构造镜像；强制重建使用 `python3 scripts/verify_busybox.py --build-only --image fs.img --rebuild`。
+BusyBox source、动态 ELF、unstripped diagnostics 与共享对象 probe 按官方 archive SHA-256、唯一 config、musl sysroot fingerprint、toolchain identity 和 recipe 做内容寻址缓存。命中后仍执行 ELF 围栏并重新构造基准镜像；强制重建使用 `python3 scripts/verify_busybox.py --build-only --image target/rootfs.img --rebuild`，随后由 `make reset-rootfs` 明确决定是否替换开发实例。
 
 ## 调试
 
