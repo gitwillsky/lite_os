@@ -178,6 +178,7 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
         }
@@ -276,6 +277,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
         }

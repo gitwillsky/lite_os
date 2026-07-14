@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
-use crate::{syscall::errno, task::current_task};
+use crate::{
+    syscall::errno,
+    task::{CredentialUpdateError, current_task},
+};
 
 /// @description 返回当前 Process 的 real/effective UID/GID。
 pub(crate) fn sys_get_id(uid: bool, effective: bool) -> isize {
@@ -40,7 +43,10 @@ pub(crate) fn sys_set_res_ids(uid: bool, values: [u32; 3]) -> isize {
 /// @description 实现 Linux getgroups size query 与 group array copyout。
 pub(crate) fn sys_getgroups(size: usize, list: usize) -> isize {
     let task = current_task().expect("getgroups requires current task");
-    let groups = task.supplementary_groups();
+    let groups = match task.supplementary_groups() {
+        Ok(groups) => groups,
+        Err(()) => return -errno::ENOMEM,
+    };
     if size == 0 {
         return groups.len() as isize;
     }
@@ -85,14 +91,24 @@ pub(crate) fn sys_setgroups(size: usize, list: usize) -> isize {
     if !encoded.is_empty() && task.copy_from_user(list, &mut encoded).is_err() {
         return -errno::EFAULT;
     }
-    let groups = encoded
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|value| u32::from_ne_bytes(*value))
-        .collect();
-    task.set_supplementary_groups(groups)
-        .map_or(-errno::EPERM, |()| 0)
+    let mut groups = Vec::new();
+    if groups.try_reserve_exact(size).is_err() {
+        return -errno::ENOMEM;
+    }
+    groups.extend(
+        encoded
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|value| u32::from_ne_bytes(*value)),
+    );
+    task.set_supplementary_groups(groups).map_or_else(
+        |error| match error {
+            CredentialUpdateError::Permission => -errno::EPERM,
+            CredentialUpdateError::OutOfMemory => -errno::ENOMEM,
+        },
+        |()| 0,
+    )
 }
 
 /// @description 替换 Process umask 并返回旧的低 9-bit mask。

@@ -109,6 +109,7 @@ pub(crate) enum WaitResult {
     Woken,
     TimedOut,
     Interrupted,
+    OutOfMemory,
 }
 
 #[derive(Debug)]

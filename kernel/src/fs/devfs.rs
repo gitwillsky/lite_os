@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use spin::Once;
 
 use super::{
@@ -64,11 +64,12 @@ struct DevInode {
 }
 
 impl DevInode {
-    fn new(filesystem_id: usize, node: DevNode) -> Arc<Self> {
-        Arc::new(Self {
+    fn new(filesystem_id: usize, node: DevNode) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
             filesystem_id,
             node,
         })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     fn child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -89,7 +90,7 @@ impl DevInode {
             b"stderr" => DevNode::Link(DevLink::Stderr),
             _ => return Err(FileSystemError::NotFound),
         };
-        Ok(Self::new(self.filesystem_id, node))
+        Ok(Self::new(self.filesystem_id, node)?)
     }
 }
 
@@ -162,7 +163,14 @@ impl Inode for DevInode {
 
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
         match self.node {
-            DevNode::Link(link) => Ok(link.target().to_vec()),
+            DevNode::Link(link) => {
+                let mut target = Vec::new();
+                target
+                    .try_reserve_exact(link.target().len())
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                target.extend_from_slice(link.target());
+                Ok(target)
+            }
             DevNode::Root | DevNode::Device(_) => Err(FileSystemError::InvalidOperation),
         }
     }
@@ -191,68 +199,28 @@ impl Inode for DevInode {
         if !matches!(self.node, DevNode::Root) {
             return Err(FileSystemError::NotDirectory);
         }
-        Ok(vec![
-            DirectoryEntry {
-                inode: 1,
-                kind: InodeType::Directory,
-                name: b".".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 1,
-                kind: InodeType::Directory,
-                name: b"..".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 2,
-                kind: InodeType::CharacterDevice,
-                name: b"null".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 3,
-                kind: InodeType::CharacterDevice,
-                name: b"zero".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 4,
-                kind: InodeType::CharacterDevice,
-                name: b"tty".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 10,
-                kind: InodeType::CharacterDevice,
-                name: b"random".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 11,
-                kind: InodeType::CharacterDevice,
-                name: b"urandom".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 5,
-                kind: InodeType::CharacterDevice,
-                name: b"console".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 6,
-                kind: InodeType::SymLink,
-                name: b"fd".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 7,
-                kind: InodeType::SymLink,
-                name: b"stdin".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 8,
-                kind: InodeType::SymLink,
-                name: b"stdout".to_vec(),
-            },
-            DirectoryEntry {
-                inode: 9,
-                kind: InodeType::SymLink,
-                name: b"stderr".to_vec(),
-            },
-        ])
+        let specifications = [
+            (1, InodeType::Directory, &b"."[..]),
+            (1, InodeType::Directory, &b".."[..]),
+            (2, InodeType::CharacterDevice, &b"null"[..]),
+            (3, InodeType::CharacterDevice, &b"zero"[..]),
+            (4, InodeType::CharacterDevice, &b"tty"[..]),
+            (10, InodeType::CharacterDevice, &b"random"[..]),
+            (11, InodeType::CharacterDevice, &b"urandom"[..]),
+            (5, InodeType::CharacterDevice, &b"console"[..]),
+            (6, InodeType::SymLink, &b"fd"[..]),
+            (7, InodeType::SymLink, &b"stdin"[..]),
+            (8, InodeType::SymLink, &b"stdout"[..]),
+            (9, InodeType::SymLink, &b"stderr"[..]),
+        ];
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(specifications.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        for (inode, kind, name) in specifications {
+            entries.push(DirectoryEntry::try_new(inode, kind, name)?);
+        }
+        Ok(entries)
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
@@ -293,9 +261,11 @@ impl DevFileSystem {
     pub(crate) fn instance() -> Arc<Self> {
         DEVICE_FILESYSTEM
             .call_once(|| {
-                Arc::new(Self {
-                    root: DevInode::new(DEVICE_FILESYSTEM_ID, DevNode::Root),
+                Arc::try_new(Self {
+                    root: DevInode::new(DEVICE_FILESYSTEM_ID, DevNode::Root)
+                        .expect("failed to allocate devfs root"),
                 })
+                .expect("failed to allocate devfs")
             })
             .clone()
     }

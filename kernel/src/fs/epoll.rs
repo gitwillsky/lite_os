@@ -1,12 +1,14 @@
 use alloc::{
-    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use spin::{Mutex, Once};
 
 use super::{OpenFileDescription, OpenFileKind};
-use crate::ipc::{Pipe, PipeEnd};
+use crate::{
+    fallible_tree::FallibleMap,
+    ipc::{Pipe, PipeEnd},
+};
 
 const MAX_NESTING_DEPTH: usize = 5;
 const EPOLL_EXCLUSIVE: u32 = 1 << 28;
@@ -71,7 +73,7 @@ impl InterestKey {
 }
 
 struct EpollState {
-    interests: BTreeMap<InterestKey, Interest>,
+    interests: FallibleMap<InterestKey, Interest>,
     next_revision: u64,
     delivery_cursor: Option<InterestKey>,
 }
@@ -110,15 +112,16 @@ impl Epoll {
         notification_read: Arc<PipeEnd>,
         notification_write: Arc<PipeEnd>,
     ) -> Result<Arc<Self>, ()> {
-        let epoll = Arc::new(Self {
+        let epoll = Arc::try_new(Self {
             state: Mutex::new(EpollState {
-                interests: BTreeMap::new(),
+                interests: FallibleMap::new(),
                 next_revision: 1,
                 delivery_cursor: None,
             }),
             notification_read,
             notification_write,
-        });
+        })
+        .map_err(|_| ())?;
         let _graph = EPOLL_GRAPH.lock();
         let mut registry = EPOLLS.call_once(|| Mutex::new(Vec::new())).lock();
         registry.retain(|entry| entry.strong_count() != 0);
@@ -162,18 +165,23 @@ impl Epoll {
                 if state.interests.contains_key(&key) {
                     return Err(EpollChangeError::Exists);
                 }
-                let revision = state.next_revision;
-                state.next_revision = state.next_revision.wrapping_add(1);
-                state.interests.insert(
+                // interest node 必须在 revision 与可观察 membership 变更前完成分配；
+                // 否则内存压力会把可返回 ENOMEM 的 epoll_ctl 变成 kernel panic。
+                let prepared = FallibleMap::try_prepare(
                     key,
                     Interest {
                         ofd,
                         event,
                         last_generation: 0,
-                        revision,
+                        revision: state.next_revision,
                         disabled: false,
                     },
-                );
+                )
+                .map_err(|_| EpollChangeError::NoMemory)?;
+                let revision = state.next_revision;
+                state.next_revision = state.next_revision.wrapping_add(1);
+                debug_assert_eq!(prepared.value().revision, revision);
+                state.interests.commit_vacant(prepared);
             }
             EpollChange::Delete => {
                 let mut state = self.state.lock();

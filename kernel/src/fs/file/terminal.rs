@@ -95,7 +95,7 @@ impl Terminal {
     ///
     /// @param console UART-backed raw byte device。
     /// @return 可由所有 console OFD 共享的 TTY owner。
-    pub(crate) fn new(console: Arc<dyn Console>) -> Arc<Self> {
+    pub(crate) fn new(console: Arc<dyn Console>) -> Result<Arc<Self>, ()> {
         let mut termios = [0u8; KERNEL_TERMIOS_SIZE];
         termios[0..4].copy_from_slice(&0x500u32.to_ne_bytes());
         termios[4..8].copy_from_slice(&0x5u32.to_ne_bytes());
@@ -105,7 +105,7 @@ impl Terminal {
         let mut window_size = [0u8; 8];
         window_size[0..2].copy_from_slice(&24u16.to_ne_bytes());
         window_size[2..4].copy_from_slice(&80u16.to_ne_bytes());
-        Arc::new(Self {
+        Arc::try_new(Self {
             console,
             state: Mutex::new(TerminalState {
                 termios,
@@ -121,6 +121,7 @@ impl Terminal {
                 input_generation: crate::sync::next_readiness_generation(),
             }),
         })
+        .map_err(|_| ())
     }
 
     /// @description 从 line discipline 唯一 cooked queue 非阻塞读取。

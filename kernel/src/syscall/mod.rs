@@ -34,6 +34,14 @@ use syscall_abi::*;
 const INTERNAL_RESTART_SYS: isize = isize::MIN;
 pub(crate) const INTERRUPTED_RESULT: isize = -errno::EINTR;
 
+fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
+    -match error {
+        crate::fs::FileDescriptorError::NotFound => errno::EBADF,
+        crate::fs::FileDescriptorError::Limit => errno::EMFILE,
+        crate::fs::FileDescriptorError::OutOfMemory => errno::ENOMEM,
+    }
+}
+
 /// @description syscall dispatcher 向 trap layer 返回的唯一控制结果。
 pub(crate) enum SyscallOutcome {
     /// 将 Linux 返回值或负 errno 写回 `a0`。

@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use super::wait_registry::IndexedWaitEntry;
 use super::*;
 use crate::fs::{
@@ -36,18 +34,22 @@ impl From<AdvisoryLockError> for AdvisoryLockWaitError {
 
 /// @description 在 task 初始化时安装 VFS advisory-lock 的唯一 wake adapter。
 pub(crate) fn install_advisory_lock_notifier() {
-    vfs().set_advisory_lock_notifier(Arc::new(TaskAdvisoryLockNotifier));
+    vfs().set_advisory_lock_notifier(
+        Arc::try_new(TaskAdvisoryLockNotifier).expect("advisory-lock notifier allocation failed"),
+    );
 }
 
 fn wake_advisory_lock_waiters(key: AdvisoryLockKey) -> usize {
-    let mut waiters = Vec::new();
+    let mut waiters = FallibleMap::new();
     let mut queue = INDEXED_WAIT_QUEUE.lock();
-    while let Some((wait_id, entry)) = queue.take_advisory_lock(key) {
-        waiters.push((wait_id, entry));
+    while let Some(entry) = queue.take_advisory_lock(key) {
+        waiters.commit_vacant(entry);
     }
     drop(queue);
     let count = waiters.len();
-    for (wait_id, entry) in waiters {
+    let mut waiters = waiters;
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged advisory waiter");
         assert!(matches!(entry.kind, IndexedWaitKind::AdvisoryLock { .. }));
         crate::task::processor::wake_flock_task(entry.task, wait_id, WaitResult::Woken);
     }
@@ -70,7 +72,7 @@ fn wait_for_file_lock(
     loop {
         // wait-registry → VFS lock-table 是唯一锁序。release 先放开 VFS table 再经 notifier
         // 获取 registry，因此 unlock 不可能落在 conflict recheck 与 membership publication 之间。
-        let queue = INDEXED_WAIT_QUEUE.lock();
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
         let attempt = attempt()?;
         let (key, wake_waiters) = match attempt {
             AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
@@ -89,9 +91,12 @@ fn wait_for_file_lock(
             }
             return Err(AdvisoryLockWaitError::Interrupted);
         }
+        let wait = queue
+            .prepare_advisory_lock(key, task.clone())
+            .map_err(|()| AdvisoryLockWaitError::NoLocks)?;
         let prepared =
-            super::context_switch::prepare_current_block(&task, queue, |queue, current| {
-                let wait_id = queue.insert_advisory_lock(key, current);
+            super::context_switch::prepare_current_block(&task, queue, move |queue, _| {
+                let wait_id = queue.commit(wait);
                 WaitMembership::AdvisoryLock(wait_id)
             });
         if wake_waiters {
@@ -101,6 +106,7 @@ fn wait_for_file_lock(
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(AdvisoryLockWaitError::Interrupted),
             WaitResult::TimedOut => panic!("file-lock wait cannot time out"),
+            WaitResult::OutOfMemory => unreachable!("wait OOM is returned before blocking"),
         }
     }
 }

@@ -75,7 +75,9 @@ pub(super) fn init(base: usize, size: usize) -> Result<Arc<dyn InterruptHandler>
     rx.try_reserve_exact(RX_CAPACITY)
         .map_err(|_| InterruptError::InvalidVector)?;
     UART.call_once(|| IrqMutex::new(UartState { base, end, rx }));
-    Ok(Arc::new(UartInterruptHandler))
+    Arc::try_new(UartInterruptHandler)
+        .map(|handler| handler as Arc<dyn InterruptHandler>)
+        .map_err(|_| InterruptError::NoMemory)
 }
 
 /// @description 在 PLIC handler/affinity 发布后使能 16550 received-data interrupt。

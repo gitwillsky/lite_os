@@ -1,7 +1,7 @@
 use crate::{
     syscall::errno,
     task::{
-        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError,
+        SignalAction, SignalSendError, SignalStack, SignalStackError, SignalWaitError, WaitResult,
         current_task, send_process_signal, send_thread_signal, send_tid_signal, wait_for_signal,
         wait_for_signal_delivery,
     },
@@ -244,8 +244,17 @@ pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
     task.begin_signal_suspend(temporary);
     let deliverable = task.caught_signal_set(!temporary);
     drop(task);
-    wait_for_signal_delivery(deliverable);
-    -errno::EINTR
+    match wait_for_signal_delivery(deliverable) {
+        WaitResult::OutOfMemory => {
+            current_task()
+                .expect("sigsuspend OOM without current task")
+                .restore_temporary_signal_mask()
+                .expect("sigsuspend temporary mask disappeared");
+            -errno::ENOMEM
+        }
+        WaitResult::Woken => -errno::EINTR,
+        _ => unreachable!("sigsuspend has no timeout/cancellation result"),
+    }
 }
 
 /// @description 实现 Linux RV64 `rt_sigtimedwait` 的 standard-signal 消费与可选 timeout。
@@ -304,6 +313,7 @@ pub(crate) fn sys_rt_sigtimedwait(
         Ok(signal) => signal,
         Err(SignalWaitError::Again) => return -errno::EAGAIN,
         Err(SignalWaitError::Interrupted) => return -errno::EINTR,
+        Err(SignalWaitError::OutOfMemory) => return -errno::ENOMEM,
     };
     if info != 0 {
         let task = current_task().expect("rt_sigtimedwait resumed without current task");

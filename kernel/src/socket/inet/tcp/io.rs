@@ -195,12 +195,18 @@ impl TcpEndpointState {
 /// @return 无返回值。
 /// @errors 状态不变量破坏时 fail-stop。
 pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
-    for state in network.tcp_endpoints.values_mut() {
+    let NetworkStack {
+        tcp_endpoints,
+        sockets,
+        ..
+    } = network;
+    tcp_endpoints.for_each_mut(|_, state| {
+        if state.orphaned {
+            return;
+        }
         match &mut state.mode {
             TcpMode::Connecting => {
-                let tcp = network
-                    .sockets
-                    .get::<tcp::Socket<'static>>(state.handles[0]);
+                let tcp = sockets.get::<tcp::Socket<'static>>(state.handles[0]);
                 match tcp.state() {
                     State::Established => {
                         state.mode = TcpMode::Connected {
@@ -220,9 +226,7 @@ pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
                 peer_closed,
                 shutdown_read,
             } => {
-                let tcp = network
-                    .sockets
-                    .get_mut::<tcp::Socket<'static>>(state.handles[0]);
+                let tcp = sockets.get_mut::<tcp::Socket<'static>>(state.handles[0]);
                 if matches!(
                     tcp.state(),
                     State::CloseWait | State::LastAck | State::TimeWait
@@ -242,17 +246,21 @@ pub(in crate::socket::inet) fn maintain(network: &mut NetworkStack) {
             }
             TcpMode::Fresh { .. } | TcpMode::Listening { .. } => {}
         }
-    }
-    let mut index = 0;
-    while index < network.orphaned_tcp.len() {
-        let handle = network.orphaned_tcp[index];
-        if network.sockets.get::<tcp::Socket<'static>>(handle).state() == State::Closed {
-            network.sockets.remove(handle);
-            network.orphaned_tcp.swap_remove(index);
-        } else {
-            index += 1;
+    });
+    tcp_endpoints.retain(|_, state| {
+        if !state.orphaned
+            || state
+                .handles
+                .iter()
+                .any(|handle| sockets.get::<tcp::Socket<'static>>(*handle).state() != State::Closed)
+        {
+            return true;
         }
-    }
+        for &handle in &state.handles {
+            sockets.remove(handle);
+        }
+        false
+    });
 }
 
 /// @description 原子读取并清除 TCP pending error，供 `SO_ERROR` 使用。

@@ -1,5 +1,3 @@
-use alloc::{vec, vec::Vec};
-
 use crate::{
     ipc::PipeDirection,
     socket::{SocketPollState, SocketWaitSource},
@@ -30,8 +28,11 @@ impl InetSocket {
     /// @description 把 Internet socket 的内部 edge notification 投影给统一 wait seam。
     ///
     /// @return 单一 source-native read notification source。
-    pub(in crate::socket) fn wait_sources(&self) -> Vec<SocketWaitSource> {
-        vec![SocketWaitSource::Notification(self.notify_read.pipe())]
+    pub(in crate::socket) fn wait_sources(&self) -> crate::socket::SocketWaitSources {
+        [
+            Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+            None,
+        ]
     }
 
     pub(super) fn notify(&self) {

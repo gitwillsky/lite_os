@@ -231,10 +231,14 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
         Ok(socket) => socket,
         Err(error) => return error,
     };
+    let ofd = match OpenFileDescription::socket(socket, flags) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
     current_task()
         .unwrap()
-        .fd_allocate(OpenFileDescription::socket(socket, flags), cloexec)
-        .map_or(-errno::EMFILE, |fd| fd as isize)
+        .fd_allocate(ofd, cloexec)
+        .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
 pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output: usize) -> isize {
@@ -265,13 +269,17 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         return socket_error(error);
     }
     let task = current_task().unwrap();
-    let (first_fd, second_fd) = match task.fd_allocate_pair(
-        OpenFileDescription::socket(first, flags),
-        OpenFileDescription::socket(second, flags),
-        cloexec,
-    ) {
+    let first_ofd = match OpenFileDescription::socket(first, flags) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
+    let second_ofd = match OpenFileDescription::socket(second, flags) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
+    let (first_fd, second_fd) = match task.fd_allocate_pair(first_ofd, second_ofd, cloexec) {
         Ok(pair) => pair,
-        Err(_) => return -errno::EMFILE,
+        Err(error) => return super::file_descriptor_error(error),
     };
     let mut bytes = [0u8; 8];
     bytes[..4].copy_from_slice(&(first_fd as i32).to_ne_bytes());
@@ -349,6 +357,7 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
                 },
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             }
         },
         Err(error) => socket_error(error),
@@ -374,16 +383,19 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
     loop {
         match listener.accept_with_notify(accept_notify.clone()) {
             Ok(socket) => {
-                let result = current_task().unwrap().fd_allocate(
-                    OpenFileDescription::socket(
-                        socket.clone(),
-                        O_RDWR | (flags as u32 & O_NONBLOCK),
-                    ),
-                    flags & SOCK_CLOEXEC != 0,
-                );
+                let ofd = match OpenFileDescription::socket(
+                    socket.clone(),
+                    O_RDWR | (flags as u32 & O_NONBLOCK),
+                ) {
+                    Ok(ofd) => ofd,
+                    Err(()) => return -errno::ENOMEM,
+                };
+                let result = current_task()
+                    .unwrap()
+                    .fd_allocate(ofd, flags & SOCK_CLOEXEC != 0);
                 let fd = match result {
                     Ok(fd) => fd,
-                    Err(_) => return -errno::EMFILE,
+                    Err(error) => return super::file_descriptor_error(error),
                 };
                 if let Err(error) = socket
                     .peer_address()
@@ -402,6 +414,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
         }
@@ -480,6 +493,7 @@ pub(crate) fn sys_sendto(
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
         }
@@ -534,6 +548,7 @@ pub(crate) fn sys_recvfrom(
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
+                WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
             Err(error) => return socket_error(error),
         }

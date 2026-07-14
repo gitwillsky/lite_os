@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use core::net::Ipv4Addr;
 
 use crate::ipc::{Pipe, PipeDirection, PipeEnd};
@@ -148,6 +148,8 @@ pub(crate) enum SocketWaitSource {
     },
 }
 
+pub(crate) type SocketWaitSources = [Option<SocketWaitSource>; 2];
+
 impl Socket {
     /// @description 创建 AF_UNIX、AF_INET 或 AF_PACKET endpoint，并一次性校验组合。
     ///
@@ -164,7 +166,7 @@ impl Socket {
     ) -> Result<Arc<Self>, SocketError> {
         let backend = match (domain, socket_type, protocol) {
             (SocketDomain::Unix, SocketType::Stream | SocketType::Datagram, 0) => {
-                SocketBackend::Unix(UnixSocket::new(socket_type, notify))
+                SocketBackend::Unix(UnixSocket::new(socket_type, notify)?)
             }
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Datagram, notify)?)
@@ -181,21 +183,23 @@ impl Socket {
             (SocketDomain::Inet, SocketType::Raw, 255) => SocketBackend::InterfaceControl,
             _ => return Err(SocketError::ProtocolNotSupported),
         };
-        Ok(Arc::new(Self {
+        Arc::try_new(Self {
             object_id: crate::id::next_runtime_object_id(),
             domain,
             socket_type,
             backend,
-        }))
+        })
+        .map_err(|_| SocketError::NoMemory)
     }
 
-    fn from_unix(socket: Arc<UnixSocket>) -> Arc<Self> {
-        Arc::new(Self {
+    fn from_unix(socket: Arc<UnixSocket>) -> Result<Arc<Self>, SocketError> {
+        Arc::try_new(Self {
             object_id: crate::id::next_runtime_object_id(),
             domain: SocketDomain::Unix,
             socket_type: socket.socket_type(),
             backend: SocketBackend::Unix(socket),
         })
+        .map_err(|_| SocketError::NoMemory)
     }
 
     pub(crate) fn domain(&self) -> SocketDomain {
@@ -238,7 +242,7 @@ impl Socket {
                     return client.connect_datagram(&listener);
                 }
                 let resources = resources.ok_or(SocketError::NoMemory)?;
-                let server = UnixSocket::new(SocketType::Stream, resources.server_notify);
+                let server = UnixSocket::new(SocketType::Stream, resources.server_notify)?;
                 UnixSocket::connect_stream(
                     client,
                     &listener,
@@ -275,15 +279,16 @@ impl Socket {
         notify: Option<(Arc<PipeEnd>, Arc<PipeEnd>)>,
     ) -> Result<Arc<Self>, SocketError> {
         match &self.backend {
-            SocketBackend::Unix(socket) => socket.accept().map(Self::from_unix),
+            SocketBackend::Unix(socket) => socket.accept().and_then(Self::from_unix),
             SocketBackend::Inet(socket) => {
                 let socket = socket.accept(notify.ok_or(SocketError::NoMemory)?)?;
-                Ok(Arc::new(Self {
+                Arc::try_new(Self {
                     object_id: crate::id::next_runtime_object_id(),
                     domain: SocketDomain::Inet,
                     socket_type: SocketType::Stream,
                     backend: SocketBackend::Inet(socket),
-                }))
+                })
+                .map_err(|_| SocketError::NoMemory)
             }
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
@@ -524,12 +529,12 @@ impl Socket {
     /// @description 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
     ///
     /// @return 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
-    pub(crate) fn wait_sources(&self) -> Vec<SocketWaitSource> {
+    pub(crate) fn wait_sources(&self) -> SocketWaitSources {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.wait_sources(),
             SocketBackend::Inet(socket) => socket.wait_sources(),
             SocketBackend::Packet(socket) => socket.wait_sources(),
-            SocketBackend::InterfaceControl => Vec::new(),
+            SocketBackend::InterfaceControl => [None, None],
         }
     }
 

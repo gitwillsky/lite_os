@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::fs::{OpenFileDescription, ProcFileDescriptorSnapshot, vfs};
+use crate::fs::{FileDescriptorError, OpenFileDescription, ProcFileDescriptorSnapshot, vfs};
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -12,7 +12,7 @@ impl TaskControlBlock {
         &self,
         ofd: Arc<OpenFileDescription>,
         cloexec: bool,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, FileDescriptorError> {
         self.process
             .files
             .lock()
@@ -24,7 +24,7 @@ impl TaskControlBlock {
         first: Arc<OpenFileDescription>,
         second: Arc<OpenFileDescription>,
         cloexec: bool,
-    ) -> Result<(usize, usize), ()> {
+    ) -> Result<(usize, usize), FileDescriptorError> {
         self.process.files.lock().allocate_pair(
             first,
             second,
@@ -71,7 +71,7 @@ impl TaskControlBlock {
         old: usize,
         minimum: usize,
         cloexec: bool,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, FileDescriptorError> {
         self.process
             .files
             .lock()
@@ -83,7 +83,7 @@ impl TaskControlBlock {
         old: usize,
         new: usize,
         cloexec: bool,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, FileDescriptorError> {
         let replaced = {
             let mut files = self.process.files.lock();
             let replaced = files.get(new);
@@ -128,15 +128,15 @@ impl TaskControlBlock {
         &self,
     ) -> Option<alloc::vec::Vec<ProcFileDescriptorSnapshot>> {
         let descriptions = self.process.files.lock().snapshot().ok()?;
-        descriptions
-            .into_iter()
-            .map(|(fd, ofd)| {
-                Some(ProcFileDescriptorSnapshot {
-                    fd,
-                    target: ofd.proc_target().ok()?,
-                    opened: ofd.opened_ref(),
-                })
-            })
-            .collect()
+        let mut snapshots = alloc::vec::Vec::new();
+        snapshots.try_reserve_exact(descriptions.len()).ok()?;
+        for (fd, ofd) in descriptions {
+            snapshots.push(ProcFileDescriptorSnapshot {
+                fd,
+                target: ofd.proc_target().ok()?,
+                opened: ofd.opened_ref(),
+            });
+        }
+        Some(snapshots)
     }
 }

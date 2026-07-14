@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::sync::Arc;
 
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
@@ -7,7 +7,7 @@ use smoltcp::{
 
 use crate::drivers::network::{NetworkDevice, NetworkError, NetworkStatistics};
 
-use super::super::packet::{self, PacketSocket};
+use super::super::packet;
 
 const ETHERNET_MTU: usize = 1514;
 const RECEIVE_CAPACITY: usize = 2048;
@@ -15,7 +15,6 @@ const RECEIVE_CAPACITY: usize = 2048;
 /// @description 将 kernel Ethernet device seam 适配为 smoltcp token device。
 pub(super) struct EthernetDevice {
     device: Arc<dyn NetworkDevice>,
-    pending_packet_notifications: Vec<Arc<PacketSocket>>,
 }
 
 impl EthernetDevice {
@@ -24,10 +23,7 @@ impl EthernetDevice {
     /// @param device DTB 选中的唯一 Ethernet device。
     /// @return 只持共享设备 Arc 的 adapter。
     pub(super) fn new(device: Arc<dyn NetworkDevice>) -> Self {
-        Self {
-            device,
-            pending_packet_notifications: Vec::new(),
-        }
+        Self { device }
     }
 
     pub(super) fn mac_address(&self) -> [u8; 6] {
@@ -37,18 +33,12 @@ impl EthernetDevice {
     pub(super) fn statistics(&self) -> NetworkStatistics {
         self.device.statistics()
     }
-
-    /// @description 移出本轮 packet RX transition，供 NetworkStack 解锁后唤醒 Pipe。
-    /// @return 每个从 empty 转 readable 的 PacketSocket 至多出现一次。
-    /// @errors 无错误；调用后 adapter 中 pending list 为空。
-    pub(super) fn take_packet_notifications(&mut self) -> Vec<Arc<PacketSocket>> {
-        core::mem::take(&mut self.pending_packet_notifications)
-    }
 }
 
 pub(super) struct EthernetRxToken<'a> {
-    frame: Vec<u8>,
-    pending_packet_notifications: &'a mut Vec<Arc<PacketSocket>>,
+    frame: [u8; RECEIVE_CAPACITY],
+    length: usize,
+    _device_lifetime: core::marker::PhantomData<&'a mut EthernetDevice>,
 }
 
 impl RxToken for EthernetRxToken<'_> {
@@ -56,9 +46,9 @@ impl RxToken for EthernetRxToken<'_> {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        self.pending_packet_notifications
-            .extend(packet::deliver(&self.frame));
-        operation(&self.frame)
+        let frame = &self.frame[..self.length];
+        packet::deliver(frame);
+        operation(frame)
     }
 }
 
@@ -71,10 +61,11 @@ impl TxToken for EthernetTxToken {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut frame = vec![0u8; length];
-        let result = operation(&mut frame);
+        assert!(length <= ETHERNET_MTU, "smoltcp TX exceeds Ethernet MTU");
+        let mut frame = [0u8; ETHERNET_MTU];
+        let result = operation(&mut frame[..length]);
         self.device
-            .transmit(&frame)
+            .transmit(&frame[..length])
             .unwrap_or_else(|error| panic!("Ethernet transmit failed: {:?}", error));
         result
     }
@@ -85,20 +76,18 @@ impl Device for EthernetDevice {
     type TxToken<'a> = EthernetTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let mut frame = vec![0u8; RECEIVE_CAPACITY];
+        let mut frame = [0u8; RECEIVE_CAPACITY];
         match self.device.receive(&mut frame) {
-            Ok(length) => {
-                frame.truncate(length);
-                Some((
-                    EthernetRxToken {
-                        frame,
-                        pending_packet_notifications: &mut self.pending_packet_notifications,
-                    },
-                    EthernetTxToken {
-                        device: self.device.clone(),
-                    },
-                ))
-            }
+            Ok(length) => Some((
+                EthernetRxToken {
+                    frame,
+                    length,
+                    _device_lifetime: core::marker::PhantomData,
+                },
+                EthernetTxToken {
+                    device: self.device.clone(),
+                },
+            )),
             Err(NetworkError::WouldBlock) => None,
             Err(error) => panic!("Ethernet receive failed: {:?}", error),
         }

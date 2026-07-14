@@ -210,10 +210,6 @@ impl PhysicalPageNumber {
     pub(crate) fn as_usize(&self) -> usize {
         self.0
     }
-
-    pub(crate) fn add_one(&self) -> Self {
-        PhysicalPageNumber(self.0 + 1)
-    }
 }
 
 impl VirtualPageNumber {

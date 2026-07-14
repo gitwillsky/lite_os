@@ -1,7 +1,8 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use spin::MutexGuard;
 
 use super::*;
+use crate::fallible_tree::FallibleMap;
 
 const JBD2_MAGIC: u32 = 0xC03B_3998;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
@@ -16,7 +17,7 @@ pub(super) struct Journal {
     blocks: Vec<u32>,
     superblock: Vec<u8>,
     sequence: u32,
-    active: Option<BTreeMap<u32, Vec<u8>>>,
+    active: Option<FallibleMap<u32, Vec<u8>>>,
     failed: bool,
 }
 
@@ -48,7 +49,7 @@ impl Journal {
             }
             blocks.push(block);
         }
-        let mut superblock = vec![0; fs.block_size];
+        let mut superblock = zeroed(fs.block_size)?;
         fs.read_fs_block_home(blocks[0], &mut superblock)?;
         if be32(&superblock, 0)? != JBD2_MAGIC
             || be32(&superblock, 4)? != JBD2_SUPERBLOCK_V2
@@ -79,8 +80,12 @@ impl Journal {
     /// @description 读取 active transaction 中覆盖指定 home block 的最新 staged bytes。
     /// @param block filesystem home block number。
     /// @return 未 staged 返回 None，否则返回完整 block snapshot。
-    pub(super) fn staged(&self, block: u32) -> Option<Vec<u8>> {
-        self.active.as_ref()?.get(&block).cloned()
+    pub(super) fn copy_staged(&self, block: u32, output: &mut [u8]) -> bool {
+        let Some(bytes) = self.active.as_ref().and_then(|writes| writes.get(&block)) else {
+            return false;
+        };
+        output.copy_from_slice(bytes);
+        true
     }
 
     /// @description 把一次完整 home-block image 去重加入 active redo write-set。
@@ -102,7 +107,14 @@ impl Journal {
             .active
             .as_mut()
             .ok_or(FileSystemError::InvalidOperation)?;
-        writes.insert(block, bytes.to_vec());
+        let mut image = Vec::new();
+        image
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        image.extend_from_slice(bytes);
+        writes
+            .try_insert(block, image)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         Ok(())
     }
 
@@ -113,7 +125,7 @@ impl Journal {
         if self.active.is_some() {
             return Err(FileSystemError::InvalidOperation);
         }
-        self.active = Some(BTreeMap::new());
+        self.active = Some(FallibleMap::new());
         Ok(())
     }
 
@@ -168,7 +180,7 @@ impl Journal {
         let mut cursor = start;
         let mut replay = Vec::new();
         let committed = loop {
-            let mut header = vec![0; fs.block_size];
+            let mut header = zeroed(fs.block_size)?;
             self.journal_read(fs, cursor, &mut header)?;
             if be32(&header, 0)? != JBD2_MAGIC || be32(&header, 8)? != sequence {
                 break false;
@@ -184,11 +196,14 @@ impl Journal {
                         if flags & JBD2_FLAG_SAME_UUID == 0 {
                             offset += 16;
                         }
-                        let mut data = vec![0; fs.block_size];
+                        let mut data = zeroed(fs.block_size)?;
                         self.journal_read(fs, cursor, &mut data)?;
                         if flags & JBD2_FLAG_ESCAPE != 0 {
                             data[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
                         }
+                        replay
+                            .try_reserve(1)
+                            .map_err(|_| FileSystemError::OutOfMemory)?;
                         replay.push((home, data));
                         cursor += 1;
                         if flags & JBD2_FLAG_LAST_TAG != 0 {
@@ -230,22 +245,30 @@ impl Journal {
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;
-        let entries = writes.iter().collect::<Vec<_>>();
         let uuid = fs.superblock.lock().s_uuid;
         let mut cursor = 1;
-        for chunk in entries.chunks(tag_capacity) {
-            let mut descriptor = vec![0; fs.block_size];
+        let mut descriptor = zeroed(fs.block_size)?;
+        let mut escaped = zeroed(fs.block_size)?;
+        let mut next_block = writes.first_key_value().map(|(&block, _)| block);
+        while let Some(first_block) = next_block {
+            descriptor.fill(0);
             put_header(&mut descriptor, JBD2_DESCRIPTOR_BLOCK, sequence)?;
             let mut offset = 12;
-            for (index, (block, bytes)) in chunk.iter().enumerate() {
+            let count = writes.iter_from(&first_block).take(tag_capacity).count();
+            let mut last_block = first_block;
+            for (index, (block, bytes)) in writes
+                .iter_from(&first_block)
+                .take(tag_capacity)
+                .enumerate()
+            {
                 let mut flags = if index == 0 { 0 } else { JBD2_FLAG_SAME_UUID };
                 if bytes[..4] == JBD2_MAGIC.to_be_bytes() {
                     flags |= JBD2_FLAG_ESCAPE;
                 }
-                if index + 1 == chunk.len() {
+                if index + 1 == count {
                     flags |= JBD2_FLAG_LAST_TAG;
                 }
-                put_be32(&mut descriptor, offset, **block)?;
+                put_be32(&mut descriptor, offset, *block)?;
                 put_be16(&mut descriptor, offset + 4, 0)?;
                 put_be16(&mut descriptor, offset + 6, flags)?;
                 offset += 8;
@@ -253,24 +276,32 @@ impl Journal {
                     descriptor[offset..offset + 16].copy_from_slice(&uuid);
                     offset += 16;
                 }
+                last_block = *block;
             }
             self.journal_write(fs, cursor, &descriptor)?;
             cursor += 1;
-            for (_, bytes) in chunk {
-                let mut journal_bytes = (*bytes).clone();
-                if journal_bytes[..4] == JBD2_MAGIC.to_be_bytes() {
-                    journal_bytes[..4].fill(0);
-                }
-                self.journal_write(fs, cursor, &journal_bytes)?;
+            for (_, bytes) in writes.iter_from(&first_block).take(count) {
+                let journal_bytes = if bytes[..4] == JBD2_MAGIC.to_be_bytes() {
+                    escaped.copy_from_slice(bytes);
+                    escaped[..4].fill(0);
+                    &escaped
+                } else {
+                    bytes
+                };
+                self.journal_write(fs, cursor, journal_bytes)?;
                 cursor += 1;
             }
+            next_block = writes
+                .iter_after(&last_block)
+                .next()
+                .map(|(&block, _)| block);
         }
-        let mut commit = vec![0; fs.block_size];
-        put_header(&mut commit, JBD2_COMMIT_BLOCK, sequence)?;
-        self.journal_write(fs, cursor, &commit)?;
+        descriptor.fill(0);
+        put_header(&mut descriptor, JBD2_COMMIT_BLOCK, sequence)?;
+        self.journal_write(fs, cursor, &descriptor)?;
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;
-        for (block, bytes) in writes {
-            fs.write_fs_block_home(block, &bytes)?;
+        for (block, bytes) in &writes {
+            fs.write_fs_block_home(*block, bytes)?;
         }
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;
         self.sequence = sequence.wrapping_add(1);
@@ -285,6 +316,15 @@ impl Journal {
         }
         result
     }
+}
+
+fn zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    bytes.resize(length, 0);
+    Ok(bytes)
 }
 
 /// @description mutation mutex、runtime snapshot 与 journal transaction 的唯一 RAII owner。
@@ -305,17 +345,31 @@ impl<'a> MutationGuard<'a> {
     pub(super) fn begin(fs: &'a Ext2FileSystem) -> Result<Self, FileSystemError> {
         let lock = fs.mutation.lock();
         let superblock = *fs.superblock.lock();
-        let groups = fs.groups.lock().clone();
-        let inodes = fs
-            .inode_cache
-            .lock()
-            .values()
-            .filter_map(Weak::upgrade)
-            .map(|inode| {
+        // 1. Rollback snapshots must reserve before mutation begins; infallible clone/collect here
+        // turns user-driven memory pressure into a kernel-wide alloc-error panic.
+        let groups = {
+            let source = fs.groups.lock();
+            let mut snapshot = Vec::new();
+            snapshot
+                .try_reserve_exact(source.len())
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            snapshot.extend_from_slice(&source);
+            snapshot
+        };
+        let inodes = {
+            let cache = fs.inode_cache.lock();
+            let mut snapshot = Vec::new();
+            snapshot
+                .try_reserve_exact(cache.len())
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            for inode in cache.values().filter_map(Weak::upgrade) {
                 let disk = *inode.disk.lock();
-                (inode, disk)
-            })
-            .collect();
+                snapshot.push((inode, disk));
+            }
+            snapshot
+        };
+        // 2. Only after every rollback allocation succeeds may the journal publish an active
+        // transaction; otherwise Drop would abort an operation that never mutated filesystem state.
         fs.journal
             .lock()
             .as_mut()
@@ -355,7 +409,7 @@ impl Drop for MutationGuard<'_> {
             journal.abort();
         }
         *self.fs.superblock.lock() = self.superblock;
-        *self.fs.groups.lock() = self.groups.clone();
+        *self.fs.groups.lock() = core::mem::take(&mut self.groups);
         for (inode, disk) in &self.inodes {
             *inode.disk.lock() = *disk;
         }

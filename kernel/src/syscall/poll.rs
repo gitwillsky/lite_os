@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
@@ -37,7 +37,7 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
     ofd.poll_events(descriptor.events)
 }
 
-fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Vec<PollWaitKey> {
+fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Result<Vec<PollWaitKey>, ()> {
     ofd_wait_keys_for_interest(ofd, i16::MAX, false, None)
 }
 
@@ -46,25 +46,37 @@ pub(super) fn ofd_wait_keys_for_interest(
     events: i16,
     exclusive: bool,
     wake_group: Option<usize>,
-) -> Vec<PollWaitKey> {
+) -> Result<Vec<PollWaitKey>, ()> {
     let mut keys = Vec::new();
+    let push = |keys: &mut Vec<PollWaitKey>, key| {
+        keys.try_reserve(1).map_err(|_| ())?;
+        keys.push(key);
+        Ok::<(), ()>(())
+    };
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { .. }) => {
-            keys.push(PollWaitKey::console(events, exclusive, wake_group))
+            push(
+                &mut keys,
+                PollWaitKey::console(events, exclusive, wake_group),
+            )?;
         }
-        OpenFileKind::Pipe(endpoint) => keys.push(PollWaitKey::pipe(
-            &endpoint.pipe(),
-            endpoint.direction(),
-            events,
-            exclusive,
-            wake_group,
-        )),
+        OpenFileKind::Pipe(endpoint) => {
+            push(
+                &mut keys,
+                PollWaitKey::pipe(
+                    &endpoint.pipe(),
+                    endpoint.direction(),
+                    events,
+                    exclusive,
+                    wake_group,
+                ),
+            )?;
+        }
         OpenFileKind::Socket(socket) => {
-            keys.extend(
-                socket
-                    .wait_sources()
-                    .into_iter()
-                    .map(|source| match source {
+            for source in socket.wait_sources().into_iter().flatten() {
+                push(
+                    &mut keys,
+                    match source {
                         SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
                             &pipe,
                             crate::ipc::PipeDirection::Read,
@@ -75,67 +87,75 @@ pub(super) fn ofd_wait_keys_for_interest(
                         SocketWaitSource::Data { pipe, direction } => {
                             PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
                         }
-                    }),
-            );
+                    },
+                )?;
+            }
         }
         OpenFileKind::Epoll(epoll) => {
             debug_assert!(!exclusive, "EPOLLEXCLUSIVE cannot target an epoll fd");
-            keys.push(PollWaitKey::pipe(
-                &epoll.notification_pipe(),
-                crate::ipc::PipeDirection::Read,
-                0x001,
-                false,
-                wake_group,
-            ));
-            if let Ok(entries) = epoll.snapshot() {
-                for interest in entries {
-                    keys.extend(ofd_wait_keys_for_interest(
-                        &interest.ofd,
-                        interest.event.events as i16,
-                        interest.event.events & (1 << 28) != 0,
-                        wake_group,
-                    ));
-                }
+            push(
+                &mut keys,
+                PollWaitKey::pipe(
+                    &epoll.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    0x001,
+                    false,
+                    wake_group,
+                ),
+            )?;
+            for interest in epoll.snapshot().map_err(|_| ())? {
+                let mut nested = ofd_wait_keys_for_interest(
+                    &interest.ofd,
+                    interest.event.events as i16,
+                    interest.event.events & (1 << 28) != 0,
+                    wake_group,
+                )?;
+                keys.try_reserve(nested.len()).map_err(|_| ())?;
+                keys.append(&mut nested);
             }
         }
         OpenFileKind::EventFd(event) => {
             if events & POLLIN != 0 {
-                keys.push(PollWaitKey::pipe(
-                    &event.notification_pipe(true),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN,
-                    exclusive,
-                    wake_group,
-                ));
+                push(
+                    &mut keys,
+                    PollWaitKey::pipe(
+                        &event.notification_pipe(true),
+                        crate::ipc::PipeDirection::Read,
+                        POLLIN,
+                        exclusive,
+                        wake_group,
+                    ),
+                )?;
             }
             if events & POLLOUT != 0 {
-                keys.push(PollWaitKey::pipe(
-                    &event.notification_pipe(false),
-                    crate::ipc::PipeDirection::Read,
-                    POLLOUT,
-                    exclusive,
-                    wake_group,
-                ));
+                push(
+                    &mut keys,
+                    PollWaitKey::pipe(
+                        &event.notification_pipe(false),
+                        crate::ipc::PipeDirection::Read,
+                        POLLOUT,
+                        exclusive,
+                        wake_group,
+                    ),
+                )?;
             }
         }
         _ => {}
     }
-    keys
+    Ok(keys)
 }
 
-fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Vec<PollWaitKey> {
+fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Result<Vec<PollWaitKey>, ()> {
     let mut keys = Vec::new();
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd {
-            keys.extend(ofd_wait_keys_for_interest(
-                ofd,
-                descriptor.events | 0x008 | 0x010,
-                false,
-                None,
-            ));
+            let mut nested =
+                ofd_wait_keys_for_interest(ofd, descriptor.events | 0x008 | 0x010, false, None)?;
+            keys.try_reserve(nested.len()).map_err(|_| ())?;
+            keys.append(&mut nested);
         }
     }
-    keys
+    Ok(keys)
 }
 
 fn evaluate(descriptors: &mut [PollDescriptor]) -> usize {
@@ -199,7 +219,10 @@ fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
 /// @param events Linux poll event mask。
 /// @return source wake、signal interruption；无 deadline，因此不会 timeout。
 pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitResult {
-    wait_for_poll(ofd_wait_keys(ofd), None, || {
+    let Ok(keys) = ofd_wait_keys(ofd) else {
+        return WaitResult::OutOfMemory;
+    };
+    wait_for_poll(keys, None, || {
         prepare_ofd(ofd);
         ofd.poll_events(events) != 0
     })
@@ -299,7 +322,16 @@ pub(crate) fn sys_ppoll(
             return copy_revents(&task, &descriptors)
                 .map_or(-errno::EFAULT, |count| count as isize);
         }
-        let keys = collect_wait_keys(&descriptors);
+        let keys = match collect_wait_keys(&descriptors) {
+            Ok(keys) => keys,
+            Err(()) => {
+                if temporary_mask {
+                    task.restore_temporary_signal_mask()
+                        .expect("ppoll temporary mask disappeared");
+                }
+                return -errno::ENOMEM;
+            }
+        };
         match wait_for_poll(keys, deadline, || {
             prepare_descriptors(&descriptors);
             any_ready(&descriptors)
@@ -315,6 +347,13 @@ pub(crate) fn sys_ppoll(
                     .map_or(-errno::EFAULT, |count| count as isize);
             }
             WaitResult::Interrupted => return -errno::EINTR,
+            WaitResult::OutOfMemory => {
+                if temporary_mask {
+                    task.restore_temporary_signal_mask()
+                        .expect("ppoll temporary mask disappeared");
+                }
+                return -errno::ENOMEM;
+            }
         }
     }
 }
@@ -408,7 +447,16 @@ pub(crate) fn sys_pselect6(
                 &descriptors,
             );
         }
-        let keys = collect_wait_keys(&descriptors);
+        let keys = match collect_wait_keys(&descriptors) {
+            Ok(keys) => keys,
+            Err(()) => {
+                if temporary_mask {
+                    task.restore_temporary_signal_mask()
+                        .expect("pselect6 temporary mask disappeared");
+                }
+                return -errno::ENOMEM;
+            }
+        };
         match wait_for_poll(keys, deadline, || {
             prepare_descriptors(&descriptors);
             any_ready(&descriptors)
@@ -430,6 +478,13 @@ pub(crate) fn sys_pselect6(
                 );
             }
             WaitResult::Interrupted => return -errno::EINTR,
+            WaitResult::OutOfMemory => {
+                if temporary_mask {
+                    task.restore_temporary_signal_mask()
+                        .expect("pselect6 temporary mask disappeared");
+                }
+                return -errno::ENOMEM;
+            }
         }
     }
 }
@@ -511,9 +566,15 @@ fn copy_select_results(
     descriptors: &[PollDescriptor],
 ) -> isize {
     let byte_count = count.div_ceil(8);
-    let mut read_bits = vec![0u8; byte_count];
-    let mut write_bits = vec![0u8; byte_count];
-    let mut except_bits = vec![0u8; byte_count];
+    let Some(mut read_bits) = zeroed_bytes(byte_count) else {
+        return -errno::ENOMEM;
+    };
+    let Some(mut write_bits) = zeroed_bytes(byte_count) else {
+        return -errno::ENOMEM;
+    };
+    let Some(mut except_bits) = zeroed_bytes(byte_count) else {
+        return -errno::ENOMEM;
+    };
     let mut ready = 0;
     for descriptor in descriptors {
         let fd = descriptor.fd as usize;
@@ -545,4 +606,11 @@ fn copy_select_results(
         }
     }
     ready
+}
+
+fn zeroed_bytes(length: usize) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).ok()?;
+    bytes.resize(length, 0);
+    Some(bytes)
 }

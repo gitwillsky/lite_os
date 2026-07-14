@@ -1,4 +1,4 @@
-use alloc::{format, sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use super::{
     DirectoryEntry, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
@@ -57,34 +57,66 @@ struct SysInode {
 }
 
 impl SysInode {
-    fn new(cpu_count: usize, node: SysNode) -> Arc<Self> {
-        Arc::new(Self { cpu_count, node })
+    fn new(cpu_count: usize, node: SysNode) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self { cpu_count, node }).map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    fn cpu_range(&self) -> Vec<u8> {
-        if self.cpu_count == 1 {
-            b"0\n".to_vec()
-        } else {
-            format!("0-{}\n", self.cpu_count - 1).into_bytes()
+    fn decimal(output: &mut [u8], prefix: &[u8], value: usize, suffix: &[u8]) -> usize {
+        output[..prefix.len()].copy_from_slice(prefix);
+        let mut digits = [0u8; 20];
+        let mut count = 0;
+        let mut value = value;
+        loop {
+            digits[count] = b'0' + (value % 10) as u8;
+            count += 1;
+            value /= 10;
+            if value == 0 {
+                break;
+            }
         }
+        for index in 0..count {
+            output[prefix.len() + index] = digits[count - index - 1];
+        }
+        let end = prefix.len() + count;
+        output[end..end + suffix.len()].copy_from_slice(suffix);
+        end + suffix.len()
+    }
+
+    fn cpu_range(&self) -> Result<Vec<u8>, FileSystemError> {
+        let mut stack = [0u8; 32];
+        let length = if self.cpu_count == 1 {
+            stack[..2].copy_from_slice(b"0\n");
+            2
+        } else {
+            Self::decimal(&mut stack, b"0-", self.cpu_count - 1, b"\n")
+        };
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        bytes.extend_from_slice(&stack[..length]);
+        Ok(bytes)
     }
 
     fn contents(&self) -> Result<Vec<u8>, FileSystemError> {
         match self.node {
-            SysNode::CpuSet(_) => Ok(self.cpu_range()),
+            SysNode::CpuSet(_) => self.cpu_range(),
             // LiteOS 不支持 CPU hotplug：能进入 userspace 的 boot 必须已启动全部 DTB hart。
             // 若这里依赖一次启动期 online 快照，后启动 hart 会永久被 userspace 隐藏。
-            SysNode::CpuOnline(_) => Ok(b"1\n".to_vec()),
+            SysNode::CpuOnline(_) => {
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(2)
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                bytes.extend_from_slice(b"1\n");
+                Ok(bytes)
+            }
             _ => Err(FileSystemError::IsDirectory),
         }
     }
 
-    fn entry(node: SysNode, name: &[u8]) -> DirectoryEntry {
-        DirectoryEntry {
-            inode: node.inode(),
-            kind: node.kind(),
-            name: name.to_vec(),
-        }
+    fn entry(node: SysNode, name: &[u8]) -> Result<DirectoryEntry, FileSystemError> {
+        DirectoryEntry::try_new(node.inode(), node.kind(), name)
     }
 
     fn child(&self, name: &[u8]) -> Result<SysNode, FileSystemError> {
@@ -213,24 +245,29 @@ impl Inode for SysInode {
 
     fn list(&self) -> Result<Vec<DirectoryEntry>, FileSystemError> {
         let parent = self.child(b"..")?;
-        let mut entries = vec![Self::entry(self.node, b"."), Self::entry(parent, b"..")];
+        let capacity = 5usize.saturating_add(self.cpu_count);
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(capacity)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        entries.push(Self::entry(self.node, b".")?);
+        entries.push(Self::entry(parent, b"..")?);
         match self.node {
-            SysNode::Root => entries.push(Self::entry(SysNode::Devices, b"devices")),
-            SysNode::Devices => entries.push(Self::entry(SysNode::System, b"system")),
-            SysNode::System => entries.push(Self::entry(SysNode::CpuRoot, b"cpu")),
+            SysNode::Root => entries.push(Self::entry(SysNode::Devices, b"devices")?),
+            SysNode::Devices => entries.push(Self::entry(SysNode::System, b"system")?),
+            SysNode::System => entries.push(Self::entry(SysNode::CpuRoot, b"cpu")?),
             SysNode::CpuRoot => {
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Possible), b"possible"));
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Present), b"present"));
-                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Online), b"online"));
+                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Possible), b"possible")?);
+                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Present), b"present")?);
+                entries.push(Self::entry(SysNode::CpuSet(CpuSet::Online), b"online")?);
                 for cpu in 0..self.cpu_count {
-                    entries.push(Self::entry(
-                        SysNode::Cpu(cpu),
-                        format!("cpu{cpu}").as_bytes(),
-                    ));
+                    let mut name = [0u8; 32];
+                    let length = Self::decimal(&mut name, b"cpu", cpu, b"");
+                    entries.push(Self::entry(SysNode::Cpu(cpu), &name[..length])?);
                 }
             }
             SysNode::Cpu(cpu) => {
-                entries.push(Self::entry(SysNode::CpuOnline(cpu), b"online"));
+                entries.push(Self::entry(SysNode::CpuOnline(cpu), b"online")?);
             }
             SysNode::CpuSet(_) | SysNode::CpuOnline(_) => {
                 return Err(FileSystemError::NotDirectory);
@@ -240,7 +277,7 @@ impl Inode for SysInode {
     }
 
     fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
-        Ok(Self::new(self.cpu_count, self.child(name)?))
+        Ok(Self::new(self.cpu_count, self.child(name)?)?)
     }
 
     fn create(
@@ -277,11 +314,10 @@ impl SysFileSystem {
     ///
     /// @param cpu_count composition root 从 HartTopology 取得的非零 logical CPU 数。
     /// @return 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
-    pub(crate) fn new(cpu_count: usize) -> Arc<Self> {
+    pub(crate) fn new(cpu_count: usize) -> Result<Arc<Self>, FileSystemError> {
         assert_ne!(cpu_count, 0, "sysfs requires non-empty CPU topology");
-        Arc::new(Self {
-            root: SysInode::new(cpu_count, SysNode::Root),
-        })
+        let root = SysInode::new(cpu_count, SysNode::Root)?;
+        Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
     }
 }
 

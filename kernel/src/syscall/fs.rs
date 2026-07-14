@@ -64,14 +64,19 @@ pub(crate) fn sys_pipe2(descriptors: usize, flags: u32) -> isize {
         Err(()) => return -errno::ENOMEM,
     };
     let pipe_flags = flags & O_NONBLOCK;
-    let (read_fd, write_fd) = match task.fd_allocate_pair(
-        OpenFileDescription::pipe(reader, O_RDONLY | pipe_flags),
-        OpenFileDescription::pipe(writer, O_WRONLY | pipe_flags),
-        flags & O_CLOEXEC != 0,
-    ) {
-        Ok(pair) => pair,
-        Err(()) => return -errno::EMFILE,
+    let read_ofd = match OpenFileDescription::pipe(reader, O_RDONLY | pipe_flags) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
     };
+    let write_ofd = match OpenFileDescription::pipe(writer, O_WRONLY | pipe_flags) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
+    let (read_fd, write_fd) =
+        match task.fd_allocate_pair(read_ofd, write_ofd, flags & O_CLOEXEC != 0) {
+            Ok(pair) => pair,
+            Err(error) => return super::file_descriptor_error(error),
+        };
     let mut output = [0u8; 8];
     output[..4].copy_from_slice(&(read_fd as i32).to_ne_bytes());
     output[4..].copy_from_slice(&(write_fd as i32).to_ne_bytes());
@@ -504,6 +509,12 @@ pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isiz
         if record_length > length.saturating_sub(output.len()) {
             break;
         }
+        if output.try_reserve_exact(record_length).is_err() {
+            if output.is_empty() {
+                return -errno::ENOMEM;
+            }
+            break;
+        }
         output.extend_from_slice(&entry.inode.to_ne_bytes());
         output.extend_from_slice(&((index + 1) as i64).to_ne_bytes());
         output.extend_from_slice(&(record_length as u16).to_ne_bytes());
@@ -536,7 +547,7 @@ pub(crate) fn sys_dup(fd: usize) -> isize {
         return -errno::EBADF;
     }
     task.fd_duplicate(fd, 0, false)
-        .map_or(-errno::EMFILE, |value| value as isize)
+        .map_or_else(super::file_descriptor_error, |value| value as isize)
 }
 pub(crate) fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
     if old == new || flags & !O_CLOEXEC != 0 {
@@ -549,7 +560,7 @@ pub(crate) fn sys_dup3(old: usize, new: usize, flags: u32) -> isize {
         return -errno::EBADF;
     }
     task.fd_duplicate_to(old, new, flags & O_CLOEXEC != 0)
-        .map_or(-errno::EBADF, |value| value as isize)
+        .map_or_else(super::file_descriptor_error, |value| value as isize)
 }
 pub(crate) fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
     let Some(task) = current_task() else {
@@ -559,6 +570,9 @@ pub(crate) fn sys_get_cwd(pointer: *mut u8, length: usize) -> isize {
         Ok(path) => path,
         Err(error) => return ferr(error),
     };
+    if bytes.try_reserve(1).is_err() {
+        return -errno::ENOMEM;
+    }
     bytes.push(0);
     if bytes.len() > length {
         return -errno::ERANGE;

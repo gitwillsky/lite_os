@@ -94,13 +94,14 @@ pub(crate) fn sys_epoll_create1(flags: usize) -> isize {
         Ok(value) => value,
         Err(()) => return -errno::ENOMEM,
     };
+    let ofd = match OpenFileDescription::epoll(epoll) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
     current_task()
         .unwrap()
-        .fd_allocate(
-            OpenFileDescription::epoll(epoll),
-            flags & EPOLL_CLOEXEC != 0,
-        )
-        .map_or(-errno::EMFILE, |fd| fd as isize)
+        .fd_allocate(ofd, flags & EPOLL_CLOEXEC != 0)
+        .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
 pub(crate) fn sys_epoll_ctl(
@@ -170,12 +171,16 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
         .map_err(|_| -errno::ENOMEM)?;
     for interest in snapshot {
         prepare_sources(&interest.ofd)?;
-        keys.extend(ofd_wait_keys_for_interest(
+        let mut interest_keys = ofd_wait_keys_for_interest(
             &interest.ofd,
             interest.event.events as i16,
             interest.event.events & EPOLLEXCLUSIVE != 0,
             Some(Epoll::identity(epoll)),
-        ));
+        )
+        .map_err(|()| -errno::ENOMEM)?;
+        keys.try_reserve(interest_keys.len())
+            .map_err(|_| -errno::ENOMEM)?;
+        keys.append(&mut interest_keys);
         if interest.disabled {
             continue;
         }
@@ -333,6 +338,10 @@ pub(crate) fn sys_epoll_pwait(
             }
             // signal frame 必须看到 begin_signal_suspend 保存的旧 mask，不能在 EINTR 前抢先清除。
             WaitResult::Interrupted => return -errno::EINTR,
+            WaitResult::OutOfMemory => {
+                restore_mask_after_error(temporary_mask);
+                return -errno::ENOMEM;
+            }
         }
     }
 }

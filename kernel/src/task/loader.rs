@@ -179,7 +179,9 @@ fn source(inode: Arc<dyn Inode>) -> Result<Arc<dyn ExecutableSource>, ProgramLoa
     let length = usize::try_from(inode.size())
         .map_err(|_| ProgramLoadError::FileSystem(FileSystemError::IoError))?;
     let file = RegularFile::from_inode(inode).map_err(ProgramLoadError::FileSystem)?;
-    Ok(Arc::new(InodeExecutableSource { file, length }))
+    let source = Arc::try_new(InodeExecutableSource { file, length })
+        .map_err(|_| ProgramLoadError::OutOfMemory)?;
+    Ok(source)
 }
 
 fn parse_script_header(

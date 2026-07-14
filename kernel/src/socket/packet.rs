@@ -1,13 +1,13 @@
 use alloc::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::{Arc, Weak},
-    vec,
     vec::Vec,
 };
 use spin::{Mutex, Once};
 
 use crate::{
     drivers::network::{NetworkDevice, NetworkError, network_device},
+    fallible_tree::FallibleMap,
     ipc::{PipeDirection, PipeEnd},
 };
 
@@ -34,11 +34,14 @@ struct EndpointState {
     protocol: u16,
     interface_index: i32,
     queue: VecDeque<Packet>,
+    // empty → readable edge 已发布到 queue、尚未在 registry lock 外通知；缺失时长期
+    // readable queue 会在每次网络 poll 重复唤醒 waiter。
+    notification_pending: bool,
 }
 
 struct PacketRegistry {
     device: Arc<dyn NetworkDevice>,
-    endpoints: BTreeMap<usize, EndpointState>,
+    endpoints: FallibleMap<usize, EndpointState>,
     next_id: usize,
 }
 
@@ -61,7 +64,7 @@ pub(super) fn init() {
     PACKET_REGISTRY.call_once(|| {
         Mutex::new(PacketRegistry {
             device,
-            endpoints: BTreeMap::new(),
+            endpoints: FallibleMap::new(),
             next_id: 1,
         })
     });
@@ -94,20 +97,24 @@ impl PacketSocket {
             .next_id
             .checked_add(1)
             .ok_or(SocketError::NoMemory)?;
-        let endpoint = Arc::new(Self {
+        let endpoint = Arc::try_new(Self {
             id,
             notify_read: notify.0,
             notify_write: notify.1,
-        });
-        registry.endpoints.insert(
+        })
+        .map_err(|_| SocketError::NoMemory)?;
+        let prepared = FallibleMap::try_prepare(
             id,
             EndpointState {
                 endpoint: Arc::downgrade(&endpoint),
                 protocol,
                 interface_index: 0,
                 queue: VecDeque::new(),
+                notification_pending: false,
             },
-        );
+        )
+        .map_err(|_| SocketError::NoMemory)?;
+        registry.endpoints.commit_vacant(prepared);
         Ok(endpoint)
     }
 
@@ -187,7 +194,11 @@ impl PacketSocket {
         if state.protocol != target.protocol {
             return Err(SocketError::ProtocolNotSupported);
         }
-        let mut frame = vec![0u8; ETH_HEADER_LENGTH + input.len()];
+        let mut frame = Vec::new();
+        frame
+            .try_reserve_exact(ETH_HEADER_LENGTH + input.len())
+            .map_err(|_| SocketError::NoMemory)?;
+        frame.resize(ETH_HEADER_LENGTH + input.len(), 0);
         frame[..6].copy_from_slice(&target.address[..6]);
         frame[6..12].copy_from_slice(&registry.device.mac_address());
         frame[12..14].copy_from_slice(&ETH_P_IP.to_be_bytes());
@@ -258,8 +269,11 @@ impl PacketSocket {
     /// @description 把 packet notification Pipe 投影给统一 OFD wait seam。
     /// @return 单一 read-direction wait source。
     /// @errors 无错误。
-    pub(super) fn wait_sources(&self) -> Vec<SocketWaitSource> {
-        vec![SocketWaitSource::Notification(self.notify_read.pipe())]
+    pub(super) fn wait_sources(&self) -> super::SocketWaitSources {
+        [
+            Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+            None,
+        ]
     }
 
     /// @description 在 registry lock 已释放后发布一次 level-triggered readable 通知。
@@ -293,12 +307,12 @@ impl Drop for PacketSocket {
 /// @param frame 包含 Ethernet header 的完整 RX frame。
 /// @return 本轮从 empty 转为 readable、且需在 NetworkStack 解锁后唤醒的 endpoints。
 /// @errors 损坏、非 IPv4、未绑定或队列已满的 frame 被丢弃，不改变 L3 ingress。
-pub(super) fn deliver(frame: &[u8]) -> Vec<Arc<PacketSocket>> {
+pub(super) fn deliver(frame: &[u8]) {
     if frame.len() < ETH_HEADER_LENGTH || u16::from_be_bytes([frame[12], frame[13]]) != ETH_P_IP {
-        return Vec::new();
+        return;
     }
     let Some(registry) = PACKET_REGISTRY.get() else {
-        return Vec::new();
+        return;
     };
     let mut registry = registry.lock();
     let own_mac = registry.device.mac_address();
@@ -311,24 +325,48 @@ pub(super) fn deliver(frame: &[u8]) -> Vec<Arc<PacketSocket>> {
         address_length: 6,
         address: padded_address(frame[6..12].try_into().unwrap()),
     };
-    let mut notifications = Vec::new();
-    for state in registry.endpoints.values_mut() {
+    registry.endpoints.for_each_mut(|_, state| {
         if state.interface_index != INTERFACE_INDEX
             || u16::from_be(state.protocol) != ETH_P_IP
             || state.queue.len() >= RECEIVE_QUEUE_LIMIT
         {
-            continue;
+            return;
         }
         let was_empty = state.queue.is_empty();
-        state.queue.push_back(Packet {
-            payload: frame[ETH_HEADER_LENGTH..].to_vec(),
-            source,
-        });
-        if was_empty && let Some(endpoint) = state.endpoint.upgrade() {
-            notifications.push(endpoint);
+        let mut payload = Vec::new();
+        if payload
+            .try_reserve_exact(frame.len() - ETH_HEADER_LENGTH)
+            .is_err()
+            || state.queue.try_reserve(1).is_err()
+        {
+            return;
         }
-    }
-    notifications
+        payload.extend_from_slice(&frame[ETH_HEADER_LENGTH..]);
+        state.queue.push_back(Packet { payload, source });
+        state.notification_pending |= was_empty;
+    });
+}
+
+/// @description 按 endpoint ID 取出下一个待发布的 packet readable edge。
+/// @param after exclusive ID cursor。
+/// @return live 且拥有 pending edge 的最小后继 endpoint；返回前原子消费 edge。
+pub(super) fn take_pending_notification(after: usize) -> Option<(usize, Arc<PacketSocket>)> {
+    let mut registry = PACKET_REGISTRY.get()?.lock();
+    let (id, endpoint) = registry
+        .endpoints
+        .iter_after(&after)
+        .find_map(|(&id, state)| {
+            state
+                .notification_pending
+                .then(|| state.endpoint.upgrade().map(|endpoint| (id, endpoint)))
+                .flatten()
+        })?;
+    registry
+        .endpoints
+        .get_mut(&id)
+        .expect("selected packet endpoint disappeared")
+        .notification_pending = false;
+    Some((id, endpoint))
 }
 
 fn padded_address(address: [u8; 6]) -> [u8; 8] {

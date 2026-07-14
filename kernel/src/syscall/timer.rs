@@ -1,5 +1,5 @@
 use crate::{
-    syscall::errno::{EFAULT, EINTR, EINVAL, EOPNOTSUPP},
+    syscall::errno::{EFAULT, EINTR, EINVAL, ENOMEM, EOPNOTSUPP},
     task::{WaitResult, current_task},
 };
 
@@ -123,7 +123,8 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
         crate::timer::get_time_us(),
     ) {
         Ok(value) => value,
-        Err(()) => return -EINVAL,
+        Err(crate::task::RealTimerError::NotFound) => return -EINVAL,
+        Err(crate::task::RealTimerError::OutOfMemory) => return -ENOMEM,
     };
     if previous != 0
         && task
@@ -162,6 +163,7 @@ fn finish_sleep(result: WaitResult, deadline_ns: u64, remaining: *mut TimeSpec) 
                 .map_or(-EFAULT, |()| -EINTR)
         }
         WaitResult::Woken => panic!("deadline wait completed without timeout or signal"),
+        WaitResult::OutOfMemory => -ENOMEM,
     }
 }
 

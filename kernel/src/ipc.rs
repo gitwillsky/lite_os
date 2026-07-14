@@ -112,7 +112,7 @@ impl Pipe {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(PIPE_CAPACITY).map_err(|_| ())?;
         bytes.resize(PIPE_CAPACITY, 0);
-        let pipe = Arc::new(Self {
+        let pipe = Arc::try_new(Self {
             object_id: crate::id::next_runtime_object_id(),
             state: Mutex::new(PipeState {
                 bytes,
@@ -124,17 +124,19 @@ impl Pipe {
                 write_generation: crate::sync::next_readiness_generation(),
             }),
             notifier,
-        });
-        Ok((
-            Arc::new(PipeEnd {
-                pipe: pipe.clone(),
-                direction: PipeDirection::Read,
-            }),
-            Arc::new(PipeEnd {
-                pipe,
-                direction: PipeDirection::Write,
-            }),
-        ))
+        })
+        .map_err(|_| ())?;
+        let read = Arc::try_new(PipeEnd {
+            pipe: pipe.clone(),
+            direction: PipeDirection::Read,
+        })
+        .map_err(|_| ())?;
+        let write = Arc::try_new(PipeEnd {
+            pipe,
+            direction: PipeDirection::Write,
+        })
+        .map_err(|_| ())?;
+        Ok((read, write))
     }
 
     pub(crate) fn identity(pipe: &Arc<Self>) -> usize {

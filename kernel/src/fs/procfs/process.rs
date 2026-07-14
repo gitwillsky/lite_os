@@ -1,13 +1,34 @@
-use alloc::{format, string::String};
-use core::fmt::Write;
+use alloc::vec::Vec;
+use core::fmt::{self, Write};
 
-use super::{ProcIoSnapshot, ProcProcessSnapshot, ProcThreadSnapshot, system::ticks};
+use super::{
+    FileSystemError, ProcIoSnapshot, ProcProcessSnapshot, ProcText, ProcThreadSnapshot, proc_text,
+    system::ticks,
+};
+
+struct Sanitized<'a> {
+    bytes: &'a [u8],
+    forbidden: &'a [u8],
+}
+
+impl fmt::Display for Sanitized<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for &byte in self.bytes {
+            formatter.write_char(if self.forbidden.contains(&byte) {
+                '?'
+            } else {
+                char::from(byte)
+            })?;
+        }
+        Ok(())
+    }
+}
 
 /// @description 将 I/O owner 快照编码为 Linux `/proc/<task>/io` 七字段格式。
 /// @param io Process 聚合或 Thread 私有 I/O counter 快照。
 /// @return 包含尾随换行的 io 文本；当前同步写路径不会产生 cancelled writes。
-pub(super) fn format_io(io: &ProcIoSnapshot) -> String {
-    format!(
+pub(super) fn format_io(io: &ProcIoSnapshot) -> Result<Vec<u8>, FileSystemError> {
+    proc_text(format_args!(
         "rchar: {}\nwchar: {}\nsyscr: {}\nsyscw: {}\nread_bytes: {}\nwrite_bytes: {}\ncancelled_write_bytes: 0\n",
         io.read_characters,
         io.written_characters,
@@ -15,13 +36,15 @@ pub(super) fn format_io(io: &ProcIoSnapshot) -> String {
         io.write_syscalls,
         io.read_bytes,
         io.write_bytes,
-    )
+    ))
 }
 
 /// @description 将 Process snapshot 编码为 Linux `/proc/<pid>/stat` 单行格式。
 /// @param process 目标 live Process 的只读快照。
 /// @return 包含尾随换行的 stat 文本。
-pub(super) fn format_process_stat(process: &ProcProcessSnapshot) -> String {
+pub(super) fn format_process_stat(
+    process: &ProcProcessSnapshot,
+) -> Result<Vec<u8>, FileSystemError> {
     format_task_stat(
         process,
         TaskStatFields {
@@ -43,7 +66,7 @@ pub(super) fn format_process_stat(process: &ProcProcessSnapshot) -> String {
 pub(super) fn format_thread_stat(
     process: &ProcProcessSnapshot,
     thread: &ProcThreadSnapshot,
-) -> String {
+) -> Result<Vec<u8>, FileSystemError> {
     format_task_stat(
         process,
         TaskStatFields {
@@ -68,10 +91,16 @@ struct TaskStatFields {
     last_cpu: usize,
 }
 
-fn format_task_stat(process: &ProcProcessSnapshot, task: TaskStatFields) -> String {
-    let comm = String::from_utf8_lossy(&process.comm).replace(['(', ')', '\n'], "?");
+fn format_task_stat(
+    process: &ProcProcessSnapshot,
+    task: TaskStatFields,
+) -> Result<Vec<u8>, FileSystemError> {
+    let comm = Sanitized {
+        bytes: &process.comm,
+        forbidden: b"()\n",
+    };
     let virtual_size = process.virtual_pages.saturating_mul(4096);
-    format!(
+    proc_text(format_args!(
         "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
         task.pid,
         comm,
@@ -87,35 +116,46 @@ fn format_task_stat(process: &ProcProcessSnapshot, task: TaskStatFields) -> Stri
         virtual_size,
         process.resident_pages,
         task.last_cpu
-    )
+    ))
 }
 
 /// @description 将 Process AddressSpace 快照编码为 Linux `/proc/<pid>/statm` 七字段格式。
 /// @param process 目标 live Process 的只读快照。
 /// @return `size resident shared text lib data dt` 页数与尾随换行。
-pub(super) fn format_process_statm(process: &ProcProcessSnapshot) -> String {
-    format!(
+pub(super) fn format_process_statm(
+    process: &ProcProcessSnapshot,
+) -> Result<Vec<u8>, FileSystemError> {
+    proc_text(format_args!(
         "{} {} {} {} 0 {} 0\n",
         process.virtual_pages,
         process.resident_pages,
         process.shared_pages,
         process.text_pages,
         process.data_pages,
-    )
+    ))
 }
 
 /// @description 将 Process comm 编码为 Linux `/proc/<pid>/comm` 格式。
 /// @param process 目标 live Process 的只读快照。
 /// @return 清理内嵌换行并带尾随换行的 comm 文本。
-pub(super) fn format_process_comm(process: &ProcProcessSnapshot) -> String {
-    let comm = String::from_utf8_lossy(&process.comm).replace('\n', "?");
-    format!("{comm}\n")
+pub(super) fn format_process_comm(
+    process: &ProcProcessSnapshot,
+) -> Result<Vec<u8>, FileSystemError> {
+    proc_text(format_args!(
+        "{}\n",
+        Sanitized {
+            bytes: &process.comm,
+            forbidden: b"\n",
+        }
+    ))
 }
 
 /// @description 将 Process owner 状态编码为已声明的 Linux status 字段。
 /// @param process 目标 live Process 的只读快照。
 /// @return 包含 identity、graph、fd 与 memory 字段的 status 文本。
-pub(super) fn format_process_status(process: &ProcProcessSnapshot) -> String {
+pub(super) fn format_process_status(
+    process: &ProcProcessSnapshot,
+) -> Result<Vec<u8>, FileSystemError> {
     format_task_status(process, process.pid, process.state)
 }
 
@@ -126,26 +166,28 @@ pub(super) fn format_process_status(process: &ProcProcessSnapshot) -> String {
 pub(super) fn format_thread_status(
     process: &ProcProcessSnapshot,
     thread: &ProcThreadSnapshot,
-) -> String {
+) -> Result<Vec<u8>, FileSystemError> {
     format_task_status(process, thread.tid, thread.state)
 }
 
-fn format_task_status(process: &ProcProcessSnapshot, pid: usize, state: u8) -> String {
-    let comm = String::from_utf8_lossy(&process.comm).replace(['\t', '\n'], "?");
-    let groups = process
-        .groups
-        .iter()
-        .fold(String::new(), |mut output, group| {
-            let _ = write!(output, "{group} ");
-            output
-        });
+fn format_task_status(
+    process: &ProcProcessSnapshot,
+    pid: usize,
+    state: u8,
+) -> Result<Vec<u8>, FileSystemError> {
+    let comm = Sanitized {
+        bytes: &process.comm,
+        forbidden: b"\t\n",
+    };
     let state_name = match state {
         b'R' => "running",
         b'T' => "stopped",
         _ => "sleeping",
     };
-    format!(
-        "Name:\t{comm}\nState:\t{} ({state_name})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\nTracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t{groups}\nNStgid:\t{}\nNSpid:\t{}\nNSpgid:\t{}\nNSsid:\t{}\nThreads:\t{}\nVmSize:\t{} kB\nVmRSS:\t{} kB\n",
+    let mut output = ProcText::new();
+    write!(
+        output,
+        "Name:\t{comm}\nState:\t{} ({state_name})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\nTracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
         state as char,
         process.pid,
         pid,
@@ -159,6 +201,14 @@ fn format_task_status(process: &ProcProcessSnapshot, pid: usize, state: u8) -> S
         process.gids[2],
         process.gids[1],
         process.fd_size,
+    )
+    .map_err(|_| FileSystemError::OutOfMemory)?;
+    for group in &process.groups {
+        write!(output, "{group} ").map_err(|_| FileSystemError::OutOfMemory)?;
+    }
+    write!(
+        output,
+        "\nNStgid:\t{}\nNSpid:\t{}\nNSpgid:\t{}\nNSsid:\t{}\nThreads:\t{}\nVmSize:\t{} kB\nVmRSS:\t{} kB\n",
         process.pid,
         pid,
         process.process_group,
@@ -167,4 +217,6 @@ fn format_task_status(process: &ProcProcessSnapshot, pid: usize, state: u8) -> S
         process.virtual_pages.saturating_mul(4),
         process.resident_pages.saturating_mul(4),
     )
+    .map_err(|_| FileSystemError::OutOfMemory)?;
+    Ok(output.finish())
 }

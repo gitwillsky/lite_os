@@ -13,6 +13,8 @@ pub(crate) enum FutexWaitError {
     TimedOut,
     /// 可投递 signal 中断了阻塞等待。
     Interrupted,
+    /// wait registry 无法在 publication 前预留完整 membership。
+    OutOfMemory,
 }
 
 /// @description 按 memory-domain key 等待用户 u32 改变，队列锁覆盖 key/value 解析与发布。
@@ -35,7 +37,7 @@ pub(crate) fn futex_wait(
     if address == 0 || address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     let prepared = task
         .with_futex_word(address, private, |key, current_value| {
             if current_value != expected {
@@ -48,11 +50,14 @@ pub(crate) fn futex_wait(
                 return Err(FutexWaitError::Interrupted);
             }
 
+            let prepared = queue
+                .prepare_futex(key, bitset, deadline, task.clone())
+                .map_err(|()| FutexWaitError::OutOfMemory)?;
             Ok(super::context_switch::prepare_current_block(
                 &task,
                 queue,
-                |queue, current| {
-                    let wait_id = queue.insert_futex(key, bitset, deadline, current);
+                move |queue, _| {
+                    let wait_id = queue.commit(prepared);
                     WaitMembership::Futex(wait_id)
                 },
             ))
@@ -62,6 +67,7 @@ pub(crate) fn futex_wait(
         WaitResult::Woken => Ok(()),
         WaitResult::TimedOut => Err(FutexWaitError::TimedOut),
         WaitResult::Interrupted => Err(FutexWaitError::Interrupted),
+        WaitResult::OutOfMemory => unreachable!("wait OOM is returned before blocking"),
     }
 }
 
@@ -86,20 +92,22 @@ pub(crate) fn futex_wake(
     let mut queue = INDEXED_WAIT_QUEUE.lock();
     let waiters = task
         .with_futex_key(address, private, |key| {
-            let mut waiters = alloc::vec::Vec::new();
+            let mut waiters = FallibleMap::new();
             for _ in 0..count {
                 let Some(waiter) = queue.take_futex(key, bitset) else {
                     break;
                 };
-                waiters.push(waiter);
+                waiters.commit_vacant(waiter);
             }
             waiters
         })
         .map_err(|_| FutexWaitError::Fault)?;
     drop(queue);
     let count = waiters.len();
-    for (wait_id, task) in waiters {
-        crate::task::processor::wake_futex_task(task, wait_id, WaitResult::Woken);
+    let mut waiters = waiters;
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
+        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
     }
     Ok(count)
 }
@@ -136,12 +144,12 @@ pub(crate) fn futex_requeue(
                 if compare.is_some_and(|expected| expected != current) {
                     return Err(FutexWaitError::Again);
                 }
-                let mut waiters = alloc::vec::Vec::new();
+                let mut waiters = FallibleMap::new();
                 for _ in 0..wake_count {
                     let Some(waiter) = queue.take_futex(source_key, u32::MAX) else {
                         break;
                     };
-                    waiters.push(waiter);
+                    waiters.commit_vacant(waiter);
                 }
                 let moved = queue.requeue_futex(source_key, target_key, requeue_count);
                 Ok((waiters, moved))
@@ -150,8 +158,10 @@ pub(crate) fn futex_requeue(
         .map_err(|_| FutexWaitError::Fault)??;
     drop(queue);
     let completed = waiters.len() + moved;
-    for (wait_id, task) in waiters {
-        crate::task::processor::wake_futex_task(task, wait_id, WaitResult::Woken);
+    let mut waiters = waiters;
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
+        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
     }
     Ok(completed)
 }

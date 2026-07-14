@@ -16,6 +16,7 @@ pub(crate) fn next_runtime_object_id() -> u64 {
 }
 
 pub(crate) struct IdAllocator {
+    initial: usize,
     current: usize,
     recycled: Vec<usize>,
 }
@@ -23,26 +24,42 @@ pub(crate) struct IdAllocator {
 impl IdAllocator {
     pub(crate) fn new(initial_id: usize) -> Self {
         Self {
+            initial: initial_id,
             current: initial_id,
             recycled: Vec::new(),
         }
     }
 
-    pub(crate) fn alloc(&mut self) -> usize {
+    /// @description 分配 ID，并同时为它未来的析构回收预留空间。
+    /// @return 成功返回唯一 ID；heap 无法预留回收槽位时返回错误。
+    pub(crate) fn alloc(&mut self) -> Result<usize, ()> {
         if let Some(id) = self.recycled.pop() {
-            id
+            Ok(id)
         } else {
+            // 每个历史签发的新 ID 都可能同时回收，因此 capacity 必须覆盖全部 fresh ID，
+            // 而不是只覆盖当前 recycled.len() + 1；后者会在连续创建后批量析构时溢出。
+            let issued_after = self
+                .current
+                .checked_sub(self.initial)
+                .and_then(|issued| issued.checked_add(1))
+                .ok_or(())?;
+            let additional = issued_after.saturating_sub(self.recycled.len());
+            self.recycled.try_reserve(additional).map_err(|_| ())?;
             let id = self.current;
-            self.current += 1;
-            id
+            self.current = self.current.checked_add(1).ok_or(())?;
+            Ok(id)
         }
     }
 
     pub(crate) fn dealloc(&mut self, id: usize) {
-        assert!(id < self.current);
+        assert!((self.initial..self.current).contains(&id));
         assert!(
             !self.recycled.contains(&id),
             "id {id} is already deallocated"
+        );
+        assert!(
+            self.recycled.len() < self.recycled.capacity(),
+            "recycle capacity proof was violated"
         );
         self.recycled.push(id);
     }

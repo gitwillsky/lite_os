@@ -1,5 +1,3 @@
-use alloc::{collections::BTreeMap, vec::Vec};
-
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,35 +237,4 @@ pub(in crate::task) fn current_process_group_is_orphaned(tgid: usize) -> bool {
         return true;
     };
     process_group_is_orphaned(&graph, node.session, node.process_group)
-}
-
-/// @description 快照 graph 中已经 orphaned 且至少含一个 fully-stopped Process 的 group。
-///
-/// @param graph 已锁定的 process graph。
-/// @return 以 `(SID, PGID)` 索引的 transition target TGID 集合。
-pub(super) fn orphaned_stopped_groups(
-    graph: &ProcessGraph,
-) -> BTreeMap<(usize, usize), Vec<usize>> {
-    let mut groups = BTreeMap::new();
-    for node in graph.nodes.values() {
-        if !matches!(node.state, ProcessState::Live(_))
-            || node.job_control != JobControlState::Stopped
-            || groups.contains_key(&(node.session, node.process_group))
-            || !process_group_is_orphaned(graph, node.session, node.process_group)
-        {
-            continue;
-        }
-        let members = graph
-            .nodes
-            .iter()
-            .filter_map(|(&member, candidate)| {
-                (candidate.session == node.session
-                    && candidate.process_group == node.process_group
-                    && matches!(candidate.state, ProcessState::Live(_)))
-                .then_some(member)
-            })
-            .collect();
-        groups.insert((node.session, node.process_group), members);
-    }
-    groups
 }

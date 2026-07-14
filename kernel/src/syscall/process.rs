@@ -242,6 +242,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: usize, rusage: *m
         Err(WaitChildError::NoChild) => return -errno::ECHILD,
         Err(WaitChildError::InvalidSelector) => return -errno::EINVAL,
         Err(WaitChildError::Interrupted) => return INTERNAL_RESTART_SYS,
+        Err(WaitChildError::OutOfMemory) => return -errno::ENOMEM,
     };
     if !status.is_null() {
         let task = current_task().expect("wait4 copyout requires current task");

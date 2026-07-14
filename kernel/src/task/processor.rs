@@ -45,14 +45,15 @@ pub(crate) struct Processor {
 }
 
 impl Processor {
-    fn new(hart_id: usize) -> Self {
+    fn new(hart_id: usize, queue_capacity: usize) -> Self {
         let mut idle_context = TaskContext::zero_init();
         idle_context.set_ra(idle_return as *const () as usize);
         Self {
             hart_id,
             current: None,
             idle_context,
-            runqueue: CfsRunQueue::new(),
+            runqueue: CfsRunQueue::try_with_capacity(queue_capacity)
+                .expect("scheduler runqueue allocation failed"),
             deferred_reap: None,
         }
     }
@@ -70,6 +71,12 @@ impl Processor {
     /// @return 无返回值。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
         let slot = current_per_hart();
+        let stale = self
+            .runqueue
+            .retain(|candidate| candidate.is_current_ready(self.hart_id));
+        if stale != 0 {
+            slot.queued_entries.fetch_sub(stale, Ordering::Relaxed);
+        }
         self.runqueue.push(entry);
         let floor = self
             .runqueue
@@ -130,13 +137,16 @@ impl Processor {
     /// @return 无返回值。
     pub(crate) fn drain_inbound_to_local(&mut self) {
         let slot = current_per_hart();
-        let mut inbound = slot.inbound.lock();
-        let mut local = VecDeque::new();
-        core::mem::swap(&mut *inbound, &mut local);
-        drop(inbound);
-        slot.inbound_entries
-            .fetch_sub(local.len(), Ordering::Relaxed);
-        for entry in local {
+        // 只消费进入本轮时的 snapshot 数量，保留 VecDeque 的预留 backing
+        // storage；如果 swap 给空 VecDeque，下一次 IRQ wake 会重新分配。
+        let count = slot.inbound.lock().len();
+        for _ in 0..count {
+            let entry = slot
+                .inbound
+                .lock()
+                .pop_front()
+                .expect("inbound snapshot shrank without owner");
+            slot.inbound_entries.fetch_sub(1, Ordering::Relaxed);
             self.add_ready_entry(entry);
         }
     }
@@ -174,6 +184,7 @@ struct PerHartProcessor {
     busy_us: AtomicU64,
     // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
     inbound: IrqMutex<VecDeque<RunQueueEntry>>,
+    queue_capacity: usize,
 }
 
 impl PerHartProcessor {
@@ -181,7 +192,11 @@ impl PerHartProcessor {
     ///
     /// @return 空 local processor、mailbox 和负载计数。
     /// @errors 无错误。
-    fn new() -> Self {
+    fn new(queue_capacity: usize) -> Self {
+        let mut inbound = VecDeque::new();
+        inbound
+            .try_reserve_exact(queue_capacity)
+            .expect("scheduler inbound allocation failed");
         Self {
             local: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicBool::new(false),
@@ -191,7 +206,8 @@ impl PerHartProcessor {
             reschedule_requested: AtomicBool::new(false),
             placement_vruntime: AtomicU64::new(0),
             busy_us: AtomicU64::new(0),
-            inbound: IrqMutex::new(VecDeque::new()),
+            inbound: IrqMutex::new(inbound),
+            queue_capacity,
         }
     }
 }
@@ -202,13 +218,16 @@ pub(super) fn account_current_hart_runtime(runtime_us: u64) {
         .fetch_add(runtime_us, Ordering::Relaxed);
 }
 
-pub(crate) fn cpu_runtime_snapshot() -> Vec<(usize, u64)> {
-    PROCESSOR_TOPOLOGY
-        .wait()
-        .slots
-        .iter()
-        .map(|slot| (slot.hart_id, slot.processor.busy_us.load(Ordering::Relaxed)))
-        .collect()
+pub(crate) fn cpu_runtime_snapshot() -> Result<Vec<(usize, u64)>, ()> {
+    let slots = &PROCESSOR_TOPOLOGY.wait().slots;
+    let mut snapshot = Vec::new();
+    snapshot.try_reserve_exact(slots.len()).map_err(|_| ())?;
+    snapshot.extend(
+        slots
+            .iter()
+            .map(|slot| (slot.hart_id, slot.processor.busy_us.load(Ordering::Relaxed))),
+    );
+    Ok(snapshot)
 }
 
 // SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 hart 只能触及
@@ -236,7 +255,18 @@ pub(super) fn init_topology() {
         PROCESSOR_TOPOLOGY.get().is_none(),
         "processor topology initialized twice"
     );
-    let mut slots = Vec::with_capacity(hart::hart_count());
+    let stack_pages = crate::memory::KERNEL_STACK_SIZE / crate::memory::PAGE_SIZE;
+    let queue_capacity = crate::memory::frame_statistics()
+        .capacity_pages
+        .div_ceil(stack_pages);
+    assert!(
+        queue_capacity != 0,
+        "physical memory cannot host one task stack"
+    );
+    let mut slots = Vec::new();
+    slots
+        .try_reserve_exact(hart::hart_count())
+        .expect("processor topology allocation failed");
     for state in hart::states() {
         let index = slots.len();
         assert_eq!(
@@ -246,7 +276,7 @@ pub(super) fn init_topology() {
         );
         slots.push(ProcessorSlot {
             hart_id: state.hart_id(),
-            processor: PerHartProcessor::new(),
+            processor: PerHartProcessor::new(queue_capacity),
         });
     }
     PROCESSOR_TOPOLOGY.call_once(|| ProcessorTopology {
@@ -279,7 +309,9 @@ fn local_processor() -> &'static mut Processor {
     // initialized 只由本 hart 在关闭 SIE 时读写，不承担跨 hart 发布；缺失该分支会重复构造 Processor。
     if !processor.initialized.load(Ordering::Relaxed) {
         // SAFETY: 只有 hart `hart` 能到达自己的 slot.local，且 S-mode trap 不开启嵌套中断。
-        unsafe { (*processor.local.get()).write(Processor::new(hart)) };
+        unsafe {
+            (*processor.local.get()).write(Processor::new(hart, processor.queue_capacity));
+        }
         processor.initialized.store(true, Ordering::Relaxed);
     }
     // SAFETY: 与上面的 per-hart 唯一所有权约束相同，initialized 证明对象已构造。
@@ -365,10 +397,34 @@ fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
     let target = processor_at(target_index);
     assert!(target_state.is_active());
     let mut inbound = target.inbound.lock();
+    let before = inbound.len();
+    inbound.retain(|candidate| candidate.is_current_ready(cpu_id));
+    target
+        .inbound_entries
+        .fetch_sub(before - inbound.len(), Ordering::Relaxed);
+    assert!(
+        inbound.len() < target.queue_capacity,
+        "preallocated scheduler mailbox capacity exhausted"
+    );
     inbound.push_back(entry);
     target.inbound_entries.fetch_add(1, Ordering::Relaxed);
     drop(inbound);
     publish_reschedule_at(target_index);
+}
+
+impl RunQueueEntry {
+    /// @description 核对 entry generation 与唯一 SchedulingState Ready membership。
+    /// @param cpu 容器所属 hart ID。
+    /// @return 该 entry 仍是当前唯一 Ready membership 时返回 true。
+    fn is_current_ready(&self, cpu: usize) -> bool {
+        matches!(
+            self.task.scheduling.state.lock().run_state,
+            RunState::Ready {
+                cpu: owner,
+                generation
+            } if owner == cpu && generation == self.generation
+        )
+    }
 }
 
 /// @description 原子替换 Thread affinity，并迁移位于已禁止 CPU 的 Ready membership。

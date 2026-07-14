@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use super::address::{PhysicalAddress, PhysicalPageNumber};
@@ -13,6 +14,28 @@ static FRAME_ALLOCATOR: Once<IrqMutex<FrameAllocator>> = Once::new();
 enum FrameAllocError {
     OutOfRange,
     Duplicate,
+}
+
+/// @description 物理页请求是否允许消耗 kernel progress reserve。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrameAllocationClass {
+    /// 用户 residency、页表与可失败 kernel 工作；触及低水位时必须返回 OOM。
+    Reclaimable,
+    /// 普通 kernel heap extent；可进入 frame reserve，但必须保留 OOM cleanup 页。
+    KernelHeap,
+    /// 启动期 DMA；失败会阻止系统完成启动，允许越过最终 progress reserve。
+    KernelCritical,
+}
+
+/// @description frame allocator 唯一 owner 的瞬时容量与碎片快照。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameStatistics {
+    /// allocator 管辖的总页数。
+    pub(crate) capacity_pages: usize,
+    /// 所有 order 合计的当前空闲页数。
+    pub(crate) free_pages: usize,
+    /// 每个 order 的空闲 block 数；index n 表示 2ⁿ 页。
+    pub(crate) free_blocks: [usize; usize::BITS as usize],
 }
 
 /// @description 一个或多个连续物理页的唯一 RAII owner。
@@ -34,6 +57,16 @@ impl FrameTracker {
         let mut tracker = Self { ppn, pages };
         tracker.bytes_mut().fill(0);
         tracker
+    }
+
+    /// @description 从已经撤销其他 owner publication 的物理 extent 重建唯一 RAII owner。
+    /// @param ppn order-aligned extent 首个物理页号。
+    /// @param pages 非零 2ⁿ 页数，frame allocator 中仍标记为 allocated。
+    /// @return 不清零内容的唯一 FrameTracker。
+    /// @safety caller 必须证明完整 extent 当前没有其他 owner、引用或 allocator membership。
+    // SAFETY: caller must transfer one complete still-allocated frame extent with no aliases.
+    pub(in crate::memory) unsafe fn from_raw(ppn: PhysicalPageNumber, pages: usize) -> Self {
+        Self { ppn, pages }
     }
 
     /// @description 独占借用 tracker 拥有的连续物理页内容。
@@ -87,93 +120,219 @@ impl Debug for FrameTracker {
     }
 }
 
+const ORDER_COUNT: usize = usize::BITS as usize;
+const BLOCK_UNUSED: u8 = u8::MAX;
+const BLOCK_ALLOCATED: u8 = 1 << 7;
+
+#[derive(Clone, Copy)]
+struct FreeBlockLinks {
+    next: usize,
+    previous: usize,
+}
+
 #[derive(Debug)]
 struct FrameAllocator {
     start_ppn: PhysicalPageNumber,
-    current_start_ppn: PhysicalPageNumber,
     end_ppn: PhysicalPageNumber,
-
-    // OWNER: allocator lock 内的 recycled pages 以页首 usize 组成严格递增 intrusive list。
-    // 缺失顺序会让 contiguous fallback 反复全表 membership/remove，最坏退化为立方扫描。
-    recycled_head: Option<PhysicalPageNumber>,
-    recycled_len: usize,
+    // OWNER: order_heads/nonempty_orders/block_state 是同一 allocator lock 下的唯一
+    // buddy metadata。heads 提供 O(1) pop/remove，bitmap 提供 O(1) 非空 order
+    // 选择，block_state 以一 byte/page 证明 buddy 是同 order free block。缺任一
+    // index 都会把 allocation/free 退化为全表扫描；三者禁止越过本 lock 单独更新。
+    order_heads: [Option<PhysicalPageNumber>; ORDER_COUNT],
+    nonempty_orders: usize,
+    block_state: Vec<u8>,
+    // free_blocks 是 order lists 的同锁计数 projection；缺失它时 procfs 为了
+    // 观察碎片必须在 IRQ-off 内扫描所有 free block。
+    free_blocks: [usize; ORDER_COUNT],
+    // OWNER: free_pages 是上述 buddy metadata 的同锁 projection，只用于低水位
+    // 快速判定。缺失同 transaction 加减会使 kernel reserve 被误放行或永久拒绝。
+    free_pages: usize,
 }
 
 impl FrameAllocator {
     fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
         let start = start_addr.ceil();
         let end = end_addr.floor();
-        Self {
+        let capacity = end.as_usize() - start.as_usize();
+        let mut block_state = Vec::new();
+        block_state
+            .try_reserve_exact(capacity)
+            .expect("frame allocator metadata allocation failed");
+        block_state.resize(capacity, BLOCK_UNUSED);
+        let mut allocator = Self {
             start_ppn: start,
-            current_start_ppn: start,
             end_ppn: end,
-            recycled_head: None,
-            recycled_len: 0,
+            order_heads: [None; ORDER_COUNT],
+            nonempty_orders: 0,
+            block_state,
+            free_blocks: [0; ORDER_COUNT],
+            free_pages: capacity,
+        };
+
+        // 将任意起点/长度区间分解为最大的 absolute-PPN-aligned buddy blocks。
+        // 初始化只写每个 block 首页，成本与 block 数而非物理页数成正比。
+        let mut cursor = start.as_usize();
+        while cursor < end.as_usize() {
+            let remaining = end.as_usize() - cursor;
+            let alignment_order = cursor.trailing_zeros() as usize;
+            let size_order = (usize::BITS - 1 - remaining.leading_zeros()) as usize;
+            let order = alignment_order.min(size_order).min(ORDER_COUNT - 1);
+            let block = PhysicalPageNumber::from(cursor);
+            allocator.insert_free(block, order);
+            cursor += 1usize << order;
         }
+        allocator
     }
 
-    fn alloc(&mut self) -> Option<PhysicalPageNumber> {
-        if let Some(ppn) = self.recycled_head {
-            self.recycled_head = Self::recycled_next(ppn);
-            self.recycled_len -= 1;
-            Some(ppn)
-        } else if self.current_start_ppn < self.end_ppn {
-            let current = self.current_start_ppn;
-            self.current_start_ppn = current.add_one();
-            Some(current)
+    fn capacity(&self) -> usize {
+        self.end_ppn.as_usize() - self.start_ppn.as_usize()
+    }
+
+    fn state_index(&self, ppn: PhysicalPageNumber) -> Option<usize> {
+        ppn.as_usize()
+            .checked_sub(self.start_ppn.as_usize())
+            .filter(|index| *index < self.block_state.len())
+    }
+
+    fn read_links(ppn: PhysicalPageNumber) -> FreeBlockLinks {
+        // SAFETY: caller 只对已在 order free list 中的 block 读取；insert_free 在同一
+        // allocator lock 下先写入完整 links，block 移出 list 前不会重新分配。
+        unsafe { ppn.as_page_ptr().cast::<FreeBlockLinks>().read() }
+    }
+
+    fn write_links(ppn: PhysicalPageNumber, links: FreeBlockLinks) {
+        // SAFETY: caller 持有 allocator lock 且 ppn 属于正在插入/更新的 free block；
+        // free block 首页不再属于任何 FrameTracker，可独占存放 intrusive links。
+        unsafe { ppn.as_page_mut_ptr().cast::<FreeBlockLinks>().write(links) };
+    }
+
+    fn insert_free(&mut self, block: PhysicalPageNumber, order: usize) {
+        let index = self
+            .state_index(block)
+            .expect("free buddy block outside allocator range");
+        assert_eq!(
+            self.block_state[index], BLOCK_UNUSED,
+            "free buddy block already has state"
+        );
+        let head = self.order_heads[order];
+        Self::write_links(
+            block,
+            FreeBlockLinks {
+                next: head.map_or(0, |page| page.as_usize()),
+                previous: 0,
+            },
+        );
+        if let Some(head) = head {
+            let mut links = Self::read_links(head);
+            assert_eq!(links.previous, 0, "free-list head has a predecessor");
+            links.previous = block.as_usize();
+            Self::write_links(head, links);
+        }
+        self.order_heads[order] = Some(block);
+        self.nonempty_orders |= 1usize << order;
+        self.block_state[index] = order as u8;
+        self.free_blocks[order] = self.free_blocks[order]
+            .checked_add(1)
+            .expect("free buddy block count overflow");
+    }
+
+    fn remove_free(&mut self, block: PhysicalPageNumber, order: usize) {
+        let index = self
+            .state_index(block)
+            .expect("removed buddy block outside allocator range");
+        assert_eq!(
+            self.block_state[index], order as u8,
+            "removed buddy block has wrong order"
+        );
+        let links = Self::read_links(block);
+        if links.previous == 0 {
+            assert_eq!(self.order_heads[order], Some(block));
+            self.order_heads[order] =
+                (links.next != 0).then(|| PhysicalPageNumber::from(links.next));
         } else {
-            None
+            let previous = PhysicalPageNumber::from(links.previous);
+            let mut previous_links = Self::read_links(previous);
+            previous_links.next = links.next;
+            Self::write_links(previous, previous_links);
         }
+        if links.next != 0 {
+            let next = PhysicalPageNumber::from(links.next);
+            let mut next_links = Self::read_links(next);
+            next_links.previous = links.previous;
+            Self::write_links(next, next_links);
+        }
+        if self.order_heads[order].is_none() {
+            self.nonempty_orders &= !(1usize << order);
+        }
+        self.block_state[index] = BLOCK_UNUSED;
+        self.free_blocks[order] = self.free_blocks[order]
+            .checked_sub(1)
+            .expect("free buddy block count underflow");
     }
 
-    fn alloc_contiguous(&mut self, pages: usize) -> Option<PhysicalPageNumber> {
+    fn has_capacity(&self, pages: usize, class: FrameAllocationClass) -> bool {
+        let reserve = match class {
+            FrameAllocationClass::Reclaimable => super::KERNEL_HEAP_GROWTH_PAGES,
+            FrameAllocationClass::KernelHeap => super::KERNEL_PROGRESS_RESERVE_PAGES,
+            FrameAllocationClass::KernelCritical => 0,
+        };
+        self.free_pages
+            .checked_sub(pages)
+            .is_some_and(|remaining| remaining >= reserve)
+    }
+
+    fn alloc_order(
+        &mut self,
+        requested_order: usize,
+        class: FrameAllocationClass,
+    ) -> Option<PhysicalPageNumber> {
+        if requested_order >= ORDER_COUNT {
+            return None;
+        }
+        let pages = 1usize << requested_order;
+        if !self.has_capacity(pages, class) {
+            return None;
+        }
+        let available = self.nonempty_orders & (!0usize << requested_order);
+        if available == 0 {
+            return None;
+        }
+        let mut order = available.trailing_zeros() as usize;
+        let block = self.order_heads[order].expect("nonempty order lost its head");
+        self.remove_free(block, order);
+
+        // 只把右半 block 插回低 order list，左半保持同一起点继续拆分。
+        // 快路径无全表扫描，IRQ-off 工作上限为 ORDER_COUNT。
+        while order > requested_order {
+            order -= 1;
+            let right = PhysicalPageNumber::from(block.as_usize() + (1usize << order));
+            self.insert_free(right, order);
+        }
+        let index = self
+            .state_index(block)
+            .expect("allocated buddy block outside allocator range");
+        assert_eq!(self.block_state[index], BLOCK_UNUSED);
+        self.block_state[index] = BLOCK_ALLOCATED | requested_order as u8;
+        self.free_pages -= pages;
+        Some(block)
+    }
+
+    fn alloc(&mut self, class: FrameAllocationClass) -> Option<PhysicalPageNumber> {
+        self.alloc_order(0, class)
+    }
+
+    fn alloc_contiguous(
+        &mut self,
+        pages: usize,
+        class: FrameAllocationClass,
+    ) -> Option<(PhysicalPageNumber, usize)> {
         if pages == 0 {
             return None;
         }
-
-        // 1. 优先从从未分配的尾部取得连续区间，保持常见路径 O(1)。
-        let allocation_end = self.current_start_ppn.as_usize().checked_add(pages)?;
-        if allocation_end <= self.end_ppn.as_usize() {
-            let start_ppn = self.current_start_ppn;
-            self.current_start_ppn = PhysicalPageNumber::from(allocation_end);
-            Some(start_ppn)
-        } else {
-            // 2. 有序 intrusive list 让连续 run 在链上相邻；单次扫描同时定位 run 与
-            // 前驱，找到后 O(1) splice。若恢复无序 list，此处会退化为重复全表查找。
-            if self.recycled_len < pages {
-                return None;
-            }
-            let mut cursor = self.recycled_head;
-            let mut previous = None;
-            let mut run_start = None;
-            let mut run_before = None;
-            let mut run_len = 0;
-            while let Some(page) = cursor {
-                let next = Self::recycled_next(page);
-                if previous.is_some_and(|previous: PhysicalPageNumber| {
-                    previous.as_usize().checked_add(1) == Some(page.as_usize())
-                }) {
-                    run_len += 1;
-                } else {
-                    run_start = Some(page);
-                    run_before = previous;
-                    run_len = 1;
-                }
-                if run_len == pages {
-                    let start = run_start.expect("non-empty recycled run lost its start");
-                    if let Some(before) = run_before {
-                        Self::set_recycled_next(before, next);
-                    } else {
-                        self.recycled_head = next;
-                    }
-                    self.recycled_len -= pages;
-                    return Some(start);
-                }
-                previous = Some(page);
-                cursor = next;
-            }
-            None
-        }
+        let allocated_pages = pages.checked_next_power_of_two()?;
+        let order = allocated_pages.trailing_zeros() as usize;
+        self.alloc_order(order, class)
+            .map(|block| (block, allocated_pages))
     }
 
     fn dealloc_contiguous(
@@ -184,77 +343,52 @@ impl FrameAllocator {
         let Some(end) = start.as_usize().checked_add(pages) else {
             return Err(FrameAllocError::OutOfRange);
         };
-        // 1. 整段必须属于 allocator 已发布区间；先完成验证，失败时 recycler 保持不变。
         if pages == 0
+            || !pages.is_power_of_two()
+            || !start.as_usize().is_multiple_of(pages)
             || start < self.start_ppn
-            || end > self.current_start_ppn.as_usize()
             || end > self.end_ppn.as_usize()
         {
             return Err(FrameAllocError::OutOfRange);
         }
-
-        // 2. 有序 list 一次定位插入点；首个 >= start 的节点落在 end 前即证明区间重叠。
-        let mut previous = None;
-        let mut cursor = self.recycled_head;
-        while let Some(page) = cursor {
-            if page >= start {
-                break;
-            }
-            previous = Some(page);
-            cursor = Self::recycled_next(page);
-        }
-        if cursor.is_some_and(|page| page.as_usize() < end) {
+        let original_order = pages.trailing_zeros() as usize;
+        let index = self.state_index(start).ok_or(FrameAllocError::OutOfRange)?;
+        if self.block_state[index] != BLOCK_ALLOCATED | original_order as u8 {
             return Err(FrameAllocError::Duplicate);
         }
-        let recycled_len = self
-            .recycled_len
+        self.block_state[index] = BLOCK_UNUSED;
+        self.free_pages = self
+            .free_pages
             .checked_add(pages)
-            .filter(|length| {
-                *length <= self.current_start_ppn.as_usize() - self.start_ppn.as_usize()
-            })
-            .expect("recycled frame count exceeds allocated range");
+            .filter(|free| *free <= self.capacity())
+            .expect("free frame count exceeds allocator capacity");
 
-        // 3. 一次 allocator transaction 串起整段页，并把它 splice 到唯一排序位置。
-        for offset in 0..pages {
-            let page = PhysicalPageNumber::from(start.as_usize() + offset);
-            let next = if offset + 1 == pages {
-                cursor
-            } else {
-                Some(PhysicalPageNumber::from(page.as_usize() + 1))
+        // 每层只通过一 byte state 定位 buddy，双链 remove 为 O(1)；释放大
+        // FrameTracker 不再按页写链，IRQ-off 时间只与最终 order 成正比。
+        let mut block = start;
+        let mut order = original_order;
+        while order + 1 < ORDER_COUNT {
+            let buddy = PhysicalPageNumber::from(block.as_usize() ^ (1usize << order));
+            let Some(buddy_index) = self.state_index(buddy) else {
+                break;
             };
-            Self::set_recycled_next(page, next);
+            if self.block_state[buddy_index] != order as u8 {
+                break;
+            }
+            self.remove_free(buddy, order);
+            block = block.min(buddy);
+            order += 1;
         }
-        if let Some(previous) = previous {
-            Self::set_recycled_next(previous, Some(start));
-        } else {
-            self.recycled_head = Some(start);
-        }
-        self.recycled_len = recycled_len;
+        self.insert_free(block, order);
         Ok(())
     }
 
-    fn set_recycled_next(ppn: PhysicalPageNumber, next: Option<PhysicalPageNumber>) {
-        debug_assert!(next.is_none_or(|next| next > ppn));
-        // SAFETY: caller 持有唯一 allocator lock，且 ppn 是已在 recycler 中或正由
-        // FrameTracker Drop 交还的完整页；页首 usize 在重新分配前只存放 next PPN。
-        unsafe {
-            ppn.as_page_mut_ptr()
-                .cast::<usize>()
-                .write(next.map_or(0, |page| page.as_usize()))
-        };
-    }
-
-    fn recycled_next(ppn: PhysicalPageNumber) -> Option<PhysicalPageNumber> {
-        // SAFETY: 只有 recycled_head 可达页会进入本函数；这些页由 dealloc_contiguous 在
-        // 相同 allocator lock 下写入 next PPN，且在从链表移除前不会重新分配。
-        let next = unsafe { ppn.as_page_ptr().cast::<usize>().read() };
-        (next != 0).then(|| PhysicalPageNumber::from(next))
-    }
-
-    fn capacity_and_free_pages(&self) -> (usize, usize) {
-        let capacity = self.end_ppn.as_usize() - self.start_ppn.as_usize();
-        let never_allocated = self.end_ppn.as_usize() - self.current_start_ppn.as_usize();
-        (capacity, never_allocated + self.recycled_len)
+    fn statistics(&self) -> FrameStatistics {
+        FrameStatistics {
+            capacity_pages: self.capacity(),
+            free_pages: self.free_pages,
+            free_blocks: self.free_blocks,
+        }
     }
 }
 
@@ -297,38 +431,44 @@ pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
 }
 
 fn alloc_raw() -> Option<FrameTracker> {
-    let res = FRAME_ALLOCATOR.wait().lock().alloc();
+    let res = FRAME_ALLOCATOR
+        .wait()
+        .lock()
+        .alloc(FrameAllocationClass::Reclaimable);
     res.map(FrameTracker::new)
 }
 
-/// @description 从唯一 frame allocator 分配一页；耗尽时统一回收可重建用户页后重试。
+/// @description 从唯一 frame allocator 分配一页；触及 kernel progress 低水位时回收后重试。
 pub(crate) fn alloc() -> Option<FrameTracker> {
     if let Some(frame) = alloc_raw() {
         return Some(frame);
     }
-    super::shared_file::reclaim_pages(64);
+    let _ = super::shared_file::reclaim_pages(64);
     alloc_raw()
 }
 
 /// @description 分配并清零指定数量的连续物理页。
 ///
 /// @param pages 非零页数。
-/// @return 成功返回唯一 `FrameTracker`；回收后仍无连续区间返回 `None`。
-pub(crate) fn alloc_contiguous(pages: usize) -> Option<FrameTracker> {
+/// @param class 是否允许消耗 kernel progress reserve。
+/// @return 成功返回唯一 `FrameTracker`，实际页数向上取整为 2ⁿ 以保证
+/// 同尺寸对齐；回收后仍无该 order 区间返回 `None`。
+pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Option<FrameTracker> {
     if pages == 0 {
         return None;
     }
-    let mut res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+    let allocation_pages = pages.checked_next_power_of_two()?;
+    let mut res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages, class);
     if res.is_none() {
-        super::shared_file::reclaim_pages(pages.max(64));
-        res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages);
+        let _ = super::shared_file::reclaim_pages(allocation_pages.max(64));
+        res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages, class);
     }
-    res.map(|b| FrameTracker::new_contiguous(b, pages))
+    res.map(|(block, allocated_pages)| FrameTracker::new_contiguous(block, allocated_pages))
 }
 
 /// @description 返回 frame allocator 管辖范围的总页数与当前空闲页数。
 ///
-/// @return `(capacity_pages, free_pages)`；两者均来自唯一 allocator 状态。
-pub(crate) fn statistics() -> (usize, usize) {
-    FRAME_ALLOCATOR.wait().lock().capacity_and_free_pages()
+/// @return 容量、空闲页和每 order block 数；均来自唯一 allocator 状态。
+pub(crate) fn statistics() -> FrameStatistics {
+    FRAME_ALLOCATOR.wait().lock().statistics()
 }

@@ -23,16 +23,20 @@ pub(crate) fn sys_eventfd2(initial: u32, flags: u32) -> isize {
         Ok(pair) => pair,
         Err(()) => return -errno::ENOMEM,
     };
-    let event = EventFd::new(
+    let event = match EventFd::new(
         u64::from(initial),
         flags & EFD_SEMAPHORE != 0,
         read_pair,
         write_pair,
-    );
+    ) {
+        Ok(event) => event,
+        Err(()) => return -errno::ENOMEM,
+    };
     let task = current_task().expect("eventfd2 requires current task");
-    task.fd_allocate(
-        OpenFileDescription::event_fd(event, flags & O_NONBLOCK),
-        flags & O_CLOEXEC != 0,
-    )
-    .map_or(-errno::EMFILE, |fd| fd as isize)
+    let ofd = match OpenFileDescription::event_fd(event, flags & O_NONBLOCK) {
+        Ok(ofd) => ofd,
+        Err(()) => return -errno::ENOMEM,
+    };
+    task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
+        .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }

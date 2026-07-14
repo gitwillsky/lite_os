@@ -11,7 +11,10 @@ use super::{
     EPHEMERAL_END, EPHEMERAL_START, EndpointState, InetSocket, InetSocketOptions, NetworkStack,
     from_ip, ipv4, now, stack,
 };
-use crate::socket::{InetAddress, SocketError, SocketPollState};
+use crate::{
+    fallible_tree::FallibleMap,
+    socket::{InetAddress, SocketError, SocketPollState},
+};
 
 const UDP_PACKET_SLOTS: usize = 8;
 const UDP_BUFFER_BYTES: usize = 128 * 1024;
@@ -26,12 +29,18 @@ pub(super) fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
 ) -> Result<SocketHandle, SocketError> {
+    let endpoint_slot = FallibleMap::<SocketHandle, EndpointState>::try_reserve_node()
+        .map_err(|_| SocketError::NoMemory)?;
     let mut rx_metadata = Vec::new();
     rx_metadata
         .try_reserve_exact(UDP_PACKET_SLOTS)
         .map_err(|_| SocketError::NoMemory)?;
     rx_metadata.resize(UDP_PACKET_SLOTS, udp::PacketMetadata::EMPTY);
-    let tx_metadata = rx_metadata.clone();
+    let mut tx_metadata = Vec::new();
+    tx_metadata
+        .try_reserve_exact(UDP_PACKET_SLOTS)
+        .map_err(|_| SocketError::NoMemory)?;
+    tx_metadata.extend_from_slice(&rx_metadata);
     let mut rx_payload = Vec::new();
     rx_payload
         .try_reserve_exact(UDP_BUFFER_BYTES)
@@ -46,16 +55,18 @@ pub(super) fn create_endpoint(
         udp::PacketBuffer::new(rx_metadata, rx_payload),
         udp::PacketBuffer::new(tx_metadata, tx_payload),
     );
-    let handle = network.sockets.add(socket);
-    network.endpoints.insert(
+    let handle = network.add_socket(socket)?;
+    network.endpoints.commit_vacant(endpoint_slot.fill(
         handle,
         EndpointState {
             endpoint,
             peer: None,
             packet_info: false,
             options: InetSocketOptions::default(),
+            readiness: SocketPollState::error(),
+            notification_pending: false,
         },
-    );
+    ));
     Ok(handle)
 }
 

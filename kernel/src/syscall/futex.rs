@@ -84,6 +84,7 @@ fn futex_error(error: FutexWaitError) -> isize {
         FutexWaitError::Invalid => errno::EINVAL,
         FutexWaitError::TimedOut => errno::ETIMEDOUT,
         FutexWaitError::Interrupted => errno::EINTR,
+        FutexWaitError::OutOfMemory => errno::ENOMEM,
     }
 }
 

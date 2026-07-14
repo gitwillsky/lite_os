@@ -1,4 +1,6 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::fmt::{self, Write};
 
 mod devfs;
 mod epoll;
@@ -15,9 +17,9 @@ pub(crate) use devfs::DevFileSystem;
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
-    CharacterDevice, Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND,
-    O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
-    TerminalAccess, TerminalRead, TerminalReadMode,
+    CharacterDevice, Console, FileDescriptorError, FileDescriptorTable, MAX_FILE_DESCRIPTORS,
+    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription,
+    OpenFileKind, Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use page_cache::{
@@ -83,6 +85,24 @@ pub(crate) enum FileSystemError {
     AccessDenied,
     Busy,
     TooManyLinks,
+}
+
+struct FallibleBytes(Vec<u8>);
+
+impl Write for FallibleBytes {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.0.try_reserve(text.len()).map_err(|_| fmt::Error)?;
+        self.0.extend_from_slice(text.as_bytes());
+        Ok(())
+    }
+}
+
+fn try_format_bytes(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSystemError> {
+    let mut bytes = FallibleBytes(Vec::new());
+    bytes
+        .write_fmt(arguments)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    Ok(bytes.0)
 }
 
 /// @description 为 VFS 提供根 inode 的文件系统实例。

@@ -43,8 +43,7 @@ impl MemorySet {
         let vpn = VirtualAddress::from(address).floor();
         let (_, area) = self
             .areas
-            .range(..=vpn)
-            .next_back()
+            .floor(&vpn)
             .filter(|(_, area)| vpn < area.vpn_range.end)
             .ok_or(UserAccessError::Fault)?;
         let page_delta = vpn.as_usize() - area.vpn_range.start.as_usize();

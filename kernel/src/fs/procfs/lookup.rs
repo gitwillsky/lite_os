@@ -1,13 +1,33 @@
+use alloc::vec::Vec;
+
 use super::{
     DirectoryEntry, FileSystemError, InodeType, ProcProcessSnapshot, ProcSnapshot,
     ProcThreadSnapshot,
 };
 
-pub(super) fn directory_entry(inode: u64, kind: InodeType, name: &[u8]) -> DirectoryEntry {
-    DirectoryEntry {
-        inode,
-        kind,
-        name: name.to_vec(),
+pub(super) fn push_directory_entry(
+    entries: &mut Vec<DirectoryEntry>,
+    inode: u64,
+    kind: InodeType,
+    name: &[u8],
+) -> Result<(), FileSystemError> {
+    entries
+        .try_reserve(1)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    entries.push(DirectoryEntry::try_new(inode, kind, name)?);
+    Ok(())
+}
+
+pub(super) fn decimal_name(value: usize, output: &mut [u8; 20]) -> &[u8] {
+    let mut value = value;
+    let mut start = output.len();
+    loop {
+        start -= 1;
+        output[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            return &output[start..];
+        }
     }
 }
 

@@ -86,6 +86,7 @@ pub(super) fn read_descriptor(
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => return -errno::EINTR,
                             WaitResult::TimedOut => unreachable!(),
+                            WaitResult::OutOfMemory => return -errno::ENOMEM,
                         }
                     }
                     Err(error) => return crate::syscall::socket::socket_error(error),
@@ -119,6 +120,7 @@ pub(super) fn read_descriptor(
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => return -errno::EINTR,
                             WaitResult::TimedOut => unreachable!(),
+                            WaitResult::OutOfMemory => return -errno::ENOMEM,
                         }
                     }
                 }
@@ -222,6 +224,10 @@ pub(super) fn read_descriptor(
                                 }
                                 crate::task::WaitResult::Interrupted
                                 | crate::task::WaitResult::TimedOut => break,
+                                crate::task::WaitResult::OutOfMemory if read == 0 => {
+                                    return -errno::ENOMEM;
+                                }
+                                crate::task::WaitResult::OutOfMemory => break,
                             }
                         }
                         TerminalRead::Bytes(count) => {

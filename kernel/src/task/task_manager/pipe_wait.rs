@@ -13,7 +13,8 @@ impl PipeNotifier for TaskPipeNotifier {
 ///
 /// @return read/write endpoints；kernel heap 不足返回错误。
 pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
-    Pipe::pair(Arc::new(TaskPipeNotifier))
+    let notifier = Arc::try_new(TaskPipeNotifier).map_err(|_| ())?;
+    Pipe::pair(notifier)
 }
 
 fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
@@ -22,11 +23,11 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
     const ERROR: i16 = 0x008;
     const HANGUP: i16 = 0x010;
     let identity = Pipe::identity(pipe);
-    let mut waiters = alloc::vec::Vec::new();
-    let mut wake_groups = BTreeSet::new();
+    let mut waiters = FallibleMap::new();
+    let mut wake_groups = FallibleMap::new();
     let mut exclusive_selected = false;
     let mut queue = INDEXED_WAIT_QUEUE.lock();
-    for direction in [PipeDirection::Read, PipeDirection::Write] {
+    'sources: for direction in [PipeDirection::Read, PipeDirection::Write] {
         let state = pipe.poll_state(direction);
         let ready = match direction {
             PipeDirection::Read => {
@@ -39,28 +40,36 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
         if ready == 0 {
             continue;
         }
-        while let Some((wait_id, entry, group)) =
+        while let Some((entry, group)) =
             queue.take_pipe(identity, direction, false, ready, state, &wake_groups)
         {
-            if let Some(group) = group {
-                wake_groups.insert(group);
+            if let Some(group) = group
+                && wake_groups.try_insert(group, ()).is_err()
+            {
+                waiters.commit_vacant(entry);
+                break 'sources;
             }
-            waiters.push((wait_id, entry));
+            waiters.commit_vacant(entry);
         }
         if !exclusive_selected
-            && let Some((wait_id, entry, group)) =
+            && let Some((entry, group)) =
                 queue.take_pipe(identity, direction, true, ready, state, &wake_groups)
         {
-            if let Some(group) = group {
-                wake_groups.insert(group);
+            if let Some(group) = group
+                && wake_groups.try_insert(group, ()).is_err()
+            {
+                waiters.commit_vacant(entry);
+                break 'sources;
             }
             exclusive_selected = true;
-            waiters.push((wait_id, entry));
+            waiters.commit_vacant(entry);
         }
     }
     drop(queue);
     let count = waiters.len();
-    for (wait_id, entry) in waiters {
+    let mut waiters = waiters;
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged pipe waiter");
         match entry.kind {
             IndexedWaitKind::Pipe { .. } => {
                 crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Woken);
@@ -81,15 +90,18 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
 /// @return ready 返回 Woken；signal 返回 Interrupted。
 pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     if pipe.wait_ready(condition) {
         return WaitResult::Woken;
     }
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    super::context_switch::prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_pipe(pipe, condition, current);
+    let Ok(prepared) = queue.prepare_pipe(pipe, condition, task.clone()) else {
+        return WaitResult::OutOfMemory;
+    };
+    super::context_switch::prepare_current_block(&task, queue, move |queue, _| {
+        let wait_id = queue.commit(prepared);
         WaitMembership::Pipe(wait_id)
     })
     .suspend()

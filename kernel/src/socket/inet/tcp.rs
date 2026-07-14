@@ -10,7 +10,7 @@ use smoltcp::{
     wire::{IpEndpoint, IpListenEndpoint},
 };
 
-use crate::ipc::PipeEnd;
+use crate::{fallible_tree::FallibleMap, ipc::PipeEnd};
 
 use super::{
     EPHEMERAL_END, EPHEMERAL_START, InetEndpoint, InetSocket, InetSocketOptions, NetworkStack,
@@ -20,7 +20,10 @@ use crate::socket::InetAddress;
 
 #[path = "tcp/io.rs"]
 mod io;
+#[path = "tcp/lifecycle.rs"]
+mod lifecycle;
 pub(super) use io::{maintain, poll_state, receive, send, shutdown, take_error};
+pub(super) use lifecycle::drop_endpoint;
 
 const TCP_BUFFER_BYTES: usize = 32 * 1024;
 const TCP_BACKLOG_MAX: usize = 16;
@@ -48,8 +51,15 @@ pub(super) struct TcpEndpointState {
     handles: Vec<SocketHandle>,
     mode: TcpMode,
     pending_error: Option<SocketError>,
+    // 最后一个 facade 释放后保留 endpoint state，直到 TCP close 完成；若改用独立 orphan
+    // queue，析构路径会因 queue 扩容而出现无法返回 ENOMEM 的失败点。
+    orphaned: bool,
     /// listener accept 继承同一个 SOL_SOCKET policy；缺失会让 accepted socket 丢失 device binding。
     pub(super) options: InetSocketOptions,
+    // 协议 poll 前的唯一 edge 快照；缺失时长期 writable TCP 会持续唤醒全部 waiter。
+    pub(super) readiness: crate::socket::SocketPollState,
+    // 只跨越 stack unlock 保存一次 transition；缺失会在持 stack lock 时反向进入 wait owner。
+    pub(super) notification_pending: bool,
 }
 
 fn allocate_buffer() -> Result<Vec<u8>, SocketError> {
@@ -68,7 +78,7 @@ fn add_socket(network: &mut NetworkStack) -> Result<SocketHandle, SocketError> {
     );
     // Reno 不使用 kernel FPU context，且比关闭 congestion control 更符合共享网络语义。
     socket.set_congestion_control(CongestionControl::Reno);
-    Ok(network.sockets.add(socket))
+    network.add_socket(socket)
 }
 
 fn allocate_endpoint_id(network: &mut NetworkStack) -> Result<usize, SocketError> {
@@ -89,42 +99,48 @@ pub(super) fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
 ) -> Result<usize, SocketError> {
+    let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
+        .map_err(|_| SocketError::NoMemory)?;
+    let mut handles = Vec::new();
+    handles
+        .try_reserve_exact(1)
+        .map_err(|_| SocketError::NoMemory)?;
     let id = allocate_endpoint_id(network)?;
     let handle = add_socket(network)?;
-    network.tcp_endpoints.insert(
+    handles.push(handle);
+    network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
         id,
         TcpEndpointState {
             endpoint,
-            handles: alloc::vec![handle],
+            handles,
             mode: TcpMode::Fresh { bound: None },
             pending_error: None,
+            orphaned: false,
             options: InetSocketOptions::default(),
+            readiness: crate::socket::SocketPollState::error(),
+            notification_pending: false,
         },
-    );
+    ));
     Ok(id)
 }
 
 pub(super) fn set_no_delay(socket: &InetSocket, enabled: bool) -> Result<(), SocketError> {
     let id = endpoint_id(socket);
     let mut network = stack()?.lock();
-    let handles = network
-        .tcp_endpoints
-        .get(&id)
-        .ok_or(SocketError::NotConnected)?
-        .handles
-        .clone();
-    for handle in handles {
-        network
-            .sockets
+    let NetworkStack {
+        tcp_endpoints,
+        sockets,
+        ..
+    } = &mut *network;
+    let state = tcp_endpoints
+        .get_mut(&id)
+        .ok_or(SocketError::NotConnected)?;
+    for &handle in &state.handles {
+        sockets
             .get_mut::<tcp::Socket<'static>>(handle)
             .set_nagle_enabled(!enabled);
     }
-    network
-        .tcp_endpoints
-        .get_mut(&id)
-        .expect("TCP endpoint disappeared while stack lock is held")
-        .options
-        .no_delay = enabled;
+    state.options.no_delay = enabled;
     Ok(())
 }
 
@@ -259,6 +275,13 @@ pub(super) fn listen(socket: &InetSocket, backlog: usize) -> Result<(), SocketEr
         },
     };
     let backlog = backlog.clamp(1, TCP_BACKLOG_MAX);
+    network
+        .tcp_endpoints
+        .get_mut(&id)
+        .expect("TCP endpoint disappeared while stack lock is held")
+        .handles
+        .try_reserve_exact(backlog.saturating_sub(1))
+        .map_err(|_| SocketError::NoMemory)?;
     let mut extra = Vec::new();
     extra
         .try_reserve_exact(backlog.saturating_sub(1))
@@ -365,6 +388,16 @@ pub(super) fn accept(
     socket: &InetSocket,
     notify: (Arc<PipeEnd>, Arc<PipeEnd>),
 ) -> Result<Arc<InetSocket>, SocketError> {
+    let mut accepted_slot =
+        Arc::<InetSocket>::try_new_uninit().map_err(|_| SocketError::NoMemory)?;
+    let mut accepted_handles = Vec::new();
+    accepted_handles
+        .try_reserve_exact(1)
+        .map_err(|_| SocketError::NoMemory)?;
+    // accepted handle 从 listener 转移后不可无损回滚；先预留 endpoint membership，
+    // 缺失时 map node OOM 会丢失一个已经建立的 TCP 连接。
+    let endpoint_slot = FallibleMap::<usize, TcpEndpointState>::try_reserve_node()
+        .map_err(|_| SocketError::NoMemory)?;
     let listener_id = endpoint_id(socket);
     let mut network = stack()?.lock();
     let (position, endpoint, backlog) = {
@@ -414,11 +447,6 @@ pub(super) fn accept(
     } else {
         network.sockets.remove(replacement);
     }
-    let accepted = Arc::new(InetSocket {
-        endpoint: InetEndpoint::Tcp(id),
-        notify_read: notify.0,
-        notify_write: notify.1,
-    });
     let peer_closed = matches!(
         network.sockets.get::<tcp::Socket<'static>>(handle).state(),
         State::CloseWait
@@ -428,19 +456,37 @@ pub(super) fn accept(
         .sockets
         .get_mut::<tcp::Socket<'static>>(handle)
         .set_nagle_enabled(!options.no_delay);
-    network.tcp_endpoints.insert(
+    accepted_handles.push(handle);
+    network.tcp_endpoints.commit_vacant(endpoint_slot.fill(
         id,
         TcpEndpointState {
-            endpoint: Arc::downgrade(&accepted),
-            handles: alloc::vec![handle],
+            endpoint: Weak::new(),
+            handles: accepted_handles,
             mode: TcpMode::Connected {
                 peer_closed,
                 shutdown_read: false,
             },
             pending_error: None,
+            orphaned: false,
             options,
+            readiness: crate::socket::SocketPollState::error(),
+            notification_pending: false,
         },
-    );
+    ));
+    Arc::get_mut(&mut accepted_slot)
+        .expect("new accepted endpoint Arc must be uniquely owned")
+        .write(InetSocket {
+            endpoint: InetEndpoint::Tcp(id),
+            notify_read: notify.0,
+            notify_write: notify.1,
+        });
+    // SAFETY: accepted_slot 尚未克隆，且上一行已完整初始化 InetSocket storage。
+    let accepted = unsafe { accepted_slot.assume_init() };
+    network
+        .tcp_endpoints
+        .get_mut(&id)
+        .expect("accepted TCP endpoint disappeared before Arc publication")
+        .endpoint = Arc::downgrade(&accepted);
     drop(network);
     socket.consume_notify();
     Ok(accepted)
@@ -530,65 +576,5 @@ pub(super) fn connection_result(socket: &InetSocket) -> Result<(), SocketError> 
             _ => Err(SocketError::InProgress),
         },
         _ => Err(SocketError::NotConnected),
-    }
-}
-
-/// @description 释放 TCP endpoint，同时保留 connected FIN/TIME_WAIT 协议生命周期。
-/// @param id 正在析构的 facade 所持稳定 endpoint id。
-/// @return 无返回值。
-/// @errors endpoint 缺失或已删除时幂等忽略。
-pub(super) fn drop_endpoint(id: usize) {
-    let Some(stack) = super::NETWORK_STACK.get() else {
-        return;
-    };
-    let mut network = stack.lock();
-    let Some(state) = network.tcp_endpoints.remove(&id) else {
-        return;
-    };
-    if matches!(
-        state.mode,
-        TcpMode::Listening { .. } | TcpMode::Fresh { .. } | TcpMode::Connecting
-    ) {
-        let handles = state.handles;
-        let needs_reset = handles.iter().any(|handle| {
-            network
-                .sockets
-                .get::<tcp::Socket<'static>>(*handle)
-                .remote_endpoint()
-                .is_some()
-        });
-        for &handle in &handles {
-            network
-                .sockets
-                .get_mut::<tcp::Socket<'static>>(handle)
-                .abort();
-        }
-        if needs_reset {
-            let NetworkStack {
-                interface,
-                device,
-                sockets,
-                ..
-            } = &mut *network;
-            interface.poll_egress(now(), device, sockets);
-        }
-        for handle in handles {
-            network.sockets.remove(handle);
-        }
-    } else {
-        for handle in state.handles {
-            network
-                .sockets
-                .get_mut::<tcp::Socket<'static>>(handle)
-                .close();
-            network.orphaned_tcp.push(handle);
-        }
-        let NetworkStack {
-            interface,
-            device,
-            sockets,
-            ..
-        } = &mut *network;
-        interface.poll_egress(now(), device, sockets);
     }
 }

@@ -40,10 +40,11 @@ impl VirtIORngDevice {
         device.set_queue_ready(1).ok()?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
-        Some(Arc::new(Self {
+        Arc::try_new(Self {
             device,
             queue: Mutex::new(queue),
-        }))
+        })
+        .ok()
     }
 
     fn fill(&self, bytes: &mut [u8]) -> Result<(), ()> {

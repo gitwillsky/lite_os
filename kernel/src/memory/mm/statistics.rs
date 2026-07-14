@@ -26,10 +26,8 @@ impl MemorySet {
                 let private_resident_pages = area.data_frames.len();
                 let clean_private_file_pages = area.private_file.as_ref().map_or(0, |backing| {
                     area.data_frames
-                        .keys()
-                        .filter(|vpn| {
-                            backing.has_file_bytes(**vpn) && !area.dirty_private.contains(*vpn)
-                        })
+                        .iter()
+                        .filter(|(vpn, resident)| backing.has_file_bytes(**vpn) && !resident.dirty)
                         .count()
                 });
                 let shared_anonymous_pages = if area.shared_anonymous.is_some() {

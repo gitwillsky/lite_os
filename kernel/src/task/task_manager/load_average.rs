@@ -136,33 +136,55 @@ pub(super) fn update(now_us: u64) {
     let Some(claim) = TASK_MANAGER.load_average.claim(now_us) else {
         return;
     };
-    // 2. graph lock 内只复制 live Task Arc，避免与 SchedulingState lock 形成嵌套锁序。
-    let tasks = {
-        let graph = TASK_MANAGER.graph.lock();
-        graph
-            .nodes
-            .values()
-            .filter_map(|node| match &node.state {
-                ProcessState::Live(threads) => Some(threads.values().cloned()),
-                ProcessState::Exited(_) => None,
+    // 2. 每次在 graph lock 内只取一个 Arc，然后解锁读 SchedulingState。
+    //    缺失 cursor 会需要无界 Task Vec snapshot，timer softirq OOM 时无法返回错误。
+    let mut cursor = None;
+    let mut runnable = 0;
+    loop {
+        let next = {
+            let graph = TASK_MANAGER.graph.lock();
+            let same_process = cursor.and_then(|(pid, tid)| {
+                let node = graph.nodes.get(&pid)?;
+                let ProcessState::Live(threads) = &node.state else {
+                    return None;
+                };
+                threads
+                    .iter_after(&tid)
+                    .next()
+                    .map(|(&tid, task)| ((pid, tid), task.clone()))
+            });
+            same_process.or_else(|| {
+                let mut nodes = match cursor {
+                    Some((pid, _)) => graph.nodes.iter_after(&pid),
+                    None => graph.nodes.iter(),
+                };
+                nodes.find_map(|(&pid, node)| {
+                    let ProcessState::Live(threads) = &node.state else {
+                        return None;
+                    };
+                    threads
+                        .iter()
+                        .next()
+                        .map(|(&tid, task)| ((pid, tid), task.clone()))
+                })
             })
-            .flatten()
-            .collect::<alloc::vec::Vec<_>>()
-    };
-    // 3. 锁外读取每个 scheduling owner；missed periods 由 O(log n) fixed power 一次提交。
-    let runnable = tasks
-        .iter()
-        .filter(|task| {
-            matches!(
-                task.scheduling.state.lock().run_state,
-                RunState::New
-                    | RunState::Ready { .. }
-                    | RunState::Running { .. }
-                    | RunState::Preempting { .. }
-                    | RunState::WakePending { .. }
-                    | RunState::StopPending { .. }
-            )
-        })
-        .count();
+        };
+        let Some((position, task)) = next else {
+            break;
+        };
+        cursor = Some(position);
+        if matches!(
+            task.scheduling.state.lock().run_state,
+            RunState::New
+                | RunState::Ready { .. }
+                | RunState::Running { .. }
+                | RunState::Preempting { .. }
+                | RunState::WakePending { .. }
+                | RunState::StopPending { .. }
+        ) {
+            runnable += 1;
+        }
+    }
+    // 3. missed periods 由 O(log n) fixed power 一次提交。
     TASK_MANAGER.load_average.commit(claim, runnable);
 }

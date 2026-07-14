@@ -28,8 +28,14 @@ fn init_interrupt_controller() {
         crate::arch::hart::max_hart_id(),
     ) {
         Ok(controller) => {
-            INTERRUPT_CONTROLLER
-                .call_once(|| IrqMutex::new(Box::new(controller) as Box<dyn InterruptController>));
+            let controller = match Box::try_new(controller) {
+                Ok(controller) => controller as Box<dyn InterruptController>,
+                Err(_) => {
+                    error!("[Platform] PLIC metadata allocation failed");
+                    return;
+                }
+            };
+            INTERRUPT_CONTROLLER.call_once(|| IrqMutex::new(controller));
         }
         Err(error) => error!("[Platform] PLIC initialization failed: {:?}", error),
     }

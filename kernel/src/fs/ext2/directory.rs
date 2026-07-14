@@ -19,7 +19,7 @@ impl Ext2Inode {
             let block = self
                 .map_block(block_index as u32)
                 .map_err(|_| FileSystemError::InvalidFileSystem)?;
-            let mut bytes = vec![0u8; self.fs.block_size];
+            let mut bytes = super::try_zeroed(self.fs.block_size)?;
             self.fs.read_fs_block(block, &mut bytes)?;
             let mut offset = 0;
             while offset < self.fs.block_size {

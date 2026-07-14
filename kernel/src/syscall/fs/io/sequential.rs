@@ -14,6 +14,7 @@ fn block_on_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> Result<(), i
         WaitResult::Woken => Ok(()),
         WaitResult::Interrupted => Err(-errno::EINTR),
         WaitResult::TimedOut => panic!("pipe I/O wait cannot time out"),
+        WaitResult::OutOfMemory => Err(-errno::ENOMEM),
     }
 }
 

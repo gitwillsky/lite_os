@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+#![feature(allocator_api)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::memory::KERNEL_SPACE;
@@ -17,6 +18,7 @@ mod config;
 mod log;
 
 mod drivers;
+mod fallible_tree;
 mod fs;
 mod lang_item;
 
@@ -66,7 +68,7 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     task::init(
         trap::trap_handler as *const () as usize,
         trap::trap_return as *const () as usize,
-        Arc::new(PlatformConsole),
+        Arc::try_new(PlatformConsole).expect("platform console allocation failed"),
     );
 
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
@@ -105,7 +107,10 @@ fn mount_root_filesystem() {
         .mount_at(
             b"/proc",
             b"proc",
-            fs::ProcFileSystem::new(Arc::new(task::KernelProcSource)),
+            fs::ProcFileSystem::new(
+                Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
+            )
+            .expect("failed to allocate procfs"),
         )
         .expect("failed to mount procfs at /proc");
     info!("procfs mounted at /proc");
@@ -113,7 +118,7 @@ fn mount_root_filesystem() {
         .mount_at(
             b"/sys",
             b"sysfs",
-            fs::SysFileSystem::new(arch::hart::hart_count()),
+            fs::SysFileSystem::new(arch::hart::hart_count()).expect("failed to allocate sysfs"),
         )
         .expect("failed to mount sysfs at /sys");
     info!("sysfs mounted at /sys");

@@ -1,18 +1,48 @@
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use lazy_static::lazy_static;
 
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
+    fallible_tree::{FallibleMap, VacantEntry},
     fs::AdvisoryLockKey,
     ipc::{Pipe, PipeDirection, PipePollState, PipeWaitCondition},
     memory::FutexKey,
     sync::IrqMutex,
     task::TaskControlBlock,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum WaitIndexKey {
+    AdvisoryLock {
+        key: AdvisoryLockKey,
+        id: u64,
+    },
+    Console {
+        exclusive: bool,
+        id: u64,
+    },
+    Deadline {
+        deadline: u64,
+        id: u64,
+    },
+    Futex {
+        key: FutexKey,
+        id: u64,
+    },
+    Pipe {
+        identity: usize,
+        direction: u8,
+        exclusive: bool,
+        id: u64,
+    },
+}
+
+/// 已完成全部节点分配、尚未发布 scheduling membership 的 wait transaction。
+pub(super) struct PreparedWait {
+    id: u64,
+    entry: VacantEntry<u64, IndexedWaitEntry>,
+    indexes: Vec<VacantEntry<WaitIndexKey, ()>>,
+}
 
 /// @description 一个 Task 的唯一 indexed wait membership 与反向 index metadata。
 pub(super) struct IndexedWaitEntry {
@@ -68,25 +98,18 @@ impl IndexedWaitEntry {
 /// @description deadline/futex/console/Pipe/Poll registration 的唯一 index owner。
 pub(super) struct IndexedWaitQueue {
     next_id: u64,
-    entries: BTreeMap<u64, IndexedWaitEntry>,
-    futex_index: BTreeSet<(FutexKey, u64)>,
-    deadline_index: BTreeSet<(u64, u64)>,
-    // bool 是 exclusive mode；缺失它会把普通 wake-all 和 EPOLLEXCLUSIVE wake-one 混为一轨。
-    console_index: BTreeSet<(bool, u64)>,
-    pipe_index: BTreeSet<(usize, u8, bool, u64)>,
-    advisory_lock_index: BTreeSet<(AdvisoryLockKey, u64)>,
+    entries: FallibleMap<u64, IndexedWaitEntry>,
+    // source/deadline membership 共用一个 ordered index；variant 是领域 discriminator，
+    // 缺失它会恢复五棵独立分配且无法原子 publication 的 tree。
+    index: FallibleMap<WaitIndexKey, ()>,
 }
 
 impl IndexedWaitQueue {
     fn new() -> Self {
         Self {
             next_id: 0,
-            entries: BTreeMap::new(),
-            futex_index: BTreeSet::new(),
-            deadline_index: BTreeSet::new(),
-            console_index: BTreeSet::new(),
-            pipe_index: BTreeSet::new(),
-            advisory_lock_index: BTreeSet::new(),
+            entries: FallibleMap::new(),
+            index: FallibleMap::new(),
         }
     }
 
@@ -94,6 +117,52 @@ impl IndexedWaitQueue {
         self.next_id = self.next_id.wrapping_add(1);
         assert_ne!(self.next_id, 0, "indexed wait ID wrapped");
         self.next_id
+    }
+
+    fn prepare_wait(
+        &mut self,
+        task: Arc<TaskControlBlock>,
+        kind: IndexedWaitKind,
+        deadline: Option<u64>,
+        poll_keys: Option<Vec<PollWaitKey>>,
+        index_count: usize,
+        prepare_indexes: impl FnOnce(u64, &mut Vec<VacantEntry<WaitIndexKey, ()>>) -> Result<(), ()>,
+    ) -> Result<PreparedWait, ()> {
+        // 1. staging Vec 与每个 AVL node 都在 wait/scheduler publication 前分配。
+        let mut indexes = Vec::new();
+        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
+        let id = self.allocate_id();
+        prepare_indexes(id, &mut indexes)?;
+        debug_assert_eq!(indexes.len(), index_count);
+        let entry = FallibleMap::try_prepare(
+            id,
+            IndexedWaitEntry {
+                task,
+                kind,
+                deadline,
+                poll_keys,
+            },
+        )
+        .map_err(|_| ())?;
+        Ok(PreparedWait { id, entry, indexes })
+    }
+
+    fn prepare_index(
+        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
+        key: WaitIndexKey,
+    ) -> Result<(), ()> {
+        indexes.push(FallibleMap::try_prepare(key, ()).map_err(|_| ())?);
+        Ok(())
+    }
+
+    /// 在 scheduling lock 内零分配发布已准备的完整 wait membership。
+    pub(super) fn commit(&mut self, prepared: PreparedWait) -> u64 {
+        // 2. owner lock 尚未释放，entry/index 的提交顺序对外不可见且均不会失败。
+        self.entries.commit_vacant(prepared.entry);
+        for index in prepared.indexes {
+            self.index.commit_vacant(index);
+        }
+        prepared.id
     }
 
     /// @description 在 owner lock 内读取 signal membership 的等待 mask。
@@ -107,23 +176,19 @@ impl IndexedWaitQueue {
         }
     }
 
-    pub(super) fn insert_deadline(&mut self, deadline: u64, task: Arc<TaskControlBlock>) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.deadline_index.insert((deadline, id)));
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Deadline,
-                        deadline: Some(deadline),
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
+    pub(super) fn prepare_deadline(
+        &mut self,
+        deadline: u64,
+        task: Arc<TaskControlBlock>,
+    ) -> Result<PreparedWait, ()> {
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::Deadline,
+            Some(deadline),
+            None,
+            1,
+            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id }),
+        )
     }
 
     /// @description 把 futex waiter 发布到 key 与可选 deadline 的唯一索引。
@@ -133,32 +198,27 @@ impl IndexedWaitQueue {
     /// @param deadline 可选 absolute monotonic deadline。
     /// @param task 被阻塞的 Thread owner。
     /// @return 新 wait membership ID。
-    pub(super) fn insert_futex(
+    pub(super) fn prepare_futex(
         &mut self,
         key: FutexKey,
         bitset: u32,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.futex_index.insert((key, id)));
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Futex { key, bitset },
-                        deadline,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
+    ) -> Result<PreparedWait, ()> {
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::Futex { key, bitset },
+            deadline,
+            None,
+            1 + usize::from(deadline.is_some()),
+            |id, indexes| {
+                Self::prepare_index(indexes, WaitIndexKey::Futex { key, id })?;
+                if let Some(deadline) = deadline {
+                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
+                }
+                Ok(())
+            },
+        )
     }
 
     /// @description 发布 terminal read 的唯一 console membership 与可选 termios deadline。
@@ -166,201 +226,205 @@ impl IndexedWaitQueue {
     /// @param deadline VTIME 导出的 absolute monotonic deadline；无超时时为 None。
     /// @param task 被阻塞的 Thread owner。
     /// @return 新 wait membership ID。
-    pub(super) fn insert_console(
+    pub(super) fn prepare_console(
         &mut self,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.console_index.insert((false, id)));
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Console,
-                        deadline,
-                        poll_keys: None,
+    ) -> Result<PreparedWait, ()> {
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::Console,
+            deadline,
+            None,
+            1 + usize::from(deadline.is_some()),
+            |id, indexes| {
+                Self::prepare_index(
+                    indexes,
+                    WaitIndexKey::Console {
+                        exclusive: false,
+                        id,
                     },
-                )
-                .is_none()
-        );
-        id
+                )?;
+                if let Some(deadline) = deadline {
+                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
+                }
+                Ok(())
+            },
+        )
     }
 
-    pub(super) fn insert_signal(
+    pub(super) fn prepare_signal(
         &mut self,
         mask: u64,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
-        }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Signal { mask },
-                        deadline,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
+    ) -> Result<PreparedWait, ()> {
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::Signal { mask },
+            deadline,
+            None,
+            usize::from(deadline.is_some()),
+            |id, indexes| {
+                if let Some(deadline) = deadline {
+                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
+                }
+                Ok(())
+            },
+        )
     }
 
-    pub(super) fn insert_pipe(
+    pub(super) fn prepare_pipe(
         &mut self,
         pipe: &Arc<Pipe>,
         condition: PipeWaitCondition,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
+    ) -> Result<PreparedWait, ()> {
         let identity = Pipe::identity(pipe);
         let direction = condition.direction();
-        assert!(
-            self.pipe_index
-                .insert((identity, direction as u8, false, id))
-        );
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Pipe {
-                            identity,
-                            condition,
-                        },
-                        deadline: None,
-                        poll_keys: None,
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::Pipe {
+                identity,
+                condition,
+            },
+            None,
+            None,
+            1,
+            |id, indexes| {
+                Self::prepare_index(
+                    indexes,
+                    WaitIndexKey::Pipe {
+                        identity,
+                        direction: direction as u8,
+                        exclusive: false,
+                        id,
                     },
                 )
-                .is_none()
-        );
-        id
+            },
+        )
     }
 
-    pub(super) fn insert_advisory_lock(
+    pub(super) fn prepare_advisory_lock(
         &mut self,
         key: AdvisoryLockKey,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
-        let id = self.allocate_id();
-        assert!(self.advisory_lock_index.insert((key, id)));
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::AdvisoryLock { key },
-                        deadline: None,
-                        poll_keys: None,
-                    },
-                )
-                .is_none()
-        );
-        id
+    ) -> Result<PreparedWait, ()> {
+        self.prepare_wait(
+            task,
+            IndexedWaitKind::AdvisoryLock { key },
+            None,
+            None,
+            1,
+            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::AdvisoryLock { key, id }),
+        )
     }
 
-    pub(super) fn insert_poll(
+    pub(super) fn prepare_poll(
         &mut self,
         keys: Vec<PollWaitKey>,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
-    ) -> u64 {
+    ) -> Result<PreparedWait, ()> {
+        let index_count = keys
+            .len()
+            .checked_add(usize::from(deadline.is_some()))
+            .ok_or(())?;
+        let mut indexes = Vec::new();
+        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
         let id = self.allocate_id();
         for key in &keys {
-            match *key {
-                PollWaitKey::Console { exclusive, .. } => {
-                    assert!(self.console_index.insert((exclusive, id)))
-                }
+            let index = match *key {
+                PollWaitKey::Console { exclusive, .. } => WaitIndexKey::Console { exclusive, id },
                 PollWaitKey::Pipe {
                     identity,
                     direction,
                     exclusive,
                     ..
-                } => assert!(
-                    self.pipe_index
-                        .insert((identity, direction as u8, exclusive, id,))
-                ),
-            }
+                } => WaitIndexKey::Pipe {
+                    identity,
+                    direction: direction as u8,
+                    exclusive,
+                    id,
+                },
+            };
+            Self::prepare_index(&mut indexes, index)?;
         }
         if let Some(deadline) = deadline {
-            assert!(self.deadline_index.insert((deadline, id)));
+            Self::prepare_index(&mut indexes, WaitIndexKey::Deadline { deadline, id })?;
         }
-        assert!(
-            self.entries
-                .insert(
-                    id,
-                    IndexedWaitEntry {
-                        task,
-                        kind: IndexedWaitKind::Poll,
-                        deadline,
-                        poll_keys: Some(keys),
-                    },
-                )
-                .is_none()
-        );
-        id
+        let entry = FallibleMap::try_prepare(
+            id,
+            IndexedWaitEntry {
+                task,
+                kind: IndexedWaitKind::Poll,
+                deadline,
+                poll_keys: Some(keys),
+            },
+        )
+        .map_err(|_| ())?;
+        Ok(PreparedWait { id, entry, indexes })
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
-        let entry = self.entries.remove(&id)?;
-        if let IndexedWaitKind::Futex { key, .. } = entry.kind {
-            assert!(self.futex_index.remove(&(key, id)));
+        self.take_detached(id).map(VacantEntry::into_value)
+    }
+
+    fn take_detached(&mut self, id: u64) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
+        let entry = self.entries.take_entry(&id)?;
+        if let IndexedWaitKind::Futex { key, .. } = entry.value().kind {
+            self.remove_index(WaitIndexKey::Futex { key, id });
         }
-        if matches!(entry.kind, IndexedWaitKind::Console) {
-            assert!(self.console_index.remove(&(false, id)));
+        if matches!(entry.value().kind, IndexedWaitKind::Console) {
+            self.remove_index(WaitIndexKey::Console {
+                exclusive: false,
+                id,
+            });
         }
         if let IndexedWaitKind::Pipe {
             identity,
             condition,
-        } = entry.kind
+        } = entry.value().kind
         {
             let direction = condition.direction();
-            assert!(
-                self.pipe_index
-                    .remove(&(identity, direction as u8, false, id))
-            );
+            self.remove_index(WaitIndexKey::Pipe {
+                identity,
+                direction: direction as u8,
+                exclusive: false,
+                id,
+            });
         }
-        if let IndexedWaitKind::AdvisoryLock { key } = entry.kind {
-            assert!(self.advisory_lock_index.remove(&(key, id)));
+        if let IndexedWaitKind::AdvisoryLock { key } = entry.value().kind {
+            self.remove_index(WaitIndexKey::AdvisoryLock { key, id });
         }
-        if let Some(keys) = &entry.poll_keys {
+        if let Some(keys) = &entry.value().poll_keys {
             for key in keys {
                 match *key {
                     PollWaitKey::Console { exclusive, .. } => {
-                        assert!(self.console_index.remove(&(exclusive, id)))
+                        self.remove_index(WaitIndexKey::Console { exclusive, id })
                     }
                     PollWaitKey::Pipe {
                         identity,
                         direction,
                         exclusive,
                         ..
-                    } => {
-                        assert!(
-                            self.pipe_index
-                                .remove(&(identity, direction as u8, exclusive, id,))
-                        )
-                    }
+                    } => self.remove_index(WaitIndexKey::Pipe {
+                        identity,
+                        direction: direction as u8,
+                        exclusive,
+                        id,
+                    }),
                 }
             }
         }
-        if let Some(deadline) = entry.deadline {
-            assert!(self.deadline_index.remove(&(deadline, id)));
+        if let Some(deadline) = entry.value().deadline {
+            self.remove_index(WaitIndexKey::Deadline { deadline, id });
         }
         Some(entry)
+    }
+
+    fn remove_index(&mut self, key: WaitIndexKey) {
+        assert!(self.index.remove(&key).is_some(), "wait index diverged");
     }
 
     /// @description 取出指定 key 上最早且 bitset 相交的 waiter。
@@ -372,29 +436,41 @@ impl IndexedWaitQueue {
         &mut self,
         key: FutexKey,
         bitset: u32,
-    ) -> Option<(u64, Arc<TaskControlBlock>)> {
-        let (_, id) = *self
-            .futex_index
-            .range((key, 0)..=(key, u64::MAX))
-            .find(|(_, id)| {
-                matches!(
-                    self.entries.get(id).map(|entry| entry.kind),
-                    Some(IndexedWaitKind::Futex { bitset: waiter, .. })
-                        if waiter & bitset != 0
-                )
-            })?;
-        self.remove(id).map(|entry| (id, entry.task))
+    ) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
+        let start = WaitIndexKey::Futex { key, id: 0 };
+        let mut selected = None;
+        for (index, _) in self.index.iter_from(&start) {
+            let WaitIndexKey::Futex { key: candidate, id } = *index else {
+                break;
+            };
+            if candidate != key {
+                break;
+            }
+            if matches!(
+                self.entries.get(&id).map(|entry| entry.kind),
+                Some(IndexedWaitKind::Futex { bitset: waiter, .. }) if waiter & bitset != 0
+            ) {
+                selected = Some(id);
+                break;
+            }
+        }
+        let id = selected?;
+        self.take_detached(id)
     }
 
     pub(super) fn take_advisory_lock(
         &mut self,
         key: AdvisoryLockKey,
-    ) -> Option<(u64, IndexedWaitEntry)> {
-        let (_, id) = *self
-            .advisory_lock_index
-            .range((key, 0)..=(key, u64::MAX))
-            .next()?;
-        self.remove(id).map(|entry| (id, entry))
+    ) -> Option<VacantEntry<u64, IndexedWaitEntry>> {
+        let start = WaitIndexKey::AdvisoryLock { key, id: 0 };
+        let (index, _) = self.index.iter_from(&start).next()?;
+        let WaitIndexKey::AdvisoryLock { key: candidate, id } = *index else {
+            return None;
+        };
+        if candidate != key {
+            return None;
+        }
+        self.take_detached(id)
     }
 
     /// @description 在唯一 registry owner 内把 source key 的 waiter 改挂到 target key。
@@ -412,26 +488,36 @@ impl IndexedWaitQueue {
         if count == 0 || source == target {
             return 0;
         }
-        let ids: Vec<_> = self
-            .futex_index
-            .range((source, 0)..=(source, u64::MAX))
-            .take(count)
-            .map(|(_, id)| *id)
-            .collect();
-        for id in &ids {
-            assert!(self.futex_index.remove(&(source, *id)));
+        let mut moved = 0;
+        while moved < count {
+            let start = WaitIndexKey::Futex { key: source, id: 0 };
+            let Some((&index, _)) = self.index.iter_from(&start).next() else {
+                break;
+            };
+            let WaitIndexKey::Futex { key, id } = index else {
+                break;
+            };
+            if key != source {
+                break;
+            }
+            let mut index = self
+                .index
+                .take_entry(&index)
+                .expect("selected futex index disappeared");
             let entry = self
                 .entries
-                .get_mut(id)
+                .get_mut(&id)
                 .expect("futex index must reference a live entry");
             let IndexedWaitKind::Futex { key, .. } = &mut entry.kind else {
                 panic!("futex index referenced a non-futex entry");
             };
             assert_eq!(*key, source);
             *key = target;
-            assert!(self.futex_index.insert((target, *id)));
+            index.set_key(WaitIndexKey::Futex { key: target, id });
+            self.index.commit_vacant(index);
+            moved += 1;
         }
-        ids.len()
+        moved
     }
 
     /// @description 从唯一 deadline index 摘取一个已经到期的 registration。
@@ -442,7 +528,11 @@ impl IndexedWaitQueue {
         &mut self,
         now: u64,
     ) -> Option<(u64, Arc<TaskControlBlock>, IndexedWaitKind)> {
-        let (deadline, id) = *self.deadline_index.first()?;
+        let start = WaitIndexKey::Deadline { deadline: 0, id: 0 };
+        let (index, _) = self.index.iter_from(&start).next()?;
+        let WaitIndexKey::Deadline { deadline, id } = *index else {
+            return None;
+        };
         if deadline > now {
             return None;
         }
@@ -454,31 +544,45 @@ impl IndexedWaitQueue {
     /// @param now 与本批 `pop_expired` 共用的 absolute monotonic 纳秒时刻。
     /// @return 最早 deadline 不晚于 `now` 时返回 true。
     pub(super) fn has_expired_deadline(&self, now: u64) -> bool {
-        self.deadline_index
-            .first()
-            .is_some_and(|(deadline, _)| *deadline <= now)
+        let start = WaitIndexKey::Deadline { deadline: 0, id: 0 };
+        self.index.iter_from(&start).next().is_some_and(
+            |(key, _)| matches!(key, WaitIndexKey::Deadline { deadline, .. } if *deadline <= now),
+        )
     }
 
     pub(super) fn take_console(
         &mut self,
         exclusive: bool,
         ready: i16,
-        excluded_groups: &BTreeSet<usize>,
-    ) -> Option<(u64, IndexedWaitEntry, Option<usize>)> {
+        excluded_groups: &FallibleMap<usize, ()>,
+    ) -> Option<(VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
+        let start = WaitIndexKey::Console { exclusive, id: 0 };
         let id = self
-            .console_index
-            .range((exclusive, 0)..=(exclusive, u64::MAX))
-            .map(|(_, id)| *id)
-            .find(|id| {
+            .index
+            .iter_from(&start)
+            .take_while(|(index, _)| {
+                matches!(
+                    index,
+                    WaitIndexKey::Console {
+                        exclusive: candidate,
+                        ..
+                    } if *candidate == exclusive
+                )
+            })
+            .find_map(|(index, _)| {
+                let WaitIndexKey::Console { exclusive: _, id } = *index else {
+                    return None;
+                };
                 self.entries
-                    .get(id)
+                    .get(&id)
                     .and_then(|entry| entry.console_wake_group(ready))
                     .is_some_and(|group| {
-                        group.is_none_or(|group| !excluded_groups.contains(&group))
+                        group.is_none_or(|group| !excluded_groups.contains_key(&group))
                     })
+                    .then_some(id)
             })?;
         let group = self.entries.get(&id)?.console_wake_group(ready)?;
-        self.remove(id).map(|entry| (id, entry, group))
+        self.take_detached(id).map(|entry| (entry, group))
     }
 
     pub(super) fn take_pipe(
@@ -488,28 +592,52 @@ impl IndexedWaitQueue {
         exclusive: bool,
         ready: i16,
         state: PipePollState,
-        excluded_groups: &BTreeSet<usize>,
-    ) -> Option<(u64, IndexedWaitEntry, Option<usize>)> {
+        excluded_groups: &FallibleMap<usize, ()>,
+    ) -> Option<(VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
+        let start = WaitIndexKey::Pipe {
+            identity,
+            direction: direction as u8,
+            exclusive,
+            id: 0,
+        };
         let id = self
-            .pipe_index
-            .range(
-                (identity, direction as u8, exclusive, 0)
-                    ..=(identity, direction as u8, exclusive, u64::MAX),
-            )
-            .map(|(_, _, _, id)| *id)
-            .find(|id| {
+            .index
+            .iter_from(&start)
+            .take_while(|(index, _)| {
+                matches!(
+                    index,
+                    WaitIndexKey::Pipe {
+                        identity: candidate_identity,
+                        direction: candidate_direction,
+                        exclusive: candidate_exclusive,
+                        ..
+                    } if (*candidate_identity, *candidate_direction, *candidate_exclusive)
+                        == (identity, direction as u8, exclusive)
+                )
+            })
+            .find_map(|(index, _)| {
+                let WaitIndexKey::Pipe {
+                    identity: _,
+                    direction: _,
+                    exclusive: _,
+                    id,
+                } = *index
+                else {
+                    return None;
+                };
                 self.entries
-                    .get(id)
+                    .get(&id)
                     .and_then(|entry| entry.pipe_wake_group(identity, direction, ready, state))
                     .is_some_and(|group| {
-                        group.is_none_or(|group| !excluded_groups.contains(&group))
+                        group.is_none_or(|group| !excluded_groups.contains_key(&group))
                     })
+                    .then_some(id)
             })?;
         let group = self
             .entries
             .get(&id)?
             .pipe_wake_group(identity, direction, ready, state)?;
-        self.remove(id).map(|entry| (id, entry, group))
+        self.take_detached(id).map(|entry| (entry, group))
     }
 }
 

@@ -1,6 +1,5 @@
 use alloc::{
     sync::{Arc, Weak},
-    vec,
     vec::Vec,
 };
 use core::net::Ipv4Addr;
@@ -11,8 +10,9 @@ use smoltcp::{
     wire::{IpProtocol, IpVersion},
 };
 
-use super::{InetSocket, NetworkStack, stack};
+use super::{InetEndpoint, InetSocket, NetworkStack, stack, try_allocate_endpoint};
 use crate::{
+    fallible_tree::FallibleMap,
     ipc::PipeEnd,
     socket::{InetAddress, SocketError, SocketPollState},
 };
@@ -28,27 +28,45 @@ pub(super) struct RawEndpointState {
     hop_limit: u8,
     broadcast: bool,
     device_bound: bool,
+    // 协议 poll 前的唯一 edge 快照；缺失时长期 writable 会制造重复 wake。
+    pub(super) readiness: SocketPollState,
+    // 只跨越 stack unlock 保存一次 transition；缺失会在持 stack lock 时通知并形成反向锁序。
+    pub(super) notification_pending: bool,
 }
 
 fn create_endpoint(
     network: &mut NetworkStack,
     endpoint: Weak<InetSocket>,
 ) -> Result<SocketHandle, SocketError> {
-    let rx = raw::PacketBuffer::new(
-        vec![raw::PacketMetadata::EMPTY; RAW_PACKET_SLOTS],
-        vec![0; RAW_PACKET_SLOTS * RAW_PACKET_CAPACITY],
-    );
-    let tx = raw::PacketBuffer::new(
-        vec![raw::PacketMetadata::EMPTY; RAW_PACKET_SLOTS],
-        vec![0; RAW_PACKET_SLOTS * RAW_PACKET_CAPACITY],
-    );
-    let handle = network.sockets.add(raw::Socket::new(
+    let endpoint_slot = FallibleMap::<SocketHandle, RawEndpointState>::try_reserve_node()
+        .map_err(|_| SocketError::NoMemory)?;
+    fn metadata() -> Result<Vec<raw::PacketMetadata>, SocketError> {
+        let mut metadata = Vec::new();
+        metadata
+            .try_reserve_exact(RAW_PACKET_SLOTS)
+            .map_err(|_| SocketError::NoMemory)?;
+        metadata.resize(RAW_PACKET_SLOTS, raw::PacketMetadata::EMPTY);
+        Ok(metadata)
+    }
+
+    fn payload() -> Result<Vec<u8>, SocketError> {
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(RAW_PACKET_SLOTS * RAW_PACKET_CAPACITY)
+            .map_err(|_| SocketError::NoMemory)?;
+        payload.resize(RAW_PACKET_SLOTS * RAW_PACKET_CAPACITY, 0);
+        Ok(payload)
+    }
+
+    let rx = raw::PacketBuffer::new(metadata()?, payload()?);
+    let tx = raw::PacketBuffer::new(metadata()?, payload()?);
+    let handle = network.add_socket(raw::Socket::new(
         Some(IpVersion::Ipv4),
         Some(IpProtocol::Icmp),
         rx,
         tx,
-    ));
-    network.raw_endpoints.insert(
+    ))?;
+    network.raw_endpoints.commit_vacant(endpoint_slot.fill(
         handle,
         RawEndpointState {
             endpoint,
@@ -56,19 +74,27 @@ fn create_endpoint(
             hop_limit: DEFAULT_HOP_LIMIT,
             broadcast: false,
             device_bound: false,
+            readiness: SocketPollState::error(),
+            notification_pending: false,
         },
-    );
+    ));
     Ok(handle)
 }
 
 pub(super) fn new(notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<InetSocket>, SocketError> {
     let mut network = stack()?.lock();
-    let handle = create_endpoint(&mut network, Weak::new())?;
-    let endpoint = Arc::new(InetSocket {
-        endpoint: super::InetEndpoint::Raw(handle),
-        notify_read: notify.0,
-        notify_write: notify.1,
+    let endpoint = try_allocate_endpoint(|| {
+        let handle = create_endpoint(&mut network, Weak::new())?;
+        Ok(InetSocket {
+            endpoint: InetEndpoint::Raw(handle),
+            notify_read: notify.0,
+            notify_write: notify.1,
+        })
     });
+    let endpoint = endpoint?;
+    let InetEndpoint::Raw(handle) = endpoint.endpoint else {
+        unreachable!("raw constructor returned a non-raw endpoint")
+    };
     network
         .raw_endpoints
         .get_mut(&handle)
@@ -77,37 +103,14 @@ pub(super) fn new(notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<InetSocket
     Ok(endpoint)
 }
 
-pub(super) type ReadinessSnapshot = Vec<(SocketHandle, Weak<InetSocket>, bool, bool)>;
-
-pub(super) fn readiness_snapshot(network: &NetworkStack) -> ReadinessSnapshot {
-    network
-        .raw_endpoints
-        .iter()
-        .map(|(handle, state)| {
-            let socket = network.sockets.get::<raw::Socket<'static>>(*handle);
-            (
-                *handle,
-                state.endpoint.clone(),
-                socket.can_recv(),
-                socket.can_send(),
-            )
-        })
-        .collect()
-}
-
-pub(super) fn readiness_notifications(
-    network: &NetworkStack,
-    before: ReadinessSnapshot,
-) -> Vec<Arc<InetSocket>> {
-    before
-        .into_iter()
-        .filter_map(|(handle, endpoint, was_readable, was_writable)| {
-            let socket = network.sockets.get::<raw::Socket<'static>>(handle);
-            (!was_readable && socket.can_recv() || !was_writable && socket.can_send())
-                .then(|| endpoint.upgrade())
-                .flatten()
-        })
-        .collect()
+pub(super) fn poll_state_locked(network: &NetworkStack, handle: SocketHandle) -> SocketPollState {
+    let socket = network.sockets.get::<raw::Socket<'static>>(handle);
+    SocketPollState {
+        readable: socket.can_recv(),
+        writable: socket.can_send(),
+        hangup: false,
+        error: false,
+    }
 }
 
 pub(super) fn bind(handle: SocketHandle, address: InetAddress) -> Result<(), SocketError> {
@@ -166,7 +169,11 @@ pub(super) fn send(
     }
     let hop_limit = state.hop_limit;
     let total_length = IPV4_HEADER_LENGTH + input.len();
-    let mut packet = vec![0; total_length];
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(total_length)
+        .map_err(|_| SocketError::NoMemory)?;
+    packet.resize(total_length, 0);
     packet[0] = 0x45;
     packet[2..4].copy_from_slice(&(total_length as u16).to_be_bytes());
     packet[6..8].copy_from_slice(&0x4000u16.to_be_bytes());

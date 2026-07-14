@@ -67,7 +67,7 @@ impl VirtIONetworkDevice {
         let mut slots = Vec::new();
         slots.try_reserve_exact((receive.size / 2) as usize).ok()?;
         for _ in 0..receive.size / 2 {
-            let mut bytes = Box::new([0u8; RX_BUFFER_SIZE]);
+            let mut bytes = Box::try_new([0u8; RX_BUFFER_SIZE]).ok()?;
             let mut outputs: [&mut [u8]; 1] = [&mut bytes[..]];
             let Some(head) = receive.add_buffer(&[], &mut outputs) else {
                 break;
@@ -84,7 +84,7 @@ impl VirtIONetworkDevice {
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
         device.notify_queue(RX_QUEUE).ok()?;
-        Some(Arc::new(Self {
+        Arc::try_new(Self {
             device,
             mac,
             queues: Mutex::new(QueueState {
@@ -93,7 +93,8 @@ impl VirtIONetworkDevice {
                 slots,
                 statistics: NetworkStatistics::default(),
             }),
-        }))
+        })
+        .ok()
     }
 
     fn create_queue(device: &VirtIODevice, index: u32) -> Option<VirtQueue> {
@@ -124,9 +125,10 @@ impl VirtIONetworkDevice {
     }
 
     pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
-        Arc::new(VirtIONetworkIrqHandler {
+        Arc::try_new(VirtIONetworkIrqHandler {
             device: self.clone(),
         })
+        .expect("VirtIO network IRQ handler allocation failed")
     }
 }
 

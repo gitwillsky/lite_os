@@ -82,6 +82,30 @@ pub(crate) struct DirectoryEntry {
     pub(crate) name: Vec<u8>,
 }
 
+impl DirectoryEntry {
+    /// @description 构造一个拥有独立名称 bytes 的目录项。
+    /// @param inode filesystem-owned inode number。
+    /// @param kind inode 类型。
+    /// @param name 不含 NUL 的原始 component bytes。
+    /// @return 完整目录项；名称 storage 不足返回 OutOfMemory。
+    pub(crate) fn try_new(
+        inode: u64,
+        kind: InodeType,
+        name: &[u8],
+    ) -> Result<Self, FileSystemError> {
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(name.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        owned.extend_from_slice(name);
+        Ok(Self {
+            inode,
+            kind,
+            name: owned,
+        })
+    }
+}
+
 /// @description 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub(crate) trait Inode: Send + Sync {
     fn filesystem_id(&self) -> usize;

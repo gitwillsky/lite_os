@@ -1,6 +1,7 @@
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::fmt;
+
+use crate::fallible_tree::FallibleMap;
 
 pub(in crate::drivers) type InterruptVector = u32;
 
@@ -9,6 +10,7 @@ pub(in crate::drivers) enum InterruptError {
     HandlerNotSet,
     InvalidVector,
     DeviceFailure,
+    NoMemory,
 }
 
 impl fmt::Display for InterruptError {
@@ -17,6 +19,7 @@ impl fmt::Display for InterruptError {
             InterruptError::HandlerNotSet => write!(f, "Interrupt handler not set"),
             InterruptError::InvalidVector => write!(f, "Invalid interrupt vector"),
             InterruptError::DeviceFailure => write!(f, "Device interrupt handling failed"),
+            InterruptError::NoMemory => write!(f, "Interrupt metadata allocation failed"),
         }
     }
 }
@@ -51,8 +54,8 @@ pub(in crate::drivers) struct PlicInterruptController {
     base_addr: usize,
     max_interrupts: u32,
     hart_mask: usize,
-    handlers: BTreeMap<InterruptVector, Arc<dyn InterruptHandler>>,
-    affinities: BTreeMap<InterruptVector, usize>,
+    handlers: FallibleMap<InterruptVector, Arc<dyn InterruptHandler>>,
+    affinities: FallibleMap<InterruptVector, usize>,
 }
 
 impl PlicInterruptController {
@@ -89,8 +92,8 @@ impl PlicInterruptController {
             base_addr,
             max_interrupts,
             hart_mask,
-            handlers: BTreeMap::new(),
-            affinities: BTreeMap::new(),
+            handlers: FallibleMap::new(),
+            affinities: FallibleMap::new(),
         };
 
         controller.init_hardware()?;
@@ -194,7 +197,9 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
 
-        self.handlers.insert(vector, handler);
+        self.handlers
+            .try_insert(vector, handler)
+            .map_err(|_| InterruptError::NoMemory)?;
         Ok(())
     }
 
@@ -249,7 +254,9 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
 
-        self.affinities.insert(vector, cpu_mask);
+        self.affinities
+            .try_insert(vector, cpu_mask)
+            .map_err(|_| InterruptError::NoMemory)?;
         let mut harts = self.hart_mask;
         while harts != 0 {
             let hart = harts.trailing_zeros();

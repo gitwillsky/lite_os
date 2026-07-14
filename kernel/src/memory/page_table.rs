@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 
@@ -105,12 +104,17 @@ impl PageTable {
 
     /// @description 分配并初始化一个拥有 root frame 的空 Sv39 页表。
     ///
-    /// @return 成功返回页表；物理页耗尽返回 `PageTableError::OutOfMemory`。
+    /// @return 成功返回页表；owner metadata 或物理页耗尽返回 `PageTableError::OutOfMemory`。
     pub(crate) fn try_new() -> Result<Self, PageTableError> {
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(1)
+            .map_err(|_| PageTableError::OutOfMemory)?;
         let frame_tracker = frame_allocator::alloc().ok_or(PageTableError::OutOfMemory)?;
+        entries.push(frame_tracker);
         Ok(Self {
-            root_ppn: frame_tracker.ppn,
-            entries: vec![frame_tracker],
+            root_ppn: entries[0].ppn,
+            entries,
         })
     }
 
@@ -119,6 +123,11 @@ impl PageTable {
     }
 
     fn allocate_table(&mut self) -> Result<PhysicalPageNumber, PageTableError> {
+        // 先为 owner record 保留空间，再取得物理页；缺失该顺序时 Vec 扩容失败会在
+        // frame 已分配后进入全局 alloc-error handler，无法返回既有 OutOfMemory 语义。
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| PageTableError::OutOfMemory)?;
         let frame = alloc().ok_or(PageTableError::OutOfMemory)?;
         let ppn = frame.ppn;
         self.entries.push(frame);

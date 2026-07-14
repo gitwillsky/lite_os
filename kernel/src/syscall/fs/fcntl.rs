@@ -224,7 +224,7 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
                 -errno::EBADF
             } else {
                 task.fd_duplicate(fd, argument, false)
-                    .map_or(-errno::EMFILE, |value| value as isize)
+                    .map_or_else(super::super::file_descriptor_error, |value| value as isize)
             }
         }
         F_GETFD => task
@@ -261,7 +261,7 @@ pub(crate) fn sys_fcntl(fd: usize, command: u32, argument: usize) -> isize {
                 -errno::EBADF
             } else {
                 task.fd_duplicate(fd, argument, true)
-                    .map_or(-errno::EMFILE, |value| value as isize)
+                    .map_or_else(super::super::file_descriptor_error, |value| value as isize)
             }
         }
         _ => -errno::EINVAL,

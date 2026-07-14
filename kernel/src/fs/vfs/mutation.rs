@@ -47,7 +47,7 @@ impl VirtualFileSystem {
                 gid,
             },
         )?;
-        self.register(OpenedFile::child(inode, parent, name))
+        self.register(OpenedFile::child(inode, parent, &name)?)
     }
 
     /// @description 校验 parent access 后创建 owner-aware symbolic link。

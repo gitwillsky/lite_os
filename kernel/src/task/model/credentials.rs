@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 use super::TaskControlBlock;
 use crate::fs::AccessIdentity;
@@ -16,7 +16,9 @@ pub(super) struct Credentials {
     real_gid: u32,
     effective_gid: u32,
     saved_gid: u32,
-    groups: Vec<u32>,
+    // OWNER: immutable Arc 让 pathname permission snapshot 和 fork 只增加引用计数；
+    // 如果保留 Vec clone，每个 pathname syscall 都可在 OOM 时 abort kernel。
+    groups: Option<Arc<Vec<u32>>>,
     umask: u32,
 }
 
@@ -94,12 +96,21 @@ impl TaskControlBlock {
     }
 
     /// @description 复制当前 supplementary group list。
-    pub(crate) fn supplementary_groups(&self) -> Vec<u32> {
-        self.process.credentials.lock().groups().to_vec()
+    pub(crate) fn supplementary_groups(&self) -> Result<Vec<u32>, ()> {
+        let credentials = self.process.credentials.lock();
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(credentials.groups().len())
+            .map_err(|_| ())?;
+        groups.extend_from_slice(credentials.groups());
+        Ok(groups)
     }
 
     /// @description 以 effective-root policy 替换 supplementary group list。
-    pub(crate) fn set_supplementary_groups(&self, groups: Vec<u32>) -> Result<(), ()> {
+    pub(crate) fn set_supplementary_groups(
+        &self,
+        groups: Vec<u32>,
+    ) -> Result<(), CredentialUpdateError> {
         self.process.credentials.lock().set_groups(groups)
     }
 
@@ -130,7 +141,7 @@ impl Credentials {
             real_gid: ROOT_ID,
             effective_gid: ROOT_ID,
             saved_gid: ROOT_ID,
-            groups: Vec::new(),
+            groups: None,
             umask: DEFAULT_UMASK,
         }
     }
@@ -176,7 +187,7 @@ impl Credentials {
     }
 
     pub(super) fn groups(&self) -> &[u32] {
-        &self.groups
+        self.groups.as_deref().map_or(&[], Vec::as_slice)
     }
 
     pub(super) fn set_uid(&mut self, uid: u32) -> Result<(), ()> {
@@ -251,11 +262,15 @@ impl Credentials {
         Ok(())
     }
 
-    pub(super) fn set_groups(&mut self, groups: Vec<u32>) -> Result<(), ()> {
+    pub(super) fn set_groups(&mut self, groups: Vec<u32>) -> Result<(), CredentialUpdateError> {
         if self.effective_uid != ROOT_ID {
-            return Err(());
+            return Err(CredentialUpdateError::Permission);
         }
-        self.groups = groups;
+        self.groups = if groups.is_empty() {
+            None
+        } else {
+            Some(Arc::try_new(groups).map_err(|_| CredentialUpdateError::OutOfMemory)?)
+        };
         Ok(())
     }
 
@@ -279,4 +294,11 @@ impl Credentials {
         self.saved_uid = self.effective_uid;
         self.saved_gid = self.effective_gid;
     }
+}
+
+/// @description credential replacement 的 permission 与 owner allocation 失败分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialUpdateError {
+    Permission,
+    OutOfMemory,
 }

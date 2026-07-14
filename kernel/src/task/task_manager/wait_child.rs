@@ -17,10 +17,10 @@ pub(super) struct ChildWaitClaim {
 ///
 /// @param node process graph 内的 parent node。
 /// @return 以全局 TID 去重的 waiter owner；各 Thread 醒来后按自己的 selector 重新检查。
-pub(super) fn take_child_waiters(node: &mut ProcessNode) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+pub(super) fn take_child_waiters(
+    node: &mut ProcessNode,
+) -> FallibleMap<usize, Arc<TaskControlBlock>> {
     core::mem::take(&mut node.child_waiters)
-        .into_values()
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,6 +37,7 @@ pub(crate) enum WaitChildError {
     NoChild,
     InvalidSelector,
     Interrupted,
+    OutOfMemory,
 }
 
 fn matching_child(
@@ -160,31 +161,34 @@ pub(crate) fn wait_child(
         }
 
         // graph lock 覆盖 child 复查与 waiter 发布；exit/job event 使用同一 owner，因此不会丢唤醒。
+        let waiter = graph
+            .nodes
+            .get(&parent)
+            .expect("waiting parent missing from process graph")
+            .child_waiters
+            .try_prepare_vacant(task.tid(), task.clone())
+            .map_err(|_| WaitChildError::OutOfMemory)?;
         let prepared =
-            super::context_switch::prepare_current_block(&task, graph, |graph, current| {
+            super::context_switch::prepare_current_block(&task, graph, move |graph, _| {
                 let parent_node = graph
                     .nodes
                     .get_mut(&parent)
                     .expect("waiting parent missing from process graph");
-                assert!(
-                    parent_node
-                        .child_waiters
-                        .insert(task.tid(), current)
-                        .is_none(),
-                    "Thread already owns child waiter"
-                );
+                parent_node.child_waiters.commit_vacant(waiter);
                 WaitMembership::Child
             });
         match prepared.suspend() {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(WaitChildError::Interrupted),
             WaitResult::TimedOut => panic!("child waiter cannot time out"),
+            WaitResult::OutOfMemory => unreachable!("child wait has no indexed allocation"),
         }
     }
 }
 
-fn wake_rechecking_waiters(waiters: alloc::vec::Vec<Arc<TaskControlBlock>>) {
-    for waiter in waiters {
+fn wake_rechecking_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>>) {
+    while let Some((&tid, _)) = waiters.first_key_value() {
+        let waiter = waiters.remove(&tid).expect("staged child waiter");
         crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
 }

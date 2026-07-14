@@ -1,13 +1,11 @@
 use core::sync::atomic::Ordering;
 
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use alloc::sync::Arc;
 use lazy_static::lazy_static;
 
 use crate::{
     arch::hart::{self, hart_id},
+    fallible_tree::{FallibleMap, VacantEntry},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
@@ -42,7 +40,9 @@ mod wait_registry;
 
 pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
 use context_switch::{prepare_current_block, schedule_with_task_context};
-pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_timer};
+pub(crate) use deferred::{
+    RealTimerError, dispatch_pending_deferred_work, real_timer, set_real_timer,
+};
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
@@ -82,7 +82,7 @@ use wait_key::IndexedWaitKind;
 pub(crate) use wait_key::PollWaitKey;
 use wait_registry::INDEXED_WAIT_QUEUE;
 enum ProcessState {
-    Live(BTreeMap<usize, Arc<TaskControlBlock>>),
+    Live(FallibleMap<usize, Arc<TaskControlBlock>>),
     Exited(ProcessExitStatus),
 }
 
@@ -95,10 +95,14 @@ struct ProcessNode {
     state: ProcessState,
     group_exit: Option<ProcessExitStatus>,
     job_control: JobControlState,
+    // OWNER: process graph 在 exit mutation 内冻结 terminal/orphan signal membership；bit 只由
+    // process-exit drainer 消费。缺失该标记会迫使不可失败的 exit 路径分配无界 TGID snapshot，
+    // 或在解锁后把信号错误投递给随后加入 process group 的进程。
+    exit_effects: u8,
     child_events: ChildEvents,
     // OWNER: parent Process node owns every Thread currently waiting for a child event. A single
     // waiter slot makes concurrent waitpid either overwrite membership or return non-Linux EAGAIN.
-    child_waiters: BTreeMap<usize, Arc<TaskControlBlock>>,
+    child_waiters: FallibleMap<usize, Arc<TaskControlBlock>>,
     // OWNER: process graph 独占 child event claim；copyout 成功才消费，EFAULT 释放。缺失该
     // claim 时两个 parent Thread 可同时返回同一 zombie，并由第二次 reap 触发状态分裂。
     child_wait_claim: Option<wait_child::ChildWaitClaim>,
@@ -109,7 +113,7 @@ struct ProcessNode {
 struct ProcessGraph {
     next_pid: usize,
     processes_created: u64,
-    nodes: BTreeMap<usize, ProcessNode>,
+    nodes: FallibleMap<usize, ProcessNode>,
 }
 
 /// @description parent relation、live task 或最小 exit record 的唯一 process graph owner。
@@ -124,13 +128,31 @@ struct TaskManager {
     process_creation: IrqMutex<()>,
 }
 
+/// @description 在执行可能发布 thread-owned mapping 的构造前，先取得 TCB Arc storage。
+/// @param out_of_memory Arc control block 分配失败时返回的领域错误。
+/// @param build 仅在 Arc storage 已就绪后执行的未发布 TCB 构造事务。
+/// @return 成功返回唯一 Arc-owned TCB；分配或构造失败不发布 task。
+fn try_allocate_task<E>(
+    out_of_memory: E,
+    build: impl FnOnce() -> Result<TaskControlBlock, E>,
+) -> Result<Arc<TaskControlBlock>, E> {
+    let mut slot = Arc::<TaskControlBlock>::try_new_uninit().map_err(|_| out_of_memory)?;
+    let task = build()?;
+    Arc::get_mut(&mut slot)
+        .expect("new task Arc must be uniquely owned")
+        .write(task);
+    // SAFETY: slot 是刚分配且未克隆的唯一 Arc；上一步完整写入一个 TaskControlBlock，
+    // 此后不再通过 MaybeUninit 观察或析构同一 storage。
+    Ok(unsafe { slot.assume_init() })
+}
+
 impl TaskManager {
     fn new() -> Self {
         Self {
             graph: IrqMutex::new(ProcessGraph {
                 next_pid: INIT_PID + 1,
                 processes_created: 1,
-                nodes: BTreeMap::new(),
+                nodes: FallibleMap::new(),
             }),
             real_timers: IrqMutex::new(deferred::RealTimerQueue::new()),
             load_average: load_average::LoadAverage::new(),
@@ -141,25 +163,34 @@ impl TaskManager {
     fn add_init(&self, task: Arc<TaskControlBlock>) {
         let tgid = task.tgid();
         assert_eq!(tgid, INIT_PID);
-        let mut threads = BTreeMap::new();
-        threads.insert(task.tid(), task.clone());
-        let previous = self.graph.lock().nodes.insert(
-            tgid,
-            ProcessNode {
-                parent: None,
-                session: INIT_PID,
-                process_group: INIT_PID,
-                has_execed: true,
-                state: ProcessState::Live(threads),
-                group_exit: None,
-                job_control: JobControlState::Running,
-                child_events: ChildEvents::default(),
-                child_waiters: BTreeMap::new(),
-                child_wait_claim: None,
-                vfork_parent: None,
-            },
-        );
-        assert!(previous.is_none(), "init inserted twice");
+        let mut threads = FallibleMap::new();
+        threads
+            .try_insert(task.tid(), task.clone())
+            .expect("init thread node allocation failed");
+        self.graph
+            .lock()
+            .nodes
+            .try_insert(
+                tgid,
+                ProcessNode {
+                    parent: None,
+                    session: INIT_PID,
+                    process_group: INIT_PID,
+                    has_execed: true,
+                    state: ProcessState::Live(threads),
+                    group_exit: None,
+                    job_control: JobControlState::Running,
+                    exit_effects: 0,
+                    child_events: ChildEvents::default(),
+                    child_waiters: FallibleMap::new(),
+                    child_wait_claim: None,
+                    vfork_parent: None,
+                },
+            )
+            .expect("init process node allocation failed")
+            .is_none()
+            .then_some(())
+            .expect("init inserted twice");
         enqueue_new_task(task);
     }
 
@@ -173,7 +204,12 @@ impl TaskManager {
         ProcessId::allocated(pid)
     }
 
-    fn publish_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) -> bool {
+    fn publish_thread(
+        &self,
+        tgid: usize,
+        thread: Arc<TaskControlBlock>,
+        prepared: VacantEntry<usize, Arc<TaskControlBlock>>,
+    ) -> bool {
         let mut graph = self.graph.lock();
         let node = graph
             .nodes
@@ -183,7 +219,8 @@ impl TaskManager {
         let ProcessState::Live(threads) = &mut node.state else {
             panic!("cannot publish thread into exited process");
         };
-        assert!(threads.insert(thread.tid(), thread.clone()).is_none());
+        debug_assert_eq!(prepared.value().tid(), thread.tid());
+        threads.commit_vacant(prepared);
         if stopping {
             crate::task::processor::request_task_stop(&thread);
         }
@@ -249,7 +286,7 @@ pub(crate) fn wait_for_console(
     input_ready: impl FnOnce() -> bool,
 ) -> WaitResult {
     let task = current_task().expect("console wait requires current task");
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     if input_ready() {
         return WaitResult::Woken;
     }
@@ -259,8 +296,11 @@ pub(crate) fn wait_for_console(
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_console(deadline, current);
+    let Ok(prepared) = queue.prepare_console(deadline, task.clone()) else {
+        return WaitResult::OutOfMemory;
+    };
+    prepare_current_block(&task, queue, move |queue, _| {
+        let wait_id = queue.commit(prepared);
         WaitMembership::Console(wait_id)
     })
     .suspend()
@@ -268,21 +308,26 @@ pub(crate) fn wait_for_console(
 
 fn wake_console_waiters() -> usize {
     const INPUT: i16 = 0x001;
-    let mut waiters = alloc::vec::Vec::new();
-    let mut wake_groups = BTreeSet::new();
+    let mut waiters = FallibleMap::new();
+    let mut wake_groups = FallibleMap::new();
     let mut queue = INDEXED_WAIT_QUEUE.lock();
-    while let Some((wait_id, entry, group)) = queue.take_console(false, INPUT, &wake_groups) {
-        if let Some(group) = group {
-            wake_groups.insert(group);
+    while let Some((entry, group)) = queue.take_console(false, INPUT, &wake_groups) {
+        if let Some(group) = group
+            && wake_groups.try_insert(group, ()).is_err()
+        {
+            waiters.commit_vacant(entry);
+            break;
         }
-        waiters.push((wait_id, entry));
+        waiters.commit_vacant(entry);
     }
-    if let Some((wait_id, entry, _)) = queue.take_console(true, INPUT, &wake_groups) {
-        waiters.push((wait_id, entry));
+    if let Some((entry, _)) = queue.take_console(true, INPUT, &wake_groups) {
+        waiters.commit_vacant(entry);
     }
     drop(queue);
     let mut count = 0;
-    for (wait_id, entry) in waiters {
+    let mut waiters = waiters;
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged console waiter");
         let woke = match entry.kind {
             IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(entry.task, wait_id, WaitResult::Woken)
@@ -312,7 +357,7 @@ pub(crate) fn wait_for_poll(
 ) -> WaitResult {
     PollWaitKey::normalize(&mut keys);
     let task = current_task().expect("ppoll wait requires current task");
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     if ready() {
         return WaitResult::Woken;
     }
@@ -322,8 +367,11 @@ pub(crate) fn wait_for_poll(
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_poll(keys, deadline, current);
+    let Ok(prepared) = queue.prepare_poll(keys, deadline, task.clone()) else {
+        return WaitResult::OutOfMemory;
+    };
+    prepare_current_block(&task, queue, move |queue, _| {
+        let wait_id = queue.commit(prepared);
         WaitMembership::Poll(wait_id)
     })
     .suspend()
@@ -333,6 +381,7 @@ pub(crate) fn wait_for_poll(
 pub(crate) enum SignalWaitError {
     Again,
     Interrupted,
+    OutOfMemory,
 }
 
 /// @description 在统一 wait registry 中等待并消费一个指定 pending signal。
@@ -347,7 +396,7 @@ pub(crate) fn wait_for_signal(
 ) -> Result<(usize, PendingSignal), SignalWaitError> {
     let task = current_task().expect("signal wait requires current task");
     loop {
-        let queue = INDEXED_WAIT_QUEUE.lock();
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
         if let Some(signal) = task.take_pending_signal(mask) {
             return Ok(signal);
         }
@@ -358,8 +407,11 @@ pub(crate) fn wait_for_signal(
             return Err(SignalWaitError::Interrupted);
         }
 
-        let result = prepare_current_block(&task, queue, |queue, current| {
-            let wait_id = queue.insert_signal(mask, deadline, current);
+        let prepared = queue
+            .prepare_signal(mask, deadline, task.clone())
+            .map_err(|()| SignalWaitError::OutOfMemory)?;
+        let result = prepare_current_block(&task, queue, move |queue, _| {
+            let wait_id = queue.commit(prepared);
             WaitMembership::Signal(wait_id)
         })
         .suspend();
@@ -367,6 +419,7 @@ pub(crate) fn wait_for_signal(
             WaitResult::Woken => {}
             WaitResult::TimedOut => return Err(SignalWaitError::Again),
             WaitResult::Interrupted => return Err(SignalWaitError::Interrupted),
+            WaitResult::OutOfMemory => unreachable!("wait OOM is returned before blocking"),
         }
     }
 }
@@ -375,14 +428,17 @@ pub(crate) fn wait_for_signal(
 ///
 /// @param deliverable_set sigsuspend 临时 mask 的补集。
 /// @return signal 发布后返回；pending signal 留给唯一 trap delivery path。
-pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
+pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) -> WaitResult {
     let task = current_task().expect("signal delivery wait requires current task");
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     if task.with_pending_signal(deliverable_set, || ()).is_some() {
-        return;
+        return WaitResult::Woken;
     }
-    let result = prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_signal(deliverable_set, None, current);
+    let Ok(prepared) = queue.prepare_signal(deliverable_set, None, task.clone()) else {
+        return WaitResult::OutOfMemory;
+    };
+    let result = prepare_current_block(&task, queue, move |queue, _| {
+        let wait_id = queue.commit(prepared);
         WaitMembership::Signal(wait_id)
     })
     .suspend();
@@ -391,6 +447,7 @@ pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) {
         WaitResult::Woken,
         "sigsuspend has no timeout/cancellation path"
     );
+    result
 }
 
 /// @description 在统一 wait registry 上阻塞到 absolute monotonic deadline。
@@ -471,13 +528,16 @@ pub(crate) fn suspend_current_and_run_next() {
 fn block_current_until(deadline: u64) -> WaitResult {
     let task = current_task().expect("deadline wait requires current task");
     // 1. wait owner lock 将 signal 复查与 membership 发布串行化，封闭 lost wakeup。
-    let queue = INDEXED_WAIT_QUEUE.lock();
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
     // 2. deep blocking seam 同时提交 runtime、发布 membership 并在切换前释放 registry owner。
-    prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_deadline(deadline, current);
+    let Ok(prepared) = queue.prepare_deadline(deadline, task.clone()) else {
+        return WaitResult::OutOfMemory;
+    };
+    prepare_current_block(&task, queue, move |queue, _| {
+        let wait_id = queue.commit(prepared);
         WaitMembership::Deadline(wait_id)
     })
     .suspend()

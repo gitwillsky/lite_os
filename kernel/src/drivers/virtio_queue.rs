@@ -1,4 +1,7 @@
-use crate::memory::{FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress, alloc_contiguous};
+use crate::memory::{
+    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress,
+    alloc_contiguous,
+};
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
@@ -67,6 +70,9 @@ impl VirtQueue {
 
         debug!("[VirtQueue] Creating queue with size={}", size);
 
+        let mut desc_shadow = Vec::new();
+        desc_shadow.try_reserve_exact(size as usize).ok()?;
+
         // 计算需要的内存大小 - 严格按照VirtIO规范进行对齐
         let desc_size = size_of::<VirtqDesc>() * size as usize;
 
@@ -86,7 +92,7 @@ impl VirtQueue {
         // 分配足够的连续页面
         let pages_needed = total_size.div_ceil(4096);
         debug!("[VirtQueue] Allocating {} pages for queue", pages_needed);
-        let frame_tracker = alloc_contiguous(pages_needed)?;
+        let frame_tracker = alloc_contiguous(pages_needed, FrameAllocationClass::KernelCritical)?;
 
         let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * 4096);
         let va = VirtualAddress::from(frame_tracker.ppn.as_usize() * 4096);
@@ -97,7 +103,6 @@ impl VirtQueue {
 
         // SAFETY: 连续帧数按 `total_size` 向上取整，desc/avail/used 的偏移均在该区间内；
         // frame tracker 在队列生命周期内保持页存活，初始化期间设备尚未获得 PFN，不存在并发 DMA。
-        let mut desc_shadow = Vec::with_capacity(size as usize);
         unsafe {
             for i in 0..size {
                 let shadow_desc = VirtqDesc {
@@ -157,12 +162,17 @@ impl VirtQueue {
         }
     }
 
-    // Simple HAL-like buffer sharing following virtio-drivers pattern
-    fn va_to_pa_segments(&self, ptr: *const u8, len: usize) -> alloc::vec::Vec<(u64, u32)> {
-        let mut segments: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+    fn segment_count(ptr: *const u8, len: usize) -> Option<usize> {
         if len == 0 {
-            return segments;
+            return Some(0);
         }
+        (ptr as usize % PAGE_SIZE)
+            .checked_add(len)
+            .map(|span| span.div_ceil(PAGE_SIZE))
+    }
+
+    // Simple HAL-like buffer sharing following virtio-drivers pattern
+    fn append_pa_segments(&self, segments: &mut Vec<(u64, u32)>, ptr: *const u8, len: usize) {
         let mut processed: usize = 0;
         while processed < len {
             let cur_va = VirtualAddress::from(ptr as usize + processed);
@@ -182,7 +192,6 @@ impl VirtQueue {
             segments.push((addr, chunk as u32));
             processed += chunk;
         }
-        segments
     }
 
     pub(super) fn add_buffer(
@@ -190,28 +199,32 @@ impl VirtQueue {
         inputs: &[&[u8]],
         outputs: &mut [&mut [u8]],
     ) -> Option<u16> {
-        // 预计算分段后的总描述符数量
-        let mut in_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
-        let mut out_segs: alloc::vec::Vec<(u64, u32)> = alloc::vec::Vec::new();
+        // 1. 预计算分段数并完成唯一可失败分配；缺失时 TX/RX
+        //    runtime 会在 Vec::push 中进入 kernel-wide allocation abort。
+        let input_count = inputs.iter().try_fold(0usize, |count, input| {
+            count.checked_add(Self::segment_count(input.as_ptr(), input.len())?)
+        })?;
+        let output_count = outputs.iter().try_fold(0usize, |count, output| {
+            count.checked_add(Self::segment_count(output.as_ptr(), output.len())?)
+        })?;
+        let total_count = input_count.checked_add(output_count)?;
+        if total_count == 0 || total_count > usize::from(self.num_free) {
+            return None;
+        }
+        let mut in_segs = Vec::new();
+        in_segs.try_reserve_exact(input_count).ok()?;
+        let mut out_segs = Vec::new();
+        out_segs.try_reserve_exact(output_count).ok()?;
 
         for input in inputs.iter() {
-            in_segs.extend(self.va_to_pa_segments(input.as_ptr(), input.len()));
+            self.append_pa_segments(&mut in_segs, input.as_ptr(), input.len());
         }
         for output in outputs.iter_mut() {
-            out_segs.extend(self.va_to_pa_segments(output.as_ptr(), output.len()));
+            self.append_pa_segments(&mut out_segs, output.as_ptr(), output.len());
         }
 
-        let total_needed = (in_segs.len() + out_segs.len()) as u16;
-        if total_needed == 0 {
-            return None;
-        }
-        if self.num_free < total_needed {
-            error!(
-                "[VIRTIO_QUEUE] Not enough free descriptors: need {}, have {}",
-                total_needed, self.num_free
-            );
-            return None;
-        }
+        // 2. total_count 已不大于 u16 num_free，转换不会截断。
+        let total_needed = total_count as u16;
 
         let head = self.free_head;
         let mut desc_idx = head;

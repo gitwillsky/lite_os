@@ -1,4 +1,5 @@
 mod cow;
+mod error;
 mod executable_load;
 mod futex_key;
 mod initial_stack;
@@ -6,140 +7,35 @@ mod mapping_request;
 mod mmap;
 mod private_area;
 mod process;
+mod resident;
 mod shared_area;
 mod statistics;
 mod user_access;
 use super::config;
 use super::{address::VirtualPageNumber, page_table::PageTable};
+use crate::fallible_tree::FallibleMap;
 use crate::memory::{
-    SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
+    ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
     frame_allocator::{FrameTracker, alloc},
-    page_table::{PTEFlags, PageTableEntry, PageTableError},
+    page_table::{PTEFlags, PageTableEntry},
     strampoline,
 };
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
-use core::{arch::asm, error::Error, ops::Range};
+use core::{arch::asm, ops::Range};
+use error::try_memory_arc;
 use private_area::PrivateFileArea;
+use resident::PrivateResident;
 use riscv::register::satp::{self, Satp};
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
 pub(crate) use {
+    error::{ElfLoadError, MemoryError, UserAccessError},
     futex_key::FutexKey,
     mapping_request::{FileMappingSource, MappingResourceLimits, MemoryAdvice},
     mmap::{PageFaultAccess, PageFaultOutcome},
     user_access::UserFaultLimits,
 };
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum MemoryError {
-    OutOfMemory,
-    PageTableError(PageTableError),
-    InvalidRange,
-    AddressInUse,
-    PermissionDenied,
-    Io,
-}
-/// @description 用户地址复制失败原因；所有成员都表示不能完成完整 copyin/copyout。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UserAccessError {
-    /// 地址为空、非用户 canonical 地址、未映射或权限不匹配。
-    Fault,
-    /// 地址加长度发生整数溢出。
-    Overflow,
-    /// 在调用方指定上限内没有找到 NUL。
-    Unterminated,
-    /// 无法为 kernel-owned copy 缓冲区分配内存。
-    OutOfMemory,
-}
-
-impl core::fmt::Display for UserAccessError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Fault => write!(f, "invalid user address or permission"),
-            Self::Overflow => write!(f, "user address range overflow"),
-            Self::Unterminated => write!(f, "unterminated user string"),
-            Self::OutOfMemory => write!(f, "out of memory while copying user string"),
-        }
-    }
-}
-
-impl Error for UserAccessError {}
-
-impl From<PageTableError> for MemoryError {
-    fn from(err: PageTableError) -> Self {
-        MemoryError::PageTableError(err)
-    }
-}
-
-impl core::fmt::Display for MemoryError {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        match self {
-            MemoryError::OutOfMemory => write!(f, "Out of memory"),
-            MemoryError::PageTableError(err) => write!(f, "Page table error: {err}"),
-            MemoryError::InvalidRange => write!(f, "Invalid virtual memory range"),
-            MemoryError::AddressInUse => write!(f, "Virtual memory range is already mapped"),
-            MemoryError::PermissionDenied => write!(f, "Virtual memory operation is not allowed"),
-            MemoryError::Io => write!(f, "File-backed memory I/O failed"),
-        }
-    }
-}
-
-impl Error for MemoryError {}
-
-impl MemoryError {
-    /// @description 判断失败是否来自物理页或页表页资源耗尽，不向上层泄漏页表错误类型。
-    ///
-    /// @return 资源耗尽返回 true，其他地址或权限错误返回 false。
-    pub(crate) fn is_out_of_memory(self) -> bool {
-        matches!(
-            self,
-            Self::OutOfMemory | Self::PageTableError(PageTableError::OutOfMemory)
-        )
-    }
-}
-
-/// @description 构造新用户映像时需要暴露给 `execve` 的失败分类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ElfLoadError {
-    /// 物理页或页表页分配失败。
-    OutOfMemory,
-    /// ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。
-    InvalidElf,
-    /// executable source 在 transaction 构造期间发生 I/O error 或 short read。
-    Io,
-}
-
-impl From<MemoryError> for ElfLoadError {
-    fn from(error: MemoryError) -> Self {
-        match error {
-            MemoryError::OutOfMemory | MemoryError::PageTableError(PageTableError::OutOfMemory) => {
-                Self::OutOfMemory
-            }
-            MemoryError::PageTableError(_)
-            | MemoryError::InvalidRange
-            | MemoryError::AddressInUse
-            | MemoryError::PermissionDenied => Self::InvalidElf,
-            MemoryError::Io => Self::Io,
-        }
-    }
-}
-
-impl core::fmt::Display for ElfLoadError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::OutOfMemory => write!(f, "out of memory while loading ELF"),
-            Self::InvalidElf => write!(f, "invalid or unsupported RV64 ELF image"),
-            Self::Io => write!(f, "I/O error while loading ELF"),
-        }
-    }
-}
-
-impl Error for ElfLoadError {}
-
 bitflags! {
     // PTE Flags 的子集
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +66,7 @@ enum VmaKind {
 pub(crate) struct MapArea {
     vpn_range: Range<VirtualPageNumber>,
     data_page_offset: usize,
-    data_frames: BTreeMap<VirtualPageNumber, Arc<FrameTracker>>,
+    data_frames: FallibleMap<VirtualPageNumber, PrivateResident>,
     map_type: MapType,
     map_permission: MapPermission,
     /// 是否标记为全局页（G位）。仅用于内核空间映射。
@@ -181,10 +77,6 @@ pub(crate) struct MapArea {
     private_file: Option<PrivateFileArea>,
     /// private VMA 只声明地址范围，首次访问才分配物理页。
     lazy_private: bool,
-    /// MADV_FREE 标记的 private anonymous resident；write fault 会取消标记。
-    discardable: BTreeSet<VirtualPageNumber>,
-    /// file-backed MAP_PRIVATE 已发生写入的 resident；干净页可从 backing 重建并回收。
-    dirty_private: BTreeSet<VirtualPageNumber>,
 }
 
 impl MapArea {
@@ -206,7 +98,7 @@ impl MapArea {
                 end: end_vpn,
             },
             data_page_offset: start_va.page_offset(),
-            data_frames: BTreeMap::new(),
+            data_frames: FallibleMap::new(),
             map_permission: permissions,
             map_type,
             global: false,
@@ -215,8 +107,6 @@ impl MapArea {
             shared_file: None,
             private_file: None,
             lazy_private: false,
-            discardable: BTreeSet::new(),
-            dirty_private: BTreeSet::new(),
         }
     }
 
@@ -289,7 +179,11 @@ impl MapArea {
         }
 
         let mut copied = 0usize;
-        for (index, frame) in self.data_frames.values_mut().enumerate() {
+        let mut index = 0usize;
+        self.data_frames.for_each_mut(|_, frame| {
+            if copied == data.len() {
+                return;
+            }
             let page_offset = if index == 0 { self.data_page_offset } else { 0 };
             let count = (config::PAGE_SIZE - page_offset).min(data.len() - copied);
             Arc::get_mut(frame)
@@ -297,10 +191,8 @@ impl MapArea {
                 .bytes_mut()[page_offset..page_offset + count]
                 .copy_from_slice(&data[copied..copied + count]);
             copied += count;
-            if copied == data.len() {
-                return Ok(());
-            }
-        }
+            index += 1;
+        });
         (copied == data.len())
             .then_some(())
             .ok_or(MemoryError::InvalidRange)
@@ -325,11 +217,11 @@ impl MapArea {
 
     pub(crate) fn unmap(&mut self, page_table: &mut PageTable) {
         if self.lazy_private || self.shared_anonymous.is_some() || self.shared_file.is_some() {
-            for vpn in self.data_frames.keys().copied() {
+            for (&vpn, _) in &self.data_frames {
                 let _ = page_table.unmap(vpn);
             }
             if let Some(shared) = &self.shared_file {
-                for vpn in shared.resident.keys().copied() {
+                for (&vpn, _) in &shared.resident {
                     let _ = page_table.unmap(vpn);
                 }
             }
@@ -339,8 +231,6 @@ impl MapArea {
             }
         }
         self.data_frames.clear();
-        self.discardable.clear();
-        self.dirty_private.clear();
         if let Some(shared) = &mut self.shared_file {
             shared.resident.clear();
         }
@@ -353,11 +243,19 @@ impl MapArea {
     ) -> Result<(), MemoryError> {
         let (ppn, frame) = match self.map_type {
             MapType::Framed => {
-                let frame = alloc().ok_or(MemoryError::OutOfMemory)?;
+                let frame = try_memory_arc(alloc().ok_or(MemoryError::OutOfMemory)?)?;
                 (frame.ppn, Some(frame))
             }
             MapType::Identical => (vpn.as_usize().into(), None),
         };
+
+        let resident = frame
+            .map(|frame| {
+                self.data_frames
+                    .try_prepare_vacant(vpn, PrivateResident::new(frame))
+            })
+            .transpose()
+            .map_err(|_| MemoryError::OutOfMemory)?;
 
         if Self::has_leaf_permission(self.map_permission) {
             let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
@@ -372,9 +270,8 @@ impl MapArea {
         } else {
             return Err(MemoryError::InvalidRange);
         }
-        if let Some(frame) = frame {
-            let replaced = self.data_frames.insert(vpn, Arc::new(frame));
-            debug_assert!(replaced.is_none());
+        if let Some(resident) = resident {
+            self.data_frames.commit_vacant(resident);
         }
         Ok(())
     }
@@ -393,10 +290,6 @@ impl MapArea {
         let original_end = self.vpn_range.end;
         let right_frames = self.data_frames.split_off(&end);
         let middle_frames = self.data_frames.split_off(&start);
-        let right_discardable = self.discardable.split_off(&end);
-        let middle_discardable = self.discardable.split_off(&start);
-        let right_dirty = self.dirty_private.split_off(&end);
-        let middle_dirty = self.dirty_private.split_off(&start);
         let (left_shared, middle_shared, right_shared) = if let Some(mut shared) = self.shared_file
         {
             let right_pages = shared.resident.split_off(&end);
@@ -431,50 +324,33 @@ impl MapArea {
         let (left_anonymous, middle_anonymous, right_anonymous) =
             SharedAnonymousArea::partition(self.shared_anonymous, original_start, start, end);
         let kind = self.kind;
-        let build = |range: Range<VirtualPageNumber>,
-                     data_frames,
-                     discardable,
-                     dirty_private,
-                     shared_anonymous,
-                     shared_file| Self {
-            vpn_range: range,
-            data_page_offset: 0,
-            data_frames,
-            map_type: MapType::Framed,
-            map_permission: self.map_permission,
-            global: false,
-            kind,
-            shared_anonymous,
-            shared_file,
-            private_file: self.private_file.clone(),
-            lazy_private: self.lazy_private,
-            discardable,
-            dirty_private,
-        };
+        let build =
+            |range: Range<VirtualPageNumber>, data_frames, shared_anonymous, shared_file| Self {
+                vpn_range: range,
+                data_page_offset: 0,
+                data_frames,
+                map_type: MapType::Framed,
+                map_permission: self.map_permission,
+                global: false,
+                kind,
+                shared_anonymous,
+                shared_file,
+                private_file: self.private_file.clone(),
+                lazy_private: self.lazy_private,
+            };
         let left = (original_start < start).then(|| {
             build(
                 original_start..start,
                 self.data_frames,
-                self.discardable,
-                self.dirty_private,
                 left_anonymous,
                 left_shared,
             )
         });
-        let middle = build(
-            start..end,
-            middle_frames,
-            middle_discardable,
-            middle_dirty,
-            middle_anonymous,
-            middle_shared,
-        );
+        let middle = build(start..end, middle_frames, middle_anonymous, middle_shared);
         let right = (end < original_end).then(|| {
             build(
                 end..original_end,
                 right_frames,
-                right_discardable,
-                right_dirty,
                 right_anonymous,
                 right_shared,
             )
@@ -482,23 +358,20 @@ impl MapArea {
         (left, middle, right)
     }
 
-    fn merge_anonymous(mut self, mut right: Self) -> Self {
+    fn merge_anonymous(&mut self, mut right: Self) {
         debug_assert_eq!(self.kind, VmaKind::Anonymous);
         debug_assert_eq!(right.kind, VmaKind::Anonymous);
         debug_assert_eq!(self.vpn_range.end, right.vpn_range.start);
         debug_assert_eq!(self.map_permission, right.map_permission);
         self.vpn_range.end = right.vpn_range.end;
         self.data_frames.append(&mut right.data_frames);
-        self.discardable.append(&mut right.discardable);
-        self.dirty_private.append(&mut right.dirty_private);
-        self
     }
 
     fn try_clone_into(&self, page_table: &mut PageTable) -> Result<Self, MemoryError> {
         let mut cloned = Self {
             vpn_range: self.vpn_range.clone(),
             data_page_offset: self.data_page_offset,
-            data_frames: BTreeMap::new(),
+            data_frames: FallibleMap::new(),
             map_type: self.map_type,
             map_permission: self.map_permission,
             global: self.global,
@@ -507,8 +380,6 @@ impl MapArea {
             shared_file: None,
             private_file: self.private_file.clone(),
             lazy_private: self.lazy_private,
-            discardable: self.discardable.clone(),
-            dirty_private: self.dirty_private.clone(),
         };
         if let Err(error) = cloned.map(page_table) {
             cloned.unmap(page_table);
@@ -524,6 +395,18 @@ impl MapArea {
             .expect("eager-cloned system frame must be unique")
             .bytes_mut()
             .copy_from_slice(source.bytes());
+        }
+        Ok(cloned)
+    }
+
+    fn try_clone_data_frames(
+        &self,
+    ) -> Result<FallibleMap<VirtualPageNumber, PrivateResident>, MemoryError> {
+        let mut cloned = FallibleMap::new();
+        for (&vpn, resident) in &self.data_frames {
+            cloned
+                .try_insert(vpn, resident.clone())
+                .map_err(|_| MemoryError::OutOfMemory)?;
         }
         Ok(cloned)
     }
@@ -543,7 +426,11 @@ struct ProgramBreak {
 #[derive(Debug)]
 pub(crate) struct MemorySet {
     page_table: PageTable,
-    areas: BTreeMap<VirtualPageNumber, MapArea>,
+    areas: FallibleMap<VirtualPageNumber, MapArea>,
+    // OWNER: cursor 与 VMA residency 由同一 MemorySet lock 拥有，只表示下次
+    // private direct reclaim 的起始 VPN。缺失它会让大 mm 中的 dirty/
+    // non-discardable 前缀在每次 OOM 时重复被扫描，饿死后续 clean page。
+    private_reclaim_cursor: VirtualPageNumber,
     /// OWNER: Linux mm 的主 ELF start_code/end_code；若从 VMA 权限反推，JIT 映射会被误计为 statm text。
     code_range: Range<usize>,
     /// OWNER: program break 与 VMA 表同属 `MemorySet`；实际 heap 页必须是普通 anonymous
@@ -555,11 +442,11 @@ pub(crate) struct MemorySet {
 
 impl MemorySet {
     const MMAP_BASE: usize = 0x4000_0000;
-
     pub(crate) fn new() -> Self {
         Self {
             page_table: PageTable::new(),
-            areas: BTreeMap::new(),
+            areas: FallibleMap::new(),
+            private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
             code_range: 0..0,
             program_break: None,
             argument_range: 0..0,
@@ -569,7 +456,8 @@ impl MemorySet {
     fn try_new() -> Result<Self, MemoryError> {
         Ok(Self {
             page_table: PageTable::try_new()?,
-            areas: BTreeMap::new(),
+            areas: FallibleMap::new(),
+            private_reclaim_cursor: VirtualPageNumber::from_vpn(0),
             code_range: 0..0,
             program_break: None,
             argument_range: 0..0,
@@ -578,7 +466,7 @@ impl MemorySet {
 
     pub(crate) fn push(
         &mut self,
-        mut map_area: MapArea,
+        map_area: MapArea,
         data: Option<&[u8]>,
     ) -> Result<(), MemoryError> {
         let start = map_area.vpn_range.start;
@@ -591,19 +479,24 @@ impl MemorySet {
         {
             return Err(MemoryError::AddressInUse);
         }
-        // 先尝试映射；若中途失败，需要回滚已映射页面，保持 VMA 表与页表同时不变。
-        if let Err(e) = map_area.map(&mut self.page_table) {
+        // VMA node 必须先于 PTE publication 分配；缺少该 preflight 会在页表已经
+        // 可见后因 ordered-index node OOM 无法记录其唯一 owner。
+        let mut prepared = self
+            .areas
+            .try_prepare_vacant(start, map_area)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        if let Err(e) = prepared.value_mut().map(&mut self.page_table) {
             // 回滚：解除已经映射的页面
-            map_area.unmap(&mut self.page_table);
+            prepared.value_mut().unmap(&mut self.page_table);
             return Err(e);
         }
         if let Some(data) = data
-            && let Err(error) = map_area.copy_data(data)
+            && let Err(error) = prepared.value_mut().copy_data(data)
         {
-            map_area.unmap(&mut self.page_table);
+            prepared.value_mut().unmap(&mut self.page_table);
             return Err(error);
         }
-        self.areas.insert(start, map_area);
+        self.areas.commit_vacant(prepared);
         Ok(())
     }
 
@@ -786,46 +679,6 @@ impl MemorySet {
             .expect("validated program break state must remain installed")
             .current = new_break;
         Ok(new_break)
-    }
-
-    fn grow_stack_for_fault(
-        &mut self,
-        address: usize,
-        stack_limit: u64,
-        address_space_limit: u64,
-    ) -> Result<(), MemoryError> {
-        let target = VirtualAddress::from(address).floor();
-        let Some((key, top)) = self.areas.iter().find_map(|(key, area)| match area.kind {
-            VmaKind::Stack { top } => Some((*key, top)),
-            _ => None,
-        }) else {
-            return Ok(());
-        };
-        if target >= key {
-            return Ok(());
-        }
-        let target_address = target.as_usize() * config::PAGE_SIZE;
-        let stack_limit = usize::try_from(stack_limit).unwrap_or(usize::MAX);
-        let allowed_bottom = top.saturating_sub(stack_limit);
-        if target_address < allowed_bottom {
-            return Ok(());
-        }
-        if self
-            .areas
-            .range(..key)
-            .next_back()
-            .is_some_and(|(_, previous)| {
-                previous.vpn_range.end.as_usize().saturating_add(1) > target.as_usize()
-            })
-        {
-            return Ok(());
-        }
-        let additional = (key.as_usize() - target.as_usize()) as u64 * config::PAGE_SIZE as u64;
-        self.ensure_resource_capacity(additional, address_space_limit, None)?;
-        let mut area = self.areas.remove(&key).expect("stack key must remain live");
-        area.vpn_range.start = target;
-        self.areas.insert(target, area);
-        Ok(())
     }
 
     pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {

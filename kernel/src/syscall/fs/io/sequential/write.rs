@@ -144,6 +144,7 @@ pub(super) fn write_descriptor(
                                 WaitResult::Woken => {}
                                 WaitResult::Interrupted => return -errno::EINTR,
                                 WaitResult::TimedOut => unreachable!(),
+                                WaitResult::OutOfMemory => return -errno::ENOMEM,
                             }
                         }
                         Err(crate::socket::SocketError::BrokenPipe) => {
@@ -223,6 +224,13 @@ pub(super) fn write_descriptor(
                                     };
                                 }
                                 WaitResult::TimedOut => unreachable!(),
+                                WaitResult::OutOfMemory => {
+                                    return if written == 0 {
+                                        -errno::ENOMEM
+                                    } else {
+                                        written as isize
+                                    };
+                                }
                             }
                         }
                     }

@@ -33,6 +33,7 @@ pub(crate) enum SchedulerPolicyError {
     Access,
     Invalid,
     NotFound,
+    OutOfMemory,
     Permission,
 }
 
@@ -50,44 +51,54 @@ pub(crate) enum SchedulerNiceSelector {
 fn nice_targets(
     selector: SchedulerNiceSelector,
     caller: &Arc<TaskControlBlock>,
-) -> Vec<Arc<TaskControlBlock>> {
+) -> Result<Vec<Arc<TaskControlBlock>>, SchedulerPolicyError> {
     if let SchedulerNiceSelector::Process(tid) = selector {
-        return scheduler_thread(tid as usize, caller).into_iter().collect();
+        let Some(target) = scheduler_thread(tid as usize, caller) else {
+            return Ok(Vec::new());
+        };
+        let mut targets = Vec::new();
+        targets
+            .try_reserve_exact(1)
+            .map_err(|_| SchedulerPolicyError::OutOfMemory)?;
+        targets.push(target);
+        return Ok(targets);
     }
     let graph = TASK_MANAGER.graph.lock();
     let selected_group = match selector {
         SchedulerNiceSelector::Group(0) => {
             let Some(node) = graph.nodes.get(&caller.tgid()) else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             Some(node.process_group)
         }
         SchedulerNiceSelector::Group(group) => Some(group as usize),
         SchedulerNiceSelector::Process(_) | SchedulerNiceSelector::User(_) => None,
     };
-    let candidates = graph
+    let mut candidates = Vec::new();
+    for node in graph
         .nodes
         .values()
         .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
-        .filter_map(|node| match &node.state {
-            ProcessState::Live(threads) => Some(threads.values().cloned()),
-            ProcessState::Exited(_) => None,
-        })
-        .flatten()
-        .collect::<Vec<_>>();
+    {
+        let ProcessState::Live(threads) = &node.state else {
+            continue;
+        };
+        candidates
+            .try_reserve(threads.len())
+            .map_err(|_| SchedulerPolicyError::OutOfMemory)?;
+        candidates.extend(threads.values().cloned());
+    }
     drop(graph);
     let SchedulerNiceSelector::User(requested_uid) = selector else {
-        return candidates;
+        return Ok(candidates);
     };
     let uid = if requested_uid == 0 {
         caller.credential_id(true, false)
     } else {
         requested_uid
     };
-    candidates
-        .into_iter()
-        .filter(|target| target.credential_id(true, false) == uid)
-        .collect()
+    candidates.retain(|target| target.credential_id(true, false) == uid);
+    Ok(candidates)
 }
 
 /// @description 查询或替换 Linux selector 命中的 live Thread nice 值。
@@ -101,7 +112,7 @@ pub(crate) fn scheduler_nice(
     replacement: Option<i32>,
 ) -> Result<i32, SchedulerPolicyError> {
     let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
-    let targets = nice_targets(selector, &caller);
+    let targets = nice_targets(selector, &caller)?;
     let Some(requested) = replacement.map(|nice| nice.clamp(-20, 19)) else {
         return targets
             .iter()

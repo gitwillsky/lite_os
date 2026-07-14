@@ -28,11 +28,16 @@ pub(crate) fn clone_current_thread(
     }
     let parent = current_task().expect("thread clone requires current task");
     let tid = TASK_MANAGER.allocate_pid().0;
-    let child = Arc::new(
-        parent
-            .clone_thread(tid, stack, tls, clear_child_tid)
-            .map_err(ThreadCloneError::Memory)?,
-    );
+    let graph_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
+        .map_err(|_| ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let child = try_allocate_task(
+        ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
+        || {
+            parent
+                .clone_thread(tid, stack, tls, clear_child_tid)
+                .map_err(ThreadCloneError::Memory)
+        },
+    )?;
     if parent
         .write_clone_tid_values([parent_tid, child_set_tid], tid as i32)
         .is_err()
@@ -40,7 +45,8 @@ pub(crate) fn clone_current_thread(
         child.remove_thread_trap_context();
         return Err(ThreadCloneError::Fault);
     }
-    if !TASK_MANAGER.publish_thread(parent.tgid(), child.clone()) {
+    let membership = graph_slot.fill(tid, child.clone());
+    if !TASK_MANAGER.publish_thread(parent.tgid(), child.clone(), membership) {
         enqueue_new_task(child);
     }
     drop(creation);

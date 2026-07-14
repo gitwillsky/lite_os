@@ -33,14 +33,14 @@ impl EventFd {
     /// @param semaphore EFD_SEMAPHORE read 是否每次只消费一。
     /// @param read_pair readable edge 的 read/write notification endpoints。
     /// @param write_pair writable edge 的 read/write notification endpoints。
-    /// @return 共享 eventfd owner。
+    /// @return 共享 eventfd owner；control block 分配失败返回空错误。
     pub(crate) fn new(
         initial: u64,
         semaphore: bool,
         read_pair: (Arc<PipeEnd>, Arc<PipeEnd>),
         write_pair: (Arc<PipeEnd>, Arc<PipeEnd>),
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             counter: Mutex::new(initial),
             semaphore,
             read_notify: read_pair.0,
@@ -48,6 +48,7 @@ impl EventFd {
             write_notify: write_pair.0,
             write_signal: write_pair.1,
         })
+        .map_err(|_| ())
     }
 
     pub(crate) fn read(&self) -> EventFdRead {

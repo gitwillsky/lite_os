@@ -38,6 +38,7 @@ fn policy_error(error: SchedulerPolicyError) -> isize {
         SchedulerPolicyError::Access => -errno::EACCES,
         SchedulerPolicyError::Invalid => -errno::EINVAL,
         SchedulerPolicyError::NotFound => -errno::ESRCH,
+        SchedulerPolicyError::OutOfMemory => -errno::ENOMEM,
         SchedulerPolicyError::Permission => -errno::EPERM,
     }
 }

@@ -1,13 +1,22 @@
 use super::*;
 
-pub(super) fn process_name(path: &[u8]) -> Vec<u8> {
-    path.rsplit(|byte| *byte == b'/')
+/// @description 为 exec/task constructor 构造可失败的共享 owner。
+/// @param value 尚未发布、失败时可直接析构的 owner value。
+/// @return Arc control block 分配成功时返回 owner；失败返回 ELF OutOfMemory。
+pub(super) fn try_elf_arc<T>(value: T) -> Result<Arc<T>, ElfLoadError> {
+    Arc::try_new(value).map_err(|_| ElfLoadError::OutOfMemory)
+}
+
+pub(super) fn process_name(path: &[u8]) -> Result<Vec<u8>, ElfLoadError> {
+    let name = path
+        .rsplit(|byte| *byte == b'/')
         .find(|component| !component.is_empty())
-        .unwrap_or(path)
-        .iter()
-        .copied()
-        .take(15)
-        .collect()
+        .unwrap_or(path);
+    let mut comm = Vec::new();
+    comm.try_reserve_exact(name.len().min(15))
+        .map_err(|_| ElfLoadError::OutOfMemory)?;
+    comm.extend_from_slice(&name[..name.len().min(15)]);
+    Ok(comm)
 }
 
 impl TaskControlBlock {
@@ -29,7 +38,7 @@ impl TaskControlBlock {
         let (new_memory_set, user_sp, entry_point) =
             loaded.build_address_space(envs, stack_limit, address_space_limit, data_limit)?;
         let new_address_space = AddressSpace::new(new_memory_set)?;
-        let new_comm = process_name(loaded.execfn());
+        let new_comm = process_name(loaded.execfn())?;
         let credential_metadata = loaded.credential_metadata();
 
         // exec 准备完成后进入不可失败的提交阶段；先发布 has_execed，才能与 parent setpgid

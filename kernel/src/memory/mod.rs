@@ -13,21 +13,33 @@ mod mm;
 mod page_table;
 mod shared_file;
 
+// OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.
+// Without this low watermark, a user fault can consume the final frame before the kernel records
+// or tears down that mapping, turning recoverable process OOM into a global alloc-error panic.
+const KERNEL_HEAP_GROWTH_PAGES: usize = 64;
+// OWNER: frame allocator preserves this final reserve from ordinary kernel-heap growth.
+// Without a distinct lower watermark, a fallible userspace-driven Vec/Arc allocation can consume
+// the same last frames needed to tear down the faulting task after ENOMEM.
+const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
+
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
 };
-pub(crate) use frame_allocator::{FrameTracker, alloc_contiguous, statistics as frame_statistics};
+pub(crate) use frame_allocator::{
+    FrameAllocationClass, FrameTracker, alloc_contiguous, statistics as frame_statistics,
+};
+pub(crate) use heap_allocator::statistics as heap_statistics;
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
     ElfLoadError, FileMappingSource, FutexKey, MapPermission, MappingResourceLimits, MemoryAdvice,
     MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, UserAccessError, UserFaultLimits,
 };
 pub(crate) use shared_file::{
-    MemoryMappingOwner, MemoryReclaimer, SharedFileError, SharedFileId, SharedFileMapping,
-    SharedFrame, SharedPage, invalidate_shared_file, register_memory_mapping_owner,
-    register_memory_reclaimer,
+    MemoryMappingOwner, MemoryReclaimer, ReclaimRequest, ReclaimResult, SharedFileError,
+    SharedFileId, SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file,
+    reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
 };
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
@@ -76,6 +88,7 @@ pub(crate) fn init() {
 
     frame_allocator::init(kernel_end_addr, memory_end_addr);
     heap_allocator::enable_frame_backed_growth();
+    heap_allocator::init_hart_caches();
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();

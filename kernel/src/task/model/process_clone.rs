@@ -53,8 +53,10 @@ impl TaskControlBlock {
         let resource_limits = self.process.resource_limits.lock().forked();
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let cpu_runtime_us = Arc::new(core::sync::atomic::AtomicU64::new(0));
-        let io_accounting = Arc::new(IoAccounting::default());
+        let cpu_runtime_us = Arc::try_new(core::sync::atomic::AtomicU64::new(0))
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        let io_accounting =
+            Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
         let child_policy = self.scheduling.policy.lock().forked(cpu_runtime_us.clone());
         let last_cpu = self
             .scheduling
@@ -62,6 +64,28 @@ impl TaskControlBlock {
             .load(core::sync::atomic::Ordering::Relaxed);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let alternate_signal_stack = *self.thread.alternate_signal_stack.lock();
+        let start_time_us = get_time_us();
+        let parent_comm = self.process.comm.lock();
+        let mut comm = Vec::new();
+        comm.try_reserve_exact(parent_comm.len())
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        comm.extend_from_slice(&parent_comm);
+        drop(parent_comm);
+        let process = Arc::try_new(Process {
+            tgid: pid,
+            comm: Mutex::new(comm),
+            start_time_us,
+            address_space: Mutex::new(address_space.clone()),
+            cwd: Mutex::new(cwd),
+            files: Mutex::new(files),
+            credentials: Mutex::new(credentials),
+            resource_limits: Mutex::new(resource_limits),
+            cpu_runtime_us: cpu_runtime_us.clone(),
+            io_accounting: io_accounting.clone(),
+            terminal: self.process.terminal.clone(),
+            signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
+        })
+        .map_err(|_| MemoryError::OutOfMemory)?;
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
@@ -83,22 +107,8 @@ impl TaskControlBlock {
         child_trap.kernel_sp = kernel_stack_top;
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
-        let start_time_us = get_time_us();
         let child = Self {
-            process: Arc::new(Process {
-                tgid: pid,
-                comm: Mutex::new(self.process.comm.lock().clone()),
-                start_time_us,
-                address_space: Mutex::new(address_space),
-                cwd: Mutex::new(cwd),
-                files: Mutex::new(files),
-                credentials: Mutex::new(credentials),
-                resource_limits: Mutex::new(resource_limits),
-                cpu_runtime_us: cpu_runtime_us.clone(),
-                io_accounting: io_accounting.clone(),
-                terminal: self.process.terminal.clone(),
-                signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
-            }),
+            process,
             thread: ThreadContext {
                 tid,
                 start_time_us,

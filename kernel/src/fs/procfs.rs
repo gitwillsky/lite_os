@@ -1,11 +1,12 @@
-use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
+use core::fmt::{self, Write};
 
 mod lookup;
 mod node;
 mod process;
 mod snapshot;
 mod system;
-use lookup::{directory_entry, find_process, find_thread, parse_pid};
+use lookup::{decimal_name, find_process, find_thread, parse_pid, push_directory_entry};
 use node::ProcNode;
 use process::{
     format_io, format_process_comm, format_process_stat, format_process_statm,
@@ -16,8 +17,8 @@ pub(crate) use snapshot::{
     ProcProcessSnapshot, ProcSnapshot, ProcThreadSnapshot,
 };
 use system::{
-    format_cpu_stat, format_loadavg, format_meminfo, format_network_devices, format_network_routes,
-    format_uptime,
+    format_buddyinfo, format_cpu_stat, format_loadavg, format_meminfo, format_network_devices,
+    format_network_routes, format_uptime, format_vmstat,
 };
 
 use super::{
@@ -27,10 +28,38 @@ use super::{
 
 const PROC_FILESYSTEM_ID: usize = 3;
 
+pub(super) struct ProcText(Vec<u8>);
+
+impl ProcText {
+    pub(super) const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub(super) fn finish(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl Write for ProcText {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.0.try_reserve(text.len()).map_err(|_| fmt::Error)?;
+        self.0.extend_from_slice(text.as_bytes());
+        Ok(())
+    }
+}
+
+pub(super) fn proc_text(arguments: fmt::Arguments<'_>) -> Result<Vec<u8>, FileSystemError> {
+    let mut output = ProcText::new();
+    output
+        .write_fmt(arguments)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    Ok(output.finish())
+}
+
 /// @description procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
 pub(crate) trait ProcSource: Send + Sync {
     /// @description 在一次读取边界取得自洽的只读快照。
-    fn snapshot(&self) -> ProcSnapshot;
+    fn snapshot(&self) -> Result<ProcSnapshot, FileSystemError>;
 
     /// @description 返回正在解析 `/proc/self` 的 calling process TGID。
     /// @return user process context 返回 TGID；无 current task 返回 None。
@@ -38,8 +67,9 @@ pub(crate) trait ProcSource: Send + Sync {
 
     /// @description 按 TGID 从目标 MemorySet argument range 读取实时 argv bytes。
     /// @param pid live process TGID。
-    /// @return 存在且 argument range 可读时返回 NUL 分隔 bytes；否则返回 None。
-    fn process_arguments(&self, pid: usize) -> Option<Vec<u8>>;
+    /// @return 存在且 argument range 可读时返回 NUL 分隔 bytes；不存在返回 None。
+    /// @errors kernel snapshot buffer OOM 返回明确文件系统错误。
+    fn process_arguments(&self, pid: usize) -> Result<Option<Vec<u8>>, FileSystemError>;
 
     /// @description 按 TGID 投影 live fd/OFD identity，不复制 backend 状态。
     /// @param pid live process TGID。
@@ -56,8 +86,8 @@ struct ProcInode {
 }
 
 impl ProcInode {
-    fn new(source: Arc<dyn ProcSource>, node: ProcNode) -> Arc<Self> {
-        Arc::new(Self { source, node })
+    fn new(source: Arc<dyn ProcSource>, node: ProcNode) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self { source, node }).map_err(|_| FileSystemError::OutOfMemory)
     }
 
     fn file_contents(&self) -> Result<Vec<u8>, FileSystemError> {
@@ -67,57 +97,34 @@ impl ProcInode {
         if let ProcNode::ProcessCmdline(pid) = self.node {
             return self
                 .source
-                .process_arguments(pid)
+                .process_arguments(pid)?
                 .ok_or(FileSystemError::NotFound);
         }
         if let ProcNode::ThreadCmdline(tgid, tid) = self.node {
-            let snapshot = self.source.snapshot();
+            let snapshot = self.source.snapshot()?;
             let process = find_process(&snapshot, tgid)?;
             let _ = find_thread(process, tid)?;
             return self
                 .source
-                .process_arguments(tgid)
+                .process_arguments(tgid)?
                 .ok_or(FileSystemError::NotFound);
         }
-        let snapshot = self.source.snapshot();
-        let text = match self.node {
+        let snapshot = self.source.snapshot()?;
+        match self.node {
             ProcNode::Stat => format_cpu_stat(&snapshot),
             ProcNode::MemInfo => format_meminfo(&snapshot),
+            ProcNode::BuddyInfo => format_buddyinfo(&snapshot),
+            ProcNode::VmStat => format_vmstat(&snapshot),
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot),
             ProcNode::NetDev => format_network_devices(snapshot.network),
             ProcNode::NetRoute => format_network_routes(snapshot.network),
             ProcNode::Mounts => unreachable!("mount table handled before task snapshot"),
-            ProcNode::ProcessStat(pid) => snapshot
-                .processes
-                .iter()
-                .find(|process| process.pid == pid)
-                .map(format_process_stat)
-                .ok_or(FileSystemError::NotFound)?,
-            ProcNode::ProcessStatus(pid) => snapshot
-                .processes
-                .iter()
-                .find(|process| process.pid == pid)
-                .map(format_process_status)
-                .ok_or(FileSystemError::NotFound)?,
-            ProcNode::ProcessComm(pid) => snapshot
-                .processes
-                .iter()
-                .find(|process| process.pid == pid)
-                .map(format_process_comm)
-                .ok_or(FileSystemError::NotFound)?,
-            ProcNode::ProcessStatm(pid) => snapshot
-                .processes
-                .iter()
-                .find(|process| process.pid == pid)
-                .map(format_process_statm)
-                .ok_or(FileSystemError::NotFound)?,
-            ProcNode::ProcessIo(pid) => snapshot
-                .processes
-                .iter()
-                .find(|process| process.pid == pid)
-                .map(|process| format_io(&process.io))
-                .ok_or(FileSystemError::NotFound)?,
+            ProcNode::ProcessStat(pid) => format_process_stat(find_process(&snapshot, pid)?),
+            ProcNode::ProcessStatus(pid) => format_process_status(find_process(&snapshot, pid)?),
+            ProcNode::ProcessComm(pid) => format_process_comm(find_process(&snapshot, pid)?),
+            ProcNode::ProcessStatm(pid) => format_process_statm(find_process(&snapshot, pid)?),
+            ProcNode::ProcessIo(pid) => format_io(&find_process(&snapshot, pid)?.io),
             ProcNode::ThreadStat(tgid, tid) => {
                 let process = find_process(&snapshot, tgid)?;
                 format_thread_stat(process, find_thread(process, tid)?)
@@ -147,14 +154,11 @@ impl ProcInode {
             | ProcNode::ProcessTaskDir(_)
             | ProcNode::ProcessFdDir(_)
             | ProcNode::ThreadDir(_, _)
-            | ProcNode::ProcessFd(_, _) => {
-                return Err(FileSystemError::IsDirectory);
-            }
+            | ProcNode::ProcessFd(_, _) => Err(FileSystemError::IsDirectory),
             ProcNode::ProcessCmdline(_) | ProcNode::ThreadCmdline(_, _) => {
                 unreachable!("cmdline handled as binary data")
             }
-        };
-        Ok(text.into_bytes())
+        }
     }
 }
 
@@ -224,11 +228,17 @@ impl Inode for ProcInode {
 
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
         match self.node {
-            ProcNode::SelfLink => self
-                .source
-                .current_pid()
-                .map(|pid| pid.to_string().into_bytes())
-                .ok_or(FileSystemError::NotFound),
+            ProcNode::SelfLink => {
+                let pid = self.source.current_pid().ok_or(FileSystemError::NotFound)?;
+                let mut stack = [0u8; 20];
+                let name = decimal_name(pid, &mut stack);
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(name.len())
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                bytes.extend_from_slice(name);
+                Ok(bytes)
+            }
             ProcNode::ProcessFd(pid, fd) => self
                 .source
                 .process_file_descriptors(pid)?
@@ -272,126 +282,111 @@ impl Inode for ProcInode {
             ProcNode::ThreadDir(tgid, _) => ProcNode::ProcessTaskDir(tgid).inode(),
             _ => 1,
         };
-        let mut entries = vec![
-            directory_entry(self.node.inode(), InodeType::Directory, b"."),
-            directory_entry(parent_inode, InodeType::Directory, b".."),
-        ];
+        let mut entries = Vec::new();
+        push_directory_entry(&mut entries, self.node.inode(), InodeType::Directory, b".")?;
+        push_directory_entry(&mut entries, parent_inode, InodeType::Directory, b"..")?;
         match self.node {
             ProcNode::Root => {
-                entries.extend([
-                    directory_entry(2, InodeType::File, b"stat"),
-                    directory_entry(3, InodeType::File, b"meminfo"),
-                    directory_entry(4, InodeType::File, b"loadavg"),
-                    directory_entry(5, InodeType::File, b"uptime"),
-                    directory_entry(6, InodeType::File, b"mounts"),
-                    directory_entry(7, InodeType::Directory, b"net"),
-                    directory_entry(10, InodeType::SymLink, b"self"),
-                ]);
-                entries.extend(self.source.snapshot().processes.into_iter().map(|process| {
-                    directory_entry(
+                for (inode, kind, name) in [
+                    (2, InodeType::File, &b"stat"[..]),
+                    (3, InodeType::File, &b"meminfo"[..]),
+                    (11, InodeType::File, &b"buddyinfo"[..]),
+                    (12, InodeType::File, &b"vmstat"[..]),
+                    (4, InodeType::File, &b"loadavg"[..]),
+                    (5, InodeType::File, &b"uptime"[..]),
+                    (6, InodeType::File, &b"mounts"[..]),
+                    (7, InodeType::Directory, &b"net"[..]),
+                    (10, InodeType::SymLink, &b"self"[..]),
+                ] {
+                    push_directory_entry(&mut entries, inode, kind, name)?;
+                }
+                for process in self.source.snapshot()?.processes {
+                    let mut name = [0u8; 20];
+                    push_directory_entry(
+                        &mut entries,
                         ProcNode::ProcessDir(process.pid).inode(),
                         InodeType::Directory,
-                        process.pid.to_string().as_bytes(),
-                    )
-                }));
+                        decimal_name(process.pid, &mut name),
+                    )?;
+                }
             }
-            ProcNode::ProcessDir(pid) => entries.extend([
-                directory_entry(ProcNode::ProcessStat(pid).inode(), InodeType::File, b"stat"),
-                directory_entry(
-                    ProcNode::ProcessStatus(pid).inode(),
-                    InodeType::File,
-                    b"status",
-                ),
-                directory_entry(
-                    ProcNode::ProcessCmdline(pid).inode(),
-                    InodeType::File,
-                    b"cmdline",
-                ),
-                directory_entry(ProcNode::ProcessComm(pid).inode(), InodeType::File, b"comm"),
-                directory_entry(
-                    ProcNode::ProcessStatm(pid).inode(),
-                    InodeType::File,
-                    b"statm",
-                ),
-                directory_entry(ProcNode::ProcessIo(pid).inode(), InodeType::File, b"io"),
-                directory_entry(
-                    ProcNode::ProcessTaskDir(pid).inode(),
-                    InodeType::Directory,
-                    b"task",
-                ),
-                directory_entry(
-                    ProcNode::ProcessFdDir(pid).inode(),
-                    InodeType::Directory,
-                    b"fd",
-                ),
-            ]),
+            ProcNode::ProcessDir(pid) => {
+                for (node, kind, name) in [
+                    (ProcNode::ProcessStat(pid), InodeType::File, &b"stat"[..]),
+                    (
+                        ProcNode::ProcessStatus(pid),
+                        InodeType::File,
+                        &b"status"[..],
+                    ),
+                    (
+                        ProcNode::ProcessCmdline(pid),
+                        InodeType::File,
+                        &b"cmdline"[..],
+                    ),
+                    (ProcNode::ProcessComm(pid), InodeType::File, &b"comm"[..]),
+                    (ProcNode::ProcessStatm(pid), InodeType::File, &b"statm"[..]),
+                    (ProcNode::ProcessIo(pid), InodeType::File, &b"io"[..]),
+                    (
+                        ProcNode::ProcessTaskDir(pid),
+                        InodeType::Directory,
+                        &b"task"[..],
+                    ),
+                    (
+                        ProcNode::ProcessFdDir(pid),
+                        InodeType::Directory,
+                        &b"fd"[..],
+                    ),
+                ] {
+                    push_directory_entry(&mut entries, node.inode(), kind, name)?;
+                }
+            }
             ProcNode::ProcessTaskDir(pid) => {
-                let snapshot = self.source.snapshot();
+                let snapshot = self.source.snapshot()?;
                 let process = find_process(&snapshot, pid)?;
-                entries.extend(process.threads.iter().map(|thread| {
-                    directory_entry(
+                for thread in &process.threads {
+                    let mut name = [0u8; 20];
+                    push_directory_entry(
+                        &mut entries,
                         ProcNode::ThreadDir(pid, thread.tid).inode(),
                         InodeType::Directory,
-                        thread.tid.to_string().as_bytes(),
-                    )
-                }));
+                        decimal_name(thread.tid, &mut name),
+                    )?;
+                }
             }
             ProcNode::ThreadDir(tgid, tid) => {
-                let snapshot = self.source.snapshot();
+                let snapshot = self.source.snapshot()?;
                 let process = find_process(&snapshot, tgid)?;
                 let _ = find_thread(process, tid)?;
-                entries.extend([
-                    directory_entry(
-                        ProcNode::ThreadStat(tgid, tid).inode(),
-                        InodeType::File,
-                        b"stat",
-                    ),
-                    directory_entry(
-                        ProcNode::ThreadStatus(tgid, tid).inode(),
-                        InodeType::File,
-                        b"status",
-                    ),
-                    directory_entry(
-                        ProcNode::ThreadCmdline(tgid, tid).inode(),
-                        InodeType::File,
-                        b"cmdline",
-                    ),
-                    directory_entry(
-                        ProcNode::ThreadComm(tgid, tid).inode(),
-                        InodeType::File,
-                        b"comm",
-                    ),
-                    directory_entry(
-                        ProcNode::ThreadStatm(tgid, tid).inode(),
-                        InodeType::File,
-                        b"statm",
-                    ),
-                    directory_entry(
-                        ProcNode::ThreadIo(tgid, tid).inode(),
-                        InodeType::File,
-                        b"io",
-                    ),
-                ]);
+                for (node, name) in [
+                    (ProcNode::ThreadStat(tgid, tid), &b"stat"[..]),
+                    (ProcNode::ThreadStatus(tgid, tid), &b"status"[..]),
+                    (ProcNode::ThreadCmdline(tgid, tid), &b"cmdline"[..]),
+                    (ProcNode::ThreadComm(tgid, tid), &b"comm"[..]),
+                    (ProcNode::ThreadStatm(tgid, tid), &b"statm"[..]),
+                    (ProcNode::ThreadIo(tgid, tid), &b"io"[..]),
+                ] {
+                    push_directory_entry(&mut entries, node.inode(), InodeType::File, name)?;
+                }
             }
             ProcNode::ProcessFdDir(pid) => {
-                entries.extend(
-                    self.source
-                        .process_file_descriptors(pid)?
-                        .ok_or(FileSystemError::NotFound)?
-                        .into_iter()
-                        .map(|entry| {
-                            directory_entry(
-                                ProcNode::ProcessFd(pid, entry.fd).inode(),
-                                InodeType::SymLink,
-                                entry.fd.to_string().as_bytes(),
-                            )
-                        }),
-                );
+                for entry in self
+                    .source
+                    .process_file_descriptors(pid)?
+                    .ok_or(FileSystemError::NotFound)?
+                {
+                    let mut name = [0u8; 20];
+                    push_directory_entry(
+                        &mut entries,
+                        ProcNode::ProcessFd(pid, entry.fd).inode(),
+                        InodeType::SymLink,
+                        decimal_name(entry.fd, &mut name),
+                    )?;
+                }
             }
-            ProcNode::NetDir => entries.extend([
-                directory_entry(8, InodeType::File, b"dev"),
-                directory_entry(9, InodeType::File, b"route"),
-            ]),
+            ProcNode::NetDir => {
+                push_directory_entry(&mut entries, 8, InodeType::File, b"dev")?;
+                push_directory_entry(&mut entries, 9, InodeType::File, b"route")?;
+            }
             _ => return Err(FileSystemError::NotDirectory),
         }
         Ok(entries)
@@ -403,6 +398,8 @@ impl Inode for ProcInode {
                 b"." | b".." => ProcNode::Root,
                 b"stat" => ProcNode::Stat,
                 b"meminfo" => ProcNode::MemInfo,
+                b"buddyinfo" => ProcNode::BuddyInfo,
+                b"vmstat" => ProcNode::VmStat,
                 b"loadavg" => ProcNode::LoadAvg,
                 b"uptime" => ProcNode::Uptime,
                 b"mounts" => ProcNode::Mounts,
@@ -412,7 +409,7 @@ impl Inode for ProcInode {
                     let pid = parse_pid(name).ok_or(FileSystemError::NotFound)?;
                     if !self
                         .source
-                        .snapshot()
+                        .snapshot()?
                         .processes
                         .iter()
                         .any(|process| process.pid == pid)
@@ -440,7 +437,7 @@ impl Inode for ProcInode {
                 b".." => ProcNode::ProcessDir(tgid),
                 _ => {
                     let tid = parse_pid(name).ok_or(FileSystemError::NotFound)?;
-                    let snapshot = self.source.snapshot();
+                    let snapshot = self.source.snapshot()?;
                     let process = find_process(&snapshot, tgid)?;
                     let _ = find_thread(process, tid)?;
                     ProcNode::ThreadDir(tgid, tid)
@@ -481,7 +478,7 @@ impl Inode for ProcInode {
             },
             _ => return Err(FileSystemError::NotDirectory),
         };
-        Ok(Self::new(self.source.clone(), node))
+        Ok(Self::new(self.source.clone(), node)?)
     }
 
     fn create(
@@ -511,10 +508,9 @@ pub(crate) struct ProcFileSystem {
 }
 
 impl ProcFileSystem {
-    pub(crate) fn new(source: Arc<dyn ProcSource>) -> Arc<Self> {
-        Arc::new(Self {
-            root: ProcInode::new(source, ProcNode::Root),
-        })
+    pub(crate) fn new(source: Arc<dyn ProcSource>) -> Result<Arc<Self>, FileSystemError> {
+        let root = ProcInode::new(source, ProcNode::Root)?;
+        Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
     }
 }
 

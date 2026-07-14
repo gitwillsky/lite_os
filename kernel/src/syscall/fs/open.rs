@@ -153,16 +153,23 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
                 return -errno::ENXIO;
             }
         }
-        OpenFileDescription::character(device, terminal, ofd_flags, opened)
+        match OpenFileDescription::character(device, terminal, ofd_flags, opened) {
+            Ok(ofd) => ofd,
+            Err(()) => return -errno::ENOMEM,
+        }
     } else {
+        let ofd = match OpenFileDescription::inode(opened, ofd_flags) {
+            Ok(ofd) => ofd,
+            Err(()) => return -errno::ENOMEM,
+        };
         if flags & O_TRUNC != 0
             && flags & O_ACCMODE != O_RDONLY
             && let Err(error) = crate::fs::truncate(inode.clone(), 0)
         {
             return ferr(error);
         }
-        OpenFileDescription::inode(opened, ofd_flags)
+        ofd
     };
     task.fd_allocate(ofd, flags & O_CLOEXEC != 0)
-        .map_or(-errno::EMFILE, |fd| fd as isize)
+        .map_or_else(super::super::file_descriptor_error, |fd| fd as isize)
 }

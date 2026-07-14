@@ -18,6 +18,7 @@ impl MemorySet {
                 if !matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File) {
                     return Err(MemoryError::PermissionDenied);
                 }
+                keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
                 keys.push(*key);
             }
         }
@@ -32,6 +33,29 @@ impl MemorySet {
         if covered < range.end {
             return Err(MemoryError::InvalidRange);
         }
+        // 1. middle 必然保留，left/right 只为实际边界计算节点，避免固定 3x staging。
+        let slot_count = keys.iter().try_fold(0usize, |count, key| {
+            let area = &self.areas[key];
+            let start = range.start.max(area.vpn_range.start);
+            let end = range.end.min(area.vpn_range.end);
+            count
+                .checked_add(1 + usize::from(area.vpn_range.start < start))
+                .and_then(|count| count.checked_add(usize::from(end < area.vpn_range.end)))
+                .ok_or(MemoryError::OutOfMemory)
+        })?;
+        // 2. 在第一个 PTE flag 改变前完成全部 node 与 staging Vec 分配。
+        let mut segment_slots = Vec::new();
+        segment_slots
+            .try_reserve_exact(slot_count)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        for _ in 0..slot_count {
+            segment_slots.push(
+                FallibleMap::<VirtualPageNumber, MapArea>::try_reserve_node()
+                    .map_err(|_| MemoryError::OutOfMemory)?,
+            );
+        }
+        // 3. 后续每个 segment 只消费预留 token，AVL rotation 与 commit 均不分配。
+        let mut segment_slots = segment_slots.into_iter();
         for key in keys {
             let area = self.areas.remove(&key).unwrap();
             let start = range.start.max(area.vpn_range.start);
@@ -44,7 +68,9 @@ impl MemorySet {
             }
             middle.map_permission = permission;
             for segment in [left, Some(middle), right].into_iter().flatten() {
-                self.areas.insert(segment.vpn_range.start, segment);
+                let slot = segment_slots.next().expect("preflighted split VMA slot");
+                self.areas
+                    .commit_vacant(slot.fill(segment.vpn_range.start, segment));
             }
         }
         self.merge_adjacent_anonymous();
@@ -106,8 +132,8 @@ impl MemorySet {
             let mut flags = PTEFlags::from_bits(permission.bits()).unwrap();
             if permission.contains(MapPermission::W)
                 && area.shared_anonymous.is_none()
-                && (Arc::strong_count(frame) > 1
-                    || area.private_file.is_some() && !area.dirty_private.contains(&vpn))
+                && (Arc::strong_count(&frame.frame) > 1
+                    || area.private_file.is_some() && !frame.dirty)
             {
                 flags.remove(PTEFlags::W);
             }

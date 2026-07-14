@@ -1,35 +1,40 @@
 use alloc::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     sync::{Arc, Weak},
-    vec,
     vec::Vec,
 };
 use spin::{Mutex, Once};
 
-use crate::ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite};
+use crate::{
+    fallible_tree::FallibleMap,
+    ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite},
+};
 
 use super::{SocketError, SocketPollState, SocketType, SocketWaitSource};
 
 const UNIX_PATH_MAX: usize = 108;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct UnixAddress(Vec<u8>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct UnixAddress {
+    length: u8,
+    bytes: [u8; UNIX_PATH_MAX],
+}
 
 impl UnixAddress {
     pub(crate) fn new(bytes: &[u8]) -> Result<Self, SocketError> {
         if bytes.is_empty() || bytes.len() > UNIX_PATH_MAX {
             return Err(SocketError::Invalid);
         }
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| SocketError::NoMemory)?;
-        owned.extend_from_slice(bytes);
-        Ok(Self(owned))
+        let mut address = Self {
+            length: bytes.len() as u8,
+            bytes: [0; UNIX_PATH_MAX],
+        };
+        address.bytes[..bytes.len()].copy_from_slice(bytes);
+        Ok(address)
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes[..usize::from(self.length)]
     }
 }
 
@@ -70,11 +75,14 @@ pub(crate) struct UnixSocket {
 
 // OWNER: AF_UNIX module uniquely owns address-to-live-socket resolution. Weak values prevent a
 // bound address from keeping a closed OFD alive; bind prunes stale entries before collision checks.
-static NAMESPACE: Once<Mutex<BTreeMap<UnixAddress, Weak<UnixSocket>>>> = Once::new();
+static NAMESPACE: Once<Mutex<FallibleMap<UnixAddress, Weak<UnixSocket>>>> = Once::new();
 
 impl UnixSocket {
-    pub(crate) fn new(socket_type: SocketType, notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn new(
+        socket_type: SocketType,
+        notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+    ) -> Result<Arc<Self>, SocketError> {
+        Arc::try_new(Self {
             socket_type,
             state: Mutex::new(match socket_type {
                 SocketType::Stream => SocketState::Initial,
@@ -88,6 +96,7 @@ impl UnixSocket {
             notify_read: notify.0,
             notify_write: notify.1,
         })
+        .map_err(|_| SocketError::NoMemory)
     }
 
     pub(crate) fn socket_type(&self) -> SocketType {
@@ -98,30 +107,34 @@ impl UnixSocket {
         if self.address.lock().is_some() {
             return Err(SocketError::Invalid);
         }
-        let mut namespace = NAMESPACE.call_once(|| Mutex::new(BTreeMap::new())).lock();
+        let mut namespace = NAMESPACE
+            .call_once(|| Mutex::new(FallibleMap::new()))
+            .lock();
         namespace.retain(|_, socket| socket.strong_count() != 0);
         if namespace.contains_key(&address) {
             return Err(SocketError::AddressInUse);
         }
-        namespace.insert(address.clone(), Arc::downgrade(self));
+        let prepared = FallibleMap::try_prepare(address, Arc::downgrade(self))
+            .map_err(|_| SocketError::NoMemory)?;
+        namespace.commit_vacant(prepared);
         *self.address.lock() = Some(address);
         Ok(())
     }
 
     pub(crate) fn address(&self) -> Option<UnixAddress> {
-        self.address.lock().clone()
+        *self.address.lock()
     }
 
     pub(crate) fn peer_address(&self) -> Option<UnixAddress> {
         match &*self.state.lock() {
-            SocketState::Stream { peer, .. } => peer.clone(),
+            SocketState::Stream { peer, .. } => *peer,
             _ => None,
         }
     }
 
     pub(crate) fn lookup(address: &UnixAddress) -> Result<Arc<Self>, SocketError> {
         NAMESPACE
-            .call_once(|| Mutex::new(BTreeMap::new()))
+            .call_once(|| Mutex::new(FallibleMap::new()))
             .lock()
             .get(address)
             .and_then(Weak::upgrade)
@@ -412,12 +425,12 @@ impl UnixSocket {
     /// @description 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
     ///
     /// @return 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
-    pub(in crate::socket) fn wait_sources(&self) -> Vec<SocketWaitSource> {
+    pub(in crate::socket) fn wait_sources(&self) -> super::SocketWaitSources {
         let state = self.state.lock();
         match &*state {
             SocketState::Stream {
                 receive, transmit, ..
-            } => vec![
+            } => [
                 receive.as_ref().map(|end| SocketWaitSource::Data {
                     pipe: end.pipe(),
                     direction: PipeDirection::Read,
@@ -426,11 +439,11 @@ impl UnixSocket {
                     pipe: end.pipe(),
                     direction: PipeDirection::Write,
                 }),
-            ]
-            .into_iter()
-            .flatten()
-            .collect(),
-            _ => vec![SocketWaitSource::Notification(self.notify_read.pipe())],
+            ],
+            _ => [
+                Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+                None,
+            ],
         }
     }
 
@@ -482,7 +495,9 @@ impl Drop for UnixSocket {
         let Some(address) = self.address.get_mut().take() else {
             return;
         };
-        let mut namespace = NAMESPACE.call_once(|| Mutex::new(BTreeMap::new())).lock();
+        let mut namespace = NAMESPACE
+            .call_once(|| Mutex::new(FallibleMap::new()))
+            .lock();
         if namespace
             .get(&address)
             .is_some_and(|entry| entry.strong_count() == 0)

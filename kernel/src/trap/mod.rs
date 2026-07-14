@@ -173,16 +173,20 @@ pub(crate) fn trap_handler() {
 }
 
 fn handle_user_page_fault(address: usize, access: crate::memory::PageFaultAccess) {
-    let outcome = task::current_task()
-        .and_then(|current| current.handle_page_fault(address, access).ok())
-        .unwrap_or(crate::memory::PageFaultOutcome::SegmentationFault);
+    let outcome = task::current_task().map(|current| current.handle_page_fault(address, access));
     match outcome {
-        crate::memory::PageFaultOutcome::Handled => {}
-        crate::memory::PageFaultOutcome::BusError => {
+        Some(Ok(crate::memory::PageFaultOutcome::Handled)) => {}
+        Some(Ok(crate::memory::PageFaultOutcome::BusError)) => {
             debug!("shared file mapping beyond EOF, VA:{address:#x}");
             exit_current_group_by_signal(7);
         }
-        crate::memory::PageFaultOutcome::SegmentationFault => {
+        // 物理页耗尽不是 address violation；缺少该分支会把真实 OOM 静默伪装为 SIGSEGV，
+        // 让 userspace 无法区分坏指针与无 swap 系统的 memory-pressure termination。
+        Some(Err(error)) if error.is_out_of_memory() => {
+            debug!("user page fault out of memory, VA:{address:#x}");
+            exit_current_group_by_signal(9);
+        }
+        Some(Ok(crate::memory::PageFaultOutcome::SegmentationFault)) | Some(Err(_)) | None => {
             debug!("user page fault, VA:{address:#x}");
             exit_current_group_by_signal(11);
         }

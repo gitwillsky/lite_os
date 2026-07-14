@@ -204,7 +204,10 @@ pub(crate) fn init_topology(board_info: &crate::arch::dtb::BoardInfo, boot_hart:
         "hart topology initialized twice"
     );
 
-    let mut states = Vec::with_capacity(board_info.hart_count);
+    let mut states = Vec::new();
+    states
+        .try_reserve_exact(board_info.hart_count)
+        .expect("hart topology allocation failed");
     let mut index_by_hart = [NO_HART_INDEX; HART_ID_CAPACITY];
     let mut mask = board_info.hart_mask;
     while mask != 0 {

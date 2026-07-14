@@ -1,5 +1,4 @@
 use alloc::{
-    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -7,7 +6,7 @@ use core::net::Ipv4Addr;
 
 use smoltcp::{
     iface::{Config, Interface, PollIngressSingleResult, SocketHandle, SocketSet},
-    socket::udp,
+    socket::AnySocket,
     time::Instant,
     wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr},
 };
@@ -15,6 +14,7 @@ use spin::{Mutex, Once};
 
 use crate::{
     drivers::network::{NetworkStatistics, network_device},
+    fallible_tree::FallibleMap,
     ipc::PipeEnd,
     timer::get_time_us,
 };
@@ -22,7 +22,7 @@ use crate::{
 use self::device::EthernetDevice;
 use self::options::InetSocketOptions;
 use self::tcp::TcpEndpointState;
-use super::{InetAddress, SocketError, packet::PacketSocket};
+use super::{InetAddress, SocketError, SocketPollState};
 
 #[path = "device.rs"]
 mod device;
@@ -30,6 +30,8 @@ mod device;
 mod options;
 #[path = "inet/raw.rs"]
 mod raw_endpoint;
+#[path = "inet/readiness.rs"]
+mod readiness;
 #[path = "inet/tcp.rs"]
 mod tcp;
 #[path = "inet/timing.rs"]
@@ -45,14 +47,10 @@ const EPHEMERAL_END: u16 = 65_535;
 // 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 hart 永久停留在 softirq context；
 // 若没有此上限，user task 和其他 deferred work 在高包速下可能饥饿。
 const NETWORK_RX_BUDGET: usize = 64;
-
-struct PollOutcome {
-    notifications: Vec<Arc<InetSocket>>,
-    packet_notifications: Vec<Arc<PacketSocket>>,
-    // 表示本轮未探测到 RX queue 为空；调用者必须重新投递 softirq，否则队列中已完成但
-    // 没有新 IRQ edge 的 frame 可能永久滞留。
-    rx_budget_exhausted: bool,
-}
+// smoltcp `SocketSet::add` 在 owned storage 耗尽时使用不可失败的
+// `Vec::push`。该 owner 以默认 RLIMIT_NOFILE 作为单次启动的预留窗口；
+// 缺失上限检查时 socket 压力会触发 kernel-wide allocation abort，而非 ENOMEM。
+const SOCKET_STORAGE_CAPACITY: usize = 1024;
 
 #[derive(Clone, Copy)]
 struct InterfaceState {
@@ -69,16 +67,35 @@ struct EndpointState {
     // it outside this endpoint owner would let setsockopt and packet delivery observe different flags.
     packet_info: bool,
     options: InetSocketOptions,
+    // 协议 poll 前的唯一 edge 快照；缺失时无法区分长期 writable 与新 writable transition。
+    readiness: SocketPollState,
+    // poll 已观察到 false → true，但尚未在 stack lock 外通知；缺失会迫使临界区内反向进入 wait owner。
+    notification_pending: bool,
+}
+
+/// 在注册协议状态前分配 InetSocket 的 Arc storage。
+///
+/// `build` 只在 control block 已就绪后运行；缺失该顺序会让 endpoint 先进入 NetworkStack，
+/// 随后的 Arc OOM 却无法向调用者返回一个未发布状态。
+fn try_allocate_endpoint(
+    build: impl FnOnce() -> Result<InetSocket, SocketError>,
+) -> Result<Arc<InetSocket>, SocketError> {
+    let mut slot = Arc::<InetSocket>::try_new_uninit().map_err(|_| SocketError::NoMemory)?;
+    let endpoint = build()?;
+    Arc::get_mut(&mut slot)
+        .expect("new endpoint Arc must be uniquely owned")
+        .write(endpoint);
+    // SAFETY: slot 是尚未克隆的唯一 Arc，且上一行已完整初始化 InetSocket storage。
+    Ok(unsafe { slot.assume_init() })
 }
 
 struct NetworkStack {
     interface: Interface,
     device: EthernetDevice,
     sockets: SocketSet<'static>,
-    endpoints: BTreeMap<SocketHandle, EndpointState>,
-    raw_endpoints: BTreeMap<SocketHandle, raw_endpoint::RawEndpointState>,
-    tcp_endpoints: BTreeMap<usize, TcpEndpointState>,
-    orphaned_tcp: Vec<SocketHandle>,
+    endpoints: FallibleMap<SocketHandle, EndpointState>,
+    raw_endpoints: FallibleMap<SocketHandle, raw_endpoint::RawEndpointState>,
+    tcp_endpoints: FallibleMap<usize, TcpEndpointState>,
     interface_state: InterfaceState,
     next_ephemeral: u16,
     next_tcp_ephemeral: u16,
@@ -109,26 +126,20 @@ fn from_ip(address: IpAddress) -> Ipv4Addr {
 }
 
 impl NetworkStack {
-    fn poll(&mut self) -> PollOutcome {
-        let before: Vec<_> = self
-            .endpoints
-            .iter()
-            .map(|(handle, state)| {
-                let socket = self.sockets.get::<udp::Socket<'static>>(*handle);
-                (
-                    *handle,
-                    state.endpoint.clone(),
-                    socket.can_recv(),
-                    socket.can_send(),
-                )
-            })
-            .collect();
-        let tcp_before: Vec<_> = self
-            .tcp_endpoints
-            .iter()
-            .map(|(&id, state)| (id, state.endpoint.clone(), state.poll_state(self)))
-            .collect();
-        let raw_before = raw_endpoint::readiness_snapshot(self);
+    fn add_socket<T: AnySocket<'static>>(
+        &mut self,
+        socket: T,
+    ) -> Result<SocketHandle, SocketError> {
+        if self.sockets.iter().count() >= SOCKET_STORAGE_CAPACITY {
+            return Err(SocketError::NoMemory);
+        }
+        // init 已为全部 slot 预留 backing storage；active count 低于上限时，
+        // add 要么复用 remove 留下的空洞，要么在已预留 capacity 内 push。
+        Ok(self.sockets.add(socket))
+    }
+
+    fn poll(&mut self) -> bool {
+        self.snapshot_readiness();
         let timestamp = now();
         // 1. 定时维护只执行一次，确保单轮协议推进的固定成本。
         self.interface.poll_maintenance(timestamp);
@@ -148,32 +159,8 @@ impl NetworkStack {
         // 3. egress API 自身保证有界；在 ingress 后推进一次即可发送 ARP/UDP 响应。
         self.interface
             .poll_egress(timestamp, &mut self.device, &mut self.sockets);
-        let mut notifications = Vec::new();
-        for (handle, endpoint, was_readable, was_writable) in before {
-            let socket = self.sockets.get::<udp::Socket<'static>>(handle);
-            if (!was_readable && socket.can_recv() || !was_writable && socket.can_send())
-                && let Some(endpoint) = endpoint.upgrade()
-            {
-                notifications.push(endpoint);
-            }
-        }
-        for (id, endpoint, before) in tcp_before {
-            if let Some(state) = self.tcp_endpoints.get(&id) {
-                let after = state.poll_state(self);
-                if after != before
-                    && (after.readable || after.writable || after.hangup || after.error)
-                    && let Some(endpoint) = endpoint.upgrade()
-                {
-                    notifications.push(endpoint);
-                }
-            }
-        }
-        notifications.extend(raw_endpoint::readiness_notifications(self, raw_before));
-        PollOutcome {
-            notifications,
-            packet_notifications: self.device.take_packet_notifications(),
-            rx_budget_exhausted,
-        }
+        self.capture_readiness_transitions();
+        rx_budget_exhausted
     }
 
     fn apply_interface_state(&mut self) {
@@ -211,15 +198,22 @@ pub(crate) fn init() {
     config.random_seed =
         get_time_us() ^ u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
     let interface = Interface::new(config, &mut device, now());
+    let mut socket_storage = Vec::new();
+    if socket_storage
+        .try_reserve_exact(SOCKET_STORAGE_CAPACITY)
+        .is_err()
+    {
+        error!("network socket storage allocation failed");
+        return;
+    }
     NETWORK_STACK.call_once(|| {
         Mutex::new(NetworkStack {
             interface,
             device,
-            sockets: SocketSet::new(Vec::new()),
-            endpoints: BTreeMap::new(),
-            raw_endpoints: BTreeMap::new(),
-            tcp_endpoints: BTreeMap::new(),
-            orphaned_tcp: Vec::new(),
+            sockets: SocketSet::new(socket_storage),
+            endpoints: FallibleMap::new(),
+            raw_endpoints: FallibleMap::new(),
+            tcp_endpoints: FallibleMap::new(),
             interface_state: InterfaceState {
                 address: None,
                 prefix_length: 0,
@@ -239,14 +233,9 @@ pub(crate) fn init() {
 /// @errors stack 尚未初始化时返回 `false`，不产生错误。
 pub(crate) fn dispatch_network_work() -> bool {
     if let Some(stack) = NETWORK_STACK.get() {
-        let outcome = stack.lock().poll();
-        for endpoint in outcome.notifications {
-            endpoint.notify();
-        }
-        for endpoint in outcome.packet_notifications {
-            endpoint.notify();
-        }
-        outcome.rx_budget_exhausted
+        let backlog = stack.lock().poll();
+        readiness::notify_pending(stack);
+        backlog
     } else {
         false
     }
@@ -278,12 +267,18 @@ impl InetSocket {
     ) -> Result<Arc<Self>, SocketError> {
         if socket_type == super::SocketType::Stream {
             let mut network = stack()?.lock();
-            let id = tcp::create_endpoint(&mut network, Weak::new())?;
-            let endpoint = Arc::new(Self {
-                endpoint: InetEndpoint::Tcp(id),
-                notify_read: notify.0,
-                notify_write: notify.1,
+            let endpoint = try_allocate_endpoint(|| {
+                let id = tcp::create_endpoint(&mut network, Weak::new())?;
+                Ok(Self {
+                    endpoint: InetEndpoint::Tcp(id),
+                    notify_read: notify.0,
+                    notify_write: notify.1,
+                })
             });
+            let endpoint = endpoint?;
+            let InetEndpoint::Tcp(id) = endpoint.endpoint else {
+                unreachable!("TCP constructor returned a non-TCP endpoint")
+            };
             network
                 .tcp_endpoints
                 .get_mut(&id)
@@ -295,12 +290,18 @@ impl InetSocket {
             return raw_endpoint::new(notify);
         }
         let mut network = stack()?.lock();
-        let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
-        let endpoint = Arc::new(Self {
-            endpoint: InetEndpoint::Udp(handle),
-            notify_read: notify.0,
-            notify_write: notify.1,
+        let endpoint = try_allocate_endpoint(|| {
+            let handle = udp_endpoint::create_endpoint(&mut network, Weak::new())?;
+            Ok(Self {
+                endpoint: InetEndpoint::Udp(handle),
+                notify_read: notify.0,
+                notify_write: notify.1,
+            })
         });
+        let endpoint = endpoint?;
+        let InetEndpoint::Udp(handle) = endpoint.endpoint else {
+            unreachable!("UDP constructor returned a non-UDP endpoint")
+        };
         network
             .endpoints
             .get_mut(&handle)

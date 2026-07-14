@@ -8,22 +8,26 @@ fn clone_shared_file_area(
         .shared_file
         .as_ref()
         .expect("shared-file clone requires shared metadata");
-    let mut resident = BTreeMap::new();
+    let mut resident = FallibleMap::new();
     for (&vpn, source) in &shared.resident {
         let cloned_page = SharedResident::new(source.page.clone(), source.writer);
+        let ppn = cloned_page.page.frame().ppn();
+        let prepared = resident
+            .try_prepare_vacant(vpn, cloned_page)
+            .map_err(|_| MemoryError::OutOfMemory)?;
         if MapArea::has_leaf_permission(area.map_permission) {
             page_table.map(
                 vpn,
-                cloned_page.page.frame().ppn(),
+                ppn,
                 PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
             )?;
         }
-        resident.insert(vpn, cloned_page);
+        resident.commit_vacant(prepared);
     }
     Ok(MapArea {
         vpn_range: area.vpn_range.clone(),
         data_page_offset: area.data_page_offset,
-        data_frames: BTreeMap::new(),
+        data_frames: FallibleMap::new(),
         map_type: area.map_type,
         map_permission: area.map_permission,
         global: area.global,
@@ -36,8 +40,6 @@ fn clone_shared_file_area(
         }),
         private_file: None,
         lazy_private: false,
-        discardable: BTreeSet::new(),
-        dirty_private: BTreeSet::new(),
     })
 }
 
@@ -49,52 +51,57 @@ impl MemorySet {
         cloned.program_break = self.program_break;
         cloned.argument_range = self.argument_range.clone();
         cloned.map_trampoline()?;
-        for (key, area) in &mut self.areas {
+        let page_table = &mut self.page_table;
+        self.areas.try_for_each_mut(|key, area| {
+            // 先预留 cloned VMA node；缺失它会在 parent COW PTE 与 child PTE
+            // 已改变后才发现无法发布 child VMA owner。
+            let area_slot =
+                FallibleMap::try_reserve_node().map_err(|_| MemoryError::OutOfMemory)?;
             let cloned_area = if area.map_permission.contains(MapPermission::U) {
                 if area.shared_file.is_some() {
-                    let cloned_area = clone_shared_file_area(area, &mut cloned.page_table)?;
-                    assert!(cloned.areas.insert(*key, cloned_area).is_none());
-                    continue;
-                }
-                let cloned_area = MapArea {
-                    vpn_range: area.vpn_range.clone(),
-                    data_page_offset: area.data_page_offset,
-                    data_frames: area.data_frames.clone(),
-                    map_type: area.map_type,
-                    map_permission: area.map_permission,
-                    global: area.global,
-                    kind: area.kind,
-                    shared_anonymous: area.shared_anonymous.clone(),
-                    shared_file: None,
-                    private_file: area.private_file.clone(),
-                    lazy_private: area.lazy_private,
-                    discardable: area.discardable.clone(),
-                    dirty_private: area.dirty_private.clone(),
-                };
-                if MapArea::has_leaf_permission(area.map_permission) {
-                    let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
-                    if area.shared_anonymous.is_none() {
-                        flags.remove(PTEFlags::W);
-                    }
-                    for (&vpn, frame) in &area.data_frames {
-                        if area.map_permission.contains(MapPermission::W)
-                            && area.shared_anonymous.is_none()
-                        {
-                            self.page_table.set_flags(vpn, flags)?;
-                        }
-                        cloned.page_table.map(vpn, frame.ppn, flags)?;
-                    }
+                    clone_shared_file_area(area, &mut cloned.page_table)?
                 } else {
-                    for &vpn in area.data_frames.keys() {
-                        cloned.page_table.reserve(vpn)?;
+                    let cloned_area = MapArea {
+                        vpn_range: area.vpn_range.clone(),
+                        data_page_offset: area.data_page_offset,
+                        data_frames: area.try_clone_data_frames()?,
+                        map_type: area.map_type,
+                        map_permission: area.map_permission,
+                        global: area.global,
+                        kind: area.kind,
+                        shared_anonymous: area.shared_anonymous.clone(),
+                        shared_file: None,
+                        private_file: area.private_file.clone(),
+                        lazy_private: area.lazy_private,
+                    };
+                    if MapArea::has_leaf_permission(area.map_permission) {
+                        let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
+                        if area.shared_anonymous.is_none() {
+                            flags.remove(PTEFlags::W);
+                        }
+                        for (&vpn, frame) in &area.data_frames {
+                            if area.map_permission.contains(MapPermission::W)
+                                && area.shared_anonymous.is_none()
+                            {
+                                page_table.set_flags(vpn, flags)?;
+                            }
+                            cloned.page_table.map(vpn, frame.ppn, flags)?;
+                        }
+                    } else {
+                        for (&vpn, _) in &area.data_frames {
+                            cloned.page_table.reserve(vpn)?;
+                        }
                     }
+                    cloned_area
                 }
-                cloned_area
             } else {
                 area.try_clone_into(&mut cloned.page_table)?
             };
-            assert!(cloned.areas.insert(*key, cloned_area).is_none());
-        }
+            cloned
+                .areas
+                .commit_vacant(area_slot.fill(*key, cloned_area));
+            Ok::<(), MemoryError>(())
+        })?;
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after fork COW publication");
         Ok(cloned)
     }
@@ -102,7 +109,7 @@ impl MemorySet {
     /// @description 处理可写用户 VMA 上的 COW store fault。
     pub(crate) fn handle_cow_fault(&mut self, address: usize) -> Result<bool, MemoryError> {
         let vpn = VirtualAddress::from(address).floor();
-        let Some((_, area)) = self.areas.range_mut(..=vpn).next_back() else {
+        let Some((_, area)) = self.areas.floor_mut(&vpn) else {
             return Ok(false);
         };
         if vpn >= area.vpn_range.end
@@ -132,13 +139,14 @@ impl MemorySet {
         if Arc::strong_count(frame) > 1 {
             let mut replacement = alloc().ok_or(MemoryError::OutOfMemory)?;
             replacement.bytes_mut().copy_from_slice(frame.bytes());
-            *frame = Arc::new(replacement);
+            let replacement = try_memory_arc(replacement)?;
             self.page_table.unmap(vpn)?;
             self.page_table.map(
                 vpn,
-                frame.ppn,
+                replacement.ppn,
                 PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
             )?;
+            frame.frame = replacement;
         } else {
             self.page_table.set_flags(
                 vpn,

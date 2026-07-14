@@ -169,8 +169,7 @@ impl VirtualFileSystem {
                 name => {
                     let parent = opened.clone();
                     let inode = parent.inode().find_child(name)?;
-                    opened =
-                        self.register(OpenedFile::child(inode, parent.clone(), name.to_vec()))?;
+                    opened = self.register(OpenedFile::child(inode, parent.clone(), name)?)?;
                     opened = self.enter_mount(opened)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
@@ -182,6 +181,9 @@ impl VirtualFileSystem {
                         }
                         if let Some(target) = opened.inode().follow_link() {
                             let mut remaining = Vec::new();
+                            remaining
+                                .try_reserve_exact(path.len())
+                                .map_err(|_| FileSystemError::OutOfMemory)?;
                             for part in path
                                 .split(|byte| *byte == b'/')
                                 .filter(|part| !matches!(*part, b"" | b"."))
@@ -217,6 +219,11 @@ impl VirtualFileSystem {
                             .filter(|part| !matches!(*part, b"" | b"."))
                             .skip(index + 1);
                         let mut expanded = target;
+                        // remaining path 是原 path 的子序列；一次预留 path.len()
+                        // 覆盖所有分隔符与 trailing slash，缺失时 push 会走全局 OOM abort。
+                        expanded
+                            .try_reserve(path.len())
+                            .map_err(|_| FileSystemError::OutOfMemory)?;
                         for part in remaining {
                             if expanded.last() != Some(&b'/') {
                                 expanded.push(b'/');
@@ -265,9 +272,14 @@ impl VirtualFileSystem {
         if name.is_empty() {
             return Err(FileSystemError::InvalidPath);
         }
+        let mut owned_name = Vec::new();
+        owned_name
+            .try_reserve_exact(name.len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        owned_name.extend_from_slice(name);
         Ok((
             self.resolve_from(start, parent_path, false, identity)?,
-            name.to_vec(),
+            owned_name,
         ))
     }
 
@@ -311,7 +323,7 @@ impl VirtualFileSystem {
         if root_fs.is_some() {
             return Err(FileSystemError::AlreadyExists);
         }
-        let root = self.register(OpenedFile::root(fs.root_inode()?))?;
+        let root = self.register(OpenedFile::root(fs.root_inode()?)?)?;
         *root_fs = Some(RootMount {
             source,
             filesystem: fs,
@@ -347,11 +359,8 @@ impl VirtualFileSystem {
         let parent = point.parent().ok_or(FileSystemError::InvalidPath)?;
         let point_identity = Self::identity(&point.inode())?;
         let root_identity = Self::identity(&root_inode)?;
-        let root = self.register(OpenedFile::child(
-            root_inode,
-            parent.clone(),
-            point.location_name(),
-        ))?;
+        let point_name = point.location_name()?;
+        let root = self.register(OpenedFile::child(root_inode, parent.clone(), &point_name)?)?;
         let mut mounts = self.mounts.lock();
         if mounts.iter().any(|mount| {
             mount.point_identity == point_identity || mount.root_identity == root_identity

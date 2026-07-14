@@ -1,10 +1,8 @@
-use alloc::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use alloc::sync::Arc;
 
 use crate::{
     arch::hart,
+    fallible_tree::FallibleMap,
     task::{
         PendingSignal, TaskControlBlock, WaitResult, current_task,
         processor::request_tick_reschedule,
@@ -39,10 +37,10 @@ impl RealTimer {
 
 /// @description ITIMER_REAL record 与 active deadline index 的唯一复合状态 owner。
 pub(super) struct RealTimerQueue {
-    timers: BTreeMap<usize, RealTimer>,
+    timers: FallibleMap<usize, RealTimer>,
     // OWNER: 仅本类型在同一 timer lock 下同步 record 与 active `(deadline, TGID)` membership。
     // 缺失 index 会让每个 tick 扫描全部 Process；分离写入口会漏发或重复 SIGALRM。
-    deadline_index: BTreeSet<(u64, usize)>,
+    deadline_index: FallibleMap<(u64, usize), ()>,
 }
 
 impl RealTimerQueue {
@@ -51,15 +49,15 @@ impl RealTimerQueue {
     /// @return 空 ITIMER_REAL queue。
     pub(super) fn new() -> Self {
         Self {
-            timers: BTreeMap::new(),
-            deadline_index: BTreeSet::new(),
+            timers: FallibleMap::new(),
+            deadline_index: FallibleMap::new(),
         }
     }
 
     fn take(&mut self, tgid: usize) -> Option<RealTimer> {
         let timer = self.timers.remove(&tgid)?;
         if let Some(expiration) = timer.next_expiration_us {
-            assert!(self.deadline_index.remove(&(expiration, tgid)));
+            assert!(self.deadline_index.remove(&(expiration, tgid)).is_some());
         }
         Some(timer)
     }
@@ -72,26 +70,71 @@ impl RealTimerQueue {
         self.take(tgid);
     }
 
-    fn replace(&mut self, tgid: usize, value_us: u64, interval_us: u64, now_us: u64) -> (u64, u64) {
-        // 1. 先撤下旧 record 与对应 index key，保证同一 TGID 只发布一个 active deadline。
-        let previous = self
-            .take(tgid)
-            .map_or((0, 0), |timer| timer.snapshot(now_us));
+    fn replace(
+        &mut self,
+        tgid: usize,
+        value_us: u64,
+        interval_us: u64,
+        now_us: u64,
+    ) -> Result<(u64, u64), RealTimerError> {
         let next_expiration_us = (value_us != 0).then(|| now_us.saturating_add(value_us));
-        // 2. value=0 且 interval!=0 仍是用户可观察的 disarmed state；丢弃会让 getitimer
-        //    错误返回零 interval。
-        if next_expiration_us.is_some() || interval_us != 0 {
-            let timer = RealTimer {
-                next_expiration_us,
-                interval_us,
-            };
-            assert!(self.timers.insert(tgid, timer).is_none());
-            // 3. active record 必须在同一锁内发布精确 key；否则 tick 会漏发或重复 SIGALRM。
-            if let Some(expiration) = next_expiration_us {
-                assert!(self.deadline_index.insert((expiration, tgid)));
+        let replacement = (next_expiration_us.is_some() || interval_us != 0).then_some(RealTimer {
+            next_expiration_us,
+            interval_us,
+        });
+        let current = self.timers.get(&tgid).copied();
+
+        // 1. 仅为当前事务缺少的 membership 预留节点；失败时旧 record/index 完全不变。
+        let prepared_timer = if current.is_none() {
+            replacement
+                .map(|timer| FallibleMap::try_prepare(tgid, timer))
+                .transpose()
+                .map_err(|_| RealTimerError::OutOfMemory)?
+        } else {
+            None
+        };
+        let prepared_deadline = if current.and_then(|timer| timer.next_expiration_us).is_none() {
+            next_expiration_us
+                .map(|expiration| FallibleMap::try_prepare((expiration, tgid), ()))
+                .transpose()
+                .map_err(|_| RealTimerError::OutOfMemory)?
+        } else {
+            None
+        };
+
+        // 2. 预留完成后才摘下旧 index；active→active 直接复用同一个 AVL node。
+        let previous = current.map_or((0, 0), |timer| timer.snapshot(now_us));
+        let mut deadline = current.and_then(|timer| {
+            timer.next_expiration_us.map(|expiration| {
+                self.deadline_index
+                    .take_entry(&(expiration, tgid))
+                    .expect("real-timer record lost deadline index")
+            })
+        });
+        match replacement {
+            Some(timer) => {
+                if let Some(current) = self.timers.get_mut(&tgid) {
+                    *current = timer;
+                } else {
+                    self.timers
+                        .commit_vacant(prepared_timer.expect("new timer node was not prepared"));
+                }
+            }
+            None => {
+                self.timers.remove(&tgid);
             }
         }
-        previous
+        // 3. active record 必须在同一锁内发布精确 key；提交阶段不再分配。
+        if let Some(expiration) = next_expiration_us {
+            let entry = if let Some(mut entry) = deadline.take() {
+                entry.set_key((expiration, tgid));
+                entry
+            } else {
+                prepared_deadline.expect("new deadline node was not prepared")
+            };
+            self.deadline_index.commit_vacant(entry);
+        }
+        Ok(previous)
     }
 
     fn current(&self, tgid: usize, now_us: u64) -> (u64, u64) {
@@ -102,12 +145,15 @@ impl RealTimerQueue {
     }
 
     fn pop_expired(&mut self, now_us: u64) -> Option<usize> {
-        let (expiration, tgid) = *self.deadline_index.first()?;
+        let (&(expiration, tgid), _) = self.deadline_index.first_key_value()?;
         if expiration > now_us {
             return None;
         }
         // 1. 从有序 index 摘下最早 deadline，并校验它仍指向同一 record。
-        assert!(self.deadline_index.remove(&(expiration, tgid)));
+        let mut deadline = self
+            .deadline_index
+            .take_entry(&(expiration, tgid))
+            .expect("selected real-timer deadline disappeared");
         let timer = self
             .timers
             .get_mut(&tgid)
@@ -127,16 +173,23 @@ impl RealTimerQueue {
             });
         // 3. 只有仍 active 的 record 才重新发布 index membership。
         if let Some(next) = timer.next_expiration_us {
-            assert!(self.deadline_index.insert((next, tgid)));
+            deadline.set_key((next, tgid));
+            self.deadline_index.commit_vacant(deadline);
         }
         Some(tgid)
     }
 
     fn has_expired(&self, now_us: u64) -> bool {
         self.deadline_index
-            .first()
-            .is_some_and(|(expiration, _)| *expiration <= now_us)
+            .first_key_value()
+            .is_some_and(|(&(expiration, _), _)| expiration <= now_us)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RealTimerError {
+    NotFound,
+    OutOfMemory,
 }
 
 fn expire_real_timers(now_us: u64) {
@@ -177,7 +230,7 @@ pub(crate) fn set_real_timer(
     value_us: u64,
     interval_us: u64,
     now_us: u64,
-) -> Result<(u64, u64), ()> {
+) -> Result<(u64, u64), RealTimerError> {
     // graph → timer 是 set/get/exit 唯一锁序，保持 live TGID 校验到 timer mutation 原子。
     let graph = TASK_MANAGER.graph.lock();
     if !graph
@@ -185,12 +238,12 @@ pub(crate) fn set_real_timer(
         .get(&tgid)
         .is_some_and(|node| matches!(node.state, ProcessState::Live(_)))
     {
-        return Err(());
+        return Err(RealTimerError::NotFound);
     }
     let previous = TASK_MANAGER
         .real_timers
         .lock()
-        .replace(tgid, value_us, interval_us, now_us);
+        .replace(tgid, value_us, interval_us, now_us)?;
     drop(graph);
     Ok(previous)
 }

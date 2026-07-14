@@ -10,6 +10,8 @@ fn publish_child(
     parent: usize,
     child: Arc<TaskControlBlock>,
     vfork_parent: Option<Arc<TaskControlBlock>>,
+    thread_slot: crate::fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
+    process_slot: crate::fallible_tree::NodeSlot<usize, ProcessNode>,
 ) {
     let pid = child.tgid();
     let mut graph = TASK_MANAGER.graph.lock();
@@ -20,9 +22,9 @@ fn publish_child(
     assert!(matches!(parent_node.state, ProcessState::Live(_)));
     let session = parent_node.session;
     let process_group = parent_node.process_group;
-    let mut threads = BTreeMap::new();
-    threads.insert(child.tid(), child);
-    let previous = graph.nodes.insert(
+    let mut threads = FallibleMap::new();
+    threads.commit_vacant(thread_slot.fill(child.tid(), child));
+    graph.nodes.commit_vacant(process_slot.fill(
         pid,
         ProcessNode {
             parent: Some(parent),
@@ -32,13 +34,13 @@ fn publish_child(
             state: ProcessState::Live(threads),
             group_exit: None,
             job_control: JobControlState::Running,
+            exit_effects: 0,
             child_events: ChildEvents::default(),
-            child_waiters: BTreeMap::new(),
+            child_waiters: FallibleMap::new(),
             child_wait_claim: None,
             vfork_parent,
         },
-    );
-    assert!(previous.is_none(), "allocated PID already exists");
+    ));
     graph.processes_created = graph.processes_created.saturating_add(1);
 }
 
@@ -52,9 +54,21 @@ pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError
     }
     let parent = current_task().expect("fork requires current task");
     let pid = TASK_MANAGER.allocate_pid();
-    let child = Arc::new(parent.fork_process(pid)?);
+    let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
+        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+    let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
+        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+    let child = try_allocate_task(crate::memory::MemoryError::OutOfMemory, || {
+        parent.fork_process(pid)
+    })?;
     let child_pid = child.tgid();
-    publish_child(parent.tgid(), child.clone(), None);
+    publish_child(
+        parent.tgid(),
+        child.clone(),
+        None,
+        thread_slot,
+        process_slot,
+    );
     drop(creation);
     enqueue_new_task(child);
     Ok(child_pid)
@@ -73,9 +87,21 @@ pub(crate) fn vfork_current_process(
     }
     let parent = current_task().expect("vfork requires current task");
     let pid = TASK_MANAGER.allocate_pid();
-    let child = Arc::new(parent.vfork_process(pid, child_stack)?);
+    let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
+        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+    let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
+        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+    let child = try_allocate_task(crate::memory::MemoryError::OutOfMemory, || {
+        parent.vfork_process(pid, child_stack)
+    })?;
     let child_pid = child.tgid();
-    publish_child(parent.tgid(), child.clone(), Some(parent.clone()));
+    publish_child(
+        parent.tgid(),
+        child.clone(),
+        Some(parent.clone()),
+        thread_slot,
+        process_slot,
+    );
     drop(creation);
 
     let prepared = super::context_switch::prepare_current_block(&parent, (), |_, _| {

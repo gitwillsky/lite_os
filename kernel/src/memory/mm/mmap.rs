@@ -2,6 +2,7 @@ use super::*;
 
 mod advice;
 mod anonymous_shared;
+mod fault;
 mod protection;
 
 /// @description 用户 page fault 请求的访问类型。
@@ -250,171 +251,6 @@ impl MemorySet {
         Ok(start)
     }
 
-    pub(crate) fn handle_page_fault(
-        &mut self,
-        address: usize,
-        access: PageFaultAccess,
-    ) -> Result<PageFaultOutcome, MemoryError> {
-        self.handle_page_fault_with_limits(address, access, UserFaultLimits::initial_exec())
-    }
-
-    pub(crate) fn handle_page_fault_with_limits(
-        &mut self,
-        address: usize,
-        access: PageFaultAccess,
-        limits: UserFaultLimits,
-    ) -> Result<PageFaultOutcome, MemoryError> {
-        let vpn = VirtualAddress::from(address).floor();
-        self.grow_stack_for_fault(address, limits.stack, limits.address_space)?;
-        let needs_private_frame = self
-            .areas
-            .range(..=vpn)
-            .next_back()
-            .map(|(_, area)| {
-                vpn < area.vpn_range.end
-                    && area.lazy_private
-                    && area.shared_anonymous.is_none()
-                    && area.shared_file.is_none()
-                    && !area.data_frames.contains_key(&vpn)
-            })
-            .unwrap_or(false);
-        let mut prepared_private_frame = if needs_private_frame {
-            Some(self.allocate_private_frame()?)
-        } else {
-            None
-        };
-        let Some((_, area)) = self.areas.range_mut(..=vpn).next_back() else {
-            return Ok(PageFaultOutcome::SegmentationFault);
-        };
-        if vpn >= area.vpn_range.end || !area.map_permission.contains(MapPermission::U) {
-            return Ok(PageFaultOutcome::SegmentationFault);
-        }
-        let permitted = match access {
-            PageFaultAccess::Read => area.map_permission.contains(MapPermission::R),
-            PageFaultAccess::Write => area.map_permission.contains(MapPermission::W),
-            PageFaultAccess::Execute => area.map_permission.contains(MapPermission::X),
-        };
-        if !permitted {
-            return Ok(PageFaultOutcome::SegmentationFault);
-        }
-        if area
-            .private_file
-            .as_ref()
-            .is_some_and(|backing| !backing.faultable(vpn))
-        {
-            return Ok(PageFaultOutcome::BusError);
-        }
-        if let Some(shared) = &area.shared_anonymous {
-            if !area.data_frames.contains_key(&vpn) {
-                let index = shared.page_offset
-                    + vpn
-                        .as_usize()
-                        .saturating_sub(area.vpn_range.start.as_usize());
-                let frame = shared.backing.page(index)?;
-                self.page_table.map(
-                    vpn,
-                    frame.ppn,
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                )?;
-                area.data_frames.insert(vpn, frame);
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared anonymous page fault");
-                return Ok(PageFaultOutcome::Handled);
-            }
-            if self.page_table.translate(vpn).is_none() {
-                let frame = area.data_frames.get(&vpn).expect("resident shared page");
-                self.page_table.map(
-                    vpn,
-                    frame.ppn,
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                )?;
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared anonymous permission fault");
-            }
-            return Ok(PageFaultOutcome::Handled);
-        }
-        if area.shared_file.is_none() {
-            if access == PageFaultAccess::Write && area.discardable.remove(&vpn) {
-                return match self.handle_cow_fault(address)? {
-                    true => Ok(PageFaultOutcome::Handled),
-                    false => Ok(PageFaultOutcome::SegmentationFault),
-                };
-            }
-            if area.lazy_private && !area.data_frames.contains_key(&vpn) {
-                let mut frame = prepared_private_frame
-                    .take()
-                    .ok_or(MemoryError::OutOfMemory)?;
-                if let Some(backing) = &area.private_file {
-                    backing.fill(vpn, &mut frame)?;
-                }
-                let ppn = frame.ppn;
-                let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
-                if area.private_file.is_some() && area.map_permission.contains(MapPermission::W) {
-                    // 首次 read 保持只读，后续 store fault 是标记 MAP_PRIVATE dirty 的唯一入口。
-                    flags.remove(PTEFlags::W);
-                    if access == PageFaultAccess::Write {
-                        area.dirty_private.insert(vpn);
-                        flags |= PTEFlags::W;
-                    }
-                }
-                self.page_table.map(vpn, ppn, flags)?;
-                area.data_frames.insert(vpn, Arc::new(frame));
-                Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after private page fault");
-                return Ok(PageFaultOutcome::Handled);
-            }
-            if access == PageFaultAccess::Write && area.private_file.is_some() {
-                area.dirty_private.insert(vpn);
-            }
-            return match access {
-                PageFaultAccess::Write if self.handle_cow_fault(address)? => {
-                    Ok(PageFaultOutcome::Handled)
-                }
-                _ if self.page_table.translate(vpn).is_some() => Ok(PageFaultOutcome::Handled),
-                _ => Ok(PageFaultOutcome::SegmentationFault),
-            };
-        }
-        let shared = area.shared_file.as_mut().unwrap();
-        if let Some(resident) = shared.resident.get(&vpn) {
-            if self.page_table.translate(vpn).is_none() {
-                self.page_table.map(
-                    vpn,
-                    resident.page.frame().ppn(),
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                )?;
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared file permission fault");
-            }
-            return Ok(PageFaultOutcome::Handled);
-        }
-        let index = (shared.file_offset / config::PAGE_SIZE as u64)
-            + (vpn.as_usize() - area.vpn_range.start.as_usize()) as u64;
-        if index * config::PAGE_SIZE as u64 >= shared.mapping.size() {
-            return Ok(PageFaultOutcome::BusError);
-        }
-        let page = shared.mapping.page(index).map_err(|error| match error {
-            SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
-            SharedFileError::Io => MemoryError::Io,
-            SharedFileError::BeyondEof => MemoryError::InvalidRange,
-        })?;
-        let resident = SharedResident::new(page, area.map_permission.contains(MapPermission::W));
-        let flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
-        self.page_table
-            .map(vpn, resident.page.frame().ppn(), flags)?;
-        shared.resident.insert(vpn, resident);
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after shared page fault");
-        Ok(PageFaultOutcome::Handled)
-    }
-
-    fn allocate_private_frame(&mut self) -> Result<FrameTracker, MemoryError> {
-        if let Some(frame) = alloc() {
-            return Ok(frame);
-        }
-        // 1. 当前 mm 在已持有 AddressSpace lock 下直接回收；registry 会通过 try_lock 跳过它。
-        self.reclaim_private_pages(64);
-        // 2. alloc 的统一慢路径会在需要时再请求其他 resident owner，最后只重试一次。
-        alloc().ok_or(MemoryError::OutOfMemory)
-    }
-
     pub(crate) fn sync_shared_mapping(
         &self,
         address: usize,
@@ -455,30 +291,33 @@ impl MemorySet {
     }
 
     pub(crate) fn invalidate_shared_file(&mut self, id: SharedFileId, size: u64) {
-        for area in self.areas.values_mut() {
+        let page_table = &mut self.page_table;
+        self.areas.for_each_mut(|_, area| {
             let Some(shared) = &mut area.shared_file else {
-                continue;
+                return;
             };
             if shared.mapping.id() != id {
-                continue;
+                return;
             }
             let start = area.vpn_range.start;
             let file_offset = shared.file_offset;
-            let stale: Vec<_> = shared
-                .resident
-                .keys()
-                .copied()
-                .filter(|vpn| {
-                    file_offset
-                        + (vpn.as_usize() - start.as_usize()) as u64 * config::PAGE_SIZE as u64
-                        >= size
-                })
-                .collect();
-            for vpn in stale {
-                let _ = self.page_table.unmap(vpn);
+            // resident key 本身有序；直接定位 stale suffix 并逐个删除其首项，避免
+            // truncate 已提交后为临时 key snapshot 分配失败或从 map 起点反复扫描。
+            let stale_page_offset = size
+                .saturating_sub(file_offset)
+                .div_ceil(config::PAGE_SIZE as u64);
+            let Some(first_stale) = usize::try_from(stale_page_offset)
+                .ok()
+                .and_then(|offset| start.as_usize().checked_add(offset))
+                .map(VirtualPageNumber::from_vpn)
+            else {
+                return;
+            };
+            while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
+                let _ = page_table.unmap(vpn);
                 shared.resident.remove(&vpn);
             }
-        }
+        });
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after truncate invalidation");
     }
 
@@ -493,6 +332,7 @@ impl MemorySet {
                 if !matches!(area.kind, VmaKind::Anonymous | VmaKind::File) {
                     return Err(MemoryError::PermissionDenied);
                 }
+                keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
                 keys.push(*key);
             }
         }
@@ -501,18 +341,24 @@ impl MemorySet {
 
     fn merge_adjacent_anonymous(&mut self) {
         loop {
-            let keys: Vec<_> = self.areas.keys().copied().collect();
-            let Some((left_key, right_key)) = keys.windows(2).find_map(|pair| {
-                let left = &self.areas[&pair[0]];
-                let right = &self.areas[&pair[1]];
-                left.anonymous_mergeable(right)
-                    .then_some((pair[0], pair[1]))
-            }) else {
+            let mut areas = self.areas.iter();
+            let Some((mut left_key, mut left)) = areas.next() else {
                 break;
             };
-            let left = self.areas.remove(&left_key).unwrap();
+            let pair = areas.find_map(|(right_key, right)| {
+                let mergeable = left.anonymous_mergeable(right);
+                let result = mergeable.then_some((*left_key, *right_key));
+                left_key = right_key;
+                left = right;
+                result
+            });
+            let Some((left_key, right_key)) = pair else {
+                break;
+            };
+            let mut left = self.areas.take_entry(&left_key).unwrap();
             let right = self.areas.remove(&right_key).unwrap();
-            self.areas.insert(left_key, left.merge_anonymous(right));
+            left.value_mut().merge_anonymous(right);
+            self.areas.commit_vacant(left);
         }
     }
 
@@ -528,6 +374,28 @@ impl MemorySet {
     ) -> Result<(), MemoryError> {
         let range = Self::checked_page_range(address, length)?;
         let keys = self.overlapping_mmap_keys(range.start, range.end)?;
+        // 1. 只计算真正保留的 left/right segment，避免完整删除也临时占用两枚节点。
+        let slot_count = keys.iter().try_fold(0usize, |count, key| {
+            let area = &self.areas[key];
+            let cut_start = range.start.max(area.vpn_range.start);
+            let cut_end = range.end.min(area.vpn_range.end);
+            count
+                .checked_add(usize::from(area.vpn_range.start < cut_start))
+                .and_then(|count| count.checked_add(usize::from(cut_end < area.vpn_range.end)))
+                .ok_or(MemoryError::OutOfMemory)
+        })?;
+        // 2. 在 sync、PTE 撤销与 VMA removal 前完成全部可失败分配。
+        let mut segment_slots = Vec::new();
+        segment_slots
+            .try_reserve_exact(slot_count)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        for _ in 0..slot_count {
+            segment_slots.push(
+                FallibleMap::<VirtualPageNumber, MapArea>::try_reserve_node()
+                    .map_err(|_| MemoryError::OutOfMemory)?,
+            );
+        }
+        // 3. 从这里开始只有 writeback/PTE 领域错误，VMA segment publication 不再分配。
         for key in &keys {
             let area = &self.areas[key];
             let start = range.start.max(area.vpn_range.start);
@@ -547,6 +415,7 @@ impl MemorySet {
                     })?;
             }
         }
+        let mut segment_slots = segment_slots.into_iter();
         for key in keys {
             let area = self.areas.remove(&key).unwrap();
             let cut_start = range.start.max(area.vpn_range.start);
@@ -554,10 +423,14 @@ impl MemorySet {
             let (left, mut middle, right) = area.partition_protectable(cut_start, cut_end);
             middle.unmap(&mut self.page_table);
             if let Some(left) = left {
-                self.areas.insert(left.vpn_range.start, left);
+                let slot = segment_slots.next().expect("preflighted left VMA slot");
+                self.areas
+                    .commit_vacant(slot.fill(left.vpn_range.start, left));
             }
             if let Some(right) = right {
-                self.areas.insert(right.vpn_range.start, right);
+                let slot = segment_slots.next().expect("preflighted right VMA slot");
+                self.areas
+                    .commit_vacant(slot.fill(right.vpn_range.start, right));
             }
         }
         if !self.range_is_free(range.start, range.end) {

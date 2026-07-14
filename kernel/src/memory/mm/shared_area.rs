@@ -1,4 +1,3 @@
-use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
@@ -18,7 +17,7 @@ pub(super) struct AnonymousSharedBacking {
     page_count: usize,
     // OWNER: backing lock 唯一发布每个共享页索引的 frame；缺失它会让并发 fault
     // 为同一 MAP_SHARED 页建立不同物理 identity，破坏 futex 与跨 fork 可见性。
-    frames: Mutex<BTreeMap<usize, Arc<FrameTracker>>>,
+    frames: Mutex<FallibleMap<usize, Arc<FrameTracker>>>,
 }
 
 impl AnonymousSharedBacking {
@@ -36,11 +35,12 @@ impl AnonymousSharedBacking {
             })
             .expect("anonymous shared-backing identity exhausted")
             + 1;
-        Ok(Arc::new(Self {
+        Arc::try_new(Self {
             id,
             page_count,
-            frames: Mutex::new(BTreeMap::new()),
-        }))
+            frames: Mutex::new(FallibleMap::new()),
+        })
+        .map_err(|_| MemoryError::OutOfMemory)
     }
 
     pub(super) fn page(&self, index: usize) -> Result<Arc<FrameTracker>, MemoryError> {
@@ -50,9 +50,16 @@ impl AnonymousSharedBacking {
         if let Some(frame) = self.frames.lock().get(&index).cloned() {
             return Ok(frame);
         }
-        let frame = Arc::new(alloc().ok_or(MemoryError::OutOfMemory)?);
+        let frame = Arc::try_new(alloc().ok_or(MemoryError::OutOfMemory)?)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        let prepared =
+            FallibleMap::try_prepare(index, frame.clone()).map_err(|_| MemoryError::OutOfMemory)?;
         let mut frames = self.frames.lock();
-        Ok(frames.entry(index).or_insert_with(|| frame.clone()).clone())
+        if let Some(existing) = frames.get(&index) {
+            return Ok(existing.clone());
+        }
+        frames.commit_vacant(prepared);
+        Ok(frame)
     }
 }
 
@@ -139,7 +146,7 @@ pub(super) struct SharedFileArea {
     /// VMA 起点对应的文件字节偏移。
     pub(super) file_offset: u64,
     /// 已 fault-in 的共享页及 writer claims。
-    pub(super) resident: BTreeMap<VirtualPageNumber, SharedResident>,
+    pub(super) resident: FallibleMap<VirtualPageNumber, SharedResident>,
 }
 
 impl MapArea {
@@ -184,7 +191,7 @@ impl MapArea {
         area.shared_file = Some(SharedFileArea {
             mapping,
             file_offset,
-            resident: BTreeMap::new(),
+            resident: FallibleMap::new(),
         });
         area
     }

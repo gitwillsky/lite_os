@@ -1,13 +1,17 @@
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, MutexGuard, Once};
 
+use crate::fallible_tree::FallibleMap;
 use crate::memory::{
-    MemoryReclaimer, PAGE_SIZE, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame,
-    SharedPage, invalidate_shared_file, register_memory_reclaimer,
+    MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
+    SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file, register_memory_reclaimer,
 };
 
 use super::{FileSystemError, Inode, InodeType};
+
+mod reclaim;
+use reclaim::CachedPages;
 
 const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
@@ -25,7 +29,7 @@ pub(crate) struct PageCacheStatistics {
 }
 
 #[derive(Debug)]
-struct CachedPage {
+pub(super) struct CachedPage {
     frame: SharedFrame,
     // OWNER: CachedPage 用一个 CAS domain 同时拥有 dirty bit 与 writable-PTE 引用计数。
     // 拆成两个 Atomic 会让 writeback 的 writer==0 / clear-dirty 间隙吞掉并发 writer publication。
@@ -37,7 +41,7 @@ impl CachedPage {
         self.state.load(Ordering::Acquire) & PAGE_DIRTY != 0
     }
 
-    fn reclaimable(&self) -> bool {
+    pub(super) fn reclaimable(&self) -> bool {
         self.state.load(Ordering::Acquire) == 0
     }
 
@@ -89,7 +93,7 @@ struct CachedFile {
     // 缺失时 512-byte user-copy chunks 可被另一 OFD write 穿插，破坏 writev/append 连续性。
     // page fault 不获取该 gate，只取内层 operation，因此同文件 mmap buffer fault 不会自死锁。
     write_sequence: Mutex<()>,
-    pages: Mutex<BTreeMap<u64, Arc<CachedPage>>>,
+    pages: Mutex<CachedPages>,
 }
 
 impl core::fmt::Debug for CachedFile {
@@ -103,7 +107,7 @@ impl core::fmt::Debug for CachedFile {
 
 impl CachedFile {
     fn page_with_storage(&self, index: u64) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
-        if let Some(page) = self.pages.lock().get(&index).cloned() {
+        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
             return Ok((page, 0));
         }
         // 1. miss fill 与 storage mutation 共用 operation domain，保证读出的 bytes 和最终
@@ -111,9 +115,13 @@ impl CachedFile {
         let _operation = self.operation.lock();
         // 2. 等锁期间另一个 filler 可能已经发布同一 page；必须复查，否则会重复 I/O，
         // 并让后完成者覆盖先完成者的唯一 cache owner。
-        if let Some(page) = self.pages.lock().get(&index).cloned() {
+        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
             return Ok((page, 0));
         }
+        // 3. 在 frame/I/O 等外部资源进入事务前预留 cache membership；缺失该步骤会在
+        //    storage read 成功后因 tree node OOM 直接 panic，且无法向 fault/read 返回 ENOMEM。
+        let page_slot = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut frame = SharedFrame::allocate().map_err(shared_error)?;
         let offset = index
             .checked_mul(PAGE_SIZE as u64)
@@ -125,7 +133,7 @@ impl CachedFile {
         let available = usize::try_from(size - offset)
             .unwrap_or(usize::MAX)
             .min(PAGE_SIZE);
-        // 3. frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
+        // 4. frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
         // cache miss 增加一次 heap allocation 和一次最多整页 memcpy。
         let read = self
             .inode
@@ -133,12 +141,16 @@ impl CachedFile {
         if read != available {
             return Err(FileSystemError::IoError);
         }
-        let page = Arc::new(CachedPage {
+        let page = Arc::try_new(CachedPage {
             frame,
             state: AtomicUsize::new(0),
-        });
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut pages = self.pages.lock();
-        assert!(pages.insert(index, page.clone()).is_none());
+        assert!(!pages.entries.contains_key(&index));
+        pages
+            .entries
+            .commit_vacant(page_slot.fill(index, page.clone()));
         Ok((page, available))
     }
 
@@ -154,7 +166,11 @@ impl CachedFile {
         let last = (end - 1) / PAGE_SIZE as u64;
         let pages = self.pages.lock();
         // 2. 从 page index 反向遍历实际 resident pages，跳过大写入区间中的 cache holes。
-        for (&index, page) in pages.range(first..=last) {
+        for (&index, page) in pages
+            .entries
+            .iter_from(&first)
+            .take_while(|(index, _)| **index <= last)
+        {
             let page_start = index * PAGE_SIZE as u64;
             let copy_start = offset.max(page_start);
             let copy_end = end.min(page_start.saturating_add(PAGE_SIZE as u64));
@@ -185,7 +201,11 @@ impl CachedFile {
             let mut dirty = 0usize;
             {
                 let pages = self.pages.lock();
-                for (&index, page) in pages.range(next..=last) {
+                for (&index, page) in pages
+                    .entries
+                    .iter_from(&next)
+                    .take_while(|(index, _)| **index <= last)
+                {
                     next = index
                         .checked_add(1)
                         .expect("cached page index cannot reach u64::MAX");
@@ -252,25 +272,17 @@ impl SharedFileMapping for CachedFile {
 }
 
 impl MemoryReclaimer for CachedFile {
-    fn reclaim_pages(&self, limit: usize) -> usize {
+    fn reclaim_pages(&self, request: ReclaimRequest) -> ReclaimResult {
         let Some(mut pages) = self.pages.try_lock() else {
-            return 0;
+            return ReclaimResult::default();
         };
-        // 1. extract_if 只移除无外部引用的 clean page；dirty/writer owner 继续留在 cache。
-        // 2. take 达到 quota 后立即 drop iterator，未访问 entry 保留。若使用 retain，即使
-        // 已回收足额页仍会扫描整个大文件 cache，把一次 OOM recovery 退化为 O(cache pages)。
-        pages
-            .extract_if(.., |_, page| {
-                page.reclaimable() && Arc::strong_count(page) == 1
-            })
-            .take(limit)
-            .count()
+        pages.reclaim(request)
     }
 }
 
 // OWNER: fs page-cache owns every regular inode cached page until clean reclaim. A weak-only map
 // would lose dirty MAP_SHARED pages when the final VMA disappears before sync(2).
-static FILES: Once<Mutex<BTreeMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
+static FILES: Once<Mutex<FallibleMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
 
 fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError> {
     if inode.inode_type() != InodeType::File || inode.is_volatile() {
@@ -280,26 +292,31 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
         filesystem: inode.filesystem_id(),
         inode: inode.metadata()?.inode,
     };
-    let mut files = FILES.call_once(|| Mutex::new(BTreeMap::new())).lock();
+    let mut files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
     if let Some(file) = files.get(&id) {
         return Ok(file.clone());
     }
-    let file = Arc::new(CachedFile {
+    // reclaimer 注册成功后会持有 Arc；必须先预留 FILES node，避免注册完成却无法发布
+    // 唯一 cache owner，形成不可回滚的孤儿 reclaimer。
+    let file_slot = FallibleMap::<SharedFileId, Arc<CachedFile>>::try_reserve_node()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let file = Arc::try_new(CachedFile {
         id,
         inode,
         operation: Mutex::new(()),
         write_sequence: Mutex::new(()),
-        pages: Mutex::new(BTreeMap::new()),
-    });
+        pages: Mutex::new(CachedPages::new()),
+    })
+    .map_err(|_| FileSystemError::OutOfMemory)?;
     register_memory_reclaimer(file.clone()).map_err(shared_error)?;
-    files.insert(id, file.clone());
+    files.commit_vacant(file_slot.fill(id, file.clone()));
     Ok(file)
 }
 
 /// @description 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
 ///
 /// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
-/// metadata、获取全局 FILES lock 并查找同一个 BTree entry。
+/// metadata、获取全局 FILES lock 并查找同一个 ordered entry。
 pub(crate) struct RegularFile(RegularFileBackend);
 
 enum RegularFileBackend {
@@ -470,15 +487,16 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64) -> Result<(), FileSyste
     file.inode.truncate_storage(size)?;
     let first_removed = size.div_ceil(PAGE_SIZE as u64);
     let mut pages = file.pages.lock();
-    pages.retain(|index, _| *index < first_removed);
+    pages.entries.retain(|index, _| *index < first_removed);
     if !size.is_multiple_of(PAGE_SIZE as u64)
-        && let Some(page) = pages.get(&(size / PAGE_SIZE as u64))
+        && let Some(page) = pages.entries.get(&(size / PAGE_SIZE as u64))
     {
         page.frame.zero_from(size as usize % PAGE_SIZE);
     }
     drop(pages);
     drop(_operation);
-    invalidate_shared_file(file.id, size).map_err(shared_error)
+    invalidate_shared_file(file.id, size);
+    Ok(())
 }
 
 /// @description 在 page-cache operation domain 内预分配 regular-file backing blocks。
@@ -511,12 +529,13 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
 }
 
 pub(crate) fn sync_all() -> Result<(), FileSystemError> {
-    let files: Vec<_> = FILES
-        .call_once(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .values()
-        .cloned()
-        .collect();
+    let registry = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
+    let mut files = Vec::new();
+    files
+        .try_reserve_exact(registry.len())
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    files.extend(registry.values().cloned());
+    drop(registry);
     for file in files {
         let _sequence = file.write_sequence.lock();
         let _operation = file.operation.lock();
@@ -525,7 +544,7 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
     FILES
         .wait()
         .lock()
-        .retain(|_, file| Arc::strong_count(file) != 1 || !file.pages.lock().is_empty());
+        .retain(|_, file| Arc::strong_count(file) != 1 || !file.pages.lock().entries.is_empty());
     Ok(())
 }
 
@@ -533,7 +552,7 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
 ///
 /// @return 只读统计；不触发 fill、writeback 或 reclaim。
 pub(crate) fn statistics() -> PageCacheStatistics {
-    let files = FILES.call_once(|| Mutex::new(BTreeMap::new())).lock();
+    let files = FILES.call_once(|| Mutex::new(FallibleMap::new())).lock();
     let mut statistics = PageCacheStatistics {
         resident_pages: 0,
         dirty_pages: 0,
@@ -541,8 +560,8 @@ pub(crate) fn statistics() -> PageCacheStatistics {
     };
     for file in files.values() {
         let pages = file.pages.lock();
-        statistics.resident_pages += pages.len();
-        for page in pages.values() {
+        statistics.resident_pages += pages.entries.len();
+        for page in pages.entries.values() {
             statistics.dirty_pages += usize::from(page.dirty());
             statistics.reclaimable_pages +=
                 usize::from(page.reclaimable() && Arc::strong_count(page) == 1);

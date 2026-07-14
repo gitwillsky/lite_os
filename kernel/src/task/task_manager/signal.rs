@@ -1,21 +1,13 @@
-use alloc::vec::Vec;
-use core::ops::Bound::{Excluded, Unbounded};
-
 use super::thread_selector::thread_by_tid;
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum JobControlState {
-    Running,
-    Stopping(usize),
-    Stopped,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct ChildEvents {
-    pub(super) stopped: Option<usize>,
-    pub(super) continued: bool,
-}
+mod job_control;
+pub(crate) use job_control::stop_current_process;
+pub(super) use job_control::{ChildEvents, JobControlState, complete_process_stop};
+use job_control::{
+    JobNotification, continue_process_locked, publish_job_notification,
+    resume_for_fatal_signal_locked,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalSendError {
@@ -31,22 +23,10 @@ enum ProcessSelector {
     AllExcept { caller: usize },
 }
 
-struct JobNotification {
-    parent: usize,
-    waiters: Vec<Arc<TaskControlBlock>>,
-    info: PendingSignal,
-}
-
 struct GeneratedSignal {
     queued: bool,
     eligible: Option<Arc<TaskControlBlock>>,
     notification: Option<JobNotification>,
-}
-
-#[derive(Clone, Copy)]
-enum JobEvent {
-    Stopped(usize),
-    Continued,
 }
 
 /// @description 通过唯一 process graph 定位 Thread 并合并一个 thread-directed signal。
@@ -118,14 +98,13 @@ fn send_selected_thread_signal(
         if signal == 0 {
             return Ok(());
         }
-        let all_threads = threads.values().cloned().collect::<Vec<_>>();
         let sender = current_task().map_or(0, |task| task.tgid());
         let info = kernel_info.unwrap_or_else(|| PendingSignal::thread_directed(sender));
         let queued = if target.ignores_generated_signal_as_init(signal) {
             false
         } else {
             target
-                .queue_signal(all_threads.iter(), signal, info)
+                .queue_signal(threads.values(), signal, info)
                 .map_err(|()| SignalSendError::InvalidSignal)?;
             true
         };
@@ -265,23 +244,20 @@ fn process_signal_permitted(
 
 fn next_process(selector: ProcessSelector, after: usize) -> Option<usize> {
     let graph = TASK_MANAGER.graph.lock();
-    graph
-        .nodes
-        .range((Excluded(after), Unbounded))
-        .find_map(|(&tgid, node)| {
-            let matches = match selector {
-                ProcessSelector::Process(pid) => tgid == pid,
-                ProcessSelector::Group(pgid) => node.process_group == pgid,
-                ProcessSelector::AllExcept { caller } => tgid > INIT_PID && tgid != caller,
-            };
-            if !matches {
-                return None;
-            }
-            let ProcessState::Live(threads) = &node.state else {
-                return None;
-            };
-            (!threads.is_empty()).then_some(tgid)
-        })
+    graph.nodes.iter_after(&after).find_map(|(&tgid, node)| {
+        let matches = match selector {
+            ProcessSelector::Process(pid) => tgid == pid,
+            ProcessSelector::Group(pgid) => node.process_group == pgid,
+            ProcessSelector::AllExcept { caller } => tgid > INIT_PID && tgid != caller,
+        };
+        if !matches {
+            return None;
+        }
+        let ProcessState::Live(threads) = &node.state else {
+            return None;
+        };
+        (!threads.is_empty()).then_some(tgid)
+    })
 }
 
 fn generate_process_signal(
@@ -294,20 +270,20 @@ fn generate_process_signal(
     let ProcessState::Live(threads) = &node.state else {
         return Err(SignalSendError::NotFound);
     };
-    let all_threads = threads.values().cloned().collect::<Vec<_>>();
-    let representative = all_threads
-        .first()
+    let representative = threads
+        .values()
+        .next()
         .cloned()
         .ok_or(SignalSendError::NotFound)?;
-    let eligible = all_threads
-        .iter()
+    let eligible = threads
+        .values()
         .find(|thread| thread.accepts_process_signal(signal))
         .cloned();
     let queued = if representative.ignores_generated_signal_as_init(signal) {
         false
     } else {
         representative
-            .queue_process_signal(all_threads.iter(), signal, info)
+            .queue_process_signal(threads.values(), signal, info)
             .map_err(|()| SignalSendError::InvalidSignal)?
     };
     let notification = if signal == 18 {
@@ -325,147 +301,6 @@ fn generate_process_signal(
     })
 }
 
-/// @description 对默认 stop action 发起 Process group-stop，并阻塞当前 Thread 直到 SIGCONT。
-///
-/// @param signal 已从 pending queue 消费的 job-control stop signal。
-/// @return SIGCONT 恢复当前 Thread 后返回；停止期间不占用 CPU。
-pub(crate) fn stop_current_process(signal: usize) {
-    let task = current_task().expect("group stop requires current task");
-    let tgid = task.tgid();
-    {
-        let mut graph = TASK_MANAGER.graph.lock();
-        let node = graph
-            .nodes
-            .get_mut(&tgid)
-            .expect("stopping process disappeared from graph");
-        let ProcessState::Live(threads) = &node.state else {
-            panic!("exited process attempted group stop");
-        };
-        node.job_control = JobControlState::Stopping(signal);
-        for thread in threads.values() {
-            crate::task::processor::request_task_stop(thread);
-        }
-    }
-    drop(task);
-    crate::task::suspend_current_and_run_next();
-}
-
-/// @description 最后一个 StopPending Thread 切回 idle 后提交 parent-visible stopped event。
-///
-/// @param tgid 刚完成 scheduler stop transition 的 Process ID。
-/// @return stop 尚未完成或已通知时不执行操作。
-pub(super) fn complete_process_stop(tgid: usize) {
-    let notification = {
-        let mut graph = TASK_MANAGER.graph.lock();
-        let completed_signal = {
-            let Some(node) = graph.nodes.get(&tgid) else {
-                return;
-            };
-            let JobControlState::Stopping(signal) = node.job_control else {
-                return;
-            };
-            let ProcessState::Live(threads) = &node.state else {
-                return;
-            };
-            threads
-                .values()
-                .all(|thread| {
-                    matches!(
-                        thread.scheduling.state.lock().run_state,
-                        RunState::Stopped { .. }
-                    )
-                })
-                .then_some(signal)
-        };
-        let Some(signal) = completed_signal else {
-            return;
-        };
-        let node = graph
-            .nodes
-            .get_mut(&tgid)
-            .expect("completed stop process disappeared");
-        node.job_control = JobControlState::Stopped;
-        node.child_events.stopped = Some(signal);
-        take_parent_notification(&mut graph, tgid, PendingSignal::child_stopped(tgid, signal))
-    };
-    publish_job_notification(notification);
-}
-
-fn continue_process_locked(graph: &mut ProcessGraph, tgid: usize) -> Option<JobNotification> {
-    let (event, threads) = {
-        let node = graph.nodes.get_mut(&tgid)?;
-        let ProcessState::Live(live) = &node.state else {
-            return None;
-        };
-        let event = match node.job_control {
-            JobControlState::Running => None,
-            JobControlState::Stopping(signal) => Some(JobEvent::Stopped(signal)),
-            JobControlState::Stopped => Some(JobEvent::Continued),
-        };
-        node.job_control = JobControlState::Running;
-        if let Some(event) = event {
-            match event {
-                JobEvent::Stopped(signal) => node.child_events.stopped = Some(signal),
-                JobEvent::Continued => node.child_events.continued = true,
-            }
-        }
-        (event, live.values().cloned().collect::<Vec<_>>())
-    };
-    for thread in threads {
-        crate::task::processor::continue_stopped_task(thread);
-    }
-    event.and_then(|event| {
-        let info = match event {
-            JobEvent::Stopped(signal) => PendingSignal::child_stopped(tgid, signal),
-            JobEvent::Continued => PendingSignal::child_continued(tgid),
-        };
-        take_parent_notification(graph, tgid, info)
-    })
-}
-
-fn resume_for_fatal_signal_locked(graph: &mut ProcessGraph, tgid: usize) {
-    let threads = {
-        let Some(node) = graph.nodes.get_mut(&tgid) else {
-            return;
-        };
-        let ProcessState::Live(live) = &node.state else {
-            return;
-        };
-        node.job_control = JobControlState::Running;
-        live.values().cloned().collect::<Vec<_>>()
-    };
-    for thread in threads {
-        crate::task::processor::continue_stopped_task(thread);
-    }
-}
-
-fn take_parent_notification(
-    graph: &mut ProcessGraph,
-    child: usize,
-    info: PendingSignal,
-) -> Option<JobNotification> {
-    let parent = graph.nodes.get(&child)?.parent?;
-    let node = graph.nodes.get_mut(&parent)?;
-    if !matches!(node.state, ProcessState::Live(_)) {
-        return None;
-    }
-    Some(JobNotification {
-        parent,
-        waiters: take_child_waiters(node),
-        info,
-    })
-}
-
-fn publish_job_notification(notification: Option<JobNotification>) {
-    let Some(notification) = notification else {
-        return;
-    };
-    for waiter in notification.waiters {
-        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
-    }
-    send_kernel_process_signal(notification.parent, 17, notification.info);
-}
-
 fn wake_process_signal_waiter(tgid: usize) -> bool {
     let mut cursor = 0usize;
     loop {
@@ -476,7 +311,7 @@ fn wake_process_signal_waiter(tgid: usize) -> bool {
                 return false;
             };
             threads
-                .range((Excluded(cursor), Unbounded))
+                .iter_after(&cursor)
                 .next()
                 .map(|(&tid, task)| (tid, task.clone()))
         };

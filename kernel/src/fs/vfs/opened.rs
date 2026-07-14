@@ -5,8 +5,32 @@ use super::{FileSystemError, Inode, VirtualFileSystem};
 
 struct OpenedLocation {
     parent: Option<Arc<OpenedFile>>,
-    name: Vec<u8>,
+    name: FileName,
     deleted: bool,
+}
+
+#[derive(Clone, Copy)]
+struct FileName {
+    length: u8,
+    bytes: [u8; 255],
+}
+
+impl FileName {
+    fn new(name: &[u8]) -> Result<Self, FileSystemError> {
+        if name.len() > 255 {
+            return Err(FileSystemError::InvalidPath);
+        }
+        let mut value = Self {
+            length: name.len() as u8,
+            bytes: [0; 255],
+        };
+        value.bytes[..name.len()].copy_from_slice(name);
+        Ok(value)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
 }
 
 /// @description VFS namespace 中一次 pathname lookup 得到的稳定 opened-entry identity。
@@ -18,30 +42,32 @@ pub(crate) struct OpenedFile {
 }
 
 impl OpenedFile {
-    pub(super) fn root(inode: Arc<dyn Inode>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(super) fn root(inode: Arc<dyn Inode>) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
             inode,
             location: Mutex::new(OpenedLocation {
                 parent: None,
-                name: Vec::new(),
+                name: FileName::new(&[])?,
                 deleted: false,
             }),
         })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     pub(super) fn child(
         inode: Arc<dyn Inode>,
         parent: Arc<OpenedFile>,
-        name: Vec<u8>,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+        name: &[u8],
+    ) -> Result<Arc<Self>, FileSystemError> {
+        Arc::try_new(Self {
             inode,
             location: Mutex::new(OpenedLocation {
                 parent: Some(parent),
-                name,
+                name: FileName::new(name)?,
                 deleted: false,
             }),
         })
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     pub(crate) fn inode(&self) -> Arc<dyn Inode> {
@@ -52,8 +78,13 @@ impl OpenedFile {
         self.location.lock().parent.clone()
     }
 
-    pub(super) fn location_name(&self) -> Vec<u8> {
-        self.location.lock().name.clone()
+    pub(super) fn location_name(&self) -> Result<Vec<u8>, FileSystemError> {
+        let location = self.location.lock();
+        let mut name = Vec::new();
+        name.try_reserve_exact(location.name.bytes().len())
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        name.extend_from_slice(location.name.bytes());
+        Ok(name)
     }
 
     pub(super) fn matches(
@@ -64,7 +95,7 @@ impl OpenedFile {
     ) -> bool {
         let location = self.location.lock();
         !location.deleted
-            && location.name == name
+            && location.name.bytes() == name
             && location
                 .parent
                 .as_ref()
@@ -79,8 +110,7 @@ impl OpenedFile {
     pub(super) fn move_to(&self, parent: Arc<OpenedFile>, name: &[u8]) {
         let mut location = self.location.lock();
         location.parent = Some(parent);
-        location.name.clear();
-        location.name.extend_from_slice(name);
+        location.name = FileName::new(name).expect("VFS accepted an overlong component");
     }
 
     pub(super) fn same_inode(&self, other: &Arc<OpenedFile>) -> bool {
@@ -103,7 +133,10 @@ impl OpenedFile {
         let own = self.location.lock();
         let mut deleted = own.deleted;
         if own.parent.is_some() {
-            components.push(own.name.clone());
+            components
+                .try_reserve(1)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            components.push(own.name);
         }
         drop(own);
 
@@ -123,7 +156,7 @@ impl OpenedFile {
                 components
                     .try_reserve(1)
                     .map_err(|_| FileSystemError::OutOfMemory)?;
-                components.push(location.name.clone());
+                components.push(location.name);
             }
             current = location.parent.clone();
         }
@@ -133,7 +166,7 @@ impl OpenedFile {
 
         let component_bytes = components
             .iter()
-            .try_fold(0usize, |total, name| total.checked_add(name.len()));
+            .try_fold(0usize, |total, name| total.checked_add(name.bytes().len()));
         let suffix = usize::from(deleted) * b" (deleted)".len();
         let capacity = component_bytes
             .and_then(|total| total.checked_add(components.len().max(1)))
@@ -147,7 +180,7 @@ impl OpenedFile {
             if path.len() > 1 {
                 path.push(b'/');
             }
-            path.extend_from_slice(component);
+            path.extend_from_slice(component.bytes());
         }
         if deleted {
             path.extend_from_slice(b" (deleted)");

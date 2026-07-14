@@ -1,9 +1,12 @@
+#[path = "file/character.rs"]
+mod character;
 #[path = "file/proc.rs"]
 mod proc;
 mod terminal;
+pub(crate) use character::CharacterDevice;
 pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead, TerminalReadMode};
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use spin::Mutex;
 
@@ -23,26 +26,12 @@ pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_CLOEXEC: u32 = 0x80000;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1_048_576;
 
-/// @description 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
-pub(crate) enum CharacterDevice {
-    Null,
-    Zero,
-    Entropy(DeviceKind),
-    Terminal {
-        terminal: Arc<Terminal>,
-        kind: DeviceKind,
-    },
-}
-
-impl CharacterDevice {
-    pub(crate) fn kind(&self) -> DeviceKind {
-        match self {
-            Self::Null => DeviceKind::Null,
-            Self::Zero => DeviceKind::Zero,
-            Self::Entropy(kind) => *kind,
-            Self::Terminal { kind, .. } => *kind,
-        }
-    }
+/// @description fd-table 查找、resource limit 与 owner metadata OOM 的稳定失败分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileDescriptorError {
+    NotFound,
+    Limit,
+    OutOfMemory,
 }
 
 /// @description OFD 后端；character device、pipe 和 inode 共享同一 fd 表。
@@ -201,8 +190,8 @@ impl OpenFileDescription {
         terminal: Arc<Terminal>,
         backing_opened: Arc<OpenedFile>,
         flags: u32,
-    ) -> Arc<Self> {
-        Arc::new(Self {
+    ) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::Character(CharacterDevice::Terminal {
                 terminal,
                 kind: DeviceKind::Console,
@@ -212,6 +201,7 @@ impl OpenFileDescription {
             character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
     /// @description 构造 pathname 打开的 character-device OFD。
@@ -226,70 +216,76 @@ impl OpenFileDescription {
         terminal: Arc<Terminal>,
         flags: u32,
         backing_opened: Arc<OpenedFile>,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, ()> {
         let device = match kind {
             DeviceKind::Null => CharacterDevice::Null,
             DeviceKind::Zero => CharacterDevice::Zero,
             DeviceKind::Random | DeviceKind::Urandom => CharacterDevice::Entropy(kind),
             DeviceKind::Tty | DeviceKind::Console => CharacterDevice::Terminal { terminal, kind },
         };
-        Arc::new(Self {
+        Arc::try_new(Self {
             kind: OpenFileKind::Character(device),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
-    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::Inode(opened),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
-    pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::Pipe(endpoint),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
-    pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::Socket(socket),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
-    pub(crate) fn epoll(epoll: Arc<Epoll>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn epoll(epoll: Arc<Epoll>) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::Epoll(epoll),
             offset: Mutex::new(0),
             flags: Mutex::new(O_RDWR),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
-    pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Result<Arc<Self>, ()> {
+        Arc::try_new(Self {
             kind: OpenFileKind::EventFd(event),
             offset: Mutex::new(0),
             flags: Mutex::new(O_RDWR | flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
+        .map_err(|_| ())
     }
 
     pub(crate) fn inode_ref(&self) -> Option<Arc<dyn Inode>> {
@@ -388,13 +384,13 @@ pub(crate) struct FileDescriptorTable {
 }
 
 impl FileDescriptorTable {
-    fn ensure_len(&mut self, length: usize) -> Result<(), ()> {
+    fn ensure_len(&mut self, length: usize) -> Result<(), FileDescriptorError> {
         if length <= self.entries.len() {
             return Ok(());
         }
         self.entries
             .try_reserve_exact(length - self.entries.len())
-            .map_err(|_| ())?;
+            .map_err(|_| FileDescriptorError::OutOfMemory)?;
         self.entries.resize(length, None);
         Ok(())
     }
@@ -421,34 +417,27 @@ impl FileDescriptorTable {
     ///
     /// @param terminal 唯一 TTY owner；backing opened entry 从已挂载 devfs 解析一次。
     /// @return fd 0/1/2 分别为 console read/write/write OFD 的 descriptor table。
-    pub(crate) fn with_terminal(terminal: Arc<Terminal>) -> Self {
+    pub(crate) fn with_terminal(terminal: Arc<Terminal>) -> Result<Self, ()> {
         let backing_opened = vfs()
             .open_file(b"/dev/console")
             .expect("mounted console device must resolve");
-        Self {
-            entries: vec![
-                Some(FileDescriptor::new(
-                    OpenFileDescription::terminal(
-                        terminal.clone(),
-                        backing_opened.clone(),
-                        O_RDONLY,
-                    ),
-                    false,
-                )),
-                Some(FileDescriptor::new(
-                    OpenFileDescription::terminal(
-                        terminal.clone(),
-                        backing_opened.clone(),
-                        O_WRONLY,
-                    ),
-                    false,
-                )),
-                Some(FileDescriptor::new(
-                    OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY),
-                    false,
-                )),
-            ],
-        }
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(3).map_err(|_| ())?;
+        entries.extend([
+            Some(FileDescriptor::new(
+                OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_RDONLY)?,
+                false,
+            )),
+            Some(FileDescriptor::new(
+                OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_WRONLY)?,
+                false,
+            )),
+            Some(FileDescriptor::new(
+                OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY)?,
+                false,
+            )),
+        ]);
+        Ok(Self { entries })
     }
 
     pub(crate) fn get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -464,10 +453,10 @@ impl FileDescriptorTable {
         minimum: usize,
         cloexec: bool,
         limit: usize,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, FileDescriptorError> {
         let limit = limit.min(MAX_FILE_DESCRIPTORS);
         if minimum >= limit {
-            return Err(());
+            return Err(FileDescriptorError::Limit);
         }
         for fd in minimum..self.entries.len().min(limit) {
             if self.entries[fd].is_none() {
@@ -480,8 +469,11 @@ impl FileDescriptorTable {
         }
         let fd = self.entries.len();
         if fd >= limit {
-            return Err(());
+            return Err(FileDescriptorError::Limit);
         }
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| FileDescriptorError::OutOfMemory)?;
         self.entries.push(Some(FileDescriptor::new(ofd, cloexec)));
         Ok(fd)
     }
@@ -498,7 +490,7 @@ impl FileDescriptorTable {
         second: Arc<OpenFileDescription>,
         cloexec: bool,
         limit: usize,
-    ) -> Result<(usize, usize), ()> {
+    ) -> Result<(usize, usize), FileDescriptorError> {
         let mut available = [usize::MAX; 2];
         let mut found = 0;
         for fd in 0..limit.min(MAX_FILE_DESCRIPTORS) {
@@ -511,7 +503,7 @@ impl FileDescriptorTable {
             }
         }
         if found != 2 {
-            return Err(());
+            return Err(FileDescriptorError::Limit);
         }
         let required = available[1] + 1;
         self.ensure_len(required)?;
@@ -541,8 +533,8 @@ impl FileDescriptorTable {
         minimum: usize,
         cloexec: bool,
         limit: usize,
-    ) -> Result<usize, ()> {
-        let ofd = self.get(old).ok_or(())?;
+    ) -> Result<usize, FileDescriptorError> {
+        let ofd = self.get(old).ok_or(FileDescriptorError::NotFound)?;
         self.allocate(ofd, minimum, cloexec, limit)
     }
 
@@ -552,11 +544,11 @@ impl FileDescriptorTable {
         new: usize,
         cloexec: bool,
         limit: usize,
-    ) -> Result<usize, ()> {
+    ) -> Result<usize, FileDescriptorError> {
         if new >= limit.min(MAX_FILE_DESCRIPTORS) {
-            return Err(());
+            return Err(FileDescriptorError::Limit);
         }
-        let ofd = self.get(old).ok_or(())?;
+        let ofd = self.get(old).ok_or(FileDescriptorError::NotFound)?;
         if self.entries.len() <= new {
             self.ensure_len(new + 1)?;
         }

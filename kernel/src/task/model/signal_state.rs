@@ -224,9 +224,11 @@ impl TaskControlBlock {
         }
         let mut state = self.process.signal_state.lock();
         let conflicting = signal_conflicting_mask(signal);
-        state.pending.discard(conflicting);
-        for thread in threads {
-            thread.thread.pending_signals.lock().discard(conflicting);
+        if conflicting != 0 {
+            state.pending.discard(conflicting);
+            for thread in threads {
+                thread.thread.pending_signals.lock().discard(conflicting);
+            }
         }
         let action = state.actions[signal];
         if action.handler == 1 {

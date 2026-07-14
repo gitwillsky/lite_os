@@ -1,7 +1,7 @@
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use super::{FileDescriptorTable, OpenFileDescription, OpenFileKind};
-use crate::fs::{FileSystemError, vfs};
+use crate::fs::{FileSystemError, try_format_bytes, vfs};
 
 impl OpenFileDescription {
     /// @description 投影 Linux `/proc/<pid>/fd/<n>` symbolic-link target。
@@ -11,17 +11,30 @@ impl OpenFileDescription {
         if let Some(opened) = self.opened_ref() {
             return vfs().opened_path(&opened);
         }
-        Ok(match &self.kind {
+        match &self.kind {
             OpenFileKind::Pipe(endpoint) => {
-                format!("pipe:[{}]", endpoint.pipe().object_id()).into_bytes()
+                try_format_bytes(format_args!("pipe:[{}]", endpoint.pipe().object_id()))
             }
-            OpenFileKind::Socket(socket) => format!("socket:[{}]", socket.object_id()).into_bytes(),
-            OpenFileKind::Epoll(_) => b"anon_inode:[eventpoll]".to_vec(),
-            OpenFileKind::EventFd(_) => b"anon_inode:[eventfd]".to_vec(),
+            OpenFileKind::Socket(socket) => {
+                try_format_bytes(format_args!("socket:[{}]", socket.object_id()))
+            }
+            OpenFileKind::Epoll(_) | OpenFileKind::EventFd(_) => {
+                let label = if matches!(self.kind, OpenFileKind::Epoll(_)) {
+                    &b"anon_inode:[eventpoll]"[..]
+                } else {
+                    &b"anon_inode:[eventfd]"[..]
+                };
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(label.len())
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                bytes.extend_from_slice(label);
+                Ok(bytes)
+            }
             OpenFileKind::Character(_) | OpenFileKind::Inode(_) => {
                 unreachable!("pathname-backed OFD lost opened identity")
             }
-        })
+        }
     }
 }
 

@@ -18,13 +18,13 @@ pub(crate) struct RunQueueEntry {
 }
 
 impl CfsRunQueue {
-    /// @description 创建空的 local runqueue。
-    ///
-    /// @return 无 task 的 CfsRunQueue。
-    pub(crate) const fn new() -> Self {
-        Self {
-            tasks: BinaryHeap::new(),
-        }
+    /// @description 在 scheduler 发布前为所有可能 live Thread 预留 heap storage。
+    /// @param capacity 由物理页数与每 Thread kernel-stack 页数推导的上界。
+    /// @return 成功返回空 runqueue；heap OOM 返回错误。
+    pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, ()> {
+        let mut tasks = BinaryHeap::new();
+        tasks.try_reserve_exact(capacity).map_err(|_| ())?;
+        Ok(Self { tasks })
     }
 
     /// @description 插入已经声明为该 CPU Ready 的 task。
@@ -32,7 +32,20 @@ impl CfsRunQueue {
     /// @param entry runqueue 获得的 membership token 与 task owner。
     /// @return 无返回值。
     pub(crate) fn push(&mut self, entry: RunQueueEntry) {
+        assert!(
+            self.tasks.len() < self.tasks.capacity(),
+            "preallocated runqueue capacity exhausted"
+        );
         self.tasks.push(entry);
+    }
+
+    /// @description 原地清理失效 generation，保留 heap backing storage。
+    /// @param keep 判定 entry 是否仍拥有 Ready membership。
+    /// @return 删除的 stale entry 数量。
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&RunQueueEntry) -> bool) -> usize {
+        let before = self.tasks.len();
+        self.tasks.retain(keep);
+        before - self.tasks.len()
     }
 
     /// @description 取出 vruntime 最小的 task。
@@ -54,12 +67,6 @@ impl CfsRunQueue {
     /// @return 当前容器长度。
     pub(crate) fn len(&self) -> usize {
         self.tasks.len()
-    }
-}
-
-impl Default for CfsRunQueue {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

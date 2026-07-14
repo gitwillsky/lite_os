@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 use super::{FileSystemError, InodeMetadata};
 
@@ -7,21 +7,21 @@ use super::{FileSystemError, InodeMetadata};
 pub(crate) struct AccessIdentity {
     uid: u32,
     gid: u32,
-    groups: Vec<u32>,
+    groups: Option<Arc<Vec<u32>>>,
 }
 
 impl AccessIdentity {
     /// @description 构造一次 real/effective identity 快照。
     /// @param uid 用于本次检查的用户 ID。
     /// @param gid 用于本次检查的主组 ID。
-    /// @param groups supplementary group ID 列表。
+    /// @param groups Process 不可变 supplementary group snapshot；空集合不分配。
     /// @return 不持有 Process lock 的权限输入。
-    pub(crate) fn new(uid: u32, gid: u32, groups: Vec<u32>) -> Self {
+    pub(crate) fn new(uid: u32, gid: u32, groups: Option<Arc<Vec<u32>>>) -> Self {
         Self { uid, gid, groups }
     }
 
     pub(crate) fn root() -> Self {
-        Self::new(0, 0, Vec::new())
+        Self::new(0, 0, None)
     }
 
     /// @description 返回本次检查使用的 UID。
@@ -40,7 +40,11 @@ impl AccessIdentity {
     /// @param gid 待查询的组 ID。
     /// @return membership 存在时为 true。
     pub(crate) fn in_group(&self, gid: u32) -> bool {
-        self.gid == gid || self.groups.contains(&gid)
+        self.gid == gid
+            || self
+                .groups
+                .as_ref()
+                .is_some_and(|groups| groups.contains(&gid))
     }
 
     /// @description 按 owner/group/other 与 root execute 规则判断 inode access。

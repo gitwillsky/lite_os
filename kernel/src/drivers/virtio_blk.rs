@@ -81,12 +81,13 @@ impl VirtIOBlockDevice {
             capacity * 512 / 1024 / 1024
         );
 
-        Some(Arc::new(Self {
+        Arc::try_new(Self {
             device: virtio_device,
             queue: Mutex::new(queue),
             capacity,
             supports_flush: driver_features & VIRTIO_BLK_F_FLUSH != 0,
-        }))
+        })
+        .ok()
     }
 
     fn validate_block(&self, block_id: usize, len: usize) -> Result<(), BlockError> {
@@ -281,8 +282,9 @@ impl InterruptHandler for VirtIOBlockIrqHandler {
 
 impl VirtIOBlockDevice {
     pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
-        Arc::new(VirtIOBlockIrqHandler {
+        Arc::try_new(VirtIOBlockIrqHandler {
             device: self.clone(),
         })
+        .expect("VirtIO block IRQ handler allocation failed")
     }
 }

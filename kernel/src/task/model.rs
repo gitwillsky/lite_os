@@ -6,6 +6,7 @@ mod file_descriptions;
 mod io_accounting;
 mod process_clone;
 mod process_exec;
+mod process_resources;
 mod resource_limits;
 mod scheduling;
 mod signal_state;
@@ -31,10 +32,11 @@ use crate::{
 use address_space::AddressSpace;
 use alternate_signal_stack::AlternateSignalStack;
 pub(crate) use alternate_signal_stack::{SignalStack, SignalStackError};
+pub(crate) use credentials::CredentialUpdateError;
 use credentials::Credentials;
 use io_accounting::IoAccounting;
 pub(crate) use io_accounting::IoStatistics;
-use process_exec::process_name;
+use process_exec::{process_name, try_elf_arc};
 pub(in crate::task) use resource_limits::RLIMIT_NICE;
 use resource_limits::ResourceLimits;
 pub(crate) use resource_limits::{
@@ -175,29 +177,32 @@ impl TaskControlBlock {
         let data_limit = resource_limits.get(RLIMIT_DATA).unwrap().soft;
         let (memory_set, user_sp, entry_point) =
             loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
-        let kernel_stack = KernelStack::new();
+        let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
-        let terminal = Terminal::new(console);
+        let terminal = Terminal::new(console).map_err(|()| ElfLoadError::OutOfMemory)?;
         let address_space = AddressSpace::new(memory_set)?;
-        let cpu_runtime_us = Arc::new(AtomicU64::new(0));
-        let io_accounting = Arc::new(IoAccounting::default());
+        let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
+        let io_accounting = try_elf_arc(IoAccounting::default())?;
         let start_time_us = get_time_us();
-        let process = Arc::new(Process {
+        let process = try_elf_arc(Process {
             tgid: pid,
-            comm: Mutex::new(process_name(loaded.execfn())),
+            comm: Mutex::new(process_name(loaded.execfn())?),
             start_time_us,
             address_space: Mutex::new(address_space),
             cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
-            files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
+            files: Mutex::new(
+                FileDescriptorTable::with_terminal(terminal.clone())
+                    .map_err(|()| ElfLoadError::OutOfMemory)?,
+            ),
             credentials: Mutex::new(Credentials::root()),
             resource_limits: Mutex::new(resource_limits),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
             terminal,
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
-        });
+        })?;
         let tcb = Self {
             process,
             thread: ThreadContext {
@@ -563,41 +568,5 @@ impl TaskControlBlock {
     /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
     pub(crate) fn task_context(&self) -> &Mutex<TaskContext> {
         &self.thread.task_cx
-    }
-
-    /// @description 复制当前 Process 工作目录的唯一 inode identity。
-    ///
-    /// @return 当前目录的共享 inode。
-    pub(crate) fn working_directory(&self) -> Arc<OpenedFile> {
-        self.process.cwd.lock().clone()
-    }
-
-    /// @description 原子替换当前 Process 的工作目录 identity。
-    ///
-    /// @param opened 已由 VFS 证明为目录的 opened entry。
-    /// @return 无返回值。
-    pub(crate) fn set_working_directory(&self, opened: Arc<OpenedFile>) {
-        *self.process.cwd.lock() = opened;
-    }
-
-    /// @description 返回当前 Process 可继承的 platform Terminal identity。
-    ///
-    /// @return 与 console OFD 指向同一 TTY owner 的 Arc。
-    pub(crate) fn terminal(&self) -> Arc<Terminal> {
-        self.process.terminal.clone()
-    }
-
-    /// @description 返回当前 Process/thread group ID。
-    ///
-    /// @return TGID；Linux getpid 与 process-directed lookup 使用该值。
-    pub(crate) fn tgid(&self) -> usize {
-        self.process.tgid.0
-    }
-
-    /// @description 返回当前 Thread ID。
-    ///
-    /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。
-    pub(crate) fn tid(&self) -> usize {
-        self.thread.tid
     }
 }

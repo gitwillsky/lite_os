@@ -11,15 +11,16 @@ pub(crate) struct KernelStack {
 }
 
 impl KernelStack {
-    pub(crate) fn new() -> Self {
-        Self::try_new().expect("Failed to allocate kernel stack memory")
-    }
-
     /// @description 分配带 guard page 的 kernel stack，供可失败的 process 创建事务使用。
     ///
     /// @return 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
     pub(crate) fn try_new() -> Result<Self, MemoryError> {
-        let handle = KernelStackHandle(KernelStackHandleAllocator.lock().alloc());
+        let handle = KernelStackHandle(
+            KernelStackHandleAllocator
+                .lock()
+                .alloc()
+                .map_err(|_| MemoryError::OutOfMemory)?,
+        );
         let (bottom, top) = kernel_stack_position(handle.0);
 
         // 在栈底预留 1 页守护页，防止向下越界破坏相邻对象导致不可预期行为；

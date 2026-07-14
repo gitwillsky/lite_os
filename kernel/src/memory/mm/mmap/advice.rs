@@ -1,4 +1,5 @@
 use super::*;
+use crate::memory::page_table::PageTableError;
 
 impl MemorySet {
     /// @description 对完整用户 VMA 区间应用 Linux madvise residency 语义。
@@ -28,6 +29,7 @@ impl MemorySet {
                 return Err(MemoryError::InvalidRange);
             }
             covered = covered.max(area.vpn_range.end);
+            keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
             keys.push(*key);
         }
         if covered < range.end {
@@ -62,13 +64,11 @@ impl MemorySet {
                 if advice == MemoryAdvice::DontNeed {
                     let _ = self.page_table.unmap(vpn);
                     area.data_frames.remove(&vpn);
-                    area.discardable.remove(&vpn);
-                    area.dirty_private.remove(&vpn);
                     if let Some(shared) = &mut area.shared_file {
                         shared.resident.remove(&vpn);
                     }
-                } else if area.data_frames.contains_key(&vpn) {
-                    area.discardable.insert(vpn);
+                } else if let Some(resident) = area.data_frames.get_mut(&vpn) {
+                    resident.discardable = true;
                     if self.page_table.translate(vpn).is_some() {
                         let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
                         flags.remove(PTEFlags::W);
@@ -109,35 +109,96 @@ impl MemorySet {
         Ok(())
     }
 
-    /// @description 回收 MADV_FREE 页与可从 immutable backing 重建的 clean private 页。
-    pub(crate) fn reclaim_private_pages(&mut self, limit: usize) -> usize {
+    fn next_private_resident_from(
+        &self,
+        cursor: VirtualPageNumber,
+    ) -> Option<(VirtualPageNumber, VirtualPageNumber)> {
+        // 1. cursor 可能落在一个更早起始的 VMA 中；先查该 area 的后缀。
+        let previous = self.areas.floor(&cursor);
+        if let Some((&key, area)) = previous
+            && cursor < area.vpn_range.end
+            && let Some((&vpn, _)) = area.data_frames.iter_from(&cursor).next()
+        {
+            return Some((key, vpn));
+        }
+
+        // 2. 从 predecessor 之后的 VMA 开始，每个 area 只查最小 resident VPN。
+        // 不构造 key Vec，避免 OOM 路径递归进入 global allocator。
+        let mut remaining = match previous {
+            Some((&key, _)) => self.areas.iter_after(&key),
+            None => self.areas.iter_from(&cursor),
+        };
+        remaining.find_map(|(&key, area)| {
+            area.data_frames
+                .first_key_value()
+                .map(|(&vpn, _)| (key, vpn))
+        })
+    }
+
+    /// @description 有界回收 MADV_FREE 页与可从 immutable backing 重建的 clean private 页。
+    ///
+    /// @param request 需要释放的物理页目标与 resident entry 扫描上限。
+    /// @return 实际释放和扫描的页数；共享 COW frame 只撤销本 mm 映射，不伪报释放。
+    pub(crate) fn reclaim_private_pages(&mut self, request: ReclaimRequest) -> ReclaimResult {
+        if request.target_pages() == 0 || request.scan_pages() == 0 {
+            return ReclaimResult::default();
+        }
+        let initial_cursor = self.private_reclaim_cursor;
+        let mut wrapped = false;
         let mut reclaimed = 0;
-        for area in self.areas.values_mut() {
-            while reclaimed < limit {
-                // OOM reclaim 不能构造临时 Vec，否则 global allocator 会递归进入 frame growth。
-                let Some(vpn) = area.data_frames.keys().copied().find(|vpn| {
-                    area.discardable.contains(vpn)
-                        || area.private_file.is_some() && !area.dirty_private.contains(vpn)
-                }) else {
+        let mut scanned = 0;
+        let mut unmapped = false;
+        while reclaimed < request.target_pages() && scanned < request.scan_pages() {
+            // 1. 持久 cursor 到达 VMA 末尾时只回绕一次；wrap 后再到初始
+            // cursor 即结束，不为计算 resident 数先全表扫描或重复访问 entry。
+            let next = self.next_private_resident_from(self.private_reclaim_cursor);
+            let Some((area_key, vpn)) = next else {
+                if wrapped {
                     break;
-                };
-                let frees_frame = area
-                    .data_frames
-                    .get(&vpn)
-                    .is_some_and(|frame| Arc::strong_count(frame) == 1);
-                let _ = self.page_table.unmap(vpn);
-                area.data_frames.remove(&vpn);
-                area.discardable.remove(&vpn);
-                area.dirty_private.remove(&vpn);
-                reclaimed += usize::from(frees_frame);
-            }
-            if reclaimed >= limit {
+                }
+                self.private_reclaim_cursor = VirtualPageNumber::from_vpn(0);
+                wrapped = true;
+                continue;
+            };
+            if wrapped && vpn >= initial_cursor {
                 break;
             }
+            self.private_reclaim_cursor = vpn
+                .as_usize()
+                .checked_add(1)
+                .map(VirtualPageNumber::from_vpn)
+                .unwrap_or_else(|| VirtualPageNumber::from_vpn(0));
+            scanned += 1;
+
+            // 2. 是否可丢弃只由 VMA owner 的单一 resident record 决定。
+            let area = self
+                .areas
+                .get_mut(&area_key)
+                .expect("private reclaim lost resident VMA");
+            let resident = area
+                .data_frames
+                .get(&vpn)
+                .expect("private reclaim lost resident page");
+            let reclaimable =
+                resident.discardable || area.private_file.is_some() && !resident.dirty;
+            if !reclaimable {
+                continue;
+            }
+            let frees_frame = Arc::strong_count(&resident.frame) == 1;
+            match self.page_table.unmap(vpn) {
+                Ok(()) => unmapped = true,
+                Err(PageTableError::NotMapped) => {}
+                Err(error) => panic!("private reclaim failed to unmap {vpn:?}: {error:?}"),
+            }
+            let removed = area.data_frames.remove(&vpn);
+            debug_assert!(removed.is_some());
+            reclaimed += usize::from(frees_frame);
         }
-        if reclaimed != 0 {
+        // 3. COW frame 仍被其他 mm 引用时 reclaimed==0，但本 mm 的 leaf PTE 已撤销；
+        // 若只按物理页计数 flush，当前 hart 可继续命中 stale writable translation。
+        if unmapped {
             Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after private page reclaim");
         }
-        reclaimed
+        ReclaimResult::new(reclaimed, scanned)
     }
 }
