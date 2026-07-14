@@ -31,6 +31,8 @@ pub(super) fn read_vectors(
                     };
                 }
             };
+            task.account_read_storage(read.storage_bytes);
+            let read = read.bytes;
             if read == 0 {
                 return total as isize;
             }
@@ -148,6 +150,7 @@ pub(super) fn write_vectors(
             };
             done += written;
             total += written;
+            task.account_write_storage(written);
             // 3. storage short write 终止完整 vector operation，禁止跳到下一段制造非连续结果。
             if written < count {
                 return total as isize;

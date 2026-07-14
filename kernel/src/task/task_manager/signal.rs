@@ -531,6 +531,7 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
         .flatten()
     };
     if let Some((wait_id, membership, entry)) = indexed {
+        let interrupted = WaitResult::Interrupted;
         assert!(Arc::ptr_eq(&entry.task, task));
         return match (membership, entry.kind) {
             (WaitMembership::Deadline(id), IndexedWaitKind::Deadline) => {
@@ -551,7 +552,7 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
             }
             (WaitMembership::Console(id), IndexedWaitKind::Console) => {
                 assert_eq!(id, wait_id);
-                crate::task::processor::wake_console_task(entry.task, wait_id)
+                crate::task::processor::wake_console_task(entry.task, wait_id, interrupted)
             }
             (WaitMembership::Signal(id), IndexedWaitKind::Signal { .. }) => {
                 assert_eq!(id, wait_id);

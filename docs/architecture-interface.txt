@@ -494,7 +494,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (te
 kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
-kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead }
+kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead , TerminalReadMode }
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
@@ -506,8 +506,11 @@ kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: StateChange
 kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Bytes (usize)
 kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Empty
 kernel/src/fs/file/terminal.rs :: enum TerminalRead :: Eof
+kernel/src/fs/file/terminal.rs :: enum TerminalReadMode :: # [doc = " canonical line discipline 只发布完整行或 EOF。"] Canonical
+kernel/src/fs/file/terminal.rs :: enum TerminalReadMode :: # [doc = " noncanonical read 由 VMIN 与 VTIME 共同决定最小字节数和超时。"] Noncanonical { # [doc = " 一次 read 正常完成前所需的最小字节数，已限制到 caller capacity。"] minimum : usize , # [doc = " VTIME 表示的 decisecond timeout，转换为纳秒；零表示无超时。"] timeout_ns : u64 , }
 kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalAccess
 kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalRead
+kernel/src/fs/file/terminal.rs :: pub (crate) enum TerminalReadMode
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn background_signal (& self , session : usize , process_group : usize , access : TerminalAccess ,) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn claim_session (& self , session : usize , foreground_pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
@@ -516,6 +519,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgi
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Arc < Self >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read_mode (& self , capacity : usize) -> TerminalReadMode
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
@@ -623,27 +627,36 @@ kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent }
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
-kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
-kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , sync_all , sync_inode , truncate , }
+kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
-kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
+kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
+kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> FileSystemStatistics
+kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
+kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: reclaimable_pages : usize
+kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: resident_pages : usize
+kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: bytes : usize
+kernel/src/fs/page_cache.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
 kernel/src/fs/page_cache.rs :: pub (crate) fn allocate (inode : Arc < dyn Inode > , offset : u64 , length : u64 ,) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode > ,) -> Result < Arc < dyn SharedFileMapping > , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) fn statistics () -> PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn begin_write (& self) -> RegularFileWrite < '_ >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> SharedFileId
-kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8] ,) -> Result < RegularFileRead , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn append (& self , input : & [u8] , size_limit : u64 ,) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFile
+kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFileRead
 kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFileWrite < 'a >
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: mode : u32
@@ -657,68 +670,10 @@ kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn root () -> 
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn uid (& self) -> u32
 kernel/src/fs/permission.rs :: pub (crate) struct AccessIdentity
 kernel/src/fs/permission.rs :: pub (crate) struct CreateMetadata
-kernel/src/fs/procfs.rs :: pub (crate) ProcCpuSnapshot :: busy_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcCpuSnapshot :: cpu : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: fd : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: opened : Option < Arc < super :: OpenedFile > >
-kernel/src/fs/procfs.rs :: pub (crate) ProcFileDescriptorSnapshot :: target : Vec < u8 >
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: address : Option < [u8 ; 4] >
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: gateway : Option < [u8 ; 4] >
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: prefix_length : u8
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: received_bytes : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: received_packets : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_bytes : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_packets : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: up : bool
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: comm : Vec < u8 >
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: data_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: fd_size : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: gids : [u32 ; 3]
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: groups : Vec < u32 >
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: last_cpu : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: nice : i32
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: pid : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: ppid : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: priority : i32
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: process_group : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: resident_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: runtime_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: session : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: shared_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: start_time_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: state : u8
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: text_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: threads : Vec < ProcThreadSnapshot >
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: uids : [u32 ; 3]
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: cpus : Vec < ProcCpuSnapshot >
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: free_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: last_pid : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: load_milli : [u64 ; 3]
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: network : Option < ProcNetworkSnapshot >
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: processes : Vec < ProcProcessSnapshot >
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: processes_created : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: runnable_tasks : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: total_pages : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: total_tasks : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: uptime_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: last_cpu : usize
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: nice : i32
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: priority : i32
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: runtime_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: start_time_us : u64
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: state : u8
-kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: tid : usize
 kernel/src/fs/procfs.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource >) -> Arc < Self >
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcCpuSnapshot
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileDescriptorSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcNetworkSnapshot
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcProcessSnapshot
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcSnapshot
-kernel/src/fs/procfs.rs :: pub (crate) struct ProcThreadSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) trait ProcSource
+kernel/src/fs/procfs.rs :: pub (crate) use snapshot :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcThreadSnapshot , }
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_arguments (& self , pid : usize) -> Option < Vec < u8 > >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_file_descriptors (& self , pid : usize ,) -> Result < Option < Vec < ProcFileDescriptorSnapshot > > , FileSystemError >
@@ -738,6 +693,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFd (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFdDir (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessIo (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStat (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatm (usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatus (usize)
@@ -748,6 +704,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: Stat
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadCmdline (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadComm (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadDir (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadIo (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStat (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStatm (usize , usize)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStatus (usize , usize)
@@ -755,12 +712,84 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: Uptime
 kernel/src/fs/procfs/node.rs :: pub (super) enum ProcNode
 kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn inode (self) -> u64
 kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn kind (self) -> InodeType
+kernel/src/fs/procfs/process.rs :: pub (super) fn format_io (io : & ProcIoSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_comm (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_stat (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_statm (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_status (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_stat (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot ,) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_status (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot ,) -> String
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcCpuSnapshot :: busy_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcCpuSnapshot :: cpu : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcFileDescriptorSnapshot :: fd : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcFileDescriptorSnapshot :: opened : Option < Arc < super :: super :: OpenedFile > >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcFileDescriptorSnapshot :: target : Vec < u8 >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: read_bytes : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: read_characters : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: read_syscalls : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: write_bytes : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: write_syscalls : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcIoSnapshot :: written_characters : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: address : Option < [u8 ; 4] >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: gateway : Option < [u8 ; 4] >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: prefix_length : u8
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: received_bytes : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: received_packets : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_bytes : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_packets : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcNetworkSnapshot :: up : bool
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: comm : Vec < u8 >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: data_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: fd_size : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: gids : [u32 ; 3]
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: groups : Vec < u32 >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: io : ProcIoSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: last_cpu : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: nice : i32
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: pid : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: ppid : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: priority : i32
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: process_group : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: resident_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: runtime_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: session : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: shared_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: start_time_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: state : u8
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: text_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: threads : Vec < ProcThreadSnapshot >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: uids : [u32 ; 3]
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: cached_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: cpus : Vec < ProcCpuSnapshot >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: dirty_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: free_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: last_pid : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: load_milli : [u64 ; 3]
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: network : Option < ProcNetworkSnapshot >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: processes : Vec < ProcProcessSnapshot >
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: processes_created : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: reclaimable_cached_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: runnable_tasks : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: total_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: total_tasks : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: uptime_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: io : ProcIoSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: last_cpu : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: nice : i32
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: priority : i32
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: runtime_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: start_time_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: state : u8
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: tid : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcCpuSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcFileDescriptorSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcIoSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcNetworkSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcProcessSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcThreadSnapshot
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_cpu_stat (snapshot : & ProcSnapshot) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_loadavg (snapshot : & ProcSnapshot) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_meminfo (snapshot : & ProcSnapshot) -> String
@@ -768,6 +797,8 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_devices (network
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network : Option < ProcNetworkSnapshot >) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
+kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Arc < Self >
+kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
 kernel/src/fs/vfs.rs :: pub (crate) fn vfs () -> & 'static VirtualFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) impl VirtualFileSystem :: fn absolute_path (& self , opened : Arc < OpenedFile > ,) -> Result < Vec < u8 > , FileSystemError >
@@ -1089,6 +1120,7 @@ kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn c
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn executable (source : Arc < dyn ExecutableSource > , data_start : usize , source_offset : usize , file_size : usize ,) -> Self
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn faultable (& self , vpn : VirtualPageNumber) -> bool
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn fill (& self , vpn : VirtualPageNumber , frame : & mut FrameTracker ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn has_file_bytes (& self , vpn : VirtualPageNumber) -> bool
 kernel/src/memory/mm/private_area.rs :: pub (super) struct PrivateFileArea
 kernel/src/memory/mm/process.rs :: pub (crate) impl MemorySet :: fn process_arguments (& mut self) -> Result < Vec < u8 > , UserAccessError >
 kernel/src/memory/mm/shared_area.rs :: pub (super) AnonymousSharedBacking :: id : u64
@@ -1620,6 +1652,8 @@ kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic
 kernel/src/syscall/resource_limit.rs :: pub (crate) fn sys_prlimit64 (pid : usize , resource : usize , replacement : usize , previous : usize ,) -> isize
 kernel/src/syscall/riscv_hwprobe.rs :: pub (crate) fn sys_riscv_hwprobe (pairs : usize , pair_count : usize , cpusetsize : usize , cpus : usize , flags : usize ,) -> isize
 kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_getpriority (which : i32 , who : u32) -> isize
+kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_ioprio_get (which : i32 , who : i32) -> isize
+kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_ioprio_set (which : i32 , who : i32 , priority : i32) -> isize
 kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_sched_get_priority_max (policy : i32) -> isize
 kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_sched_get_priority_min (policy : i32) -> isize
 kernel/src/syscall/scheduler.rs :: pub (crate) fn sys_sched_getaffinity (tid : i32 , length : u32 , output : usize) -> isize
@@ -1710,7 +1744,7 @@ kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , ker
 kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
 kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { register_private_memory_barrier , synchronize_private_memory }
-kernel/src/task/mod.rs :: pub (crate) use model :: { PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
+kernel/src/task/mod.rs :: pub (crate) use model :: { IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
@@ -1752,6 +1786,7 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < OpenedFile >
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
 kernel/src/task/model.rs :: pub (crate) use alternate_signal_stack :: { SignalStack , SignalStackError }
+kernel/src/task/model.rs :: pub (crate) use io_accounting :: IoStatistics
 kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY , RLIMIT_AS , RLIMIT_DATA , RLIMIT_NPROC , RLIMIT_STACK , ResourceLimit , ResourceLimitError , }
 kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
@@ -1882,6 +1917,25 @@ kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock 
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn process_file_descriptors (& self ,) -> Option < alloc :: vec :: Vec < ProcFileDescriptorSnapshot > >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn with_file_descriptions < R > (& self , first : usize , second : usize , operation : impl FnOnce (Arc < OpenFileDescription > , Arc < OpenFileDescription >) -> R ,) -> Option < R >
 kernel/src/task/model/file_descriptions.rs :: pub (super) impl TaskControlBlock :: fn close_cloexec_files (& self)
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: read_bytes : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: read_characters : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: read_syscalls : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: write_bytes : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: write_syscalls : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) IoStatistics :: written_characters : u64
+kernel/src/task/model/io_accounting.rs :: pub (crate) impl TaskControlBlock :: fn account_read_result (& self , result : isize)
+kernel/src/task/model/io_accounting.rs :: pub (crate) impl TaskControlBlock :: fn account_read_storage (& self , bytes : usize)
+kernel/src/task/model/io_accounting.rs :: pub (crate) impl TaskControlBlock :: fn account_write_result (& self , result : isize)
+kernel/src/task/model/io_accounting.rs :: pub (crate) impl TaskControlBlock :: fn account_write_storage (& self , bytes : usize)
+kernel/src/task/model/io_accounting.rs :: pub (crate) struct IoStatistics
+kernel/src/task/model/io_accounting.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_io_statistics (& self) -> IoStatistics
+kernel/src/task/model/io_accounting.rs :: pub (in crate :: task) impl TaskControlBlock :: fn thread_io_statistics (& self) -> IoStatistics
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_read_result (& self , result : isize)
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_read_storage (& self , bytes : usize)
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_write_result (& self , result : isize)
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn account_write_storage (& self , bytes : usize)
+kernel/src/task/model/io_accounting.rs :: pub (super) impl IoAccounting :: fn snapshot (& self) -> IoStatistics
+kernel/src/task/model/io_accounting.rs :: pub (super) struct IoAccounting
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn fork_process (& self , pid : ProcessId) -> Result < Self , MemoryError >
 kernel/src/task/model/process_clone.rs :: pub (in crate :: task) impl TaskControlBlock :: fn vfork_process (& self , pid : ProcessId , child_stack : usize ,) -> Result < Self , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ElfLoadError >
@@ -1954,6 +2008,7 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn begin_runtime (& mut self , start_time_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn checkpoint_runtime (& mut self , checkpoint_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn finish_runtime (& mut self , end_time_us : u64)
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn io_priority (& mut self , replacement : Option < u16 >) -> u16
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn nice (& mut self , replacement : Option < i32 >) -> i32
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn reset_on_fork (& mut self , replacement : Option < bool >) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn executes_outside_affinity (& self) -> bool
@@ -2024,7 +2079,7 @@ kernel/src/task/processor.rs :: pub (super) fn finish_deschedule_transition (tas
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
 kernel/src/task/processor.rs :: pub (super) fn reap_deferred_task ()
 kernel/src/task/processor.rs :: pub (super) fn wake_child_task (task : Arc < TaskControlBlock > , result : WaitResult) -> bool
-kernel/src/task/processor.rs :: pub (super) fn wake_console_task (task : Arc < TaskControlBlock > , wait_id : u64) -> bool
+kernel/src/task/processor.rs :: pub (super) fn wake_console_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_deadline_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_flock_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
 kernel/src/task/processor.rs :: pub (super) fn wake_futex_task (task : Arc < TaskControlBlock > , wait_id : u64 , result : WaitResult ,) -> bool
@@ -2061,7 +2116,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn run_tasks () -> !
 kernel/src/task/task_manager.rs :: pub (crate) fn sleep_until (deadline_ns : u64) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn suspend_current_and_run_next ()
 kernel/src/task/task_manager.rs :: pub (crate) fn take_current_task () -> Option < Arc < TaskControlBlock > >
-kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (input_ready : impl FnOnce () -> bool) -> WaitResult
+kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_console (deadline : Option < u64 > , input_ready : impl FnOnce () -> bool ,) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : alloc :: vec :: Vec < PollWaitKey > , deadline : Option < u64 > , ready : impl FnOnce () -> bool ,) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64)
@@ -2070,7 +2125,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use deferred :: { dispatch_pendin
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_pipe_endpoints , wait_for_pipe }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
-kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_policy }
+kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
@@ -2138,6 +2193,7 @@ kernel/src/task/task_manager/policy.rs :: enum SchedulerPolicyRequest :: # [doc 
 kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerNiceSelector
 kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerPolicyError
 kernel/src/task/task_manager/policy.rs :: pub (crate) enum SchedulerPolicyRequest
+kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_io_priority (tid : usize , replacement : Option < u16 > ,) -> Result < u16 , SchedulerPolicyError >
 kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_nice (selector : SchedulerNiceSelector , replacement : Option < i32 > ,) -> Result < i32 , SchedulerPolicyError >
 kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_policy (tid : usize , request : SchedulerPolicyRequest ,) -> Result < i32 , SchedulerPolicyError >
 kernel/src/task/task_manager/policy.rs :: pub (crate) fn scheduler_rr_interval (tid : usize) -> Result < u64 , SchedulerPolicyError >
@@ -2257,7 +2313,7 @@ kernel/src/task/task_manager/wait_registry.rs :: pub (super) IndexedWaitEntry ::
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) IndexedWaitEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn has_expired_deadline (& self , now : u64) -> bool
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_advisory_lock (& mut self , key : AdvisoryLockKey , task : Arc < TaskControlBlock > ,) -> u64
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_console (& mut self , task : Arc < TaskControlBlock >) -> u64
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_console (& mut self , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_deadline (& mut self , deadline : u64 , task : Arc < TaskControlBlock >) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_futex (& mut self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> u64
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn insert_pipe (& mut self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , task : Arc < TaskControlBlock > ,) -> u64

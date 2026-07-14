@@ -161,9 +161,21 @@ impl IndexedWaitQueue {
         id
     }
 
-    pub(super) fn insert_console(&mut self, task: Arc<TaskControlBlock>) -> u64 {
+    /// @description 发布 terminal read 的唯一 console membership 与可选 termios deadline。
+    ///
+    /// @param deadline VTIME 导出的 absolute monotonic deadline；无超时时为 None。
+    /// @param task 被阻塞的 Thread owner。
+    /// @return 新 wait membership ID。
+    pub(super) fn insert_console(
+        &mut self,
+        deadline: Option<u64>,
+        task: Arc<TaskControlBlock>,
+    ) -> u64 {
         let id = self.allocate_id();
         assert!(self.console_index.insert((false, id)));
+        if let Some(deadline) = deadline {
+            assert!(self.deadline_index.insert((deadline, id)));
+        }
         assert!(
             self.entries
                 .insert(
@@ -171,7 +183,7 @@ impl IndexedWaitQueue {
                     IndexedWaitEntry {
                         task,
                         kind: IndexedWaitKind::Console,
-                        deadline: None,
+                        deadline,
                         poll_keys: None,
                     },
                 )

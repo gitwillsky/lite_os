@@ -18,6 +18,7 @@ pub(super) enum ProcNode {
     ProcessCmdline(usize),
     ProcessComm(usize),
     ProcessStatm(usize),
+    ProcessIo(usize),
     ProcessTaskDir(usize),
     ProcessFdDir(usize),
     ProcessFd(usize, usize),
@@ -27,6 +28,7 @@ pub(super) enum ProcNode {
     ThreadCmdline(usize, usize),
     ThreadComm(usize, usize),
     ThreadStatm(usize, usize),
+    ThreadIo(usize, usize),
 }
 
 impl ProcNode {
@@ -50,6 +52,7 @@ impl ProcNode {
             Self::ProcessFdDir(pid) => 0x1000_0000_0000_0005 | (pid as u64) << 4,
             Self::ProcessStatm(pid) => 0x1000_0000_0000_0006 | (pid as u64) << 4,
             Self::ProcessTaskDir(pid) => 0x1000_0000_0000_0007 | (pid as u64) << 4,
+            Self::ProcessIo(pid) => 0x1000_0000_0000_0008 | (pid as u64) << 4,
             Self::ProcessFd(pid, fd) => 0x2000_0000_0000_0000 | (pid as u64) << 10 | fd as u64,
             Self::ThreadDir(_, tid) => 0x3000_0000_0000_0000 | (tid as u64) << 4,
             Self::ThreadStat(_, tid) => 0x3000_0000_0000_0001 | (tid as u64) << 4,
@@ -57,6 +60,7 @@ impl ProcNode {
             Self::ThreadCmdline(_, tid) => 0x3000_0000_0000_0003 | (tid as u64) << 4,
             Self::ThreadComm(_, tid) => 0x3000_0000_0000_0004 | (tid as u64) << 4,
             Self::ThreadStatm(_, tid) => 0x3000_0000_0000_0005 | (tid as u64) << 4,
+            Self::ThreadIo(_, tid) => 0x3000_0000_0000_0006 | (tid as u64) << 4,
         }
     }
 

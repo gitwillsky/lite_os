@@ -46,11 +46,17 @@ pub(super) fn format_cpu_stat(snapshot: &ProcSnapshot) -> String {
 }
 
 pub(super) fn format_meminfo(snapshot: &ProcSnapshot) -> String {
+    let available_pages = snapshot
+        .free_pages
+        .saturating_add(snapshot.reclaimable_cached_pages)
+        .min(snapshot.total_pages);
     format!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         0 kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          0 kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           0 kB\n",
+        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           0 kB\n",
         snapshot.total_pages * 4,
         snapshot.free_pages * 4,
-        snapshot.free_pages * 4
+        available_pages * 4,
+        snapshot.cached_pages * 4,
+        snapshot.dirty_pages * 4,
     )
 }
 

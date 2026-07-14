@@ -1,7 +1,22 @@
 use alloc::{format, string::String};
 use core::fmt::Write;
 
-use super::{ProcProcessSnapshot, ProcThreadSnapshot, system::ticks};
+use super::{ProcIoSnapshot, ProcProcessSnapshot, ProcThreadSnapshot, system::ticks};
+
+/// @description 将 I/O owner 快照编码为 Linux `/proc/<task>/io` 七字段格式。
+/// @param io Process 聚合或 Thread 私有 I/O counter 快照。
+/// @return 包含尾随换行的 io 文本；当前同步写路径不会产生 cancelled writes。
+pub(super) fn format_io(io: &ProcIoSnapshot) -> String {
+    format!(
+        "rchar: {}\nwchar: {}\nsyscr: {}\nsyscw: {}\nread_bytes: {}\nwrite_bytes: {}\ncancelled_write_bytes: 0\n",
+        io.read_characters,
+        io.written_characters,
+        io.read_syscalls,
+        io.write_syscalls,
+        io.read_bytes,
+        io.write_bytes,
+    )
+}
 
 /// @description 将 Process snapshot 编码为 Linux `/proc/<pid>/stat` 单行格式。
 /// @param process 目标 live Process 的只读快照。

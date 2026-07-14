@@ -126,6 +126,9 @@ pub(crate) struct Sched {
     // OWNER: policy lock 独占 Linux reset-on-fork policy；缺失该 flag 会让
     // sched_getscheduler 的返回值与 child 实际继承的 nice 语义分裂。
     reset_on_fork: bool,
+    // OWNER: SchedulingEntity policy lock 独占 per-Thread I/O priority；若只让 syscall
+    // 返回默认值，htop 显示会与后续 set 操作分裂且 fork 无法继承真实 policy。
+    io_priority: u16,
     /// Thread 已提交的 CPU runtime；只由该 policy 更新和投影。
     total_runtime_us: u64,
     /// 所属 Process 的唯一 CPU runtime counter。
@@ -216,6 +219,7 @@ impl Sched {
             nice,
             vruntime,
             reset_on_fork: false,
+            io_priority: 0,
             total_runtime_us: 0,
             process_runtime_us,
         }
@@ -234,6 +238,7 @@ impl Sched {
             nice: if reset { self.nice.max(0) } else { self.nice },
             vruntime: self.vruntime,
             reset_on_fork: false,
+            io_priority: self.io_priority,
             total_runtime_us: 0,
             process_runtime_us,
         }
@@ -262,6 +267,18 @@ impl Sched {
         if let Some(replacement) = replacement {
             assert!((-20..=19).contains(&replacement));
             self.nice = replacement;
+        }
+        previous
+    }
+
+    /// @description 查询或替换当前 Thread 的 Linux encoded I/O priority。
+    ///
+    /// @param replacement None 只查询；Some 已由 syscall seam 校验 class/data encoding。
+    /// @return 修改前的 encoded `IOPRIO_PRIO_VALUE`。
+    pub(in crate::task) fn io_priority(&mut self, replacement: Option<u16>) -> u16 {
+        let previous = self.io_priority;
+        if let Some(replacement) = replacement {
+            self.io_priority = replacement;
         }
         previous
     }

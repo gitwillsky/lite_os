@@ -4,8 +4,8 @@ use crate::{
     syscall::errno,
     task::{
         SchedulerAffinityError, SchedulerNiceSelector, SchedulerPolicyError,
-        SchedulerPolicyRequest, current_task, scheduler_affinity, scheduler_nice, scheduler_policy,
-        scheduler_rr_interval, suspend_current_and_run_next,
+        SchedulerPolicyRequest, current_task, scheduler_affinity, scheduler_io_priority,
+        scheduler_nice, scheduler_policy, scheduler_rr_interval, suspend_current_and_run_next,
     },
 };
 
@@ -20,6 +20,10 @@ const SCHED_EXT: i32 = 7;
 const PRIO_PROCESS: i32 = 0;
 const PRIO_PGRP: i32 = 1;
 const PRIO_USER: i32 = 2;
+const IOPRIO_WHO_PROCESS: i32 = 1;
+const IOPRIO_CLASS_SHIFT: u32 = 13;
+const IOPRIO_CLASS_IDLE: u16 = 3;
+const IOPRIO_DATA_MASK: u16 = (1 << IOPRIO_CLASS_SHIFT) - 1;
 
 fn affinity_error(error: SchedulerAffinityError) -> isize {
     match error {
@@ -45,6 +49,43 @@ fn nice_selector(which: i32, who: u32) -> Result<SchedulerNiceSelector, isize> {
         PRIO_USER => Ok(SchedulerNiceSelector::User(who)),
         _ => Err(-errno::EINVAL),
     }
+}
+
+/// @description 设置一个 live Thread 的 Linux I/O priority。
+///
+/// @param which 当前实现支持 `IOPRIO_WHO_PROCESS`。
+/// @param who 零选择 caller，正数选择全局 TID。
+/// @param priority encoded class/data；支持 NONE/RT/BE/IDLE 与 data 0..7。
+/// @return 成功返回 0。
+/// @errors selector/encoding 非法返回 EINVAL；目标不存在或权限不足返回 ESRCH/EPERM。
+pub(crate) fn sys_ioprio_set(which: i32, who: i32, priority: i32) -> isize {
+    if which != IOPRIO_WHO_PROCESS || who < 0 || priority < 0 || priority > u16::MAX as i32 {
+        return -errno::EINVAL;
+    }
+    let priority = priority as u16;
+    let class = priority >> IOPRIO_CLASS_SHIFT;
+    let data = priority & IOPRIO_DATA_MASK;
+    if class > IOPRIO_CLASS_IDLE || data > 7 || class == 0 && data != 0 {
+        return -errno::EINVAL;
+    }
+    scheduler_io_priority(who as usize, Some(priority))
+        .map(|_| 0)
+        .unwrap_or_else(policy_error)
+}
+
+/// @description 查询一个 live Thread 的 Linux I/O priority。
+///
+/// @param which 当前实现支持 `IOPRIO_WHO_PROCESS`。
+/// @param who 零选择 caller，正数选择全局 TID。
+/// @return encoded priority；未显式设置时为 class NONE 的零。
+/// @errors selector 非法或目标不存在返回 EINVAL/ESRCH。
+pub(crate) fn sys_ioprio_get(which: i32, who: i32) -> isize {
+    if which != IOPRIO_WHO_PROCESS || who < 0 {
+        return -errno::EINVAL;
+    }
+    scheduler_io_priority(who as usize, None)
+        .map(|priority| priority as isize)
+        .unwrap_or_else(policy_error)
 }
 
 /// @description 按 Linux PROCESS/PGRP/USER selector 替换 live Thread nice。

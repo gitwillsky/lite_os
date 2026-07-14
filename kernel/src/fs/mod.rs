@@ -8,6 +8,7 @@ mod inode;
 mod page_cache;
 mod permission;
 mod procfs;
+mod sysfs;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
@@ -16,17 +17,19 @@ pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
     CharacterDevice, Console, FileDescriptorTable, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND,
     O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal,
-    TerminalAccess, TerminalRead,
+    TerminalAccess, TerminalRead, TerminalReadMode,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use page_cache::{
-    RegularFile, RegularFileWrite, allocate, mapping, sync_all, sync_inode, truncate,
+    RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
+    sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
-    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcNetworkSnapshot,
-    ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
+    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcIoSnapshot,
+    ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
+pub(crate) use sysfs::SysFileSystem;
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
     AdvisoryLockNotifier, OpenedFile, RecordLockMode, RecordLockRange, init as init_vfs, vfs,

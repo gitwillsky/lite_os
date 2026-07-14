@@ -144,6 +144,26 @@ pub(crate) fn scheduler_nice(
     result
 }
 
+/// @description 查询或替换一个 live Thread 的 Linux I/O priority policy。
+///
+/// @param tid 零选择 calling Thread；正数使用全局 TID selector。
+/// @param replacement None 查询，Some 替换已验证的 encoded priority。
+/// @return 当前或新 I/O priority。
+/// @errors caller/目标不存在返回 NotFound；设置其他身份目标且无 root 权限返回 Permission。
+pub(crate) fn scheduler_io_priority(
+    tid: usize,
+    replacement: Option<u16>,
+) -> Result<u16, SchedulerPolicyError> {
+    let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
+    let target = scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
+    if replacement.is_some() && caller.scheduler_privilege_for(&target).is_none() {
+        return Err(SchedulerPolicyError::Permission);
+    }
+    let mut policy = target.scheduling.policy.lock();
+    let previous = policy.io_priority(replacement);
+    Ok(replacement.unwrap_or(previous))
+}
+
 /// @description 查询或替换 live Thread 的 legacy Linux scheduler policy。
 ///
 /// @param tid 零选择 calling Thread；正数使用 Linux 全局 TID selector。

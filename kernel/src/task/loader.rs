@@ -91,7 +91,7 @@ impl ExecutableSource for InodeExecutableSource {
         self.file
             .read(offset as u64, buffer)
             .ok()
-            .filter(|read| *read == buffer.len())
+            .filter(|read| read.bytes == buffer.len())
             .map(|_| ())
             .ok_or(())
     }

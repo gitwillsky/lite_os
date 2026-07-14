@@ -78,6 +78,24 @@ impl PrivateFileArea {
         }
     }
 
+    /// @description 判断 resident private page 是否仍包含文件数据，而非纯 BSS/EOF 零页。
+    ///
+    /// @param vpn 待分类的 VMA virtual page number。
+    /// @return page 与 executable/file 数据区间存在非空交集时为 true。
+    pub(super) fn has_file_bytes(&self, vpn: VirtualPageNumber) -> bool {
+        let page_start = vpn.as_usize().saturating_mul(PAGE_SIZE);
+        let page_end = page_start.saturating_add(PAGE_SIZE);
+        let file_size = match &self.source {
+            PrivateSource::Executable(_) => self.file_size,
+            PrivateSource::CachedFile(source) => {
+                usize::try_from(source.size().saturating_sub(self.source_offset as u64))
+                    .unwrap_or(usize::MAX)
+            }
+        };
+        let data_end = self.data_start.saturating_add(file_size);
+        page_start < data_end && self.data_start < page_end
+    }
+
     /// @description 只填充 fault page 与文件数据区间的交集；BSS/EOF 后区域保持零。
     pub(super) fn fill(
         &self,

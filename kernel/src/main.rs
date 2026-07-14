@@ -109,6 +109,14 @@ fn mount_root_filesystem() {
         )
         .expect("failed to mount procfs at /proc");
     info!("procfs mounted at /proc");
+    fs::vfs()
+        .mount_at(
+            b"/sys",
+            b"sysfs",
+            fs::SysFileSystem::new(arch::hart::hart_count()),
+        )
+        .expect("failed to mount sysfs at /sys");
+    info!("sysfs mounted at /sys");
 }
 
 struct PlatformConsole;

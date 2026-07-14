@@ -73,7 +73,7 @@ def _stage_package_root(
     staging = workspace / "rootfs"
     staging.mkdir()
     run([str(debugfs), "-R", f"rdump / {staging}", str(image)])
-    for unmanaged in ("lost+found", "dev", "proc"):
+    for unmanaged in ("lost+found", "dev", "proc", "sys"):
         path = staging / unmanaged
         if path.is_dir():
             shutil.rmtree(path)

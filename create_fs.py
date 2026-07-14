@@ -7,7 +7,7 @@ import sys
 
 from scripts.ext2_image import find_debugfs, find_mke2fs
 
-BOOT_DIRECTORIES = ("/bin", "/dev", "/proc")
+BOOT_DIRECTORIES = ("/bin", "/dev", "/proc", "/sys")
 
 def create_ext2_filesystem(filename, init_elf, size_mb=128):
     """创建带标准 JBD2 journal inode 的 4K ext2 revision 1 文件系统。"""

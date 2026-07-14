@@ -1,7 +1,9 @@
 mod address_space;
 mod alternate_signal_stack;
 mod credentials;
+mod debug;
 mod file_descriptions;
+mod io_accounting;
 mod process_clone;
 mod process_exec;
 mod resource_limits;
@@ -30,6 +32,8 @@ use address_space::AddressSpace;
 use alternate_signal_stack::AlternateSignalStack;
 pub(crate) use alternate_signal_stack::{SignalStack, SignalStackError};
 use credentials::Credentials;
+use io_accounting::IoAccounting;
+pub(crate) use io_accounting::IoStatistics;
 use process_exec::process_name;
 pub(in crate::task) use resource_limits::RLIMIT_NICE;
 use resource_limits::ResourceLimits;
@@ -108,6 +112,9 @@ struct ThreadContext {
     syscall_restart: Mutex<Option<SyscallRestart>>,
     // OWNER: Thread 独占 altstack registration；active 只从 SP/range 推导，复制 flag 会与 sigreturn 分裂。
     alternate_signal_stack: Mutex<AlternateSignalStack>,
+    // OWNER: ThreadContext 独占当前 Thread 的 Linux I/O counters；Process 聚合只保存
+    // group 口径，不能替代 thread `/proc/<tgid>/task/<tid>/io`。
+    io_accounting: IoAccounting,
 }
 
 /// @description signal handler 返回后重放一次 Linux/riscv64 ecall 的完整寄存输入。
@@ -139,6 +146,9 @@ struct Process {
     // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
     // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
     cpu_runtime_us: Arc<AtomicU64>,
+    // OWNER: Process 的全部 Thread 同步累计到这一份 I/O counters；若只在 live Thread
+    // snapshot 时求和，已退出 worker 的读写历史会从 `/proc/<tgid>/io` 倒退消失。
+    io_accounting: Arc<IoAccounting>,
     terminal: Arc<Terminal>,
     // OWNER: disposition 与 process-directed pending 必须同锁；拆开会造成 SIG_IGN/queue 竞态和锁序反转。
     signal_state: Mutex<ProcessSignalState>,
@@ -172,6 +182,7 @@ impl TaskControlBlock {
         let terminal = Terminal::new(console);
         let address_space = AddressSpace::new(memory_set)?;
         let cpu_runtime_us = Arc::new(AtomicU64::new(0));
+        let io_accounting = Arc::new(IoAccounting::default());
         let start_time_us = get_time_us();
         let process = Arc::new(Process {
             tgid: pid,
@@ -183,6 +194,7 @@ impl TaskControlBlock {
             credentials: Mutex::new(Credentials::root()),
             resource_limits: Mutex::new(resource_limits),
             cpu_runtime_us: cpu_runtime_us.clone(),
+            io_accounting: io_accounting.clone(),
             terminal,
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         });
@@ -206,6 +218,7 @@ impl TaskControlBlock {
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
                 alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
+                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(CpuAffinity::all_possible())),
@@ -279,6 +292,7 @@ impl TaskControlBlock {
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
                 alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
+                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(cpu_affinity)),
@@ -585,22 +599,5 @@ impl TaskControlBlock {
     /// @return 当前单线程模型中与 TGID 数值相同、但语义独立的 TID。
     pub(crate) fn tid(&self) -> usize {
         self.thread.tid
-    }
-}
-
-impl core::fmt::Debug for TaskControlBlock {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            r#"
-            TaskControlBlock {{
-                tgid: {},
-                tid: {},
-                task_status: {:?}
-            }}"#,
-            self.tgid(),
-            self.tid(),
-            self.scheduling.state.lock().run_state
-        )
     }
 }

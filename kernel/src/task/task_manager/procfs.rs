@@ -3,8 +3,8 @@ use core::sync::atomic::Ordering;
 use crate::{
     arch::hart,
     fs::{
-        ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot,
-        ProcSnapshot, ProcSource, ProcThreadSnapshot,
+        ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
+        ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot, page_cache_statistics,
     },
     memory::frame_statistics,
     task::{RunState, current_task, processor::cpu_runtime_snapshot},
@@ -156,6 +156,7 @@ fn process_snapshot() -> ProcSnapshot {
                 start_time_us,
                 last_cpu: hart::hart_index(thread.scheduling.last_cpu.load(Ordering::Relaxed))
                     .expect("task last_cpu disappeared from topology"),
+                io: io_snapshot(thread.thread_io_statistics()),
             });
         }
         let leader = thread_snapshots
@@ -200,11 +201,13 @@ fn process_snapshot() -> ProcSnapshot {
             data_pages: statistics.data_pages,
             fd_size: statistics.fd_size,
             last_cpu,
+            io: io_snapshot(representative.process_io_statistics()),
         });
     }
 
     // 3. allocator 与 per-hart processor 分别提供其唯一 owner 下的统计。
     let (total_pages, free_pages) = frame_statistics();
+    let cache = page_cache_statistics();
     let load_milli = TASK_MANAGER.load_average.values();
     let cpus = cpu_runtime_snapshot()
         .into_iter()
@@ -228,6 +231,9 @@ fn process_snapshot() -> ProcSnapshot {
         boot_epoch_seconds: boot_epoch_seconds(),
         total_pages,
         free_pages,
+        cached_pages: cache.resident_pages,
+        dirty_pages: cache.dirty_pages,
+        reclaimable_cached_pages: cache.reclaimable_pages,
         runnable_tasks,
         total_tasks,
         processes_created,
@@ -236,6 +242,17 @@ fn process_snapshot() -> ProcSnapshot {
         cpus,
         processes,
         network,
+    }
+}
+
+fn io_snapshot(statistics: crate::task::IoStatistics) -> ProcIoSnapshot {
+    ProcIoSnapshot {
+        read_characters: statistics.read_characters,
+        written_characters: statistics.written_characters,
+        read_syscalls: statistics.read_syscalls,
+        write_syscalls: statistics.write_syscalls,
+        read_bytes: statistics.read_bytes,
+        write_bytes: statistics.write_bytes,
     }
 }
 

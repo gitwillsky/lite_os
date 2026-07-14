@@ -1,4 +1,5 @@
 use super::*;
+use crate::fs::TerminalReadMode;
 
 /// @description 执行 scalar/readv 共用的唯一 sequential read descriptor dispatch。
 /// @param task userspace address owner。
@@ -173,7 +174,22 @@ pub(super) fn read_descriptor(
                 kind,
             } => {
                 let mut input = [0u8; 512];
-                let read = loop {
+                let capacity = total_length.min(input.len());
+                let mode = console.read_mode(capacity);
+                let nonblocking = *ofd.flags.lock() & O_NONBLOCK != 0;
+                let mut read = 0;
+                // VTIME 在 MIN=0 时从 read 开始计时，在 MIN>0 时从首字节开始并按
+                // 后续每批输入重置；缺少这个区分会让 curses halfdelay 永久阻塞。
+                let mut deadline = match mode {
+                    TerminalReadMode::Noncanonical {
+                        minimum: 0,
+                        timeout_ns,
+                    } if timeout_ns != 0 => {
+                        Some(crate::timer::get_time_ns().saturating_add(timeout_ns))
+                    }
+                    _ => None,
+                };
+                loop {
                     if *kind == DeviceKind::Tty
                         && let Err(error) = guard_terminal_access(console, TerminalAccess::Input)
                     {
@@ -182,21 +198,54 @@ pub(super) fn read_descriptor(
                     if drain_terminal_input(console).is_err() {
                         return -errno::EIO;
                     }
-                    let count = total_length.min(input.len());
-                    match console.read(&mut input[..count]) {
+                    match console.read(&mut input[read..capacity]) {
                         TerminalRead::Empty => {
-                            match crate::task::wait_for_console(|| console.wait_ready()) {
+                            if matches!(
+                                mode,
+                                TerminalReadMode::Noncanonical {
+                                    minimum: 0,
+                                    timeout_ns: 0,
+                                }
+                            ) {
+                                break;
+                            }
+                            if nonblocking {
+                                if read == 0 {
+                                    return -errno::EAGAIN;
+                                }
+                                break;
+                            }
+                            match crate::task::wait_for_console(deadline, || console.wait_ready()) {
                                 crate::task::WaitResult::Woken => continue,
-                                crate::task::WaitResult::Interrupted => return -errno::EINTR,
-                                crate::task::WaitResult::TimedOut => {
-                                    panic!("console wait cannot time out")
+                                crate::task::WaitResult::Interrupted if read == 0 => {
+                                    return -errno::EINTR;
+                                }
+                                crate::task::WaitResult::Interrupted
+                                | crate::task::WaitResult::TimedOut => break,
+                            }
+                        }
+                        TerminalRead::Bytes(count) => {
+                            read += count;
+                            match mode {
+                                TerminalReadMode::Canonical => break,
+                                TerminalReadMode::Noncanonical {
+                                    minimum,
+                                    timeout_ns,
+                                } => {
+                                    if read == capacity || read >= minimum {
+                                        break;
+                                    }
+                                    if timeout_ns != 0 {
+                                        deadline = Some(
+                                            crate::timer::get_time_ns().saturating_add(timeout_ns),
+                                        );
+                                    }
                                 }
                             }
                         }
-                        TerminalRead::Bytes(read) => break read,
-                        TerminalRead::Eof => return 0,
+                        TerminalRead::Eof => break,
                     }
-                };
+                }
                 let mut cursor = UserIoCursor::new(vectors);
                 let result = cursor.copy_to_user(task, &input[..read]);
                 scatter_result(&cursor, result)

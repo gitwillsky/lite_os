@@ -53,6 +53,8 @@ fn copy_regular_file(
                 };
             }
         };
+        task.account_read_storage(read.storage_bytes);
+        let read = read.bytes;
         if read == 0 {
             break;
         }
@@ -66,6 +68,7 @@ fn copy_regular_file(
                 };
             }
         };
+        task.account_write_storage(written);
         *input_position = input_position
             .checked_add(written as u64)
             .expect("sendfile input position overflow");
@@ -214,7 +217,10 @@ pub(crate) fn sys_sendfile(
         return -errno::ESRCH;
     };
     if offset == 0 {
-        return do_sendfile(&task, output_fd, input_fd, None, count);
+        let result = do_sendfile(&task, output_fd, input_fd, None, count);
+        task.account_read_result(result);
+        task.account_write_result(result);
+        return result;
     }
     let mut bytes = [0u8; core::mem::size_of::<i64>()];
     if task.copy_from_user(offset, &mut bytes).is_err() {
@@ -232,6 +238,8 @@ pub(crate) fn sys_sendfile(
         }
         Err(_) => -errno::EINVAL,
     };
+    task.account_read_result(result);
+    task.account_write_result(result);
     if task
         .copy_to_user(offset, &signed_position.to_ne_bytes())
         .is_err()

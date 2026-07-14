@@ -46,7 +46,9 @@ pub(crate) use deferred::{dispatch_pending_deferred_work, real_timer, set_real_t
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
-pub(crate) use policy::{SchedulerPolicyError, SchedulerPolicyRequest, scheduler_policy};
+pub(crate) use policy::{
+    SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
+};
 use process_exit::ProcessExitStatus;
 pub(crate) use process_exit::{
     exit_current_group, exit_current_group_by_signal, exit_current_if_group_exiting,
@@ -239,19 +241,26 @@ pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(),
 
 /// @description 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。
 ///
+/// @param deadline VTIME 导出的 absolute monotonic deadline；无超时时为 None。
 /// @param input_ready 在 registry owner lock 内复查 UART ring 的短闭包。
-/// @return 输入已到达/IRQ 唤醒返回 `Woken`；signal cancellation 返回 `Interrupted`。
-pub(crate) fn wait_for_console(input_ready: impl FnOnce() -> bool) -> WaitResult {
+/// @return 输入已到达/IRQ 唤醒返回 `Woken`，到期返回 `TimedOut`，signal cancellation 返回 `Interrupted`。
+pub(crate) fn wait_for_console(
+    deadline: Option<u64>,
+    input_ready: impl FnOnce() -> bool,
+) -> WaitResult {
     let task = current_task().expect("console wait requires current task");
     let queue = INDEXED_WAIT_QUEUE.lock();
     if input_ready() {
         return WaitResult::Woken;
     }
+    if deadline.is_some_and(|value| value <= get_time_ns()) {
+        return WaitResult::TimedOut;
+    }
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
     prepare_current_block(&task, queue, |queue, current| {
-        let wait_id = queue.insert_console(current);
+        let wait_id = queue.insert_console(deadline, current);
         WaitMembership::Console(wait_id)
     })
     .suspend()
@@ -276,7 +285,7 @@ fn wake_console_waiters() -> usize {
     for (wait_id, entry) in waiters {
         let woke = match entry.kind {
             IndexedWaitKind::Console => {
-                crate::task::processor::wake_console_task(entry.task, wait_id)
+                crate::task::processor::wake_console_task(entry.task, wait_id, WaitResult::Woken)
             }
             IndexedWaitKind::Poll => {
                 crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken)

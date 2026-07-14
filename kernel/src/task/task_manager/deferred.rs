@@ -245,6 +245,9 @@ fn wake_expired_tasks(now_ns: u64) {
             IndexedWaitKind::Signal { .. } => {
                 crate::task::processor::wake_signal_task(task, WaitResult::TimedOut)
             }
+            IndexedWaitKind::Console => {
+                crate::task::processor::wake_console_task(task, wait_id, WaitResult::TimedOut)
+            }
             IndexedWaitKind::Poll => {
                 crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
             }

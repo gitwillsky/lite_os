@@ -54,6 +54,7 @@ impl TaskControlBlock {
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let cpu_runtime_us = Arc::new(core::sync::atomic::AtomicU64::new(0));
+        let io_accounting = Arc::new(IoAccounting::default());
         let child_policy = self.scheduling.policy.lock().forked(cpu_runtime_us.clone());
         let last_cpu = self
             .scheduling
@@ -94,6 +95,7 @@ impl TaskControlBlock {
                 credentials: Mutex::new(credentials),
                 resource_limits: Mutex::new(resource_limits),
                 cpu_runtime_us: cpu_runtime_us.clone(),
+                io_accounting: io_accounting.clone(),
                 terminal: self.process.terminal.clone(),
                 signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
             }),
@@ -115,6 +117,7 @@ impl TaskControlBlock {
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
                 alternate_signal_stack: Mutex::new(alternate_signal_stack),
+                io_accounting: IoAccounting::default(),
             },
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(cpu_affinity)),

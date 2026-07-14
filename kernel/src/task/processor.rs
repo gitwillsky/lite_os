@@ -441,13 +441,14 @@ pub(super) fn wake_futex_task(
 ///
 /// @param task indexed wait registry 移出的 task owner。
 /// @param wait_id 必须与 SchedulingState 中记录的 ID 相同。
+/// @param result UART input 或 VTIME deadline 的唯一完成结果。
 /// @return membership 有效时返回 true；stale wake 返回 false。
-pub(super) fn wake_console_task(task: Arc<TaskControlBlock>, wait_id: u64) -> bool {
-    wake_waiting_task(
-        task,
-        WaitMembership::Console(wait_id),
-        Some(WaitResult::Woken),
-    )
+pub(super) fn wake_console_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
+    wake_waiting_task(task, WaitMembership::Console(wait_id), Some(result))
 }
 
 /// @description 消费 `rt_sigtimedwait` membership，并发布 signal/timeout/interruption 结果。

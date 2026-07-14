@@ -29,7 +29,9 @@ fn positioned_read(fd: usize, vectors: &[UserIoVec], offset: i64) -> isize {
         Err(error) => return ferr(error),
     };
     let mut position = offset as u64;
-    read_regular_vectors(&task, &file, &mut position, vectors)
+    let result = read_regular_vectors(&task, &file, &mut position, vectors);
+    task.account_read_result(result);
+    result
 }
 
 /// @description 从 regular-file OFD 的显式 offset 读取，不修改共享 OFD offset。
@@ -94,7 +96,9 @@ fn positioned_write(
     let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
     let mut position = offset as u64;
     let writer = file.begin_write();
-    write_regular_vectors(&task, &writer, &mut position, vectors, append)
+    let result = write_regular_vectors(&task, &writer, &mut position, vectors, append);
+    task.account_write_result(result);
+    result
 }
 
 /// @description 向 regular-file OFD 的显式 offset 写入，不修改共享 OFD offset。

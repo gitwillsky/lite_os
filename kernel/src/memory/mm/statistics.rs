@@ -24,6 +24,14 @@ impl MemorySet {
                     .as_ref()
                     .map_or(0, |shared| shared.resident.len());
                 let private_resident_pages = area.data_frames.len();
+                let clean_private_file_pages = area.private_file.as_ref().map_or(0, |backing| {
+                    area.data_frames
+                        .keys()
+                        .filter(|vpn| {
+                            backing.has_file_bytes(**vpn) && !area.dirty_private.contains(*vpn)
+                        })
+                        .count()
+                });
                 let shared_anonymous_pages = if area.shared_anonymous.is_some() {
                     private_resident_pages
                 } else {
@@ -42,7 +50,7 @@ impl MemorySet {
                 (
                     size + pages,
                     resident + private_resident_pages + shared_file_pages,
-                    shared + shared_anonymous_pages + shared_file_pages,
+                    shared + shared_anonymous_pages + shared_file_pages + clean_private_file_pages,
                     data + data_pages,
                 )
             });

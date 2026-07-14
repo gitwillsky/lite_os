@@ -88,7 +88,7 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
         Ok(context) => context,
         Err(error) => return error,
     };
-    read_descriptor(
+    let result = read_descriptor(
         &task,
         &ofd,
         &[UserIoVec {
@@ -96,7 +96,9 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
             length,
         }],
         length,
-    )
+    );
+    task.account_read_result(result);
+    result
 }
 
 /// @description 按 Linux RV64 `struct iovec` 顺序从同一个 OFD scatter read。
@@ -113,7 +115,9 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    read_descriptor(&task, &ofd, &vectors, total_length)
+    let result = read_descriptor(&task, &ofd, &vectors, total_length);
+    task.account_read_result(result);
+    result
 }
 
 /// @description 将单一 userspace buffer 写入 descriptor。
@@ -126,7 +130,7 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
         Ok(context) => context,
         Err(error) => return error,
     };
-    write_descriptor(
+    let result = write_descriptor(
         &task,
         &ofd,
         &[UserIoVec {
@@ -134,7 +138,9 @@ pub(crate) fn sys_write(fd: usize, pointer: *const u8, length: usize) -> isize {
             length,
         }],
         length,
-    )
+    );
+    task.account_write_result(result);
+    result
 }
 
 /// @description 按 Linux RV64 `struct iovec` 顺序写入同一个 open file description。
@@ -151,5 +157,7 @@ pub(crate) fn sys_writev(fd: usize, iovector: usize, count: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    write_descriptor(&task, &ofd, &vectors, total_length)
+    let result = write_descriptor(&task, &ofd, &vectors, total_length);
+    task.account_write_result(result);
+    result
 }

@@ -13,6 +13,17 @@ const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
 const WRITEBACK_BATCH_PAGES: usize = 32;
 
+/// @description page-cache owner 在单次读取边界投影的全局页统计。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PageCacheStatistics {
+    /// 当前由 CachedFile 强拥有的 resident pages。
+    pub(crate) resident_pages: usize,
+    /// dirty bit 已发布且尚未完成 writeback 的 resident pages。
+    pub(crate) dirty_pages: usize,
+    /// 当前可由 allocator 慢路径直接释放的 clean、无外部引用 pages。
+    pub(crate) reclaimable_pages: usize,
+}
+
 #[derive(Debug)]
 struct CachedPage {
     frame: SharedFrame,
@@ -91,9 +102,9 @@ impl core::fmt::Debug for CachedFile {
 }
 
 impl CachedFile {
-    fn page(&self, index: u64) -> Result<Arc<CachedPage>, FileSystemError> {
+    fn page_with_storage(&self, index: u64) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
         if let Some(page) = self.pages.lock().get(&index).cloned() {
-            return Ok(page);
+            return Ok((page, 0));
         }
         // 1. miss fill 与 storage mutation 共用 operation domain，保证读出的 bytes 和最终
         // cache publication 之间没有 write/truncate 可以穿过。
@@ -101,7 +112,7 @@ impl CachedFile {
         // 2. 等锁期间另一个 filler 可能已经发布同一 page；必须复查，否则会重复 I/O，
         // 并让后完成者覆盖先完成者的唯一 cache owner。
         if let Some(page) = self.pages.lock().get(&index).cloned() {
-            return Ok(page);
+            return Ok((page, 0));
         }
         let mut frame = SharedFrame::allocate().map_err(shared_error)?;
         let offset = index
@@ -128,7 +139,7 @@ impl CachedFile {
         });
         let mut pages = self.pages.lock();
         assert!(pages.insert(index, page.clone()).is_none());
-        Ok(page)
+        Ok((page, available))
     }
 
     fn update_cached(&self, offset: u64, input: &[u8]) {
@@ -227,8 +238,8 @@ impl SharedFileMapping for CachedFile {
     }
 
     fn page(&self, index: u64) -> Result<Arc<dyn SharedPage>, SharedFileError> {
-        CachedFile::page(self, index)
-            .map(|page| page as Arc<dyn SharedPage>)
+        self.page_with_storage(index)
+            .map(|(page, _)| page as Arc<dyn SharedPage>)
             .map_err(fs_error)
     }
 
@@ -291,6 +302,15 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
 /// metadata、获取全局 FILES lock 并查找同一个 BTree entry。
 pub(crate) struct RegularFile(Arc<CachedFile>);
 
+/// @description 一次 regular-file cache read 的 logical 与实际 storage 结果。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RegularFileRead {
+    /// 复制到 kernel output 的 logical file bytes。
+    pub(crate) bytes: usize,
+    /// 本次调用因 cache miss 从 filesystem storage 成功填充的 bytes。
+    pub(crate) storage_bytes: usize,
+}
+
 /// @description 持有单 inode write-sequence ownership 的一次 regular-file mutation。
 ///
 /// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
@@ -329,21 +349,30 @@ impl RegularFile {
     /// @error cache fill 分配失败时返回 `OutOfMemory`。
     /// @error size snapshot 后并发 truncate 越过当前 page 时返回 `InvalidOperation`。
     /// @error storage read 失败或短读时返回对应 filesystem error。
-    pub(crate) fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
+    pub(crate) fn read(
+        &self,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<RegularFileRead, FileSystemError> {
         let size = self.0.inode.size();
         let count = usize::try_from(size.saturating_sub(offset))
             .unwrap_or(usize::MAX)
             .min(output.len());
         let mut done = 0;
+        let mut storage_bytes = 0;
         while done < count {
             let current = offset + done as u64;
-            let page = self.0.page(current / PAGE_SIZE as u64)?;
+            let (page, filled) = self.0.page_with_storage(current / PAGE_SIZE as u64)?;
+            storage_bytes += filled;
             let page_offset = current as usize % PAGE_SIZE;
             let part = (PAGE_SIZE - page_offset).min(count - done);
             page.frame.read(page_offset, &mut output[done..done + part]);
             done += part;
         }
-        Ok(done)
+        Ok(RegularFileRead {
+            bytes: done,
+            storage_bytes,
+        })
     }
 
     /// @description 开始一次不可被其他 regular-file mutation 穿插的 write operation。
@@ -466,6 +495,28 @@ pub(crate) fn sync_all() -> Result<(), FileSystemError> {
         .lock()
         .retain(|_, file| Arc::strong_count(file) != 1 || !file.pages.lock().is_empty());
     Ok(())
+}
+
+/// @description 从唯一 CachedFile page maps 汇总一次全局 resident/dirty/reclaimable 快照。
+///
+/// @return 只读统计；不触发 fill、writeback 或 reclaim。
+pub(crate) fn statistics() -> PageCacheStatistics {
+    let files = FILES.call_once(|| Mutex::new(BTreeMap::new())).lock();
+    let mut statistics = PageCacheStatistics {
+        resident_pages: 0,
+        dirty_pages: 0,
+        reclaimable_pages: 0,
+    };
+    for file in files.values() {
+        let pages = file.pages.lock();
+        statistics.resident_pages += pages.len();
+        for page in pages.values() {
+            statistics.dirty_pages += usize::from(page.dirty());
+            statistics.reclaimable_pages +=
+                usize::from(page.reclaimable() && Arc::strong_count(page) == 1);
+        }
+    }
+    statistics
 }
 
 fn fs_error(error: FileSystemError) -> SharedFileError {

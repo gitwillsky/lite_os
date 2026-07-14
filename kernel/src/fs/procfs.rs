@@ -3,12 +3,17 @@ use alloc::{string::ToString, sync::Arc, vec, vec::Vec};
 mod lookup;
 mod node;
 mod process;
+mod snapshot;
 mod system;
 use lookup::{directory_entry, find_process, find_thread, parse_pid};
 use node::ProcNode;
 use process::{
-    format_process_comm, format_process_stat, format_process_statm, format_process_status,
-    format_thread_stat, format_thread_status,
+    format_io, format_process_comm, format_process_stat, format_process_statm,
+    format_process_status, format_thread_stat, format_thread_status,
+};
+pub(crate) use snapshot::{
+    ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
+    ProcProcessSnapshot, ProcSnapshot, ProcThreadSnapshot,
 };
 use system::{
     format_cpu_stat, format_loadavg, format_meminfo, format_network_devices, format_network_routes,
@@ -21,82 +26,6 @@ use super::{
 };
 
 const PROC_FILESYSTEM_ID: usize = 3;
-
-#[derive(Clone)]
-pub(crate) struct ProcThreadSnapshot {
-    pub(crate) tid: usize,
-    pub(crate) state: u8,
-    pub(crate) nice: i32,
-    pub(crate) priority: i32,
-    pub(crate) runtime_us: u64,
-    pub(crate) start_time_us: u64,
-    pub(crate) last_cpu: usize,
-}
-
-#[derive(Clone)]
-pub(crate) struct ProcProcessSnapshot {
-    pub(crate) pid: usize,
-    pub(crate) ppid: usize,
-    pub(crate) process_group: usize,
-    pub(crate) session: usize,
-    pub(crate) comm: Vec<u8>,
-    pub(crate) uids: [u32; 3],
-    pub(crate) gids: [u32; 3],
-    pub(crate) groups: Vec<u32>,
-    pub(crate) state: u8,
-    pub(crate) nice: i32,
-    pub(crate) priority: i32,
-    pub(crate) threads: Vec<ProcThreadSnapshot>,
-    pub(crate) runtime_us: u64,
-    pub(crate) start_time_us: u64,
-    pub(crate) virtual_pages: usize,
-    pub(crate) resident_pages: usize,
-    pub(crate) shared_pages: usize,
-    pub(crate) text_pages: usize,
-    pub(crate) data_pages: usize,
-    pub(crate) fd_size: usize,
-    pub(crate) last_cpu: usize,
-}
-
-/// @description 一个 live descriptor number 与其 Linux procfs symlink target 快照。
-pub(crate) struct ProcFileDescriptorSnapshot {
-    pub(crate) fd: usize,
-    pub(crate) target: Vec<u8>,
-    pub(crate) opened: Option<Arc<super::OpenedFile>>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ProcCpuSnapshot {
-    pub(crate) cpu: usize,
-    pub(crate) busy_us: u64,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ProcNetworkSnapshot {
-    pub(crate) address: Option<[u8; 4]>,
-    pub(crate) prefix_length: u8,
-    pub(crate) gateway: Option<[u8; 4]>,
-    pub(crate) up: bool,
-    pub(crate) received_bytes: u64,
-    pub(crate) received_packets: u64,
-    pub(crate) transmitted_bytes: u64,
-    pub(crate) transmitted_packets: u64,
-}
-
-pub(crate) struct ProcSnapshot {
-    pub(crate) uptime_us: u64,
-    pub(crate) boot_epoch_seconds: u64,
-    pub(crate) total_pages: usize,
-    pub(crate) free_pages: usize,
-    pub(crate) runnable_tasks: usize,
-    pub(crate) total_tasks: usize,
-    pub(crate) processes_created: u64,
-    pub(crate) last_pid: usize,
-    pub(crate) load_milli: [u64; 3],
-    pub(crate) cpus: Vec<ProcCpuSnapshot>,
-    pub(crate) processes: Vec<ProcProcessSnapshot>,
-    pub(crate) network: Option<ProcNetworkSnapshot>,
-}
 
 /// @description procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
 pub(crate) trait ProcSource: Send + Sync {
@@ -183,6 +112,12 @@ impl ProcInode {
                 .find(|process| process.pid == pid)
                 .map(format_process_statm)
                 .ok_or(FileSystemError::NotFound)?,
+            ProcNode::ProcessIo(pid) => snapshot
+                .processes
+                .iter()
+                .find(|process| process.pid == pid)
+                .map(|process| format_io(&process.io))
+                .ok_or(FileSystemError::NotFound)?,
             ProcNode::ThreadStat(tgid, tid) => {
                 let process = find_process(&snapshot, tgid)?;
                 format_thread_stat(process, find_thread(process, tid)?)
@@ -200,6 +135,10 @@ impl ProcInode {
                 let process = find_process(&snapshot, tgid)?;
                 let _ = find_thread(process, tid)?;
                 format_process_statm(process)
+            }
+            ProcNode::ThreadIo(tgid, tid) => {
+                let process = find_process(&snapshot, tgid)?;
+                format_io(&find_thread(process, tid)?.io)
             }
             ProcNode::Root
             | ProcNode::NetDir
@@ -370,6 +309,7 @@ impl Inode for ProcInode {
                     InodeType::File,
                     b"statm",
                 ),
+                directory_entry(ProcNode::ProcessIo(pid).inode(), InodeType::File, b"io"),
                 directory_entry(
                     ProcNode::ProcessTaskDir(pid).inode(),
                     InodeType::Directory,
@@ -421,6 +361,11 @@ impl Inode for ProcInode {
                         ProcNode::ThreadStatm(tgid, tid).inode(),
                         InodeType::File,
                         b"statm",
+                    ),
+                    directory_entry(
+                        ProcNode::ThreadIo(tgid, tid).inode(),
+                        InodeType::File,
+                        b"io",
                     ),
                 ]);
             }
@@ -481,6 +426,7 @@ impl Inode for ProcInode {
                 b"cmdline" => ProcNode::ProcessCmdline(pid),
                 b"comm" => ProcNode::ProcessComm(pid),
                 b"statm" => ProcNode::ProcessStatm(pid),
+                b"io" => ProcNode::ProcessIo(pid),
                 b"task" => ProcNode::ProcessTaskDir(pid),
                 b"fd" => ProcNode::ProcessFdDir(pid),
                 _ => return Err(FileSystemError::NotFound),
@@ -504,6 +450,7 @@ impl Inode for ProcInode {
                 b"cmdline" => ProcNode::ThreadCmdline(tgid, tid),
                 b"comm" => ProcNode::ThreadComm(tgid, tid),
                 b"statm" => ProcNode::ThreadStatm(tgid, tid),
+                b"io" => ProcNode::ThreadIo(tgid, tid),
                 _ => return Err(FileSystemError::NotFound),
             },
             ProcNode::ProcessFdDir(pid) => match name {

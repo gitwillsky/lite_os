@@ -17,9 +17,9 @@ pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_execut
 pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
 pub(in crate::task) use model::CpuAffinity;
 pub(crate) use model::{
-    PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError, RunState,
-    SignalAction, SignalDelivery, SignalStack, SignalStackError, StopResume, StopTransition,
-    TaskControlBlock, WaitMembership, WaitResult,
+    IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError,
+    RunState, SignalAction, SignalDelivery, SignalStack, SignalStackError, StopResume,
+    StopTransition, TaskControlBlock, WaitMembership, WaitResult,
 };
 pub(crate) use processor::*;
 pub(crate) use task_manager::advisory_lock::{

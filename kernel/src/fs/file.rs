@@ -1,7 +1,7 @@
 #[path = "file/proc.rs"]
 mod proc;
 mod terminal;
-pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead};
+pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead, TerminalReadMode};
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering, fence};

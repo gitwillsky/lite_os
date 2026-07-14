@@ -65,6 +65,8 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_DUP3 => sys_dup3(args[0], args[1], args[2] as u32),
         SYSCALL_FCNTL => sys_fcntl(args[0], args[1] as u32, args[2]),
         SYSCALL_IOCTL => sys_ioctl(args[0], args[1], args[2]),
+        SYSCALL_IOPRIO_SET => sys_ioprio_set(args[0] as i32, args[1] as i32, args[2] as i32),
+        SYSCALL_IOPRIO_GET => sys_ioprio_get(args[0] as i32, args[1] as i32),
         SYSCALL_FLOCK => sys_flock(args[0], args[1]),
         SYSCALL_MKNODAT => sys_mknodat(
             args[0] as isize,

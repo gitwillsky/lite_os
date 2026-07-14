@@ -21,6 +21,20 @@ pub(crate) enum TerminalRead {
     Empty,
 }
 
+/// @description 当前 termios 对一次 terminal read 规定的完成条件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalReadMode {
+    /// canonical line discipline 只发布完整行或 EOF。
+    Canonical,
+    /// noncanonical read 由 VMIN 与 VTIME 共同决定最小字节数和超时。
+    Noncanonical {
+        /// 一次 read 正常完成前所需的最小字节数，已限制到 caller capacity。
+        minimum: usize,
+        /// VTIME 表示的 decisecond timeout，转换为纳秒；零表示无超时。
+        timeout_ns: u64,
+    },
+}
+
 struct TerminalState {
     termios: [u8; KERNEL_TERMIOS_SIZE],
     window_size: [u8; 8],
@@ -129,6 +143,27 @@ impl Terminal {
             state.input_len -= 1;
         }
         TerminalRead::Bytes(count)
+    }
+
+    /// @description 从唯一 termios owner 投影一次 read 的 canonical/VMIN/VTIME 语义。
+    ///
+    /// @param capacity 本次 userspace read 可接收的最大字节数。
+    /// @return canonical 模式，或已按 capacity 收敛的 noncanonical 完成条件。
+    pub(crate) fn read_mode(&self, capacity: usize) -> TerminalReadMode {
+        const ICANON: u32 = 0x2;
+        const VTIME: usize = 5;
+        const VMIN: usize = 6;
+        const CONTROL_OFFSET: usize = 17;
+        const DECISECOND_NS: u64 = 100_000_000;
+
+        let state = self.state.lock();
+        if state.local_flags() & ICANON != 0 {
+            return TerminalReadMode::Canonical;
+        }
+        TerminalReadMode::Noncanonical {
+            minimum: usize::from(state.termios[CONTROL_OFFSET + VMIN]).min(capacity),
+            timeout_ns: u64::from(state.termios[CONTROL_OFFSET + VTIME]) * DECISECOND_NS,
+        }
     }
 
     pub(crate) fn input_ready(&self) -> bool {
