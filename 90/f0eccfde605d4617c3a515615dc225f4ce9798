@@ -1,0 +1,61 @@
+docs/syscall-support.md
+  s_f0a69312287991::t_8744018ad4a4ea 36,99,103-104,106
+kernel/src/fs/mod.rs
+  s_f0a69312287991::t_2295b13b7b8647 28
+kernel/src/fs/procfs.rs
+  s_f0a69312287991::t_05bb6aefa231ba 3-4,7-12,25-35,49,54-56,144-152,180-203,208,210,214-216,326-329,368-377,384-426,483-484,488-508
+kernel/src/fs/procfs/lookup.rs
+  s_f0a69312287991::t_7485e1a7cd7762 1-43
+kernel/src/fs/procfs/node.rs
+  s_f0a69312287991::t_3d72326d43f22f 1-75
+kernel/src/fs/procfs/process.rs
+  s_f0a69312287991::t_4776c4589cd3a2 4,10-56,61,63,67-71,74-88,104-118,127,134,136,148,151
+kernel/src/memory/mm/cow.rs
+  s_f0a69312287991::t_54fd5827208d81 48-49
+kernel/src/memory/mm/mmap.rs
+  s_f0a69312287991::t_cafc66c590abf0 69,124
+kernel/src/memory/mm/mmap/advice.rs
+  s_f0a69312287991::t_4293aa2fbd57fc 25-26
+kernel/src/memory/mm/mmap/anonymous_shared.rs
+  s_f0a69312287991::t_e0270d6092047d 9
+kernel/src/memory/mm/mmap/protection.rs
+  s_f0a69312287991::t_36b438ff8cc778 11
+kernel/src/memory/mm/statistics.rs
+  s_f0a69312287991::t_07bc5cb0b30efd 1-51
+kernel/src/memory/page_table.rs
+  s_f0a69312287991::t_0a04b29aa2b7dc 201,239,246
+kernel/src/syscall/fs/io/sequential.rs
+  s_f0a69312287991::t_1398d2db076c51 116
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_f0a69312287991::t_e6e89758e13703 100-102
+kernel/src/syscall/memory.rs
+  s_f0a69312287991::t_7427a06f2717d4 16-19,70-71,85-91,216
+kernel/src/task/model.rs
+  s_f0a69312287991::t_17b6cbddb950e8 91-93,124,175,179,193,266
+kernel/src/task/model/address_space.rs
+  s_f0a69312287991::t_31e4bd6dcb528d 6-25,47,567-574,577-581
+kernel/src/task/model/process_clone.rs
+  s_f0a69312287991::t_9fe26400b8bc93 85,90,102
+kernel/src/task/model/scheduling.rs
+  s_f0a69312287991::t_eb8a82a1cf0817 344-352,371-390,398
+kernel/src/task/task_manager/procfs.rs
+  s_f0a69312287991::t_57bad37cb3b848 7,122,126,134-135,138-159,161-170,177,186,193,195-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "90f0eccfde605d4617c3a515615dc225f4ce9798",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
