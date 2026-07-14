@@ -8,9 +8,7 @@ impl MemorySet {
         length: usize,
         permission: MapPermission,
     ) -> Result<(), MemoryError> {
-        if !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
-        {
+        if !permission.contains(MapPermission::U) {
             return Err(MemoryError::InvalidRange);
         }
         let range = Self::checked_page_range(address, length)?;

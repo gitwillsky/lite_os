@@ -198,9 +198,7 @@ impl PageTable {
         ppn: PhysicalPageNumber,
         flags: PTEFlags,
     ) -> Result<(), PageTableError> {
-        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R)
-            || flags.contains(PTEFlags::W | PTEFlags::X)
-        {
+        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R) {
             return Err(PageTableError::InvalidFlags);
         }
         let (table_ppn, index) = self.find_pte_create(vpn)?;
@@ -238,16 +236,14 @@ impl PageTable {
     /// @description 原地更新现有 leaf PTE 的访问权限并保留物理页号。
     ///
     /// @param vpn 必须已映射的虚拟页号。
-    /// @param flags 新权限；禁止 W-only 与 W+X。
+    /// @param flags 新权限；RISC-V leaf 禁止 W-only，允许 Linux 用户态请求 W+X。
     /// @return 成功返回空值；缺页或非法权限返回明确错误。
     pub(crate) fn set_flags(
         &mut self,
         vpn: VirtualPageNumber,
         flags: PTEFlags,
     ) -> Result<(), PageTableError> {
-        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R)
-            || flags.contains(PTEFlags::W | PTEFlags::X)
-        {
+        if flags.contains(PTEFlags::W) && !flags.contains(PTEFlags::R) {
             return Err(PageTableError::InvalidFlags);
         }
         let idxs = vpn.indexes();

@@ -1,30 +1,91 @@
 use alloc::{format, string::String};
 use core::fmt::Write;
 
-use super::{ProcProcessSnapshot, system::ticks};
+use super::{ProcProcessSnapshot, ProcThreadSnapshot, system::ticks};
 
 /// @description 将 Process snapshot 编码为 Linux `/proc/<pid>/stat` 单行格式。
 /// @param process 目标 live Process 的只读快照。
 /// @return 包含尾随换行的 stat 文本。
 pub(super) fn format_process_stat(process: &ProcProcessSnapshot) -> String {
+    format_task_stat(
+        process,
+        TaskStatFields {
+            pid: process.pid,
+            state: process.state,
+            nice: process.nice,
+            priority: process.priority,
+            runtime_us: process.runtime_us,
+            start_time_us: process.start_time_us,
+            last_cpu: process.last_cpu,
+        },
+    )
+}
+
+/// @description 将 Thread snapshot 编码为 Linux `/proc/<tgid>/task/<tid>/stat` 单行格式。
+/// @param process Thread 所属 Process 的共享快照。
+/// @param thread 目标 live Thread 的只读快照。
+/// @return 包含尾随换行的 stat 文本。
+pub(super) fn format_thread_stat(
+    process: &ProcProcessSnapshot,
+    thread: &ProcThreadSnapshot,
+) -> String {
+    format_task_stat(
+        process,
+        TaskStatFields {
+            pid: thread.tid,
+            state: thread.state,
+            nice: thread.nice,
+            priority: thread.priority,
+            runtime_us: thread.runtime_us,
+            start_time_us: thread.start_time_us,
+            last_cpu: thread.last_cpu,
+        },
+    )
+}
+
+struct TaskStatFields {
+    pid: usize,
+    state: u8,
+    nice: i32,
+    priority: i32,
+    runtime_us: u64,
+    start_time_us: u64,
+    last_cpu: usize,
+}
+
+fn format_task_stat(process: &ProcProcessSnapshot, task: TaskStatFields) -> String {
     let comm = String::from_utf8_lossy(&process.comm).replace(['(', ')', '\n'], "?");
     let virtual_size = process.virtual_pages.saturating_mul(4096);
     format!(
         "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
-        process.pid,
+        task.pid,
         comm,
-        process.state as char,
+        task.state as char,
         process.ppid,
         process.process_group,
         process.session,
-        ticks(process.runtime_us),
-        process.priority,
-        process.nice,
-        process.threads,
-        ticks(process.start_time_us),
+        ticks(task.runtime_us),
+        task.priority,
+        task.nice,
+        process.threads.len(),
+        ticks(task.start_time_us),
         virtual_size,
         process.resident_pages,
-        process.last_cpu
+        task.last_cpu
+    )
+}
+
+/// @description 将 Process AddressSpace 快照编码为 Linux `/proc/<pid>/statm` 七字段格式。
+/// @param process 目标 live Process 的只读快照。
+/// @return `size resident shared text lib data dt` 页数与尾随换行。
+pub(super) fn format_process_statm(process: &ProcProcessSnapshot) -> String {
+    format!(
+        "{} {} {} {} 0 {} 0\n",
+        process.virtual_pages,
+        process.resident_pages,
+        process.shared_pages,
+        process.text_pages,
+        process.data_pages,
     )
 }
 
@@ -40,6 +101,21 @@ pub(super) fn format_process_comm(process: &ProcProcessSnapshot) -> String {
 /// @param process 目标 live Process 的只读快照。
 /// @return 包含 identity、graph、fd 与 memory 字段的 status 文本。
 pub(super) fn format_process_status(process: &ProcProcessSnapshot) -> String {
+    format_task_status(process, process.pid, process.state)
+}
+
+/// @description 将 Thread snapshot 编码为 Linux `/proc/<tgid>/task/<tid>/status`。
+/// @param process Thread 所属 Process 的共享快照。
+/// @param thread 目标 live Thread 的只读快照。
+/// @return 包含线程 identity、状态及共享 Process 字段的 status 文本。
+pub(super) fn format_thread_status(
+    process: &ProcProcessSnapshot,
+    thread: &ProcThreadSnapshot,
+) -> String {
+    format_task_status(process, thread.tid, thread.state)
+}
+
+fn format_task_status(process: &ProcProcessSnapshot, pid: usize, state: u8) -> String {
     let comm = String::from_utf8_lossy(&process.comm).replace(['\t', '\n'], "?");
     let groups = process
         .groups
@@ -48,16 +124,16 @@ pub(super) fn format_process_status(process: &ProcProcessSnapshot) -> String {
             let _ = write!(output, "{group} ");
             output
         });
-    let state_name = match process.state {
+    let state_name = match state {
         b'R' => "running",
         b'T' => "stopped",
         _ => "sleeping",
     };
     format!(
         "Name:\t{comm}\nState:\t{} ({state_name})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\nTracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t{groups}\nNStgid:\t{}\nNSpid:\t{}\nNSpgid:\t{}\nNSsid:\t{}\nThreads:\t{}\nVmSize:\t{} kB\nVmRSS:\t{} kB\n",
-        process.state as char,
+        state as char,
         process.pid,
-        process.pid,
+        pid,
         process.ppid,
         process.uids[0],
         process.uids[1],
@@ -69,10 +145,10 @@ pub(super) fn format_process_status(process: &ProcProcessSnapshot) -> String {
         process.gids[1],
         process.fd_size,
         process.pid,
-        process.pid,
+        pid,
         process.process_group,
         process.session,
-        process.threads,
+        process.threads.len(),
         process.virtual_pages.saturating_mul(4),
         process.resident_pages.saturating_mul(4),
     )

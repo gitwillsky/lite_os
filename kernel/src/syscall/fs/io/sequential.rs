@@ -5,18 +5,6 @@ use read::read_descriptor;
 mod write;
 use write::write_descriptor;
 
-/// @description 选择 eventfd 的 Linux scalar-read 或 read-iterator length contract。
-///
-/// 缺失该显式 form 会迫使统一 engine 错误扩大 scalar `read`（必须恰好八字节），
-/// 或错误拒绝合法的 `readv`（总 capacity 可大于八字节且可跨 iovec）。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EventFdReadForm {
-    /// Scalar file operation：count 必须恰好为一个 u64。
-    Scalar,
-    /// Read-iterator file operation：总 capacity 至少为一个 u64。
-    Iterator,
-}
-
 /// @description 把 task-layer pipe wait result 统一翻译为 syscall control flow。
 /// @param pipe anonymous pipe owner。
 /// @param condition blocking I/O 必须满足的精确 read/write 条件。
@@ -108,7 +96,6 @@ pub(crate) fn sys_read(fd: usize, pointer: *mut u8, length: usize) -> isize {
             length,
         }],
         length,
-        EventFdReadForm::Scalar,
     )
 }
 
@@ -126,13 +113,7 @@ pub(crate) fn sys_readv(fd: usize, iovector: usize, count: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    read_descriptor(
-        &task,
-        &ofd,
-        &vectors,
-        total_length,
-        EventFdReadForm::Iterator,
-    )
+    read_descriptor(&task, &ofd, &vectors, total_length)
 }
 
 /// @description 将单一 userspace buffer 写入 descriptor。

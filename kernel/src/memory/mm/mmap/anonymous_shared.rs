@@ -6,7 +6,7 @@ impl MemorySet {
     ///
     /// @param address 零表示由内核选址；非零是 hint 或 exact 地址。
     /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 用户页权限；允许 PROT_NONE，禁止 W+X。
+    /// @param permission 用户页权限；允许 PROT_NONE 与 Linux W+X 映射。
     /// @param fixed_noreplace 为真时必须精确使用 address，冲突不替换。
     /// @return 成功返回映射起始地址；分配或页表提交失败不留下 VMA。
     pub(crate) fn map_shared_anonymous(
@@ -19,7 +19,6 @@ impl MemorySet {
     ) -> Result<usize, MemoryError> {
         if length == 0
             || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);

@@ -66,7 +66,7 @@ impl MemorySet {
     ///
     /// @param address 零表示由内核选址；非零是 page-aligned hint 或 fixed-noreplace 地址。
     /// @param length 非零字节长度，向上取整到整页。
-    /// @param permission 用户页权限；必须含 U，允许 PROT_NONE，禁止 W+X。
+    /// @param permission 用户页权限；必须含 U，允许 PROT_NONE 与 Linux W+X 映射。
     /// @param fixed_noreplace 为真时地址冲突返回 `AddressInUse`，不替换既有 VMA。
     /// @return 成功返回 page-aligned 起始地址；任何失败都不改变页表或 VMA 表。
     pub(crate) fn map_anonymous(
@@ -80,7 +80,6 @@ impl MemorySet {
     ) -> Result<usize, MemoryError> {
         if length == 0
             || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);
@@ -122,6 +121,7 @@ impl MemorySet {
             MapArea::anonymous(start_address.into(), end_address.into(), permission),
             None,
         )?;
+        self.merge_adjacent_anonymous();
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mmap page-table update");
         Ok(start_address)
     }
@@ -143,7 +143,6 @@ impl MemorySet {
         if length == 0
             || !file_offset.is_multiple_of(config::PAGE_SIZE as u64)
             || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);
@@ -207,7 +206,6 @@ impl MemorySet {
         if length == 0
             || !file_offset.is_multiple_of(config::PAGE_SIZE as u64)
             || !permission.contains(MapPermission::U)
-            || permission.contains(MapPermission::W | MapPermission::X)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);

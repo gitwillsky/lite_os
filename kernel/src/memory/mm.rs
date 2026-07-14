@@ -7,9 +7,9 @@ mod mmap;
 mod private_area;
 mod process;
 mod shared_area;
+mod statistics;
 mod user_access;
 use super::config;
-use super::executable::{ElfKind, ExecutableImage};
 use super::{address::VirtualPageNumber, page_table::PageTable};
 use crate::memory::{
     SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
@@ -25,7 +25,6 @@ use alloc::{
 };
 use bitflags::bitflags;
 use core::{arch::asm, error::Error, ops::Range};
-use initial_stack::ElfAuxInfo;
 use private_area::PrivateFileArea;
 use riscv::register::satp::{self, Satp};
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
@@ -161,15 +160,8 @@ pub(crate) enum MapType {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum VmaKind {
     System,
-    Heap {
-        base: usize,
-        program_break: usize,
-        limit: usize,
-    },
     Anonymous,
-    Stack {
-        top: usize,
-    },
+    Stack { top: usize },
     Elf,
     File,
 }
@@ -261,22 +253,6 @@ impl MapArea {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
         area.kind = VmaKind::File;
         area.private_file = Some(backing);
-        area.lazy_private = true;
-        area
-    }
-
-    fn heap(base: usize, limit: usize) -> Self {
-        let mut area = Self::new(
-            base.into(),
-            base.into(),
-            MapType::Framed,
-            MapPermission::R | MapPermission::W | MapPermission::U,
-        );
-        area.kind = VmaKind::Heap {
-            base,
-            program_break: base,
-            limit,
-        };
         area.lazy_private = true;
         area
     }
@@ -400,58 +376,6 @@ impl MapArea {
             let replaced = self.data_frames.insert(vpn, Arc::new(frame));
             debug_assert!(replaced.is_none());
         }
-        Ok(())
-    }
-
-    fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtualPageNumber) {
-        let _ = page_table.unmap(vpn);
-        self.data_frames.remove(&vpn);
-    }
-
-    pub(crate) fn shrink_to(
-        &mut self,
-        page_table: &mut PageTable,
-        new_end: VirtualPageNumber,
-    ) -> Result<(), MemoryError> {
-        if new_end < self.vpn_range.start || new_end > self.vpn_range.end {
-            return Err(MemoryError::InvalidRange);
-        }
-        for vpn in new_end.as_usize()..self.vpn_range.end.as_usize() {
-            self.unmap_one(page_table, VirtualPageNumber::from_vpn(vpn));
-        }
-        self.vpn_range = Range {
-            start: self.vpn_range.start,
-            end: new_end,
-        };
-        Ok(())
-    }
-
-    pub(crate) fn append_to(
-        &mut self,
-        page_table: &mut PageTable,
-        new_end: VirtualPageNumber,
-    ) -> Result<(), MemoryError> {
-        if new_end < self.vpn_range.end {
-            return Err(MemoryError::InvalidRange);
-        }
-        if self.lazy_private {
-            self.vpn_range.end = new_end;
-            return Ok(());
-        }
-        let old_end = self.vpn_range.end;
-        for vpn in old_end.as_usize()..new_end.as_usize() {
-            let vpn = VirtualPageNumber::from_vpn(vpn);
-            if let Err(error) = self.map_one(page_table, vpn) {
-                for rollback in old_end.as_usize()..vpn.as_usize() {
-                    self.unmap_one(page_table, VirtualPageNumber::from_vpn(rollback));
-                }
-                return Err(error);
-            }
-        }
-        self.vpn_range = Range {
-            start: self.vpn_range.start,
-            end: new_end,
-        };
         Ok(())
     }
 
@@ -605,10 +529,26 @@ impl MapArea {
     }
 }
 
+/// @description Linux `mm_struct` 中 program break 的唯一进程级元数据。
+#[derive(Debug, Clone, Copy)]
+struct ProgramBreak {
+    /// ELF writable image 之后允许的最小 break。
+    base: usize,
+    /// 用户可观察的精确 byte address；不能用页对齐 VMA end 替代。
+    current: usize,
+    /// 与用户 stack guard 隔离的最大 break。
+    limit: usize,
+}
+
 #[derive(Debug)]
 pub(crate) struct MemorySet {
     page_table: PageTable,
     areas: BTreeMap<VirtualPageNumber, MapArea>,
+    /// OWNER: Linux mm 的主 ELF start_code/end_code；若从 VMA 权限反推，JIT 映射会被误计为 statm text。
+    code_range: Range<usize>,
+    /// OWNER: program break 与 VMA 表同属 `MemorySet`；实际 heap 页必须是普通 anonymous
+    /// VMA，否则 `MAP_FIXED` 无法按 Linux 语义替换其中任意页。
+    program_break: Option<ProgramBreak>,
     // OWNER: Linux mm 的 arg_start/arg_end；缺失时 procfs 只能伪造静态 argv，无法反映用户栈修改。
     argument_range: Range<usize>,
 }
@@ -620,6 +560,8 @@ impl MemorySet {
         Self {
             page_table: PageTable::new(),
             areas: BTreeMap::new(),
+            code_range: 0..0,
+            program_break: None,
             argument_range: 0..0,
         }
     }
@@ -628,6 +570,8 @@ impl MemorySet {
         Ok(Self {
             page_table: PageTable::try_new()?,
             areas: BTreeMap::new(),
+            code_range: 0..0,
+            program_break: None,
             argument_range: 0..0,
         })
     }
@@ -679,24 +623,6 @@ impl MemorySet {
         self.page_table.token()
     }
 
-    /// @description 返回用户 VMA `(virtual_pages, resident_pages)`；不计 kernel-only trap context。
-    pub(crate) fn user_page_statistics(&self) -> (usize, usize) {
-        self.areas
-            .values()
-            .filter(|area| area.map_permission.contains(MapPermission::U))
-            .fold((0, 0), |(virtual_pages, resident_pages), area| {
-                (
-                    virtual_pages + area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize(),
-                    resident_pages
-                        + area.data_frames.len()
-                        + area
-                            .shared_file
-                            .as_ref()
-                            .map_or(0, |shared| shared.resident.len()),
-                )
-            })
-    }
-
     fn virtual_bytes(&self) -> u64 {
         self.areas
             .values()
@@ -716,10 +642,7 @@ impl MemorySet {
                     .contains(MapPermission::U | MapPermission::W)
                     && area.shared_anonymous.is_none()
                     && area.shared_file.is_none()
-                    && matches!(
-                        area.kind,
-                        VmaKind::Anonymous | VmaKind::Heap { .. } | VmaKind::Elf | VmaKind::File
-                    )
+                    && matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File)
             })
             .map(|area| {
                 (area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize()) as u64
@@ -809,77 +732,59 @@ impl MemorySet {
     }
 
     fn initialize_user_heap(&mut self, base: usize, limit: usize) -> Result<(), MemoryError> {
-        if base >= limit || !VirtualAddress::from(base).is_aligned() {
+        if self.program_break.is_some() || base >= limit || !VirtualAddress::from(base).is_aligned()
+        {
             return Err(MemoryError::InvalidRange);
         }
-        self.push(MapArea::heap(base, limit), None)
+        self.program_break = Some(ProgramBreak {
+            base,
+            current: base,
+            limit,
+        });
+        Ok(())
     }
 
-    /// @description 查询或原子提交 program break；失败保持旧值。
+    /// @description 查询或原子提交 program break；实际页统一表示为 anonymous VMA。
+    ///
+    /// @param new_break 零表示查询，否则为期望的新 byte address。
+    /// @param address_space_limit 当前进程 `RLIMIT_AS` soft limit。
+    /// @param data_limit 当前进程 `RLIMIT_DATA` soft limit。
+    /// @return 成功返回当前或已提交的新 break；失败保持精确 break 与全部 VMA 不变。
     pub(crate) fn set_program_break(
         &mut self,
         new_break: usize,
         address_space_limit: u64,
         data_limit: u64,
     ) -> Result<usize, MemoryError> {
-        let heap_key = self
-            .areas
-            .iter()
-            .find_map(|(key, area)| matches!(area.kind, VmaKind::Heap { .. }).then_some(*key))
-            .ok_or(MemoryError::InvalidRange)?;
-        let (base, old_break, limit, old_page_end) = match self.areas[&heap_key].kind {
-            VmaKind::Heap {
-                base,
-                program_break,
-                limit,
-            } => (
-                base,
-                program_break,
-                limit,
-                self.areas[&heap_key].vpn_range.end,
-            ),
-            _ => return Err(MemoryError::InvalidRange),
-        };
+        let state = self.program_break.ok_or(MemoryError::InvalidRange)?;
         if new_break == 0 {
-            return Ok(old_break);
+            return Ok(state.current);
         }
-        if new_break < base || new_break > limit {
+        if new_break < state.base || new_break > state.limit {
             return Err(MemoryError::InvalidRange);
         }
+        let old_page_end = VirtualAddress::from(state.current).ceil();
         let new_page_end = VirtualAddress::from(new_break).ceil();
         if new_page_end > old_page_end {
-            let additional = (new_page_end.as_usize() - old_page_end.as_usize()) as u64
-                * config::PAGE_SIZE as u64;
-            self.ensure_resource_capacity(additional, address_space_limit, Some(data_limit))?;
-        }
-        if new_page_end > old_page_end
-            && self
-                .areas
-                .range((
-                    core::ops::Bound::Excluded(heap_key),
-                    core::ops::Bound::Unbounded,
-                ))
-                .next()
-                .is_some_and(|(next, _)| new_page_end > *next)
-        {
-            return Err(MemoryError::AddressInUse);
-        }
-        let area = self
-            .areas
-            .get_mut(&heap_key)
-            .ok_or(MemoryError::InvalidRange)?;
-        if new_page_end > old_page_end {
-            area.append_to(&mut self.page_table, new_page_end)?;
+            let start = usize::from(VirtualAddress::from(old_page_end));
+            let length = (new_page_end.as_usize() - old_page_end.as_usize()) * config::PAGE_SIZE;
+            self.map_anonymous(
+                start,
+                length,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+                true,
+                address_space_limit,
+                data_limit,
+            )?;
         } else if new_page_end < old_page_end {
-            area.shrink_to(&mut self.page_table, new_page_end)?;
+            let start = usize::from(VirtualAddress::from(new_page_end));
+            let length = (old_page_end.as_usize() - new_page_end.as_usize()) * config::PAGE_SIZE;
+            self.unmap_user_mapping(start, length)?;
         }
-        if let VmaKind::Heap { program_break, .. } = &mut area.kind {
-            *program_break = new_break;
-        }
-
-        if new_page_end != old_page_end {
-            Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after brk page-table update");
-        }
+        self.program_break
+            .as_mut()
+            .expect("validated program break state must remain installed")
+            .current = new_break;
         Ok(new_break)
     }
 
@@ -971,104 +876,14 @@ impl MemorySet {
             .expect("TrapContext VA should be mapped")
             .ppn()
     }
-
-    /// @description 从已校验 ELF plan 构造受 rlimit 约束的新地址空间、初始栈与 entry。
-    pub(crate) fn from_elf(
-        image: &ExecutableImage,
-        args: &[Vec<u8>],
-        envs: &[Vec<u8>],
-        execfn: &[u8],
-        stack_limit: u64,
-        address_space_limit: u64,
-        data_limit: u64,
-    ) -> Result<(Self, usize, usize), ElfLoadError> {
-        let mut memory_set = MemorySet::try_new().map_err(ElfLoadError::from)?;
-        memory_set.map_trampoline().map_err(ElfLoadError::from)?;
-        const MAIN_PIE_BASE: usize = 0x1_0000;
-        const INTERPRETER_BASE: usize = 0x2000_0000;
-        let main_type = image.main.kind;
-        let main_bias = match main_type {
-            ElfKind::Executable if image.interpreter.is_none() => 0,
-            ElfKind::SharedObject if image.interpreter.is_some() => MAIN_PIE_BASE,
-            _ => return Err(ElfLoadError::InvalidElf),
-        };
-        let main = memory_set.map_elf_image(&image.main, main_bias)?;
-        let (entry_point, interpreter_base) = if let Some(interpreter) = &image.interpreter {
-            if interpreter.kind != ElfKind::SharedObject {
-                return Err(ElfLoadError::InvalidElf);
-            }
-            let loaded = memory_set.map_elf_image(interpreter, INTERPRETER_BASE)?;
-            (loaded.entry, INTERPRETER_BASE)
-        } else {
-            (main.entry, 0)
-        };
-        let phdr_address = main.phdr.ok_or(ElfLoadError::InvalidElf)?;
-        let heap_base = VirtualAddress::from(main.max_end).ceil().as_usize() * config::PAGE_SIZE;
-        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
-        let user_stack_top = user_end
-            .checked_sub(config::PAGE_SIZE)
-            .ok_or(ElfLoadError::InvalidElf)?;
-        let heap_limit = user_stack_top
-            .checked_sub(config::PAGE_SIZE)
-            .ok_or(ElfLoadError::InvalidElf)?;
-        if heap_base >= heap_limit {
-            return Err(ElfLoadError::InvalidElf);
-        }
-
-        // 2. heap 从最高 LOAD 末端开始；栈位于 Sv39 低半区顶部，上下各保留一页 guard。
-        memory_set
-            .push(MapArea::stack(user_stack_top), None)
-            .map_err(ElfLoadError::from)?;
-        memory_set
-            .initialize_user_heap(heap_base, heap_limit)
-            .map_err(ElfLoadError::from)?;
-        memory_set
-            .push(
-                MapArea::new(
-                    config::TRAP_CONTEXT.into(),
-                    config::TRAMPOLINE.into(),
-                    MapType::Framed,
-                    MapPermission::R | MapPermission::W,
-                ),
-                None,
-            )
-            .map_err(ElfLoadError::from)?;
-
-        if memory_set.handle_page_fault(phdr_address, PageFaultAccess::Read)?
-            != PageFaultOutcome::Handled
-        {
-            return Err(ElfLoadError::InvalidElf);
-        }
-        let phdr_pte = memory_set
-            .translate(VirtualAddress::from(phdr_address).floor())
-            .ok_or(ElfLoadError::InvalidElf)?;
-        if !phdr_pte.flags().contains(PTEFlags::U | PTEFlags::R) {
-            return Err(ElfLoadError::InvalidElf);
-        }
-
-        // 3. 初始栈是 argv/envp/auxv 的唯一用户契约，不通过寄存器传递私有参数。
-        let aux = ElfAuxInfo::new(
-            phdr_address,
-            main.phent,
-            main.phnum,
-            main.entry,
-            interpreter_base,
-        );
-        let actual_stack_top =
-            memory_set.build_initial_stack(user_stack_top, args, envs, execfn, aux, stack_limit)?;
-        if memory_set.virtual_bytes() > address_space_limit || memory_set.data_bytes() > data_limit
-        {
-            return Err(ElfLoadError::OutOfMemory);
-        }
-        Ok((memory_set, actual_stack_top, entry_point))
-    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct LoadedElf {
     entry: usize,
     phdr: Option<usize>,
     phent: usize,
     phnum: usize,
     max_end: usize,
+    code_range: Range<usize>,
 }

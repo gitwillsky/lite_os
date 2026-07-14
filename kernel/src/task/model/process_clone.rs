@@ -82,11 +82,12 @@ impl TaskControlBlock {
         child_trap.kernel_sp = kernel_stack_top;
         child_trap.kernel_hart_id = 0;
         child_trap.kernel_gp = 0;
+        let start_time_us = get_time_us();
         let child = Self {
             process: Arc::new(Process {
                 tgid: pid,
                 comm: Mutex::new(self.process.comm.lock().clone()),
-                start_time_us: get_time_us(),
+                start_time_us,
                 address_space: Mutex::new(address_space),
                 cwd: Mutex::new(cwd),
                 files: Mutex::new(files),
@@ -98,6 +99,7 @@ impl TaskControlBlock {
             }),
             thread: ThreadContext {
                 tid,
+                start_time_us,
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(

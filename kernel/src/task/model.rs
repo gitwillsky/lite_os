@@ -88,6 +88,9 @@ pub(crate) enum StopResume {
 #[derive(Debug)]
 struct ThreadContext {
     tid: usize,
+    // OWNER: ThreadContext 独占线程创建时刻；若复用 Process 创建时刻，后建 pthread 的
+    // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
+    start_time_us: u64,
     kernel_stack: KernelStack,
     trap_cx_va: Mutex<usize>,
     task_cx: Mutex<TaskContext>,
@@ -118,7 +121,7 @@ struct SyscallRestart {
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
 struct Process {
     tgid: ProcessId,
-    // OWNER: Process 独占 Linux comm 与创建时刻；fork 复制，exec 原子替换 comm。
+    // OWNER: Process 独占 Linux comm 与进程创建时刻；fork 创建新时刻，exec 原子替换 comm。
     comm: Mutex<Vec<u8>>,
     start_time_us: u64,
     // OWNER: Process 的单锁 handle 决定所有 Thread 当前使用的 AddressSpace；vfork child
@@ -169,10 +172,11 @@ impl TaskControlBlock {
         let terminal = Terminal::new(console);
         let address_space = AddressSpace::new(memory_set)?;
         let cpu_runtime_us = Arc::new(AtomicU64::new(0));
+        let start_time_us = get_time_us();
         let process = Arc::new(Process {
             tgid: pid,
             comm: Mutex::new(process_name(loaded.execfn())),
-            start_time_us: get_time_us(),
+            start_time_us,
             address_space: Mutex::new(address_space),
             cwd: Mutex::new(vfs().open_file(b"/").expect("mounted root must resolve")),
             files: Mutex::new(FileDescriptorTable::with_terminal(terminal.clone())),
@@ -186,6 +190,7 @@ impl TaskControlBlock {
             process,
             thread: ThreadContext {
                 tid,
+                start_time_us,
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(
@@ -258,6 +263,7 @@ impl TaskControlBlock {
             process: self.process.clone(),
             thread: ThreadContext {
                 tid,
+                start_time_us: get_time_us(),
                 kernel_stack,
                 trap_cx_va: Mutex::new(trap_cx_va),
                 task_cx: Mutex::new(TaskContext::goto_trap_return(

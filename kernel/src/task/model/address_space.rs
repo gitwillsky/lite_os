@@ -3,6 +3,26 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 mod mapping;
 
+/// @description Process owner 向 task façade 发布的 procfs 统计快照。
+pub(in crate::task) struct ProcessStatistics {
+    /// Process 共享 comm。
+    pub(in crate::task) comm: Vec<u8>,
+    /// Process 创建时的 monotonic 微秒时间。
+    pub(in crate::task) start_time_us: u64,
+    /// AddressSpace 用户 VMA 总页数。
+    pub(in crate::task) virtual_pages: usize,
+    /// AddressSpace 当前驻留页数。
+    pub(in crate::task) resident_pages: usize,
+    /// 当前驻留且由共享 mapping owner 持有的页数。
+    pub(in crate::task) shared_pages: usize,
+    /// 可执行用户 VMA 页数。
+    pub(in crate::task) text_pages: usize,
+    /// writable private data 与 stack VMA 页数。
+    pub(in crate::task) data_pages: usize,
+    /// Process fd table 当前 slot capacity。
+    pub(in crate::task) fd_size: usize,
+}
+
 #[derive(Debug)]
 pub(super) struct AddressSpace {
     pub(super) memory_set: Mutex<MemorySet>,
@@ -24,7 +44,7 @@ impl AddressSpace {
         Ok(owner)
     }
 
-    pub(super) fn page_statistics(&self) -> (usize, usize) {
+    pub(super) fn page_statistics(&self) -> (usize, usize, usize, usize, usize) {
         self.memory_set.lock().user_page_statistics()
     }
 
@@ -544,15 +564,21 @@ impl TaskControlBlock {
         self.process.address_space().process_arguments()
     }
 
-    pub(in crate::task) fn process_statistics(&self) -> (Vec<u8>, u64, usize, usize, usize) {
-        let (virtual_pages, resident_pages) = self.process.address_space().page_statistics();
-        (
-            self.process.comm.lock().clone(),
-            self.process.start_time_us,
+    /// @description 从 Process 与 AddressSpace 唯一 owner 取得一次 procfs 统计快照。
+    /// @return comm、创建时刻、Linux statm 页统计与 fd table capacity。
+    pub(in crate::task) fn process_statistics(&self) -> ProcessStatistics {
+        let (virtual_pages, resident_pages, shared_pages, text_pages, data_pages) =
+            self.process.address_space().page_statistics();
+        ProcessStatistics {
+            comm: self.process.comm.lock().clone(),
+            start_time_us: self.process.start_time_us,
             virtual_pages,
             resident_pages,
-            self.process.files.lock().slot_capacity(),
-        )
+            shared_pages,
+            text_pages,
+            data_pages,
+            fd_size: self.process.files.lock().slot_capacity(),
+        }
     }
 }
 

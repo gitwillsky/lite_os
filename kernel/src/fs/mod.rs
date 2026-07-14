@@ -25,7 +25,7 @@ pub(crate) use page_cache::{
 pub(crate) use permission::{AccessIdentity, CreateMetadata};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcNetworkSnapshot,
-    ProcProcessSnapshot, ProcSnapshot, ProcSource,
+    ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,

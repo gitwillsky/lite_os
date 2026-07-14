@@ -22,10 +22,8 @@ impl MemorySet {
                 return Err(MemoryError::InvalidRange);
             }
             if advice == MemoryAdvice::Free
-                && (!matches!(
-                    area.kind,
-                    VmaKind::Anonymous | VmaKind::Heap { .. } | VmaKind::Stack { .. }
-                ) || area.shared_anonymous.is_some())
+                && (!matches!(area.kind, VmaKind::Anonymous | VmaKind::Stack { .. })
+                    || area.shared_anonymous.is_some())
             {
                 return Err(MemoryError::InvalidRange);
             }

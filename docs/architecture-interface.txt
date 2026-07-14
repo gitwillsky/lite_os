@@ -627,7 +627,7 @@ kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , Fi
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
-kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , }
+kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> FileSystemStatistics
@@ -671,6 +671,7 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_bytes 
 kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: transmitted_packets : u64
 kernel/src/fs/procfs.rs :: pub (crate) ProcNetworkSnapshot :: up : bool
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: comm : Vec < u8 >
+kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: data_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: fd_size : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: gids : [u32 ; 3]
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: groups : Vec < u32 >
@@ -683,9 +684,11 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: process_group : us
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: resident_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: runtime_us : u64
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: session : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: shared_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: start_time_us : u64
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: state : u8
-kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: threads : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: text_pages : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: threads : Vec < ProcThreadSnapshot >
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: uids : [u32 ; 3]
 kernel/src/fs/procfs.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
@@ -700,6 +703,13 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: runnable_tasks : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: total_pages : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: total_tasks : usize
 kernel/src/fs/procfs.rs :: pub (crate) ProcSnapshot :: uptime_us : u64
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: last_cpu : usize
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: nice : i32
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: priority : i32
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: runtime_us : u64
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: start_time_us : u64
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: state : u8
+kernel/src/fs/procfs.rs :: pub (crate) ProcThreadSnapshot :: tid : usize
 kernel/src/fs/procfs.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource >) -> Arc < Self >
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcCpuSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileDescriptorSnapshot
@@ -707,14 +717,50 @@ kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcNetworkSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcProcessSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcSnapshot
+kernel/src/fs/procfs.rs :: pub (crate) struct ProcThreadSnapshot
 kernel/src/fs/procfs.rs :: pub (crate) trait ProcSource
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_pid (& self) -> Option < usize >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_arguments (& self , pid : usize) -> Option < Vec < u8 > >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_file_descriptors (& self , pid : usize ,) -> Result < Option < Vec < ProcFileDescriptorSnapshot > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn snapshot (& self) -> ProcSnapshot
+kernel/src/fs/procfs/lookup.rs :: pub (super) fn directory_entry (inode : u64 , kind : InodeType , name : & [u8]) -> DirectoryEntry
+kernel/src/fs/procfs/lookup.rs :: pub (super) fn find_process (snapshot : & ProcSnapshot , pid : usize ,) -> Result < & ProcProcessSnapshot , FileSystemError >
+kernel/src/fs/procfs/lookup.rs :: pub (super) fn find_thread (process : & ProcProcessSnapshot , tid : usize ,) -> Result < & ProcThreadSnapshot , FileSystemError >
+kernel/src/fs/procfs/lookup.rs :: pub (super) fn parse_pid (name : & [u8]) -> Option < usize >
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: LoadAvg
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: MemInfo
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Mounts
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetDev
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetDir
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: NetRoute
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessCmdline (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessComm (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessDir (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFd (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessFdDir (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStat (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatm (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessStatus (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ProcessTaskDir (usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Root
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: SelfLink
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Stat
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadCmdline (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadComm (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadDir (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStat (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStatm (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: ThreadStatus (usize , usize)
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: Uptime
+kernel/src/fs/procfs/node.rs :: pub (super) enum ProcNode
+kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn inode (self) -> u64
+kernel/src/fs/procfs/node.rs :: pub (super) impl ProcNode :: fn kind (self) -> InodeType
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_comm (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_stat (process : & ProcProcessSnapshot) -> String
+kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_statm (process : & ProcProcessSnapshot) -> String
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_status (process : & ProcProcessSnapshot) -> String
+kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_stat (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot ,) -> String
+kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_status (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot ,) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_cpu_stat (snapshot : & ProcSnapshot) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_loadavg (snapshot : & ProcSnapshot) -> String
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_meminfo (snapshot : & ProcSnapshot) -> String
@@ -971,17 +1017,14 @@ kernel/src/memory/mm.rs :: pub (crate) enum ElfLoadError
 kernel/src/memory/mm.rs :: pub (crate) enum MapType
 kernel/src/memory/mm.rs :: pub (crate) enum MemoryError
 kernel/src/memory/mm.rs :: pub (crate) enum UserAccessError
-kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn append_to (& mut self , page_table : & mut PageTable , new_end : VirtualPageNumber ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn map (& mut self , page_table : & mut PageTable) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn new (start_va : VirtualAddress , end_va : VirtualAddress , map_type : MapType , permissions : MapPermission ,) -> Self
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn set_global (mut self , global : bool) -> Self
-kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn shrink_to (& mut self , page_table : & mut PageTable , new_end : VirtualPageNumber ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn unmap (& mut self , page_table : & mut PageTable)
 kernel/src/memory/mm.rs :: pub (crate) impl MemoryError :: fn is_out_of_memory (self) -> bool
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn active (& self)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn allocate_thread_trap_context (& mut self , tid : usize ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , isize >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_trampoline (& mut self) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn new () -> Self
@@ -992,12 +1035,12 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (&
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> (usize , usize)
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
 kernel/src/memory/mm.rs :: pub (crate) use { futex_key :: FutexKey , mapping_request :: { FileMappingSource , MappingResourceLimits , MemoryAdvice } , mmap :: { PageFaultAccess , PageFaultOutcome } , user_access :: UserFaultLimits , }
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
+kernel/src/memory/mm/executable_load.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 匿名共享映射以不可复用的 backing ID 和字节偏移跨进程匹配。"] SharedAnonymous { backing : u64 , offset : usize }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 文件共享映射以 inode identity 和文件字节偏移跨地址空间匹配。"] SharedFile { file : SharedFileId , offset : u64 }
@@ -1068,6 +1111,7 @@ kernel/src/memory/mm/shared_area.rs :: pub (super) struct AnonymousSharedBacking
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedAnonymousArea
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedFileArea
 kernel/src/memory/mm/shared_area.rs :: pub (super) struct SharedResident
+kernel/src/memory/mm/statistics.rs :: pub (crate) impl MemorySet :: fn user_page_statistics (& self) -> (usize , usize , usize , usize , usize)
 kernel/src/memory/mm/user_access.rs :: pub (crate) UserFaultLimits :: address_space : u64
 kernel/src/memory/mm/user_access.rs :: pub (crate) UserFaultLimits :: stack : u64
 kernel/src/memory/mm/user_access.rs :: pub (crate) impl MemorySet :: fn compare_exchange_user_u32 (& mut self , address : usize , current : u32 , new : u32 , limits : UserFaultLimits ,) -> Result < Result < u32 , u32 > , UserAccessError >
@@ -1508,7 +1552,7 @@ kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_read (fd : usize , 
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_writev (fd : usize , iovector : usize , count : usize) -> isize
-kernel/src/syscall/fs/io/sequential/read.rs :: pub (super) fn read_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize , eventfd_form : EventFdReadForm ,) -> isize
+kernel/src/syscall/fs/io/sequential/read.rs :: pub (super) fn read_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize ,) -> isize
 kernel/src/syscall/fs/io/sequential/write.rs :: pub (super) fn write_descriptor (task : & TaskControlBlock , ofd : & Arc < OpenFileDescription > , vectors : & [UserIoVec] , total_length : usize ,) -> isize
 kernel/src/syscall/fs/io/user_vector.rs :: pub (super) UserIoVec :: base : usize
 kernel/src/syscall/fs/io/user_vector.rs :: pub (super) UserIoVec :: length : usize
@@ -1734,12 +1778,21 @@ kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: f
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_key < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_word < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: comm : Vec < u8 >
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: data_pages : usize
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: fd_size : usize
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: resident_pages : usize
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: shared_pages : usize
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: start_time_us : u64
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: text_pages : usize
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) ProcessStatistics :: virtual_pages : usize
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn private_memory_barrier_registered (& self) -> bool
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_arguments (& self) -> Option < alloc :: vec :: Vec < u8 > >
-kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_statistics (& self) -> (Vec < u8 > , u64 , usize , usize , usize)
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn process_statistics (& self) -> ProcessStatistics
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn register_private_memory_barrier (& self)
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
 kernel/src/task/model/address_space.rs :: pub (in crate :: task) impl TaskControlBlock :: fn write_clone_tid_values (& self , addresses : [Option < usize > ; 2] , tid : i32 ,) -> Result < () , UserAccessError >
+kernel/src/task/model/address_space.rs :: pub (in crate :: task) struct ProcessStatistics
 kernel/src/task/model/address_space.rs :: pub (super) AddressSpace :: memory_set : Mutex < MemorySet >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn advise_user_mapping (& self , address : usize , length : usize , advice : crate :: memory :: MemoryAdvice ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] , limits : UserFaultLimits ,) -> Result < () , UserAccessError >
@@ -1751,7 +1804,7 @@ kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn ma
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , file : FileMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn new (memory_set : MemorySet) -> Result < Arc < Self > , MemoryError >
-kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn page_statistics (& self) -> (usize , usize)
+kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn page_statistics (& self) -> (usize , usize , usize , usize , usize)
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn process_arguments (& self) -> Option < alloc :: vec :: Vec < u8 > >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn protect_user_mapping (& self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space.rs :: pub (super) impl AddressSpace :: fn sync_shared_mapping (& self , address : usize , length : usize , writeback : bool ,) -> Result < () , MemoryError >
@@ -1904,6 +1957,7 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn f
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn nice (& mut self , replacement : Option < i32 >) -> i32
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn reset_on_fork (& mut self , replacement : Option < bool >) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn executes_outside_affinity (& self) -> bool
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl TaskControlBlock :: fn thread_statistics (& self , active_now_us : Option < u64 > ,) -> (u64 , i32 , i32 , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct CpuAffinity
 kernel/src/task/model/scheduling.rs :: pub (super) impl Sched :: fn forked (& self , process_runtime_us : Arc < AtomicU64 >) -> Self
 kernel/src/task/model/scheduling.rs :: pub (super) impl Sched :: fn new (nice : i32 , vruntime : u64 , process_runtime_us : Arc < AtomicU64 >) -> Self

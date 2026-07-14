@@ -5,14 +5,12 @@ use super::*;
 /// @param ofd 已完成 access/capability 检查的共享 OFD。
 /// @param vectors scalar one-element 或已导入的 RV64 iovec 序列。
 /// @param total_length vectors 的 checked 总 capacity。
-/// @param eventfd_form eventfd 唯一需要区分的 scalar/read-iterator contract。
 /// @return byte count、EOF、partial count 或负 errno。
 pub(super) fn read_descriptor(
     task: &TaskControlBlock,
     ofd: &Arc<OpenFileDescription>,
     vectors: &[UserIoVec],
     total_length: usize,
-    eventfd_form: EventFdReadForm,
 ) -> isize {
     if total_length == 0 {
         return 0;
@@ -99,12 +97,9 @@ pub(super) fn read_descriptor(
         }
         OpenFileKind::EventFd(event) => {
             let size = mem::size_of::<u64>();
-            // 1. scalar count 必须恰好八字节；iterator 检查总 capacity，且允许跨 iovec。
-            let valid_length = match eventfd_form {
-                EventFdReadForm::Scalar => total_length == size,
-                EventFdReadForm::Iterator => total_length >= size,
-            };
-            if !valid_length {
+            // 1. Linux eventfd_read 只拒绝小于 u64 的 iterator；read(2) 同样以单元素
+            // iov_iter 进入，因此大 buffer 必须成功，否则 libuv 会在 eventfd drain 时中止。
+            if total_length < size {
                 return -errno::EINVAL;
             }
             let mut cursor = UserIoCursor::new(vectors);

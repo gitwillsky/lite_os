@@ -341,6 +341,15 @@ impl Sched {
         priority
     }
 
+    fn active_runtime_delta(&self, now_us: u64) -> u64 {
+        let start_time_us = self
+            .active_runtime_start
+            .expect("running task has no active runtime slice")
+            .get()
+            - 1;
+        now_us.saturating_sub(start_time_us)
+    }
+
     /// 同时累计 Thread、Process 与 hart runtime，并推进 CFS virtual runtime。
     fn commit_runtime(&mut self, runtime_us: u64, priority: usize) {
         self.total_runtime_us = self.total_runtime_us.saturating_add(runtime_us);
@@ -359,6 +368,26 @@ impl Sched {
 }
 
 impl TaskControlBlock {
+    /// @description 快照 Thread 创建时刻、调度属性与已累计 CPU runtime。
+    ///
+    /// @param active_now_us calling Thread 传入本次 monotonic 时刻以包含尚未提交的 active slice；
+    /// 其他 Thread 传入 `None`，保持跨 hart 最多一个 scheduler tick 的 bounded-stale 读取。
+    /// @return `(start_time_us, nice, priority, runtime_us)`；读取不修改任何 owner。
+    pub(in crate::task) fn thread_statistics(
+        &self,
+        active_now_us: Option<u64>,
+    ) -> (u64, i32, i32, u64) {
+        let policy = self.scheduling.policy.lock();
+        let active_runtime_us =
+            active_now_us.map_or(0, |now_us| policy.active_runtime_delta(now_us));
+        (
+            self.thread.start_time_us,
+            policy.nice,
+            policy.get_dynamic_priority(),
+            policy.total_runtime_us.saturating_add(active_runtime_us),
+        )
+    }
+
     /// @description 快照 calling Thread 与所属 Process 的 scheduler CPU runtime。
     ///
     /// @param now_us 本次查询共用的 monotonic 微秒时刻。
@@ -366,12 +395,7 @@ impl TaskControlBlock {
     /// @panics calling Thread 当前没有 active slice，表示 syscall 绕过 scheduler running ownership。
     pub(crate) fn cpu_runtime_snapshot(&self, now_us: u64) -> (u64, u64) {
         let policy = self.scheduling.policy.lock();
-        let start_time_us = policy
-            .active_runtime_start
-            .expect("running task has no active runtime slice")
-            .get()
-            - 1;
-        let active_runtime_us = now_us.saturating_sub(start_time_us);
+        let active_runtime_us = policy.active_runtime_delta(now_us);
         let thread_runtime_us = policy.total_runtime_us.saturating_add(active_runtime_us);
         let process_runtime_us = self
             .process

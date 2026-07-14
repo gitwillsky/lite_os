@@ -4,7 +4,7 @@ use crate::{
     arch::hart,
     fs::{
         ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot,
-        ProcSnapshot, ProcSource,
+        ProcSnapshot, ProcSource, ProcThreadSnapshot,
     },
     memory::frame_statistics,
     task::{RunState, current_task, processor::cpu_runtime_snapshot},
@@ -119,11 +119,11 @@ fn process_snapshot() -> ProcSnapshot {
     let mut total_tasks = 0;
     let mut processes = alloc::vec::Vec::with_capacity(rows.len());
     for (pid, ppid, process_group, session, representative, threads) in rows {
-        let mut state = b'S';
+        let mut thread_snapshots = alloc::vec::Vec::with_capacity(threads.len());
         for thread in &threads {
             total_tasks += 1;
             let run_state = thread.scheduling.state.lock().run_state;
-            if matches!(
+            let runnable = matches!(
                 run_state,
                 RunState::New
                     | RunState::Ready { .. }
@@ -131,25 +131,50 @@ fn process_snapshot() -> ProcSnapshot {
                     | RunState::Preempting { .. }
                     | RunState::WakePending { .. }
                     | RunState::StopPending { .. }
-            ) {
+            );
+            if runnable {
                 runnable_tasks += 1;
-                state = b'R';
-            } else if matches!(run_state, RunState::Stopped { .. }) {
-                state = b'T';
             }
+            let active_now_us = current
+                .as_ref()
+                .is_some_and(|current| current.tid() == thread.tid())
+                .then_some(uptime_us);
+            let (start_time_us, nice, priority, runtime_us) =
+                thread.thread_statistics(active_now_us);
+            thread_snapshots.push(ProcThreadSnapshot {
+                tid: thread.tid(),
+                state: if runnable {
+                    b'R'
+                } else if matches!(run_state, RunState::Stopped { .. }) {
+                    b'T'
+                } else {
+                    b'S'
+                },
+                nice,
+                priority,
+                runtime_us,
+                start_time_us,
+                last_cpu: hart::hart_index(thread.scheduling.last_cpu.load(Ordering::Relaxed))
+                    .expect("task last_cpu disappeared from topology"),
+            });
         }
+        let leader = thread_snapshots
+            .iter()
+            .find(|thread| thread.tid == pid)
+            .unwrap_or_else(|| {
+                thread_snapshots
+                    .first()
+                    .expect("live process has no threads")
+            });
+        let (state, nice, priority, last_cpu) =
+            (leader.state, leader.nice, leader.priority, leader.last_cpu);
         // 1. Linux 只刷新 same-thread-group 的 current task；其他 running sibling 由下一 tick 提交。
         // 2. Process counter 保留 exited Thread；改回累加 live Thread 会让 /proc runtime 倒退。
         let runtime_us = match current.as_ref() {
             Some(task) if task.tgid() == pid => task.cpu_runtime_snapshot(uptime_us).0,
             _ => representative.process_cpu_runtime_us(),
         };
-        let policy = representative.scheduling.policy.lock();
-        let nice = policy.nice;
-        let priority = policy.get_dynamic_priority();
-        drop(policy);
-        let (comm, start_time_us, virtual_pages, resident_pages, fd_size) =
-            representative.process_statistics();
+        let statistics = representative.process_statistics();
         let uids = representative.credential_res_ids(true);
         let gids = representative.credential_res_ids(false);
         let groups = representative.supplementary_groups();
@@ -158,21 +183,23 @@ fn process_snapshot() -> ProcSnapshot {
             ppid,
             process_group,
             session,
-            comm,
+            comm: statistics.comm,
             uids,
             gids,
             groups,
             state,
             nice,
             priority,
-            threads: threads.len(),
+            threads: thread_snapshots,
             runtime_us,
-            start_time_us,
-            virtual_pages,
-            resident_pages,
-            fd_size,
-            last_cpu: hart::hart_index(representative.scheduling.last_cpu.load(Ordering::Relaxed))
-                .expect("task last_cpu disappeared from topology"),
+            start_time_us: statistics.start_time_us,
+            virtual_pages: statistics.virtual_pages,
+            resident_pages: statistics.resident_pages,
+            shared_pages: statistics.shared_pages,
+            text_pages: statistics.text_pages,
+            data_pages: statistics.data_pages,
+            fd_size: statistics.fd_size,
+            last_cpu,
         });
     }
 
