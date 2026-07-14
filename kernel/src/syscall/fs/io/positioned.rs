@@ -95,7 +95,10 @@ fn positioned_write(
 
     let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
     let mut position = offset as u64;
-    let writer = file.begin_write();
+    let writer = match file.begin_write() {
+        Ok(writer) => writer,
+        Err(error) => return ferr(error),
+    };
     let result = write_regular_vectors(&task, &writer, &mut position, vectors, append);
     task.account_write_result(result);
     result

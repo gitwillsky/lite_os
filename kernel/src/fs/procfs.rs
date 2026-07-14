@@ -203,6 +203,10 @@ impl Inode for ProcInode {
         false
     }
 
+    fn is_volatile(&self) -> bool {
+        true
+    }
+
     fn is_read_only(&self) -> bool {
         true
     }

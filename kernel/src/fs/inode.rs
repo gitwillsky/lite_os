@@ -94,6 +94,13 @@ pub(crate) trait Inode: Send + Sync {
 
     fn is_executable(&self) -> bool;
 
+    /// @description 标识内容由每次读取即时生成、不得进入 regular-file page cache 的只读文件。
+    /// @return procfs 等动态快照文件返回 true；持久文件返回 false。
+    /// @note 缺少该区分会把第一次 `/proc/stat`、`/proc/<pid>/stat` 等快照永久缓存，令监控采样冻结。
+    fn is_volatile(&self) -> bool {
+        false
+    }
+
     /// @description 返回 inode 所属 filesystem adapter 是否拒绝持久 mutation。
     /// @return ext2 root 为 false；只读 devfs/procfs 为 true。
     fn is_read_only(&self) -> bool {

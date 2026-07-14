@@ -577,6 +577,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn follow_link (& self) -> Option < Arc
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn is_read_only (& self) -> bool
+kernel/src/fs/inode.rs :: trait Inode :: fn is_volatile (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn link (& self , _name : & [u8] , _target : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn list (& self) -> Result < Vec < DirectoryEntry > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
@@ -647,9 +648,9 @@ kernel/src/fs/page_cache.rs :: pub (crate) fn statistics () -> PageCacheStatisti
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64) -> Result < () , FileSystemError >
-kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn begin_write (& self) -> RegularFileWrite < '_ >
+kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn begin_write (& self) -> Result < RegularFileWrite < '_ > , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
-kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> SharedFileId
+kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> Option < SharedFileId >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8] ,) -> Result < RegularFileRead , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn append (& self , input : & [u8] , size_limit : u64 ,) -> Result < (u64 , usize) , FileSystemError >

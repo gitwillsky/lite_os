@@ -27,7 +27,10 @@ pub(super) fn write_descriptor(
             };
             let append = *ofd.flags.lock() & O_APPEND != 0;
             let mut offset = ofd.offset.lock();
-            let writer = file.begin_write();
+            let writer = match file.begin_write() {
+                Ok(writer) => writer,
+                Err(error) => return ferr(error),
+            };
             write_regular_vectors(task, &writer, &mut offset, vectors, append)
         }
         OpenFileKind::Pipe(endpoint) => {

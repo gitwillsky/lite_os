@@ -30,7 +30,9 @@ fn copy_regular_file(
         Ok(count) => count,
         Err(error) => return error,
     };
-    if input.id() == output.id() {
+    if let (Some(input_id), Some(output_id)) = (input.id(), output.id())
+        && input_id == output_id
+    {
         let input_end = u128::from(*input_position) + transferable as u128;
         let output_end = u128::from(*output_position) + transferable as u128;
         if output_end > u128::from(*input_position) && u128::from(*output_position) < input_end {
@@ -38,7 +40,10 @@ fn copy_regular_file(
         }
     }
 
-    let writer = output.begin_write();
+    let writer = match output.begin_write() {
+        Ok(writer) => writer,
+        Err(error) => return ferr(error),
+    };
     let mut chunk = [0u8; crate::memory::PAGE_SIZE];
     let mut total = 0usize;
     while total < transferable {

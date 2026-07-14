@@ -273,7 +273,7 @@ impl MemoryReclaimer for CachedFile {
 static FILES: Once<Mutex<BTreeMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
 
 fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError> {
-    if inode.inode_type() != InodeType::File {
+    if inode.inode_type() != InodeType::File || inode.is_volatile() {
         return Err(FileSystemError::InvalidOperation);
     }
     let id = SharedFileId {
@@ -296,11 +296,16 @@ fn cached_file(inode: Arc<dyn Inode>) -> Result<Arc<CachedFile>, FileSystemError
     Ok(file)
 }
 
-/// @description 已解析 page-cache identity 的 regular-file I/O facade。
+/// @description 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
 ///
 /// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
 /// metadata、获取全局 FILES lock 并查找同一个 BTree entry。
-pub(crate) struct RegularFile(Arc<CachedFile>);
+pub(crate) struct RegularFile(RegularFileBackend);
+
+enum RegularFileBackend {
+    Cached(Arc<CachedFile>),
+    Volatile(Arc<dyn Inode>),
+}
 
 /// @description 一次 regular-file cache read 的 logical 与实际 storage 结果。
 #[derive(Debug, Clone, Copy)]
@@ -320,29 +325,41 @@ pub(crate) struct RegularFileWrite<'a> {
 }
 
 impl RegularFile {
-    /// @description 将 regular inode 解析为唯一 page-cache owner。
+    /// @description 将 regular inode 解析为持久 page-cache owner 或只读动态快照。
     /// @param inode 目标 regular inode。
-    /// @return 可在本次 I/O 内复用的 facade。
+    /// @return 可在本次 I/O 内复用的 facade；volatile inode 不注册全局 cache entry。
     /// @error `InvalidOperation` 表示 inode 不是 regular file。
     /// @error inode metadata 读取失败时透传 filesystem error。
     /// @error 首次注册 memory reclaimer 失败时返回 `OutOfMemory`。
     pub(crate) fn from_inode(inode: Arc<dyn Inode>) -> Result<Self, FileSystemError> {
-        cached_file(inode).map(Self)
+        if inode.inode_type() != InodeType::File {
+            return Err(FileSystemError::InvalidOperation);
+        }
+        if inode.is_volatile() {
+            return Ok(Self(RegularFileBackend::Volatile(inode)));
+        }
+        cached_file(inode).map(|file| Self(RegularFileBackend::Cached(file)))
     }
 
-    /// @description 返回该 facade 唯一 page-cache backing identity。
-    /// @return mounted filesystem 与 inode number 组成的稳定 identity。
-    pub(crate) fn id(&self) -> SharedFileId {
-        self.0.id
+    /// @description 返回持久文件的唯一 page-cache backing identity。
+    /// @return 持久文件返回 filesystem/inode identity；动态快照没有 cache identity，返回 None。
+    pub(crate) fn id(&self) -> Option<SharedFileId> {
+        match &self.0 {
+            RegularFileBackend::Cached(file) => Some(file.id),
+            RegularFileBackend::Volatile(_) => None,
+        }
     }
 
     /// @description 返回当前 regular-file byte size。
     /// @return filesystem metadata owner 的当前 i_size 投影。
     pub(crate) fn size(&self) -> u64 {
-        self.0.inode.size()
+        match &self.0 {
+            RegularFileBackend::Cached(file) => file.inode.size(),
+            RegularFileBackend::Volatile(inode) => inode.size(),
+        }
     }
 
-    /// @description 从 page cache 读取 regular-file bytes。
+    /// @description 从持久 page cache 或只读动态 inode 读取 regular-file bytes。
     /// @param offset 文件 byte offset。
     /// @param output kernel-owned 输出缓冲区。
     /// @return 实际读取字节数；EOF 返回零。
@@ -354,7 +371,18 @@ impl RegularFile {
         offset: u64,
         output: &mut [u8],
     ) -> Result<RegularFileRead, FileSystemError> {
-        let size = self.0.inode.size();
+        let file = match &self.0 {
+            RegularFileBackend::Cached(file) => file,
+            RegularFileBackend::Volatile(inode) => {
+                return inode
+                    .read_storage(offset, output)
+                    .map(|bytes| RegularFileRead {
+                        bytes,
+                        storage_bytes: 0,
+                    });
+            }
+        };
+        let size = file.inode.size();
         let count = usize::try_from(size.saturating_sub(offset))
             .unwrap_or(usize::MAX)
             .min(output.len());
@@ -362,7 +390,7 @@ impl RegularFile {
         let mut storage_bytes = 0;
         while done < count {
             let current = offset + done as u64;
-            let (page, filled) = self.0.page_with_storage(current / PAGE_SIZE as u64)?;
+            let (page, filled) = file.page_with_storage(current / PAGE_SIZE as u64)?;
             storage_bytes += filled;
             let page_offset = current as usize % PAGE_SIZE;
             let part = (PAGE_SIZE - page_offset).min(count - done);
@@ -377,11 +405,15 @@ impl RegularFile {
 
     /// @description 开始一次不可被其他 regular-file mutation 穿插的 write operation。
     /// @return 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
-    pub(crate) fn begin_write(&self) -> RegularFileWrite<'_> {
-        RegularFileWrite {
-            file: &self.0,
-            _sequence: self.0.write_sequence.lock(),
-        }
+    /// @error 只读动态 inode 返回 `ReadOnly`。
+    pub(crate) fn begin_write(&self) -> Result<RegularFileWrite<'_>, FileSystemError> {
+        let RegularFileBackend::Cached(file) = &self.0 else {
+            return Err(FileSystemError::ReadOnly);
+        };
+        Ok(RegularFileWrite {
+            file,
+            _sequence: file.write_sequence.lock(),
+        })
     }
 }
 
