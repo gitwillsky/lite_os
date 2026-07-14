@@ -1,21 +1,25 @@
 pub(crate) mod block;
+mod display;
 mod goldfish_rtc;
 mod hal;
 pub(crate) mod network;
 mod platform;
 mod uart;
 mod virtio_blk;
+mod virtio_gpu;
 mod virtio_net;
 mod virtio_queue;
 mod virtio_rng;
 
+pub(crate) use display::{DisplayDevice, DisplayError, DisplayMode, primary_display};
 pub(crate) use goldfish_rtc::GoldfishRTCDevice;
 use hal::{
     InterruptController, InterruptError, InterruptHandler, InterruptVector, MmioBus,
     PlicInterruptController, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK,
-    VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
+    VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
 };
 use virtio_blk::VirtIOBlockDevice;
+use virtio_gpu::VirtIOGpuDevice;
 use virtio_net::VirtIONetworkDevice;
 use virtio_rng::VirtIORngDevice;
 

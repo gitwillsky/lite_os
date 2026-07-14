@@ -2,6 +2,7 @@ use super::*;
 
 mod advice;
 mod anonymous_shared;
+mod device;
 mod fault;
 mod protection;
 
@@ -329,7 +330,10 @@ impl MemorySet {
         let mut keys = Vec::new();
         for (key, area) in &self.areas {
             if start < area.vpn_range.end && area.vpn_range.start < end {
-                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::File) {
+                if !matches!(
+                    area.kind,
+                    VmaKind::Anonymous | VmaKind::File | VmaKind::Device
+                ) {
                     return Err(MemoryError::PermissionDenied);
                 }
                 keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;

@@ -6,6 +6,8 @@ use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering, fence};
 
+use super::hal::VirtQueueAddresses;
+
 // VirtIO Ring 描述符标志
 pub(super) const VIRTQ_DESC_F_NEXT: u16 = 1;
 pub(super) const VIRTQ_DESC_F_WRITE: u16 = 2;
@@ -54,8 +56,7 @@ pub(super) struct VirtQueue {
     // Shadow descriptors that device can't access - inspired by virtio-drivers
     desc_shadow: Vec<VirtqDesc>,
     _frame_tracker: FrameTracker,
-    // 队列共享内存的物理基地址与各段偏移，供MMIO寄存器编程
-    mem_paddr: PhysicalAddress,
+    addresses: VirtQueueAddresses,
 }
 
 impl VirtQueue {
@@ -144,12 +145,19 @@ impl VirtQueue {
             avail_idx: 0,
             desc_shadow,
             _frame_tracker: frame_tracker,
-            mem_paddr: base_pa,
+            addresses: VirtQueueAddresses {
+                descriptor: base_pa.as_usize() as u64,
+                driver: (base_pa.as_usize() + avail_offset) as u64,
+                device: (base_pa.as_usize() + used_offset) as u64,
+            },
         })
     }
 
-    pub(super) fn physical_address(&self) -> PhysicalAddress {
-        self.mem_paddr
+    /// @description 返回 MMIO v2 queue publication 所需的三段物理地址。
+    ///
+    /// @return descriptor、available 与 used ring 的稳定物理基址。
+    pub(super) fn addresses(&self) -> VirtQueueAddresses {
+        self.addresses
     }
 
     // Write descriptor from shadow to actual - inspired by virtio-drivers
@@ -172,7 +180,14 @@ impl VirtQueue {
     }
 
     // Simple HAL-like buffer sharing following virtio-drivers pattern
-    fn append_pa_segments(&self, segments: &mut Vec<(u64, u32)>, ptr: *const u8, len: usize) {
+    fn write_segments(
+        &mut self,
+        ptr: *const u8,
+        len: usize,
+        writable: bool,
+        descriptor: &mut u16,
+        remaining: &mut usize,
+    ) {
         let mut processed: usize = 0;
         while processed < len {
             let cur_va = VirtualAddress::from(ptr as usize + processed);
@@ -188,8 +203,22 @@ impl VirtQueue {
                     None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
                 }
             };
-            let addr = pa.as_usize() as u64;
-            segments.push((addr, chunk as u32));
+            let current = *descriptor;
+            let next = self.desc_shadow[current as usize].next;
+            *remaining -= 1;
+            let desc = &mut self.desc_shadow[current as usize];
+            desc.addr = pa.as_usize() as u64;
+            desc.len = chunk as u32;
+            desc.flags = if writable { VIRTQ_DESC_F_WRITE } else { 0 }
+                | if *remaining != 0 {
+                    VIRTQ_DESC_F_NEXT
+                } else {
+                    0
+                };
+            self.write_desc(current);
+            if *remaining != 0 {
+                *descriptor = next;
+            }
             processed += chunk;
         }
     }
@@ -199,8 +228,9 @@ impl VirtQueue {
         inputs: &[&[u8]],
         outputs: &mut [&mut [u8]],
     ) -> Option<u16> {
-        // 1. 预计算分段数并完成唯一可失败分配；缺失时 TX/RX
-        //    runtime 会在 Vec::push 中进入 kernel-wide allocation abort。
+        // 1. 预计算全部物理分段，只在容量充足时开始修改 free chain。
+        //    若在 runtime 构造临时 Vec，网络和块 I/O 的每次提交都会分配，并在
+        //    memory pressure 下把本可返回的设备错误放大为 kernel-wide allocation abort。
         let input_count = inputs.iter().try_fold(0usize, |count, input| {
             count.checked_add(Self::segment_count(input.as_ptr(), input.len())?)
         })?;
@@ -211,65 +241,34 @@ impl VirtQueue {
         if total_count == 0 || total_count > usize::from(self.num_free) {
             return None;
         }
-        let mut in_segs = Vec::new();
-        in_segs.try_reserve_exact(input_count).ok()?;
-        let mut out_segs = Vec::new();
-        out_segs.try_reserve_exact(output_count).ok()?;
 
-        for input in inputs.iter() {
-            self.append_pa_segments(&mut in_segs, input.as_ptr(), input.len());
-        }
-        for output in outputs.iter_mut() {
-            self.append_pa_segments(&mut out_segs, output.as_ptr(), output.len());
-        }
-
-        // 2. total_count 已不大于 u16 num_free，转换不会截断。
+        // 2. total_count 已不大于 u16 num_free；直接以固定局部状态遍历
+        //    buffer，避免为每次 descriptor submission 构造 heap collection。
         let total_needed = total_count as u16;
-
         let head = self.free_head;
         let mut desc_idx = head;
-
-        // 填充输入段
-        for (seg_i, (addr, len)) in in_segs.iter().enumerate() {
-            let is_last_in = seg_i == in_segs.len() - 1;
-            let mut flags: u16 = 0;
-            if !(is_last_in && out_segs.is_empty()) {
-                flags |= VIRTQ_DESC_F_NEXT;
-            }
-
-            let desc = &mut self.desc_shadow[desc_idx as usize];
-            desc.addr = *addr;
-            desc.len = *len;
-            desc.flags = flags;
-
-            let next_idx = desc.next;
-            self.write_desc(desc_idx);
-            if !is_last_in || !out_segs.is_empty() {
-                desc_idx = next_idx;
-            }
+        let mut remaining = total_count;
+        for input in inputs {
+            self.write_segments(
+                input.as_ptr(),
+                input.len(),
+                false,
+                &mut desc_idx,
+                &mut remaining,
+            );
         }
-
-        // 填充输出段
-        for (seg_i, (addr, len)) in out_segs.iter().enumerate() {
-            let is_last_out = seg_i == out_segs.len() - 1;
-            let mut flags: u16 = VIRTQ_DESC_F_WRITE;
-            if !is_last_out {
-                flags |= VIRTQ_DESC_F_NEXT;
-            }
-
-            let desc = &mut self.desc_shadow[desc_idx as usize];
-            desc.addr = *addr;
-            desc.len = *len;
-            desc.flags = flags;
-
-            let next_idx = desc.next;
-            self.write_desc(desc_idx);
-            if !is_last_out {
-                desc_idx = next_idx;
-            }
+        for output in outputs {
+            self.write_segments(
+                output.as_ptr(),
+                output.len(),
+                true,
+                &mut desc_idx,
+                &mut remaining,
+            );
         }
+        assert_eq!(remaining, 0, "VirtIO segment count diverged from fill");
 
-        // 更新free_head与计数
+        // 3. 全部 descriptor 已完整写入，最后一次提交 free-list owner。
         self.free_head = self.desc_shadow[desc_idx as usize].next;
         self.num_free -= total_needed;
 
@@ -334,6 +333,15 @@ impl VirtQueue {
 
             Ok(Some((used_elem.id as u16, used_elem.len)))
         }
+    }
+
+    /// @description 非破坏性检查 used ring 是否尚有未回收 completion。
+    ///
+    /// @return device 发布的 used index 领先当前 consumer 时返回 `true`。
+    pub(super) fn has_used(&self) -> bool {
+        // SAFETY: used ring 在 `_frame_tracker` 生命周期内有效；Acquire 与 device 的
+        // used publication 配对，本方法不读取 ring payload。
+        unsafe { (*self.used).idx.load(Ordering::Acquire) != self.last_used_idx }
     }
 
     fn recycle_descriptors(&mut self, head: u16) -> Result<(), ()> {

@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use spin::{Mutex, Once};
 
 use super::{
-    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VirtIODevice, virtio_queue::VirtQueue,
+    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VirtIODevice,
+    virtio_queue::VirtQueue,
 };
 
 /// OWNER: virtio-rng driver owns the only kernel entropy device and serializes its queue.
@@ -20,7 +21,10 @@ impl VirtIORngDevice {
             return None;
         }
         device.initialize().ok()?;
-        device.set_driver_features(0).ok()?;
+        if device.device_features().ok()? & VIRTIO_F_VERSION_1 == 0 {
+            return None;
+        }
+        device.set_driver_features(VIRTIO_F_VERSION_1).ok()?;
         let status = device.get_status().ok()?;
         device
             .set_status(status | VIRTIO_CONFIG_S_FEATURES_OK)
@@ -28,16 +32,9 @@ impl VirtIORngDevice {
         if device.get_status().ok()? & VIRTIO_CONFIG_S_FEATURES_OK == 0 {
             return None;
         }
-        device.set_guest_page_size(4096).ok()?;
-        device.select_queue(0).ok()?;
-        let size = device.queue_max_size().ok()?;
-        let queue = VirtQueue::new(u16::try_from(size).ok()?)?;
-        device.set_queue_size(size).ok()?;
-        device.set_queue_align(4096).ok()?;
-        device
-            .set_queue_pfn((queue.physical_address().as_usize() >> 12) as u32)
-            .ok()?;
-        device.set_queue_ready(1).ok()?;
+        let size = device.queue_max_size(0).ok()?;
+        let queue = VirtQueue::new(size)?;
+        device.configure_queue(0, size, queue.addresses()).ok()?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
         Arc::try_new(Self {

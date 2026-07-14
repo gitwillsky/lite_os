@@ -248,7 +248,10 @@ pub(super) fn write_descriptor(
             {
                 return error;
             }
-            if matches!(device, CharacterDevice::Entropy(_)) {
+            if matches!(
+                device,
+                CharacterDevice::Entropy(_) | CharacterDevice::Drm(_)
+            ) {
                 return -errno::EOPNOTSUPP;
             }
             let mut cursor = UserIoCursor::new(vectors);
@@ -282,6 +285,7 @@ pub(super) fn write_descriptor(
                         }
                     }
                     CharacterDevice::Entropy(_) => unreachable!("entropy write rejected above"),
+                    CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
                 };
                 written += count;
                 if count < requested {

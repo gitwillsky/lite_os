@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::memory::SharedFileMapping;
+use crate::memory::{FrameTracker, SharedFileMapping};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemoryAdvice {
@@ -16,6 +16,29 @@ pub(crate) enum MemoryAdvice {
 pub(crate) struct FileMappingSource {
     pub(super) mapping: Arc<dyn SharedFileMapping>,
     pub(super) offset: u64,
+}
+
+/// @description device-backed mmap 在 DRM 与 memory seam 之间传递的不可变 backing view。
+#[derive(Debug, Clone)]
+pub(crate) struct DeviceMappingSource {
+    pub(super) identity: u64,
+    pub(super) backing: Arc<FrameTracker>,
+    pub(super) page_offset: usize,
+}
+
+impl DeviceMappingSource {
+    /// @description 构造从 backing 首页开始的 device mapping source。
+    ///
+    /// @param identity 在 backing 释放后仍不复用的共享 futex identity。
+    /// @param backing 完整物理 extent 的共享生命周期 owner。
+    /// @return page offset 为零的 mapping source。
+    pub(crate) fn new(identity: u64, backing: Arc<FrameTracker>) -> Self {
+        Self {
+            identity,
+            backing,
+            page_offset: 0,
+        }
+    }
 }
 
 impl FileMappingSource {

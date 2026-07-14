@@ -6,7 +6,7 @@ use alloc::{
 use spin::{Mutex, Once};
 
 use crate::{
-    drivers::network::{NetworkDevice, NetworkError, network_device},
+    drivers::network::{NetworkDevice, NetworkError, NetworkTransmit, network_device},
     fallible_tree::FallibleMap,
     ipc::{PipeDirection, PipeEnd},
 };
@@ -194,16 +194,20 @@ impl PacketSocket {
         if state.protocol != target.protocol {
             return Err(SocketError::ProtocolNotSupported);
         }
+        let device = registry.device.clone();
+        let source_mac = device.mac_address();
+        drop(registry);
+        let transmit = NetworkTransmit::reserve(device).map_err(network_error)?;
         let mut frame = Vec::new();
         frame
             .try_reserve_exact(ETH_HEADER_LENGTH + input.len())
             .map_err(|_| SocketError::NoMemory)?;
         frame.resize(ETH_HEADER_LENGTH + input.len(), 0);
         frame[..6].copy_from_slice(&target.address[..6]);
-        frame[6..12].copy_from_slice(&registry.device.mac_address());
+        frame[6..12].copy_from_slice(&source_mac);
         frame[12..14].copy_from_slice(&ETH_P_IP.to_be_bytes());
         frame[ETH_HEADER_LENGTH..].copy_from_slice(input);
-        registry.device.transmit(&frame).map_err(network_error)?;
+        transmit.submit(&frame).map_err(network_error)?;
         Ok(input.len())
     }
 
@@ -239,7 +243,7 @@ impl PacketSocket {
     }
 
     /// @description 从唯一 receive queue 投影 packet endpoint readiness。
-    /// @return queue 非空时 readable，adapter 存在时始终 writable。
+    /// @return queue 非空时 readable，TX pool 尚有 free slot 时 writable。
     /// @errors registry 消失投影为 not-readable；发送时再返回具体错误。
     pub(super) fn poll_state(&self) -> SocketPollState {
         let readable = registry().is_ok_and(|registry| {
@@ -251,7 +255,7 @@ impl PacketSocket {
         });
         SocketPollState {
             readable,
-            writable: true,
+            writable: registry().is_ok_and(|registry| registry.lock().device.transmit_available()),
             hangup: false,
             error: false,
         }
@@ -345,6 +349,20 @@ pub(super) fn deliver(frame: &[u8]) {
         state.queue.push_back(Packet { payload, source });
         state.notification_pending |= was_empty;
     });
+}
+
+/// @description 在 TX capacity 从零转为非零时向全部 packet endpoint 发布 writable edge。
+///
+/// @return 无返回值；没有 live endpoint 时为空操作。
+/// @errors 不分配；实际 Pipe notification 由 NetworkStack lock 外的统一 drain 完成。
+pub(super) fn publish_transmit_ready() {
+    let Some(registry) = PACKET_REGISTRY.get() else {
+        return;
+    };
+    registry
+        .lock()
+        .endpoints
+        .for_each_mut(|_, state| state.notification_pending = true);
 }
 
 /// @description 按 endpoint ID 取出下一个待发布的 packet readable edge。

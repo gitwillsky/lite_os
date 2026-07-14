@@ -77,6 +77,33 @@ impl TaskControlBlock {
         )
     }
 
+    /// @description 将 DRM 已授权的 device backing 映射进 calling Process AddressSpace。
+    ///
+    /// @param address 零为内核选址，非零为 hint 或 exact address。
+    /// @param length 映射字节长度。
+    /// @param permission 用户 read/write/none 权限。
+    /// @param fixed_noreplace 是否禁止覆盖已有 VMA。
+    /// @param source 已验证 handle 与 mmap offset 的 backing owner。
+    /// @return 成功返回 mapping 起点；范围、权限或内存错误保持 transaction 未发布。
+    pub(crate) fn map_device(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        source: DeviceMappingSource,
+    ) -> Result<usize, MemoryError> {
+        let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
+        self.process.address_space().map_device(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            source,
+            address_space_limit,
+        )
+    }
+
     pub(crate) fn sync_shared_mapping(
         &self,
         address: usize,
@@ -150,6 +177,27 @@ impl TaskControlBlock {
             length,
             permission,
             fixed_noreplace,
+            address_space_limit,
+        )
+    }
+}
+
+impl AddressSpace {
+    fn map_device(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+        fixed_noreplace: bool,
+        source: DeviceMappingSource,
+        address_space_limit: u64,
+    ) -> Result<usize, MemoryError> {
+        self.memory_set.lock().map_device(
+            address,
+            length,
+            permission,
+            fixed_noreplace,
+            source,
             address_space_limit,
         )
     }

@@ -1,4 +1,5 @@
 mod cow;
+mod device_area;
 mod error;
 mod executable_load;
 mod futex_key;
@@ -24,6 +25,7 @@ use crate::memory::{
 use alloc::{sync::Arc, vec::Vec};
 use bitflags::bitflags;
 use core::{arch::asm, ops::Range};
+use device_area::DeviceArea;
 use error::try_memory_arc;
 use private_area::PrivateFileArea;
 use resident::PrivateResident;
@@ -32,7 +34,9 @@ use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, S
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
     futex_key::FutexKey,
-    mapping_request::{FileMappingSource, MappingResourceLimits, MemoryAdvice},
+    mapping_request::{
+        DeviceMappingSource, FileMappingSource, MappingResourceLimits, MemoryAdvice,
+    },
     mmap::{PageFaultAccess, PageFaultOutcome},
     user_access::UserFaultLimits,
 };
@@ -60,6 +64,7 @@ enum VmaKind {
     Stack { top: usize },
     Elf,
     File,
+    Device,
 }
 
 #[derive(Debug)]
@@ -74,6 +79,7 @@ pub(crate) struct MapArea {
     kind: VmaKind,
     shared_anonymous: Option<SharedAnonymousArea>,
     shared_file: Option<SharedFileArea>,
+    device: Option<DeviceArea>,
     private_file: Option<PrivateFileArea>,
     /// private VMA 只声明地址范围，首次访问才分配物理页。
     lazy_private: bool,
@@ -105,6 +111,7 @@ impl MapArea {
             kind: VmaKind::System,
             shared_anonymous: None,
             shared_file: None,
+            device: None,
             private_file: None,
             lazy_private: false,
         }
@@ -199,6 +206,9 @@ impl MapArea {
     }
 
     pub(crate) fn map(&mut self, page_table: &mut PageTable) -> Result<(), MemoryError> {
+        if self.device.is_some() {
+            return self.map_device_area(page_table);
+        }
         if self.shared_file.is_some() {
             let _ = page_table;
             return Ok(());
@@ -216,6 +226,10 @@ impl MapArea {
     }
 
     pub(crate) fn unmap(&mut self, page_table: &mut PageTable) {
+        if self.device.is_some() {
+            self.unmap_device_area(page_table);
+            return;
+        }
         if self.lazy_private || self.shared_anonymous.is_some() || self.shared_file.is_some() {
             for (&vpn, _) in &self.data_frames {
                 let _ = page_table.unmap(vpn);
@@ -283,7 +297,7 @@ impl MapArea {
     ) -> (Option<Self>, Self, Option<Self>) {
         debug_assert!(matches!(
             self.kind,
-            VmaKind::Anonymous | VmaKind::Elf | VmaKind::File
+            VmaKind::Anonymous | VmaKind::Elf | VmaKind::File | VmaKind::Device
         ));
         debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
         let original_start = self.vpn_range.start;
@@ -323,36 +337,50 @@ impl MapArea {
         };
         let (left_anonymous, middle_anonymous, right_anonymous) =
             SharedAnonymousArea::partition(self.shared_anonymous, original_start, start, end);
+        let (left_device, middle_device, right_device) =
+            DeviceArea::partition(self.device, original_start, start, end);
         let kind = self.kind;
-        let build =
-            |range: Range<VirtualPageNumber>, data_frames, shared_anonymous, shared_file| Self {
-                vpn_range: range,
-                data_page_offset: 0,
-                data_frames,
-                map_type: MapType::Framed,
-                map_permission: self.map_permission,
-                global: false,
-                kind,
-                shared_anonymous,
-                shared_file,
-                private_file: self.private_file.clone(),
-                lazy_private: self.lazy_private,
-            };
+        let build = |range: Range<VirtualPageNumber>,
+                     data_frames,
+                     shared_anonymous,
+                     shared_file,
+                     device| Self {
+            vpn_range: range,
+            data_page_offset: 0,
+            data_frames,
+            map_type: MapType::Framed,
+            map_permission: self.map_permission,
+            global: false,
+            kind,
+            shared_anonymous,
+            shared_file,
+            device,
+            private_file: self.private_file.clone(),
+            lazy_private: self.lazy_private,
+        };
         let left = (original_start < start).then(|| {
             build(
                 original_start..start,
                 self.data_frames,
                 left_anonymous,
                 left_shared,
+                left_device,
             )
         });
-        let middle = build(start..end, middle_frames, middle_anonymous, middle_shared);
+        let middle = build(
+            start..end,
+            middle_frames,
+            middle_anonymous,
+            middle_shared,
+            middle_device,
+        );
         let right = (end < original_end).then(|| {
             build(
                 end..original_end,
                 right_frames,
                 right_anonymous,
                 right_shared,
+                right_device,
             )
         });
         (left, middle, right)
@@ -365,50 +393,6 @@ impl MapArea {
         debug_assert_eq!(self.map_permission, right.map_permission);
         self.vpn_range.end = right.vpn_range.end;
         self.data_frames.append(&mut right.data_frames);
-    }
-
-    fn try_clone_into(&self, page_table: &mut PageTable) -> Result<Self, MemoryError> {
-        let mut cloned = Self {
-            vpn_range: self.vpn_range.clone(),
-            data_page_offset: self.data_page_offset,
-            data_frames: FallibleMap::new(),
-            map_type: self.map_type,
-            map_permission: self.map_permission,
-            global: self.global,
-            kind: self.kind,
-            shared_anonymous: None,
-            shared_file: None,
-            private_file: self.private_file.clone(),
-            lazy_private: self.lazy_private,
-        };
-        if let Err(error) = cloned.map(page_table) {
-            cloned.unmap(page_table);
-            return Err(error);
-        }
-        for (vpn, source) in &self.data_frames {
-            Arc::get_mut(
-                cloned
-                    .data_frames
-                    .get_mut(vpn)
-                    .expect("cloned framed VMA must own every source VPN"),
-            )
-            .expect("eager-cloned system frame must be unique")
-            .bytes_mut()
-            .copy_from_slice(source.bytes());
-        }
-        Ok(cloned)
-    }
-
-    fn try_clone_data_frames(
-        &self,
-    ) -> Result<FallibleMap<VirtualPageNumber, PrivateResident>, MemoryError> {
-        let mut cloned = FallibleMap::new();
-        for (&vpn, resident) in &self.data_frames {
-            cloned
-                .try_insert(vpn, resident.clone())
-                .map_err(|_| MemoryError::OutOfMemory)?;
-        }
-        Ok(cloned)
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::{
-    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
+    fs::{CharacterDevice, InodeType, O_ACCMODE, O_RDONLY, O_WRONLY, OpenFileKind},
     memory::{MapPermission, MemoryAdvice, MemoryError},
     task::current_task,
 };
@@ -126,8 +126,24 @@ pub(crate) fn sys_mmap(
     let Some(ofd) = task.fd_get(fd as usize) else {
         return -errno::EBADF;
     };
-    if *ofd.flags.lock() & O_ACCMODE == O_WRONLY {
+    let access_mode = *ofd.flags.lock() & O_ACCMODE;
+    if access_mode == O_WRONLY {
         return -errno::EACCES;
+    }
+    if let OpenFileKind::Character(CharacterDevice::Drm(file)) = &ofd.kind {
+        if sharing != MAP_SHARED || permission.contains(MapPermission::X) {
+            return -errno::EINVAL;
+        }
+        if permission.contains(MapPermission::W) && access_mode == O_RDONLY {
+            return -errno::EACCES;
+        }
+        let source = match file.mapping(offset as u64, length) {
+            Ok(source) => source,
+            Err(error) => return -super::drm::drm_errno(error),
+        };
+        return task
+            .map_device(address, length, permission, exact_address, source)
+            .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
     }
     let Some(inode) = ofd.inode_ref() else {
         return -errno::ENODEV;

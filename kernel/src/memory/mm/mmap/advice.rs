@@ -28,6 +28,11 @@ impl MemorySet {
             {
                 return Err(MemoryError::InvalidRange);
             }
+            if advice == MemoryAdvice::DontNeed && area.device.is_some() {
+                // Device extent 不可像 anonymous/page-cache residency 一样丢弃；若撤销 PTE
+                // 却保留 VMA，后续 fault 没有 page-in owner，会把有效 GEM mapping 变成 SIGSEGV。
+                return Err(MemoryError::InvalidRange);
+            }
             covered = covered.max(area.vpn_range.end);
             keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
             keys.push(*key);

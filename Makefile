@@ -1,6 +1,6 @@
 ROOTFS_IMAGE := target/rootfs.img
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -32,6 +32,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 run: build-kernel build-bootloader fs.img
 	qemu-system-riscv64 \
 	-machine virt \
+	-global virtio-mmio.force-legacy=false \
 	-nographic \
 	-smp 8 \
 	-rtc base=localtime \
@@ -41,11 +42,30 @@ run: build-kernel build-bootloader fs.img
 	-device virtio-blk-device,drive=x0 \
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-device,rng=rng0 \
+	-device virtio-gpu-device \
+	-netdev user,id=net0 \
+	-device virtio-net-device,netdev=net0
+
+run-gui: build-kernel build-bootloader fs.img
+	qemu-system-riscv64 \
+	-machine virt \
+	-global virtio-mmio.force-legacy=false \
+	-display default \
+	-serial mon:stdio \
+	-smp 8 \
+	-rtc base=localtime \
+	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
+	-kernel target/riscv64gc-unknown-none-elf/debug/kernel \
+	-drive file=fs.img,if=none,format=raw,id=x0 \
+	-device virtio-blk-device,drive=x0 \
+	-object rng-random,filename=/dev/urandom,id=rng0 \
+	-device virtio-rng-device,rng=rng0 \
+	-device virtio-gpu-device \
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
 run-gdb: build-kernel build-bootloader fs.img
-	qemu-system-riscv64 -machine virt -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
+	qemu-system-riscv64 -machine virt -global virtio-mmio.force-legacy=false -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device virtio-gpu-device -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
 	cargo clean

@@ -1,5 +1,52 @@
 use super::*;
 
+impl MapArea {
+    fn try_clone_into(&self, page_table: &mut PageTable) -> Result<Self, MemoryError> {
+        let mut cloned = Self {
+            vpn_range: self.vpn_range.clone(),
+            data_page_offset: self.data_page_offset,
+            data_frames: FallibleMap::new(),
+            map_type: self.map_type,
+            map_permission: self.map_permission,
+            global: self.global,
+            kind: self.kind,
+            shared_anonymous: None,
+            shared_file: None,
+            device: None,
+            private_file: self.private_file.clone(),
+            lazy_private: self.lazy_private,
+        };
+        if let Err(error) = cloned.map(page_table) {
+            cloned.unmap(page_table);
+            return Err(error);
+        }
+        for (vpn, source) in &self.data_frames {
+            Arc::get_mut(
+                cloned
+                    .data_frames
+                    .get_mut(vpn)
+                    .expect("cloned framed VMA must own every source VPN"),
+            )
+            .expect("eager-cloned system frame must be unique")
+            .bytes_mut()
+            .copy_from_slice(source.bytes());
+        }
+        Ok(cloned)
+    }
+
+    fn try_clone_data_frames(
+        &self,
+    ) -> Result<FallibleMap<VirtualPageNumber, PrivateResident>, MemoryError> {
+        let mut cloned = FallibleMap::new();
+        for (&vpn, resident) in &self.data_frames {
+            cloned
+                .try_insert(vpn, resident.clone())
+                .map_err(|_| MemoryError::OutOfMemory)?;
+        }
+        Ok(cloned)
+    }
+}
+
 fn clone_shared_file_area(
     area: &MapArea,
     page_table: &mut PageTable,
@@ -38,6 +85,7 @@ fn clone_shared_file_area(
             file_offset: shared.file_offset,
             resident,
         }),
+        device: None,
         private_file: None,
         lazy_private: false,
     })
@@ -58,7 +106,9 @@ impl MemorySet {
             let area_slot =
                 FallibleMap::try_reserve_node().map_err(|_| MemoryError::OutOfMemory)?;
             let cloned_area = if area.map_permission.contains(MapPermission::U) {
-                if area.shared_file.is_some() {
+                if area.device.is_some() {
+                    area.try_clone_device_into(&mut cloned.page_table)?
+                } else if area.shared_file.is_some() {
                     clone_shared_file_area(area, &mut cloned.page_table)?
                 } else {
                     let cloned_area = MapArea {
@@ -71,6 +121,7 @@ impl MemorySet {
                         kind: area.kind,
                         shared_anonymous: area.shared_anonymous.clone(),
                         shared_file: None,
+                        device: None,
                         private_file: area.private_file.clone(),
                         lazy_private: area.lazy_private,
                     };

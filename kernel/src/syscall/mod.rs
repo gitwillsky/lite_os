@@ -1,4 +1,5 @@
 mod credentials;
+mod drm;
 mod epoll;
 mod errno;
 mod eventfd;

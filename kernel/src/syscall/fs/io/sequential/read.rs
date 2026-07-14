@@ -171,6 +171,7 @@ pub(super) fn read_descriptor(
                 }
                 total_length as isize
             }
+            CharacterDevice::Drm(_) => -errno::EOPNOTSUPP,
             CharacterDevice::Terminal {
                 terminal: console,
                 kind,

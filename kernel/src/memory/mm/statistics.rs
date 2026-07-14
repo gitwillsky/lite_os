@@ -35,6 +35,12 @@ impl MemorySet {
                 } else {
                     0
                 };
+                let device_pages =
+                    if area.device.is_some() && MapArea::has_leaf_permission(area.map_permission) {
+                        pages
+                    } else {
+                        0
+                    };
                 let data_pages = if matches!(area.kind, VmaKind::Stack { .. })
                     || area.map_permission.contains(MapPermission::W)
                         && area.shared_anonymous.is_none()
@@ -47,8 +53,12 @@ impl MemorySet {
                 };
                 (
                     size + pages,
-                    resident + private_resident_pages + shared_file_pages,
-                    shared + shared_anonymous_pages + shared_file_pages + clean_private_file_pages,
+                    resident + private_resident_pages + shared_file_pages + device_pages,
+                    shared
+                        + shared_anonymous_pages
+                        + shared_file_pages
+                        + clean_private_file_pages
+                        + device_pages,
                     data + data_pages,
                 )
             });

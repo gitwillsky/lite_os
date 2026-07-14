@@ -188,6 +188,7 @@ kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct RTCDevice
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct StringInLine < const N : usize >
 kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct VirtIODevice
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const CONSOLE_SOFTIRQ : u32 = 1 << 1
+kernel/src/arch/riscv64/hart.rs :: pub (crate) const DISPLAY_SOFTIRQ : u32 = 1 << 4
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_ID_OFFSET : usize = offset_of ! (HartState , hart_id)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_SIZE : usize = size_of :: < HartState > ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_STACK_TOP_OFFSET : usize = offset_of ! (HartState , startup_stack_top)
@@ -207,6 +208,7 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) fn max_hart_id () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn online_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn possible_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_console_softirq ()
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_display_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_network_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_backlog_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_softirq ()
@@ -253,6 +255,21 @@ kernel/src/drivers/block.rs :: trait BlockDevice :: fn block_size (& self) -> us
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn flush (& self) -> Result < () , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn read_block (& self , block_id : usize , buf : & mut [u8]) -> Result < usize , BlockError >
 kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , block_id : usize , buf : & [u8]) -> Result < usize , BlockError >
+kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
+kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
+kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
+kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: height : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: pitch : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: width : u32
+kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
+kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn DisplayDevice > >
+kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
+kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
+kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn DisplayDevice >) -> Result < () , () >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn initial_backing (& self) -> Arc < FrameTracker >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_completion (& self) -> Result < Option < u64 > , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , backing : Arc < FrameTracker >) -> Result < u64 , DisplayError >
 kernel/src/drivers/goldfish_rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) enum RtcError
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (rtc : RTCDevice) -> Result < Self , RtcError >
@@ -283,14 +300,19 @@ kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn supports_
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptHandler :: fn handle_interrupt (& self , vector : InterruptVector) -> Result < () , InterruptError >
 kernel/src/drivers/hal/mod.rs :: pub (super) use bus :: MmioBus
 kernel/src/drivers/hal/mod.rs :: pub (super) use interrupt :: { InterruptController , InterruptError , InterruptHandler , InterruptVector , PlicInterruptController , }
-kernel/src/drivers/hal/mod.rs :: pub (super) use virtio :: { VIRTIO_CONFIG_S_DRIVER_OK , VIRTIO_CONFIG_S_FEATURES_OK , VIRTIO_MMIO_INT_CONFIG , VIRTIO_MMIO_INT_VRING , VirtIODevice , }
+kernel/src/drivers/hal/mod.rs :: pub (super) use virtio :: { VIRTIO_CONFIG_S_DRIVER_OK , VIRTIO_CONFIG_S_FEATURES_OK , VIRTIO_F_VERSION_1 , VIRTIO_MMIO_INT_CONFIG , VIRTIO_MMIO_INT_VRING , VirtIODevice , VirtQueueAddresses , }
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: descriptor : u64
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: device : u64
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: driver : u64
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_CONFIG_S_ACKNOWLEDGE : u32 = 1
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_CONFIG_S_DRIVER : u32 = 2
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_CONFIG_S_DRIVER_OK : u32 = 4
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_CONFIG_S_FEATURES_OK : u32 = 8
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_F_VERSION_1 : u64 = 1 << 32
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_MMIO_INT_CONFIG : u32 = 2
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_MMIO_INT_VRING : u32 = 1
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn device_features (& self) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn device_features (& self) -> Result < u64 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn device_id (& self) -> u32
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn get_status (& self) -> Result < u32 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn initialize (& mut self) -> Result < () , BusError >
@@ -298,41 +320,48 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice 
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn interrupt_status (& self) -> Result < u32 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn notify_queue (& self , queue : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn queue_max_size (& self) -> Result < u32 , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u64 (& self , offset : usize) -> Result < u64 , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn select_queue (& self , queue : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_driver_features (& self , features : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_guest_page_size (& self , size : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_queue_align (& self , align : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_queue_pfn (& self , pfn : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_queue_ready (& self , ready : u32) -> Result < () , BusError >
-kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_queue_size (& self , size : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_driver_features (& self , features : u64) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_status (& self , status : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtIODevice
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtQueueAddresses
 kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/drivers/mod.rs :: pub (crate) fn init ()
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod network
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , primary_display }
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 设备暂时没有已完成的接收帧。"] WouldBlock
+kernel/src/drivers/network.rs :: pub (crate) NetworkCompletion :: backlog : bool
+kernel/src/drivers/network.rs :: pub (crate) NetworkCompletion :: transmit_became_available : bool
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: received_bytes : u64
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: received_packets : u64
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: transmitted_bytes : u64
 kernel/src/drivers/network.rs :: pub (crate) NetworkStatistics :: transmitted_packets : u64
 kernel/src/drivers/network.rs :: pub (crate) enum NetworkError
 kernel/src/drivers/network.rs :: pub (crate) fn network_device () -> Option < Arc < dyn NetworkDevice > >
+kernel/src/drivers/network.rs :: pub (crate) impl NetworkTransmit :: fn reserve (device : Arc < dyn NetworkDevice >) -> Result < Self , NetworkError >
+kernel/src/drivers/network.rs :: pub (crate) impl NetworkTransmit :: fn submit (mut self , frame : & [u8]) -> Result < () , NetworkError >
+kernel/src/drivers/network.rs :: pub (crate) struct NetworkCompletion
 kernel/src/drivers/network.rs :: pub (crate) struct NetworkStatistics
+kernel/src/drivers/network.rs :: pub (crate) struct NetworkTransmit
 kernel/src/drivers/network.rs :: pub (crate) trait NetworkDevice
 kernel/src/drivers/network.rs :: pub (super) fn register_network_device (device : Arc < dyn NetworkDevice > ,) -> Result < () , Arc < dyn NetworkDevice > >
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn cancel_transmit (& self , reservation : u16)
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn mac_address (& self) -> [u8 ; 6]
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn poll_completions (& self , budget : usize) -> Result < NetworkCompletion , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn receive (& self , frame : & mut [u8]) -> Result < usize , NetworkError >
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn reserve_transmit (& self) -> Result < u16 , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn statistics (& self) -> NetworkStatistics
-kernel/src/drivers/network.rs :: trait NetworkDevice :: fn transmit (& self , frame : & [u8]) -> Result < () , NetworkError >
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn submit_transmit (& self , reservation : u16 , frame : & [u8]) -> Result < () , NetworkError >
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn transmit_available (& self) -> bool
 kernel/src/drivers/platform.rs :: pub (super) fn handle_external_interrupt ()
 kernel/src/drivers/platform.rs :: pub (super) fn init ()
 kernel/src/drivers/uart.rs :: pub (super) fn enable_receive_interrupt ()
@@ -345,6 +374,29 @@ kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_UNSUPP : u8 =
 kernel/src/drivers/virtio_blk.rs :: pub (super) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_blk.rs :: pub (super) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_blk.rs :: pub (super) struct VirtIOBlockDevice
+kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_gpu.rs :: pub (super) struct VirtIOGpuDevice
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_HEADER_SIZE : usize = 24
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const DISPLAY_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16 * 24
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_DISPLAY_INFO : u32 = 0x0100
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING : u32 = 0x0106
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D : u32 = 0x0101
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_FLUSH : u32 = 0x0104
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_UNREF : u32 = 0x0102
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_SET_SCANOUT : u32 = 0x0103
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D : u32 = 0x0105
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FLAG_FENCE : u32 = 1
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM : u32 = 2
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_DISPLAY_INFO : u32 = 0x1101
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_NODATA : u32 = 0x1100
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_rect (bytes : & mut [u8] , offset : usize , mode : DisplayMode) -> Option < () >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
 kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_net.rs :: pub (super) struct VirtIONetworkDevice
@@ -372,8 +424,9 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) const VIRTQ_DESC_F_NEXT : u16 
 kernel/src/drivers/virtio_queue.rs :: pub (super) const VIRTQ_DESC_F_WRITE : u16 = 2
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_buffer (& mut self , inputs : & [& [u8]] , outputs : & mut [& mut [u8]] ,) -> Option < u16 >
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_to_avail (& mut self , desc_idx : u16)
+kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn addresses (& self) -> VirtQueueAddresses
+kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn has_used (& self) -> bool
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn new (size : u16) -> Option < Self >
-kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn physical_address (& self) -> PhysicalAddress
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn used (& mut self) -> Result < Option < (u16 , u32) > , () >
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtQueue
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqAvail
@@ -384,6 +437,60 @@ kernel/src/drivers/virtio_rng.rs :: pub (crate) fn fill_entropy (bytes : & mut [
 kernel/src/drivers/virtio_rng.rs :: pub (super) fn register (device : Arc < VirtIORngDevice >) -> Result < () , () >
 kernel/src/drivers/virtio_rng.rs :: pub (super) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_rng.rs :: pub (super) struct VirtIORngDevice
+kernel/src/drm.rs :: enum DrmError :: # [doc = " UAPI 参数、尺寸或 fake offset 非法。"] Invalid
+kernel/src/drm.rs :: enum DrmError :: # [doc = " display adapter 已有未完成 transaction。"] Busy
+kernel/src/drm.rs :: enum DrmError :: # [doc = " display transport 或 response 损坏。"] Device
+kernel/src/drm.rs :: enum DrmError :: # [doc = " monotonic identity 或 handle 空间耗尽。"] NoSpace
+kernel/src/drm.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
+kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
+kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " active object 已切换到 fallback，caller 必须等待后重试删除。"] Wait (DrmWait)
+kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
+kernel/src/drm.rs :: pub (crate) DrmMode :: clock : u32
+kernel/src/drm.rs :: pub (crate) DrmMode :: flags : u32
+kernel/src/drm.rs :: pub (crate) DrmMode :: hdisplay : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: hsync_end : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: hsync_start : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: htotal : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: mode_type : u32
+kernel/src/drm.rs :: pub (crate) DrmMode :: vdisplay : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: vrefresh : u32
+kernel/src/drm.rs :: pub (crate) DrmMode :: vsync_end : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: vsync_start : u16
+kernel/src/drm.rs :: pub (crate) DrmMode :: vtotal : u16
+kernel/src/drm.rs :: pub (crate) DumbBufferInfo :: handle : u32
+kernel/src/drm.rs :: pub (crate) DumbBufferInfo :: pitch : u32
+kernel/src/drm.rs :: pub (crate) DumbBufferInfo :: size : u64
+kernel/src/drm.rs :: pub (crate) FramebufferInfo :: handle : u32
+kernel/src/drm.rs :: pub (crate) FramebufferInfo :: height : u32
+kernel/src/drm.rs :: pub (crate) FramebufferInfo :: pitch : u32
+kernel/src/drm.rs :: pub (crate) FramebufferInfo :: width : u32
+kernel/src/drm.rs :: pub (crate) enum DrmError
+kernel/src/drm.rs :: pub (crate) enum FramebufferRemoval
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn active_framebuffer (& self) -> Option < u32 >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn add_framebuffer (& self , handle : u32 , width : u32 , height : u32 , pitch : u32 ,) -> Result < u32 , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn create_dumb (& self , width : u32 , height : u32 , bpp : u32 , flags : u32 ,) -> Result < DumbBufferInfo , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn destroy_dumb (& self , handle : u32) -> Result < () , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn disable_crtc (& self) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer (& self , id : u32) -> Result < FramebufferInfo , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_count (& self) -> usize
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , index : usize) -> Option < u32 >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (& self , id : u32) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/drm.rs :: pub (crate) mod device
+kernel/src/drm.rs :: pub (crate) struct DrmFile
+kernel/src/drm.rs :: pub (crate) struct DrmMode
+kernel/src/drm.rs :: pub (crate) struct DrmWait
+kernel/src/drm.rs :: pub (crate) struct DumbBufferInfo
+kernel/src/drm.rs :: pub (crate) struct FramebufferInfo
+kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work ()
+kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
+kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
+kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn is_empty (& self) -> bool
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn len (& self) -> usize
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn new () -> Self
@@ -540,12 +647,14 @@ kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy (DeviceKind)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , () >
 kernel/src/fs/file/proc.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
 kernel/src/fs/file/proc.rs :: pub (crate) impl OpenFileDescription :: fn proc_target (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
@@ -580,6 +689,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn window_size (&
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file/terminal.rs :: pub (crate) struct Terminal
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
+kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
 kernel/src/fs/inode.rs :: enum DeviceKind :: Random
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
@@ -1132,9 +1242,19 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_add
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
 kernel/src/memory/mm.rs :: pub (crate) struct MemorySet
-kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , futex_key :: FutexKey , mapping_request :: { FileMappingSource , MappingResourceLimits , MemoryAdvice } , mmap :: { PageFaultAccess , PageFaultOutcome } , user_access :: UserFaultLimits , }
+kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , futex_key :: FutexKey , mapping_request :: { DeviceMappingSource , FileMappingSource , MappingResourceLimits , MemoryAdvice , } , mmap :: { PageFaultAccess , PageFaultOutcome } , user_access :: UserFaultLimits , }
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
+kernel/src/memory/mm/device_area.rs :: pub (in crate :: memory :: mm) impl MapArea :: fn device (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission , source : DeviceMappingSource ,) -> Self
+kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: backing : Arc < FrameTracker >
+kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: identity : u64
+kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: page_offset : usize
+kernel/src/memory/mm/device_area.rs :: pub (super) impl DeviceArea :: fn partition (area : Option < Self > , original_start : VirtualPageNumber , start : VirtualPageNumber , end : VirtualPageNumber ,) -> (Option < Self > , Option < Self > , Option < Self >)
+kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn map_device_area (& self , page_table : & mut PageTable) -> Result < () , MemoryError >
+kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn protect_device_area (& self , page_table : & mut PageTable , range : Range < VirtualPageNumber > , permission : MapPermission ,) -> Result < () , MemoryError >
+kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn try_clone_device_into (& self , page_table : & mut PageTable ,) -> Result < Self , MemoryError >
+kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn unmap_device_area (& self , page_table : & mut PageTable)
+kernel/src/memory/mm/device_area.rs :: pub (super) struct DeviceArea
 kernel/src/memory/mm/error.rs :: enum ElfLoadError :: # [doc = " ELF header、segment、地址、权限、解释器或初始栈不满足 RV64 契约。"] InvalidElf
 kernel/src/memory/mm/error.rs :: enum ElfLoadError :: # [doc = " executable source 在 transaction 构造期间发生 I/O error 或 short read。"] Io
 kernel/src/memory/mm/error.rs :: enum ElfLoadError :: # [doc = " 物理页或页表页分配失败。"] OutOfMemory
@@ -1155,6 +1275,7 @@ kernel/src/memory/mm/error.rs :: pub (crate) impl MemoryError :: fn is_out_of_me
 kernel/src/memory/mm/error.rs :: pub (super) fn try_memory_arc < T > (value : T) -> Result < Arc < T > , MemoryError >
 kernel/src/memory/mm/executable_load.rs :: pub (crate) impl MemorySet :: fn from_elf (image : & ExecutableImage , args : & [Vec < u8 >] , envs : & [Vec < u8 >] , execfn : & [u8] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (Self , usize , usize) , ElfLoadError >
 kernel/src/memory/mm/executable_load.rs :: pub (super) impl MemorySet :: fn map_elf_image (& mut self , image : & ParsedElf , load_bias : usize ,) -> Result < LoadedElf , ElfLoadError >
+kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " Device VMA 以不复用 backing identity 与 byte offset 跨 fork 匹配。"] SharedDevice { backing : u64 , offset : usize }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 匿名共享映射以不可复用的 backing ID 和字节偏移跨进程匹配。"] SharedAnonymous { backing : u64 , offset : usize }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 文件共享映射以 inode identity 和文件字节偏移跨地址空间匹配。"] SharedFile { file : SharedFileId , offset : u64 }
 kernel/src/memory/mm/futex_key.rs :: enum FutexKey :: # [doc = " 私有映射只在同一个 AddressSpace 内共享等待队列。"] Private { address_space : usize , address : usize , }
@@ -1170,10 +1291,15 @@ kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Random
 kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Sequential
 kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: WillNeed
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < FrameTracker >) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl MappingResourceLimits :: const fn new (address_space : u64 , data : u64) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct DeviceMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct FileMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct MappingResourceLimits
+kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: backing : Arc < FrameTracker >
+kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: identity : u64
+kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: page_offset : usize
 kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: mapping : Arc < dyn SharedFileMapping >
 kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: offset : u64
 kernel/src/memory/mm/mapping_request.rs :: pub (super) MappingResourceLimits :: address_space : u64
@@ -1195,6 +1321,7 @@ kernel/src/memory/mm/mmap.rs :: pub (crate) impl MemorySet :: fn unmap_user_mapp
 kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn advise_user_mapping (& mut self , address : usize , length : usize , advice : MemoryAdvice ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn reclaim_private_pages (& mut self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_shared_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
+kernel/src/memory/mm/mmap/device.rs :: pub (crate) impl MemorySet :: fn map_device (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , source : DeviceMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/fault.rs :: pub (crate) impl MemorySet :: fn handle_page_fault (& mut self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/memory/mm/mmap/fault.rs :: pub (crate) impl MemorySet :: fn handle_page_fault_with_limits (& mut self , address : usize , access : PageFaultAccess , limits : UserFaultLimits ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/memory/mm/mmap/protection.rs :: pub (crate) impl MemorySet :: fn protect_user_mapping (& mut self , address : usize , length : usize , permission : MapPermission ,) -> Result < () , MemoryError >
@@ -1257,7 +1384,7 @@ kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , Ex
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { ElfLoadError , FileMappingSource , FutexKey , MapPermission , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingSource , FutexKey , MapPermission , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
@@ -1421,8 +1548,10 @@ kernel/src/socket.rs :: pub (crate) struct UnixConnectResources
 kernel/src/socket.rs :: pub (crate) type SocketWaitSources  = [Option < SocketWaitSource > ; 2]
 kernel/src/socket.rs :: pub (crate) use inet :: { configure_address , configure_gateway , configure_netmask , configure_up , dispatch_network_work , interface_snapshot , network_snapshot , network_work_due , }
 kernel/src/socket.rs :: pub (crate) use unix :: UnixAddress
+kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn new (device : Arc < dyn NetworkDevice >) -> Self
+kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn poll_completions (& self , budget : usize ,) -> Result < NetworkCompletion , NetworkError >
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn statistics (& self) -> NetworkStatistics
 kernel/src/socket/device.rs :: pub (super) struct EthernetDevice
 kernel/src/socket/device.rs :: pub (super) struct EthernetRxToken < 'a >
@@ -1534,6 +1663,7 @@ kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn consume_noti
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn notify (& self)
 kernel/src/socket/packet.rs :: pub (super) fn deliver (frame : & [u8])
 kernel/src/socket/packet.rs :: pub (super) fn init ()
+kernel/src/socket/packet.rs :: pub (super) fn publish_transmit_ready ()
 kernel/src/socket/packet.rs :: pub (super) fn take_pending_notification (after : usize) -> Option < (usize , Arc < PacketSocket >) >
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn address (& self) -> Result < PacketAddress , SocketError >
 kernel/src/socket/packet.rs :: pub (super) impl PacketSocket :: fn bind (& self , address : PacketAddress) -> Result < () , SocketError >
@@ -1583,6 +1713,8 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_id (uid : bool , val
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_res_ids (uid : bool , values : [u32 ; 3]) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize , list : usize) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
+kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_errno (error : DrmError) -> isize
+kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_ioctl (task : & TaskControlBlock , file : & DrmFile , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
@@ -1957,6 +2089,7 @@ kernel/src/task/model/address_space.rs :: pub (super) struct AddressSpace
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn advise_user_mapping (& self , address : usize , length : usize , advice : crate :: memory :: MemoryAdvice ,) -> Result < () , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn handle_page_fault (& self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
+kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_device (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , source : DeviceMappingSource ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_private_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_anonymous (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool ,) -> Result < usize , MemoryError >
 kernel/src/task/model/address_space/mapping.rs :: pub (crate) impl TaskControlBlock :: fn map_shared_file (& self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , mapping : Arc < dyn SharedFileMapping > , offset : u64 ,) -> Result < usize , MemoryError >

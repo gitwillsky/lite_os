@@ -3,7 +3,8 @@ use spin::Mutex;
 
 use super::{
     InterruptError, InterruptHandler, InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK,
-    VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
+    VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING,
+    VirtIODevice,
     block::{BLOCK_SIZE, BlockDevice, BlockError},
     virtio_queue::*,
 };
@@ -11,7 +12,7 @@ use super::{
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
 const VIRTIO_BLK_T_FLUSH: u32 = 4;
-const VIRTIO_BLK_F_FLUSH: u32 = 1 << 9;
+const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 
 pub(super) const VIRTIO_BLK_S_OK: u8 = 0;
 pub(super) const VIRTIO_BLK_S_IOERR: u8 = 1;
@@ -43,7 +44,10 @@ impl VirtIOBlockDevice {
         virtio_device.initialize().ok()?;
 
         let device_features = virtio_device.device_features().ok()?;
-        let driver_features = device_features & VIRTIO_BLK_F_FLUSH;
+        if device_features & VIRTIO_F_VERSION_1 == 0 {
+            return None;
+        }
+        let driver_features = VIRTIO_F_VERSION_1 | device_features & VIRTIO_BLK_F_FLUSH;
         virtio_device.set_driver_features(driver_features).ok()?;
 
         let status = virtio_device.get_status().ok()?;
@@ -55,19 +59,11 @@ impl VirtIOBlockDevice {
             return None;
         }
 
-        virtio_device.set_guest_page_size(4096).ok()?;
-
-        virtio_device.select_queue(0).ok()?;
-        let queue_size = virtio_device.queue_max_size().ok()?;
-        let queue_size_u16 = u16::try_from(queue_size).ok()?;
-        let queue = VirtQueue::new(queue_size_u16)?;
-
-        virtio_device.set_queue_size(queue_size).ok()?;
-        virtio_device.set_queue_align(4096).ok()?;
-
-        let queue_pfn = queue.physical_address().as_usize() >> 12;
-        virtio_device.set_queue_pfn(queue_pfn as u32).ok()?;
-        virtio_device.set_queue_ready(1).ok()?;
+        let queue_size = virtio_device.queue_max_size(0).ok()?;
+        let queue = VirtQueue::new(queue_size)?;
+        virtio_device
+            .configure_queue(0, queue_size, queue.addresses())
+            .ok()?;
 
         let capacity = virtio_device.read_config_u64(0).ok()?;
 

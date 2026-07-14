@@ -21,6 +21,61 @@ pub(crate) struct NetworkStatistics {
     pub(crate) transmitted_packets: u64,
 }
 
+/// @description 一次有界 device completion drain 的结果。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NetworkCompletion {
+    /// 尚有 used entry 未回收，调用方必须重新投递 network softirq。
+    pub(crate) backlog: bool,
+    /// TX 容量从零变为非零，阻塞的 packet writer 需要被唤醒。
+    pub(crate) transmit_became_available: bool,
+}
+
+/// @description 不可复制的 Ethernet TX slot reservation。
+///
+/// token 在提交前丢弃会归还 slot；成功提交后 descriptor 只能由 used-ring
+/// completion 归还。这使 smoltcp 获得 TxToken 到填充 frame 的窗口内不会被
+/// AF_PACKET sender 抢走最后一个 slot。
+pub(crate) struct NetworkTransmit {
+    device: Arc<dyn NetworkDevice>,
+    reservation: Option<u16>,
+}
+
+impl NetworkTransmit {
+    /// @description 从适配器的固定 TX pool 中预留一个 slot。
+    ///
+    /// @param device DTB 选中的唯一 Ethernet adapter。
+    /// @return 拥有唯一 reservation 的 token。
+    /// @errors pool 已满返回 `WouldBlock`；设备状态损坏返回 `Device`。
+    pub(crate) fn reserve(device: Arc<dyn NetworkDevice>) -> Result<Self, NetworkError> {
+        let reservation = device.reserve_transmit()?;
+        Ok(Self {
+            device,
+            reservation: Some(reservation),
+        })
+    }
+
+    /// @description 把完整 Ethernet frame 复制到预留 DMA slot 并发布 descriptor。
+    ///
+    /// @param frame 不含 VirtIO header 的 Ethernet frame。
+    /// @return descriptor 成功发布返回 unit；实际 DMA 完成由 softirq 回收。
+    /// @errors frame 过大或 transport 失败返回对应错误。
+    pub(crate) fn submit(mut self, frame: &[u8]) -> Result<(), NetworkError> {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("network transmit reservation consumed twice");
+        self.device.submit_transmit(reservation, frame)
+    }
+}
+
+impl Drop for NetworkTransmit {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.reservation.take() {
+            self.device.cancel_transmit(reservation);
+        }
+    }
+}
+
 /// @description 面向 Ethernet 协议栈的唯一 network device seam。
 pub(crate) trait NetworkDevice: Send + Sync {
     /// @description 返回设备出厂 MAC 地址。
@@ -34,11 +89,43 @@ pub(crate) trait NetworkDevice: Send + Sync {
     /// @return 帧长度；当前无包返回 `WouldBlock`，损坏或过长返回对应错误。
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError>;
 
-    /// @description 同步提交一个完整 Ethernet frame。
+    /// @description 从固定 TX pool 中预留一个 slot。
     ///
+    /// @return adapter-private slot ID。
+    /// @errors pool 已满返回 `WouldBlock`；owner 状态损坏返回 `Device`。
+    fn reserve_transmit(&self) -> Result<u16, NetworkError>;
+
+    /// @description 把已预留 slot 转换为唯一 in-flight descriptor membership。
+    ///
+    /// @param reservation `reserve_transmit` 返回且尚未消费的 slot ID。
     /// @param frame 不含 VirtIO header 的 Ethernet frame。
-    /// @return DMA 完成返回成功；过长或 transport 失败返回对应错误。
-    fn transmit(&self, frame: &[u8]) -> Result<(), NetworkError>;
+    /// @return descriptor 已发布返回 unit。
+    /// @errors frame 过长或 transport 失败返回对应错误。
+    fn submit_transmit(&self, reservation: u16, frame: &[u8]) -> Result<(), NetworkError>;
+
+    /// @description 取消尚未发布的 TX reservation。
+    ///
+    /// @param reservation 由同一 adapter 发布的 slot ID。
+    /// @return 无返回值；重复取消或取消 in-flight slot 会 fail-stop。
+    fn cancel_transmit(&self, reservation: u16);
+
+    /// @description 读取当前是否可以立即预留 TX slot。
+    ///
+    /// @return 至少一个 free slot 时返回 `true`。
+    fn transmit_available(&self) -> bool;
+
+    /// @description 有界回收 TX used-ring completion。
+    ///
+    /// @param budget 本轮最多回收的 descriptor head 数。
+    /// @return backlog 与 TX capacity transition。
+    /// @errors used ring 或 descriptor owner 损坏返回 `Device`。
+    fn poll_completions(&self, budget: usize) -> Result<NetworkCompletion, NetworkError>;
+
+    /// @description 一轮 RX drain 结束后批量通知设备新的 available buffers。
+    ///
+    /// @return 无 pending repost 时为空操作。
+    /// @errors MMIO transport 失败返回 `Device`。
+    fn finish_receive_batch(&self) -> Result<(), NetworkError>;
 
     /// @description 读取与 queue completion 同一 owner 更新的累计 counters。
     ///

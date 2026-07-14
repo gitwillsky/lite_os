@@ -5,6 +5,7 @@ use crate::{
 
 const FIONBIO: usize = 0x5421;
 
+use super::drm::drm_ioctl;
 use super::{errno, socket::socket_ioctl, tty::tty_ioctl};
 
 /// @description 按 OFD backend 分发 Linux ioctl；TTY 与 socket policy 留在各自 ABI module。
@@ -14,6 +15,10 @@ use super::{errno, socket::socket_ioctl, tty::tty_ioctl};
 /// @param argument request-specific scalar 或 userspace pointer。
 /// @return backend handler 结果；fd、backend 或 request 不支持时返回负 errno。
 pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
+    // Linux syscall entry 把 ioctl cmd 解释为 unsigned int；musl 的 C prototype 使用 int，
+    // RV64 会把 bit31=1 的 _IOWR 常量符号扩展到 XLEN。缺失归一化时所有双向 DRM
+    // request 都会与 32-bit UAPI 常量失配并错误返回 ENOTTY。
+    let request = request as u32 as usize;
     let task = current_task().expect("ioctl requires current task");
     let Some(ofd) = task.fd_get(fd) else {
         return -errno::EBADF;
@@ -37,6 +42,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
             tty_ioctl(&task, terminal, request, argument)
+        }
+        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+            drm_ioctl(&task, file, request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,

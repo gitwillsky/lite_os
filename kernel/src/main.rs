@@ -18,6 +18,7 @@ mod config;
 mod log;
 
 mod drivers;
+mod drm;
 mod fallible_tree;
 mod fs;
 mod lang_item;
@@ -63,6 +64,12 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     timer::init_rtc();
     fs::init_vfs();
     drivers::init();
+    if let Some(display) = drivers::primary_display() {
+        let (completion_read, completion_write) =
+            task::create_pipe_endpoints().expect("DRM completion notification allocation failed");
+        drm::device::init(display, completion_read, completion_write)
+            .expect("primary DRM initialization failed");
+    }
     socket::init();
     mount_root_filesystem();
     task::init(

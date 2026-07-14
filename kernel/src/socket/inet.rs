@@ -22,7 +22,7 @@ use crate::{
 use self::device::EthernetDevice;
 use self::options::InetSocketOptions;
 use self::tcp::TcpEndpointState;
-use super::{InetAddress, SocketError, SocketPollState};
+use super::{InetAddress, SocketError, SocketPollState, packet};
 
 #[path = "device.rs"]
 mod device;
@@ -47,6 +47,9 @@ const EPHEMERAL_END: u16 = 65_535;
 // 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 hart 永久停留在 softirq context；
 // 若没有此上限，user task 和其他 deferred work 在高包速下可能饥饿。
 const NETWORK_RX_BUDGET: usize = 64;
+// TX completion 与 RX 使用同一 softirq fairness 约束；缺失上限时大量完成的
+// sender 可以在一次 user-return 前无界占用 deferred context。
+const NETWORK_TX_COMPLETION_BUDGET: usize = 64;
 // smoltcp `SocketSet::add` 在 owned storage 耗尽时使用不可失败的
 // `Vec::push`。该 owner 以默认 RLIMIT_NOFILE 作为单次启动的预留窗口；
 // 缺失上限检查时 socket 压力会触发 kernel-wide allocation abort，而非 ENOMEM。
@@ -102,6 +105,11 @@ struct NetworkStack {
     next_tcp_id: usize,
 }
 
+struct NetworkPoll {
+    backlog: bool,
+    transmit_became_available: bool,
+}
+
 // OWNER: the IPv4 module uniquely owns interface configuration, routes, ARP cache, UDP socket set,
 // endpoint peer state and ephemeral-port allocation. Duplicating any subset would make ioctl,
 // packet dispatch and getsockname observe conflicting network identities.
@@ -138,7 +146,11 @@ impl NetworkStack {
         Ok(self.sockets.add(socket))
     }
 
-    fn poll(&mut self) -> bool {
+    fn poll(&mut self) -> NetworkPoll {
+        let completion = self
+            .device
+            .poll_completions(NETWORK_TX_COMPLETION_BUDGET)
+            .unwrap_or_else(|error| panic!("Ethernet completion failed: {:?}", error));
         self.snapshot_readiness();
         let timestamp = now();
         // 1. 定时维护只执行一次，确保单轮协议推进的固定成本。
@@ -159,8 +171,14 @@ impl NetworkStack {
         // 3. egress API 自身保证有界；在 ingress 后推进一次即可发送 ARP/UDP 响应。
         self.interface
             .poll_egress(timestamp, &mut self.device, &mut self.sockets);
+        self.device
+            .finish_receive_batch()
+            .unwrap_or_else(|error| panic!("Ethernet RX repost failed: {:?}", error));
         self.capture_readiness_transitions();
-        rx_budget_exhausted
+        NetworkPoll {
+            backlog: rx_budget_exhausted || completion.backlog,
+            transmit_became_available: completion.transmit_became_available,
+        }
     }
 
     fn apply_interface_state(&mut self) {
@@ -233,9 +251,12 @@ pub(crate) fn init() {
 /// @errors stack 尚未初始化时返回 `false`，不产生错误。
 pub(crate) fn dispatch_network_work() -> bool {
     if let Some(stack) = NETWORK_STACK.get() {
-        let backlog = stack.lock().poll();
+        let poll = stack.lock().poll();
+        if poll.transmit_became_available {
+            packet::publish_transmit_ready();
+        }
         readiness::notify_pending(stack);
-        backlog
+        poll.backlog
     } else {
         false
     }

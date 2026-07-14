@@ -22,6 +22,8 @@ pub(crate) const CONSOLE_SOFTIRQ: u32 = 1 << 1;
 pub(crate) const NETWORK_SOFTIRQ: u32 = 1 << 2;
 /// Timer/deadline batch 用尽后发布的有界续批 work bit。
 pub(crate) const TIMER_BACKLOG_SOFTIRQ: u32 = 1 << 3;
+/// VirtIO-GPU controlq hardirq 发布的 deferred completion bit。
+pub(crate) const DISPLAY_SOFTIRQ: u32 = 1 << 4;
 
 // OWNER: hart module owns the immutable DTB-derived topology and per-hart states.
 static HART_TOPOLOGY: Once<HartTopology> = Once::new();
@@ -343,6 +345,12 @@ pub(crate) fn raise_console_softirq() {
 /// @errors 当前 hart 不在 DTB topology 时 fail-stop。
 pub(crate) fn raise_network_softirq() {
     raise_softirq(NETWORK_SOFTIRQ);
+}
+
+/// @description 发布当前 hart 的 deferred display completion work。
+/// @return 无返回值；重复 IRQ 合并为同一个 per-hart bit。
+pub(crate) fn raise_display_softirq() {
+    raise_softirq(DISPLAY_SOFTIRQ);
 }
 
 /// @description 发布当前 hart 的 timer/deadline backlog 续批工作。

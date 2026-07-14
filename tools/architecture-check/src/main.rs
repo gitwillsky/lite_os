@@ -24,6 +24,7 @@ const KERNEL_MODULES: &[&str] = &[
     "arch",
     "config",
     "drivers",
+    "drm",
     "fallible_tree",
     "fs",
     "id",

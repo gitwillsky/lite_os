@@ -4,30 +4,42 @@ const MAGIC: usize = 0x000;
 const VERSION: usize = 0x004;
 const DEVICE_ID: usize = 0x008;
 const DEVICE_FEATURES: usize = 0x010;
+const DEVICE_FEATURES_SEL: usize = 0x014;
 const DRIVER_FEATURES: usize = 0x020;
-const GUEST_PAGE_SIZE: usize = 0x028;
+const DRIVER_FEATURES_SEL: usize = 0x024;
 const QUEUE_SEL: usize = 0x030;
 const QUEUE_NUM_MAX: usize = 0x034;
 const QUEUE_NUM: usize = 0x038;
-const QUEUE_ALIGN: usize = 0x03c;
-const QUEUE_PFN: usize = 0x040;
 const QUEUE_READY: usize = 0x044;
 const QUEUE_NOTIFY: usize = 0x050;
 const INTERRUPT_STATUS: usize = 0x060;
 const INTERRUPT_ACK: usize = 0x064;
 const STATUS: usize = 0x070;
+const QUEUE_DESC_LOW: usize = 0x080;
+const QUEUE_DRIVER_LOW: usize = 0x090;
+const QUEUE_DEVICE_LOW: usize = 0x0a0;
+const CONFIG_GENERATION: usize = 0x0fc;
 const CONFIG: usize = 0x100;
 
 pub(in crate::drivers) const VIRTIO_CONFIG_S_ACKNOWLEDGE: u32 = 1;
 pub(in crate::drivers) const VIRTIO_CONFIG_S_DRIVER: u32 = 2;
 pub(in crate::drivers) const VIRTIO_CONFIG_S_DRIVER_OK: u32 = 4;
 pub(in crate::drivers) const VIRTIO_CONFIG_S_FEATURES_OK: u32 = 8;
+pub(in crate::drivers) const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 pub(in crate::drivers) const VIRTIO_MMIO_INT_VRING: u32 = 1;
 pub(in crate::drivers) const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
 
 const VIRTIO_MMIO_MAGIC: u32 = 0x7472_6976;
 
-/// @description 为 VirtIO MMIO legacy 设备提供启动所需的最小寄存接口。
+/// @description VirtIO MMIO v2 split-queue 的三段物理地址。
+#[derive(Clone, Copy)]
+pub(in crate::drivers) struct VirtQueueAddresses {
+    pub(in crate::drivers) descriptor: u64,
+    pub(in crate::drivers) driver: u64,
+    pub(in crate::drivers) device: u64,
+}
+
+/// @description 为 VirtIO MMIO v2 设备提供 feature、queue 与 config 事务接口。
 pub(in crate::drivers) struct VirtIODevice {
     bus: MmioBus,
     device_id: u32,
@@ -61,19 +73,42 @@ impl VirtIODevice {
     pub(in crate::drivers) fn initialize(&mut self) -> Result<(), BusError> {
         let magic = self.bus.read_u32(MAGIC)?;
         let version = self.bus.read_u32(VERSION)?;
-        if magic != VIRTIO_MMIO_MAGIC || (version != 1 && version != 2) {
+        if magic != VIRTIO_MMIO_MAGIC || version != 2 || self.device_id == 0 {
+            return Err(BusError::InvalidAddress);
+        }
+        self.set_status(0)?;
+        if self.get_status()? != 0 {
             return Err(BusError::InvalidAddress);
         }
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE)?;
         self.set_status(VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER)
     }
 
-    pub(in crate::drivers) fn set_driver_features(&self, features: u32) -> Result<(), BusError> {
-        self.bus.write_u32(DRIVER_FEATURES, features)
+    /// @description 以 low/high selector 发布完整 64-bit driver feature set。
+    ///
+    /// @param features 已与 device feature 相交且必须含 `VIRTIO_F_VERSION_1`。
+    /// @return 两个 feature word 全部写入后返回 unit。
+    /// @errors 缺少 version feature 或 MMIO 访问失败返回 `InvalidAddress`。
+    pub(in crate::drivers) fn set_driver_features(&self, features: u64) -> Result<(), BusError> {
+        if features & VIRTIO_F_VERSION_1 == 0 {
+            return Err(BusError::InvalidAddress);
+        }
+        self.bus.write_u32(DRIVER_FEATURES_SEL, 0)?;
+        self.bus.write_u32(DRIVER_FEATURES, features as u32)?;
+        self.bus.write_u32(DRIVER_FEATURES_SEL, 1)?;
+        self.bus.write_u32(DRIVER_FEATURES, (features >> 32) as u32)
     }
 
-    pub(in crate::drivers) fn device_features(&self) -> Result<u32, BusError> {
-        self.bus.read_u32(DEVICE_FEATURES)
+    /// @description 以 low/high selector 读取完整 64-bit device feature set。
+    ///
+    /// @return device 发布的全部 feature bits。
+    /// @errors MMIO 访问失败返回 `InvalidAddress`。
+    pub(in crate::drivers) fn device_features(&self) -> Result<u64, BusError> {
+        self.bus.write_u32(DEVICE_FEATURES_SEL, 0)?;
+        let low = self.bus.read_u32(DEVICE_FEATURES)?;
+        self.bus.write_u32(DEVICE_FEATURES_SEL, 1)?;
+        let high = self.bus.read_u32(DEVICE_FEATURES)?;
+        Ok(u64::from(low) | u64::from(high) << 32)
     }
 
     pub(in crate::drivers) fn set_status(&self, status: u32) -> Result<(), BusError> {
@@ -84,32 +119,47 @@ impl VirtIODevice {
         self.bus.read_u32(STATUS)
     }
 
-    pub(in crate::drivers) fn set_guest_page_size(&self, size: u32) -> Result<(), BusError> {
-        self.bus.write_u32(GUEST_PAGE_SIZE, size)
+    /// @description 读取一个尚未发布 queue 的最大长度。
+    ///
+    /// @param index device-defined queue index。
+    /// @return 非零且可由 `u16` 表达的最大 descriptor 数。
+    /// @errors queue 不存在、已 ready 或 MMIO 失败返回 `InvalidAddress`。
+    pub(in crate::drivers) fn queue_max_size(&self, index: u32) -> Result<u16, BusError> {
+        self.bus.write_u32(QUEUE_SEL, index)?;
+        let maximum = self.bus.read_u32(QUEUE_NUM_MAX)?;
+        if maximum == 0 || self.bus.read_u32(QUEUE_READY)? != 0 {
+            return Err(BusError::InvalidAddress);
+        }
+        u16::try_from(maximum).map_err(|_| BusError::InvalidAddress)
     }
 
-    pub(in crate::drivers) fn select_queue(&self, queue: u32) -> Result<(), BusError> {
-        self.bus.write_u32(QUEUE_SEL, queue)
-    }
-
-    pub(in crate::drivers) fn queue_max_size(&self) -> Result<u32, BusError> {
-        self.bus.read_u32(QUEUE_NUM_MAX)
-    }
-
-    pub(in crate::drivers) fn set_queue_size(&self, size: u32) -> Result<(), BusError> {
-        self.bus.write_u32(QUEUE_NUM, size)
-    }
-
-    pub(in crate::drivers) fn set_queue_align(&self, align: u32) -> Result<(), BusError> {
-        self.bus.write_u32(QUEUE_ALIGN, align)
-    }
-
-    pub(in crate::drivers) fn set_queue_pfn(&self, pfn: u32) -> Result<(), BusError> {
-        self.bus.write_u32(QUEUE_PFN, pfn)
-    }
-
-    pub(in crate::drivers) fn set_queue_ready(&self, ready: u32) -> Result<(), BusError> {
-        self.bus.write_u32(QUEUE_READY, ready)
+    /// @description 选择并发布一个 MMIO v2 split virtqueue。
+    ///
+    /// @param index device-defined queue index。
+    /// @param requested driver 选择的二次幂 queue size。
+    /// @param addresses descriptor、available 和 used ring 的物理基址。
+    /// @return device 接受 queue size 并完成 ready publication 后返回 unit。
+    /// @errors queue 不存在、已 ready、size 无效或 MMIO 失败返回 `InvalidAddress`。
+    pub(in crate::drivers) fn configure_queue(
+        &self,
+        index: u32,
+        requested: u16,
+        addresses: VirtQueueAddresses,
+    ) -> Result<(), BusError> {
+        self.bus.write_u32(QUEUE_SEL, index)?;
+        let maximum = self.bus.read_u32(QUEUE_NUM_MAX)?;
+        if maximum == 0
+            || u32::from(requested) > maximum
+            || !requested.is_power_of_two()
+            || self.bus.read_u32(QUEUE_READY)? != 0
+        {
+            return Err(BusError::InvalidAddress);
+        }
+        self.bus.write_u32(QUEUE_NUM, u32::from(requested))?;
+        self.write_address(QUEUE_DESC_LOW, addresses.descriptor)?;
+        self.write_address(QUEUE_DRIVER_LOW, addresses.driver)?;
+        self.write_address(QUEUE_DEVICE_LOW, addresses.device)?;
+        self.bus.write_u32(QUEUE_READY, 1)
     }
 
     pub(in crate::drivers) fn notify_queue(&self, queue: u32) -> Result<(), BusError> {
@@ -125,8 +175,23 @@ impl VirtIODevice {
     }
 
     pub(in crate::drivers) fn read_config_u64(&self, offset: usize) -> Result<u64, BusError> {
-        let low = self.bus.read_u32(CONFIG + offset)?;
-        let high = self.bus.read_u32(CONFIG + offset + 4)?;
-        Ok(((high as u64) << 32) | low as u64)
+        for _ in 0..4 {
+            let before = self.bus.read_u32(CONFIG_GENERATION)?;
+            let low = self.bus.read_u32(CONFIG + offset)?;
+            let high = self.bus.read_u32(CONFIG + offset + 4)?;
+            let after = self.bus.read_u32(CONFIG_GENERATION)?;
+            if before == after {
+                return Ok(u64::from(low) | u64::from(high) << 32);
+            }
+        }
+        Err(BusError::InvalidAddress)
+    }
+
+    fn write_address(&self, low_register: usize, address: u64) -> Result<(), BusError> {
+        self.bus.write_u32(low_register, address as u32)?;
+        self.bus.write_u32(
+            low_register + core::mem::size_of::<u32>(),
+            (address >> 32) as u32,
+        )
     }
 }

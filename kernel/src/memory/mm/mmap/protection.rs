@@ -15,7 +15,11 @@ impl MemorySet {
         let mut keys = Vec::new();
         for (key, area) in &self.areas {
             if range.start < area.vpn_range.end && area.vpn_range.start < range.end {
-                if !matches!(area.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File) {
+                if !matches!(
+                    area.kind,
+                    VmaKind::Anonymous | VmaKind::Elf | VmaKind::File | VmaKind::Device
+                ) || area.device.is_some() && permission.contains(MapPermission::X)
+                {
                     return Err(MemoryError::PermissionDenied);
                 }
                 keys.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
@@ -61,7 +65,9 @@ impl MemorySet {
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             let (left, mut middle, right) = area.partition_protectable(start, end);
-            if middle.shared_file.is_some() {
+            if middle.device.is_some() {
+                middle.protect_device_area(&mut self.page_table, start..end, permission)?;
+            } else if middle.shared_file.is_some() {
                 self.protect_shared_file(&mut middle, start, end, permission)?;
             } else {
                 self.protect_private(&mut middle, start, end, permission)?;

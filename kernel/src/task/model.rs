@@ -19,10 +19,10 @@ use spin::Mutex;
 use crate::{
     fs::{Console, FileDescriptorTable, OpenedFile, Terminal, vfs},
     memory::{
-        ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack, MapPermission,
-        MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer, MemorySet,
-        PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping, TRAP_CONTEXT,
-        UserAccessError, UserFaultLimits, VirtualAddress,
+        DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
+        MapPermission, MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer,
+        MemorySet, PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
+        TRAP_CONTEXT, UserAccessError, UserFaultLimits, VirtualAddress,
     },
     sync::IrqMutex,
     task::{TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId},

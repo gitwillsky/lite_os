@@ -94,6 +94,13 @@ impl MemorySet {
         {
             return Ok(PageFaultOutcome::BusError);
         }
+        if area.device.is_some() {
+            return Ok(if self.page_table.translate(vpn).is_some() {
+                PageFaultOutcome::Handled
+            } else {
+                PageFaultOutcome::SegmentationFault
+            });
+        }
         if let Some(shared) = &area.shared_anonymous {
             if !area.data_frames.contains_key(&vpn) {
                 let index = shared.page_offset

@@ -3,8 +3,8 @@ use alloc::boxed::Box;
 use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::register_block_device;
 use crate::drivers::{
-    InterruptController, InterruptHandler, MmioBus, PlicInterruptController, VirtIOBlockDevice,
-    VirtIONetworkDevice, VirtIORngDevice,
+    DisplayDevice, InterruptController, InterruptHandler, MmioBus, PlicInterruptController,
+    VirtIOBlockDevice, VirtIOGpuDevice, VirtIONetworkDevice, VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
 
@@ -92,6 +92,7 @@ fn init_virtio_devices(board_info: &BoardInfo) {
                 1 => init_virtio_net_device(board_info, virtio_dev.irq, base_addr),
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
                 4 => init_virtio_rng_device(base_addr),
+                16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
                 _ => info!(
                     "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
                     device_id, base_addr
@@ -122,6 +123,21 @@ fn init_virtio_rng_device(base_addr: usize) {
     let device = VirtIORngDevice::new(base_addr).expect("DTB virtio-rng must initialize");
     super::virtio_rng::register(device).expect("only one virtio-rng device is supported");
     info!("[Platform] VirtIO RNG registered at {:#x}", base_addr);
+}
+
+fn init_virtio_gpu_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+    let device = VirtIOGpuDevice::new(base_addr).expect("DTB virtio-gpu must initialize");
+    let mode = device.mode();
+    super::display::register(device.clone())
+        .unwrap_or_else(|_| panic!("only one virtio-gpu device is supported"));
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "gpu"),
+        "virtio-gpu requires a registered IRQ"
+    );
+    info!(
+        "[Platform] VirtIO GPU registered at {:#x}, mode={}x{} pitch={}",
+        base_addr, mode.width, mode.height, mode.pitch
+    );
 }
 
 #[inline]

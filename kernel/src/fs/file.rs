@@ -87,6 +87,7 @@ impl OpenFileDescription {
             OpenFileKind::Character(device) => match device {
                 CharacterDevice::Null | CharacterDevice::Zero => result = events & (INPUT | OUTPUT),
                 CharacterDevice::Entropy(_) => result = events & INPUT,
+                CharacterDevice::Drm(_) => result = events & OUTPUT,
                 CharacterDevice::Terminal { terminal, .. } => {
                     result = events & OUTPUT;
                     if events & INPUT != 0 && terminal.wait_ready() {
@@ -160,7 +161,10 @@ impl OpenFileDescription {
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
             OpenFileKind::EventFd(event) => event.readiness_generation(events),
             OpenFileKind::Character(
-                CharacterDevice::Null | CharacterDevice::Zero | CharacterDevice::Entropy(_),
+                CharacterDevice::Null
+                | CharacterDevice::Zero
+                | CharacterDevice::Entropy(_)
+                | CharacterDevice::Drm(_),
             )
             | OpenFileKind::Inode(_) => 0,
         }
@@ -217,12 +221,7 @@ impl OpenFileDescription {
         flags: u32,
         backing_opened: Arc<OpenedFile>,
     ) -> Result<Arc<Self>, ()> {
-        let device = match kind {
-            DeviceKind::Null => CharacterDevice::Null,
-            DeviceKind::Zero => CharacterDevice::Zero,
-            DeviceKind::Random | DeviceKind::Urandom => CharacterDevice::Entropy(kind),
-            DeviceKind::Tty | DeviceKind::Console => CharacterDevice::Terminal { terminal, kind },
-        };
+        let device = CharacterDevice::open(kind, terminal)?;
         Arc::try_new(Self {
             kind: OpenFileKind::Character(device),
             offset: Mutex::new(0),

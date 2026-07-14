@@ -5,7 +5,9 @@ use smoltcp::{
     time::Instant,
 };
 
-use crate::drivers::network::{NetworkDevice, NetworkError, NetworkStatistics};
+use crate::drivers::network::{
+    NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
+};
 
 use super::super::packet;
 
@@ -33,6 +35,25 @@ impl EthernetDevice {
     pub(super) fn statistics(&self) -> NetworkStatistics {
         self.device.statistics()
     }
+
+    /// @description 有界回收设备 TX completion。
+    ///
+    /// @param budget 本轮最多回收的 descriptor head 数。
+    /// @return backlog 与 capacity transition。
+    /// @errors 设备或 used ring 损坏时返回错误。
+    pub(super) fn poll_completions(
+        &self,
+        budget: usize,
+    ) -> Result<NetworkCompletion, NetworkError> {
+        self.device.poll_completions(budget)
+    }
+
+    /// @description 把本轮重新发布的 RX buffers 一次通知给设备。
+    ///
+    /// @return 成功或 transport 错误。
+    pub(super) fn finish_receive_batch(&self) -> Result<(), NetworkError> {
+        self.device.finish_receive_batch()
+    }
 }
 
 pub(super) struct EthernetRxToken<'a> {
@@ -53,7 +74,7 @@ impl RxToken for EthernetRxToken<'_> {
 }
 
 pub(super) struct EthernetTxToken {
-    device: Arc<dyn NetworkDevice>,
+    reservation: NetworkTransmit,
 }
 
 impl TxToken for EthernetTxToken {
@@ -64,8 +85,8 @@ impl TxToken for EthernetTxToken {
         assert!(length <= ETHERNET_MTU, "smoltcp TX exceeds Ethernet MTU");
         let mut frame = [0u8; ETHERNET_MTU];
         let result = operation(&mut frame[..length]);
-        self.device
-            .transmit(&frame[..length])
+        self.reservation
+            .submit(&frame[..length])
             .unwrap_or_else(|error| panic!("Ethernet transmit failed: {:?}", error));
         result
     }
@@ -76,6 +97,11 @@ impl Device for EthernetDevice {
     type TxToken<'a> = EthernetTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let reservation = match NetworkTransmit::reserve(self.device.clone()) {
+            Ok(reservation) => reservation,
+            Err(NetworkError::WouldBlock) => return None,
+            Err(error) => panic!("Ethernet TX reservation failed: {:?}", error),
+        };
         let mut frame = [0u8; RECEIVE_CAPACITY];
         match self.device.receive(&mut frame) {
             Ok(length) => Some((
@@ -84,9 +110,7 @@ impl Device for EthernetDevice {
                     length,
                     _device_lifetime: core::marker::PhantomData,
                 },
-                EthernetTxToken {
-                    device: self.device.clone(),
-                },
+                EthernetTxToken { reservation },
             )),
             Err(NetworkError::WouldBlock) => None,
             Err(error) => panic!("Ethernet receive failed: {:?}", error),
@@ -94,9 +118,11 @@ impl Device for EthernetDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(EthernetTxToken {
-            device: self.device.clone(),
-        })
+        match NetworkTransmit::reserve(self.device.clone()) {
+            Ok(reservation) => Some(EthernetTxToken { reservation }),
+            Err(NetworkError::WouldBlock) => None,
+            Err(error) => panic!("Ethernet TX reservation failed: {:?}", error),
+        }
     }
 
     fn capabilities(&self) -> DeviceCapabilities {

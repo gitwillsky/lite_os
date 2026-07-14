@@ -13,6 +13,8 @@ pub(crate) enum FutexKey {
     SharedAnonymous { backing: u64, offset: usize },
     /// 文件共享映射以 inode identity 和文件字节偏移跨地址空间匹配。
     SharedFile { file: SharedFileId, offset: u64 },
+    /// Device VMA 以不复用 backing identity 与 byte offset 跨 fork 匹配。
+    SharedDevice { backing: u64, offset: usize },
 }
 
 impl MemorySet {
@@ -67,6 +69,18 @@ impl MemorySet {
                 .ok_or(UserAccessError::Overflow)?;
             return Ok(FutexKey::SharedFile {
                 file: shared.mapping.id(),
+                offset,
+            });
+        }
+        if let Some(device) = &area.device {
+            let offset = device
+                .page_offset
+                .checked_add(page_delta)
+                .and_then(|page| page.checked_mul(config::PAGE_SIZE))
+                .and_then(|base| base.checked_add(page_offset))
+                .ok_or(UserAccessError::Overflow)?;
+            return Ok(FutexKey::SharedDevice {
+                backing: device.identity,
                 offset,
             });
         }

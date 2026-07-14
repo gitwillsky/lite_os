@@ -337,6 +337,9 @@ pub(crate) fn dispatch_pending_deferred_work() {
         process_terminal_input();
         wake_console_waiters();
     }
+    if work & hart::DISPLAY_SOFTIRQ != 0 {
+        crate::drm::device::dispatch_display_work();
+    }
     let network_due = work & hart::NETWORK_SOFTIRQ != 0
         || work & hart::TIMER_SOFTIRQ != 0 && crate::socket::network_work_due();
     if network_due {
