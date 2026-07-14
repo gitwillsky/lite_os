@@ -310,6 +310,18 @@ impl RegularFile {
         cached_file(inode).map(Self)
     }
 
+    /// @description 返回该 facade 唯一 page-cache backing identity。
+    /// @return mounted filesystem 与 inode number 组成的稳定 identity。
+    pub(crate) fn id(&self) -> SharedFileId {
+        self.0.id
+    }
+
+    /// @description 返回当前 regular-file byte size。
+    /// @return filesystem metadata owner 的当前 i_size 投影。
+    pub(crate) fn size(&self) -> u64 {
+        self.0.inode.size()
+    }
+
     /// @description 从 page cache 读取 regular-file bytes。
     /// @param offset 文件 byte offset。
     /// @param output kernel-owned 输出缓冲区。

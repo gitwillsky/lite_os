@@ -12,8 +12,8 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 137 个 Linux/riscv64 number。
-- dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
+- `syscall-abi` 只定义下表 138 个 Linux/riscv64 number。
+- dispatcher 对所有其他 number 安静地返回 `-ENOSYS`；正常 capability/io_uring 等 userspace probe 不得放大为逐调用 kernel log。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
 状态含义：
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 137 个入口
+## 2. 当前暴露的 138 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -53,6 +53,7 @@
 | 62 | `lseek` | fd、signed offset、whence | new offset；`EBADF/EINVAL/ESPIPE` | POSIX lseek | **Complete**。实现 `SEEK_SET/CUR/END`，offset 位于共享 OFD。 | `kernel/src/syscall/fs.rs` |
 | 63-66 | `read/write/readv/writev` | fd、buffer 或 RV64 iovec | byte count；partial/EOF；标准 fd/stream errno | POSIX I/O；musl/BusyBox | **Partial**。scalar/vector 共用唯一 sequential descriptor dispatch，scalar 以单元素 vector 进入；regular 路径每次 syscall 只解析一次 cache facade并整次唯一持有 OFD offset，write/append 另以 per-inode write-sequence gate 防止跨 OFD chunk 穿插。所有 vector 路径一次导入 iovec，non-regular sequential 路径由唯一 cursor 维护 scatter/gather progress。socket datagram scalar/vector write 均提交一个完整消息，不按 staging 大小截断；stream 返回真实 short/partial count。`RLIMIT_FSIZE` 越界首写返回 `EFBIG`+SIGXFSZ，跨界返回 partial；iovec 最大 1024、总长不超过 SSIZE_MAX。缺完整 VMIN/VTIME。 | `kernel/src/syscall/fs/io/sequential.rs`, `kernel/src/syscall/fs/io/sequential/read.rs`, `kernel/src/syscall/fs/io/sequential/write.rs`, `kernel/src/syscall/fs/io/regular.rs`, `kernel/src/syscall/fs/io/user_vector.rs`, `kernel/src/fs/page_cache.rs` |
 | 67-70 | `pread64/pwrite64/preadv/pwritev` | fd、buffer/iovec、signed 64-bit offset | byte count；partial/EOF；`EBADF/EFAULT/EFBIG/EINVAL/EIO/EISDIR/ESPIPE` | POSIX positioned I/O；SQLite/Git | **Complete**（当前 regular-file scope）。显式 offset 不改变共享 OFD offset；legacy pwrite 继承 Linux `O_APPEND` 行为。scalar/vector 共用一次 fd/cache 解析和同一 chunk/partial-I/O engine，write sequence 覆盖完整 iovec；stream、directory 与 anonymous fd 不伪造 positioned I/O。 | `kernel/src/syscall/fs/io/positioned.rs`, `kernel/src/syscall/fs/io/regular.rs` |
+| 71 | `sendfile` | output fd、input fd、可空 signed 64-bit offset pointer、count | byte count/partial/EOF；`EBADF/EFAULT/EFBIG/EINVAL/ESPIPE` 与 storage errno | Linux in-kernel copy；Alpine CA bundle trigger | **Partial（regular→regular complete）**。输入/输出各解析一次 page-cache facade，以唯一 PAGE_SIZE kernel staging 避免 userspace round-trip；显式 offset 只在成功传输后推进用户值，空 offset 更新输入 OFD，输出 OFD 始终推进。两个 OFD offset 按 identity 排序后整次持有，输出 write-sequence 覆盖完整 operation；支持 MAX_RW_COUNT、RLIMIT_FSIZE/SIGXFSZ、partial result、同文件非重叠 copy，并拒绝 O_APPEND/重叠区间。socket/pipe 输出仍返回 `EINVAL`，不伪造 zero-copy。 | `kernel/src/syscall/fs/io/sendfile.rs`, `kernel/src/fs/page_cache.rs` |
 | 72-73 | `pselect6` / `ppoll` | fd_set/pollfd array、relative timespec、可选临时 sigmask | ready count/0；`EINTR/EBADF/EFAULT/EINVAL/ENOMEM` | POSIX select/poll；musl；OpenSSL；BusyBox line editing | **Complete**（当前 OFD kinds）。两种 ABI 共用一次 registration 可索引多个 Pipe/Console source；pselect 按 read/write/except 输出 bitmap 并拒绝 invalid fd，ppoll 对 invalid fd 返回 POLLNVAL；timeout 使用 monotonic deadline，临时 mask 在 ready/timeout 或 signal frame 正确恢复。 | `kernel/src/syscall/poll.rs`, `kernel/src/task/task_manager.rs` |
 | 78 | `readlinkat` | dirfd、raw path、buffer、size | target byte count；不追加 NUL；标准 pathname errno | Linux readlinkat；BusyBox ls/readlink/tty | **Complete**（当前 VFS symlink 语义）。支持绝对路径、`AT_FDCWD`、目录 fd、截断复制、persistent raw target 与 `/proc/<pid>/fd` dynamic target；opened entry 被删除时返回 ` (deleted)`，magic-link follow 仍引用 live file。 | `kernel/src/syscall/fs/readlink.rs`, `kernel/src/fs/vfs.rs`, `kernel/src/fs/procfs.rs` |
 | 79/80 | `newfstatat` / `fstat` | dirfd/fd、path、RV64 `struct stat` | 0；fd/path/copyout errno | POSIX stat/fstatat；BusyBox ls/lstat | **Partial**。128-byte asm-generic 布局与 512-byte `st_blocks` 正确；`newfstatat` 默认跟随 symlink，`AT_SYMLINK_NOFOLLOW` 保留末项 link inode。尚无 `AT_EMPTY_PATH`、credentials 与完整 mount semantics。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/vfs.rs` |
@@ -118,7 +119,7 @@
 
 ## 4. musl 结论
 
-当前 137 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 138 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex PI/PI-requeue/WAKE_OP 与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间与 queued realtime signal；

@@ -119,6 +119,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_PWRITE64 => sys_pwrite64(args[0], args[1], args[2], args[3] as i64),
         SYSCALL_PREADV => sys_preadv(args[0], args[1], args[2], args[3] as i64),
         SYSCALL_PWRITEV => sys_pwritev(args[0], args[1], args[2], args[3] as i64),
+        SYSCALL_SENDFILE => sys_sendfile(args[0], args[1], args[2], args[3]),
         SYSCALL_PPOLL => sys_ppoll(args[0], args[1], args[2], args[3], args[4]),
         SYSCALL_PSELECT6 => sys_pselect6(args[0], args[1], args[2], args[3], args[4], args[5]),
         SYSCALL_READLINKAT => sys_readlinkat(
@@ -275,10 +276,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_PRLIMIT64 => sys_prlimit64(args[0], args[1], args[2], args[3]),
         SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
         SYSCALL_RISCV_HWPROBE => sys_riscv_hwprobe(args[0], args[1], args[2], args[3], args[4]),
-        _ => {
-            debug!("syscall: unsupported syscall_id: {}", syscall_id);
-            -errno::ENOSYS
-        }
+        _ => -errno::ENOSYS,
     };
     if result == INTERNAL_RESTART_SYS {
         SyscallOutcome::Restart

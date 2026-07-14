@@ -8,6 +8,9 @@ pub(crate) use positioned::{
     sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2,
 };
 
+mod sendfile;
+pub(crate) use sendfile::sys_sendfile;
+
 mod regular;
 use regular::{read_vectors as read_regular_vectors, write_vectors as write_regular_vectors};
 

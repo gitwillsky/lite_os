@@ -41,6 +41,7 @@ pub const SYSCALL_PREAD64: usize = 67;
 pub const SYSCALL_PWRITE64: usize = 68;
 pub const SYSCALL_PREADV: usize = 69;
 pub const SYSCALL_PWRITEV: usize = 70;
+pub const SYSCALL_SENDFILE: usize = 71;
 pub const SYSCALL_PPOLL: usize = 73;
 pub const SYSCALL_PSELECT6: usize = 72;
 pub const SYSCALL_READLINKAT: usize = 78;

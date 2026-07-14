@@ -638,7 +638,9 @@ kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inod
 kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn begin_write (& self) -> RegularFileWrite < '_ >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn id (& self) -> SharedFileId
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn append (& self , input : & [u8] , size_limit : u64 ,) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFile
@@ -1477,7 +1479,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use access :: sys_faccessat
 kernel/src/syscall/fs.rs :: pub (crate) use attributes :: { sys_fchmod , sys_fchmodat , sys_fchown , sys_fchownat }
 kernel/src/syscall/fs.rs :: pub (crate) use fcntl :: sys_fcntl
 kernel/src/syscall/fs.rs :: pub (crate) use flock :: sys_flock
-kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_write , sys_writev , }
+kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_sendfile , sys_write , sys_writev , }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mknodat , sys_renameat2 , sys_unlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_fchdir , sys_openat }
@@ -1491,6 +1493,7 @@ kernel/src/syscall/fs/attributes.rs :: pub (crate) fn sys_fchownat (dirfd : isiz
 kernel/src/syscall/fs/fcntl.rs :: pub (crate) fn sys_fcntl (fd : usize , command : u32 , argument : usize) -> isize
 kernel/src/syscall/fs/flock.rs :: pub (crate) fn sys_flock (fd : usize , operation : usize) -> isize
 kernel/src/syscall/fs/io.rs :: pub (crate) use positioned :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , }
+kernel/src/syscall/fs/io.rs :: pub (crate) use sendfile :: sys_sendfile
 kernel/src/syscall/fs/io.rs :: pub (crate) use sequential :: { sys_read , sys_readv , sys_write , sys_writev }
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pread64 (fd : usize , pointer : usize , length : usize , offset : i64) -> isize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_preadv (fd : usize , iovector : usize , count : usize , offset : i64) -> isize
@@ -1500,6 +1503,7 @@ kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev (fd : usize
 kernel/src/syscall/fs/io/positioned.rs :: pub (crate) fn sys_pwritev2 (fd : usize , iovector : usize , count : usize , offset : i64 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn read_vectors (task : & TaskControlBlock , file : & RegularFile , position : & mut u64 , vectors : & [UserIoVec] ,) -> isize
 kernel/src/syscall/fs/io/regular.rs :: pub (super) fn write_vectors (task : & TaskControlBlock , file : & RegularFileWrite < '_ > , position : & mut u64 , vectors : & [UserIoVec] , append : bool ,) -> isize
+kernel/src/syscall/fs/io/sendfile.rs :: pub (crate) fn sys_sendfile (output_fd : usize , input_fd : usize , offset : usize , count : usize ,) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_read (fd : usize , pointer : * mut u8 , length : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_readv (fd : usize , iovector : usize , count : usize) -> isize
 kernel/src/syscall/fs/io/sequential.rs :: pub (crate) fn sys_write (fd : usize , pointer : * const u8 , length : usize) -> isize

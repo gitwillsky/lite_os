@@ -18,7 +18,7 @@ pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
 pub(crate) use io::{
     sys_pread64, sys_preadv, sys_preadv2, sys_pwrite64, sys_pwritev, sys_pwritev2, sys_read,
-    sys_readv, sys_write, sys_writev,
+    sys_readv, sys_sendfile, sys_write, sys_writev,
 };
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
