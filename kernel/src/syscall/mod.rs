@@ -5,6 +5,7 @@ mod errno;
 mod eventfd;
 mod fs;
 mod futex;
+mod input;
 mod ioctl;
 mod membarrier;
 mod memory;

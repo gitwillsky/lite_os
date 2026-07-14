@@ -490,22 +490,19 @@ pub(crate) fn run_tasks() -> ! {
         let task = with_current_processor(Processor::select_task);
         if let Some(task) = task {
             switch_to_task(task);
-            // guard 留在 idle stack 跨越切换，确保 kernel continuation 恢复时 SIE=0。
+            // guard 留在 idle stack 跨越切换，确保 kernel continuation 恢复后先在 SIE=0
+            // 完成 switch bookkeeping；释放时才恢复下一轮 idle 所需的 SIE=1 不变量。
             drop(idle_irq);
             continue;
         }
 
-        // 2. SIE=0 时执行 WFI，已在 sie 中单独使能的 timer/IPI 仍会让 hart 退出等待。
-        // 3. 醒来后才短暂打开 SIE 投递 pending trap；若在 WFI 前开中断，trap 可能先于
-        //    WFI 返回并造成 lost wakeup。
-        // idle context 不继承 user trap 的 SIE=0：醒来后显式投递一次 pending interrupt。
+        // 2. 所有 scheduler guard 释放后恢复 SIE，再执行 WFI；QEMU 只在全局中断开启时
+        // 才会用 PLIC source 唤醒 idle vCPU，反序会让 device IRQ 滞留到其他 task 活动。
+        // 3. enable 与 WFI 之间命中 IRQ 时，周期 scheduler timer 最迟在下一 tick 结束 WFI；
+        // 下一轮仍在 SIE=0 下重查 softirq/mailbox/run queue，不会丢失 runnable state。
+        drop(idle_irq);
         use riscv::asm::wfi;
         wfi();
-        drop(idle_irq);
-        // SAFETY: 当前 hart 没有 running task，所有 scheduler guard 已释放；只为投递本地 pending trap 修改 SIE。
-        unsafe { riscv::register::sstatus::set_sie() }
-        // SAFETY: 与上面的 idle-only enable 配对，恢复 kernel continuation 的 non-nested 契约。
-        unsafe { riscv::register::sstatus::clear_sie() }
     }
 }
 

@@ -250,7 +250,9 @@ pub(super) fn write_descriptor(
             }
             if matches!(
                 device,
-                CharacterDevice::Entropy(_) | CharacterDevice::Drm(_)
+                CharacterDevice::Entropy(_)
+                    | CharacterDevice::Drm(_)
+                    | CharacterDevice::Input { .. }
             ) {
                 return -errno::EOPNOTSUPP;
             }
@@ -286,6 +288,7 @@ pub(super) fn write_descriptor(
                     }
                     CharacterDevice::Entropy(_) => unreachable!("entropy write rejected above"),
                     CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
+                    CharacterDevice::Input { .. } => unreachable!("input write rejected above"),
                 };
                 written += count;
                 if count < requested {

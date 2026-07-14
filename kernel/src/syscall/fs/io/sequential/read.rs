@@ -172,6 +172,70 @@ pub(super) fn read_descriptor(
                 total_length as isize
             }
             CharacterDevice::Drm(_) => -errno::EOPNOTSUPP,
+            CharacterDevice::Input { file, .. } => {
+                const EVENT_SIZE: usize = 24;
+                if total_length < EVENT_SIZE {
+                    return -errno::EINVAL;
+                }
+                let maximum = total_length / EVENT_SIZE;
+                let nonblocking = *ofd.flags.lock() & O_NONBLOCK != 0;
+                let mut cursor = UserIoCursor::new(vectors);
+                let mut events = [crate::input::InputEvent::default(); 16];
+                let mut consumed = 0usize;
+                loop {
+                    let available = file.readable_count().min(maximum - consumed);
+                    if available == 0 {
+                        if consumed != 0 || consumed == maximum {
+                            break;
+                        }
+                        if nonblocking {
+                            return -errno::EAGAIN;
+                        }
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                            WaitResult::Woken => continue,
+                            WaitResult::Interrupted => return -errno::EINTR,
+                            WaitResult::TimedOut => unreachable!(),
+                            WaitResult::OutOfMemory => return -errno::ENOMEM,
+                        }
+                    }
+                    let requested = available.min(events.len());
+                    // 1. destructive queue progress 前先 fault-in 整数个 event 的输出范围；
+                    // 缺失该证明会在 EFAULT 时静默丢失已从 evdev ring 弹出的输入事件。
+                    if cursor
+                        .validate_write_prefix(task, requested * EVENT_SIZE)
+                        .is_err()
+                    {
+                        return if cursor.completed() == 0 {
+                            -errno::EFAULT
+                        } else {
+                            cursor.completed() as isize
+                        };
+                    }
+                    // 2. 并发 reader 可能先消费同一 OFD queue，因此只提交实际取得的 events。
+                    let read = file.read(&mut events[..requested]);
+                    if read == 0 {
+                        if consumed != 0 {
+                            break;
+                        }
+                        continue;
+                    }
+                    // 3. ABI 只发布完整的 24-byte RV64 input_event，不暴露内部 raw event shape。
+                    for event in events.iter().take(read) {
+                        if cursor.copy_to_user(task, &event.encode()).is_err() {
+                            return if cursor.completed() == 0 {
+                                -errno::EFAULT
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                    }
+                    consumed += read;
+                    if consumed == maximum || read < requested {
+                        break;
+                    }
+                }
+                cursor.completed() as isize
+            }
             CharacterDevice::Terminal {
                 terminal: console,
                 kind,

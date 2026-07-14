@@ -24,6 +24,7 @@ mod fs;
 mod lang_item;
 
 mod id;
+mod input;
 mod ipc;
 mod memory;
 mod random;
@@ -70,6 +71,7 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
         drm::device::init(display, completion_read, completion_write)
             .expect("primary DRM initialization failed");
     }
+    input::init(task::create_pipe_endpoints).expect("evdev input initialization failed");
     socket::init();
     mount_root_filesystem();
     task::init(

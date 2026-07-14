@@ -15,6 +15,7 @@ static DEVICE_FILESYSTEM: Once<Arc<DevFileSystem>> = Once::new();
 enum DevNode {
     Root,
     Dri,
+    Input,
     Device(DeviceKind),
     Link(DevLink),
 }
@@ -43,6 +44,7 @@ impl DevNode {
         match self {
             Self::Root => 1,
             Self::Dri => 12,
+            Self::Input => 14,
             Self::Device(device) => device.inode(),
             Self::Link(DevLink::Fd) => 6,
             Self::Link(DevLink::Stdin) => 7,
@@ -53,7 +55,7 @@ impl DevNode {
 
     fn mode(self) -> u32 {
         match self {
-            Self::Root | Self::Dri => 0o040755,
+            Self::Root | Self::Dri | Self::Input => 0o040755,
             Self::Device(device) => device.mode(),
             Self::Link(_) => 0o120777,
         }
@@ -78,6 +80,7 @@ impl DevInode {
         let node = match (self.node, name) {
             (DevNode::Root, b"." | b"..") => DevNode::Root,
             (DevNode::Root, b"dri") => DevNode::Dri,
+            (DevNode::Root, b"input") => DevNode::Input,
             (DevNode::Root, b"null") => DevNode::Device(DeviceKind::Null),
             (DevNode::Root, b"zero") => DevNode::Device(DeviceKind::Zero),
             (DevNode::Root, b"random") => DevNode::Device(DeviceKind::Random),
@@ -91,6 +94,15 @@ impl DevInode {
             (DevNode::Dri, b".") => DevNode::Dri,
             (DevNode::Dri, b"..") => DevNode::Root,
             (DevNode::Dri, b"card0") => DevNode::Device(DeviceKind::DriCard0),
+            (DevNode::Input, b".") => DevNode::Input,
+            (DevNode::Input, b"..") => DevNode::Root,
+            (DevNode::Input, name) => {
+                let index = parse_event_index(name).ok_or(FileSystemError::NotFound)?;
+                if usize::from(index) >= crate::input::device_count() {
+                    return Err(FileSystemError::NotFound);
+                }
+                DevNode::Device(DeviceKind::InputEvent(index))
+            }
             (DevNode::Device(_) | DevNode::Link(_), _) | (DevNode::Dri, _) => {
                 return Err(FileSystemError::NotFound);
             }
@@ -100,6 +112,38 @@ impl DevInode {
     }
 }
 
+fn parse_event_index(name: &[u8]) -> Option<u16> {
+    let digits = name.strip_prefix(b"event")?;
+    if digits.is_empty() || digits.len() > 5 {
+        return None;
+    }
+    digits.iter().try_fold(0u16, |value, byte| {
+        let digit = byte.checked_sub(b'0')?;
+        (digit <= 9)
+            .then(|| value.checked_mul(10)?.checked_add(u16::from(digit)))
+            .flatten()
+    })
+}
+
+fn event_name(index: u16, output: &mut [u8; 10]) -> usize {
+    output[..5].copy_from_slice(b"event");
+    let mut digits = [0u8; 5];
+    let mut value = index;
+    let mut count = 0;
+    loop {
+        digits[count] = b'0' + (value % 10) as u8;
+        count += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for offset in 0..count {
+        output[5 + offset] = digits[count - 1 - offset];
+    }
+    5 + count
+}
+
 impl Inode for DevInode {
     fn filesystem_id(&self) -> usize {
         self.filesystem_id
@@ -107,7 +151,7 @@ impl Inode for DevInode {
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let device = match self.node {
-            DevNode::Root | DevNode::Dri => None,
+            DevNode::Root | DevNode::Dri | DevNode::Input => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         };
@@ -125,7 +169,7 @@ impl Inode for DevInode {
             gid: 0,
             size: match self.node {
                 DevNode::Link(link) => link.target().len() as u64,
-                DevNode::Root | DevNode::Dri | DevNode::Device(_) => 0,
+                DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Device(_) => 0,
             },
             blocks: 0,
             block_size: 4096,
@@ -138,7 +182,7 @@ impl Inode for DevInode {
 
     fn inode_type(&self) -> InodeType {
         match self.node {
-            DevNode::Root | DevNode::Dri => InodeType::Directory,
+            DevNode::Root | DevNode::Dri | DevNode::Input => InodeType::Directory,
             DevNode::Device(_) => InodeType::CharacterDevice,
             DevNode::Link(_) => InodeType::SymLink,
         }
@@ -147,7 +191,7 @@ impl Inode for DevInode {
     fn size(&self) -> u64 {
         match self.node {
             DevNode::Link(link) => link.target().len() as u64,
-            DevNode::Root | DevNode::Dri | DevNode::Device(_) => 0,
+            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Device(_) => 0,
         }
     }
 
@@ -161,7 +205,7 @@ impl Inode for DevInode {
 
     fn device_kind(&self) -> Option<DeviceKind> {
         match self.node {
-            DevNode::Root | DevNode::Dri => None,
+            DevNode::Root | DevNode::Dri | DevNode::Input => None,
             DevNode::Device(device) => Some(device),
             DevNode::Link(_) => None,
         }
@@ -177,7 +221,7 @@ impl Inode for DevInode {
                 target.extend_from_slice(link.target());
                 Ok(target)
             }
-            DevNode::Root | DevNode::Dri | DevNode::Device(_) => {
+            DevNode::Root | DevNode::Dri | DevNode::Input | DevNode::Device(_) => {
                 Err(FileSystemError::InvalidOperation)
             }
         }
@@ -218,6 +262,7 @@ impl Inode for DevInode {
             (8, InodeType::SymLink, &b"stdout"[..]),
             (9, InodeType::SymLink, &b"stderr"[..]),
             (12, InodeType::Directory, &b"dri"[..]),
+            (14, InodeType::Directory, &b"input"[..]),
         ];
         let dri = [
             (12, InodeType::Directory, &b"."[..]),
@@ -227,6 +272,27 @@ impl Inode for DevInode {
         let specifications: &[_] = match self.node {
             DevNode::Root => &root,
             DevNode::Dri => &dri,
+            DevNode::Input => {
+                let count = crate::input::device_count();
+                let mut entries = Vec::new();
+                entries
+                    .try_reserve_exact(count.saturating_add(2))
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                entries.push(DirectoryEntry::try_new(14, InodeType::Directory, b".")?);
+                entries.push(DirectoryEntry::try_new(1, InodeType::Directory, b"..")?);
+                for index in 0..count {
+                    let index =
+                        u16::try_from(index).map_err(|_| FileSystemError::InvalidOperation)?;
+                    let mut name = [0u8; 10];
+                    let length = event_name(index, &mut name);
+                    entries.push(DirectoryEntry::try_new(
+                        DeviceKind::InputEvent(index).inode(),
+                        InodeType::CharacterDevice,
+                        &name[..length],
+                    )?);
+                }
+                return Ok(entries);
+            }
             DevNode::Device(_) | DevNode::Link(_) => {
                 return Err(FileSystemError::NotDirectory);
             }

@@ -192,6 +192,7 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) const DISPLAY_SOFTIRQ : u32 = 1 <
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_ID_OFFSET : usize = offset_of ! (HartState , hart_id)
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_SIZE : usize = size_of :: < HartState > ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_STACK_TOP_OFFSET : usize = offset_of ! (HartState , startup_stack_top)
+kernel/src/arch/riscv64/hart.rs :: pub (crate) const INPUT_SOFTIRQ : u32 = 1 << 5
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const NETWORK_SOFTIRQ : u32 = 1 << 2
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const TIMER_BACKLOG_SOFTIRQ : u32 = 1 << 3
 kernel/src/arch/riscv64/hart.rs :: pub (crate) const TIMER_SOFTIRQ : u32 = 1
@@ -209,6 +210,7 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) fn online_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn possible_hart_mask () -> usize
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_console_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_display_softirq ()
+kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_input_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_network_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_backlog_softirq ()
 kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_softirq ()
@@ -279,7 +281,9 @@ kernel/src/drivers/hal/bus.rs :: enum BusError :: InvalidAddress
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) enum BusError
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) struct MmioBus
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: DeviceFailure
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: HandlerNotSet
@@ -311,6 +315,7 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_CONFI
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_F_VERSION_1 : u64 = 1 << 32
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_MMIO_INT_CONFIG : u32 = 2
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) const VIRTIO_MMIO_INT_VRING : u32 = 1
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn config_generation (& self) -> Result < u32 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn configure_queue (& self , index : u32 , requested : u16 , addresses : VirtQueueAddresses ,) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn device_features (& self) -> Result < u64 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn device_id (& self) -> u32
@@ -322,10 +327,44 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice 
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn notify_queue (& self , queue : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u64 (& self , offset : usize) -> Result < u64 , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u8 (& self , offset : usize) -> Result < u8 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_driver_features (& self , features : u64) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_status (& self , status : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn write_config_u8 (& self , offset : usize , value : u8 ,) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtIODevice
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtQueueAddresses
+kernel/src/drivers/input.rs :: enum InputDeviceError :: Device
+kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: flat : i32
+kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: fuzz : i32
+kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: maximum : i32
+kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: minimum : i32
+kernel/src/drivers/input.rs :: pub (crate) InputAbsInfo :: resolution : i32
+kernel/src/drivers/input.rs :: pub (crate) InputId :: bustype : u16
+kernel/src/drivers/input.rs :: pub (crate) InputId :: product : u16
+kernel/src/drivers/input.rs :: pub (crate) InputId :: vendor : u16
+kernel/src/drivers/input.rs :: pub (crate) InputId :: version : u16
+kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: code : u16
+kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: event_type : u16
+kernel/src/drivers/input.rs :: pub (crate) RawInputEvent :: value : i32
+kernel/src/drivers/input.rs :: pub (crate) enum InputDeviceError
+kernel/src/drivers/input.rs :: pub (crate) fn device (index : usize) -> Option < Arc < dyn InputDevice > >
+kernel/src/drivers/input.rs :: pub (crate) fn device_count () -> usize
+kernel/src/drivers/input.rs :: pub (crate) struct InputAbsInfo
+kernel/src/drivers/input.rs :: pub (crate) struct InputId
+kernel/src/drivers/input.rs :: pub (crate) struct RawInputEvent
+kernel/src/drivers/input.rs :: pub (crate) trait InputDevice
+kernel/src/drivers/input.rs :: pub (super) fn register (device : Arc < dyn InputDevice >) -> Result < usize , Arc < dyn InputDevice > >
+kernel/src/drivers/input.rs :: trait InputDevice :: fn abs_info (& self , code : u16) -> Option < InputAbsInfo >
+kernel/src/drivers/input.rs :: trait InputDevice :: fn event_codes (& self , event_type : u16) -> & [u8]
+kernel/src/drivers/input.rs :: trait InputDevice :: fn event_types (& self) -> & [u8]
+kernel/src/drivers/input.rs :: trait InputDevice :: fn finish_receive_batch (& self) -> Result < () , InputDeviceError >
+kernel/src/drivers/input.rs :: trait InputDevice :: fn has_pending_event (& self) -> bool
+kernel/src/drivers/input.rs :: trait InputDevice :: fn id (& self) -> InputId
+kernel/src/drivers/input.rs :: trait InputDevice :: fn name (& self) -> & [u8]
+kernel/src/drivers/input.rs :: trait InputDevice :: fn physical_path (& self) -> & [u8]
+kernel/src/drivers/input.rs :: trait InputDevice :: fn properties (& self) -> & [u8]
+kernel/src/drivers/input.rs :: trait InputDevice :: fn receive_event (& self) -> Result < Option < RawInputEvent > , InputDeviceError >
+kernel/src/drivers/input.rs :: trait InputDevice :: fn serial (& self) -> & [u8]
 kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
 kernel/src/drivers/mod.rs :: pub (crate) fn handle_external_interrupt ()
 kernel/src/drivers/mod.rs :: pub (crate) fn init ()
@@ -334,6 +373,8 @@ kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , primary_display }
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
+kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
+kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
@@ -397,6 +438,9 @@ kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn read_u64 (bytes : & [u8]
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_rect (bytes : & mut [u8] , offset : usize , mode : DisplayMode) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
+kernel/src/drivers/virtio_input.rs :: pub (super) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_input.rs :: pub (super) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_input.rs :: pub (super) struct VirtIOInputDevice
 kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_net.rs :: pub (super) struct VirtIONetworkDevice
@@ -649,12 +693,16 @@ kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) 
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy (DeviceKind)
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , kind : DeviceKind , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , () >
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/proc.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
 kernel/src/fs/file/proc.rs :: pub (crate) impl OpenFileDescription :: fn proc_target (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
@@ -690,6 +738,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn write (& self 
 kernel/src/fs/file/terminal.rs :: pub (crate) struct Terminal
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
+kernel/src/fs/inode.rs :: enum DeviceKind :: InputEvent (u16)
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
 kernel/src/fs/inode.rs :: enum DeviceKind :: Random
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
@@ -1057,6 +1106,42 @@ kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn alloc (& mut self) -> Res
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn dealloc (& mut self , id : usize)
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn new (initial_id : usize) -> Self
 kernel/src/id.rs :: pub (crate) struct IdAllocator
+kernel/src/input.rs :: enum InputError :: Busy
+kernel/src/input.rs :: enum InputError :: Invalid
+kernel/src/input.rs :: enum InputError :: NotFound
+kernel/src/input.rs :: enum InputError :: OutOfMemory
+kernel/src/input.rs :: enum InputString :: Name
+kernel/src/input.rs :: enum InputString :: PhysicalPath
+kernel/src/input.rs :: enum InputString :: Serial
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: flat : i32
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: fuzz : i32
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: maximum : i32
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: minimum : i32
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: resolution : i32
+kernel/src/input.rs :: pub (crate) AbsoluteInfo :: value : i32
+kernel/src/input.rs :: pub (crate) enum InputError
+kernel/src/input.rs :: pub (crate) enum InputString
+kernel/src/input.rs :: pub (crate) fn device_count () -> usize
+kernel/src/input.rs :: pub (crate) fn dispatch_input_work () -> bool
+kernel/src/input.rs :: pub (crate) fn init (mut create_notification : impl FnMut () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () > ,) -> Result < () , () >
+kernel/src/input.rs :: pub (crate) fn open (index : usize) -> Result < Arc < InputFile > , InputError >
+kernel/src/input.rs :: pub (crate) impl InputEvent :: fn encode (self) -> [u8 ; 24]
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn absolute_info (& self , code : u16) -> Result < AbsoluteInfo , InputError >
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn copy_bitmap (& self , event_type : Option < u16 > , output : & mut [u8] ,) -> Result < usize , InputError >
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn copy_key_state (& self , output : & mut [u8]) -> usize
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn copy_string (& self , kind : InputString , output : & mut [u8]) -> usize
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn id (& self) -> InputId
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn mark_sync_lost (& self)
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn read (& self , output : & mut [InputEvent]) -> usize
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn readable_count (& self) -> usize
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn readiness_generation (& self) -> u64
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn set_clock (& self , clock_id : i32) -> Result < () , InputError >
+kernel/src/input.rs :: pub (crate) impl InputFile :: fn set_grab (file : & Arc < Self > , grab : bool) -> Result < () , InputError >
+kernel/src/input.rs :: pub (crate) struct AbsoluteInfo
+kernel/src/input.rs :: pub (crate) struct InputEvent
+kernel/src/input.rs :: pub (crate) struct InputFile
 kernel/src/ipc.rs :: enum PipeDirection :: Read
 kernel/src/ipc.rs :: enum PipeDirection :: Write
 kernel/src/ipc.rs :: enum PipeRead :: Bytes (usize)
@@ -1854,6 +1939,7 @@ kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize ,
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_statfs (name : * const u8 , address : usize) -> isize
 kernel/src/syscall/futex.rs :: pub (crate) fn sys_futex (address : usize , operation : usize , value : u32 , timeout : usize , target : usize , value3 : u32 ,) -> isize
+kernel/src/syscall/input.rs :: pub (in crate :: syscall) fn input_ioctl (task : & TaskControlBlock , file : & Arc < InputFile > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/membarrier.rs :: pub (super) fn sys_membarrier (command : usize , flags : usize , _cpu_id : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_brk (new_brk : usize) -> isize
@@ -1871,6 +1957,12 @@ kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_pselect6 (count : usize , read_set : usize , write_set : usize , except_set : usize , timeout : usize , signal_argument : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys_for_interest (ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Result < Vec < PollWaitKey > , () >
 kernel/src/syscall/poll.rs :: pub (super) fn wait_for_ofd (ofd : & Arc < OpenFileDescription > , events : i16) -> WaitResult
+kernel/src/syscall/poll/select.rs :: pub (super) fn deadline (task : & TaskControlBlock , timeout : usize) -> Result < Option < u64 > , isize >
+kernel/src/syscall/poll/select.rs :: pub (super) fn install_signal_mask (task : & TaskControlBlock , argument : usize) -> Result < bool , isize >
+kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn copy_results (& self , task : & TaskControlBlock , descriptors : impl Iterator < Item = (usize , i16 , i16) > ,) -> isize
+kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn events (& self , fd : usize) -> i16
+kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn load (task : & TaskControlBlock , count : usize , addresses : [usize ; 3] ,) -> Result < Self , isize >
+kernel/src/syscall/poll/select.rs :: pub (super) struct SelectSets
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !

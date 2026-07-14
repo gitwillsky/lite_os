@@ -31,6 +31,28 @@ impl MmioBus {
         Ok(address)
     }
 
+    /// @description 从 MMIO window 读取一个 byte。
+    /// @param offset 相对 window base 的 byte offset。
+    /// @return volatile 读取值。
+    /// @errors offset 越界返回 `InvalidAddress`。
+    pub(in crate::drivers) fn read_u8(&self, offset: usize) -> Result<u8, BusError> {
+        let address = self.address(offset, core::mem::size_of::<u8>())?;
+        // SAFETY: `address` 已完成边界检查；MMIO byte access 必须 volatile。
+        Ok(unsafe { core::ptr::read_volatile(address as *const u8) })
+    }
+
+    /// @description 向 MMIO window 写入一个 byte。
+    /// @param offset 相对 window base 的 byte offset。
+    /// @param value 要发布的 byte。
+    /// @return 写入成功返回 unit。
+    /// @errors offset 越界返回 `InvalidAddress`。
+    pub(in crate::drivers) fn write_u8(&self, offset: usize, value: u8) -> Result<(), BusError> {
+        let address = self.address(offset, core::mem::size_of::<u8>())?;
+        // SAFETY: `address` 已完成边界检查；MMIO byte access 必须 volatile。
+        unsafe { core::ptr::write_volatile(address as *mut u8, value) };
+        Ok(())
+    }
+
     pub(in crate::drivers) fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         let address = self.address(offset, core::mem::size_of::<u32>())?;
         // SAFETY: `address` 已经边界、溢出和 32 位对齐检查；MMIO 必须 volatile。

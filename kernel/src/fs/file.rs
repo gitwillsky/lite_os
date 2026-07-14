@@ -84,17 +84,7 @@ impl OpenFileDescription {
         let mut result = 0;
         match &self.kind {
             OpenFileKind::Inode(_) => result = events & (INPUT | OUTPUT),
-            OpenFileKind::Character(device) => match device {
-                CharacterDevice::Null | CharacterDevice::Zero => result = events & (INPUT | OUTPUT),
-                CharacterDevice::Entropy(_) => result = events & INPUT,
-                CharacterDevice::Drm(_) => result = events & OUTPUT,
-                CharacterDevice::Terminal { terminal, .. } => {
-                    result = events & OUTPUT;
-                    if events & INPUT != 0 && terminal.wait_ready() {
-                        result |= INPUT;
-                    }
-                }
-            },
+            OpenFileKind::Character(device) => result = device.poll_events(events),
             OpenFileKind::Pipe(endpoint) => {
                 let state = endpoint.pipe().poll_state(endpoint.direction());
                 if events & INPUT != 0 && state.readable {
@@ -151,22 +141,14 @@ impl OpenFileDescription {
     /// @return 跨 source 可比较的 generation；不支持 epoll 的 inode/device 返回零。
     pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         match &self.kind {
-            OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
-                terminal.readiness_generation()
-            }
+            OpenFileKind::Character(device) => device.readiness_generation(),
             OpenFileKind::Pipe(endpoint) => {
                 endpoint.pipe().readiness_generation(endpoint.direction())
             }
             OpenFileKind::Socket(socket) => socket.readiness_generation(events),
             OpenFileKind::Epoll(epoll) => epoll.readiness_generation(),
             OpenFileKind::EventFd(event) => event.readiness_generation(events),
-            OpenFileKind::Character(
-                CharacterDevice::Null
-                | CharacterDevice::Zero
-                | CharacterDevice::Entropy(_)
-                | CharacterDevice::Drm(_),
-            )
-            | OpenFileKind::Inode(_) => 0,
+            OpenFileKind::Inode(_) => 0,
         }
     }
 
@@ -174,14 +156,14 @@ impl OpenFileDescription {
     ///
     /// @return 可加入 epoll 返回 true；regular inode/null/zero 返回 false 并映射 EPERM。
     pub(crate) fn epoll_pollable(&self) -> bool {
-        matches!(
-            self.kind,
-            OpenFileKind::Character(CharacterDevice::Terminal { .. })
-                | OpenFileKind::Pipe(_)
-                | OpenFileKind::Socket(_)
-                | OpenFileKind::Epoll(_)
-                | OpenFileKind::EventFd(_)
-        )
+        match &self.kind {
+            OpenFileKind::Character(device) => device.epoll_pollable(),
+            OpenFileKind::Pipe(_)
+            | OpenFileKind::Socket(_)
+            | OpenFileKind::Epoll(_)
+            | OpenFileKind::EventFd(_) => true,
+            OpenFileKind::Inode(_) => false,
+        }
     }
 
     /// @description 构造继承给 init 的 console OFD，并保留 devfs opened entry。

@@ -217,6 +217,10 @@ fn prepare_sources(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
             drain_terminal_input(terminal).map_err(|()| -errno::EIO)
         }
+        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
+            let _ = file.prepare_to_block();
+            Ok(())
+        }
         OpenFileKind::Epoll(epoll) => {
             epoll.consume_notifications();
             for interest in epoll.snapshot().map_err(|()| -errno::ENOMEM)? {

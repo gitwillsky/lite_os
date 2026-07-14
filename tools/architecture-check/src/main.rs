@@ -28,6 +28,7 @@ const KERNEL_MODULES: &[&str] = &[
     "fallible_tree",
     "fs",
     "id",
+    "input",
     "ipc",
     "lang_item",
     "log",

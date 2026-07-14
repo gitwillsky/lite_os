@@ -3,8 +3,9 @@ use alloc::boxed::Box;
 use crate::arch::dtb::{BoardInfo, board_info};
 use crate::drivers::block::register_block_device;
 use crate::drivers::{
-    DisplayDevice, InterruptController, InterruptHandler, MmioBus, PlicInterruptController,
-    VirtIOBlockDevice, VirtIOGpuDevice, VirtIONetworkDevice, VirtIORngDevice,
+    DisplayDevice, InputDevice, InterruptController, InterruptHandler, MmioBus,
+    PlicInterruptController, VirtIOBlockDevice, VirtIOGpuDevice, VirtIOInputDevice,
+    VirtIONetworkDevice, VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
 
@@ -93,6 +94,7 @@ fn init_virtio_devices(board_info: &BoardInfo) {
                 2 => init_virtio_blk_device(board_info, virtio_dev.irq, base_addr),
                 4 => init_virtio_rng_device(base_addr),
                 16 => init_virtio_gpu_device(board_info, virtio_dev.irq, base_addr),
+                18 => init_virtio_input_device(board_info, virtio_dev.irq, base_addr),
                 _ => info!(
                     "[Platform] Unrecognized VirtIO device ID {:#x} at {:#x}",
                     device_id, base_addr
@@ -100,6 +102,22 @@ fn init_virtio_devices(board_info: &BoardInfo) {
             }
         }
     }
+}
+
+fn init_virtio_input_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+    let device = VirtIOInputDevice::new(base_addr).expect("DTB virtio-input must initialize");
+    let index = super::input::register(device.clone())
+        .unwrap_or_else(|_| panic!("VirtIO input registry allocation failed"));
+    assert!(
+        maybe_register_irq(board_info, irq, device.irq_handler_for(), "input"),
+        "virtio-input requires a registered IRQ"
+    );
+    info!(
+        "[Platform] VirtIO input event{} registered at {:#x}, name={}",
+        index,
+        base_addr,
+        core::str::from_utf8(device.name()).unwrap_or("<non-utf8>")
+    );
 }
 
 fn init_virtio_net_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {

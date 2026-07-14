@@ -61,6 +61,8 @@ run-gui: build-kernel build-bootloader fs.img
 	-object rng-random,filename=/dev/urandom,id=rng0 \
 	-device virtio-rng-device,rng=rng0 \
 	-device virtio-gpu-device \
+	-device virtio-keyboard-device \
+	-device virtio-tablet-device \
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 

@@ -6,6 +6,7 @@ use crate::{
 const FIONBIO: usize = 0x5421;
 
 use super::drm::drm_ioctl;
+use super::input::input_ioctl;
 use super::{errno, socket::socket_ioctl, tty::tty_ioctl};
 
 /// @description 按 OFD backend 分发 Linux ioctl；TTY 与 socket policy 留在各自 ABI module。
@@ -45,6 +46,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
         }
         OpenFileKind::Character(CharacterDevice::Drm(file)) => {
             drm_ioctl(&task, file, request, argument)
+        }
+        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
+            input_ioctl(&task, file, request, argument)
         }
         OpenFileKind::Socket(socket) => socket_ioctl(&task, socket, request, argument),
         _ => -errno::ENOTTY,

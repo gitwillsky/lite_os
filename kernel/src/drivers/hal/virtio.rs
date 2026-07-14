@@ -187,6 +187,34 @@ impl VirtIODevice {
         Err(BusError::InvalidAddress)
     }
 
+    /// @description 读取 device-specific config 的单个 byte。
+    /// @param offset 相对 device config 起点的 byte offset。
+    /// @return volatile 读取值。
+    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    pub(in crate::drivers) fn read_config_u8(&self, offset: usize) -> Result<u8, BusError> {
+        self.bus.read_u8(CONFIG + offset)
+    }
+
+    /// @description 写入 device-specific config 的单个 byte。
+    /// @param offset 相对 device config 起点的 byte offset。
+    /// @param value 由具体 device protocol 定义的值。
+    /// @return 写入成功返回 unit。
+    /// @errors offset 超出 MMIO window 返回 `InvalidAddress`。
+    pub(in crate::drivers) fn write_config_u8(
+        &self,
+        offset: usize,
+        value: u8,
+    ) -> Result<(), BusError> {
+        self.bus.write_u8(CONFIG + offset, value)
+    }
+
+    /// @description 读取 device config 的原子性 generation。
+    /// @return 当前 generation value。
+    /// @errors MMIO 访问失败返回 `InvalidAddress`。
+    pub(in crate::drivers) fn config_generation(&self) -> Result<u32, BusError> {
+        self.bus.read_u32(CONFIG_GENERATION)
+    }
+
     fn write_address(&self, low_register: usize, address: u64) -> Result<(), BusError> {
         self.bus.write_u32(low_register, address as u32)?;
         self.bus.write_u32(

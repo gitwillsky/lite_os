@@ -340,6 +340,9 @@ pub(crate) fn dispatch_pending_deferred_work() {
     if work & hart::DISPLAY_SOFTIRQ != 0 {
         crate::drm::device::dispatch_display_work();
     }
+    if work & hart::INPUT_SOFTIRQ != 0 && crate::input::dispatch_input_work() {
+        hart::raise_input_softirq();
+    }
     let network_due = work & hart::NETWORK_SOFTIRQ != 0
         || work & hart::TIMER_SOFTIRQ != 0 && crate::socket::network_work_due();
     if network_due {
