@@ -1,0 +1,32 @@
+#!/bin/sh
+
+usage() {
+	echo "Usage: shutdown [-h|-H|-P|-r] now" >&2
+}
+
+command=/bin/poweroff
+case "${1:-}" in
+	-h|-P|--poweroff)
+		shift
+		;;
+	-H|--halt)
+		command=/bin/halt
+		shift
+		;;
+	-r|--reboot)
+		command=/bin/reboot
+		shift
+		;;
+	--help)
+		usage
+		exit 0
+		;;
+esac
+
+# LiteOS 没有用户态关机调度 daemon；拒绝未来时间，避免把未实现的调度伪装成立即成功。
+if [ "$#" -ne 1 ] || [ "$1" != now ]; then
+	usage
+	exit 1
+fi
+
+exec "$command"

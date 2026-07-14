@@ -10,6 +10,8 @@ ext2 持久化证据使用同一个镜像：1-hart BusyBox ash 通过标准 open
 
 - `CAD_OFF/CAD_ON` 更新真实原子 policy，为未来 input IRQ 与 syscall 并发预留唯一语义；当前 QEMU virt 无 Ctrl-Alt-Delete input device。
 - `RESTART/HALT/POWER_OFF` 分别映射 SBI cold reboot/shutdown；SRST 成功按规范不返回，若 firmware 意外返回则 syscall 报 `EIO`。
+- rootfs 直接提供 BusyBox `halt/poweroff/reboot`；BusyBox 上游没有 `shutdown` applet，产品 `/bin/shutdown` 只解析立即动作并委托给上游 applet，不复制 reset ABI 或 system policy。
+- 普通 reboot/poweroff 由 BusyBox init 先 TERM、sync、等待、KILL、再 reset；两段固定一秒 grace period 是用户态优雅退出语义。`reboot -f` 只用于明确跳过 init 清理的快速开发重启。
 - platform 无 restart-reason channel，因此 `RESTART2`、kexec 和 suspend 不伪成功。
 - ext2 仍无 journal；证据覆盖显式 sync 后的冷启动保存，不声称突然断电的跨块事务原子性。
 
