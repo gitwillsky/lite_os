@@ -1,0 +1,29 @@
+docs/architecture.md
+  s_f0a69312287991::t_23d2ea696e2c00 201
+docs/phase-28-persistence-reset.md
+  s_f0a69312287991::t_43f2b3ae6c14b1 13-14
+scripts/verify_busybox.py
+  s_f0a69312287991::t_8ffbf20041f5ec 105,133,768-769,914,1003
+user/busybox.config
+  s_f0a69312287991::t_482139881f2198 226-227
+user/shutdown
+  s_f0a69312287991::t_a6ac8554d5201e 1-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "39a91dfd19b6f625d19780a069bf567cd49aa782",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
