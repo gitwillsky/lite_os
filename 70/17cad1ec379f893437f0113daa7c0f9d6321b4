@@ -1,0 +1,123 @@
+Makefile
+  s_f0a69312287991::t_caab81cdf645e1 3,35,45-63,68
+docs/architecture-contract.md
+  s_f0a69312287991::t_03ea8ce5512072 22,25-26,28,35,47,62-66,69,87,106-107,138,151,178-179
+docs/architecture-interface.txt
+  s_f0a69312287991::t_5833afe6090460 191,211,258-272,303-306,311,314-315,323,325,328,335,341-342,349-351,353,356-357,359,361,363-364,377-399,427-428,440-493,650,657,692,1245,1248-1257,1278,1294,1297,1300-1302,1324,1387,1551,1554,1666,1716-1717,2092
+docs/architecture.md
+  s_f0a69312287991::t_6452b7d296911c 3,27-28,63-64,127,171,173-174,180-197,201,205,238,246,257,261-262,271
+docs/syscall-support.md
+  s_f0a69312287991::t_be01750d7bbbf1 40,101,104-105,107
+kernel/src/arch/riscv64/hart.rs
+  s_f0a69312287991::t_7c087aace5657e 25-26,350-355
+kernel/src/drivers/display.rs
+  s_f0a69312287991::t_bac8c0cdbda208 1-73
+kernel/src/drivers/hal/mod.rs
+  s_f0a69312287991::t_a035bcc1dbac56 10-11
+kernel/src/drivers/hal/virtio.rs
+  s_f0a69312287991::t_ef0e548051a35c 7,9,18-21,28,34-42,76-80,87-99,102-111,122-133,136-162,178-195
+kernel/src/drivers/mod.rs
+  s_f0a69312287991::t_d5a5dd3c1e4017 2,9,14,19,22
+kernel/src/drivers/network.rs
+  s_f0a69312287991::t_19e2b850db6d71 24-78,92-98,100,102-128
+kernel/src/drivers/platform.rs
+  s_f0a69312287991::t_b6ac6a1806dc67 6-7,95,128-142
+kernel/src/drivers/virtio_blk.rs
+  s_f0a69312287991::t_86d8b4403aea20 6-7,15,47-50,62-66
+kernel/src/drivers/virtio_gpu.rs
+  s_f0a69312287991::t_552481dbdea49f 1-597
+kernel/src/drivers/virtio_gpu/wire.rs
+  s_f0a69312287991::t_476adb6f772b97 1-50
+kernel/src/drivers/virtio_net.rs
+  s_f0a69312287991::t_05b5312d206498 6-7,12,16-18,21,27-37,41-49,53,57-59,75-76,79,89-99,106-110,112-114,117-132,145-151,159,165-167,191-192,199-203,212,214-219,224-229,231-251,254,256,260-267,269-291,295-378
+kernel/src/drivers/virtio_queue.rs
+  s_f0a69312287991::t_6e45544e8bf64b 9-10,59,148-152,156-160,183-190,206-221,231-233,245-246,250-258,260-267,269,271,338-346
+kernel/src/drivers/virtio_rng.rs
+  s_f0a69312287991::t_3c9fc0517cf1fd 5-6,24-27,35-37
+kernel/src/drm.rs
+  s_f0a69312287991::t_cc02fdb2458ae2 1-553
+kernel/src/drm/device.rs
+  s_f0a69312287991::t_69d4a8470f17a6 1-170
+kernel/src/drm/mode.rs
+  s_f0a69312287991::t_1120976d5819b7 1-72
+kernel/src/fs/devfs.rs
+  s_f0a69312287991::t_783f61eb9be9d6 17,45,56,78-97,110,128,141,150,164,180-182,207,220,222-233,238
+kernel/src/fs/file.rs
+  s_f0a69312287991::t_fd8fe84a8b7908 90,164-167,224
+kernel/src/fs/file/character.rs
+  s_f0a69312287991::t_17a8f976165d35 4,12,20-34,42
+kernel/src/fs/inode.rs
+  s_f0a69312287991::t_0f04b9fe72d9b3 24,37,49,56-58
+kernel/src/main.rs
+  s_f0a69312287991::t_fdfef0da07c044 21,67-72
+kernel/src/memory/mm.rs
+  s_f0a69312287991::t_5ba6aaf8ff0f3d 2,28,37-39,67,82,114,209-211,229-232,300,340-341,343-360,367,370-376,383
+kernel/src/memory/mm/cow.rs
+  s_f0a69312287991::t_0f6eeaa760e098 3-49,88,109-111,124
+kernel/src/memory/mm/device_area.rs
+  s_f0a69312287991::t_06ac81efbc30e7 1-162
+kernel/src/memory/mm/futex_key.rs
+  s_f0a69312287991::t_945d37e1776f4b 16-17,75-86
+kernel/src/memory/mm/mapping_request.rs
+  s_f0a69312287991::t_f66e62960e8d3b 3,21-43
+kernel/src/memory/mm/mmap.rs
+  s_f0a69312287991::t_47355787a98abb 5,333-336
+kernel/src/memory/mm/mmap/advice.rs
+  s_f0a69312287991::t_9c6a16b7ca7173 31-35
+kernel/src/memory/mm/mmap/device.rs
+  s_f0a69312287991::t_0f8c719a463f02 1-75
+kernel/src/memory/mm/mmap/fault.rs
+  s_f0a69312287991::t_d3162ae5c48e6d 97-103
+kernel/src/memory/mm/mmap/protection.rs
+  s_f0a69312287991::t_14725e345678ed 18-22,68-70
+kernel/src/memory/mm/statistics.rs
+  s_f0a69312287991::t_2bebe5aced70fc 38-43,56-61
+kernel/src/memory/mod.rs
+  s_f0a69312287991::t_0e344e5b060392 36-38
+kernel/src/socket/device.rs
+  s_f0a69312287991::t_8f74fa692a654b 8-10,38-56,77,88-89,100-104,113,121-125
+kernel/src/socket/inet.rs
+  s_f0a69312287991::t_6f57d2631bc54a 25,50-52,108-112,149-153,174-176,178-181,254-257,259
+kernel/src/socket/packet.rs
+  s_f0a69312287991::t_e519eef26f5808 9,197-200,207,210,246,258,354-367
+kernel/src/syscall/drm.rs
+  s_f0a69312287991::t_1281ad31b7c20a 1-542
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_f0a69312287991::t_d6320ad0940b7d 174
+kernel/src/syscall/fs/io/sequential/write.rs
+  s_f0a69312287991::t_8a1516ec1f4ca8 251-254,288
+kernel/src/syscall/ioctl.rs
+  s_f0a69312287991::t_60f01242a49b63 8,18-21,46-48
+kernel/src/syscall/memory.rs
+  s_f0a69312287991::t_9ee2c9b5f4c0f0 2,129-130,133-147
+kernel/src/syscall/mod.rs
+  s_f0a69312287991::t_fa4ee05c7bda08 2
+kernel/src/task/model.rs
+  s_f0a69312287991::t_7712ba0cdaff83 22-25
+kernel/src/task/model/address_space/mapping.rs
+  s_f0a69312287991::t_7d903e3dc107f2 80-106,184-204
+kernel/src/task/task_manager/deferred.rs
+  s_f0a69312287991::t_6ae03994cd9180 340-342
+scripts/qemu_gate.py
+  s_f0a69312287991::t_5741996c0b0189 121-122,240-241
+tools/architecture-check/src/main.rs
+  s_f0a69312287991::t_3a640200530137 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7017cad1ec379f893437f0113daa7c0f9d6321b4",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
