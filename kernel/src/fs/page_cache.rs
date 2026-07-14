@@ -1,5 +1,5 @@
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, MutexGuard, Once};
 
 use crate::memory::{
@@ -9,13 +9,36 @@ use crate::memory::{
 
 use super::{FileSystemError, Inode, InodeType};
 
+const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
+const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
+const WRITEBACK_BATCH_PAGES: usize = 32;
+
 #[derive(Debug)]
 struct CachedPage {
     frame: SharedFrame,
-    // OWNER: CachedPage 独占 dirty 与 writable-PTE 引用计数；拆到 VMA 会使 fork/unmap
-    // 无法判断 writeback 后是否仍可能被用户硬件写入，造成脏数据丢失。
-    dirty: AtomicBool,
-    writers: AtomicUsize,
+    // OWNER: CachedPage 用一个 CAS domain 同时拥有 dirty bit 与 writable-PTE 引用计数。
+    // 拆成两个 Atomic 会让 writeback 的 writer==0 / clear-dirty 间隙吞掉并发 writer publication。
+    state: AtomicUsize,
+}
+
+impl CachedPage {
+    fn dirty(&self) -> bool {
+        self.state.load(Ordering::Acquire) & PAGE_DIRTY != 0
+    }
+
+    fn reclaimable(&self) -> bool {
+        self.state.load(Ordering::Acquire) == 0
+    }
+
+    fn mark_clean_if_unmapped(&self) {
+        // writer acquire 与本 CAS 竞争：先 acquire 则 writer count 阻止清理，后 acquire
+        // 则重新原子发布 dirty，因而不存在已映射 writable page 被误标 clean 的窗口。
+        let _ = self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & PAGE_WRITER_MASK == 0).then_some(0)
+            });
+    }
 }
 
 impl SharedPage for CachedPage {
@@ -23,18 +46,25 @@ impl SharedPage for CachedPage {
         &self.frame
     }
 
-    fn mark_dirty(&self) {
-        self.dirty.store(true, Ordering::Release);
-    }
-
     fn acquire_writer(&self) {
-        self.writers.fetch_add(1, Ordering::AcqRel);
-        self.mark_dirty();
+        let result = self
+            .state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                (state & PAGE_WRITER_MASK)
+                    .checked_add(1)
+                    .filter(|writers| *writers <= PAGE_WRITER_MASK)
+                    .map(|writers| PAGE_DIRTY | writers)
+            });
+        assert!(result.is_ok(), "shared-page writer count overflow");
     }
 
     fn release_writer(&self) {
-        let previous = self.writers.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous != 0);
+        self.state
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                let writers = state & PAGE_WRITER_MASK;
+                (writers != 0).then_some((state & PAGE_DIRTY) | (writers - 1))
+            })
+            .expect("shared-page writer release without acquire");
     }
 }
 
@@ -94,8 +124,7 @@ impl CachedFile {
         }
         let page = Arc::new(CachedPage {
             frame,
-            dirty: AtomicBool::new(false),
-            writers: AtomicUsize::new(0),
+            state: AtomicUsize::new(0),
         });
         let mut pages = self.pages.lock();
         assert!(pages.insert(index, page.clone()).is_none());
@@ -129,41 +158,59 @@ impl CachedFile {
 
     fn writeback_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
         let end = offset.saturating_add(length);
-        let pages: Vec<_> = self
-            .pages
-            .lock()
-            .range((offset / PAGE_SIZE as u64)..=((end.saturating_sub(1)) / PAGE_SIZE as u64))
-            .map(|(index, page)| (*index, page.clone()))
-            .collect();
         // 1. operation lock 保证本次 writeback 的 EOF 不被 write/truncate 改动；只读取一次，
         // 避免每个 resident page 都进入 filesystem metadata owner。
         let size = self.inode.size();
-        // 2. 首个实际 dirty page 才分配 scratch，之后覆盖复用；缺失复用会让大文件 fsync
-        // 对每个脏页重复 heap allocation/free，把顺序写回变成 allocator 热点。
-        let mut data = Vec::new();
-        for (index, page) in pages {
-            if !page.dirty.load(Ordering::Acquire) {
-                continue;
+        // 2. 每批最多扫描固定数量 resident pages 并只 clone dirty Arc；range-sized Vec 会让
+        // 大 mapping 的 munmap 在内存压力下反而申请连续大块 heap 并 panic。
+        let first = offset / PAGE_SIZE as u64;
+        let last = end.saturating_sub(1) / PAGE_SIZE as u64;
+        let mut next = first;
+        let mut data = [0u8; PAGE_SIZE];
+        loop {
+            let mut batch: [Option<(u64, Arc<CachedPage>)>; WRITEBACK_BATCH_PAGES] =
+                core::array::from_fn(|_| None);
+            let mut scanned = 0usize;
+            let mut dirty = 0usize;
+            {
+                let pages = self.pages.lock();
+                for (&index, page) in pages.range(next..=last) {
+                    next = index
+                        .checked_add(1)
+                        .expect("cached page index cannot reach u64::MAX");
+                    scanned += 1;
+                    if page.dirty() {
+                        batch[dirty] = Some((index, page.clone()));
+                        dirty += 1;
+                    }
+                    if scanned == WRITEBACK_BATCH_PAGES {
+                        break;
+                    }
+                }
             }
-            let page_start = index * PAGE_SIZE as u64;
-            let count = usize::try_from(size.saturating_sub(page_start))
-                .unwrap_or(usize::MAX)
-                .min(PAGE_SIZE);
-            if count == 0 {
-                continue;
+            if scanned == 0 {
+                break;
             }
-            if data.is_empty() {
-                data.try_reserve_exact(PAGE_SIZE)
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                data.resize(PAGE_SIZE, 0);
+            let reached_end = next > last;
+            // 3. 单一 stack scratch 跨 batch 复用；storage 成功后仅在没有 writable PTE 时
+            // CAS 清 dirty，错误路径保留当前及后续 page 的 dirty 状态供下一次 sync 重试。
+            for entry in &mut batch[..dirty] {
+                let (index, page) = entry.take().expect("dirty writeback slot must exist");
+                let page_start = index * PAGE_SIZE as u64;
+                let count = usize::try_from(size.saturating_sub(page_start))
+                    .unwrap_or(usize::MAX)
+                    .min(PAGE_SIZE);
+                if count == 0 {
+                    continue;
+                }
+                page.frame.read(0, &mut data[..count]);
+                if self.inode.write_storage(page_start, &data[..count])? != count {
+                    return Err(FileSystemError::IoError);
+                }
+                page.mark_clean_if_unmapped();
             }
-            // 3. EOF page 只提交有效前缀；后续完整页会覆盖 scratch 的对应区间。
-            page.frame.read(0, &mut data[..count]);
-            if self.inode.write_storage(page_start, &data[..count])? != count {
-                return Err(FileSystemError::IoError);
-            }
-            if page.writers.load(Ordering::Acquire) == 0 {
-                page.dirty.store(false, Ordering::Release);
+            if reached_end {
+                break;
             }
         }
         self.inode.sync_storage()
@@ -203,9 +250,7 @@ impl MemoryReclaimer for CachedFile {
         // 已回收足额页仍会扫描整个大文件 cache，把一次 OOM recovery 退化为 O(cache pages)。
         pages
             .extract_if(.., |_, page| {
-                !page.dirty.load(Ordering::Acquire)
-                    && page.writers.load(Ordering::Acquire) == 0
-                    && Arc::strong_count(page) == 1
+                page.reclaimable() && Arc::strong_count(page) == 1
             })
             .take(limit)
             .count()

@@ -22,7 +22,7 @@ pub(crate) use io::{
 };
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
-pub(crate) use open::{sys_chdir, sys_openat};
+pub(crate) use open::{sys_chdir, sys_fchdir, sys_openat};
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
 

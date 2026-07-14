@@ -12,7 +12,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 136 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 137 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 统一返回 `-ENOSYS`。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -28,7 +28,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 136 个入口
+## 2. 当前暴露的 137 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -46,7 +46,7 @@
 | 47 | `fallocate` | fd、mode、signed offset/length | 0；`EBADF/EINVAL/EFBIG/ENOSPC/EIO/EOPNOTSUPP`；越过 limit 投递 SIGXFSZ | Linux space reservation；apk-tools extraction | **Partial（mode=0 complete）**。page-cache operation lock 与 ext2 mutation owner 串行化；只为 range 中的 hole 分配清零 block，不覆盖已有内容，必要时扩展 i_size。大 range 分成有界 JBD2 transaction，已提交 chunk crash-consistent；其他 allocation mode 明确返回 `EOPNOTSUPP`。 | `kernel/src/syscall/fs.rs`, `kernel/src/fs/page_cache.rs`, `kernel/src/fs/ext2.rs` |
 | 48 | `faccessat` | dirfd、pathname、`F_OK/R_OK/W_OK/X_OK` | 0；`EACCES/EROFS/EINVAL` 与 pathname errno | musl access；BusyBox rm/command lookup | **Complete**。使用 real UID/GID 与 supplementary groups；VFS traversal 和 owner/group/other rwx、root execute、只读 `W_OK` 均成立。 | `kernel/src/syscall/fs/access.rs`, `kernel/src/fs/permission.rs` |
 | 52-55 | `fchmod/fchmodat/fchownat/fchown` | fd 或 dirfd/pathname、mode/UID/GID/flags | 0；标准 fd/permission/path errno | POSIX chmod/chown；BusyBox、apk-tools | **Complete**（当前 inode-backed fd 与 ext2/devfs/procfs）。fd/path chmod/chown 共用唯一 owner/root、supplementary group 与 set-id clearing 语义；symlink no-follow/empty-path chown 与 ext2 journal metadata commit 成立。 | `kernel/src/syscall/fs/attributes.rs`, `kernel/src/fs/ext2/metadata.rs` |
-| 49 | `chdir` | NUL 结尾 raw pathname | 0；pathname/permission errno | POSIX chdir；musl direct wrapper | **Complete**（当前单 mount namespace）。所有 component 与最终目录执行 search permission，cwd 仍只保存 inode。 | `kernel/src/syscall/fs/open.rs`, `kernel/src/fs/vfs.rs` |
+| 49/50 | `chdir/fchdir` | NUL 结尾 raw pathname；directory fd | 0；`EBADF/ENOTDIR` 或 pathname/permission errno | POSIX cwd；musl/apk-tools | **Complete**（当前单 mount namespace）。pathname traversal 与 pathname/fd 最终目录都执行 search permission，成功后只替换 Process 唯一 opened cwd identity；rename 后的 `getcwd` 继续由同一 namespace owner 投影。 | `kernel/src/syscall/fs/open.rs`, `kernel/src/fs/vfs.rs` |
 | 56/57 | `openat` / `close` | dirfd、raw path、flags/mode；fd | fd/0；标准 fd/path/permission errno | POSIX openat/close | **Partial**。既有 OFD/device/flag 语义加 VFS traversal、final rwx、create parent、umask 与标准 opened-entry identity；cwd/directory fd/procfs magic link 共用该 seam，close 原子移除 proc fd 节点。尚无 `O_NOFOLLOW/O_PATH`。 | `kernel/src/syscall/fs/open.rs`, `kernel/src/fs/vfs/opened.rs` |
 | 59 | `pipe2` | `int[2]`、`O_CLOEXEC/O_NONBLOCK` | 0；`EFAULT/EINVAL/EMFILE/ENOMEM` | POSIX pipe；BusyBox pipeline | **Complete**（当前 fd/wait 模型）。64 KiB ring、4096-byte PIPE_BUF atomic write、blocking/nonblocking、EOF、EPIPE+SIGPIPE、fork/dup endpoint lifecycle 与 exit-time fd close 共用单一 Pipe owner。 | `kernel/src/ipc.rs`, `kernel/src/syscall/fs.rs` |
 | 61 | `getdents64` | fd、`linux_dirent64` buffer、length | bytes；`EBADF/ENOTDIR/EFAULT/EINVAL` | libc readdir backend | **Complete**。目录 OFD 保存逐项位置，记录按 8 bytes 对齐并包含 `d_type`；并发目录变更后的 cookie 与 Linux 一样不承诺快照语义。 | `kernel/src/syscall/fs.rs` |
@@ -118,7 +118,7 @@
 
 ## 4. musl 结论
 
-当前 136 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 137 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex PI/PI-requeue/WAKE_OP 与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间与 queued realtime signal；

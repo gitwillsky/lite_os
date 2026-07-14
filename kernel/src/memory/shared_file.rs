@@ -93,7 +93,6 @@ impl SharedFrame {
 /// @description MemorySet 持有的共享 cache page interface。
 pub(crate) trait SharedPage: Send + Sync + Debug {
     fn frame(&self) -> &SharedFrame;
-    fn mark_dirty(&self);
     fn acquire_writer(&self);
     fn release_writer(&self);
 }

@@ -100,6 +100,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
         SYSCALL_FALLOCATE => sys_fallocate(args[0], args[1], args[2] as i64, args[3] as i64),
         SYSCALL_CHDIR => sys_chdir(args[0] as *const u8),
+        SYSCALL_FCHDIR => sys_fchdir(args[0]),
         SYSCALL_OPENAT => sys_openat(
             args[0] as isize,
             args[1] as *const u8,

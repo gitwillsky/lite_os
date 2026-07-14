@@ -1145,7 +1145,6 @@ kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn size (& self) 
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& self , offset : u64 , length : u64) -> Result < () , SharedFileError >
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & SharedFrame
-kernel/src/memory/shared_file.rs :: trait SharedPage :: fn mark_dirty (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
 kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
 kernel/src/socket.rs :: enum SocketAddress :: Inet (InetAddress)
@@ -1481,7 +1480,7 @@ kernel/src/syscall/fs.rs :: pub (crate) use flock :: sys_flock
 kernel/src/syscall/fs.rs :: pub (crate) use io :: { sys_pread64 , sys_preadv , sys_preadv2 , sys_pwrite64 , sys_pwritev , sys_pwritev2 , sys_read , sys_readv , sys_write , sys_writev , }
 kernel/src/syscall/fs.rs :: pub (crate) use links :: { sys_linkat , sys_symlinkat }
 kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mknodat , sys_renameat2 , sys_unlinkat }
-kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_openat }
+kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_fchdir , sys_openat }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
 kernel/src/syscall/fs/access.rs :: pub (crate) fn sys_faccessat (dirfd : isize , name : * const u8 , mode : usize) -> isize
@@ -1527,6 +1526,7 @@ kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_mknodat (dirfd : isize 
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_renameat2 (old_dirfd : isize , old_name : * const u8 , new_dirfd : isize , new_name : * const u8 , flags : u32 ,) -> isize
 kernel/src/syscall/fs/namespace.rs :: pub (crate) fn sys_unlinkat (dirfd : isize , name : * const u8 , flags : usize) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_chdir (name : * const u8) -> isize
+kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_fchdir (fd : usize) -> isize
 kernel/src/syscall/fs/open.rs :: pub (crate) fn sys_openat (fd : isize , name : * const u8 , flags : u32 , mode : u32) -> isize
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn base (task : & TaskControlBlock , fd : isize , path : & [u8] ,) -> Result < Option < Arc < OpenedFile > > , isize >
 kernel/src/syscall/fs/pathname.rs :: pub (super) fn ferr (error : FileSystemError) -> isize

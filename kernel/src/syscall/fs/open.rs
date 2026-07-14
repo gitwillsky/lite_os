@@ -1,10 +1,12 @@
+use alloc::sync::Arc;
+
 use crate::{
     fs::{
-        DeviceKind, FileSystemError, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY,
-        OpenFileDescription, vfs,
+        AccessIdentity, DeviceKind, FileSystemError, InodeType, O_ACCMODE, O_CLOEXEC, O_RDONLY,
+        O_WRONLY, OpenFileDescription, OpenedFile, vfs,
     },
     syscall::errno,
-    task::{current_task, session_id},
+    task::{TaskControlBlock, current_task, session_id},
 };
 
 use super::pathname::{base, ferr, path};
@@ -13,6 +15,32 @@ const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
 const O_DIRECTORY: u32 = 0x10000;
+
+/// @description 校验 directory/search permission 后原子替换 Process 唯一 cwd identity。
+/// @param task cwd owner。
+/// @param opened pathname 或 fd 已解析出的 opened-entry identity。
+/// @param identity 本次 operation 唯一 effective-credentials snapshot。
+/// @return 成功返回 0；失败返回负 errno 且 cwd 保持不变。
+/// @error 非目录返回 `ENOTDIR`；metadata 或 search permission 失败返回对应 errno。
+fn change_directory(
+    task: &TaskControlBlock,
+    opened: Arc<OpenedFile>,
+    identity: &AccessIdentity,
+) -> isize {
+    let inode = opened.inode();
+    if inode.inode_type() != InodeType::Directory {
+        return -errno::ENOTDIR;
+    }
+    let metadata = match inode.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => return ferr(error),
+    };
+    if let Err(error) = identity.require(metadata, 1) {
+        return ferr(error);
+    }
+    task.set_working_directory(opened);
+    0
+}
 
 /// @description 校验 pathname search permission 后替换 Process cwd opened entry。
 pub(crate) fn sys_chdir(name: *const u8) -> isize {
@@ -29,19 +57,26 @@ pub(crate) fn sys_chdir(name: *const u8) -> isize {
         Ok(opened) => opened,
         Err(error) => return ferr(error),
     };
-    let inode = opened.inode();
-    if inode.inode_type() != InodeType::Directory {
-        return -errno::ENOTDIR;
-    }
-    let metadata = match inode.metadata() {
-        Ok(metadata) => metadata,
-        Err(error) => return ferr(error),
+    change_directory(&task, opened, &identity)
+}
+
+/// @description 按 Linux `fchdir` 从 live descriptor 的 opened entry 替换 Process cwd。
+/// @param fd 当前 Process descriptor number。
+/// @return 成功返回 0；失败返回负 errno 且 cwd 保持不变。
+/// @error descriptor 不存在返回 `EBADF`；非 pathname-backed 或非目录 fd 返回 `ENOTDIR`。
+/// @error metadata 或 search permission 失败返回对应 errno。
+pub(crate) fn sys_fchdir(fd: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
     };
-    if let Err(error) = identity.require(metadata, 1) {
-        return ferr(error);
-    }
-    task.set_working_directory(opened);
-    0
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    let Some(opened) = ofd.opened_ref() else {
+        return -errno::ENOTDIR;
+    };
+    let identity = task.access_identity(true);
+    change_directory(&task, opened, &identity)
 }
 
 /// @description 以 effective credentials 执行 open/create permission 并发布 OFD。

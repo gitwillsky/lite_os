@@ -27,6 +27,7 @@ pub const SYSCALL_FSTATFS: usize = 44;
 pub const SYSCALL_FTRUNCATE: usize = 46;
 pub const SYSCALL_FALLOCATE: usize = 47;
 pub const SYSCALL_CHDIR: usize = 49;
+pub const SYSCALL_FCHDIR: usize = 50;
 pub const SYSCALL_OPENAT: usize = 56;
 pub const SYSCALL_CLOSE: usize = 57;
 pub const SYSCALL_PIPE2: usize = 59;
