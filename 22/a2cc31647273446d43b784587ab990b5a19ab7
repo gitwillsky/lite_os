@@ -1,0 +1,79 @@
+Makefile
+  s_f0a69312287991::t_286daa18834d11 64-65
+docs/architecture-contract.md
+  s_f0a69312287991::t_12f1981ee114da 23,26-27,29,36,48,66,69,181
+docs/architecture-interface.txt
+  s_f0a69312287991::t_1aae4aeaf90542 195,213,284,286,318,330,333,336-367,376-377,441-443,696,702,704-705,741,1109-1144,1942,1960-1965
+docs/architecture.md
+  s_f0a69312287991::t_a8ce45569f2ab9 27,29,64-65,143,196,198-205,209,246,265,269,279
+docs/standards-baseline.md
+  s_f0a69312287991::t_3518a83bedb159 69-70,143-144
+docs/syscall-support.md
+  s_f0a69312287991::t_60648b0b168f71 37,40,55,58
+kernel/src/arch/riscv64/hart.rs
+  s_f0a69312287991::t_1ea9222af6009d 27-28,358-363
+kernel/src/drivers/hal/bus.rs
+  s_f0a69312287991::t_2aff22a780b231 34-55
+kernel/src/drivers/hal/virtio.rs
+  s_f0a69312287991::t_1c545e62d9a971 190-217
+kernel/src/drivers/input.rs
+  s_f0a69312287991::t_62ec7e6c2dc7b3 1-99
+kernel/src/drivers/mod.rs
+  s_f0a69312287991::t_0f382dc727ae49 5,11,23-24,27
+kernel/src/drivers/platform.rs
+  s_f0a69312287991::t_b9315078ee4092 6-8,97,107-122
+kernel/src/drivers/virtio_input.rs
+  s_f0a69312287991::t_6379fc96839a68 1-372
+kernel/src/fs/devfs.rs
+  s_f0a69312287991::t_f95524887022cf 18,47,58,83,97-105,115-146,154,172,185,194,208,224,265,275-295
+kernel/src/fs/file.rs
+  s_f0a69312287991::t_13c0b4ddcfea51 87,144,151,159-166
+kernel/src/fs/file/character.rs
+  s_f0a69312287991::t_0a13c14b69d509 6,14-17,25-27,40-43,55,59-99
+kernel/src/fs/inode.rs
+  s_f0a69312287991::t_ea81e900f9e3c4 25,39,52,58
+kernel/src/input.rs
+  s_f0a69312287991::t_1b22de867e08b7 1-600
+kernel/src/main.rs
+  s_f0a69312287991::t_2649acf8ad667d 27,74
+kernel/src/syscall/epoll.rs
+  s_f0a69312287991::t_58c7ebe10a6a77 220-223
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_f0a69312287991::t_d7b70ce8b49fe6 175-238
+kernel/src/syscall/fs/io/sequential/write.rs
+  s_f0a69312287991::t_d913464bc5614b 253-255,291
+kernel/src/syscall/input.rs
+  s_f0a69312287991::t_bb22a8c02b8580 1-156
+kernel/src/syscall/ioctl.rs
+  s_f0a69312287991::t_1baf2a5f14ccd3 9,50-52
+kernel/src/syscall/mod.rs
+  s_f0a69312287991::t_aadf3002a9d06b 8
+kernel/src/syscall/poll.rs
+  s_f0a69312287991::t_e92f7d59216f34 15-16,65-76,217-219,398-399,407,422,426,440,442-448,472,474-480
+kernel/src/syscall/poll/select.rs
+  s_f0a69312287991::t_d5e34d5d8cbb2b 1-181
+kernel/src/task/task_manager.rs
+  s_f0a69312287991::t_65757daa0e52c4 493-494,499-503
+kernel/src/task/task_manager/deferred.rs
+  s_f0a69312287991::t_4c14bf95bf7868 343-345
+tools/architecture-check/src/main.rs
+  s_f0a69312287991::t_2bef203e364b5b 31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "22a2cc31647273446d43b784587ab990b5a19ab7",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
