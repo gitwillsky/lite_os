@@ -1,0 +1,97 @@
+docs/architecture-contract.md
+  s_f0a69312287991::t_29f0a85db1a62b 67-68,70,80,179,184-185
+docs/architecture-interface.txt
+  s_f0a69312287991::t_3a0c829c77262f 490,525,535-536,539-558,603-604,697,719-720,722-723,727,748,768-769,864,872,1058-1085,1859,2100-2101,2337,2524,2532,2585,2620,2671,2732
+docs/architecture.md
+  s_f0a69312287991::t_ce17f8c75e6f9d 65,192,195-196,205-212,216,231-232,276,286
+docs/syscall-support.md
+  s_f0a69312287991::t_1131c31ca72cd0 37,40,45,51,55,58,60
+kernel/src/drm.rs
+  s_f0a69312287991::t_6eb98ca83a7d55 1,5,15-18,31-33,43-50,63-65,96-98,125-127,145-146,430,510-517,519-526,534-538,545-547,549,556,582,587
+kernel/src/drm/device.rs
+  s_f0a69312287991::t_4a51c67fe67921 4-12,29,38-43,94,101,121,127,129,131-138,143,146,170-182,202
+kernel/src/drm/event.rs
+  s_f0a69312287991::t_681a341d0294d3 1-116
+kernel/src/drm/master.rs
+  s_f0a69312287991::t_efbceacd97ce2a 1-44
+kernel/src/fs/devfs.rs
+  s_f0a69312287991::t_fd30ab95a3eb63 19,49,60,86,93,103-104,112,160,178-182,195,204,218,234,276-277,308-316
+kernel/src/fs/devpts.rs
+  s_f0a69312287991::t_f5846611f4178b 1-254
+kernel/src/fs/file.rs
+  s_f0a69312287991::t_7c09732fce8ce7 184,206,215
+kernel/src/fs/file/character.rs
+  s_f0a69312287991::t_69feb7cb97c3a6 5,12,14,21,33-34,38-40,42-58,69-90,98-110,119-122,124-128,134-137
+kernel/src/fs/file/terminal.rs
+  s_f0a69312287991::t_feffc544692689 410-417
+kernel/src/fs/inode.rs
+  s_f0a69312287991::t_f2925b31448745 24-25,40-41,55-56,64-71
+kernel/src/fs/mod.rs
+  s_f0a69312287991::t_ca9bc3d942be9b 6,14,19,37
+kernel/src/fs/pty.rs
+  s_f0a69312287991::t_2081f10a4bc70d 1-423
+kernel/src/main.rs
+  s_f0a69312287991::t_a83a39218ea7ee 75-76,117-124
+kernel/src/syscall/drm.rs
+  s_f0a69312287991::t_5779fb47d5321e 1-2,25-26,50,57-58,107,110-112,119-128,245,317,345,347-349,355-356
+kernel/src/syscall/epoll.rs
+  s_f0a69312287991::t_003f840d0ec0e3 217-223,229-236
+kernel/src/syscall/fs.rs
+  s_f0a69312287991::t_10533c6f02a97b 328-334
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_f0a69312287991::t_1328e4b6ca8778 152,174-286,354,373,383-387,403-415
+kernel/src/syscall/fs/io/sequential/write.rs
+  s_f0a69312287991::t_bc71504944fb50 245-246,254,276-307,316-374
+kernel/src/syscall/fs/open.rs
+  s_f0a69312287991::t_f46cbedc1875cb 158
+kernel/src/syscall/ioctl.rs
+  s_f0a69312287991::t_9343b24964f89f 10-14,51-53
+kernel/src/syscall/poll.rs
+  s_f0a69312287991::t_cee1fea8305578 59-90,93-99,102,114-125,263-268,273-278
+kernel/src/syscall/tty.rs
+  s_f0a69312287991::t_2046e9e8444d91 2,22-51,84
+kernel/src/task/model.rs
+  s_f0a69312287991::t_8ed0e08017539e 154-156,205
+kernel/src/task/model/process_clone.rs
+  s_f0a69312287991::t_21da0d9f38a436 85
+kernel/src/task/model/process_resources.rs
+  s_f0a69312287991::t_a5eb578aa9b309 20-21,23-30
+kernel/src/task/task_manager.rs
+  s_f0a69312287991::t_d0f060ec8ce88b 47,72
+kernel/src/task/task_manager/deferred.rs
+  s_f0a69312287991::t_567cede76e4fdb 304-306,344
+kernel/src/task/task_manager/pipe_wait.rs
+  s_f0a69312287991::t_18eff36e4fba86 92-104,110-112,116
+kernel/src/task/task_manager/process_group.rs
+  s_f0a69312287991::t_889ab0367cb278 138,154-158
+kernel/src/task/task_manager/terminal_access.rs
+  s_f0a69312287991::t_f48c429cf6a09e 12-22
+kernel/src/task/task_manager/wait_registry.rs
+  s_f0a69312287991::t_ff15f2a438ece7 157-165,225,254,271,279,290,292,302-303
+scripts/verify_busybox.py
+  s_f0a69312287991::t_f8cf25c6fbc9dc 727-776,797,828-829,940,958,968
+tools/architecture-check/src/main.rs
+  s_f0a69312287991::t_3fc71e8f283501 265,278
+user/inittab
+  s_f0a69312287991::t_54bfdfaee286cc 2
+user/liteos-terminal.c
+  s_f0a69312287991::t_b62c5dfe62ca75 1-711
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da0c7b8db29a232f1df27f30eeb4f1fd39daf194",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
