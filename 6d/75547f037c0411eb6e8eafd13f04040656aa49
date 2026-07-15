@@ -1,0 +1,23 @@
+docs/architecture.md
+  s_f0a69312287991::t_ffc5a4acaf9298 210
+user/liteos-terminal.c
+  s_f0a69312287991::t_ceb3318657573a 42-50,347-350,352-357,364,366-367
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6d75547f037c0411eb6e8eafd13f04040656aa49",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
