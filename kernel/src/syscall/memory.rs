@@ -98,88 +98,118 @@ pub(crate) fn sys_mmap(
         Ok(permission) => permission,
         Err(error) => return -error,
     };
-    let task = current_task().expect("mmap requires a current task");
     let fixed = flags & MAP_FIXED != 0;
-    if fixed {
-        if address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE) {
+    // Reject cheap range errors before regular-file backing acquisition can publish a new
+    // canonical page-cache owner. MemorySet remains the final full-range validator.
+    if fixed && (length == 0 || address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE)) {
+        return -errno::EINVAL;
+    }
+    let task = current_task().expect("mmap requires a current task");
+
+    enum PreparedMapping {
+        Anonymous,
+        SharedAnonymous,
+        Device(crate::memory::DeviceMappingSource),
+        PrivateFile(alloc::sync::Arc<dyn crate::memory::SharedFileMapping>),
+        SharedFile(alloc::sync::Arc<dyn crate::memory::SharedFileMapping>),
+    }
+
+    // Resolve every remaining ABI/backing error before destructive MAP_FIXED replacement.
+    // The prepared value only retains the canonical immutable backing owner.
+    let prepared = if flags & MAP_ANONYMOUS != 0 {
+        if fd != -1 || offset != 0 {
             return -errno::EINVAL;
         }
+        if sharing == MAP_SHARED {
+            PreparedMapping::SharedAnonymous
+        } else {
+            PreparedMapping::Anonymous
+        }
+    } else {
+        if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
+            return -errno::EINVAL;
+        }
+        let Some(ofd) = task.fd_get(fd as usize) else {
+            return -errno::EBADF;
+        };
+        let access_mode = *ofd.flags.lock() & O_ACCMODE;
+        if access_mode == O_WRONLY {
+            return -errno::EACCES;
+        }
+        if let OpenFileKind::Character(CharacterDevice::Drm(file)) = &ofd.kind {
+            if sharing != MAP_SHARED || permission.contains(MapPermission::X) {
+                return -errno::EINVAL;
+            }
+            if permission.contains(MapPermission::W) && access_mode == O_RDONLY {
+                return -errno::EACCES;
+            }
+            let source = match file.mapping(offset as u64, length) {
+                Ok(source) => source,
+                Err(error) => return -super::drm::drm_errno(error),
+            };
+            PreparedMapping::Device(source)
+        } else {
+            let Some(inode) = ofd.inode_ref() else {
+                return -errno::ENODEV;
+            };
+            if inode.inode_type() != InodeType::File {
+                return -errno::ENODEV;
+            }
+            if sharing == MAP_SHARED
+                && permission.contains(MapPermission::W)
+                && access_mode == O_RDONLY
+            {
+                return -errno::EACCES;
+            }
+            let mapping = match crate::fs::mapping(inode.clone()) {
+                Ok(mapping) => mapping,
+                Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
+                Err(_) => return -errno::EIO,
+            };
+            if sharing == MAP_SHARED {
+                PreparedMapping::SharedFile(mapping)
+            } else {
+                PreparedMapping::PrivateFile(mapping)
+            }
+        }
+    };
+
+    if fixed {
+        // This begins the replacement stage. A later VMA installation error does not restore
+        // the removed mapping, matching the deliberately limited Linux-compatible contract.
         if let Err(error) = task.unmap_user_mapping(address, length) {
             return -memory_errno(error);
         }
     }
     let exact_address = fixed || flags & MAP_FIXED_NOREPLACE != 0;
-    if flags & MAP_ANONYMOUS != 0 {
-        if fd != -1 || offset != 0 {
-            return -errno::EINVAL;
-        }
-        let result = if sharing == MAP_SHARED {
-            task.map_shared_anonymous(address, length, permission, exact_address)
-        } else {
+    let result = match prepared {
+        PreparedMapping::Anonymous => {
             task.map_anonymous(address, length, permission, exact_address)
-        };
-        return result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
-    }
-    if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
-        return -errno::EINVAL;
-    }
-    let Some(ofd) = task.fd_get(fd as usize) else {
-        return -errno::EBADF;
-    };
-    let access_mode = *ofd.flags.lock() & O_ACCMODE;
-    if access_mode == O_WRONLY {
-        return -errno::EACCES;
-    }
-    if let OpenFileKind::Character(CharacterDevice::Drm(file)) = &ofd.kind {
-        if sharing != MAP_SHARED || permission.contains(MapPermission::X) {
-            return -errno::EINVAL;
         }
-        if permission.contains(MapPermission::W) && access_mode == O_RDONLY {
-            return -errno::EACCES;
+        PreparedMapping::SharedAnonymous => {
+            task.map_shared_anonymous(address, length, permission, exact_address)
         }
-        let source = match file.mapping(offset as u64, length) {
-            Ok(source) => source,
-            Err(error) => return -super::drm::drm_errno(error),
-        };
-        return task
-            .map_device(address, length, permission, exact_address, source)
-            .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
-    }
-    let Some(inode) = ofd.inode_ref() else {
-        return -errno::ENODEV;
-    };
-    if inode.inode_type() != InodeType::File {
-        return -errno::ENODEV;
-    }
-    let mapping = match crate::fs::mapping(inode.clone()) {
-        Ok(mapping) => mapping,
-        Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
-        Err(_) => return -errno::EIO,
-    };
-    if sharing == MAP_SHARED {
-        if permission.contains(MapPermission::W) && *ofd.flags.lock() & O_ACCMODE == O_RDONLY {
-            return -errno::EACCES;
+        PreparedMapping::Device(source) => {
+            task.map_device(address, length, permission, exact_address, source)
         }
-        return task
-            .map_shared_file(
-                address,
-                length,
-                permission,
-                exact_address,
-                mapping,
-                offset as u64,
-            )
-            .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize);
-    }
-    task.map_private_file(
-        address,
-        length,
-        permission,
-        exact_address,
-        mapping,
-        offset as u64,
-    )
-    .map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
+        PreparedMapping::PrivateFile(mapping) => task.map_private_file(
+            address,
+            length,
+            permission,
+            exact_address,
+            mapping,
+            offset as u64,
+        ),
+        PreparedMapping::SharedFile(mapping) => task.map_shared_file(
+            address,
+            length,
+            permission,
+            exact_address,
+            mapping,
+            offset as u64,
+        ),
+    };
+    result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }
 
 /// @description 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。

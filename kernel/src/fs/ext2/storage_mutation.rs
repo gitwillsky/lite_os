@@ -5,10 +5,10 @@ impl Ext2Inode {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        let mutation = self.fs.begin_mutation()?;
+        let mut mutation = self.fs.begin_mutation()?;
         let offset = self.size();
         let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        let written = self.write_at_locked(offset_usize, buf)?;
+        let written = self.write_at_locked(&mut mutation, offset_usize, buf)?;
         mutation.commit()?;
         Ok((offset, written))
     }
@@ -26,18 +26,18 @@ impl Ext2Inode {
         let mut begin = first;
         while begin < last {
             let finish = (begin + BLOCKS_PER_TRANSACTION).min(last);
-            let mutation = self.fs.begin_mutation()?;
+            let mut mutation = self.fs.begin_mutation()?;
             for index in begin..finish {
                 let index = u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?;
                 if self.map_block_sparse(index)? == 0 {
-                    self.ensure_block_mapped(index)?;
+                    self.ensure_block_mapped(&mut mutation, index)?;
                 }
             }
             mutation.commit()?;
             begin = finish;
         }
-        let mutation = self.fs.begin_mutation()?;
-        let mut inode = self.disk.lock();
+        let mut mutation = self.fs.begin_mutation()?;
+        let mut inode = mutation.inode(self)?;
         if end > Self::disk_size(&inode) {
             Self::set_disk_size(&mut inode, end);
         }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::memory::{FutexKey, UserAccessError};
 
 /// @description futex WAIT 在 task layer 的精确结果分类。
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +72,41 @@ pub(crate) fn futex_wait(
     }
 }
 
+/// @description 在 queue→memory 固定锁序内解析 key，并唤醒最多 `count` 个 waiter。
+/// @param count 最大唤醒数。
+/// @param bitset wake 与 waiter mask 的非零交集条件。
+/// @param with_key 在 AddressSpace lock 内把稳定 FutexKey 交给 consume。
+/// @return 实际消费的 waiter 数；key 解析 fault 或非法 bitset 返回错误。
+pub(in crate::task) fn futex_wake_with_key(
+    count: usize,
+    bitset: u32,
+    with_key: impl FnOnce(&mut dyn FnMut(FutexKey)) -> Result<(), UserAccessError>,
+) -> Result<usize, FutexWaitError> {
+    if bitset == 0 {
+        return Err(FutexWaitError::Invalid);
+    }
+    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let mut waiters = FallibleMap::new();
+    {
+        let mut consume = |key| {
+            for _ in 0..count {
+                let Some(waiter) = queue.take_futex(key, bitset) else {
+                    break;
+                };
+                waiters.commit_vacant(waiter);
+            }
+        };
+        with_key(&mut consume).map_err(|_| FutexWaitError::Fault)?;
+    }
+    drop(queue);
+    let count = waiters.len();
+    while let Some((&wait_id, _)) = waiters.first_key_value() {
+        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
+        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
+    }
+    Ok(count)
+}
+
 /// @description 唤醒同一 memory-domain key 上最多 `count` 个匹配 waiter。
 ///
 /// @param task 提供 futex 地址空间与 shared backing 解析上下文的 Thread owner。
@@ -89,27 +125,9 @@ pub(crate) fn futex_wake(
     if address == 0 || address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let waiters = task
-        .with_futex_key(address, private, |key| {
-            let mut waiters = FallibleMap::new();
-            for _ in 0..count {
-                let Some(waiter) = queue.take_futex(key, bitset) else {
-                    break;
-                };
-                waiters.commit_vacant(waiter);
-            }
-            waiters
-        })
-        .map_err(|_| FutexWaitError::Fault)?;
-    drop(queue);
-    let count = waiters.len();
-    let mut waiters = waiters;
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged futex waiter");
-        crate::task::processor::wake_futex_task(entry.task, wait_id, WaitResult::Woken);
-    }
-    Ok(count)
+    futex_wake_with_key(count, bitset, |consume| {
+        task.with_futex_key(address, private, consume)
+    })
 }
 
 /// @description 原子比较 source word，唤醒一部分 waiter，并把其余 waiter 改挂到 target key。

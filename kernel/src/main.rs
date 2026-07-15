@@ -66,14 +66,18 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     fs::init_vfs();
     drivers::init();
     if let Some(display) = drivers::primary_display() {
-        let (completion_read, completion_write) =
-            task::create_pipe_endpoints().expect("DRM completion notification allocation failed");
+        let (completion_read, completion_write) = task::create_notification_endpoints()
+            .expect("DRM completion notification allocation failed");
         drm::device::init(display, completion_read, completion_write)
             .expect("primary DRM initialization failed");
     }
-    input::init(task::create_pipe_endpoints).expect("evdev input initialization failed");
-    fs::init_pty(task::create_pipe_endpoints, task::hangup_terminal)
-        .expect("Unix98 PTY initialization failed");
+    input::init(task::create_notification_endpoints).expect("evdev input initialization failed");
+    fs::init_pty(
+        task::create_pipe_endpoints,
+        task::create_notification_endpoints,
+        task::hangup_terminal,
+    )
+    .expect("Unix98 PTY initialization failed");
     socket::init();
     mount_root_filesystem();
     task::init(

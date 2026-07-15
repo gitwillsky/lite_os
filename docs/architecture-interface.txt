@@ -151,7 +151,7 @@ bootloader/src/uart16550.rs :: pub (crate) impl Uart16550Map :: fn get (& self) 
 bootloader/src/uart16550.rs :: pub (crate) static UART : Mutex < Uart16550Map >
 bootloader/src/uart16550.rs :: pub (crate) struct Uart16550Map
 kernel/src/arch/mod.rs :: pub (crate) use riscv64 :: hart
-kernel/src/arch/mod.rs :: pub (crate) use riscv64 :: { console , dtb , hart_start_entry , sbi }
+kernel/src/arch/mod.rs :: pub (crate) use riscv64 :: { before_mmio_write , console , dtb , hart_start_entry , sbi }
 kernel/src/arch/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
 kernel/src/arch/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
 kernel/src/arch/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
@@ -229,10 +229,12 @@ kernel/src/arch/riscv64/hart.rs :: pub (crate) struct HartTopology
 kernel/src/arch/riscv64/hart.rs :: pub (crate) use memory_barrier :: { complete_pending_memory_barrier , synchronize_memory_barrier }
 kernel/src/arch/riscv64/hart/memory_barrier.rs :: pub (crate) fn complete_pending_memory_barrier ()
 kernel/src/arch/riscv64/hart/memory_barrier.rs :: pub (crate) fn synchronize_memory_barrier ()
+kernel/src/arch/riscv64/io.rs :: pub (crate) fn before_mmio_write ()
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod console
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod dtb
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod hart
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod sbi
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: before_mmio_write
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use start :: entry_address as hart_start_entry
 kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn console_putchar (byte : u8) -> Result < () , isize >
 kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn hart_start (hart_id : usize , start_address : usize , opaque : usize) -> Result < () , isize >
@@ -650,32 +652,35 @@ kernel/src/fs/epoll.rs :: pub (crate) struct EpollEvent
 kernel/src/fs/epoll.rs :: pub (crate) struct EpollInterest
 kernel/src/fs/ext2.rs :: pub (crate) impl Ext2FileSystem :: fn new (device : Arc < dyn BlockDevice >) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/ext2.rs :: pub (crate) struct Ext2FileSystem
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn add_dir_entry_locked (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , kind : InodeType ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn create_hard_link (& self , name : & [u8] , target : Arc < dyn Inode > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn create_symlink (& self , name : & [u8] , target : & [u8] , metadata : super :: super :: CreateMetadata ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn dir_iterate_blocks < F : FnMut (Ext2DirEntry2Header , & [u8]) -> bool > (& self , mut visit : F ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn reload_after_lookup (& self , lookup : Arc < dyn Inode > , number : u32 ,) -> Result < (Arc < Self > , bool) , FileSystemError >
+kernel/src/fs/ext2/directory.rs :: pub (super) impl Ext2Inode :: fn remove_dir_entry_locked (& self , _mutation : & mut MutationGuard < '_ > , name : & [u8] ,) -> Result < u32 , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn copy_staged (& self , block : u32 , output : & mut [u8]) -> bool
 kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext2FileSystem >) -> Result < Self , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext2FileSystem) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u32 , bytes : & [u8] , block_size : usize ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext2FileSystem) -> Result < Self , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext2FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'inode > (& mut self , inode : & 'inode Ext2Inode ,) -> Result < MutexGuard < 'inode , Ext2InodeDisk > , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) struct Journal
 kernel/src/fs/ext2/journal.rs :: pub (super) struct MutationGuard < 'a >
-kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2Inode :: fn update_owner_mode (& self , mode : Option < u32 > , uid : Option < u32 > , gid : Option < u32 > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2Inode :: fn update_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2Inode :: fn update_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2InodeDisk :: fn gid (& self) -> u32
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2InodeDisk :: fn set_gid (& mut self , gid : u32)
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2InodeDisk :: fn set_uid (& mut self , uid : u32)
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2InodeDisk :: fn uid (& self) -> u32
 kernel/src/fs/ext2/mount.rs :: pub (super) impl Ext2FileSystem :: fn validate_superblock (sb : & Ext2SuperBlock , block_size : usize ,) -> Result < () , FileSystemError >
-kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn defer_reclaim_locked (& self , inode : & Arc < Ext2Inode > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn defer_reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , inode : & Arc < Ext2Inode > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn recover_orphans (& self) -> Result < () , FileSystemError >
-kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , mutation : & mut MutationGuard < '_ > , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn allocate_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn append_bytes (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
-kernel/src/fs/file.rs :: enum FileDescriptorError :: Limit
-kernel/src/fs/file.rs :: enum FileDescriptorError :: NotFound
-kernel/src/fs/file.rs :: enum FileDescriptorError :: OutOfMemory
 kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
@@ -685,7 +690,6 @@ kernel/src/fs/file.rs :: enum OpenFileKind :: Socket (Arc < Socket >)
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: flags : Mutex < u32 >
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: kind : OpenFileKind
 kernel/src/fs/file.rs :: pub (crate) OpenFileDescription :: offset : Mutex < u64 >
-kernel/src/fs/file.rs :: pub (crate) const MAX_FILE_DESCRIPTORS : usize = 1_048_576
 kernel/src/fs/file.rs :: pub (crate) const O_ACCMODE : u32 = 3
 kernel/src/fs/file.rs :: pub (crate) const O_APPEND : u32 = 0x400
 kernel/src/fs/file.rs :: pub (crate) const O_CLOEXEC : u32 = 0x80000
@@ -693,21 +697,7 @@ kernel/src/fs/file.rs :: pub (crate) const O_NONBLOCK : u32 = 0x800
 kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_RDWR : u32 = 2
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
-kernel/src/fs/file.rs :: pub (crate) enum FileDescriptorError
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool , limit : usize ,) -> Result < (usize , usize) , FileDescriptorError >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn close (& mut self , fd : usize) -> Result < () , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn descriptor_flags (& self , fd : usize) -> Result < u32 , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (& mut self , old : usize , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn slot_capacity (& self) -> usize
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_cloexec (& mut self) -> Option < Arc < OpenFileDescription > >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
-kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
@@ -721,10 +711,10 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn poll_events 
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (socket : Arc < Socket > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Result < Arc < Self > , () >
-kernel/src/fs/file.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
 kernel/src/fs/file.rs :: pub (crate) use character :: CharacterDevice
+kernel/src/fs/file.rs :: pub (crate) use descriptor_table :: { DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , }
 kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead , TerminalReadMode }
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
@@ -741,7 +731,28 @@ kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , FileSystemError >
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn readiness_generation (& self) -> u64
-kernel/src/fs/file/proc.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
+kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: Limit
+kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: NotFound
+kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: OutOfMemory
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) const MAX_FILE_DESCRIPTORS : usize = 1_048_576
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) enum FileDescriptorError
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl DetachedFileDescriptor :: fn finish_close (self) -> Arc < OpenFileDescription >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool , limit : usize ,) -> Result < (usize , usize) , FileDescriptorError >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn descriptor_flags (& self , fd : usize) -> Result < u32 , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn detach (& mut self , fd : usize) -> Result < DetachedFileDescriptor , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate (& mut self , old : usize , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn duplicate_to (& mut self , old : usize , new : usize , cloexec : bool , limit : usize ,) -> Result < Option < DetachedFileDescriptor > , FileDescriptorError >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn slot_capacity (& self) -> usize
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& mut self) -> Self
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn take_cloexec_batch (& mut self , cursor : & mut usize , output : & mut [Option < DetachedFileDescriptor >] ,) -> usize
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Result < Self , () >
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct DetachedFileDescriptor
+kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct FileDescriptorTable
 kernel/src/fs/file/proc.rs :: pub (crate) impl OpenFileDescription :: fn proc_target (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Output
@@ -818,6 +829,7 @@ kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
 kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset : u64 , _length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn device_kind (& self) -> Option < DeviceKind >
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
@@ -833,7 +845,6 @@ kernel/src/fs/inode.rs :: trait Inode :: fn metadata (& self) -> Result < InodeM
 kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
-kernel/src/fs/inode.rs :: trait Inode :: fn set_owner_mode (& self , _mode : Option < u32 > , _uid : Option < u32 > , _gid : Option < u32 > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
 kernel/src/fs/inode.rs :: trait Inode :: fn symlink (& self , _name : & [u8] , _target : & [u8] , _metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -878,10 +889,10 @@ kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent }
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
-kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
-kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
+kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use pty :: { PtyMaster , PtySlave , init as init_pty }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
@@ -926,8 +937,18 @@ kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn permits (& 
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn require (& self , metadata : InodeMetadata , requested : u8 ,) -> Result < () , FileSystemError >
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn root () -> Self
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn uid (& self) -> u32
+kernel/src/fs/permission.rs :: pub (crate) impl OwnerModeChange :: fn chmod (identity : AccessIdentity , mode : u32) -> Self
+kernel/src/fs/permission.rs :: pub (crate) impl OwnerModeChange :: fn chown (identity : AccessIdentity , uid : Option < u32 > , gid : Option < u32 >) -> Self
 kernel/src/fs/permission.rs :: pub (crate) struct AccessIdentity
 kernel/src/fs/permission.rs :: pub (crate) struct CreateMetadata
+kernel/src/fs/permission.rs :: pub (crate) struct OwnerModeChange
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn authorize (self , mut current : OwnerModeState ,) -> Result < OwnerModeState , FileSystemError >
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn authorize_metadata (self , metadata : InodeMetadata) -> Result < () , FileSystemError >
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn gid (& self) -> u32
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn mode (& self) -> u16
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn new (kind : InodeType , mode : u16 , uid : u32 , gid : u32) -> Self
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn uid (& self) -> u32
+kernel/src/fs/permission.rs :: pub (super) struct OwnerModeState
 kernel/src/fs/procfs.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource >) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
 kernel/src/fs/procfs.rs :: pub (crate) trait ProcSource
@@ -1069,7 +1090,7 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network 
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_vmstat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
-kernel/src/fs/pty.rs :: pub (crate) fn init (factory : PipeFactory , hangup : HangupNotifier) -> Result < () , () >
+kernel/src/fs/pty.rs :: pub (crate) fn init (data_factory : PipeFactory , notification_factory : PipeFactory , hangup : HangupNotifier ,) -> Result < () , () >
 kernel/src/fs/pty.rs :: pub (crate) fn open_master () -> Result < Arc < PtyMaster > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
@@ -1234,6 +1255,7 @@ kernel/src/ipc.rs :: pub (crate) enum PipeRead
 kernel/src/ipc.rs :: pub (crate) enum PipeWaitCondition
 kernel/src/ipc.rs :: pub (crate) enum PipeWrite
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn identity (pipe : & Arc < Self >) -> usize
+kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn notification_pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn object_id (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn pair (notifier : Arc < dyn PipeNotifier > ,) -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction : PipeDirection) -> PipePollState
@@ -2177,7 +2199,6 @@ kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
@@ -2191,7 +2212,6 @@ kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , Si
 kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
 kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: CpuAffinity
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
@@ -2379,6 +2399,8 @@ kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: f
 kernel/src/task/model/resource_limits.rs :: pub (super) impl ResourceLimits :: fn get (& self , resource : usize) -> Option < ResourceLimit >
 kernel/src/task/model/resource_limits.rs :: pub (super) impl TaskControlBlock :: fn user_fault_limits (& self) -> crate :: memory :: UserFaultLimits
 kernel/src/task/model/resource_limits.rs :: pub (super) struct ResourceLimits
+kernel/src/task/model/robust_list.rs :: pub (crate) impl TaskControlBlock :: fn set_robust_list (& self , head : usize , length : usize) -> Result < () , () >
+kernel/src/task/model/robust_list.rs :: pub (in crate :: task) impl TaskControlBlock :: fn cleanup_robust_list (& self)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: AdvisoryLock (u64)
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Child
 kernel/src/task/model/scheduling.rs :: enum WaitMembership :: Console (u64)
@@ -2465,6 +2487,7 @@ kernel/src/task/model/signal_state.rs :: pub (super) struct ProcessSignalState
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
 kernel/src/task/pid.rs :: pub (super) ProcessId :: <tuple> : usize
+kernel/src/task/pid.rs :: pub (super) const PID_MAX : usize = 0x3fff_ffff
 kernel/src/task/pid.rs :: pub (super) impl ProcessId :: const fn allocated (value : usize) -> Self
 kernel/src/task/pid.rs :: pub (super) struct ProcessId
 kernel/src/task/processor.rs :: pub (crate) Processor :: current : Option < Arc < TaskControlBlock > >
@@ -2506,6 +2529,10 @@ kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on
 kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> usize
 kernel/src/task/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < TaskControlBlock > , generation : u64) -> RunQueueEntry
 kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock , affinity : CpuAffinity) -> usize
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry)
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : usize , entry : RunQueueEntry)
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn drain_inbound_to_local (processor : & mut Processor)
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn select_task (processor : & mut Processor) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64
@@ -2535,7 +2562,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deli
 kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
 kernel/src/task/task_manager.rs :: pub (crate) use deferred :: { RealTimerError , dispatch_pending_deferred_work , real_timer , set_real_timer , }
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
-kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until }
+kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -2546,11 +2573,12 @@ kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError ,
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , resize_terminal , }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
-kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { fork_current_process , vfork_current_process }
+kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { ProcessCloneError , fork_current_process , vfork_current_process }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/task_manager.rs :: pub (in crate :: task) mod advisory_lock
 kernel/src/task/task_manager.rs :: pub (in crate :: task) mod vfork
+kernel/src/task/task_manager.rs :: pub (in crate :: task) use futex :: futex_wake_with_key
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
 kernel/src/task/task_manager.rs :: pub (super) fn add_init_task (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/advisory_lock.rs :: enum AdvisoryLockWaitError :: FileSystem (crate :: fs :: FileSystemError)
@@ -2590,10 +2618,12 @@ kernel/src/task/task_manager/futex.rs :: pub (crate) enum FutexWaitError
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_requeue (task : & TaskControlBlock , source : usize , target : usize , private : bool , wake_count : usize , requeue_count : usize , compare : Option < u32 > ,) -> Result < usize , FutexWaitError >
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wait (task : Arc < TaskControlBlock > , address : usize , expected : u32 , private : bool , deadline : Option < u64 > , bitset : u32 ,) -> Result < () , FutexWaitError >
 kernel/src/task/task_manager/futex.rs :: pub (crate) fn futex_wake (task : & TaskControlBlock , address : usize , private : bool , count : usize , bitset : u32 ,) -> Result < usize , FutexWaitError >
+kernel/src/task/task_manager/futex.rs :: pub (in crate :: task) fn futex_wake_with_key (count : usize , bitset : u32 , with_key : impl FnOnce (& mut dyn FnMut (FutexKey)) -> Result < () , UserAccessError > ,) -> Result < usize , FutexWaitError >
 kernel/src/task/task_manager/load_average.rs :: pub (super) fn update (now_us : u64)
 kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: fn new () -> Self
 kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: fn values (& self) -> [u64 ; 3]
 kernel/src/task/task_manager/load_average.rs :: pub (super) struct LoadAverage
+kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_notification_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
@@ -2693,8 +2723,11 @@ kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn parent_pid (pi
 kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn scheduler_thread (tid : usize , caller : & Arc < TaskControlBlock > ,) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn thread_by_tid (graph : & ProcessGraph , tid : usize ,) -> Option < (usize , Arc < TaskControlBlock >) >
-kernel/src/task/task_manager/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , crate :: memory :: MemoryError >
-kernel/src/task/task_manager/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize ,) -> Result < usize , crate :: memory :: MemoryError >
+kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: Memory (crate :: memory :: MemoryError)
+kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: ResourceLimit
+kernel/src/task/task_manager/vfork.rs :: pub (crate) enum ProcessCloneError
+kernel/src/task/task_manager/vfork.rs :: pub (crate) fn fork_current_process () -> Result < usize , ProcessCloneError >
+kernel/src/task/task_manager/vfork.rs :: pub (crate) fn vfork_current_process (child_stack : usize) -> Result < usize , ProcessCloneError >
 kernel/src/task/task_manager/vfork.rs :: pub (in crate :: task) fn complete_vfork_exec (child_pid : usize)
 kernel/src/task/task_manager/vfork.rs :: pub (super) fn complete_vfork (child_pid : usize)
 kernel/src/task/task_manager/vfork.rs :: pub (super) fn wake_parent (parent : Arc < TaskControlBlock > , child_pid : usize)

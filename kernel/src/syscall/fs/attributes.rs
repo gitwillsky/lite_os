@@ -1,5 +1,5 @@
 use crate::{
-    fs::{FileSystemError, Inode, InodeType, vfs},
+    fs::{FileSystemError, Inode, OwnerModeChange, vfs},
     syscall::errno,
     task::{TaskControlBlock, current_task},
 };
@@ -40,20 +40,8 @@ fn target(
 }
 
 fn chmod_inode(task: &TaskControlBlock, inode: alloc::sync::Arc<dyn Inode>, mode: u32) -> isize {
-    let metadata = match inode.metadata() {
-        Ok(value) => value,
-        Err(error) => return ferr(error),
-    };
-    let identity = task.access_identity(true);
-    if identity.uid() != 0 && identity.uid() != metadata.uid {
-        return -errno::EPERM;
-    }
-    let mut mode = mode & 0o7777;
-    if identity.uid() != 0 && !identity.in_group(metadata.gid) {
-        mode &= !0o2000;
-    }
     inode
-        .set_owner_mode(Some(mode), None, None)
+        .change_owner_mode(OwnerModeChange::chmod(task.access_identity(true), mode))
         .map_or_else(ferr, |()| 0)
 }
 
@@ -93,29 +81,17 @@ fn chown_inode(
     owner: u32,
     group: u32,
 ) -> isize {
-    let metadata = match inode.metadata() {
-        Ok(value) => value,
-        Err(error) => return ferr(error),
-    };
-    let identity = task.access_identity(true);
     let uid = (owner != u32::MAX).then_some(owner);
     let gid = (group != u32::MAX).then_some(group);
-    if identity.uid() != 0
-        && (identity.uid() != metadata.uid
-            || uid.is_some_and(|value| value != metadata.uid)
-            || gid.is_some_and(|value| !identity.in_group(value)))
-    {
-        return -errno::EPERM;
-    }
-    let mode = (inode.inode_type() == InodeType::File && (uid.is_some() || gid.is_some()))
-        .then_some(metadata.mode & !0o6000);
-    inode.set_owner_mode(mode, uid, gid).map_or_else(
-        |error| match error {
-            FileSystemError::InvalidOperation => -errno::EOVERFLOW,
-            other => ferr(other),
-        },
-        |()| 0,
-    )
+    inode
+        .change_owner_mode(OwnerModeChange::chown(task.access_identity(true), uid, gid))
+        .map_or_else(
+            |error| match error {
+                FileSystemError::InvalidOperation => -errno::EOVERFLOW,
+                other => ferr(other),
+            },
+            |()| 0,
+        )
 }
 
 /// @description 按 Linux fchown ABI 修改已打开 inode 的 owner/group 并更新 ctime。

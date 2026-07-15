@@ -9,10 +9,11 @@ impl Ext2FileSystem {
     /// @errors 重复入链、on-disk 状态或 I/O 无效时返回错误。
     pub(super) fn defer_reclaim_locked(
         &self,
+        mutation: &mut MutationGuard<'_>,
         inode: &Arc<Ext2Inode>,
     ) -> Result<(), FileSystemError> {
         let previous = self.superblock.lock().s_last_orphan;
-        let mut disk = inode.disk.lock();
+        let mut disk = mutation.inode(inode)?;
         if disk.i_links_count == 0 {
             return Err(FileSystemError::InvalidFileSystem);
         }
@@ -32,6 +33,7 @@ impl Ext2FileSystem {
     /// @errors target 不在有限无环 chain、inode 或 I/O 无效时返回错误。
     pub(super) fn remove_orphan_locked(
         &self,
+        mutation: &mut MutationGuard<'_>,
         target: u32,
         target_next: u32,
     ) -> Result<(), FileSystemError> {
@@ -45,7 +47,7 @@ impl Ext2FileSystem {
             if current == target {
                 if let Some(previous) = previous {
                     let previous = self.load_inode(previous)?;
-                    let mut disk = previous.disk.lock();
+                    let mut disk = mutation.inode(&previous)?;
                     disk.i_dtime = target_next;
                     self.write_inode_disk(previous.inode_num, &disk)?;
                 } else {
@@ -74,10 +76,10 @@ impl Ext2FileSystem {
             }
             let inode = self.load_inode(inode_number)?;
             let next = inode.disk.lock().i_dtime;
-            let mutation = self.begin_mutation()?;
+            let mut mutation = self.begin_mutation()?;
             self.superblock.lock().s_last_orphan = next;
             self.write_primary_superblock()?;
-            inode.reclaim_locked(false)?;
+            inode.reclaim_locked(&mut mutation, false)?;
             mutation.commit()?;
         }
         Err(FileSystemError::InvalidFileSystem)

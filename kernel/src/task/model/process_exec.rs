@@ -45,6 +45,10 @@ impl TaskControlBlock {
         // 在 process graph lock 上建立确定顺序，避免新映像已经生效而 parent 仍错误改组。
         super::super::task_manager::mark_process_exec(self.tgid());
 
+        // Linux exec 在旧 mm 仍可访问时完成 robust owner-death publication，并清除
+        // per-Thread registration；否则相同 VA 在新映像中会被误当成旧 robust list。
+        self.cleanup_robust_list();
+
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
         let kernel_stack_top = self.thread.kernel_stack.get_top();

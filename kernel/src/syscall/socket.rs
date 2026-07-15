@@ -7,7 +7,7 @@ use crate::{
         UnixAddress, UnixConnectResources, configure_address, configure_gateway, configure_netmask,
         configure_up, interface_snapshot,
     },
-    task::{TaskControlBlock, WaitResult, create_pipe_endpoints, current_task},
+    task::{self, TaskControlBlock, WaitResult, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};
@@ -104,7 +104,7 @@ fn new_socket(
     kind: SocketType,
     protocol: usize,
 ) -> Result<Arc<Socket>, isize> {
-    create_pipe_endpoints()
+    task::create_notification_endpoints()
         .map_err(|_| -errno::ENOMEM)
         .and_then(|notify| Socket::new(domain, kind, protocol, notify).map_err(socket_error))
 }
@@ -257,11 +257,11 @@ pub(crate) fn sys_socketpair(domain: usize, kind: usize, protocol: usize, output
         Ok(socket) => socket,
         Err(error) => return error,
     };
-    let first_to_second = match create_pipe_endpoints() {
+    let first_to_second = match task::create_pipe_endpoints() {
         Ok(pair) => pair,
         Err(_) => return -errno::ENOMEM,
     };
-    let second_to_first = match create_pipe_endpoints() {
+    let second_to_first = match task::create_pipe_endpoints() {
         Ok(pair) => pair,
         Err(_) => return -errno::ENOMEM,
     };
@@ -325,15 +325,15 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
     };
     let resources =
         if client.domain() == SocketDomain::Unix && client.socket_type() == SocketType::Stream {
-            let server_notify = match create_pipe_endpoints() {
+            let server_notify = match task::create_notification_endpoints() {
                 Ok(value) => value,
                 Err(_) => return -errno::ENOMEM,
             };
-            let client_to_server = match create_pipe_endpoints() {
+            let client_to_server = match task::create_pipe_endpoints() {
                 Ok(value) => value,
                 Err(_) => return -errno::ENOMEM,
             };
-            let server_to_client = match create_pipe_endpoints() {
+            let server_to_client = match task::create_pipe_endpoints() {
                 Ok(value) => value,
                 Err(_) => return -errno::ENOMEM,
             };
@@ -373,7 +373,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
         Err(error) => return error,
     };
     let accept_notify = if listener.domain() == SocketDomain::Inet {
-        match create_pipe_endpoints() {
+        match task::create_notification_endpoints() {
             Ok(value) => Some(value),
             Err(_) => return -errno::ENOMEM,
         }

@@ -1,11 +1,13 @@
 use alloc::{sync::Arc, vec::Vec};
+use core::num::NonZeroUsize;
 use spin::Mutex;
 
 mod eventfd;
 pub(crate) use eventfd::{EventFd, EventFdRead, EventFdWrite};
 
 pub(crate) const PIPE_BUF: usize = 4096;
-const PIPE_CAPACITY: usize = 64 * 1024;
+const PIPE_CAPACITY: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
+const NOTIFICATION_CAPACITY: NonZeroUsize = NonZeroUsize::MIN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -93,7 +95,7 @@ struct PipeState {
     write_generation: u64,
 }
 
-/// @description anonymous pipe 的唯一 byte ring 与 endpoint lifecycle owner。
+/// @description data/notification Pipe 的唯一 byte ring、generation 与 endpoint lifecycle owner。
 pub(crate) struct Pipe {
     // Pipe owner 分配一次并由两个 endpoint 共享；缺失时 read/write fd 会报告不同 pipe inode。
     object_id: u64,
@@ -109,9 +111,27 @@ impl Pipe {
     pub(crate) fn pair(
         notifier: Arc<dyn PipeNotifier>,
     ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        Self::pair_with_capacity(notifier, PIPE_CAPACITY)
+    }
+
+    /// @description 创建只承载合并 readiness token 的一字节 Pipe endpoints。
+    ///
+    /// @param notifier 与 data Pipe 共用的 task wait-registry 通知 seam。
+    /// @return 两个 endpoint；kernel heap 不足返回错误。
+    pub(crate) fn notification_pair(
+        notifier: Arc<dyn PipeNotifier>,
+    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        Self::pair_with_capacity(notifier, NOTIFICATION_CAPACITY)
+    }
+
+    fn pair_with_capacity(
+        notifier: Arc<dyn PipeNotifier>,
+        capacity: NonZeroUsize,
+    ) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+        let capacity = capacity.get();
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(PIPE_CAPACITY).map_err(|_| ())?;
-        bytes.resize(PIPE_CAPACITY, 0);
+        bytes.try_reserve_exact(capacity).map_err(|_| ())?;
+        bytes.resize(capacity, 0);
         let pipe = Arc::try_new(Self {
             object_id: crate::id::next_runtime_object_id(),
             state: Mutex::new(PipeState {
@@ -198,10 +218,22 @@ impl Pipe {
                 }
             } else {
                 let count = output.len().min(state.length);
-                for byte in output.iter_mut().take(count) {
-                    *byte = state.bytes[state.head];
-                    state.head = (state.head + 1) % state.bytes.len();
-                    state.length -= 1;
+                if count != 0 {
+                    let capacity = state.bytes.len();
+                    let head = state.head;
+                    let first = count.min(capacity - head);
+                    output[..first].copy_from_slice(&state.bytes[head..head + first]);
+                    let second = count - first;
+                    if second != 0 {
+                        output[first..count].copy_from_slice(&state.bytes[..second]);
+                    }
+                    let next = head + count;
+                    state.head = if next >= capacity {
+                        next - capacity
+                    } else {
+                        next
+                    };
+                    state.length -= count;
                 }
                 state.write_generation = crate::sync::next_readiness_generation();
                 PipeRead::Bytes(count)
@@ -228,10 +260,21 @@ impl Pipe {
                     PipeWrite::Full
                 } else {
                     let count = available.min(input.len());
-                    for byte in input.iter().take(count) {
-                        let tail = (state.head + state.length) % state.bytes.len();
-                        state.bytes[tail] = *byte;
-                        state.length += 1;
+                    if count != 0 {
+                        let capacity = state.bytes.len();
+                        let tail = state.head + state.length;
+                        let tail = if tail >= capacity {
+                            tail - capacity
+                        } else {
+                            tail
+                        };
+                        let first = count.min(capacity - tail);
+                        state.bytes[tail..tail + first].copy_from_slice(&input[..first]);
+                        let second = count - first;
+                        if second != 0 {
+                            state.bytes[..second].copy_from_slice(&input[first..count]);
+                        }
+                        state.length += count;
                     }
                     state.read_generation = crate::sync::next_readiness_generation();
                     PipeWrite::Bytes(count)

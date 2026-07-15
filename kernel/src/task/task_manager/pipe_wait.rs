@@ -9,12 +9,23 @@ impl PipeNotifier for TaskPipeNotifier {
     }
 }
 
-/// @description 创建绑定统一 task wait registry 的 anonymous pipe endpoints。
-///
-/// @return read/write endpoints；kernel heap 不足返回错误。
-pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+fn create_endpoints(
+    pair: impl FnOnce(Arc<dyn PipeNotifier>) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()>,
+) -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
     let notifier = Arc::try_new(TaskPipeNotifier).map_err(|_| ())?;
-    Pipe::pair(notifier)
+    pair(notifier)
+}
+
+/// @description 创建绑定统一 task wait registry 的 64 KiB data Pipe endpoints。
+/// @return anonymous pipe、AF_UNIX transport 与 PTY output 使用的 read/write endpoints。
+pub(crate) fn create_pipe_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+    create_endpoints(Pipe::pair)
+}
+
+/// @description 创建绑定同一 task wait registry 的一字节 notification Pipe endpoints。
+/// @return DRM/input/PTY/epoll/eventfd/socket readiness 使用的 read/write token endpoints。
+pub(crate) fn create_notification_endpoints() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()> {
+    create_endpoints(Pipe::notification_pair)
 }
 
 fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {

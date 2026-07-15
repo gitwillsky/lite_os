@@ -5,12 +5,12 @@ use crate::{
     memory::{ElfLoadError, UserAccessError},
     syscall::errno,
     task::{
-        EXEC_ARGUMENT_BYTES_LIMIT, ProcessGroupError, ProgramLoadError, SetProcessGroupError,
-        TaskControlBlock, ThreadCloneError, WaitChildError, clone_current_thread,
-        consume_child_status, create_session, current_task, exit_current_group,
-        exit_current_thread, fork_current_process, load_executable, parent_pid, process_group,
-        release_child_status, session_id, set_process_group, thread_count, vfork_current_process,
-        wait_child,
+        EXEC_ARGUMENT_BYTES_LIMIT, ProcessCloneError, ProcessGroupError, ProgramLoadError,
+        SetProcessGroupError, TaskControlBlock, ThreadCloneError, WaitChildError,
+        clone_current_thread, consume_child_status, create_session, current_task,
+        exit_current_group, exit_current_thread, fork_current_process, load_executable, parent_pid,
+        process_group, release_child_status, session_id, set_process_group, thread_count,
+        vfork_current_process, wait_child,
     },
 };
 
@@ -137,8 +137,10 @@ pub(crate) fn sys_clone(
         }
         return match fork_current_process() {
             Ok(pid) => pid as isize,
-            Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
-            Err(_) => -errno::EAGAIN,
+            Err(ProcessCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
+            Err(ProcessCloneError::Memory(_)) | Err(ProcessCloneError::ResourceLimit) => {
+                -errno::EAGAIN
+            }
         };
     }
     if flags == (SIGCHLD | CLONE_VM | CLONE_VFORK) {
@@ -147,8 +149,10 @@ pub(crate) fn sys_clone(
         }
         return match vfork_current_process(stack) {
             Ok(pid) => pid as isize,
-            Err(error) if error.is_out_of_memory() => -errno::ENOMEM,
-            Err(_) => -errno::EAGAIN,
+            Err(ProcessCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
+            Err(ProcessCloneError::Memory(_)) | Err(ProcessCloneError::ResourceLimit) => {
+                -errno::EAGAIN
+            }
         };
     }
     const CLONE_FS: usize = 0x200;
@@ -207,7 +211,7 @@ pub(crate) fn sys_set_tid_address(address: usize) -> isize {
 
 /// @description 注册 calling Thread 的 Linux robust-list head。
 ///
-/// @param head 用户 robust_list_head 地址。
+/// @param head 用户 robust_list_head 地址；零且 length 正确时注销。
 /// @param length RV64 必须为 24 bytes。
 /// @return 成功返回零，形状错误返回 `EINVAL`。
 pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {

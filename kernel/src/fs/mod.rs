@@ -20,16 +20,16 @@ pub(crate) use devpts::DevPtsFileSystem;
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
-    CharacterDevice, Console, FileDescriptorError, FileDescriptorTable, MAX_FILE_DESCRIPTORS,
-    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription,
-    OpenFileKind, Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
+    CharacterDevice, Console, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
+    MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY,
+    OpenFileDescription, OpenFileKind, Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
 };
 pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,
 };
-pub(crate) use permission::{AccessIdentity, CreateMetadata};
+pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcIoSnapshot,
     ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,

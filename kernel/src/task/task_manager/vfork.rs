@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProcessCloneError {
+    Memory(crate::memory::MemoryError),
+    ResourceLimit,
+}
+
 /// @description 把已完整准备的 fork/vfork child 一次发布到唯一 process graph。
 ///
 /// @param parent parent TGID。
@@ -46,21 +52,24 @@ fn publish_child(
 
 /// @description COW fork 当前单线程 process 并发布 child 到唯一 graph/runqueue。
 /// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
-/// @errors 地址空间或 Process 资源分配失败时返回 MemoryError。
-pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError> {
+/// @errors 地址空间/Process 分配失败返回 Memory，RLIMIT_NPROC/PID namespace 耗尽返回 ResourceLimit。
+pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
     let creation = TASK_MANAGER.process_creation.lock();
     if !super::check_process_slot() {
-        return Err(crate::memory::MemoryError::InvalidRange);
+        return Err(ProcessCloneError::ResourceLimit);
     }
     let parent = current_task().expect("fork requires current task");
-    let pid = TASK_MANAGER.allocate_pid();
+    let pid = TASK_MANAGER
+        .allocate_pid()
+        .ok_or(ProcessCloneError::ResourceLimit)?;
     let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
-        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
     let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
-        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
-    let child = try_allocate_task(crate::memory::MemoryError::OutOfMemory, || {
-        parent.fork_process(pid)
-    })?;
+        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let child = try_allocate_task(
+        ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
+        || parent.fork_process(pid).map_err(ProcessCloneError::Memory),
+    )?;
     let child_pid = child.tgid();
     publish_child(
         parent.tgid(),
@@ -77,23 +86,28 @@ pub(crate) fn fork_current_process() -> Result<usize, crate::memory::MemoryError
 /// @description 发布共享 AddressSpace 的 vfork child，并只阻塞 calling Thread 到 child exec/exit。
 /// @param child_stack musl clone wrapper 提供的 16-byte aligned child SP；零值继承。
 /// @return parent 恢复后获得 child PID；准备失败时不发布 child 或 wait membership。
-/// @errors 地址空间或 Process 资源分配失败时返回 MemoryError。
-pub(crate) fn vfork_current_process(
-    child_stack: usize,
-) -> Result<usize, crate::memory::MemoryError> {
+/// @errors 地址空间/Process 分配失败返回 Memory，RLIMIT_NPROC/PID namespace 耗尽返回 ResourceLimit。
+pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, ProcessCloneError> {
     let creation = TASK_MANAGER.process_creation.lock();
     if !super::check_process_slot() {
-        return Err(crate::memory::MemoryError::InvalidRange);
+        return Err(ProcessCloneError::ResourceLimit);
     }
     let parent = current_task().expect("vfork requires current task");
-    let pid = TASK_MANAGER.allocate_pid();
+    let pid = TASK_MANAGER
+        .allocate_pid()
+        .ok_or(ProcessCloneError::ResourceLimit)?;
     let thread_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
-        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
+        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
     let process_slot = FallibleMap::<usize, ProcessNode>::try_reserve_node()
-        .map_err(|_| crate::memory::MemoryError::OutOfMemory)?;
-    let child = try_allocate_task(crate::memory::MemoryError::OutOfMemory, || {
-        parent.vfork_process(pid, child_stack)
-    })?;
+        .map_err(|_| ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
+    let child = try_allocate_task(
+        ProcessCloneError::Memory(crate::memory::MemoryError::OutOfMemory),
+        || {
+            parent
+                .vfork_process(pid, child_stack)
+                .map_err(ProcessCloneError::Memory)
+        },
+    )?;
     let child_pid = child.tgid();
     publish_child(
         parent.tgid(),

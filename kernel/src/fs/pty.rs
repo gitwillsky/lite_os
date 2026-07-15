@@ -267,9 +267,15 @@ impl Drop for PtySlave {
 }
 
 struct PtyRegistry {
-    factory: PipeFactory,
+    pipes: PipeFactories,
     hangup: HangupNotifier,
     slots: Vec<Weak<PtyPair>>,
+}
+
+#[derive(Clone, Copy)]
+struct PipeFactories {
+    data: PipeFactory,
+    notification: PipeFactory,
 }
 
 // OWNER: pty module 唯一拥有 Unix98 index namespace、生命周期和 transport factory。weak
@@ -277,16 +283,24 @@ struct PtyRegistry {
 static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 
 /// @description 装配 Unix98 PTY transport 与 controlling-terminal hangup seam。
-/// @param factory composition root 提供的 task-registry Pipe endpoint constructor。
+/// @param data_factory composition root 提供的 64 KiB output Pipe constructor。
+/// @param notification_factory composition root 提供的一字节 readiness Pipe constructor。
 /// @param hangup task owner 提供的无分配 SIGHUP/SIGCONT notifier。
 /// @return 首次初始化成功；重复初始化返回错误。
-pub(crate) fn init(factory: PipeFactory, hangup: HangupNotifier) -> Result<(), ()> {
+pub(crate) fn init(
+    data_factory: PipeFactory,
+    notification_factory: PipeFactory,
+    hangup: HangupNotifier,
+) -> Result<(), ()> {
     if PTYS.get().is_some() {
         return Err(());
     }
     PTYS.call_once(|| {
         Mutex::new(PtyRegistry {
-            factory,
+            pipes: PipeFactories {
+                data: data_factory,
+                notification: notification_factory,
+            },
             hangup,
             slots: Vec::new(),
         })
@@ -298,15 +312,15 @@ pub(crate) fn init(factory: PipeFactory, hangup: HangupNotifier) -> Result<(), (
 /// @return master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
 pub(crate) fn open_master() -> Result<Arc<PtyMaster>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let (factory, hangup) = {
+    let (pipes, hangup) = {
         let registry = registry.lock();
-        (registry.factory, registry.hangup)
+        (registry.pipes, registry.hangup)
     };
-    let (output_read, output_write) = factory().map_err(|()| FileSystemError::OutOfMemory)?;
+    let (output_read, output_write) = (pipes.data)().map_err(|()| FileSystemError::OutOfMemory)?;
     let (slave_notification_read, slave_notification_write) =
-        factory().map_err(|()| FileSystemError::OutOfMemory)?;
+        (pipes.notification)().map_err(|()| FileSystemError::OutOfMemory)?;
     let (master_notification_read, master_notification_write) =
-        factory().map_err(|()| FileSystemError::OutOfMemory)?;
+        (pipes.notification)().map_err(|()| FileSystemError::OutOfMemory)?;
     let console = Arc::try_new(PtyConsole {
         output: output_write,
         master_notification: master_notification_write.clone(),

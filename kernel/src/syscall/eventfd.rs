@@ -2,7 +2,7 @@ use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, OpenFileDescription},
     ipc::EventFd,
     syscall::errno,
-    task::{create_pipe_endpoints, current_task},
+    task::{create_notification_endpoints, current_task},
 };
 
 const EFD_SEMAPHORE: u32 = 1;
@@ -15,11 +15,11 @@ pub(crate) fn sys_eventfd2(initial: u32, flags: u32) -> isize {
     if flags & !(EFD_SEMAPHORE | O_NONBLOCK | O_CLOEXEC) != 0 {
         return -errno::EINVAL;
     }
-    let read_pair = match create_pipe_endpoints() {
+    let read_pair = match create_notification_endpoints() {
         Ok(pair) => pair,
         Err(()) => return -errno::ENOMEM,
     };
-    let write_pair = match create_pipe_endpoints() {
+    let write_pair = match create_notification_endpoints() {
         Ok(pair) => pair,
         Err(()) => return -errno::ENOMEM,
     };

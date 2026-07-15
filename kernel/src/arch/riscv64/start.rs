@@ -90,17 +90,19 @@ pub(crate) fn entry_address() -> usize {
 extern "C" fn clear_bss() {
     // SAFETY: linker script provides immutable address symbols delimiting the kernel BSS.
     unsafe extern "C" {
-        static sbss: u8;
-        static ebss: u8;
+        fn sbss();
+        fn ebss();
     }
     // SAFETY: linker symbols delimit the writable BSS range; the unique cold-boot hart executes
     // this before publishing any reference into BSS, so byte-wise zeroing has no aliases.
     unsafe {
-        let start = sbss as *const u8 as usize;
-        let end = ebss as *const u8 as usize;
+        // Linker boundaries are declared consistently as address-only function symbols across
+        // arch and memory so fat LTO cannot split the same ELF symbol into conflicting LLVM types.
+        let start = sbss as *const () as usize;
+        let end = ebss as *const () as usize;
         let count = end - start;
         if count > 0 {
-            core::ptr::write_bytes(sbss as *mut u8, 0, count);
+            core::ptr::write_bytes(start as *mut u8, 0, count);
         }
     }
 }

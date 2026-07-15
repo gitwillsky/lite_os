@@ -1,7 +1,12 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::fs::{FileDescriptorError, OpenFileDescription, ProcFileDescriptorSnapshot, vfs};
+use crate::fs::{
+    DetachedFileDescriptor, FileDescriptorError, OpenFileDescription, ProcFileDescriptorSnapshot,
+    vfs,
+};
+
+const CLOEXEC_CLOSE_BATCH: usize = 32;
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -34,12 +39,8 @@ impl TaskControlBlock {
     }
 
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
-        let ofd = {
-            let mut files = self.process.files.lock();
-            let ofd = files.get(fd).ok_or(())?;
-            files.close(fd)?;
-            ofd
-        };
+        let descriptor = self.process.files.lock().detach(fd)?;
+        let ofd = descriptor.finish_close();
         vfs().release_record_locks_for_file(self.tgid(), &ofd);
         Ok(())
     }
@@ -57,12 +58,25 @@ impl TaskControlBlock {
     ///
     /// @return 无返回值；非 CLOEXEC descriptors 与其 record locks 保持跨 exec 存活。
     pub(super) fn close_cloexec_files(&self) {
+        let mut cursor = 0;
+        let mut batch: [Option<DetachedFileDescriptor>; CLOEXEC_CLOSE_BATCH] =
+            core::array::from_fn(|_| None);
         loop {
-            let ofd = self.process.files.lock().take_cloexec();
-            let Some(ofd) = ofd else {
+            let count = self
+                .process
+                .files
+                .lock()
+                .take_cloexec_batch(&mut cursor, &mut batch);
+            if count == 0 {
                 break;
-            };
-            vfs().release_record_locks_for_file(self.tgid(), &ofd);
+            }
+            for descriptor in &mut batch[..count] {
+                let ofd = descriptor
+                    .take()
+                    .expect("CLOEXEC batch count exceeded detached entries")
+                    .finish_close();
+                vfs().release_record_locks_for_file(self.tgid(), &ofd);
+            }
         }
     }
 
@@ -86,11 +100,10 @@ impl TaskControlBlock {
     ) -> Result<usize, FileDescriptorError> {
         let replaced = {
             let mut files = self.process.files.lock();
-            let replaced = files.get(new);
-            files.duplicate_to(old, new, cloexec, self.file_descriptor_limit())?;
-            replaced
+            files.duplicate_to(old, new, cloexec, self.file_descriptor_limit())?
         };
-        if let Some(ofd) = replaced {
+        if let Some(descriptor) = replaced {
+            let ofd = descriptor.finish_close();
             vfs().release_record_locks_for_file(self.tgid(), &ofd);
         }
         Ok(new)

@@ -261,9 +261,9 @@ pub(super) fn handle_external_interrupt() {
     // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
     if let Some(controller) = interrupt_controller() {
         let result = controller.lock().handle_pending_interrupts();
-        if let Err(e) = result {
+        if result.is_err() {
             #[cfg(debug_assertions)]
-            debug!("[Platform] Interrupt handling failed: {:?}", e);
+            debug!("[Platform] Interrupt handling failed: {:?}", result);
         }
     }
 }

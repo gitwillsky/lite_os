@@ -27,7 +27,10 @@ pub(crate) fn clone_current_thread(
         return Err(ThreadCloneError::ResourceLimit);
     }
     let parent = current_task().expect("thread clone requires current task");
-    let tid = TASK_MANAGER.allocate_pid().0;
+    let tid = TASK_MANAGER
+        .allocate_pid()
+        .ok_or(ThreadCloneError::ResourceLimit)?
+        .0;
     let graph_slot = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node()
         .map_err(|_| ThreadCloneError::Memory(crate::memory::MemoryError::OutOfMemory))?;
     let child = try_allocate_task(

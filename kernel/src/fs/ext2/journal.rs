@@ -11,6 +11,9 @@ const JBD2_SUPERBLOCK_V2: u32 = 4;
 const JBD2_FLAG_ESCAPE: u16 = 1;
 const JBD2_FLAG_SAME_UUID: u16 = 2;
 const JBD2_FLAG_LAST_TAG: u16 = 8;
+// rename is the widest current mutation: old/new parent, moved inode, replacement inode.
+const MAX_LIVE_INODE_UNDOS: usize = 4;
+const _: () = assert!(core::mem::size_of::<Option<(Arc<Ext2Inode>, Ext2InodeDisk)>>() == 136);
 
 /// @description 标准 JBD2 journal inode 的单事务 redo-log owner。
 pub(super) struct Journal {
@@ -327,26 +330,42 @@ fn zeroed(length: usize) -> Result<Vec<u8>, FileSystemError> {
     Ok(bytes)
 }
 
-/// @description mutation mutex、runtime snapshot 与 journal transaction 的唯一 RAII owner。
+/// @description mutation mutex、lazy runtime undo set 与 journal transaction 的唯一 RAII owner。
 pub(super) struct MutationGuard<'a> {
     fs: &'a Ext2FileSystem,
     _lock: MutexGuard<'a, ()>,
     superblock: Ext2SuperBlock,
     groups: Vec<Ext2GroupDesc>,
-    inodes: Vec<(Arc<Ext2Inode>, Ext2InodeDisk)>,
+    // OWNER: this guard exclusively owns runtime inode preimages until commit/abort. Four live
+    // slots cover the widest rename transaction; one transient slot covers create or final Drop.
+    // Overflow fails before an untracked mutation, otherwise abort could publish stale live state.
+    inodes: [Option<(Arc<Ext2Inode>, Ext2InodeDisk)>; MAX_LIVE_INODE_UNDOS],
+    inode_count: usize,
+    discarded_inode: Option<u32>,
     committed: bool,
 }
 
 impl<'a> MutationGuard<'a> {
-    /// @description 取得唯一 mutation lock、冻结 runtime snapshot 并开始空 redo write-set。
+    /// @description 取得唯一 mutation lock、冻结 allocator snapshot 并开始空 redo write-set。
     /// @param fs journal 已加载且未 aborted 的 filesystem。
     /// @return 拥有 transaction 与 rollback snapshot 的 guard。
     /// @errors journal 缺失、aborted 或 transaction 重入时返回错误。
     pub(super) fn begin(fs: &'a Ext2FileSystem) -> Result<Self, FileSystemError> {
+        Self::begin_after(fs, || Ok(())).map(|(guard, ())| guard)
+    }
+
+    /// @description 取得 mutation lock，执行无副作用 live-state prepare，成功后才冻结 rollback 并开 journal。
+    /// @param prepare 只读当前 mutation domain、不得发布状态的 fallible prepare。
+    /// @return guard 与锁内准备结果；prepare 失败不分配 snapshot、不发布 active transaction。
+    pub(super) fn begin_after<T>(
+        fs: &'a Ext2FileSystem,
+        prepare: impl FnOnce() -> Result<T, FileSystemError>,
+    ) -> Result<(Self, T), FileSystemError> {
         let lock = fs.mutation.lock();
+        let prepared = prepare()?;
         let superblock = *fs.superblock.lock();
-        // 1. Rollback snapshots must reserve before mutation begins; infallible clone/collect here
-        // turns user-driven memory pressure into a kernel-wide alloc-error panic.
+        // 1. The topology-wide allocator snapshot precedes the active transaction. Live inode
+        // preimages use the fixed current-domain slots and are captured before first mutation.
         let groups = {
             let source = fs.groups.lock();
             let mut snapshot = Vec::new();
@@ -356,33 +375,77 @@ impl<'a> MutationGuard<'a> {
             snapshot.extend_from_slice(&source);
             snapshot
         };
-        let inodes = {
-            let cache = fs.inode_cache.lock();
-            let mut snapshot = Vec::new();
-            snapshot
-                .try_reserve_exact(cache.len())
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-            for inode in cache.values().filter_map(Weak::upgrade) {
-                let disk = *inode.disk.lock();
-                snapshot.push((inode, disk));
-            }
-            snapshot
-        };
-        // 2. Only after every rollback allocation succeeds may the journal publish an active
-        // transaction; otherwise Drop would abort an operation that never mutated filesystem state.
+        // 2. Only after the eager allocator rollback allocation succeeds may the journal publish
+        // an active transaction. Inode undo is stack-resident and cannot add an OOM path.
         fs.journal
             .lock()
             .as_mut()
             .ok_or(FileSystemError::InvalidFileSystem)?
             .begin()?;
-        Ok(Self {
-            fs,
-            _lock: lock,
-            superblock,
-            groups,
-            inodes,
-            committed: false,
-        })
+        Ok((
+            Self {
+                fs,
+                _lock: lock,
+                superblock,
+                groups,
+                inodes: [const { None }; MAX_LIVE_INODE_UNDOS],
+                inode_count: 0,
+                discarded_inode: None,
+                committed: false,
+            },
+            prepared,
+        ))
+    }
+
+    /// @description 首次可变访问 live inode 时先捕获其唯一 rollback preimage。
+    /// @param inode 当前 filesystem inode-cache 中由 caller 保活的 inode。
+    /// @return 已建立 abort 恢复证明的 inode disk lock。
+    /// @errors cache owner 分裂或超过当前事务已证明的四 inode 上限返回 invalid operation。
+    pub(super) fn inode<'inode>(
+        &mut self,
+        inode: &'inode Ext2Inode,
+    ) -> Result<MutexGuard<'inode, Ext2InodeDisk>, FileSystemError> {
+        let number = inode.inode_num;
+        let discarded_on_abort = self.discarded_inode == Some(number);
+        let captured = self
+            .inodes
+            .iter()
+            .take(self.inode_count)
+            .flatten()
+            .any(|(captured, _)| captured.inode_num == number);
+        if !discarded_on_abort && !captured {
+            let slot = self
+                .inodes
+                .get_mut(self.inode_count)
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let owner = self
+                .fs
+                .inode_cache
+                .lock()
+                .get(&number)
+                .and_then(Weak::upgrade)
+                .filter(|owner| core::ptr::eq(Arc::as_ptr(owner), inode))
+                .ok_or(FileSystemError::InvalidFileSystem)?;
+            let disk = *inode.disk.lock();
+            *slot = Some((owner, disk));
+            self.inode_count += 1;
+        }
+        Ok(inode.disk.lock())
+    }
+
+    /// @description 在 transient inode 可能被修改前登记 abort 删除责任。
+    /// @param number 本 transaction 新分配、或已进入 final Drop 无法保活 Arc 的 inode number。
+    /// @return 后续 inode mutation/cache publication 不再需要 rollback state。
+    /// @errors 同一 transaction 出现第二 transient inode 返回 invalid operation。
+    pub(super) fn discard_inode_on_abort(&mut self, number: u32) -> Result<(), FileSystemError> {
+        match self.discarded_inode {
+            Some(existing) if existing == number => Ok(()),
+            Some(_) => Err(FileSystemError::InvalidOperation),
+            None => {
+                self.discarded_inode = Some(number);
+                Ok(())
+            }
+        }
     }
 
     /// @description 按 journal→commit→home→clean 顺序持久化并消费本次 guard。
@@ -410,16 +473,12 @@ impl Drop for MutationGuard<'_> {
         }
         *self.fs.superblock.lock() = self.superblock;
         *self.fs.groups.lock() = core::mem::take(&mut self.groups);
-        for (inode, disk) in &self.inodes {
+        for (inode, disk) in self.inodes.iter().take(self.inode_count).flatten() {
             *inode.disk.lock() = *disk;
         }
-        self.fs.inode_cache.lock().retain(|number, weak| {
-            weak.strong_count() != 0
-                && self
-                    .inodes
-                    .iter()
-                    .any(|(inode, _)| inode.inode_num == *number)
-        });
+        if let Some(number) = self.discarded_inode {
+            self.fs.inode_cache.lock().remove(&number);
+        }
     }
 }
 

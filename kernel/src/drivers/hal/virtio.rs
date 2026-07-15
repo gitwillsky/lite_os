@@ -163,6 +163,10 @@ impl VirtIODevice {
     }
 
     pub(in crate::drivers) fn notify_queue(&self, queue: u32) -> Result<(), BusError> {
+        // RISC-V does not order normal memory against MMIO.  The available-index Release store
+        // publishes descriptors to memory; this edge makes that index visible before the
+        // device observes its queue doorbell.
+        crate::arch::before_mmio_write();
         self.bus.write_u32(QUEUE_NOTIFY, queue)
     }
 

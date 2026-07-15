@@ -20,6 +20,7 @@ use core::{
 
 mod job_control;
 mod placement;
+mod ready_queue;
 pub(in crate::task) use job_control::request_tick_reschedule;
 pub(super) use job_control::{
     begin_preempt_running_task, continue_stopped_task, request_task_reschedule, request_task_stop,
@@ -70,54 +71,14 @@ impl Processor {
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
     /// @return 无返回值。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
-        let slot = current_per_hart();
-        let stale = self
-            .runqueue
-            .retain(|candidate| candidate.is_current_ready(self.hart_id));
-        if stale != 0 {
-            slot.queued_entries.fetch_sub(stale, Ordering::Relaxed);
-        }
-        self.runqueue.push(entry);
-        let floor = self
-            .runqueue
-            .minimum_vruntime()
-            .expect("non-empty runqueue lost placement floor");
-        slot.placement_vruntime.store(floor, Ordering::Release);
-        // queued_entries 与 local heap 每次 push/pop 一一对应，不统计 mailbox/current。
-        slot.queued_entries.fetch_add(1, Ordering::Relaxed);
-        debug_assert_eq!(
-            self.runqueue.len(),
-            slot.queued_entries.load(Ordering::Relaxed)
-        );
+        ready_queue::add_ready_entry(self, entry);
     }
 
     /// @description 消费 stale entry，原子完成 Ready → Running 与 current 发布。
     ///
     /// @return 队列为空时返回 `None`，否则返回唯一取出的任务引用。
     pub(crate) fn select_task(&mut self) -> Option<Arc<TaskControlBlock>> {
-        assert!(self.current.is_none(), "CPU already owns a current task");
-        let slot = current_per_hart();
-        loop {
-            let entry = self.runqueue.pop()?;
-            slot.queued_entries.fetch_sub(1, Ordering::Relaxed);
-            let mut scheduling = entry.task.scheduling.state.lock();
-            match scheduling.run_state {
-                RunState::Ready { cpu, generation }
-                    if cpu == self.hart_id && generation == entry.generation =>
-                {
-                    scheduling.run_state = RunState::Running { cpu: self.hart_id };
-                    drop(scheduling);
-                    self.current = Some(entry.task.clone());
-                    let floor = self.runqueue.minimum_vruntime().unwrap_or(entry.vruntime);
-                    slot.placement_vruntime.store(floor, Ordering::Release);
-                    slot.running_entries.fetch_add(1, Ordering::Relaxed);
-                    return Some(entry.task);
-                }
-                _ => {
-                    // generation 不匹配说明 stop/continue 等转换已废弃该 entry，只消费不执行。
-                }
-            }
-        }
+        ready_queue::select_task(self)
     }
 
     /// @description 撤销当前 hart 的 running ownership 与负载发布。
@@ -136,19 +97,7 @@ impl Processor {
     ///
     /// @return 无返回值。
     pub(crate) fn drain_inbound_to_local(&mut self) {
-        let slot = current_per_hart();
-        // 只消费进入本轮时的 snapshot 数量，保留 VecDeque 的预留 backing
-        // storage；如果 swap 给空 VecDeque，下一次 IRQ wake 会重新分配。
-        let count = slot.inbound.lock().len();
-        for _ in 0..count {
-            let entry = slot
-                .inbound
-                .lock()
-                .pop_front()
-                .expect("inbound snapshot shrank without owner");
-            slot.inbound_entries.fetch_sub(1, Ordering::Relaxed);
-            self.add_ready_entry(entry);
-        }
+        ready_queue::drain_inbound_to_local(self);
     }
 
     fn defer_reap(&mut self, task: Arc<TaskControlBlock>) {
@@ -169,7 +118,7 @@ struct PerHartProcessor {
     initialized: AtomicBool,
     // 仅供跨 hart 负载选择；Relaxed 过期值只影响选择，不发布或拥有 runqueue entry。
     queued_entries: AtomicUsize,
-    // 与 inbound mutex 内容器同步增减；Relaxed 读取只作为近似负载 hint。
+    // inbound mutex 内的修改者发布精确容器长度；Relaxed 读取只作近似负载 hint。
     inbound_entries: AtomicUsize,
     // OWNER: processor slot 发布本 hart 当前 Running membership；缺失会让选核把 busy hart 当成 idle。
     running_entries: AtomicUsize,
@@ -382,49 +331,7 @@ fn publish_reschedule_at(cpu_index: usize) {
 /// @return 无返回值。
 /// @errors 目标越界、未 active 或 SBI IPI 失败均触发内核不变量失败，不做 CPU fallback。
 fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
-    let current = hart_id();
-    if cpu_id == current {
-        with_current_processor(|processor| processor.add_ready_entry(entry));
-        if current_per_hart().running_entries.load(Ordering::Relaxed) != 0 {
-            request_reschedule();
-        }
-        return;
-    }
-
-    let target_index = hart::hart_index(cpu_id)
-        .unwrap_or_else(|| panic!("target CPU {} is absent from DTB topology", cpu_id));
-    let target_state = &hart::states()[target_index];
-    let target = processor_at(target_index);
-    assert!(target_state.is_active());
-    let mut inbound = target.inbound.lock();
-    let before = inbound.len();
-    inbound.retain(|candidate| candidate.is_current_ready(cpu_id));
-    target
-        .inbound_entries
-        .fetch_sub(before - inbound.len(), Ordering::Relaxed);
-    assert!(
-        inbound.len() < target.queue_capacity,
-        "preallocated scheduler mailbox capacity exhausted"
-    );
-    inbound.push_back(entry);
-    target.inbound_entries.fetch_add(1, Ordering::Relaxed);
-    drop(inbound);
-    publish_reschedule_at(target_index);
-}
-
-impl RunQueueEntry {
-    /// @description 核对 entry generation 与唯一 SchedulingState Ready membership。
-    /// @param cpu 容器所属 hart ID。
-    /// @return 该 entry 仍是当前唯一 Ready membership 时返回 true。
-    fn is_current_ready(&self, cpu: usize) -> bool {
-        matches!(
-            self.task.scheduling.state.lock().run_state,
-            RunState::Ready {
-                cpu: owner,
-                generation
-            } if owner == cpu && generation == self.generation
-        )
-    }
+    ready_queue::deliver_ready_entry(cpu_id, entry);
 }
 
 /// @description 原子替换 Thread affinity，并迁移位于已禁止 CPU 的 Ready membership。

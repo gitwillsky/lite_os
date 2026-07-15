@@ -1,4 +1,6 @@
 pub(crate) const INIT_PID: usize = 1;
+/// Linux futex owner word reserves the top two bits for WAITERS/OWNER_DIED.
+pub(super) const PID_MAX: usize = 0x3fff_ffff;
 
 #[derive(Debug)]
 pub(super) struct ProcessId(pub(super) usize);

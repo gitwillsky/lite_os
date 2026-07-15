@@ -1,10 +1,10 @@
 use crate::memory::{
-    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress,
-    alloc_contiguous,
+    FrameAllocationClass, FrameTracker, KERNEL_SPACE, MemorySet, PAGE_SIZE, PhysicalAddress,
+    VirtualAddress, alloc_contiguous,
 };
 use alloc::vec::Vec;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU16, Ordering, fence};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::hal::VirtQueueAddresses;
 
@@ -182,6 +182,7 @@ impl VirtQueue {
     // Simple HAL-like buffer sharing following virtio-drivers pattern
     fn write_segments(
         &mut self,
+        kernel_space: &MemorySet,
         ptr: *const u8,
         len: usize,
         writable: bool,
@@ -196,12 +197,9 @@ impl VirtQueue {
             let to_page_end = PAGE_SIZE - page_off;
             let chunk = core::cmp::min(remain, to_page_end);
 
-            let pa = {
-                let kernel_space = crate::memory::KERNEL_SPACE.wait().lock();
-                match kernel_space.translate_kernel_address(cur_va) {
-                    Some(pa) => pa,
-                    None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
-                }
+            let pa = match kernel_space.translate_kernel_address(cur_va) {
+                Some(pa) => pa,
+                None => panic!("VirtQueue: failed to translate VA {:#x}", cur_va.as_usize()),
             };
             let current = *descriptor;
             let next = self.desc_shadow[current as usize].next;
@@ -248,8 +246,14 @@ impl VirtQueue {
         let head = self.free_head;
         let mut desc_idx = head;
         let mut remaining = total_count;
+        // Buffer owners keep their mappings live through completion; this lock only stabilizes
+        // page-table traversal while the chain is translated.  Take it once for the whole chain
+        // instead of once per physical segment: block, network and display buffers commonly span
+        // several pages, and repeated spin-lock traffic provided no stronger lifetime proof.
+        let kernel_space = KERNEL_SPACE.wait().lock();
         for input in inputs {
             self.write_segments(
+                &kernel_space,
                 input.as_ptr(),
                 input.len(),
                 false,
@@ -259,6 +263,7 @@ impl VirtQueue {
         }
         for output in outputs {
             self.write_segments(
+                &kernel_space,
                 output.as_ptr(),
                 output.len(),
                 true,
@@ -267,6 +272,7 @@ impl VirtQueue {
             );
         }
         assert_eq!(remaining, 0, "VirtIO segment count diverged from fill");
+        drop(kernel_space);
 
         // 3. 全部 descriptor 已完整写入，最后一次提交 free-list owner。
         self.free_head = self.desc_shadow[desc_idx as usize].next;
@@ -286,13 +292,11 @@ impl VirtQueue {
             *ring_ptr = desc_idx;
         }
 
-        // Write barrier: ensure descriptor table updates are visible before avail ring update
-        fence(Ordering::SeqCst);
-
         // Increment avail index - this makes the descriptor available to device
         self.avail_idx = self.avail_idx.wrapping_add(1);
         // SAFETY: `avail` points into the queue pages retained by `_frame_tracker`; producer
-        // access is serialized by `&mut self`, and Release publishes prior descriptor writes.
+        // access is serialized by `&mut self`.  The Release store is the VirtIO-required barrier:
+        // it publishes the descriptor table and ring slot before exposing the new index.
         unsafe {
             (*self.avail).idx.store(self.avail_idx, Ordering::Release);
         }

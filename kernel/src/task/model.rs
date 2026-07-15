@@ -8,6 +8,7 @@ mod process_clone;
 mod process_exec;
 mod process_resources;
 mod resource_limits;
+mod robust_list;
 mod scheduling;
 mod signal_state;
 
@@ -501,68 +502,6 @@ impl TaskControlBlock {
 
     pub(super) fn take_clear_child_tid(&self) -> Option<usize> {
         self.thread.clear_child_tid.lock().take()
-    }
-
-    pub(crate) fn set_robust_list(&self, head: usize, length: usize) -> Result<(), ()> {
-        if head == 0 || length != 3 * core::mem::size_of::<usize>() {
-            return Err(());
-        }
-        *self.thread.robust_list.lock() = Some(head);
-        Ok(())
-    }
-
-    pub(super) fn cleanup_robust_list(&self) {
-        const FUTEX_WAITERS: u32 = 0x8000_0000;
-        const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
-        const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
-        let Some(head) = self.thread.robust_list.lock().take() else {
-            return;
-        };
-        let mut header = [0u8; 3 * core::mem::size_of::<usize>()];
-        if self.copy_from_user(head, &mut header).is_err() {
-            return;
-        }
-        let word = core::mem::size_of::<usize>();
-        let mut entry = usize::from_ne_bytes(header[0..word].try_into().unwrap());
-        let offset = isize::from_ne_bytes(header[word..2 * word].try_into().unwrap());
-        let pending = usize::from_ne_bytes(header[2 * word..3 * word].try_into().unwrap());
-        let mark = |entry: usize| {
-            let Some(address) = entry.checked_add_signed(offset) else {
-                return;
-            };
-            let mut bytes = [0u8; 4];
-            if self.copy_from_user(address, &mut bytes).is_err() {
-                return;
-            }
-            let old = u32::from_ne_bytes(bytes);
-            if old & FUTEX_TID_MASK != self.tid() as u32 {
-                return;
-            }
-            let new = old & FUTEX_WAITERS | FUTEX_OWNER_DIED;
-            let address_space = self.process.address_space();
-            let exchanged = address_space
-                .memory_set
-                .lock()
-                .compare_exchange_user_u32(address, old, new, self.user_fault_limits())
-                .is_ok_and(|result| result.is_ok());
-            if exchanged {
-                let _ = crate::task::futex_wake(self, address, false, 1, u32::MAX);
-            }
-        };
-        for _ in 0..2048 {
-            if entry == 0 || entry == head {
-                break;
-            }
-            let mut next = [0u8; core::mem::size_of::<usize>()];
-            if self.copy_from_user(entry, &mut next).is_err() {
-                break;
-            }
-            mark(entry);
-            entry = usize::from_ne_bytes(next);
-        }
-        if pending != 0 {
-            mark(pending);
-        }
     }
 
     /// @description 取得当前 Thread 的 context-switch 保存区锁。

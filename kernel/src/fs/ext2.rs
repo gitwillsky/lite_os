@@ -5,7 +5,9 @@ use alloc::{
 use core::{cmp, mem, ptr};
 use spin::Mutex;
 
-use super::{DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType};
+use super::{
+    DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType, OwnerModeChange,
+};
 use crate::{
     drivers::block::{BLOCK_SIZE, BlockDevice},
     fallible_tree::FallibleMap,
@@ -1163,10 +1165,14 @@ impl Ext2Inode {
     }
 
     /// 调用方必须持有文件系统 mutation 锁，保证位图和 inode 指针不会并发丢失更新。
-    fn ensure_block_mapped(&self, file_block: u32) -> Result<u32, FileSystemError> {
+    fn ensure_block_mapped(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        file_block: u32,
+    ) -> Result<u32, FileSystemError> {
         let (root, path) = self.pointer_path(file_block)?;
         let preferred = self.fs.group_index_and_local_inode(self.inode_num).0;
-        let mut inode = self.disk.lock();
+        let mut inode = mutation.inode(self)?;
         if path.is_empty() {
             if inode.i_block[root] == 0 {
                 inode.i_block[root] = self.fs.allocate_block(preferred)?;
@@ -1244,7 +1250,11 @@ impl Ext2Inode {
         Ok((empty, freed))
     }
 
-    fn truncate_locked(&self, size: u64) -> Result<(), FileSystemError> {
+    fn truncate_locked(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        size: u64,
+    ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
@@ -1254,7 +1264,7 @@ impl Ext2Inode {
             if size != 0 {
                 return Err(FileSystemError::InvalidOperation);
             }
-            let mut inode = self.disk.lock();
+            let mut inode = mutation.inode(self)?;
             inode.i_block = [0; 15];
             Self::set_disk_size(&mut inode, 0);
             inode.i_mtime = Self::now();
@@ -1263,7 +1273,7 @@ impl Ext2Inode {
         }
         if size < old_size {
             let keep = ceil_div(size as usize, self.fs.block_size);
-            let mut inode = self.disk.lock();
+            let mut inode = mutation.inode(self)?;
             let mut freed = 0u32;
             for index in keep..12 {
                 if inode.i_block[index] != 0 {
@@ -1303,14 +1313,14 @@ impl Ext2Inode {
                     data[size as usize % self.fs.block_size..].fill(0);
                     self.fs.write_fs_block(block, &data)?;
                 }
-                inode = self.disk.lock();
+                inode = mutation.inode(self)?;
             }
             Self::set_disk_size(&mut inode, size);
             inode.i_mtime = Self::now();
             inode.i_ctime = inode.i_mtime;
             self.fs.write_inode_disk(self.inode_num, &inode)?;
         } else if size > old_size {
-            let mut inode = self.disk.lock();
+            let mut inode = mutation.inode(self)?;
             Self::set_disk_size(&mut inode, size);
             inode.i_mtime = Self::now();
             inode.i_ctime = inode.i_mtime;
@@ -1319,19 +1329,28 @@ impl Ext2Inode {
         Ok(())
     }
 
-    fn reclaim_locked(&self, directory: bool) -> Result<(), FileSystemError> {
+    fn reclaim_locked(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        directory: bool,
+    ) -> Result<(), FileSystemError> {
         if directory {
-            self.disk.lock().i_mode = 0x8000;
+            mutation.inode(self)?.i_mode = 0x8000;
         }
-        self.truncate_locked(0)?;
-        let mut disk = self.disk.lock();
+        self.truncate_locked(mutation, 0)?;
+        let mut disk = mutation.inode(self)?;
         *disk = Ext2InodeDisk::default();
         self.fs.write_inode_disk(self.inode_num, &disk)?;
         drop(disk);
         self.fs.free_inode(self.inode_num, directory)
     }
 
-    fn write_at_locked(&self, offset: usize, buf: &[u8]) -> Result<usize, FileSystemError> {
+    fn write_at_locked(
+        &self,
+        mutation: &mut MutationGuard<'_>,
+        offset: usize,
+        buf: &[u8],
+    ) -> Result<usize, FileSystemError> {
         let end = offset
             .checked_add(buf.len())
             .ok_or(FileSystemError::NoSpace)?;
@@ -1341,7 +1360,7 @@ impl Ext2Inode {
             let file_block = u32::try_from(position / self.fs.block_size)
                 .map_err(|_| FileSystemError::NoSpace)?;
             let block_offset = position % self.fs.block_size;
-            let block = self.ensure_block_mapped(file_block)?;
+            let block = self.ensure_block_mapped(mutation, file_block)?;
             let count = cmp::min(self.fs.block_size - block_offset, buf.len() - done);
             let mut data = try_zeroed(self.fs.block_size)?;
             if block_offset != 0 || count != self.fs.block_size {
@@ -1351,7 +1370,7 @@ impl Ext2Inode {
             self.fs.write_fs_block(block, &data)?;
             done += count;
         }
-        let mut inode = self.disk.lock();
+        let mut inode = mutation.inode(self)?;
         if end as u64 > Self::disk_size(&inode) {
             Self::set_disk_size(&mut inode, end as u64);
         }
@@ -1359,173 +1378,6 @@ impl Ext2Inode {
         inode.i_ctime = inode.i_mtime;
         self.fs.write_inode_disk(self.inode_num, &inode)?;
         Ok(done)
-    }
-
-    fn add_dir_entry_locked(
-        &self,
-        child: u32,
-        name: &[u8],
-        kind: InodeType,
-    ) -> Result<(), FileSystemError> {
-        let needed = align_up(mem::size_of::<Ext2DirEntry2Header>() + name.len(), 4);
-        let blocks = ceil_div(self.size() as usize, self.fs.block_size);
-        for index in 0..=blocks {
-            let block = if index == blocks {
-                self.ensure_block_mapped(index as u32)?
-            } else {
-                self.map_block(index as u32)?
-            };
-            let mut buf = try_zeroed(self.fs.block_size)?;
-            if index < blocks {
-                self.fs.read_fs_block(block, &mut buf)?;
-            }
-            if index == blocks {
-                let header = Ext2DirEntry2Header {
-                    inode: child,
-                    rec_len: self.fs.block_size as u16,
-                    name_len: name.len() as u8,
-                    file_type: Self::file_type(kind),
-                };
-                // SAFETY: a fresh complete block has room for the header and validated name.
-                unsafe {
-                    ptr::write_unaligned(buf.as_mut_ptr() as *mut Ext2DirEntry2Header, header)
-                };
-                buf[mem::size_of::<Ext2DirEntry2Header>()
-                    ..mem::size_of::<Ext2DirEntry2Header>() + name.len()]
-                    .copy_from_slice(name);
-                self.fs.write_fs_block(block, &buf)?;
-                let mut inode = self.disk.lock();
-                Self::set_disk_size(&mut inode, ((index + 1) * self.fs.block_size) as u64);
-                self.fs.write_inode_disk(self.inode_num, &inode)?;
-                return Ok(());
-            }
-            let mut pos = 0;
-            while pos < self.fs.block_size {
-                // SAFETY: directory validation guarantees a complete header at pos.
-                let mut header = unsafe {
-                    ptr::read_unaligned(buf.as_ptr().add(pos) as *const Ext2DirEntry2Header)
-                };
-                let record = header.rec_len as usize;
-                if record < 8 || pos + record > self.fs.block_size {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-                let ideal = align_up(
-                    mem::size_of::<Ext2DirEntry2Header>() + header.name_len as usize,
-                    4,
-                );
-                if header.inode == 0 && record >= needed {
-                    header.inode = child;
-                    header.name_len = name.len() as u8;
-                    header.file_type = Self::file_type(kind);
-                    // SAFETY: directory validation proved `record` covers a complete header at
-                    // `pos`; write_unaligned updates that on-disk header without forming a reference.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                            header,
-                        )
-                    };
-                    let start = pos + mem::size_of::<Ext2DirEntry2Header>();
-                    buf[start..start + name.len()].copy_from_slice(name);
-                    self.fs.write_fs_block(block, &buf)?;
-                    return Ok(());
-                }
-                if header.inode != 0 && record >= ideal + needed {
-                    header.rec_len = ideal as u16;
-                    // SAFETY: `pos` names the validated current record and its complete header
-                    // lies inside the full block buffer.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                            header,
-                        )
-                    };
-                    let new_pos = pos + ideal;
-                    let new_header = Ext2DirEntry2Header {
-                        inode: child,
-                        rec_len: (record - ideal) as u16,
-                        name_len: name.len() as u8,
-                        file_type: Self::file_type(kind),
-                    };
-                    // SAFETY: split condition proves `new_pos + header_size <= pos + record`, so
-                    // the new unaligned header lies wholly inside the current block buffer.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(new_pos) as *mut Ext2DirEntry2Header,
-                            new_header,
-                        )
-                    };
-                    let start = new_pos + mem::size_of::<Ext2DirEntry2Header>();
-                    buf[start..start + name.len()].copy_from_slice(name);
-                    self.fs.write_fs_block(block, &buf)?;
-                    return Ok(());
-                }
-                pos += record;
-            }
-        }
-        Err(FileSystemError::NoSpace)
-    }
-
-    fn remove_dir_entry_locked(&self, name: &[u8]) -> Result<u32, FileSystemError> {
-        let blocks = ceil_div(self.size() as usize, self.fs.block_size);
-        for index in 0..blocks {
-            let block = self.map_block(index as u32)?;
-            let mut buf = try_zeroed(self.fs.block_size)?;
-            self.fs.read_fs_block(block, &mut buf)?;
-            let mut pos = 0;
-            let mut previous = None;
-            while pos < self.fs.block_size {
-                // SAFETY: prior record validation advances `pos` by a nonzero aligned rec_len;
-                // the loop bound and filesystem validation guarantee a complete header remains.
-                let header = unsafe {
-                    ptr::read_unaligned(buf.as_ptr().add(pos) as *const Ext2DirEntry2Header)
-                };
-                let record = header.rec_len as usize;
-                if record < 8 || pos + record > self.fs.block_size {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-                let start = pos + mem::size_of::<Ext2DirEntry2Header>();
-                if header.inode != 0
-                    && header.name_len as usize <= record - 8
-                    && &buf[start..start + header.name_len as usize] == name
-                {
-                    if let Some(previous_pos) = previous {
-                        // SAFETY: `previous_pos` was recorded only after validating a complete
-                        // preceding directory record in this same live block buffer.
-                        let mut previous_header = unsafe {
-                            ptr::read_unaligned(
-                                buf.as_ptr().add(previous_pos) as *const Ext2DirEntry2Header
-                            )
-                        };
-                        previous_header.rec_len += header.rec_len;
-                        // SAFETY: previous header remains inside the block; merging adjacent
-                        // validated lengths cannot extend beyond their original combined span.
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf.as_mut_ptr().add(previous_pos) as *mut Ext2DirEntry2Header,
-                                previous_header,
-                            )
-                        };
-                    } else {
-                        let mut empty = header;
-                        empty.inode = 0;
-                        // SAFETY: `pos` currently identifies a validated complete header in buf;
-                        // write_unaligned changes only its inode field representation.
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                                empty,
-                            )
-                        };
-                    }
-                    self.fs.write_fs_block(block, &buf)?;
-                    return Ok(header.inode);
-                }
-                previous = Some(pos);
-                pos += record;
-            }
-        }
-        Err(FileSystemError::NotFound)
     }
 
     fn map_block(&self, file_block_index: u32) -> Result<u32, FileSystemError> {
@@ -1815,8 +1667,8 @@ impl Inode for Ext2Inode {
         drop(inode);
         // 2. max prevents the lock-free precheck from rolling back a concurrent explicit update.
         if update_atime {
-            let mutation = self.fs.begin_mutation()?;
-            let mut inode = self.disk.lock();
+            let mut mutation = self.fs.begin_mutation()?;
+            let mut inode = mutation.inode(self)?;
             inode.i_atime = cmp::max(inode.i_atime, now);
             self.fs.write_inode_disk(self.inode_num, &inode)?;
             drop(inode);
@@ -1861,8 +1713,8 @@ impl Inode for Ext2Inode {
         if buf.is_empty() {
             return Ok(0);
         }
-        let mutation = self.fs.begin_mutation()?;
-        let written = self.write_at_locked(offset, buf)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        let written = self.write_at_locked(&mut mutation, offset, buf)?;
         mutation.commit()?;
         Ok(written)
     }
@@ -1872,8 +1724,8 @@ impl Inode for Ext2Inode {
     }
 
     fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError> {
-        let mutation = self.fs.begin_mutation()?;
-        self.truncate_locked(size)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        self.truncate_locked(&mut mutation, size)?;
         mutation.commit()
     }
 
@@ -1957,7 +1809,7 @@ impl Inode for Ext2Inode {
         if !matches!(kind, InodeType::File | InodeType::Directory) {
             return Err(FileSystemError::InvalidOperation);
         }
-        let mutation = self.fs.begin_mutation()?;
+        let mut mutation = self.fs.begin_mutation()?;
         match self.find_child(name) {
             Ok(_) => return Err(FileSystemError::AlreadyExists),
             Err(FileSystemError::NotFound) => {}
@@ -1967,6 +1819,7 @@ impl Inode for Ext2Inode {
         let number = self
             .fs
             .allocate_inode(group, kind == InodeType::Directory)?;
+        mutation.discard_inode_on_abort(number)?;
         let now = Self::now();
         let mut disk = Ext2InodeDisk {
             i_mode: (if kind == InodeType::Directory {
@@ -1985,11 +1838,16 @@ impl Inode for Ext2Inode {
         self.fs.write_inode_disk(number, &disk)?;
         let child = Ext2Inode::load(self.fs.clone(), number)?;
         if kind == InodeType::Directory {
-            child.add_dir_entry_locked(number, b".", InodeType::Directory)?;
-            child.add_dir_entry_locked(self.inode_num, b"..", InodeType::Directory)?;
+            child.add_dir_entry_locked(&mut mutation, number, b".", InodeType::Directory)?;
+            child.add_dir_entry_locked(
+                &mut mutation,
+                self.inode_num,
+                b"..",
+                InodeType::Directory,
+            )?;
         }
-        self.add_dir_entry_locked(number, name, kind)?;
-        let mut parent = self.disk.lock();
+        self.add_dir_entry_locked(&mut mutation, number, name, kind)?;
+        let mut parent = mutation.inode(self)?;
         if kind == InodeType::Directory {
             parent.i_links_count += 1;
         }
@@ -2001,13 +1859,8 @@ impl Inode for Ext2Inode {
         Ok(child as Arc<dyn Inode>)
     }
 
-    fn set_owner_mode(
-        &self,
-        mode: Option<u32>,
-        uid: Option<u32>,
-        gid: Option<u32>,
-    ) -> Result<(), FileSystemError> {
-        self.update_owner_mode(mode, uid, gid)
+    fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+        self.update_owner_mode(change)
     }
 
     fn symlink(
@@ -2029,7 +1882,7 @@ impl Inode for Ext2Inode {
             return Err(FileSystemError::NotDirectory);
         }
         Self::validate_name(name)?;
-        let mutation = self.fs.begin_mutation()?;
+        let mut mutation = self.fs.begin_mutation()?;
         let child = self.find_child(name)?;
         let metadata = child.metadata()?;
         if metadata.kind == InodeType::Directory {
@@ -2046,21 +1899,21 @@ impl Inode for Ext2Inode {
         } else if remove_directory {
             return Err(FileSystemError::NotDirectory);
         }
-        self.remove_dir_entry_locked(name)?;
-        let child = Ext2Inode::load(self.fs.clone(), metadata.inode as u32)?;
-        let mut disk = child.disk.lock();
+        self.remove_dir_entry_locked(&mut mutation, name)?;
+        let (child, externally_held) = self.reload_after_lookup(child, metadata.inode as u32)?;
+        let mut disk = mutation.inode(&child)?;
         if metadata.kind != InodeType::Directory && disk.i_links_count > 1 {
             disk.i_links_count -= 1;
             disk.i_ctime = Self::now();
             self.fs.write_inode_disk(child.inode_num, &disk)?;
-        } else if metadata.kind != InodeType::Directory && Arc::strong_count(&child) > 2 {
+        } else if metadata.kind != InodeType::Directory && externally_held {
             drop(disk);
-            self.fs.defer_reclaim_locked(&child)?;
+            self.fs.defer_reclaim_locked(&mut mutation, &child)?;
         } else {
             drop(disk);
-            child.reclaim_locked(metadata.kind == InodeType::Directory)?;
+            child.reclaim_locked(&mut mutation, metadata.kind == InodeType::Directory)?;
         }
-        let mut parent = self.disk.lock();
+        let mut parent = mutation.inode(self)?;
         if metadata.kind == InodeType::Directory {
             parent.i_links_count -= 1;
         }
@@ -2083,7 +1936,7 @@ impl Inode for Ext2Inode {
         }
         Self::validate_name(old_name)?;
         Self::validate_name(new_name)?;
-        let mutation = self.fs.begin_mutation()?;
+        let mut mutation = self.fs.begin_mutation()?;
         let new_parent = Ext2Inode::load(self.fs.clone(), new_parent_inode as u32)?;
         if new_parent.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -2141,54 +1994,65 @@ impl Inode for Ext2Inode {
             {
                 return Err(FileSystemError::DirectoryNotEmpty);
             }
-            new_parent.remove_dir_entry_locked(new_name)?;
-            let existing = Ext2Inode::load(self.fs.clone(), existing_meta.inode as u32)?;
+            new_parent.remove_dir_entry_locked(&mut mutation, new_name)?;
+            let (existing, externally_held) =
+                self.reload_after_lookup(existing, existing_meta.inode as u32)?;
             if existing_meta.kind == InodeType::Directory {
-                new_parent.disk.lock().i_links_count -= 1;
+                mutation.inode(&new_parent)?.i_links_count -= 1;
             }
-            let mut disk = existing.disk.lock();
+            let mut disk = mutation.inode(&existing)?;
             if existing_meta.kind != InodeType::Directory && disk.i_links_count > 1 {
                 disk.i_links_count -= 1;
                 disk.i_ctime = Self::now();
                 self.fs.write_inode_disk(existing.inode_num, &disk)?;
-            } else if existing_meta.kind != InodeType::Directory && Arc::strong_count(&existing) > 2
-            {
+            } else if existing_meta.kind != InodeType::Directory && externally_held {
                 drop(disk);
-                self.fs.defer_reclaim_locked(&existing)?;
+                self.fs.defer_reclaim_locked(&mut mutation, &existing)?;
             } else {
                 drop(disk);
-                existing.reclaim_locked(existing_meta.kind == InodeType::Directory)?;
+                existing
+                    .reclaim_locked(&mut mutation, existing_meta.kind == InodeType::Directory)?;
             }
         }
         let metadata = child.metadata()?;
-        new_parent.add_dir_entry_locked(metadata.inode as u32, new_name, metadata.kind)?;
-        self.remove_dir_entry_locked(old_name)?;
+        new_parent.add_dir_entry_locked(
+            &mut mutation,
+            metadata.inode as u32,
+            new_name,
+            metadata.kind,
+        )?;
+        self.remove_dir_entry_locked(&mut mutation, old_name)?;
         {
             let child = Ext2Inode::load(self.fs.clone(), metadata.inode as u32)?;
-            let mut disk = child.disk.lock();
+            let mut disk = mutation.inode(&child)?;
             disk.i_ctime = Self::now();
             self.fs.write_inode_disk(child.inode_num, &disk)?;
         }
         if metadata.kind == InodeType::Directory && self.inode_num != new_parent.inode_num {
             let child = Ext2Inode::load(self.fs.clone(), metadata.inode as u32)?;
-            child.remove_dir_entry_locked(b"..")?;
-            child.add_dir_entry_locked(new_parent.inode_num, b"..", InodeType::Directory)?;
-            self.disk.lock().i_links_count -= 1;
-            new_parent.disk.lock().i_links_count += 1;
+            child.remove_dir_entry_locked(&mut mutation, b"..")?;
+            child.add_dir_entry_locked(
+                &mut mutation,
+                new_parent.inode_num,
+                b"..",
+                InodeType::Directory,
+            )?;
+            mutation.inode(self)?.i_links_count -= 1;
+            mutation.inode(&new_parent)?.i_links_count += 1;
         }
         let now = Self::now();
         if self.inode_num == new_parent.inode_num {
-            let mut disk = self.disk.lock();
+            let mut disk = mutation.inode(self)?;
             disk.i_mtime = now;
             disk.i_ctime = now;
             self.fs.write_inode_disk(self.inode_num, &disk)?;
         } else {
-            let mut old_disk = self.disk.lock();
+            let mut old_disk = mutation.inode(self)?;
             old_disk.i_mtime = now;
             old_disk.i_ctime = now;
             self.fs.write_inode_disk(self.inode_num, &old_disk)?;
             drop(old_disk);
-            let mut new_disk = new_parent.disk.lock();
+            let mut new_disk = mutation.inode(&new_parent)?;
             new_disk.i_mtime = now;
             new_disk.i_ctime = now;
             self.fs.write_inode_disk(new_parent.inode_num, &new_disk)?;
@@ -2205,9 +2069,11 @@ impl Drop for Ext2Inode {
                 .then_some(disk.i_dtime)
         };
         if let Some(orphan_next) = orphan_next {
-            let result = self.fs.begin_mutation().and_then(|mutation| {
-                self.fs.remove_orphan_locked(self.inode_num, orphan_next)?;
-                self.reclaim_locked(false)?;
+            let result = self.fs.begin_mutation().and_then(|mut mutation| {
+                mutation.discard_inode_on_abort(self.inode_num)?;
+                self.fs
+                    .remove_orphan_locked(&mut mutation, self.inode_num, orphan_next)?;
+                self.reclaim_locked(&mut mutation, false)?;
                 mutation.commit()
             });
             if let Err(error) = result {

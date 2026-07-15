@@ -10,7 +10,7 @@ use crate::{
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
-        pid::{INIT_PID, ProcessId},
+        pid::{INIT_PID, PID_MAX, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
     },
@@ -43,8 +43,11 @@ use context_switch::{prepare_current_block, schedule_with_task_context};
 pub(crate) use deferred::{
     RealTimerError, dispatch_pending_deferred_work, real_timer, set_real_timer,
 };
+pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
-pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe, wait_for_pipe_until};
+pub(crate) use pipe_wait::{
+    create_notification_endpoints, create_pipe_endpoints, wait_for_pipe, wait_for_pipe_until,
+};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
@@ -75,7 +78,7 @@ pub(crate) use terminal_access::{
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 pub(crate) use thread_selector::{parent_pid, thread_count};
 use vfork::complete_vfork;
-pub(crate) use vfork::{fork_current_process, vfork_current_process};
+pub(crate) use vfork::{ProcessCloneError, fork_current_process, vfork_current_process};
 use wait_child::take_child_waiters;
 pub(crate) use wait_child::{
     WaitChildError, consume_child_status, release_child_status, wait_child,
@@ -196,14 +199,14 @@ impl TaskManager {
         enqueue_new_task(task);
     }
 
-    fn allocate_pid(&self) -> ProcessId {
+    fn allocate_pid(&self) -> Option<ProcessId> {
         let mut graph = self.graph.lock();
         let pid = graph.next_pid;
-        graph.next_pid = graph
-            .next_pid
-            .checked_add(1)
-            .expect("PID namespace exhausted");
-        ProcessId::allocated(pid)
+        if pid > PID_MAX {
+            return None;
+        }
+        graph.next_pid = pid + 1;
+        Some(ProcessId::allocated(pid))
     }
 
     fn publish_thread(

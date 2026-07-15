@@ -10,17 +10,26 @@ fn became_ready(before: SocketPollState, after: SocketPollState) -> bool {
         || !before.error && after.error
 }
 
+/// 从 UDP/raw endpoint map 的首项或严格 cursor 后继开始零分配升序查找。
+fn find_endpoint_after<V, R>(
+    endpoints: &FallibleMap<SocketHandle, V>,
+    after: Option<SocketHandle>,
+    mut find: impl FnMut(SocketHandle, &V) -> Option<R>,
+) -> Option<R> {
+    let mut entries = match after {
+        Some(handle) => endpoints.iter_after(&handle),
+        None => endpoints.iter(),
+    };
+    entries.find_map(|(&handle, state)| find(handle, state))
+}
+
 impl NetworkStack {
     /// 在协议 poll 前冻结全部 endpoint readiness；缺失该快照会把长期 writable
     /// 误判为每轮新 edge，持续唤醒所有网络 waiter。
     pub(super) fn snapshot_readiness(&mut self) {
         let mut udp_cursor = None;
-        while let Some(handle) = self
-            .endpoints
-            .iter()
-            .filter(|(handle, _)| udp_cursor.is_none_or(|cursor| **handle > cursor))
-            .map(|(&handle, _)| handle)
-            .next()
+        while let Some(handle) =
+            find_endpoint_after(&self.endpoints, udp_cursor, |handle, _| Some(handle))
         {
             udp_cursor = Some(handle);
             let socket = self.sockets.get::<udp::Socket<'static>>(handle);
@@ -36,12 +45,8 @@ impl NetworkStack {
                 .readiness = readiness;
         }
         let mut raw_cursor = None;
-        while let Some(handle) = self
-            .raw_endpoints
-            .iter()
-            .filter(|(handle, _)| raw_cursor.is_none_or(|cursor| **handle > cursor))
-            .map(|(&handle, _)| handle)
-            .next()
+        while let Some(handle) =
+            find_endpoint_after(&self.raw_endpoints, raw_cursor, |handle, _| Some(handle))
         {
             raw_cursor = Some(handle);
             let readiness = raw_endpoint::poll_state_locked(self, handle);
@@ -73,12 +78,8 @@ impl NetworkStack {
     /// 对照 poll 前快照，只发布 false → true 的 readiness transition。
     pub(super) fn capture_readiness_transitions(&mut self) {
         let mut udp_cursor = None;
-        while let Some(handle) = self
-            .endpoints
-            .iter()
-            .filter(|(handle, _)| udp_cursor.is_none_or(|cursor| **handle > cursor))
-            .map(|(&handle, _)| handle)
-            .next()
+        while let Some(handle) =
+            find_endpoint_after(&self.endpoints, udp_cursor, |handle, _| Some(handle))
         {
             udp_cursor = Some(handle);
             let socket = self.sockets.get::<udp::Socket<'static>>(handle);
@@ -96,12 +97,8 @@ impl NetworkStack {
             state.readiness = after;
         }
         let mut raw_cursor = None;
-        while let Some(handle) = self
-            .raw_endpoints
-            .iter()
-            .filter(|(handle, _)| raw_cursor.is_none_or(|cursor| **handle > cursor))
-            .map(|(&handle, _)| handle)
-            .next()
+        while let Some(handle) =
+            find_endpoint_after(&self.raw_endpoints, raw_cursor, |handle, _| Some(handle))
         {
             raw_cursor = Some(handle);
             let after = raw_endpoint::poll_state_locked(self, handle);
@@ -138,16 +135,12 @@ impl NetworkStack {
         &mut self,
         after: Option<SocketHandle>,
     ) -> Option<(SocketHandle, Arc<InetSocket>)> {
-        let (handle, endpoint) = self
-            .endpoints
-            .iter()
-            .filter(|(handle, _)| after.is_none_or(|after| **handle > after))
-            .find_map(|(&handle, state)| {
-                state
-                    .notification_pending
-                    .then(|| state.endpoint.upgrade().map(|endpoint| (handle, endpoint)))
-                    .flatten()
-            })?;
+        let (handle, endpoint) = find_endpoint_after(&self.endpoints, after, |handle, state| {
+            state
+                .notification_pending
+                .then(|| state.endpoint.upgrade().map(|endpoint| (handle, endpoint)))
+                .flatten()
+        })?;
         self.endpoints
             .get_mut(&handle)
             .expect("selected UDP endpoint disappeared")
@@ -159,11 +152,8 @@ impl NetworkStack {
         &mut self,
         after: Option<SocketHandle>,
     ) -> Option<(SocketHandle, Arc<InetSocket>)> {
-        let (handle, endpoint) = self
-            .raw_endpoints
-            .iter()
-            .filter(|(handle, _)| after.is_none_or(|after| **handle > after))
-            .find_map(|(&handle, state)| {
+        let (handle, endpoint) =
+            find_endpoint_after(&self.raw_endpoints, after, |handle, state| {
                 state
                     .notification_pending
                     .then(|| state.endpoint.upgrade().map(|endpoint| (handle, endpoint)))

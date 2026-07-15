@@ -1,4 +1,5 @@
 use super::*;
+use crate::fs::permission::OwnerModeState;
 
 impl Ext2InodeDisk {
     pub(super) fn uid(&self) -> u32 {
@@ -37,8 +38,8 @@ impl Ext2Inode {
             .map(u32::try_from)
             .transpose()
             .map_err(|_| FileSystemError::InvalidOperation)?;
-        let mutation = self.fs.begin_mutation()?;
-        let mut inode = self.disk.lock();
+        let mut mutation = self.fs.begin_mutation()?;
+        let mut inode = mutation.inode(self)?;
         if let Some(value) = atime {
             inode.i_atime = value;
         }
@@ -51,23 +52,21 @@ impl Ext2Inode {
         mutation.commit()
     }
 
-    pub(super) fn update_owner_mode(
-        &self,
-        mode: Option<u32>,
-        uid: Option<u32>,
-        gid: Option<u32>,
-    ) -> Result<(), FileSystemError> {
-        let mutation = self.fs.begin_mutation()?;
-        let mut disk = self.disk.lock();
-        if let Some(mode) = mode {
-            disk.i_mode = disk.i_mode & 0xf000 | mode as u16 & 0o7777;
-        }
-        if let Some(uid) = uid {
-            disk.set_uid(uid);
-        }
-        if let Some(gid) = gid {
-            disk.set_gid(gid);
-        }
+    pub(super) fn update_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+        // mutation lock 先冻结 live owner/mode；拒绝路径不得为全 inode rollback snapshot 分配。
+        let (mut mutation, update) = MutationGuard::begin_after(&self.fs, || {
+            let disk = self.disk.lock();
+            change.authorize(OwnerModeState::new(
+                Self::kind_from_mode(disk.i_mode),
+                disk.i_mode,
+                disk.uid(),
+                disk.gid(),
+            ))
+        })?;
+        let mut disk = mutation.inode(self)?;
+        disk.i_mode = update.mode();
+        disk.set_uid(update.uid());
+        disk.set_gid(update.gid());
         disk.i_ctime = Self::now();
         self.fs.write_inode_disk(self.inode_num, &disk)?;
         drop(disk);

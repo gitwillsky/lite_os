@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use super::{CreateMetadata, FileSystemError, OpenedFile};
+use super::{CreateMetadata, FileSystemError, OpenedFile, OwnerModeChange};
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,17 +208,11 @@ pub(crate) trait Inode: Send + Sync {
         metadata: CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
 
-    /// @description 原子持久化 chmod/chown 产生的 mode/owner/ctime 更新。
-    /// @param mode Some 时替换 permission 与 special bits，保留 inode type。
-    /// @param uid Some 时替换 owner UID。
-    /// @param gid Some 时替换 owner GID。
-    /// @return 成功或只读、范围、I/O 错误。
-    fn set_owner_mode(
-        &self,
-        _mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
-    ) -> Result<(), FileSystemError> {
+    /// @description 在 filesystem mutation owner 内按 live state 原子授权并持久化 chmod/chown。
+    /// @param change 调用身份与已解码的 mode/UID/GID 语义请求。
+    /// @return 成功或权限、只读、范围、I/O 错误。
+    fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+        change.authorize_metadata(self.metadata()?)?;
         Err(FileSystemError::ReadOnly)
     }
 
