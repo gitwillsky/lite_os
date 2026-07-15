@@ -6,6 +6,11 @@ use crate::fs::{Epoll, vfs};
 
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = 1_048_576;
 
+#[path = "free_slot_index.rs"]
+mod free_slot_index;
+
+use free_slot_index::FreeSlotIndex;
+
 /// @description fd-table 查找、resource limit 与 owner metadata OOM 的稳定失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileDescriptorError {
@@ -18,6 +23,11 @@ struct FileDescriptor {
     ofd: Arc<OpenFileDescription>,
     cloexec: bool,
 }
+
+const _: () = assert!(
+    core::mem::size_of::<Option<FileDescriptor>>() == 16,
+    "fd-index memory proof assumes the reviewed RV64 descriptor slot layout"
+);
 
 impl FileDescriptor {
     fn new(ofd: Arc<OpenFileDescription>, cloexec: bool) -> Self {
@@ -62,18 +72,37 @@ impl DetachedFileDescriptor {
 /// @description 进程 fd table；slot、FD_CLOEXEC 与 descriptor publication 的唯一 owner。
 pub(crate) struct FileDescriptorTable {
     entries: Vec<Option<FileDescriptor>>,
+    free_slots: FreeSlotIndex,
 }
 
 impl FileDescriptorTable {
+    fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+            free_slots: FreeSlotIndex::new(),
+        }
+    }
+
     fn ensure_len(&mut self, length: usize) -> Result<(), FileDescriptorError> {
         if length <= self.entries.len() {
             return Ok(());
         }
+        self.free_slots
+            .try_reserve_slots(length)
+            .map_err(|_| FileDescriptorError::OutOfMemory)?;
+        let old_length = self.entries.len();
         self.entries
-            .try_reserve_exact(length - self.entries.len())
+            .try_reserve(length - old_length)
             .map_err(|_| FileDescriptorError::OutOfMemory)?;
         self.entries.resize(length, None);
+        self.free_slots.grow(old_length, length);
         Ok(())
+    }
+
+    fn publish_empty(&mut self, fd: usize, descriptor: FileDescriptor) {
+        assert!(self.entries[fd].is_none());
+        self.free_slots.occupy(fd);
+        self.entries[fd] = Some(descriptor);
     }
 
     /// @description 返回当前 fd table 已分配的 descriptor slot 数。
@@ -85,12 +114,16 @@ impl FileDescriptorTable {
     /// @description 复制 fd entries，同时保持每个 entry 共享原 OFD Arc。
     /// @return 成功返回独立 descriptor table；kernel heap 耗尽返回错误。
     pub(crate) fn try_clone(&self) -> Result<Self, ()> {
+        let free_slots = self.free_slots.try_clone()?;
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(self.entries.len())
             .map_err(|_| ())?;
         entries.extend(self.entries.iter().cloned());
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            free_slots,
+        })
     }
 
     /// @description 构造 init 的三个 inherited console descriptor。
@@ -100,23 +133,24 @@ impl FileDescriptorTable {
         let backing_opened = vfs()
             .open_file(b"/dev/console")
             .expect("mounted console device must resolve");
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(3).map_err(|_| ())?;
-        entries.extend([
-            Some(FileDescriptor::new(
-                OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_RDONLY)?,
-                false,
-            )),
-            Some(FileDescriptor::new(
-                OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_WRONLY)?,
-                false,
-            )),
-            Some(FileDescriptor::new(
-                OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY)?,
-                false,
-            )),
-        ]);
-        Ok(Self { entries })
+        let mut table = Self::empty();
+        table.ensure_len(3).map_err(|_| ())?;
+        let input = FileDescriptor::new(
+            OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_RDONLY)?,
+            false,
+        );
+        let output = FileDescriptor::new(
+            OpenFileDescription::terminal(terminal.clone(), backing_opened.clone(), O_WRONLY)?,
+            false,
+        );
+        let error = FileDescriptor::new(
+            OpenFileDescription::terminal(terminal, backing_opened, O_WRONLY)?,
+            false,
+        );
+        table.publish_empty(0, input);
+        table.publish_empty(1, output);
+        table.publish_empty(2, error);
+        Ok(table)
     }
 
     pub(crate) fn get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -137,23 +171,17 @@ impl FileDescriptorTable {
         if minimum >= limit {
             return Err(FileDescriptorError::Limit);
         }
-        for fd in minimum..self.entries.len().min(limit) {
-            if self.entries[fd].is_none() {
-                self.entries[fd] = Some(FileDescriptor::new(ofd, cloexec));
-                return Ok(fd);
-            }
-        }
-        if self.entries.len() < minimum {
-            self.ensure_len(minimum)?;
-        }
-        let fd = self.entries.len();
+        let fd = self
+            .free_slots
+            .first_free(minimum, self.entries.len())
+            .unwrap_or(self.entries.len().max(minimum));
         if fd >= limit {
             return Err(FileDescriptorError::Limit);
         }
-        self.entries
-            .try_reserve(1)
-            .map_err(|_| FileDescriptorError::OutOfMemory)?;
-        self.entries.push(Some(FileDescriptor::new(ofd, cloexec)));
+        if fd >= self.entries.len() {
+            self.ensure_len(fd + 1)?;
+        }
+        self.publish_empty(fd, FileDescriptor::new(ofd, cloexec));
         Ok(fd)
     }
 
@@ -170,25 +198,29 @@ impl FileDescriptorTable {
         cloexec: bool,
         limit: usize,
     ) -> Result<(usize, usize), FileDescriptorError> {
-        let mut available = [usize::MAX; 2];
-        let mut found = 0;
-        for fd in 0..limit.min(MAX_FILE_DESCRIPTORS) {
-            if self.entries.get(fd).is_none_or(Option::is_none) {
-                available[found] = fd;
-                found += 1;
-                if found == 2 {
-                    break;
-                }
-            }
-        }
-        if found != 2 {
+        let limit = limit.min(MAX_FILE_DESCRIPTORS);
+        let first_fd = self
+            .free_slots
+            .first_free(0, self.entries.len())
+            .unwrap_or(self.entries.len());
+        if first_fd >= limit {
             return Err(FileDescriptorError::Limit);
         }
-        let required = available[1] + 1;
-        self.ensure_len(required)?;
-        self.entries[available[0]] = Some(FileDescriptor::new(first, cloexec));
-        self.entries[available[1]] = Some(FileDescriptor::new(second, cloexec));
-        Ok((available[0], available[1]))
+        let second_fd = self
+            .free_slots
+            .first_free(first_fd + 1, self.entries.len())
+            .unwrap_or(self.entries.len().max(first_fd + 1));
+        if second_fd >= limit {
+            return Err(FileDescriptorError::Limit);
+        }
+        if second_fd >= self.entries.len() {
+            self.ensure_len(second_fd + 1)?;
+        }
+        let first_entry = FileDescriptor::new(first, cloexec);
+        let second_entry = FileDescriptor::new(second, cloexec);
+        self.publish_empty(first_fd, first_entry);
+        self.publish_empty(second_fd, second_entry);
+        Ok((first_fd, second_fd))
     }
 
     /// @description 原子摘除一个 entry，不在 fd-table owner lock 内执行其 Drop cleanup。
@@ -196,15 +228,15 @@ impl FileDescriptorTable {
     /// @return detached entry；空洞或越界返回错误。
     pub(crate) fn detach(&mut self, fd: usize) -> Result<DetachedFileDescriptor, ()> {
         let entry = self.entries.get_mut(fd).ok_or(())?;
-        Ok(DetachedFileDescriptor(entry.take().ok_or(())?))
+        let detached = entry.take().ok_or(())?;
+        self.free_slots.release(fd);
+        Ok(DetachedFileDescriptor(detached))
     }
 
     /// @description 从 live Process 原子取走全部 fd entry，供 exit 在 files lock 外关闭。
     /// @return 拥有原全部 entry 的独立 table；self 变为空 table。
     pub(crate) fn take_all(&mut self) -> Self {
-        Self {
-            entries: core::mem::take(&mut self.entries),
-        }
+        core::mem::replace(self, Self::empty())
     }
 
     pub(crate) fn duplicate(
@@ -234,8 +266,12 @@ impl FileDescriptorTable {
         if self.entries.len() <= new {
             self.ensure_len(new + 1)?;
         }
+        let descriptor = FileDescriptor::new(ofd, cloexec);
+        if self.entries[new].is_none() {
+            self.free_slots.occupy(new);
+        }
         Ok(self.entries[new]
-            .replace(FileDescriptor::new(ofd, cloexec))
+            .replace(descriptor)
             .map(DetachedFileDescriptor))
     }
 
@@ -281,9 +317,11 @@ impl FileDescriptorTable {
         let mut count = 0;
         while *cursor < self.entries.len() && count < output.len() {
             let slot = &mut self.entries[*cursor];
+            let fd = *cursor;
             *cursor += 1;
             if slot.as_ref().is_some_and(|entry| entry.cloexec) {
                 output[count] = slot.take().map(DetachedFileDescriptor);
+                self.free_slots.release(fd);
                 count += 1;
             }
         }

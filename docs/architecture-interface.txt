@@ -753,6 +753,14 @@ kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Result < Self , () >
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct DetachedFileDescriptor
 kernel/src/fs/file/descriptor_table.rs :: pub (crate) struct FileDescriptorTable
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn first_free (& self , minimum : usize , slots : usize) -> Option < usize >
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn grow (& mut self , old_slots : usize , new_slots : usize)
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn new () -> Self
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn occupy (& mut self , fd : usize)
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn release (& mut self , fd : usize)
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn try_clone (& self) -> Result < Self , () >
+kernel/src/fs/file/free_slot_index.rs :: pub (super) impl FreeSlotIndex :: fn try_reserve_slots (& mut self , slots : usize) -> Result < () , () >
+kernel/src/fs/file/free_slot_index.rs :: pub (super) struct FreeSlotIndex
 kernel/src/fs/file/proc.rs :: pub (crate) impl OpenFileDescription :: fn proc_target (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Input
 kernel/src/fs/file/terminal.rs :: enum TerminalAccess :: Output

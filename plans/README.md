@@ -18,6 +18,7 @@ work when these plans were written; preserve it and do not commit or run Make.
 | 006 | Copy Pipe rings in at most two contiguous slices | P1 | S | 005 | DONE |
 | 007 | Linearize CLOEXEC cleanup and detach descriptor destruction | P1 | M | — | DONE |
 | 008 | Lazily capture ext2 inode rollback state | P1 | M | — | DONE |
+| 009 | Index file-descriptor free slots | P1 | M | 007 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
@@ -38,10 +39,10 @@ REJECTED (with one-line rationale).
 - Full MAP_FIXED rollback was rejected: Linux validates file/backing permissions
   before replacement, but does not promise restoration after every later
   `mmap_region` failure. Plan 003 fixes the demonstrated ordering bug only.
-- Pipe byte-at-a-time ring copies, ext2 full-cache rollback snapshots, per-page
-  journal commits, descriptor-table quadratic scans, and scheduler stale-entry
-  sweeps are confirmed performance opportunities but deferred behind the five
-  higher-leverage plans above.
+- Per-page journal commits and scheduler stale-entry sweeps remain confirmed
+  performance opportunities. Pipe byte-at-a-time copies, ext2 full-cache
+  rollback snapshots, and descriptor-table quadratic scans are addressed by
+  Plans 006, 008, and 009 respectively.
 - Replacing three `lazy_static!` globals with `spin 0.10::Lazy` and deleting the
   stale nested `kernel/Cargo.lock` are worthwhile cleanup, but lower priority than
   the selected correctness and memory-cost work.
