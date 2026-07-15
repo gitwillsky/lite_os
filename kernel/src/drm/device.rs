@@ -1,6 +1,15 @@
 use spin::Once;
 
 use super::*;
+use crate::drivers::DisplayError;
+
+pub(super) fn display_error(error: DisplayError) -> DrmError {
+    match error {
+        DisplayError::WouldBlock => DrmError::Busy,
+        DisplayError::InvalidRectangle => DrmError::Invalid,
+        DisplayError::Device => DrmError::Device,
+    }
+}
 
 impl Drop for DrmFile {
     fn drop(&mut self) {
@@ -17,13 +26,19 @@ impl Drop for DrmFile {
             {
                 completion.reset_after_owner = Some(identity);
             } else if completion.pending.is_none() && owned_active {
-                self.submit_scanout(&mut completion, None)
+                self.submit_scanout(&mut completion, None, None)
                     .expect("closing DRM OFD failed to restore fallback scanout");
             }
             if owned_active {
                 // close 后 object ID 立即离开可查询 namespace；hardware 可能仍显示旧
                 // backing 到已排队 transaction 完成，但不得发布指向已删除 object 的 ID。
                 completion.active = None;
+            }
+        }
+        {
+            let mut state = self.device.state.lock();
+            if state.master == Some(identity) {
+                state.master = None;
             }
         }
         loop {
@@ -76,12 +91,14 @@ pub(crate) fn init(
             pending: None,
             active: None,
             completed: 0,
+            sequence: 0,
             reset_after_owner: None,
         }),
         state: Mutex::new(DrmDeviceState {
             next_buffer_identity: 1,
             next_file_identity: 1,
             next_framebuffer_id: 4,
+            master: None,
             framebuffers: FallibleMap::new(),
         }),
     })
@@ -101,22 +118,32 @@ pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
         state.next_file_identity = identity.checked_add(1).ok_or(())?;
         identity
     };
-    Arc::try_new(DrmFile {
+    let file = Arc::try_new(DrmFile {
         device,
         file_identity,
         state: Mutex::new(DrmFileState {
             next_handle: 1,
             buffers: FallibleMap::new(),
+            was_master: false,
         }),
+        events: Mutex::new(EventQueue::new()),
     })
-    .map_err(|_| ())
+    .map_err(|_| ())?;
+    let mut state = file.device.state.lock();
+    if state.master.is_none() {
+        state.master = Some(file_identity);
+        file.state.lock().was_master = true;
+    }
+    drop(state);
+    Ok(file)
 }
 
 /// @description 在 deferred context 有界推进一次 GPU controlq completion。
 ///
+/// @param timestamp_ns task deferred owner 在本批次取得的 monotonic completion 时刻。
 /// @return 无返回值；每个 IRQ 只推进一个 resource transaction stage。
 /// @errors 未初始化、descriptor/fence 损坏或 device failure 直接 fail-stop。
-pub(crate) fn dispatch_display_work() {
+pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     let drm = PRIMARY_DRM
         .get()
         .expect("display softirq arrived before DRM initialization");
@@ -140,6 +167,19 @@ pub(crate) fn dispatch_display_work() {
         .expect("display completion without pending DRM transaction");
     assert_eq!(pending.fence, fence);
     state.completed = state.completed.max(fence);
+    if pending.framebuffer.is_some() {
+        state.sequence = state.sequence.wrapping_add(1);
+    }
+    if let Some(event) = pending.event.as_ref()
+        && let Some(file) = event.file.upgrade()
+    {
+        file.events.lock().push(DrmEvent {
+            user_data: event.user_data,
+            seconds: (timestamp_ns / 1_000_000_000) as u32,
+            microseconds: (timestamp_ns % 1_000_000_000 / 1_000) as u32,
+            sequence: state.sequence,
+        });
+    }
     let reset_after_close = pending
         .owner
         .is_some_and(|owner| state.reset_after_owner == Some(owner));
@@ -159,6 +199,7 @@ pub(crate) fn dispatch_display_work() {
             fence: reset_fence,
             framebuffer: None,
             owner: None,
+            event: None,
         });
     }
     drop(state);

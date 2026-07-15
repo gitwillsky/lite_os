@@ -17,10 +17,17 @@ impl TaskControlBlock {
         *self.process.cwd.lock() = opened;
     }
 
-    /// @description 返回当前 Process 可继承的 platform Terminal identity。
-    /// @return 与 console OFD 指向同一 TTY owner 的 Arc。
+    /// @description 返回当前 Process 可继承的 controlling Terminal identity。
+    /// @return 与 `/dev/tty` 当前解析目标相同的 Arc。
     pub(crate) fn terminal(&self) -> Arc<Terminal> {
-        self.process.terminal.clone()
+        self.process.terminal.lock().clone()
+    }
+
+    /// @description 在成功 TIOCSCTTY 后原子替换 Process controlling Terminal。
+    /// @param terminal 已由 Terminal owner 接受当前 session 的新 identity。
+    /// @return 无返回值；后续 fork 与 `/dev/tty` lookup 观察同一 Arc。
+    pub(in crate::task) fn set_terminal(&self, terminal: Arc<Terminal>) {
+        *self.process.terminal.lock() = terminal;
     }
 
     /// @description 返回当前 Process/thread group ID。

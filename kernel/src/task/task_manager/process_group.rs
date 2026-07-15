@@ -135,7 +135,7 @@ pub(in crate::task) fn mark_process_exec(tgid: usize) {
 /// @return 成功取得或重复确认同一 session 时返回 `Ok(())`。
 /// @errors 非 session leader/force 请求返回 Permission；TTY 属于其他 session 返回 Permission。
 pub(crate) fn claim_controlling_terminal(
-    terminal: &crate::fs::Terminal,
+    terminal: &Arc<crate::fs::Terminal>,
     force: usize,
 ) -> Result<(), ProcessGroupError> {
     let pid = current_task()
@@ -151,7 +151,11 @@ pub(crate) fn claim_controlling_terminal(
     }
     terminal
         .claim_session(session, pgid)
-        .map_err(|()| ProcessGroupError::Permission)
+        .map_err(|()| ProcessGroupError::Permission)?;
+    current_task()
+        .expect("TIOCSCTTY caller disappeared")
+        .set_terminal(terminal.clone());
+    Ok(())
 }
 
 /// @description 查询当前 session controlling TTY 的 foreground process group。

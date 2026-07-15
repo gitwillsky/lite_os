@@ -1,2 +1,3 @@
 ::respawn:/etc/init.d/network-service
+::respawn:/bin/liteos-terminal
 ::respawn:-/bin/sh

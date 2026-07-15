@@ -149,7 +149,7 @@ pub(super) fn read_descriptor(
                 }
                 total_length as isize
             }
-            CharacterDevice::Entropy(_) => {
+            CharacterDevice::Entropy => {
                 let mut bytes = [0u8; 256];
                 let mut cursor = UserIoCursor::new(vectors);
                 while cursor.completed() < total_length {
@@ -171,7 +171,119 @@ pub(super) fn read_descriptor(
                 }
                 total_length as isize
             }
-            CharacterDevice::Drm(_) => -errno::EOPNOTSUPP,
+            CharacterDevice::Drm(file) => {
+                const EVENT_SIZE: usize = crate::drm::DrmEvent::SIZE;
+                let maximum = total_length / EVENT_SIZE;
+                let nonblocking = *ofd.flags.lock() & O_NONBLOCK != 0;
+                let mut cursor = UserIoCursor::new(vectors);
+                let mut events = [crate::drm::DrmEvent::EMPTY; 16];
+                let mut consumed = 0usize;
+                loop {
+                    let readable = file.readable_event_count();
+                    if readable == 0 {
+                        if consumed != 0 {
+                            break;
+                        }
+                        if nonblocking {
+                            return -errno::EAGAIN;
+                        }
+                        match crate::syscall::poll::wait_for_ofd(ofd, 1) {
+                            WaitResult::Woken => continue,
+                            WaitResult::Interrupted => return -errno::EINTR,
+                            WaitResult::TimedOut => unreachable!(),
+                            WaitResult::OutOfMemory => return -errno::ENOMEM,
+                        }
+                    }
+                    // Linux drm_read 对无法容纳队首完整 event 的 buffer 返回零，绝不拆分 ABI。
+                    if maximum == consumed {
+                        break;
+                    }
+                    let requested = readable.min(maximum - consumed).min(events.len());
+                    if cursor
+                        .validate_write_prefix(task, requested * EVENT_SIZE)
+                        .is_err()
+                    {
+                        return if cursor.completed() == 0 {
+                            -errno::EFAULT
+                        } else {
+                            cursor.completed() as isize
+                        };
+                    }
+                    let read = file.read_events(&mut events[..requested]);
+                    if read == 0 {
+                        continue;
+                    }
+                    for event in events.iter().take(read) {
+                        if cursor.copy_to_user(task, &event.encode()).is_err() {
+                            return if cursor.completed() == 0 {
+                                -errno::EFAULT
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                    }
+                    consumed += read;
+                    if consumed == maximum || read < requested {
+                        break;
+                    }
+                }
+                cursor.completed() as isize
+            }
+            CharacterDevice::PtyMaster(master) => {
+                let mut input = [0u8; 512];
+                let mut cursor = UserIoCursor::new(vectors);
+                while cursor.completed() < total_length {
+                    let requested = (total_length - cursor.completed()).min(input.len());
+                    let read = loop {
+                        match master.read(&mut input[..requested]) {
+                            crate::ipc::PipeRead::Bytes(count) => break count,
+                            crate::ipc::PipeRead::Eof => {
+                                return if cursor.completed() == 0 {
+                                    -errno::EIO
+                                } else {
+                                    cursor.completed() as isize
+                                };
+                            }
+                            crate::ipc::PipeRead::Empty if master.peer_hung_up() => {
+                                return if cursor.completed() == 0 {
+                                    -errno::EIO
+                                } else {
+                                    cursor.completed() as isize
+                                };
+                            }
+                            crate::ipc::PipeRead::Empty if cursor.completed() != 0 => {
+                                return cursor.completed() as isize;
+                            }
+                            crate::ipc::PipeRead::Empty if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                                return -errno::EAGAIN;
+                            }
+                            crate::ipc::PipeRead::Empty => {
+                                let wait = match master.prepare_to_block() {
+                                    None => WaitResult::Woken,
+                                    Some(pipe) => crate::task::wait_for_pipe(
+                                        &pipe,
+                                        crate::ipc::PipeWaitCondition::Readable,
+                                    ),
+                                };
+                                match wait {
+                                    WaitResult::Woken => {}
+                                    WaitResult::Interrupted => return -errno::EINTR,
+                                    WaitResult::TimedOut => unreachable!(),
+                                    WaitResult::OutOfMemory => return -errno::ENOMEM,
+                                }
+                            }
+                        }
+                    };
+                    let result = cursor.copy_to_user(task, &input[..read]);
+                    if result.is_err() {
+                        return scatter_result(&cursor, result);
+                    }
+                    if read < requested {
+                        break;
+                    }
+                }
+                cursor.completed() as isize
+            }
             CharacterDevice::Input { file, .. } => {
                 const EVENT_SIZE: usize = 24;
                 if total_length < EVENT_SIZE {
@@ -239,6 +351,7 @@ pub(super) fn read_descriptor(
             CharacterDevice::Terminal {
                 terminal: console,
                 kind,
+                pty,
             } => {
                 let mut input = [0u8; 512];
                 let capacity = total_length.min(input.len());
@@ -257,7 +370,7 @@ pub(super) fn read_descriptor(
                     _ => None,
                 };
                 loop {
-                    if *kind == DeviceKind::Tty
+                    if matches!(*kind, DeviceKind::Tty | DeviceKind::PtySlave(_))
                         && let Err(error) = guard_terminal_access(console, TerminalAccess::Input)
                     {
                         return error;
@@ -267,6 +380,11 @@ pub(super) fn read_descriptor(
                     }
                     match console.read(&mut input[read..capacity]) {
                         TerminalRead::Empty => {
+                            if let Some(slave) = pty
+                                && slave.master_hung_up()
+                            {
+                                break;
+                            }
                             if matches!(
                                 mode,
                                 TerminalReadMode::Noncanonical {
@@ -282,7 +400,19 @@ pub(super) fn read_descriptor(
                                 }
                                 break;
                             }
-                            match crate::task::wait_for_console(deadline, || console.wait_ready()) {
+                            let wait = if let Some(slave) = pty {
+                                match slave.prepare_to_block() {
+                                    None => crate::task::WaitResult::Woken,
+                                    Some(pipe) => crate::task::wait_for_pipe_until(
+                                        &pipe,
+                                        crate::ipc::PipeWaitCondition::Readable,
+                                        deadline,
+                                    ),
+                                }
+                            } else {
+                                crate::task::wait_for_console(deadline, || console.wait_ready())
+                            };
+                            match wait {
                                 crate::task::WaitResult::Woken => continue,
                                 crate::task::WaitResult::Interrupted if read == 0 => {
                                     return -errno::EINTR;

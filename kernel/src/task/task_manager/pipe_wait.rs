@@ -89,15 +89,31 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
 /// @param condition read 等待 data/EOF；write 等待完整原子写容量/broken reader。
 /// @return ready 返回 Woken；signal 返回 Interrupted。
 pub(crate) fn wait_for_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> WaitResult {
+    wait_for_pipe_until(pipe, condition, None)
+}
+
+/// @description 阻塞到 pipe 条件满足、absolute deadline 到期或 signal interruption。
+/// @param pipe anonymous pipe owner。
+/// @param condition read data/EOF 或 write capacity/broken peer。
+/// @param deadline 可选 absolute monotonic 纳秒 deadline。
+/// @return ready、timeout、signal 或 wait publication OOM。
+pub(crate) fn wait_for_pipe_until(
+    pipe: &Arc<Pipe>,
+    condition: PipeWaitCondition,
+    deadline: Option<u64>,
+) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
     let mut queue = INDEXED_WAIT_QUEUE.lock();
     if pipe.wait_ready(condition) {
         return WaitResult::Woken;
     }
+    if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+        return WaitResult::TimedOut;
+    }
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let Ok(prepared) = queue.prepare_pipe(pipe, condition, task.clone()) else {
+    let Ok(prepared) = queue.prepare_pipe(pipe, condition, deadline, task.clone()) else {
         return WaitResult::OutOfMemory;
     };
     super::context_switch::prepare_current_block(&task, queue, move |queue, _| {

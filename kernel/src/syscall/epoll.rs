@@ -214,11 +214,24 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
 
 fn prepare_sources(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
     match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
-            drain_terminal_input(terminal).map_err(|()| -errno::EIO)
+        OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
+            if let Some(slave) = pty {
+                let _ = slave.prepare_to_block();
+                Ok(())
+            } else {
+                drain_terminal_input(terminal).map_err(|()| -errno::EIO)
+            }
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
             let _ = file.prepare_to_block();
+            Ok(())
+        }
+        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+            let _ = file.prepare_to_block();
+            Ok(())
+        }
+        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
+            let _ = master.prepare_to_block();
             Ok(())
         }
         OpenFileKind::Epoll(epoll) => {

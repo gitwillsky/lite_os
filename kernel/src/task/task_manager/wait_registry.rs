@@ -154,6 +154,15 @@ impl IndexedWaitQueue {
         indexes.push(FallibleMap::try_prepare(key, ()).map_err(|_| ())?);
         Ok(())
     }
+    fn prepare_optional_deadline(
+        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
+        id: u64,
+        deadline: Option<u64>,
+    ) -> Result<(), ()> {
+        deadline.map_or(Ok(()), |deadline| {
+            Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })
+        })
+    }
 
     /// 在 scheduling lock 内零分配发布已准备的完整 wait membership。
     pub(super) fn commit(&mut self, prepared: PreparedWait) -> u64 {
@@ -213,10 +222,7 @@ impl IndexedWaitQueue {
             1 + usize::from(deadline.is_some()),
             |id, indexes| {
                 Self::prepare_index(indexes, WaitIndexKey::Futex { key, id })?;
-                if let Some(deadline) = deadline {
-                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
-                }
-                Ok(())
+                Self::prepare_optional_deadline(indexes, id, deadline)
             },
         )
     }
@@ -245,10 +251,7 @@ impl IndexedWaitQueue {
                         id,
                     },
                 )?;
-                if let Some(deadline) = deadline {
-                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
-                }
-                Ok(())
+                Self::prepare_optional_deadline(indexes, id, deadline)
             },
         )
     }
@@ -265,12 +268,7 @@ impl IndexedWaitQueue {
             deadline,
             None,
             usize::from(deadline.is_some()),
-            |id, indexes| {
-                if let Some(deadline) = deadline {
-                    Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })?;
-                }
-                Ok(())
-            },
+            |id, indexes| Self::prepare_optional_deadline(indexes, id, deadline),
         )
     }
 
@@ -278,6 +276,7 @@ impl IndexedWaitQueue {
         &mut self,
         pipe: &Arc<Pipe>,
         condition: PipeWaitCondition,
+        deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
         let identity = Pipe::identity(pipe);
@@ -288,9 +287,9 @@ impl IndexedWaitQueue {
                 identity,
                 condition,
             },
+            deadline,
             None,
-            None,
-            1,
+            1 + usize::from(deadline.is_some()),
             |id, indexes| {
                 Self::prepare_index(
                     indexes,
@@ -300,7 +299,8 @@ impl IndexedWaitQueue {
                         exclusive: false,
                         id,
                     },
-                )
+                )?;
+                Self::prepare_optional_deadline(indexes, id, deadline)
             },
         )
     }

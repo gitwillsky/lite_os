@@ -72,6 +72,8 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
             .expect("primary DRM initialization failed");
     }
     input::init(task::create_pipe_endpoints).expect("evdev input initialization failed");
+    fs::init_pty(task::create_pipe_endpoints, task::hangup_terminal)
+        .expect("Unix98 PTY initialization failed");
     socket::init();
     mount_root_filesystem();
     task::init(
@@ -112,6 +114,14 @@ fn mount_root_filesystem() {
         .mount_at(b"/dev", b"devfs", fs::DevFileSystem::instance())
         .expect("failed to mount devfs at /dev");
     info!("devfs mounted at /dev");
+    fs::vfs()
+        .mount_at(
+            b"/dev/pts",
+            b"devpts",
+            fs::DevPtsFileSystem::new().expect("failed to allocate devpts"),
+        )
+        .expect("failed to mount devpts at /dev/pts");
+    info!("devpts mounted at /dev/pts");
     fs::vfs()
         .mount_at(
             b"/proc",

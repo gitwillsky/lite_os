@@ -151,7 +151,9 @@ struct Process {
     // OWNER: Process 的全部 Thread 同步累计到这一份 I/O counters；若只在 live Thread
     // snapshot 时求和，已退出 worker 的读写历史会从 `/proc/<tgid>/io` 倒退消失。
     io_accounting: Arc<IoAccounting>,
-    terminal: Arc<Terminal>,
+    // OWNER: Process 的 controlling-terminal handle 由全部 Thread 共享，TIOCSCTTY 原子替换，
+    // fork 按 Arc 继承。缺失该锁会让 `/dev/tty` 在 PTY claim 后仍错误指向启动 UART。
+    terminal: Mutex<Arc<Terminal>>,
     // OWNER: disposition 与 process-directed pending 必须同锁；拆开会造成 SIG_IGN/queue 竞态和锁序反转。
     signal_state: Mutex<ProcessSignalState>,
 }
@@ -200,7 +202,7 @@ impl TaskControlBlock {
             resource_limits: Mutex::new(resource_limits),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
-            terminal,
+            terminal: Mutex::new(terminal),
             signal_state: Mutex::new(ProcessSignalState::new([SignalAction::default(); 65])),
         })?;
         let tcb = Self {

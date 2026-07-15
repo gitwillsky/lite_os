@@ -7,7 +7,11 @@ const FIONBIO: usize = 0x5421;
 
 use super::drm::drm_ioctl;
 use super::input::input_ioctl;
-use super::{errno, socket::socket_ioctl, tty::tty_ioctl};
+use super::{
+    errno,
+    socket::socket_ioctl,
+    tty::{pty_master_ioctl, tty_ioctl},
+};
 
 /// @description 按 OFD backend 分发 Linux ioctl；TTY 与 socket policy 留在各自 ABI module。
 ///
@@ -43,6 +47,9 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
             tty_ioctl(&task, terminal, request, argument)
+        }
+        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
+            pty_master_ioctl(&task, master, request, argument)
         }
         OpenFileKind::Character(CharacterDevice::Drm(file)) => {
             drm_ioctl(&task, file, request, argument)

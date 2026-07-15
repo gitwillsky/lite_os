@@ -1,8 +1,8 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 
 use crate::{
-    drivers::{DisplayDevice, DisplayError, DisplayMode},
+    drivers::{DisplayDevice, DisplayMode},
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
     memory::{
@@ -12,6 +12,10 @@ use crate::{
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
 
+mod event;
+pub(crate) use event::DrmEvent;
+use event::{EVENT_QUEUE_CAPACITY, EventQueue};
+mod master;
 mod mode;
 use mode::cvt_mode;
 pub(crate) mod device;
@@ -24,6 +28,9 @@ struct CompletionState {
     // completed 单调前进，waiter 以 `>= fence` 判断；若只保存一次 edge，旧 Pipe token
     // 被其他 waiter 排空后会永久丢失已完成事实。
     completed: u64,
+    // OWNER: sequence 只在成功完成一次 userspace scanout transaction 时前进；若按
+    // submission 计数，adapter failure 或尚未生效的 framebuffer 会获得伪完成序号。
+    sequence: u32,
     // close 在目标 flip 已进入 device 后不能撤销 descriptor；记录 OFD identity，最终
     // completion 到达后立即提交 fallback，避免关闭 fd 留下无 owner 的永久 scanout。
     reset_after_owner: Option<u64>,
@@ -33,6 +40,14 @@ struct PendingScanout {
     fence: u64,
     framebuffer: Option<u32>,
     owner: Option<u64>,
+    event: Option<PendingEvent>,
+}
+
+struct PendingEvent {
+    // Weak 避免 hardware pending transaction 反向保活已经 close 的 OFD；close 后完成
+    // 仍推进 device fence，但不向不可达的 file queue 发布事件。
+    file: Weak<DrmFile>,
+    user_data: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +60,9 @@ struct DrmDeviceState {
     next_buffer_identity: u64,
     next_file_identity: u64,
     next_framebuffer_id: u32,
+    // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
+    // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
+    master: Option<u64>,
     // OWNER: framebuffer IDs 是 device-wide KMS object namespace；若放进 DrmFile，
     // GETRESOURCES 与另一个 primary-node open 会观察冲突或缺失的 mode object。
     framebuffers: FallibleMap<u32, Framebuffer>,
@@ -75,6 +93,9 @@ struct DrmFileState {
     // OWNER: buffers 是当前 OFD 唯一 GEM handle namespace；缺失 file-private collection
     // 会让不同 open 通过猜测 handle/offset 访问彼此 backing。
     buffers: FallibleMap<u32, Arc<DumbBuffer>>,
+    // Linux 允许曾经的 master 在无当前 master 时重新取得 ownership；缺失该历史位会让
+    // root-less display server 在 DROP_MASTER 后永久无法恢复。
+    was_master: bool,
 }
 
 /// @description Linux DRM/KMS domain 的 primary display owner。
@@ -101,6 +122,9 @@ pub(crate) struct DrmFile {
     // OWNER: 每个 OFD 的 handle namespace 与 next_handle 在同一锁内发布；若放到 device
     // global，两个独立 open 会错误地互相获得或销毁 buffer access。
     state: Mutex<DrmFileState>,
+    // OWNER: 每个 OFD 唯一拥有 Linux event_space 与 read cursor。固定 4 KiB queue 让
+    // deferred completion 永不分配；缺失独立 queue 会把一个 client 的事件泄漏给另一个。
+    events: Mutex<EventQueue>,
 }
 
 /// @description DRM dumb-buffer 操作的稳定领域错误。
@@ -118,6 +142,8 @@ pub(crate) enum DrmError {
     Busy,
     /// display transport 或 response 损坏。
     Device,
+    /// 当前 OFD 不是 KMS master，或无权重新取得 master。
+    Permission,
 }
 
 /// @description RMFB transaction 的无分配进度结果。
@@ -401,7 +427,7 @@ impl DrmFile {
             .is_some_and(|active| active.framebuffer == id)
         {
             return self
-                .submit_scanout(&mut completion, None)
+                .submit_scanout(&mut completion, None, None)
                 .map(FramebufferRemoval::Wait);
         }
         let removed = {
@@ -481,9 +507,23 @@ impl DrmFile {
     /// @param id device-wide framebuffer object ID。
     /// @return CREATE→ATTACH→TRANSFER→SET→FLUSH→UNREF transaction fence。
     /// @errors object/尺寸非法、已有 transaction 或 adapter failure 返回稳定领域错误。
-    pub(crate) fn page_flip(&self, id: u32) -> Result<DrmWait, DrmError> {
+    pub(crate) fn page_flip(
+        self: &Arc<Self>,
+        id: u32,
+        user_data: Option<u64>,
+    ) -> Result<DrmWait, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         let mut completion = self.device.completion.lock();
-        self.submit_scanout(&mut completion, Some(id))
+        if user_data.is_some() && self.events.lock().len() == EVENT_QUEUE_CAPACITY {
+            return Err(DrmError::Busy);
+        }
+        let event = user_data.map(|user_data| PendingEvent {
+            file: Arc::downgrade(self),
+            user_data,
+        });
+        self.submit_scanout(&mut completion, Some(id), event)
     }
 
     /// @description 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
@@ -491,21 +531,29 @@ impl DrmFile {
     /// @return hardware transaction 完成且 active state 发布后返回 unit。
     /// @errors page-flip 提交错误、signal interruption 或 wait registration OOM。
     pub(crate) fn set_crtc(&self, id: u32) -> Result<DrmWait, DrmError> {
-        self.page_flip(id)
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
+        let mut completion = self.device.completion.lock();
+        self.submit_scanout(&mut completion, Some(id), None)
     }
 
     /// @description 同步恢复启动期黑屏 backing，并清除 active framebuffer state。
     /// @return fallback transaction 完成后返回 unit。
     /// @errors 已有 transaction、signal interruption、OOM 或 adapter failure。
     pub(crate) fn disable_crtc(&self) -> Result<DrmWait, DrmError> {
+        if !self.is_master() {
+            return Err(DrmError::Permission);
+        }
         let mut completion = self.device.completion.lock();
-        self.submit_scanout(&mut completion, None)
+        self.submit_scanout(&mut completion, None, None)
     }
 
     fn submit_scanout(
         &self,
         completion: &mut CompletionState,
         framebuffer_id: Option<u32>,
+        event: Option<PendingEvent>,
     ) -> Result<DrmWait, DrmError> {
         if completion.pending.is_some() {
             return Err(DrmError::Busy);
@@ -531,23 +579,16 @@ impl DrmFile {
             .device
             .display
             .submit_scanout(backing)
-            .map_err(display_error)?;
+            .map_err(device::display_error)?;
         completion.pending = Some(PendingScanout {
             fence,
             framebuffer: framebuffer_id,
             owner,
+            event,
         });
         Ok(DrmWait {
             device: self.device.clone(),
             fence,
         })
-    }
-}
-
-fn display_error(error: DisplayError) -> DrmError {
-    match error {
-        DisplayError::WouldBlock => DrmError::Busy,
-        DisplayError::InvalidRectangle => DrmError::Invalid,
-        DisplayError::Device => DrmError::Device,
     }
 }

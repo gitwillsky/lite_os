@@ -56,11 +56,36 @@ pub(super) fn ofd_wait_keys_for_interest(
         Ok::<(), ()>(())
     };
     match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { .. }) => {
-            push(
-                &mut keys,
-                PollWaitKey::console(events, exclusive, wake_group),
-            )?;
+        OpenFileKind::Character(CharacterDevice::Terminal { pty, .. }) => {
+            if let Some(slave) = pty {
+                push(
+                    &mut keys,
+                    PollWaitKey::pipe(
+                        &slave.notification_pipe(),
+                        crate::ipc::PipeDirection::Read,
+                        POLLIN,
+                        exclusive,
+                        wake_group,
+                    ),
+                )?;
+                if events & POLLOUT != 0 {
+                    push(
+                        &mut keys,
+                        PollWaitKey::pipe(
+                            &slave.output_pipe(),
+                            crate::ipc::PipeDirection::Write,
+                            events,
+                            exclusive,
+                            wake_group,
+                        ),
+                    )?;
+                }
+            } else {
+                push(
+                    &mut keys,
+                    PollWaitKey::console(events, exclusive, wake_group),
+                )?;
+            }
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
             push(
@@ -69,6 +94,30 @@ pub(super) fn ofd_wait_keys_for_interest(
                     &file.notification_pipe(),
                     crate::ipc::PipeDirection::Read,
                     POLLIN,
+                    exclusive,
+                    wake_group,
+                ),
+            )?;
+        }
+        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+            push(
+                &mut keys,
+                PollWaitKey::pipe(
+                    &file.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    POLLIN,
+                    exclusive,
+                    wake_group,
+                ),
+            )?;
+        }
+        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
+            push(
+                &mut keys,
+                PollWaitKey::pipe(
+                    &master.notification_pipe(),
+                    crate::ipc::PipeDirection::Read,
+                    POLLIN | POLLOUT | POLLHUP,
                     exclusive,
                     wake_group,
                 ),
@@ -211,11 +260,21 @@ fn prepare_descriptors(descriptors: &[PollDescriptor]) {
 
 fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
     match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { terminal, .. }) => {
-            let _ = drain_terminal_input(terminal);
+        OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
+            if let Some(slave) = pty {
+                let _ = slave.prepare_to_block();
+            } else {
+                let _ = drain_terminal_input(terminal);
+            }
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
             let _ = file.prepare_to_block();
+        }
+        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
+            let _ = file.prepare_to_block();
+        }
+        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
+            let _ = master.prepare_to_block();
         }
         OpenFileKind::Epoll(epoll) => {
             epoll.consume_notifications();

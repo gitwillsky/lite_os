@@ -1,5 +1,5 @@
 use crate::{
-    fs::{Terminal, TerminalAccess},
+    fs::{PtyMaster, Terminal, TerminalAccess},
     syscall::errno,
     task::{
         ProcessGroupError, TaskControlBlock, TerminalAccessError, check_terminal_access,
@@ -19,6 +19,36 @@ const TIOCSPGRP: usize = 0x5410;
 const TIOCGWINSZ: usize = 0x5413;
 const TIOCSWINSZ: usize = 0x5414;
 const TIOCGSID: usize = 0x5429;
+const TIOCGPTN: usize = 0x8004_5430;
+const TIOCSPTLCK: usize = 0x4004_5431;
+
+/// @description 实现 Unix98 PTY master 专属 ioctl，并把通用 TTY request 投影到 slave。
+/// @param task 当前 userspace address-space owner。
+/// @param master `/dev/ptmx` OFD backend。
+/// @param request Linux generic或 PTY master ioctl request。
+/// @param argument request-specific userspace pointer/value。
+/// @return 成功返回零；pointer/request 错误返回标准负 errno。
+pub(super) fn pty_master_ioctl(
+    task: &TaskControlBlock,
+    master: &PtyMaster,
+    request: usize,
+    argument: usize,
+) -> isize {
+    match request {
+        TIOCGPTN => task
+            .copy_to_user(argument, &master.index().to_ne_bytes())
+            .map_or(-errno::EFAULT, |()| 0),
+        TIOCSPTLCK => {
+            let mut bytes = [0u8; 4];
+            if task.copy_from_user(argument, &mut bytes).is_err() {
+                return -errno::EFAULT;
+            }
+            master.set_locked(i32::from_ne_bytes(bytes) != 0);
+            0
+        }
+        _ => tty_ioctl(task, master.terminal(), request, argument),
+    }
+}
 
 fn tty_error(error: ProcessGroupError) -> isize {
     match error {
@@ -51,7 +81,7 @@ pub(super) fn guard_terminal_access(
 /// @return 成功返回零；fd、用户地址、session/group 或 request 错误返回负 errno。
 pub(super) fn tty_ioctl(
     task: &TaskControlBlock,
-    terminal: &Terminal,
+    terminal: &alloc::sync::Arc<Terminal>,
     request: usize,
     argument: usize,
 ) -> isize {

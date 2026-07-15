@@ -407,6 +407,14 @@ impl Terminal {
         None
     }
 
+    /// @description 原子执行 PTY vhangup，清除 controlling session 与 foreground owner。
+    /// @return 原 foreground PGID；task owner 用它投递 SIGHUP/SIGCONT。
+    pub(crate) fn hangup(&self) -> Option<usize> {
+        let mut state = self.state.lock();
+        state.controlling_session = None;
+        state.foreground_pgid.take()
+    }
+
     pub(crate) fn foreground_pgid(&self, session: usize) -> Result<usize, ()> {
         let state = self.state.lock();
         if state.controlling_session != Some(session) {

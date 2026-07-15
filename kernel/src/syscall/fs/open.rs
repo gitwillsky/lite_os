@@ -155,7 +155,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
         }
         match OpenFileDescription::character(device, terminal, ofd_flags, opened) {
             Ok(ofd) => ofd,
-            Err(()) => return -errno::ENOMEM,
+            Err(error) => return ferr(error),
         }
     } else {
         let ofd = match OpenFileDescription::inode(opened, ofd_flags) {

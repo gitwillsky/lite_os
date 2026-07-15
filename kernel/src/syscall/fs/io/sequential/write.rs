@@ -242,7 +242,8 @@ pub(super) fn write_descriptor(
         OpenFileKind::Character(device) => {
             if let CharacterDevice::Terminal {
                 terminal,
-                kind: DeviceKind::Tty,
+                kind: DeviceKind::Tty | DeviceKind::PtySlave(_),
+                ..
             } = device
                 && let Err(error) = guard_terminal_access(terminal, TerminalAccess::Output)
             {
@@ -250,9 +251,7 @@ pub(super) fn write_descriptor(
             }
             if matches!(
                 device,
-                CharacterDevice::Entropy(_)
-                    | CharacterDevice::Drm(_)
-                    | CharacterDevice::Input { .. }
+                CharacterDevice::Entropy | CharacterDevice::Drm(_) | CharacterDevice::Input { .. }
             ) {
                 return -errno::EOPNOTSUPP;
             }
@@ -274,9 +273,38 @@ pub(super) fn write_descriptor(
                 assert_eq!(copied, requested, "character gather ended early");
                 let count = match device {
                     CharacterDevice::Null | CharacterDevice::Zero => requested,
-                    CharacterDevice::Terminal { terminal, .. } => {
-                        match terminal.write(&input[..requested]) {
-                            Ok(written) => written,
+                    CharacterDevice::Terminal {
+                        pty: Some(slave), ..
+                    } => loop {
+                        match slave.write(&input[..requested]) {
+                            Ok(0) if written != 0 => return written as isize,
+                            Ok(0) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                                return -errno::EAGAIN;
+                            }
+                            Ok(0) => match crate::task::wait_for_pipe(
+                                &slave.output_pipe(),
+                                PipeWaitCondition::Writable {
+                                    minimum: crate::fs::PtySlave::output_write_minimum(requested),
+                                },
+                            ) {
+                                WaitResult::Woken => {}
+                                WaitResult::Interrupted => {
+                                    return if written == 0 {
+                                        -errno::EINTR
+                                    } else {
+                                        written as isize
+                                    };
+                                }
+                                WaitResult::TimedOut => unreachable!(),
+                                WaitResult::OutOfMemory => {
+                                    return if written == 0 {
+                                        -errno::ENOMEM
+                                    } else {
+                                        written as isize
+                                    };
+                                }
+                            },
+                            Ok(count) => break count,
                             Err(error) => {
                                 return if written == 0 {
                                     ferr(error)
@@ -285,8 +313,65 @@ pub(super) fn write_descriptor(
                                 };
                             }
                         }
-                    }
-                    CharacterDevice::Entropy(_) => unreachable!("entropy write rejected above"),
+                    },
+                    CharacterDevice::Terminal {
+                        terminal,
+                        pty: None,
+                        ..
+                    } => match terminal.write(&input[..requested]) {
+                        Ok(count) => count,
+                        Err(error) => {
+                            return if written == 0 {
+                                ferr(error)
+                            } else {
+                                written as isize
+                            };
+                        }
+                    },
+                    CharacterDevice::PtyMaster(master) => loop {
+                        match master.write(&input[..requested]) {
+                            Ok(0) if written != 0 => return written as isize,
+                            Ok(0) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
+                                return -errno::EAGAIN;
+                            }
+                            Ok(0) => {
+                                let wait = match master.prepare_write_to_block() {
+                                    None => WaitResult::Woken,
+                                    Some(pipe) => crate::task::wait_for_pipe(
+                                        &pipe,
+                                        PipeWaitCondition::Readable,
+                                    ),
+                                };
+                                match wait {
+                                    WaitResult::Woken => {}
+                                    WaitResult::Interrupted => {
+                                        return if written == 0 {
+                                            -errno::EINTR
+                                        } else {
+                                            written as isize
+                                        };
+                                    }
+                                    WaitResult::TimedOut => unreachable!(),
+                                    WaitResult::OutOfMemory => {
+                                        return if written == 0 {
+                                            -errno::ENOMEM
+                                        } else {
+                                            written as isize
+                                        };
+                                    }
+                                }
+                            }
+                            Ok(count) => break count,
+                            Err(error) => {
+                                return if written == 0 {
+                                    ferr(error)
+                                } else {
+                                    written as isize
+                                };
+                            }
+                        }
+                    },
+                    CharacterDevice::Entropy => unreachable!("entropy write rejected above"),
                     CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
                     CharacterDevice::Input { .. } => unreachable!("input write rejected above"),
                 };

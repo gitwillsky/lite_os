@@ -181,6 +181,7 @@ impl OpenFileDescription {
             kind: OpenFileKind::Character(CharacterDevice::Terminal {
                 terminal,
                 kind: DeviceKind::Console,
+                pty: None,
             }),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
@@ -202,7 +203,7 @@ impl OpenFileDescription {
         terminal: Arc<Terminal>,
         flags: u32,
         backing_opened: Arc<OpenedFile>,
-    ) -> Result<Arc<Self>, ()> {
+    ) -> Result<Arc<Self>, FileSystemError> {
         let device = CharacterDevice::open(kind, terminal)?;
         Arc::try_new(Self {
             kind: OpenFileKind::Character(device),
@@ -211,7 +212,7 @@ impl OpenFileDescription {
             character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
         })
-        .map_err(|_| ())
+        .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, ()> {

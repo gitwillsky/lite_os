@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write};
 
 mod devfs;
+mod devpts;
 mod epoll;
 mod ext2;
 mod file;
@@ -10,10 +11,12 @@ mod inode;
 mod page_cache;
 mod permission;
 mod procfs;
+mod pty;
 mod sysfs;
 mod vfs;
 
 pub(crate) use devfs::DevFileSystem;
+pub(crate) use devpts::DevPtsFileSystem;
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
@@ -31,6 +34,7 @@ pub(crate) use procfs::{
     ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcFileSystem, ProcIoSnapshot,
     ProcNetworkSnapshot, ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot,
 };
+pub(crate) use pty::{PtyMaster, PtySlave, init as init_pty};
 pub(crate) use sysfs::SysFileSystem;
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,

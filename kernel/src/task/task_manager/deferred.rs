@@ -301,6 +301,9 @@ fn wake_expired_tasks(now_ns: u64) {
             IndexedWaitKind::Console => {
                 crate::task::processor::wake_console_task(task, wait_id, WaitResult::TimedOut)
             }
+            IndexedWaitKind::Pipe { .. } => {
+                crate::task::processor::wake_pipe_task(task, wait_id, WaitResult::TimedOut)
+            }
             IndexedWaitKind::Poll => {
                 crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
             }
@@ -338,7 +341,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
         wake_console_waiters();
     }
     if work & hart::DISPLAY_SOFTIRQ != 0 {
-        crate::drm::device::dispatch_display_work();
+        crate::drm::device::dispatch_display_work(get_time_ns());
     }
     if work & hart::INPUT_SOFTIRQ != 0 && crate::input::dispatch_input_work() {
         hart::raise_input_softirq();

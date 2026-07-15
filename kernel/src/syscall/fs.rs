@@ -312,25 +312,6 @@ fn encode_device(device: DeviceKind) -> u64 {
         | (u64::from(major & !0xfff) << 32)
 }
 
-fn character_metadata(device: DeviceKind) -> InodeMetadata {
-    InodeMetadata {
-        filesystem: 2,
-        inode: device.inode(),
-        kind: InodeType::CharacterDevice,
-        mode: device.mode(),
-        links: 1,
-        uid: 0,
-        gid: 0,
-        size: 0,
-        blocks: 0,
-        block_size: 4096,
-        atime: 0,
-        mtime: 0,
-        ctime: 0,
-        device: Some(device),
-    }
-}
-
 pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
     let Some(task) = current_task() else {
         return -errno::ESRCH;
@@ -344,13 +325,13 @@ pub(crate) fn sys_fstat(fd: usize, pointer: *mut u8) -> isize {
             Err(error) => ferr(error),
         },
         None => match &ofd.kind {
-            OpenFileKind::Character(device) => copy_stat(
-                &task,
-                pointer,
-                Some(character_metadata(device.kind())),
-                0,
-                0,
-            ),
+            OpenFileKind::Character(_) => match ofd.opened_ref() {
+                Some(opened) => match opened.inode().metadata() {
+                    Ok(metadata) => copy_stat(&task, pointer, Some(metadata), 0, 0),
+                    Err(error) => ferr(error),
+                },
+                None => -errno::EIO,
+            },
             OpenFileKind::Pipe(endpoint) => {
                 copy_stat(&task, pointer, None, 0o010666, endpoint.pipe().object_id())
             }

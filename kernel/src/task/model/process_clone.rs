@@ -82,7 +82,7 @@ impl TaskControlBlock {
             resource_limits: Mutex::new(resource_limits),
             cpu_runtime_us: cpu_runtime_us.clone(),
             io_accounting: io_accounting.clone(),
-            terminal: self.process.terminal.clone(),
+            terminal: Mutex::new(self.process.terminal.lock().clone()),
             signal_state: Mutex::new(ProcessSignalState::new(signal_actions)),
         })
         .map_err(|_| MemoryError::OutOfMemory)?;

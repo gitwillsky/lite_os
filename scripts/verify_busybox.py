@@ -724,6 +724,56 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
 
 
+def build_display_terminal(musl: MuslCachePaths) -> Path:
+    """构建 rootfs 唯一 DRM/evdev/PTY terminal consumer。"""
+    source = ROOT / "user/liteos-terminal.c"
+    payload = {
+        "kind": "display-terminal",
+        "recipe_version": 1,
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
+        "source_sha256": sha256(source),
+    }
+    entry = WORK / "display-terminals" / fingerprint(payload)
+    if manifest_matches(entry, payload, ("liteos-terminal",)):
+        return entry / "liteos-terminal"
+    generation = generation_directory(WORK / "display-terminal-generations", fingerprint(payload))
+    env = build_environment()
+    env.update({
+        "LITEOS_MUSL_CLANG": str(musl.compiler),
+        "LITEOS_MUSL_LLD": str(musl.linker),
+        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_SYSROOT": str(musl.install),
+    })
+    published = False
+    try:
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/musl_clang.py"),
+                str(source),
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-fPIE",
+                "-pie",
+                "-o",
+                str(generation / "liteos-terminal"),
+            ],
+            ROOT,
+            env,
+        )
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+        published = True
+    finally:
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    return entry / "liteos-terminal"
+
+
 def create_image(
     binary: Path,
     musl: MuslCachePaths,
@@ -744,6 +794,7 @@ def create_image(
         ROOT,
     )
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+    display_terminal = build_display_terminal(musl)
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
@@ -774,6 +825,8 @@ def create_image(
         f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
         f"write {dynamic_probe} /bin/dynamic-smoke",
         "set_inode_field /bin/dynamic-smoke mode 0100755",
+        f"write {display_terminal} /bin/liteos-terminal",
+        "set_inode_field /bin/liteos-terminal mode 0100755",
         "symlink /lib/ld-musl-riscv64.so.1 /usr/lib/libc.so",
     ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
@@ -884,6 +937,7 @@ def create_published_image(
         OSError: cache publication 或 output copy 失败。
     """
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+    display_terminal = build_display_terminal(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
     if host_openssl is None:
@@ -901,6 +955,7 @@ def create_published_image(
             musl.install / "usr/lib/libc.so",
             dynamic_probe,
             dynamic_library,
+            display_terminal,
             openssl.binary,
             bootstrap.apk_static,
             bootstrap.ca_certificates_bundle,
@@ -910,6 +965,7 @@ def create_published_image(
             ROOT / "user/passwd",
             ROOT / "user/group",
             ROOT / "user/inittab",
+            ROOT / "user/liteos-terminal.c",
             ROOT / "user/network-service",
             ROOT / "user/shutdown",
             ROOT / "user/udhcpc.script",

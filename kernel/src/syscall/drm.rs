@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use crate::{
     drm::{DrmError, DrmFile, DrmWait, FramebufferRemoval},
     ipc::PipeWaitCondition,
@@ -20,6 +22,8 @@ const fn drm_ioc(direction: usize, number: usize, size: usize) -> usize {
 
 const DRM_IOCTL_VERSION: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x00, 64);
 const DRM_IOCTL_GET_CAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x0c, 16);
+const DRM_IOCTL_SET_MASTER: usize = drm_ioc(0, 0x1e, 0);
+const DRM_IOCTL_DROP_MASTER: usize = drm_ioc(0, 0x1f, 0);
 const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa0, 64);
 const DRM_IOCTL_MODE_GETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa1, 104);
 const DRM_IOCTL_MODE_SETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa2, 104);
@@ -43,16 +47,15 @@ const DRM_IOCTL_MODE_ADDFB2: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb8, 104);
 /// @return 成功返回零；pointer、object ID 或未支持 request 返回负 errno。
 pub(in crate::syscall) fn drm_ioctl(
     task: &TaskControlBlock,
-    file: &DrmFile,
+    file: &Arc<DrmFile>,
     request: usize,
     argument: usize,
 ) -> isize {
-    if argument == 0 {
-        return -errno::EFAULT;
-    }
     let result = match request {
         DRM_IOCTL_VERSION => version(task, argument),
         DRM_IOCTL_GET_CAP => get_cap(task, argument),
+        DRM_IOCTL_SET_MASTER => set_master(task, file),
+        DRM_IOCTL_DROP_MASTER => drop_master(task, file),
         DRM_IOCTL_MODE_GETRESOURCES => resources(task, file, argument),
         DRM_IOCTL_MODE_GETCRTC => crtc(task, file, argument),
         DRM_IOCTL_MODE_SETCRTC => set_crtc(task, file, argument),
@@ -101,12 +104,26 @@ fn get_cap(task: &TaskControlBlock, argument: usize) -> Result<(), isize> {
     let mut bytes = copy_in::<16>(task, argument)?;
     let value = match read_u64(&bytes, 0)? {
         1 => 1,
+        2 => 1,
         3 => 24,
         4 => 1,
+        6 => 1,
+        0x12 => 1,
+        5 | 7 | 8 | 9 | 0x10 | 0x11 | 0x13 | 0x14 | 0x15 => 0,
         _ => return Err(errno::EINVAL),
     };
     write_u64(&mut bytes, 8, value)?;
     copy_out(task, argument, &bytes)
+}
+
+fn set_master(task: &TaskControlBlock, file: &DrmFile) -> Result<(), isize> {
+    file.set_master(task.credential_id(true, true) == 0)
+        .map_err(drm_errno)
+}
+
+fn drop_master(task: &TaskControlBlock, file: &DrmFile) -> Result<(), isize> {
+    file.drop_master(task.credential_id(true, true) == 0)
+        .map_err(drm_errno)
 }
 
 fn create_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
@@ -225,6 +242,7 @@ pub(in crate::syscall) fn drm_errno(error: DrmError) -> isize {
         DrmError::NoSpace => errno::ENOSPC,
         DrmError::Busy => errno::EBUSY,
         DrmError::Device => errno::EIO,
+        DrmError::Permission => errno::EACCES,
     }
 }
 
@@ -296,7 +314,7 @@ fn crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), 
     copy_out(task, argument, &bytes)
 }
 
-fn set_crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
+fn set_crtc(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
     let bytes = copy_in::<104>(task, argument)?;
     if read_u32(&bytes, 12)? != CRTC_ID || read_u32(&bytes, 20)? != 0 || read_u32(&bytes, 24)? != 0
     {
@@ -324,16 +342,18 @@ fn set_crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<
     wait_scanout(wait)
 }
 
-fn page_flip(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
+fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> Result<(), isize> {
     let bytes = copy_in::<24>(task, argument)?;
-    if read_u32(&bytes, 4)? != CRTC_ID
-        || read_u32(&bytes, 8)? != 0
+    let flags = read_u32(&bytes, 8)?;
+    if read_u32(&bytes, 0)? != CRTC_ID
+        || flags & !1 != 0
         || read_u32(&bytes, 12)? != 0
         || file.active_framebuffer().is_none()
     {
         return Err(errno::EINVAL);
     }
-    file.page_flip(read_u32(&bytes, 0)?)
+    let user_data = (flags & 1 != 0).then(|| read_u64(&bytes, 16)).transpose()?;
+    file.page_flip(read_u32(&bytes, 4)?, user_data)
         .map(|_| ())
         .map_err(drm_errno)
 }

@@ -44,7 +44,7 @@ pub(crate) use deferred::{
     RealTimerError, dispatch_pending_deferred_work, real_timer, set_real_timer,
 };
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
-pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe};
+pub(crate) use pipe_wait::{create_pipe_endpoints, wait_for_pipe, wait_for_pipe_until};
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
@@ -69,7 +69,7 @@ pub(crate) use signal::{
     send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
-pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access};
+pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access, hangup_terminal};
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 pub(crate) use thread_selector::{parent_pid, thread_count};
 use vfork::complete_vfork;

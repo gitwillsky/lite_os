@@ -21,6 +21,8 @@ pub(crate) enum DeviceKind {
     Urandom,
     Tty,
     Console,
+    Ptmx,
+    PtySlave(u32),
     DriCard0,
     InputEvent(u16),
 }
@@ -35,6 +37,8 @@ impl DeviceKind {
             Self::Urandom => (1, 9),
             Self::Tty => (5, 0),
             Self::Console => (5, 1),
+            Self::Ptmx => (5, 2),
+            Self::PtySlave(index) => (136 + index / 256, index % 256),
             Self::DriCard0 => (226, 0),
             Self::InputEvent(index) => (13, 64 + u32::from(index)),
         }
@@ -48,6 +52,8 @@ impl DeviceKind {
             Self::Urandom => 11,
             Self::Tty => 4,
             Self::Console => 5,
+            Self::Ptmx => 15,
+            Self::PtySlave(index) => 0x1_0000 + u64::from(index),
             Self::DriCard0 => 13,
             Self::InputEvent(index) => 0x100 + u64::from(index),
         }
@@ -55,10 +61,14 @@ impl DeviceKind {
 
     pub(crate) fn mode(self) -> u32 {
         match self {
-            Self::Console | Self::InputEvent(_) => 0o020600,
-            Self::Null | Self::Zero | Self::Random | Self::Urandom | Self::Tty | Self::DriCard0 => {
-                0o020666
-            }
+            Self::Console | Self::PtySlave(_) | Self::InputEvent(_) => 0o020600,
+            Self::Null
+            | Self::Zero
+            | Self::Random
+            | Self::Urandom
+            | Self::Tty
+            | Self::Ptmx
+            | Self::DriCard0 => 0o020666,
         }
     }
 }

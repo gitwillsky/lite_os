@@ -487,6 +487,7 @@ kernel/src/drm.rs :: enum DrmError :: # [doc = " display transport 或 response 
 kernel/src/drm.rs :: enum DrmError :: # [doc = " monotonic identity 或 handle 空间耗尽。"] NoSpace
 kernel/src/drm.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
+kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD 不是 KMS master，或无权重新取得 master。"] Permission
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " active object 已切换到 fallback，caller 必须等待后重试删除。"] Wait (DrmWait)
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
 kernel/src/drm.rs :: pub (crate) DrmMode :: clock : u32
@@ -521,7 +522,7 @@ kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , ind
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (& self , id : u32) -> Result < DrmWait , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
@@ -531,9 +532,30 @@ kernel/src/drm.rs :: pub (crate) struct DrmMode
 kernel/src/drm.rs :: pub (crate) struct DrmWait
 kernel/src/drm.rs :: pub (crate) struct DumbBufferInfo
 kernel/src/drm.rs :: pub (crate) struct FramebufferInfo
-kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work ()
+kernel/src/drm.rs :: pub (crate) use event :: DrmEvent
+kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
+kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
+kernel/src/drm/event.rs :: pub (crate) impl DrmEvent :: fn encode (self) -> [u8 ; Self :: SIZE]
+kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn read_events (& self , output : & mut [DrmEvent]) -> usize
+kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn readable_event_count (& self) -> usize
+kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn readiness_generation (& self) -> u64
+kernel/src/drm/event.rs :: pub (crate) struct DrmEvent
+kernel/src/drm/event.rs :: pub (super) DrmEvent :: microseconds : u32
+kernel/src/drm/event.rs :: pub (super) DrmEvent :: seconds : u32
+kernel/src/drm/event.rs :: pub (super) DrmEvent :: sequence : u32
+kernel/src/drm/event.rs :: pub (super) DrmEvent :: user_data : u64
+kernel/src/drm/event.rs :: pub (super) const EVENT_QUEUE_CAPACITY : usize = 4096 / DrmEvent :: SIZE
+kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn len (& self) -> usize
+kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn new () -> Self
+kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn push (& mut self , event : DrmEvent)
+kernel/src/drm/event.rs :: pub (super) struct EventQueue
+kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn drop_master (& self , privileged : bool) -> Result < () , DrmError >
+kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn is_master (& self) -> bool
+kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn set_master (& self , privileged : bool) -> Result < () , DrmError >
 kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn is_empty (& self) -> bool
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn len (& self) -> usize
@@ -578,6 +600,8 @@ kernel/src/fallible_tree/iter.rs :: pub (super) impl Iter < 'a , K , V > :: fn f
 kernel/src/fallible_tree/iter.rs :: pub (super) impl Iter < 'a , K , V > :: fn new (root : Option < & 'a Node < K , V > >) -> Self
 kernel/src/fs/devfs.rs :: pub (crate) impl DevFileSystem :: fn instance () -> Arc < Self >
 kernel/src/fs/devfs.rs :: pub (crate) struct DevFileSystem
+kernel/src/fs/devpts.rs :: pub (crate) impl DevPtsFileSystem :: fn new () -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/devpts.rs :: pub (crate) struct DevPtsFileSystem
 kernel/src/fs/epoll.rs :: enum EpollChange :: Add
 kernel/src/fs/epoll.rs :: enum EpollChange :: Delete
 kernel/src/fs/epoll.rs :: enum EpollChange :: Modify
@@ -670,7 +694,7 @@ kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_all (& 
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn take_cloexec (& mut self) -> Option < Arc < OpenFileDescription > >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn try_clone (& self) -> Result < Self , () >
 kernel/src/fs/file.rs :: pub (crate) impl FileDescriptorTable :: fn with_terminal (terminal : Arc < Terminal >) -> Result < Self , () >
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , () >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Result < Arc < Self > , () >
@@ -692,15 +716,15 @@ kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
 kernel/src/fs/file.rs :: trait Console :: fn read (& self , bytes : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy (DeviceKind)
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , kind : DeviceKind , }
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
-kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , }
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: PtyMaster (Arc < PtyMaster >)
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , pty : Option < Arc < PtySlave > > , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
 kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
-kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn kind (& self) -> DeviceKind
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_pollable (& self) -> bool
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , () >
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , FileSystemError >
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/proc.rs :: pub (crate) impl FileDescriptorTable :: fn snapshot (& self) -> Result < Vec < (usize , Arc < OpenFileDescription >) > , () >
@@ -721,6 +745,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn claim_session 
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn controlling_session (& self) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn drain_input (& self) -> Result < u64 , FileSystemError >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn foreground_pgid (& self , session : usize) -> Result < usize , () >
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn hangup (& self) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn input_ready (& self) -> bool
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn new (console : Arc < dyn Console >) -> Result < Arc < Self > , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn read (& self , bytes : & mut [u8]) -> TerminalRead
@@ -740,6 +765,8 @@ kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
 kernel/src/fs/inode.rs :: enum DeviceKind :: InputEvent (u16)
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
+kernel/src/fs/inode.rs :: enum DeviceKind :: Ptmx
+kernel/src/fs/inode.rs :: enum DeviceKind :: PtySlave (u32)
 kernel/src/fs/inode.rs :: enum DeviceKind :: Random
 kernel/src/fs/inode.rs :: enum DeviceKind :: Tty
 kernel/src/fs/inode.rs :: enum DeviceKind :: Urandom
@@ -834,6 +861,7 @@ kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
+kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent }
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
@@ -841,6 +869,7 @@ kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry ,
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
+kernel/src/fs/mod.rs :: pub (crate) use pty :: { PtyMaster , PtySlave , init as init_pty }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs :: SysFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , OpenedFile , RecordLockMode , RecordLockRange , init as init_vfs , vfs , }
 kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -1026,6 +1055,34 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_network_routes (network 
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_vmstat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
+kernel/src/fs/pty.rs :: pub (crate) fn init (factory : PipeFactory , hangup : HangupNotifier) -> Result < () , () >
+kernel/src/fs/pty.rs :: pub (crate) fn open_master () -> Result < Arc < PtyMaster > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
+kernel/src/fs/pty.rs :: pub (crate) fn slave_indices () -> Result < Vec < u32 > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn index (& self) -> u32
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn peer_hung_up (& self) -> bool
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn prepare_write_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn read (& self , output : & mut [u8]) -> PipeRead
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn readable (& self) -> bool
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn set_locked (& self , locked : bool)
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn terminal (& self) -> & Arc < Terminal >
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn writable (& self) -> bool
+kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn write (& self , input : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn master_hung_up (& self) -> bool
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn notification_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn output_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn output_writable (& self) -> bool
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn output_write_minimum (input_length : usize) -> usize
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn readiness_generation (& self) -> u64
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn terminal (& self) -> & Arc < Terminal >
+kernel/src/fs/pty.rs :: pub (crate) impl PtySlave :: fn write (& self , bytes : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) struct PtyMaster
+kernel/src/fs/pty.rs :: pub (crate) struct PtyPair
+kernel/src/fs/pty.rs :: pub (crate) struct PtySlave
 kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
 kernel/src/fs/vfs.rs :: pub (crate) fn init ()
@@ -1799,7 +1856,7 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_res_ids (uid : bool 
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize , list : usize) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
 kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_errno (error : DrmError) -> isize
-kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_ioctl (task : & TaskControlBlock , file : & DrmFile , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/drm.rs :: pub (in crate :: syscall) fn drm_ioctl (task : & TaskControlBlock , file : & Arc < DrmFile > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
@@ -2040,7 +2097,8 @@ kernel/src/syscall/timer.rs :: pub (crate) fn sys_setitimer (which : usize , rep
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
 kernel/src/syscall/tty.rs :: pub (super) fn guard_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , isize >
-kernel/src/syscall/tty.rs :: pub (super) fn tty_ioctl (task : & TaskControlBlock , terminal : & Terminal , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/tty.rs :: pub (super) fn pty_master_ioctl (task : & TaskControlBlock , master : & PtyMaster , request : usize , argument : usize ,) -> isize
+kernel/src/syscall/tty.rs :: pub (super) fn tty_ioctl (task : & TaskControlBlock , terminal : & alloc :: sync :: Arc < Terminal > , request : usize , argument : usize ,) -> isize
 kernel/src/system.rs :: enum ResetKind :: ColdReboot
 kernel/src/system.rs :: enum ResetKind :: Shutdown
 kernel/src/system.rs :: pub (crate) enum ResetKind
@@ -2276,6 +2334,7 @@ kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock 
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn tgid (& self) -> usize
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn tid (& self) -> usize
 kernel/src/task/model/process_resources.rs :: pub (crate) impl TaskControlBlock :: fn working_directory (& self) -> Arc < OpenedFile >
+kernel/src/task/model/process_resources.rs :: pub (in crate :: task) impl TaskControlBlock :: fn set_terminal (& self , terminal : Arc < Terminal >)
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidLimit
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: InvalidResource
 kernel/src/task/model/resource_limits.rs :: enum ResourceLimitError :: NotFound
@@ -2462,7 +2521,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deli
 kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
 kernel/src/task/task_manager.rs :: pub (crate) use deferred :: { RealTimerError , dispatch_pending_deferred_work , real_timer , set_real_timer , }
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
-kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_pipe_endpoints , wait_for_pipe }
+kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -2470,7 +2529,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGro
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use resource_limit :: process_resource_limit
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
-kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access }
+kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
 kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { fork_current_process , vfork_current_process }
@@ -2523,6 +2582,7 @@ kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: 
 kernel/src/task/task_manager/load_average.rs :: pub (super) struct LoadAverage
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult
+kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe_until (pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > ,) -> WaitResult
 kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller process group，非零选择 PGID。"] Group (u32)
 kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller real UID，非零选择给定 UID。"] User (u32)
 kernel/src/task/task_manager/policy.rs :: enum SchedulerNiceSelector :: # [doc = " 零选择 caller，非零选择全局 TID。"] Process (u32)
@@ -2557,7 +2617,7 @@ kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: No
 kernel/src/task/task_manager/process_group.rs :: enum SetProcessGroupError :: Permission
 kernel/src/task/task_manager/process_group.rs :: pub (crate) enum ProcessGroupError
 kernel/src/task/task_manager/process_group.rs :: pub (crate) enum SetProcessGroupError
-kernel/src/task/task_manager/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & crate :: fs :: Terminal , force : usize ,) -> Result < () , ProcessGroupError >
+kernel/src/task/task_manager/process_group.rs :: pub (crate) fn claim_controlling_terminal (terminal : & Arc < crate :: fs :: Terminal > , force : usize ,) -> Result < () , ProcessGroupError >
 kernel/src/task/task_manager/process_group.rs :: pub (crate) fn create_session () -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager/process_group.rs :: pub (crate) fn process_group (pid : usize) -> Result < usize , ProcessGroupError >
 kernel/src/task/task_manager/process_group.rs :: pub (crate) fn session_id (pid : usize) -> Result < usize , ProcessGroupError >
@@ -2608,6 +2668,7 @@ kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: I
 kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: Restart
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
+kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn hangup_terminal (terminal : & Terminal)
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: ResourceLimit
@@ -2668,7 +2729,7 @@ kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQue
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_console (& mut self , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_deadline (& mut self , deadline : u64 , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_futex (& mut self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
-kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_pipe (& mut self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_pipe (& mut self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_poll (& mut self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn prepare_signal (& mut self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQueue :: fn remove (& mut self , id : u64) -> Option < IndexedWaitEntry >

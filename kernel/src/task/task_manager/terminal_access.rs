@@ -9,6 +9,17 @@ pub(crate) enum TerminalAccessError {
     Restart,
 }
 
+/// @description 执行 PTY master close 的 controlling-terminal hangup consequence。
+/// @param terminal 正在失去 master endpoint 的唯一 Terminal owner。
+/// @return 无返回值；没有 foreground process group 时幂等完成。
+pub(crate) fn hangup_terminal(terminal: &Terminal) {
+    let Some(pgid) = terminal.hangup() else {
+        return;
+    };
+    send_process_group_signal(pgid, 1);
+    send_process_group_signal(pgid, 18);
+}
+
 /// @description 对 controlling TTY 后台访问执行唯一 job-control 判定与 signal generation。
 ///
 /// @param terminal caller 正在访问的 TTY owner。
