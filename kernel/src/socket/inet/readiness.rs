@@ -197,17 +197,31 @@ impl NetworkStack {
 /// 按稳定 endpoint ID 消费本轮 pending edge，并在 NetworkStack lock 外通知 wait owner。
 pub(super) fn notify_pending(stack: &Mutex<NetworkStack>) {
     let mut udp_cursor = None;
-    while let Some((handle, endpoint)) = stack.lock().next_pending_udp(udp_cursor) {
+    loop {
+        // `while let stack.lock()...` 会把 temporary guard 延长到循环体，令 notify
+        // 在 NetworkStack lock 内反向获取 wait registry，和 poll level recheck 死锁。
+        let pending = { stack.lock().next_pending_udp(udp_cursor) };
+        let Some((handle, endpoint)) = pending else {
+            break;
+        };
         udp_cursor = Some(handle);
         endpoint.notify();
     }
     let mut raw_cursor = None;
-    while let Some((handle, endpoint)) = stack.lock().next_pending_raw(raw_cursor) {
+    loop {
+        let pending = { stack.lock().next_pending_raw(raw_cursor) };
+        let Some((handle, endpoint)) = pending else {
+            break;
+        };
         raw_cursor = Some(handle);
         endpoint.notify();
     }
     let mut tcp_cursor = 0;
-    while let Some((id, endpoint)) = stack.lock().next_pending_tcp(tcp_cursor) {
+    loop {
+        let pending = { stack.lock().next_pending_tcp(tcp_cursor) };
+        let Some((id, endpoint)) = pending else {
+            break;
+        };
         tcp_cursor = id;
         endpoint.notify();
     }
