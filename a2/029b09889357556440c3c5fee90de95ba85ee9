@@ -1,0 +1,45 @@
+Makefile
+  s_3774a247416205::t_809e0367fd5bbc 3,5-7,58-59
+docs/architecture-contract.md
+  s_3774a247416205::t_b148addc0f29f3 26,33,73,236,247
+docs/architecture.md
+  s_3774a247416205::t_9d2f1503276828 70-71,220,243
+docs/syscall-support.md
+  s_3774a247416205::t_1e527315b8e8ea 51,55,58
+kernel/src/fs/devfs.rs
+  s_3774a247416205::t_ded4739584506a 91,270
+kernel/src/fs/file.rs
+  s_3774a247416205::t_03ca7a49d88194 8
+kernel/src/fs/file/character.rs
+  s_3774a247416205::t_0aeaba228e0a01 7-19,26,42-57,69,101-107,163
+kernel/src/fs/inode.rs
+  s_3774a247416205::t_67512b2ff6f350 22,39,55,67
+kernel/src/log.rs
+  s_3774a247416205::t_36b2a1410560d3 1,24-32,43-164,209-212,222-223,227-231,267,270-281
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_3774a247416205::t_7fc9d3bbcf238f 169-181
+kernel/src/syscall/fs/io/sequential/write.rs
+  s_3774a247416205::t_f636279fea3a53 264-267,388
+user/inittab
+  s_3774a247416205::t_8f87fd027677c5 2
+user/liteos-terminal.c
+  s_3774a247416205::t_c20efd04ea54dd 123,246-256,272,287,307,386,392,435,438-457,459-462,465-467,480,506-507,535-558,575,614,616-618,831-847,855-856,911-917,920,922,941-945,947-952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a2029b09889357556440c3c5fee90de95ba85ee9",
+  "prompts": {},
+  "sessions": {
+    "s_3774a247416205": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65ba-609c-77a2-a2cd-9f90a9a5f6f2",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
