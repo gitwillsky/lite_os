@@ -39,8 +39,15 @@
 #endif
 #define EVIOCGNAME(length) IOC(IOC_READ, 'E', 0x06, (length))
 
-#define CELL_WIDTH 8U
-#define CELL_HEIGHT 16U
+#define CELL_WIDTH 16U
+#define CELL_HEIGHT 32U
+#define GLYPH_WIDTH 5U
+#define GLYPH_HEIGHT 7U
+#define GLYPH_SCALE_X 2U
+#define GLYPH_SCALE_Y 4U
+#define GLYPH_OFFSET_X ((CELL_WIDTH - GLYPH_WIDTH * GLYPH_SCALE_X) / 2U)
+#define GLYPH_OFFSET_Y ((CELL_HEIGHT - GLYPH_HEIGHT * GLYPH_SCALE_Y) / 2U)
+#define CURSOR_HEIGHT 3U
 #define DRM_PAGE_FLIP_EVENT 1U
 #define EV_KEY 1U
 
@@ -337,20 +344,27 @@ static void render(const struct terminal *terminal, struct display *display) {
             for (unsigned y = 0; y < CELL_HEIGHT; ++y) {
                 uint32_t *pixels = (uint32_t *)((uint8_t *)display->pixels +
                     (row * CELL_HEIGHT + y) * display->pitch) + column * CELL_WIDTH;
-                unsigned glyph_row = y >= 1 && y < 15 ? (y - 1) / 2 : 7;
+                unsigned glyph_row = y >= GLYPH_OFFSET_Y &&
+                                     y < GLYPH_OFFSET_Y + GLYPH_HEIGHT * GLYPH_SCALE_Y
+                                         ? (y - GLYPH_OFFSET_Y) / GLYPH_SCALE_Y
+                                         : GLYPH_HEIGHT;
                 for (unsigned x = 0; x < CELL_WIDTH; ++x) {
-                    int stroke = glyph_row < 7 && x >= 1 && x < 6 &&
-                                 (glyph[glyph_row] & (1U << (5 - x)));
+                    unsigned glyph_column = x >= GLYPH_OFFSET_X &&
+                                            x < GLYPH_OFFSET_X + GLYPH_WIDTH * GLYPH_SCALE_X
+                                                ? (x - GLYPH_OFFSET_X) / GLYPH_SCALE_X
+                                                : GLYPH_WIDTH;
+                    int stroke = glyph_row < GLYPH_HEIGHT && glyph_column < GLYPH_WIDTH &&
+                                 (glyph[glyph_row] & (1U << (GLYPH_WIDTH - glyph_column - 1U)));
                     pixels[x] = stroke ? foreground : background;
                 }
             }
         }
     }
     uint32_t *cursor = (uint32_t *)((uint8_t *)display->pixels +
-        (terminal->row * CELL_HEIGHT + CELL_HEIGHT - 2) * display->pitch) +
+        (terminal->row * CELL_HEIGHT + CELL_HEIGHT - CURSOR_HEIGHT) * display->pitch) +
         terminal->column * CELL_WIDTH;
-    for (unsigned y = 0; y < 2; ++y) {
-        for (unsigned x = 1; x < CELL_WIDTH - 1; ++x)
+    for (unsigned y = 0; y < CURSOR_HEIGHT; ++y) {
+        for (unsigned x = GLYPH_OFFSET_X; x < CELL_WIDTH - GLYPH_OFFSET_X; ++x)
             cursor[x] = palette[terminal->foreground & 15];
         cursor = (uint32_t *)((uint8_t *)cursor + display->pitch);
     }
