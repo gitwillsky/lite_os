@@ -15,20 +15,22 @@ existing `EBADF`/`EMFILE`/`ENOMEM` classification.
 
 ## Ownership and representation
 
-- `fs::file::descriptor_table::FileDescriptorTable` remains the unique owner of
-  slots, `FD_CLOEXEC`, descriptor publication, and free-slot selection.
-- A private four-level `FreeSlotIndex` is derived metadata under the same files
-  lock. Level zero has one set bit per empty materialized slot; each upper level
-  has one set bit per nonempty child word.
+- `fs::file::descriptor_table::FileDescriptorTable` remains the process-level
+  owner of `FD_CLOEXEC` and descriptor publication. Its private `IndexedSlots<T>`
+  is the unique compound owner of the slot vector and free-slot selection, so
+  callers cannot mutate occupancy without the index transition.
+- `IndexedSlots<T>` contains a private four-level `FreeSlotIndex` derived under
+  the same files lock. Level zero has one set bit per empty materialized slot;
+  each upper level has one set bit per nonempty child word.
 - The index also owns one conservative `occupied_prefix`: every materialized fd
   below it is proved occupied. In-order publication advances it by one; detach
   lowers it; fork clones it with the bitmap. It may lag and cause a bounded
   bitmap query, but can never move past an unproved slot.
 - `MAX_FILE_DESCRIPTORS == 1_048_576` and RV64 `usize::BITS == 64` prove four
   levels cover the complete domain: 1,048,576 → 16,384 → 256 → 4 → 1 words.
-- Invalid/unmaterialized slots have no set bit. The slot vector remains the
-  semantic owner; the index is only a search accelerator and never crosses the
-  fd-table module interface.
+- Invalid/unmaterialized slots have no set bit. `IndexedSlots<T>` keeps the slot
+  vector as semantic truth and the index as a search accelerator; neither
+  representation crosses the fd-table module interface.
 - Any mismatch is fail-stop: publication/removal methods assert the expected
   old index bit. There is no recovery path that guesses which copy is correct.
 
@@ -36,6 +38,8 @@ existing `EBADF`/`EMFILE`/`ENOMEM` classification.
 
 - Growth reserves every required index level and the slot vector before either
   logical length changes. OOM leaves slots and index logically unchanged.
+- Descriptor constructors run only after limit checks and all backing reserves,
+  so failed insertion cannot publish or transiently increment descriptor refs.
 - Publishing into an empty slot clears exactly one level-zero bit and propagates
   zero/nonzero transitions upward before the entry becomes visible.
 - Detach, CLOEXEC detach, and close make the slot empty and set exactly one bit.
@@ -75,7 +79,12 @@ parametric instruction/work model, not a runtime benchmark claim.
   close/reopen lowest-fd reuse; pair allocation with zero/one/two holes; dup3
   empty/replacement/same-fd wrapper behavior; CLOEXEC batches; fork/exit/take-all;
   limit before growth; OOM before logical mutation.
-- Source audit every `entries` occupancy mutation has exactly one index mutation.
+- Host tests path-include the exact production `IndexedSlots<T>` implementation
+  and cover hierarchy churn, pair allocation with zero/one/two holes, replacement
+  into an occupied slot and a hole, conditional CLOEXEC-style detach, limits,
+  sparse minimum growth, clone, iteration, and take-all.
+- Source audit confirms `entries` is private to `IndexedSlots<T>` and every
+  occupancy mutation has exactly one index mutation.
 - RV64 check, clippy with warnings denied, optimized assembly inspection,
   architecture fence, format, and `git diff --check`.
 - Independent standards and spec reviews.
