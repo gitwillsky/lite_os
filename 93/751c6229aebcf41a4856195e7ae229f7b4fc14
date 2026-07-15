@@ -1,0 +1,89 @@
+AGENTS.md
+  h_3c88a3bd48cce1 11
+kernel/src/memory/mm/device_area.rs
+  h_3c88a3bd48cce1 12-13,82,84
+  s_dd5bfa84b90cfd::t_140003552d8289 1
+Cargo.toml
+  s_dd5bfa84b90cfd::t_c1c7539697cefc 9
+Makefile
+  s_dd5bfa84b90cfd::t_c4a8653ab0e1bc 3,5-6,36-39
+assets/fonts/JetBrainsMono-LICENSE
+  s_dd5bfa84b90cfd::t_85d3cdd95bdee8 1-93
+docs/architecture-contract.md
+  s_dd5bfa84b90cfd::t_691bb435e5de52 5-12,17,30,75,77,79-80,87,141,159,162,169,257
+docs/architecture-interface.txt
+  s_dd5bfa84b90cfd::t_90e27251aaa023 266,270-273,278,281,284-285,387,435,455-460,463,517,544,561,567-569,1427-1432,1518,1604,1610,1699,1772,1776,1807-1808,1861,1869,1985-1994,1998,2011-2016
+docs/syscall-support.md
+  s_dd5bfa84b90cfd::t_af2b589c70a1c7 3,11-17,47,106
+docs/syscall/socket.md
+  s_dd5bfa84b90cfd::t_50308e257b1468 1-30
+kernel/src/drivers/display.rs
+  s_dd5bfa84b90cfd::t_234b327635db96 4,17-29,44-45,52-53,56,58-59,66,69-79
+kernel/src/drivers/mod.rs
+  s_dd5bfa84b90cfd::t_dd38eadfeaa057 17
+kernel/src/drivers/virtio_gpu.rs
+  s_dd5bfa84b90cfd::t_5e2097b162c043 4,7-10,19-20,27,29-34,41-42,49-62,75-77,85-90,94-95,97-112,159,163-164,177,182,189,191,206,226-228,237-238,241,298,305,313,316-321,325,327-328,334-415,442,444-449,465,470-476,480,487-503,509,513-520,531-546,552,556-655,661,667,671-674,676-677,684
+kernel/src/drivers/virtio_gpu/boot.rs
+  s_dd5bfa84b90cfd::t_60daca644e587a 3,5-8,48,62,64,66-67,69-79,84
+kernel/src/drivers/virtio_gpu/wire.rs
+  s_dd5bfa84b90cfd::t_0ad31080524f10 1-3,24-106,114-124
+kernel/src/drm.rs
+  s_dd5bfa84b90cfd::t_c060a4842cd19f 4,9,22-24,37,39-50,74-75,87,160,272-274,313-314,416,421-435,443,536,549-580,583-584,591
+kernel/src/drm/device.rs
+  s_dd5bfa84b90cfd::t_aed544282574d8 19,25,27-30,40,47,49-99,116-127,130-131,263,277-284,287-308,313-315,317,322,326-327,330-332
+kernel/src/memory/device_backing.rs
+  s_dd5bfa84b90cfd::t_d139cf0bfa9d04 1-116
+kernel/src/memory/mm/mapping_request.rs
+  s_dd5bfa84b90cfd::t_011c14b10691d2 3,34,42,44
+kernel/src/memory/mm/mmap/device.rs
+  s_dd5bfa84b90cfd::t_1c0fd8d863a1d9 36
+kernel/src/memory/mod.rs
+  s_dd5bfa84b90cfd::t_abdd1fe946d68e 8,28
+kernel/src/socket.rs
+  s_dd5bfa84b90cfd::t_992bbe49b1908e 8-9,12-13,22-23,39,66-72,85,139,204-206,242-244,255,283,323,341,354,410-411,421,518,546,557
+kernel/src/socket/kobject.rs
+  s_dd5bfa84b90cfd::t_d9956f2cb7e50b 1-254
+kernel/src/socket/message_limits.rs
+  s_dd5bfa84b90cfd::t_9e3aaf5aa9c919 11,28,40,80
+kernel/src/socket/observation.rs
+  s_dd5bfa84b90cfd::t_2088d36f5430da 1-95
+kernel/src/syscall/drm.rs
+  s_dd5bfa84b90cfd::t_5866a7a3cc6180 4,36,69,363-412
+kernel/src/syscall/socket.rs
+  s_dd5bfa84b90cfd::t_ef8a2ea9d5b821 6-8,25,153-156,209-214,228,312,316-322
+scripts/verify_busybox.py
+  s_dd5bfa84b90cfd::t_1864eabfcfce3e 62,731-736,739,742-750,762-764,768-787,792,795,802,1054-1094,1096-1102,1130
+user/liteos-terminal/Cargo.lock
+  s_dd5bfa84b90cfd::t_7b00afca500720 1-7
+user/liteos-terminal/Cargo.toml
+  s_dd5bfa84b90cfd::t_ab04decaf44dbf 1-14
+user/liteos-terminal/src/ffi.rs
+  s_dd5bfa84b90cfd::t_410604c822d564 1-274
+user/liteos-terminal/src/lib.rs
+  s_dd5bfa84b90cfd::t_940b81f906833b 1-31
+user/liteos-terminal/src/model.rs
+  s_dd5bfa84b90cfd::t_4c7338d027c782 1-835
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93751c6229aebcf41a4856195e7ae229f7b4fc14",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
