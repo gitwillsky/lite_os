@@ -669,6 +669,10 @@ kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn dis
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'inode > (& mut self , inode : & 'inode Ext2Inode ,) -> Result < MutexGuard < 'inode , Ext2InodeDisk > , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) struct Journal
 kernel/src/fs/ext2/journal.rs :: pub (super) struct MutationGuard < 'a >
+kernel/src/fs/ext2/journal_layout.rs :: pub (super) impl JournalLayout :: fn new (journal_blocks : usize , block_size : usize) -> Option < Self >
+kernel/src/fs/ext2/journal_layout.rs :: pub (super) impl JournalLayout :: fn tags_per_descriptor (self) -> usize
+kernel/src/fs/ext2/journal_layout.rs :: pub (super) impl JournalLayout :: fn write_capacity (self) -> usize
+kernel/src/fs/ext2/journal_layout.rs :: pub (super) struct JournalLayout
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2Inode :: fn update_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2Inode :: fn update_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/metadata.rs :: pub (super) impl Ext2InodeDisk :: fn gid (& self) -> u32
@@ -681,6 +685,10 @@ kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn recover_or
 kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orphan_locked (& self , mutation : & mut MutationGuard < '_ > , target : u32 , target_next : u32 ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn allocate_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn append_bytes (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u32 , FileSystemError >
+kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_at_locked (& self , mutation : & mut MutationGuard < '_ > , offset : usize , buf : & [u8] ,) -> Result < usize , FileSystemError >
+kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/file.rs :: enum OpenFileKind :: Character (CharacterDevice)
 kernel/src/fs/file.rs :: enum OpenFileKind :: Epoll (Arc < Epoll >)
 kernel/src/fs/file.rs :: enum OpenFileKind :: EventFd (Arc < EventFd >)
@@ -844,6 +852,7 @@ kernel/src/fs/inode.rs :: pub (crate) impl DirectoryEntry :: fn try_new (inode :
 kernel/src/fs/inode.rs :: pub (crate) struct DirectoryEntry
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
+kernel/src/fs/inode.rs :: pub (crate) trait StorageWriter
 kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset : u64 , _length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
@@ -869,6 +878,8 @@ kernel/src/fs/inode.rs :: trait Inode :: fn sync_storage (& self) -> Result < ()
 kernel/src/fs/inode.rs :: trait Inode :: fn truncate_storage (& self , size : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn write_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
 kernel/src/fs/mod.rs :: enum FileSystemError :: Busy
@@ -907,7 +918,7 @@ kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent }
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
 kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType , StorageWriter , }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcFileDescriptorSnapshot , ProcFileSystem , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcSnapshot , ProcSource , ProcThreadSnapshot , }
@@ -944,6 +955,8 @@ kernel/src/fs/page_cache/reclaim.rs :: pub (super) CachedPages :: entries : Fall
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) impl CachedPages :: fn new () -> Self
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) impl CachedPages :: fn reclaim (& mut self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) struct CachedPages
+kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_with_backoff < T , Error > (entries : & [T] , mut commit : impl FnMut (& [T]) -> Result < () , Error > , mut publish : impl FnMut (& [T]) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < () , Error >
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: mode : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: uid : u32

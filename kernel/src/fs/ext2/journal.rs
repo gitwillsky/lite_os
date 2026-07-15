@@ -1,6 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::MutexGuard;
 
+use super::journal_layout::JournalLayout;
 use super::*;
 use crate::fallible_tree::FallibleMap;
 
@@ -19,6 +20,9 @@ const _: () = assert!(core::mem::size_of::<Option<(Arc<Ext2Inode>, Ext2InodeDisk
 pub(super) struct Journal {
     blocks: Vec<u32>,
     superblock: Vec<u8>,
+    // OWNER: Journal 缓存由已验证 block count/size 唯一推导的 immutable layout；
+    // 过高会让 commit 越界，过低只会提前拆分 transaction。
+    layout: JournalLayout,
     sequence: u32,
     active: Option<FallibleMap<u32, Vec<u8>>>,
     failed: bool,
@@ -70,10 +74,13 @@ impl Journal {
             return Err(FileSystemError::InvalidFileSystem);
         }
         blocks.truncate(maximum);
+        let layout = JournalLayout::new(blocks.len(), fs.block_size)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
         let sequence = be32(&superblock, 24)?;
         Ok(Self {
             blocks,
             superblock,
+            layout,
             sequence,
             active: None,
             failed: false,
@@ -110,14 +117,21 @@ impl Journal {
             .active
             .as_mut()
             .ok_or(FileSystemError::InvalidOperation)?;
+        if let Some(image) = writes.get_mut(&block) {
+            image.copy_from_slice(bytes);
+            return Ok(());
+        }
+        if writes.len() >= self.layout.write_capacity() {
+            return Err(FileSystemError::NoSpace);
+        }
         let mut image = Vec::new();
         image
             .try_reserve_exact(bytes.len())
             .map_err(|_| FileSystemError::OutOfMemory)?;
         image.extend_from_slice(bytes);
-        writes
-            .try_insert(block, image)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let entry =
+            FallibleMap::try_prepare(block, image).map_err(|_| FileSystemError::OutOfMemory)?;
+        writes.commit_vacant(entry);
         Ok(())
     }
 
@@ -240,11 +254,12 @@ impl Journal {
         if writes.is_empty() {
             return Ok(());
         }
-        let tag_capacity = 1 + (fs.block_size - 12 - 24) / 8;
+        let tag_capacity = self.layout.tags_per_descriptor();
         let descriptor_count = writes.len().div_ceil(tag_capacity);
-        if 1 + writes.len() + descriptor_count >= self.blocks.len() {
-            return Err(FileSystemError::NoSpace);
-        }
+        assert!(
+            1 + writes.len() + descriptor_count < self.blocks.len(),
+            "staged transaction exceeded validated journal layout"
+        );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;

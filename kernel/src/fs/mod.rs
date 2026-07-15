@@ -24,7 +24,9 @@ pub(crate) use file::{
     MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY,
     OpenFileDescription, OpenFileKind, Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
 };
-pub(crate) use inode::{DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType};
+pub(crate) use inode::{
+    DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType, StorageWriter,
+};
 pub(crate) use page_cache::{
     RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
     sync_all, sync_inode, truncate,

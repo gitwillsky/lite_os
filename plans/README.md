@@ -22,6 +22,7 @@ the completed plan's files.
 | 008 | Lazily capture ext2 inode rollback state | P1 | M | — | DONE |
 | 009 | Index file-descriptor free slots | P1 | M | 007 | DONE |
 | 010 | Amortize runqueue stale-generation cleanup | P1 | M | — | DONE |
+| 011 | Batch page-cache journal writeback | P1 | M | 008 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
@@ -42,10 +43,10 @@ REJECTED (with one-line rationale).
 - Full MAP_FIXED rollback was rejected: Linux validates file/backing permissions
   before replacement, but does not promise restoration after every later
   `mmap_region` failure. Plan 003 fixes the demonstrated ordering bug only.
-- Per-page journal commits remain a confirmed performance opportunity. Pipe
-  byte-at-a-time copies, ext2 full-cache rollback snapshots, descriptor-table
-  quadratic scans, and scheduler per-delivery stale sweeps are addressed by
-  Plans 006, 008, 009, and 010 respectively.
+- Pipe byte-at-a-time copies, ext2 full-cache rollback snapshots,
+  descriptor-table quadratic scans, scheduler per-delivery stale sweeps, and
+  per-page journal commits are addressed by Plans 006, 008, 009, 010, and 011
+  respectively.
 - Replacing three `lazy_static!` globals with `spin 0.10::Lazy` and deleting the
   stale nested `kernel/Cargo.lock` are worthwhile cleanup, but lower priority than
   the selected correctness and memory-cost work.

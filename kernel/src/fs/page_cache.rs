@@ -11,11 +11,12 @@ use crate::memory::{
 use super::{FileSystemError, Inode, InodeType};
 
 mod reclaim;
+mod writeback;
+mod writeback_batch;
 use reclaim::CachedPages;
 
 const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
-const WRITEBACK_BATCH_PAGES: usize = 32;
 
 /// @description page-cache owner 在单次读取边界投影的全局页统计。
 #[derive(Debug, Clone, Copy)]
@@ -181,70 +182,6 @@ impl CachedFile {
             page.frame
                 .write(page_offset, &input[source_start..source_start + count]);
         }
-    }
-
-    fn writeback_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
-        let end = offset.saturating_add(length);
-        // 1. operation lock 保证本次 writeback 的 EOF 不被 write/truncate 改动；只读取一次，
-        // 避免每个 resident page 都进入 filesystem metadata owner。
-        let size = self.inode.size();
-        // 2. 每批最多扫描固定数量 resident pages 并只 clone dirty Arc；range-sized Vec 会让
-        // 大 mapping 的 munmap 在内存压力下反而申请连续大块 heap 并 panic。
-        let first = offset / PAGE_SIZE as u64;
-        let last = end.saturating_sub(1) / PAGE_SIZE as u64;
-        let mut next = first;
-        let mut data = [0u8; PAGE_SIZE];
-        loop {
-            let mut batch: [Option<(u64, Arc<CachedPage>)>; WRITEBACK_BATCH_PAGES] =
-                core::array::from_fn(|_| None);
-            let mut scanned = 0usize;
-            let mut dirty = 0usize;
-            {
-                let pages = self.pages.lock();
-                for (&index, page) in pages
-                    .entries
-                    .iter_from(&next)
-                    .take_while(|(index, _)| **index <= last)
-                {
-                    next = index
-                        .checked_add(1)
-                        .expect("cached page index cannot reach u64::MAX");
-                    scanned += 1;
-                    if page.dirty() {
-                        batch[dirty] = Some((index, page.clone()));
-                        dirty += 1;
-                    }
-                    if scanned == WRITEBACK_BATCH_PAGES {
-                        break;
-                    }
-                }
-            }
-            if scanned == 0 {
-                break;
-            }
-            let reached_end = next > last;
-            // 3. 单一 stack scratch 跨 batch 复用；storage 成功后仅在没有 writable PTE 时
-            // CAS 清 dirty，错误路径保留当前及后续 page 的 dirty 状态供下一次 sync 重试。
-            for entry in &mut batch[..dirty] {
-                let (index, page) = entry.take().expect("dirty writeback slot must exist");
-                let page_start = index * PAGE_SIZE as u64;
-                let count = usize::try_from(size.saturating_sub(page_start))
-                    .unwrap_or(usize::MAX)
-                    .min(PAGE_SIZE);
-                if count == 0 {
-                    continue;
-                }
-                page.frame.read(0, &mut data[..count]);
-                if self.inode.write_storage(page_start, &data[..count])? != count {
-                    return Err(FileSystemError::IoError);
-                }
-                page.mark_clean_if_unmapped();
-            }
-            if reached_end {
-                break;
-            }
-        }
-        self.inode.sync_storage()
     }
 }
 

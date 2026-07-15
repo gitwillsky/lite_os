@@ -7,6 +7,7 @@ use spin::Mutex;
 
 use super::{
     DirectoryEntry, FileSystem, FileSystemError, Inode, InodeMetadata, InodeType, OwnerModeChange,
+    StorageWriter,
 };
 use crate::{
     drivers::block::{BLOCK_SIZE, BlockDevice},
@@ -16,6 +17,7 @@ use crate::{
 mod directory;
 mod filesystem;
 mod journal;
+mod journal_layout;
 mod metadata;
 mod mount;
 mod orphan;
@@ -868,41 +870,6 @@ impl Ext2FileSystem {
         Ok(index)
     }
 
-    fn allocate_block(&self, preferred_group: usize) -> Result<u32, FileSystemError> {
-        let group_count = self.groups.lock().len();
-        let total_blocks = self.superblock.lock().s_blocks_count as usize;
-        for step in 0..group_count {
-            let group = (preferred_group + step) % group_count;
-            let (bitmap, free) = {
-                let groups = self.groups.lock();
-                (
-                    groups[group].bg_block_bitmap,
-                    groups[group].bg_free_blocks_count,
-                )
-            };
-            if free == 0 {
-                continue;
-            }
-            let group_start = self.first_data_block as usize + group * self.blocks_per_group;
-            let limit = cmp::min(
-                self.blocks_per_group,
-                total_blocks.saturating_sub(group_start),
-            );
-            let local = self.set_bitmap_bit(bitmap, limit, true, None)?;
-            {
-                let mut groups = self.groups.lock();
-                groups[group].bg_free_blocks_count -= 1;
-            }
-            self.superblock.lock().s_free_blocks_count -= 1;
-            self.sync_allocation_metadata(group)?;
-            let block = (group_start + local) as u32;
-            let zeroed = try_zeroed(self.block_size)?;
-            self.write_fs_block(block, &zeroed)?;
-            return Ok(block);
-        }
-        Err(FileSystemError::NoSpace)
-    }
-
     fn free_block(&self, block: u32) -> Result<(), FileSystemError> {
         if block < self.first_data_block || block >= self.superblock.lock().s_blocks_count {
             return Err(FileSystemError::InvalidFileSystem);
@@ -1164,42 +1131,6 @@ impl Ext2Inode {
         Err(FileSystemError::NoSpace)
     }
 
-    /// 调用方必须持有文件系统 mutation 锁，保证位图和 inode 指针不会并发丢失更新。
-    fn ensure_block_mapped(
-        &self,
-        mutation: &mut MutationGuard<'_>,
-        file_block: u32,
-    ) -> Result<u32, FileSystemError> {
-        let (root, path) = self.pointer_path(file_block)?;
-        let preferred = self.fs.group_index_and_local_inode(self.inode_num).0;
-        let mut inode = mutation.inode(self)?;
-        if path.is_empty() {
-            if inode.i_block[root] == 0 {
-                inode.i_block[root] = self.fs.allocate_block(preferred)?;
-                inode.i_blocks_lo += (self.fs.block_size / 512) as u32;
-            }
-            return Ok(inode.i_block[root]);
-        }
-        if inode.i_block[root] == 0 {
-            inode.i_block[root] = self.fs.allocate_block(preferred)?;
-            inode.i_blocks_lo += (self.fs.block_size / 512) as u32;
-        }
-        let mut pointer_block = inode.i_block[root];
-        for (depth, index) in path.iter().enumerate() {
-            let mut pointers = self.read_pointer_block(pointer_block)?;
-            if pointers[*index] == 0 {
-                pointers[*index] = self.fs.allocate_block(preferred)?;
-                inode.i_blocks_lo += (self.fs.block_size / 512) as u32;
-                self.write_pointer_block(pointer_block, &pointers)?;
-            }
-            pointer_block = pointers[*index];
-            if depth + 1 == path.len() {
-                return Ok(pointer_block);
-            }
-        }
-        Err(FileSystemError::InvalidFileSystem)
-    }
-
     fn free_tree(&self, block: u32, level: usize) -> Result<u32, FileSystemError> {
         let mut sectors = (self.fs.block_size / 512) as u32;
         if level > 0 {
@@ -1343,41 +1274,6 @@ impl Ext2Inode {
         self.fs.write_inode_disk(self.inode_num, &disk)?;
         drop(disk);
         self.fs.free_inode(self.inode_num, directory)
-    }
-
-    fn write_at_locked(
-        &self,
-        mutation: &mut MutationGuard<'_>,
-        offset: usize,
-        buf: &[u8],
-    ) -> Result<usize, FileSystemError> {
-        let end = offset
-            .checked_add(buf.len())
-            .ok_or(FileSystemError::NoSpace)?;
-        let mut done = 0;
-        while done < buf.len() {
-            let position = offset + done;
-            let file_block = u32::try_from(position / self.fs.block_size)
-                .map_err(|_| FileSystemError::NoSpace)?;
-            let block_offset = position % self.fs.block_size;
-            let block = self.ensure_block_mapped(mutation, file_block)?;
-            let count = cmp::min(self.fs.block_size - block_offset, buf.len() - done);
-            let mut data = try_zeroed(self.fs.block_size)?;
-            if block_offset != 0 || count != self.fs.block_size {
-                self.fs.read_fs_block(block, &mut data)?;
-            }
-            data[block_offset..block_offset + count].copy_from_slice(&buf[done..done + count]);
-            self.fs.write_fs_block(block, &data)?;
-            done += count;
-        }
-        let mut inode = mutation.inode(self)?;
-        if end as u64 > Self::disk_size(&inode) {
-            Self::set_disk_size(&mut inode, end as u64);
-        }
-        inode.i_mtime = Self::now();
-        inode.i_ctime = inode.i_mtime;
-        self.fs.write_inode_disk(self.inode_num, &inode)?;
-        Ok(done)
     }
 
     fn map_block(&self, file_block_index: u32) -> Result<u32, FileSystemError> {
@@ -1706,17 +1602,14 @@ impl Inode for Ext2Inode {
     }
 
     fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError> {
-        if self.inode_type() == InodeType::Directory {
-            return Err(FileSystemError::IsDirectory);
-        }
-        let offset = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        let mut mutation = self.fs.begin_mutation()?;
-        let written = self.write_at_locked(&mut mutation, offset, buf)?;
-        mutation.commit()?;
-        Ok(written)
+        self.write_bytes(offset, buf)
+    }
+
+    fn write_storage_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        self.write_batch(batch)
     }
 
     fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {

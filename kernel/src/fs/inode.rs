@@ -124,6 +124,22 @@ impl DirectoryEntry {
     }
 }
 
+/// @description 一次 filesystem-owned storage batch 内的顺序 byte writer。
+///
+/// caller 只提交 offset/bytes；具体 filesystem 决定这些写入共享一个 journal
+/// transaction，还是使用默认逐次 storage mutation。writer 不得逃出 batch callback。
+pub(crate) trait StorageWriter {
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError>;
+}
+
+struct DirectStorageWriter<'inode, T: Inode + ?Sized>(&'inode T);
+
+impl<T: Inode + ?Sized> StorageWriter for DirectStorageWriter<'_, T> {
+    fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<usize, FileSystemError> {
+        self.0.write_storage(offset, bytes)
+    }
+}
+
 /// @description 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub(crate) trait Inode: Send + Sync {
     fn filesystem_id(&self) -> usize;
@@ -169,6 +185,19 @@ pub(crate) trait Inode: Send + Sync {
     }
 
     fn write_storage(&self, offset: u64, buf: &[u8]) -> Result<usize, FileSystemError>;
+
+    /// @description 让 filesystem adapter 在一次 owner-defined storage batch 中消费写入。
+    /// @param batch 短生命周期 producer；只能通过 StorageWriter 顺序提交 byte ranges。
+    /// @return producer 与 adapter 全部成功后返回；失败时 caller 不得把 batch 标 clean。
+    /// @note 默认实现只为既有只读/volatile adapter 保持逐次 write_storage 语义；
+    /// mutable cached adapter 必须覆盖为 callback 失败时可整体重放的 transaction。
+    fn write_storage_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        let mut writer = DirectStorageWriter(self);
+        batch(&mut writer)
+    }
 
     fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
 
