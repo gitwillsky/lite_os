@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, MutexGuard, Once};
 
 use crate::fallible_tree::FallibleMap;
@@ -17,6 +17,16 @@ use reclaim::CachedPages;
 
 const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
+const WRITEBACK_BATCH_PAGES: usize = 32;
+const DIRTY_LIMIT_DIVISOR: usize = 4;
+const DIRTY_THROTTLE_PAGES: usize = WRITEBACK_BATCH_PAGES * 2;
+
+// OWNER: dirty count 只投影 CachedPage 单一 atomic state 的 clean→dirty / dirty→clean
+// 转换。缺少该高水位投影会让 writable mapping 吃完可用于 journal writeback 的内存。
+static DIRTY_PAGES: AtomicUsize = AtomicUsize::new(0);
+// OWNER: 此 gate 只合并跨 hart 的同一 dirty 高水位回收尝试；缺失它会让多个
+// writable fault 同时扫描相同 owner，放大 CPU/FLUSH，而跳过者仍由后续 cadence 重试。
+static DIRTY_THROTTLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// @description page-cache owner 在单次读取边界投影的全局页统计。
 #[derive(Debug, Clone, Copy)]
@@ -46,14 +56,30 @@ impl CachedPage {
         self.state.load(Ordering::Acquire) == 0
     }
 
+    fn dirty_unmapped(&self) -> bool {
+        self.state.load(Ordering::Acquire) == PAGE_DIRTY
+    }
+
     fn mark_clean_if_unmapped(&self) {
         // writer acquire 与本 CAS 竞争：先 acquire 则 writer count 阻止清理，后 acquire
         // 则重新原子发布 dirty，因而不存在已映射 writable page 被误标 clean 的窗口。
-        let _ = self
+        if let Ok(previous) = self
             .state
             .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state & PAGE_WRITER_MASK == 0).then_some(0)
-            });
+            })
+            && previous & PAGE_DIRTY != 0
+        {
+            DIRTY_PAGES.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for CachedPage {
+    fn drop(&mut self) {
+        if self.dirty() {
+            DIRTY_PAGES.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -63,6 +89,22 @@ impl SharedPage for CachedPage {
     }
 
     fn acquire_writer(&self) {
+        // 在发布新 writable PTE 前提前回写旧的 unmapped dirty 页。高水位只影响慢路径，
+        // 且此时仍保留 3/4 物理容量供 ext2 journal staging，避免 OOM 后递归回写自锁。
+        let dirty_limit = crate::memory::frame_statistics()
+            .capacity_pages
+            .div_ceil(DIRTY_LIMIT_DIVISOR);
+        let dirty = DIRTY_PAGES.load(Ordering::Relaxed);
+        if !self.dirty()
+            && dirty >= dirty_limit
+            && (dirty - dirty_limit).is_multiple_of(DIRTY_THROTTLE_PAGES)
+            && DIRTY_THROTTLE_ACTIVE
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            let _ = crate::memory::reclaim_pages(DIRTY_THROTTLE_PAGES);
+            DIRTY_THROTTLE_ACTIVE.store(false, Ordering::Release);
+        }
         let result = self
             .state
             .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
@@ -71,7 +113,10 @@ impl SharedPage for CachedPage {
                     .filter(|writers| *writers <= PAGE_WRITER_MASK)
                     .map(|writers| PAGE_DIRTY | writers)
             });
-        assert!(result.is_ok(), "shared-page writer count overflow");
+        let previous = result.expect("shared-page writer count overflow");
+        if previous & PAGE_DIRTY == 0 {
+            DIRTY_PAGES.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn release_writer(&self) {
@@ -224,10 +269,7 @@ impl SharedFileMapping for CachedFile {
 
 impl MemoryReclaimer for CachedFile {
     fn reclaim_pages(&self, request: ReclaimRequest) -> ReclaimResult {
-        let Some(mut pages) = self.pages.try_lock() else {
-            return ReclaimResult::default();
-        };
-        pages.reclaim(request)
+        self.reclaim_under_pressure(request)
     }
 }
 

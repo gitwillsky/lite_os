@@ -60,7 +60,7 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 2
+ROOTFS_RECIPE_VERSION = 3
 DISPLAY_FONT_SOURCE = ROOT / "assets" / "fonts" / "spleen-16x32.psfu.b64"
 DISPLAY_FONT_SHA256 = "b3b6067d4c00c2e8acae1df68c04ab35d23b6bec47120cb29ffa7bc9b975baad"
 FORBIDDEN_BOOT_MARKERS = (
@@ -184,6 +184,8 @@ BUSYBOX_LINKS = (
     "yes",
     "zcat",
 )
+STRESS_LINKS = ("cputest", "memtest", "cachetest")
+
 
 def start_http_gate() -> tuple[subprocess.Popen[bytes], int]:
     """在 QEMU slirp 稳定转发的非特权范围选择首个空闲 HTTP origin port。"""
@@ -777,6 +779,57 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
     return entry / "liteos-terminal"
 
 
+def build_stress_tools(musl: MuslCachePaths) -> Path:
+    """构建 rootfs 单一 CPU/memory/page-cache 诊断程序。"""
+    source = ROOT / "user/liteos-stress.c"
+    payload = {
+        "kind": "liteos-stress-tools",
+        "recipe_version": 1,
+        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
+        "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
+        "source_sha256": sha256(source),
+    }
+    entry = WORK / "stress-tools" / fingerprint(payload)
+    if manifest_matches(entry, payload, ("liteos-stress",)):
+        return entry / "liteos-stress"
+    generation = generation_directory(WORK / "stress-tool-generations", fingerprint(payload))
+    env = build_environment()
+    env.update({
+        "LITEOS_MUSL_CLANG": str(musl.compiler),
+        "LITEOS_MUSL_LLD": str(musl.linker),
+        "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+        "LITEOS_MUSL_SYSROOT": str(musl.install),
+    })
+    published = False
+    try:
+        run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/musl_clang.py"),
+                str(source),
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-fPIE",
+                "-pie",
+                "-pthread",
+                "-o",
+                str(generation / "liteos-stress"),
+            ],
+            ROOT,
+            env,
+        )
+        write_manifest(generation, payload)
+        publish_generation(generation, entry)
+        published = True
+    finally:
+        if not published:
+            shutil.rmtree(generation, ignore_errors=True)
+    return entry / "liteos-stress"
+
+
 def create_image(
     binary: Path,
     musl: MuslCachePaths,
@@ -798,6 +851,7 @@ def create_image(
     )
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_terminal = build_display_terminal(musl)
+    stress_tools = build_stress_tools(musl)
     display_font_bytes = base64.b64decode(
         b"".join(DISPLAY_FONT_SOURCE.read_bytes().split()), validate=True
     )
@@ -843,6 +897,12 @@ def create_image(
         "set_inode_field /bin/dynamic-smoke mode 0100755",
         f"write {display_terminal} /bin/liteos-terminal",
         "set_inode_field /bin/liteos-terminal mode 0100755",
+        f"write {stress_tools} /bin/liteos-stress",
+        "set_inode_field /bin/liteos-stress mode 0100755",
+        "ln /bin/liteos-stress /bin/cputest",
+        "ln /bin/liteos-stress /bin/memtest",
+        "ln /bin/liteos-stress /bin/cachetest",
+        f"set_inode_field /bin/liteos-stress links_count {len(STRESS_LINKS) + 1}",
         f"write {display_font_path} /usr/share/consolefonts/spleen-16x32.psfu",
         "set_inode_field /usr/share/consolefonts/spleen-16x32.psfu mode 0100644",
         f"write {ROOT / 'assets' / 'fonts' / 'Spleen-LICENSE'} /usr/share/licenses/spleen/LICENSE",
@@ -884,6 +944,7 @@ def create_image(
             find_debugfs(),
             Path(workspace),
             BUSYBOX_LINKS,
+            STRESS_LINKS,
             FORBIDDEN_BOOT_MARKERS,
         )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
@@ -901,6 +962,17 @@ def create_image(
     metadata = run([str(find_debugfs()), "-R", "stat /bin/init", str(image)], ROOT)
     if f"Links: {len(expected)}" not in metadata:
         raise RuntimeError("BusyBox inode link count does not match rootfs applets")
+    stress_commands = {"liteos-stress", *STRESS_LINKS}
+    missing_stress = sorted(stress_commands - entries.keys())
+    if missing_stress:
+        raise RuntimeError(f"rootfs lacks stress commands: {', '.join(missing_stress)}")
+    if len({entries[name] for name in stress_commands}) != 1:
+        raise RuntimeError("stress commands must be hardlinks to one inode")
+    stress_metadata = run(
+        [str(find_debugfs()), "-R", "stat /bin/liteos-stress", str(image)], ROOT
+    )
+    if "Links: 4" not in stress_metadata:
+        raise RuntimeError("stress command inode link count does not match multicall names")
     temporary_directory_metadata = run(
         [str(find_debugfs()), "-R", "stat /tmp", str(image)], ROOT
     )
@@ -959,6 +1031,7 @@ def create_published_image(
     """
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_terminal = build_display_terminal(musl)
+    stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
     if host_openssl is None:
@@ -977,6 +1050,7 @@ def create_published_image(
             dynamic_probe,
             dynamic_library,
             display_terminal,
+            stress_tools,
             openssl.binary,
             bootstrap.apk_static,
             bootstrap.ca_certificates_bundle,
@@ -987,6 +1061,7 @@ def create_published_image(
             ROOT / "user/group",
             ROOT / "user/inittab",
             ROOT / "user/liteos-terminal.c",
+            ROOT / "user/liteos-stress.c",
             ROOT / "assets/fonts/spleen-16x32.psfu.b64",
             ROOT / "assets/fonts/Spleen-LICENSE",
             ROOT / "user/network-service",

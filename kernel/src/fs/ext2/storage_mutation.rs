@@ -222,7 +222,28 @@ impl Ext2Inode {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        let mut mutation = self.fs.begin_mutation()?;
+        let mutation = self.fs.begin_mutation()?;
+        self.write_batch_with_mutation(mutation, batch)
+    }
+
+    pub(super) fn try_write_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        if self.inode_type() == InodeType::Directory {
+            return Err(FileSystemError::IsDirectory);
+        }
+        let Some(mutation) = MutationGuard::try_begin(&self.fs)? else {
+            return Err(FileSystemError::Busy);
+        };
+        self.write_batch_with_mutation(mutation, batch)
+    }
+
+    fn write_batch_with_mutation(
+        &self,
+        mut mutation: MutationGuard<'_>,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
         let maximum_end = {
             let mut writer = Ext2StorageWriter {
                 inode: self,

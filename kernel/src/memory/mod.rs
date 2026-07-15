@@ -40,7 +40,7 @@ pub(crate) use mm::{
 pub(crate) use shared_file::{
     MemoryMappingOwner, MemoryReclaimer, ReclaimRequest, ReclaimResult, SharedFileError,
     SharedFileId, SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file,
-    reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
+    reclaim_pages, reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
 };
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.

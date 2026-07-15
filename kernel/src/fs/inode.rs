@@ -199,6 +199,17 @@ pub(crate) trait Inode: Send + Sync {
         batch(&mut writer)
     }
 
+    /// @description 尝试在不等待 filesystem mutation owner 的前提下提交回收写回批次。
+    /// @param batch 短生命周期 producer；仅在 adapter 成功取得 mutation ownership 时消费。
+    /// @return 批次完整提交后返回。
+    /// @errors owner 正忙时返回 Busy 且 batch 未执行；其他 journal、存储或容量错误原样返回。
+    fn try_write_storage_batch(
+        &self,
+        _batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        Err(FileSystemError::Busy)
+    }
+
     fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError>;
 
     fn truncate_storage(&self, size: u64) -> Result<(), FileSystemError>;

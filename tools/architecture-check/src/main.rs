@@ -265,6 +265,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "group",
         "inittab",
         "liteos-terminal.c",
+        "liteos-stress.c",
         "musl-smoke.c",
         "network-service",
         "passwd",

@@ -669,6 +669,7 @@ kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn beg
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'inode > (& mut self , inode : & 'inode Ext2Inode ,) -> Result < MutexGuard < 'inode , Ext2InodeDisk > , FileSystemError >
+kernel/src/fs/ext2/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn try_begin (fs : & 'a Ext2FileSystem) -> Result < Option < Self > , FileSystemError >
 kernel/src/fs/ext2/journal.rs :: pub (super) struct Journal
 kernel/src/fs/ext2/journal.rs :: pub (super) struct MutationGuard < 'a >
 kernel/src/fs/ext2/journal_layout.rs :: pub (super) impl JournalLayout :: fn new (journal_blocks : usize , block_size : usize) -> Option < Self >
@@ -697,6 +698,7 @@ kernel/src/fs/ext2/orphan.rs :: pub (super) impl Ext2FileSystem :: fn remove_orp
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn allocate_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn append_bytes (& self , buf : & [u8]) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u32 , FileSystemError >
+kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn try_write_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_at_locked (& self , mutation : & mut MutationGuard < '_ > , offset : usize , buf : & [u8] ,) -> Result < usize , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/ext2/storage_mutation.rs :: pub (super) impl Ext2Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
@@ -887,6 +889,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
 kernel/src/fs/inode.rs :: trait Inode :: fn symlink (& self , _name : & [u8] , _target : & [u8] , _metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn sync_storage (& self) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn truncate_storage (& self , size : u64) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn try_write_storage_batch (& self , _batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
@@ -963,9 +966,15 @@ kernel/src/fs/page_cache.rs :: pub (crate) struct RegularFileWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (super) impl CachedPage :: fn reclaimable (& self) -> bool
 kernel/src/fs/page_cache.rs :: pub (super) struct CachedPage
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) CachedPages :: entries : FallibleMap < u64 , Arc < CachedPage > >
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: reclaimed_pages : usize
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: scanned_pages : usize
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: writeback : [Option < (u64 , Arc < CachedPage >) > ; WRITEBACK_BATCH_PAGES]
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) PreparedReclaim :: writeback_pages : usize
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) impl CachedPages :: fn new () -> Self
-kernel/src/fs/page_cache/reclaim.rs :: pub (super) impl CachedPages :: fn reclaim (& mut self , request : ReclaimRequest) -> ReclaimResult
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) impl CachedPages :: fn prepare_reclaim (& mut self , request : ReclaimRequest , allow_writeback : bool ,) -> PreparedReclaim
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) struct CachedPages
+kernel/src/fs/page_cache/reclaim.rs :: pub (super) struct PreparedReclaim
+kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn reclaim_under_pressure (& self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) fn commit_with_backoff < T , Error > (entries : & [T] , mut commit : impl FnMut (& [T]) -> Result < () , Error > , mut publish : impl FnMut (& [T]) , mut capacity_error : impl FnMut (& Error) -> bool ,) -> Result < () , Error >
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
@@ -1651,7 +1660,7 @@ kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocation
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
 kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MapPermission , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
-kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
+kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
 kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
 kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable

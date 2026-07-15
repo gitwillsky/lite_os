@@ -68,6 +68,7 @@ def _stage_package_root(
     debugfs: Path,
     workspace: Path,
     busybox_links: tuple[str, ...],
+    stress_links: tuple[str, ...],
 ) -> Path:
     """从唯一 ext2 image primitive 导出 package payload，并恢复 hardlink identity。"""
     staging = workspace / "rootfs"
@@ -87,6 +88,13 @@ def _stage_package_root(
         path = staging / "bin" / name
         path.unlink(missing_ok=True)
         os.link(init, path)
+    stress = staging / "bin/liteos-stress"
+    if not stress.is_file():
+        raise RuntimeError("rootfs staging lacks /bin/liteos-stress")
+    for name in stress_links:
+        path = staging / "bin" / name
+        path.unlink(missing_ok=True)
+        os.link(stress, path)
     apk_static = staging / "sbin/apk.static"
     apk = staging / "sbin/apk"
     apk.unlink(missing_ok=True)
@@ -349,11 +357,14 @@ def assemble_apk_rootfs(
     debugfs: Path,
     workspace: Path,
     busybox_links: tuple[str, ...],
+    stress_links: tuple[str, ...],
     forbidden_markers: tuple[str, ...],
 ) -> Path:
     """执行 image → signed package → real apk install → final image 的唯一 assembly。"""
     bootstrap = _inject_bootstrap_files(image, debugfs, workspace)
-    staging = _stage_package_root(image, debugfs, workspace, busybox_links)
+    staging = _stage_package_root(
+        image, debugfs, workspace, busybox_links, stress_links
+    )
     package = _build_base_package(
         staging, workspace, bootstrap.private_key, bootstrap.public_key
     )

@@ -1620,6 +1620,13 @@ impl Inode for Ext2Inode {
         self.write_batch(batch)
     }
 
+    fn try_write_storage_batch(
+        &self,
+        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        self.try_write_batch(batch)
+    }
+
     fn append_storage(&self, buf: &[u8]) -> Result<(u64, usize), FileSystemError> {
         self.append_bytes(buf)
     }

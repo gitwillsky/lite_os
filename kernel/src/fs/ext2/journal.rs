@@ -4,6 +4,7 @@ use spin::MutexGuard;
 use super::journal_layout::JournalLayout;
 use super::*;
 use crate::fallible_tree::FallibleMap;
+use crate::memory::PAGE_SIZE;
 
 const JBD2_MAGIC: u32 = 0xC03B_3998;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
@@ -265,12 +266,14 @@ impl Journal {
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;
         let uuid = fs.superblock.lock().s_uuid;
         let mut cursor = 1;
-        let mut descriptor = zeroed(fs.block_size)?;
-        let mut escaped = zeroed(fs.block_size)?;
+        // commit 已把 journal 标为 dirty；此后 descriptor/escape 复用同一固定栈 scratch。
+        // 若在 durable state publication 后才尝试 heap allocation，OOM 会留下无法安全重试的半事务。
+        let mut scratch_storage = [0u8; PAGE_SIZE];
+        let scratch = &mut scratch_storage[..fs.block_size];
         let mut next_block = writes.first_key_value().map(|(&block, _)| block);
         while let Some(first_block) = next_block {
-            descriptor.fill(0);
-            put_header(&mut descriptor, JBD2_DESCRIPTOR_BLOCK, sequence)?;
+            scratch.fill(0);
+            put_header(&mut *scratch, JBD2_DESCRIPTOR_BLOCK, sequence)?;
             let mut offset = 12;
             let count = writes.iter_from(&first_block).take(tag_capacity).count();
             let mut last_block = first_block;
@@ -286,23 +289,23 @@ impl Journal {
                 if index + 1 == count {
                     flags |= JBD2_FLAG_LAST_TAG;
                 }
-                put_be32(&mut descriptor, offset, *block)?;
-                put_be16(&mut descriptor, offset + 4, 0)?;
-                put_be16(&mut descriptor, offset + 6, flags)?;
+                put_be32(&mut *scratch, offset, *block)?;
+                put_be16(&mut *scratch, offset + 4, 0)?;
+                put_be16(&mut *scratch, offset + 6, flags)?;
                 offset += 8;
                 if index == 0 {
-                    descriptor[offset..offset + 16].copy_from_slice(&uuid);
+                    scratch[offset..offset + 16].copy_from_slice(&uuid);
                     offset += 16;
                 }
                 last_block = *block;
             }
-            self.journal_write(fs, cursor, &descriptor)?;
+            self.journal_write(fs, cursor, scratch)?;
             cursor += 1;
             for (_, bytes) in writes.iter_from(&first_block).take(count) {
-                let journal_bytes = if bytes[..4] == JBD2_MAGIC.to_be_bytes() {
-                    escaped.copy_from_slice(bytes);
-                    escaped[..4].fill(0);
-                    &escaped
+                let journal_bytes: &[u8] = if bytes[..4] == JBD2_MAGIC.to_be_bytes() {
+                    scratch.copy_from_slice(bytes);
+                    scratch[..4].fill(0);
+                    &*scratch
                 } else {
                     bytes
                 };
@@ -314,9 +317,9 @@ impl Journal {
                 .next()
                 .map(|(&block, _)| block);
         }
-        descriptor.fill(0);
-        put_header(&mut descriptor, JBD2_COMMIT_BLOCK, sequence)?;
-        self.journal_write(fs, cursor, &descriptor)?;
+        scratch.fill(0);
+        put_header(&mut *scratch, JBD2_COMMIT_BLOCK, sequence)?;
+        self.journal_write(fs, cursor, scratch)?;
         fs.device.flush().map_err(|_| FileSystemError::IoError)?;
         for (block, bytes) in &writes {
             fs.write_fs_block_home(*block, bytes)?;
@@ -369,6 +372,17 @@ impl<'a> MutationGuard<'a> {
         Self::begin_after(fs, || Ok(())).map(|(guard, ())| guard)
     }
 
+    /// @description 仅在无需等待时取得 mutation owner 并开始空 transaction。
+    /// @param fs journal 已加载且未 aborted 的 filesystem。
+    /// @return owner 空闲时返回完整 guard，忙时返回 `None` 且不执行任何 prepare。
+    /// @errors owner 取得后的 snapshot 或 journal begin 失败返回对应错误。
+    pub(super) fn try_begin(fs: &'a Ext2FileSystem) -> Result<Option<Self>, FileSystemError> {
+        let Some(lock) = fs.mutation.try_lock() else {
+            return Ok(None);
+        };
+        Self::begin_after_lock(fs, lock, || Ok(())).map(|(guard, ())| Some(guard))
+    }
+
     /// @description 取得 mutation lock，执行无副作用 live-state prepare，成功后才冻结 rollback 并开 journal。
     /// @param prepare 只读当前 mutation domain、不得发布状态的 fallible prepare。
     /// @return guard 与锁内准备结果；prepare 失败不分配 snapshot、不发布 active transaction。
@@ -377,6 +391,14 @@ impl<'a> MutationGuard<'a> {
         prepare: impl FnOnce() -> Result<T, FileSystemError>,
     ) -> Result<(Self, T), FileSystemError> {
         let lock = fs.mutation.lock();
+        Self::begin_after_lock(fs, lock, prepare)
+    }
+
+    fn begin_after_lock<T>(
+        fs: &'a Ext2FileSystem,
+        lock: MutexGuard<'a, ()>,
+        prepare: impl FnOnce() -> Result<T, FileSystemError>,
+    ) -> Result<(Self, T), FileSystemError> {
         let prepared = prepare()?;
         let superblock = *fs.superblock.lock();
         // 1. The topology-wide allocator snapshot precedes the active transaction. Live inode
