@@ -639,12 +639,13 @@ kernel/src/fs/epoll.rs :: pub (crate) enum EpollChange
 kernel/src/fs/epoll.rs :: pub (crate) enum EpollChangeError
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn change (self : & Arc < Self > , operation : EpollChange , fd : usize , ofd : Arc < OpenFileDescription > , event : Option < EpollEvent > ,) -> Result < () , EpollChangeError >
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn commit_delivery (& self , fd : usize , ofd : & Arc < OpenFileDescription > , revision : u64 , generation : u64 , edge : bool , oneshot : bool ,)
-kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn consume_notifications (& self)
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn consume_notifications (& self) -> u64
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn has_ready (& self) -> bool
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn identity (epoll : & Arc < Self >) -> usize
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn new (notification_read : Arc < PipeEnd > , notification_write : Arc < PipeEnd > ,) -> Result < Arc < Self > , () >
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn readiness_generation (& self) -> u64
+kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn recheck_changed (& self , snapshot_generation : u64) -> bool
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn release_file (closed : & Arc < OpenFileDescription >)
 kernel/src/fs/epoll.rs :: pub (crate) impl Epoll :: fn snapshot (& self) -> Result < Vec < EpollInterest > , () >
 kernel/src/fs/epoll.rs :: pub (crate) struct Epoll
@@ -1292,7 +1293,7 @@ kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn poll_state (& self , direction 
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn readiness_generation (& self , direction : PipeDirection) -> u64
 kernel/src/ipc.rs :: pub (crate) impl Pipe :: fn wait_ready (& self , condition : PipeWaitCondition) -> bool
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn direction (& self) -> PipeDirection
-kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn drain_readiness (& self)
+kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn drain_readiness (& self) -> u64
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn pipe (& self) -> Arc < Pipe >
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn read (& self , output : & mut [u8]) -> PipeRead
 kernel/src/ipc.rs :: pub (crate) impl PipeEnd :: fn signal_readiness (& self)
@@ -2076,16 +2077,30 @@ kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`
 kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - errno :: EINTR
 kernel/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 kernel/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6]) -> SyscallOutcome
+kernel/src/syscall/poll.rs :: enum PrepareError :: Io
+kernel/src/syscall/poll.rs :: enum PrepareError :: NoMemory
+kernel/src/syscall/poll.rs :: enum PrepareIo :: Ignore
+kernel/src/syscall/poll.rs :: enum PrepareIo :: Propagate
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_ppoll (poll_fds : usize , count : usize , timeout : usize , signal_mask : usize , signal_set_size : usize ,) -> isize
 kernel/src/syscall/poll.rs :: pub (crate) fn sys_pselect6 (count : usize , read_set : usize , write_set : usize , except_set : usize , timeout : usize , signal_argument : usize ,) -> isize
-kernel/src/syscall/poll.rs :: pub (super) fn ofd_wait_keys_for_interest (ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Result < Vec < PollWaitKey > , () >
+kernel/src/syscall/poll.rs :: pub (super) enum PrepareError
+kernel/src/syscall/poll.rs :: pub (super) enum PrepareIo
+kernel/src/syscall/poll.rs :: pub (super) fn prepare_wait_sources (ofd : & Arc < OpenFileDescription > , io : PrepareIo ,) -> Result < () , PrepareError >
 kernel/src/syscall/poll.rs :: pub (super) fn wait_for_ofd (ofd : & Arc < OpenFileDescription > , events : i16) -> WaitResult
+kernel/src/syscall/poll.rs :: pub (super) use wait_keys :: { PollWaitGuards , PollWaitKeys }
 kernel/src/syscall/poll/select.rs :: pub (super) fn deadline (task : & TaskControlBlock , timeout : usize) -> Result < Option < u64 > , isize >
 kernel/src/syscall/poll/select.rs :: pub (super) fn install_signal_mask (task : & TaskControlBlock , argument : usize) -> Result < bool , isize >
 kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn copy_results (& self , task : & TaskControlBlock , descriptors : impl Iterator < Item = (usize , i16 , i16) > ,) -> isize
 kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn events (& self , fd : usize) -> i16
 kernel/src/syscall/poll/select.rs :: pub (super) impl SelectSets :: fn load (task : & TaskControlBlock , count : usize , addresses : [usize ; 3] ,) -> Result < Self , isize >
 kernel/src/syscall/poll/select.rs :: pub (super) struct SelectSets
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitGuards :: fn changed (& self) -> bool
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: const fn new () -> Self
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_epoll_change_source (& mut self , epoll : & Arc < Epoll > ,) -> Result < () , () >
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_interest (& mut self , ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Result < () , () >
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn finish (self) -> (Vec < PollWaitKey > , PollWaitGuards)
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitGuards
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitKeys
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_exit (exit_code : i32) -> !

@@ -11,6 +11,7 @@
 ## 唯一 wait owner
 
 - `PollWaitKey` 保存 source identity、direction、requested events、exclusive mode 与 epoll instance wake-group。一个 Poll membership 在同一 source 上出现重复 key 时合并 event mask；只要存在普通 key，普通模式优先，避免同一 task 同时占用 wake-all 与 wake-one 两条注册。
+- 一次 poll/epoll evaluation 的全部 source 只向一个 transient builder 追加；builder 分别转移唯一 key Vec 与 epoll generation-guard Vec，不为每个 interest 建临时 key collection。普通 data source 继承顶层 epoll instance wake-group，而顶层及 nested epoll ctl/close notification 固定使用不分组的普通 registration，使一次 control-plane change 唤醒全部已发布 stale waiter；尚未发布的并发 snapshot 则由持久 generation mismatch 拒绝。registry-lock readiness closure 禁止重新分配/展开 keys。
 - IndexedWaitQueue 的 console/Pipe index 将 exclusive mode 纳入 key，但 membership、deadline、signal cancellation 和 task scheduling state 仍保持单一 owner。
 - source wake 先按实际 ready mask 过滤 callback：每个匹配的普通 epoll instance 只选择一个 epoll_wait thread，同时唤醒全部匹配的 ppoll/direct waiter；随后按 wait-id 选择一个匹配 exclusive epoll instance。被选 waiter 重新注册后获得更大的 wait-id。
 - Pipe read source 投影 `IN/HUP`，write source 投影 `OUT/ERR`；这避免只订阅 `EPOLLIN` 的 exclusive socket 被无关 `EPOLLOUT` wake 错误消费 quota。

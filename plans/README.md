@@ -23,6 +23,7 @@ the completed plan's files.
 | 009 | Index file-descriptor free slots | P1 | M | 007 | DONE |
 | 010 | Amortize runqueue stale-generation cleanup | P1 | M | — | DONE |
 | 011 | Batch page-cache journal writeback | P1 | M | 008 | DONE |
+| 012 | Seal epoll wait publication | P1 | M | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).

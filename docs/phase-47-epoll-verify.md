@@ -9,7 +9,7 @@
 - Pipe、AF_UNIX 和 Terminal 从单一全局 allocator 取得 readiness generation。ET 消费 generation，而不是比较 ready 位图；数据在保持 ready 的期间再次到达仍可形成新 edge。
 - snapshot 带 MOD revision。完整 RV64 `epoll_event[]` 单次 copyout 成功后才提交 ET/ONESHOT；并发 MOD/DEL 或 fd reuse 令旧 revision 失效，旧 delivery 不覆盖新 state。
 - 成功 delivery 推进唯一 `(fd,OFD)` cursor，下一次 snapshot 从其后轮转；`maxevents` 小于 ready 数量时，永久 LT-ready 的低 key 不会饿死后续 interest。
-- 每个 epoll 只有一对内部 notification Pipe endpoints，并复用 IndexedWaitQueue 的 Pipe key；并发 ADD/MOD/DEL 或最后 close 会唤醒基于旧 interest snapshot 睡眠的 waiter，重新求值前统一排空 notification，不建立第二套 registry。
+- 每个 epoll 只有一对内部 notification Pipe endpoints，并复用 IndexedWaitQueue 的 Pipe key；顶层及 nested snapshot 都先捕获该 Pipe 的 read generation，再展开 interest。change source 使用不分组的普通 registration，使并发 ADD/MOD/DEL 或最后 close 先摘除全部已发布 stale membership；registry-lock recheck 排空 token 并比较每份 snapshot generation，因此 token 即使被另一 waiter 消费也不能让并发预建的旧 keys 入睡。generation 变化时重建完整 source keys，新 interest 当前尚未 ready 也不发布旧 snapshot；稳定时只做零分配 generation/level scan，不建立第二套 registry。
 - 嵌套图变更由单一 graph lock 串行化，拒绝 self-loop、cycle 和超过 5 层的图；readiness 与 wait-key 递归因此有界。
 
 Phase 47 当时尚未实现 `EPOLLEXCLUSIVE`，因此没有以 wake-all 冒充；该缺口已由 Phase 48 在同一 IndexedWaitQueue 内完成。

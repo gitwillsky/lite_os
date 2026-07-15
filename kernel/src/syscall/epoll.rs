@@ -1,14 +1,14 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    fs::{CharacterDevice, Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
-    task::{
-        WaitResult, create_notification_endpoints, current_task, drain_terminal_input,
-        wait_for_poll,
-    },
+    fs::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
+    task::{WaitResult, create_notification_endpoints, current_task, wait_for_poll},
 };
 
-use super::{errno, poll::ofd_wait_keys_for_interest};
+use super::{
+    errno,
+    poll::{PollWaitGuards, PollWaitKeys, PrepareError, PrepareIo, prepare_wait_sources},
+};
 
 const EPOLL_CLOEXEC: usize = 0x80000;
 const EPOLL_CTL_ADD: usize = 1;
@@ -45,6 +45,7 @@ struct ReadyEvent {
 struct Evaluation {
     ready: Vec<ReadyEvent>,
     keys: Vec<crate::task::PollWaitKey>,
+    guards: PollWaitGuards,
 }
 
 fn epoll_fd(fd: usize) -> Result<Arc<Epoll>, isize> {
@@ -165,25 +166,32 @@ pub(crate) fn sys_epoll_ctl(
 }
 
 fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
-    epoll.consume_notifications();
+    let mut keys = PollWaitKeys::new();
+    let wake_group = Some(Epoll::identity(epoll));
+    keys.add_epoll_change_source(epoll)
+        .map_err(|()| -errno::ENOMEM)?;
     let snapshot = epoll.snapshot().map_err(|_| -errno::ENOMEM)?;
     let mut ready = Vec::new();
-    let mut keys = Vec::new();
     ready
         .try_reserve_exact(maximum.min(snapshot.len()))
         .map_err(|_| -errno::ENOMEM)?;
     for interest in snapshot {
-        prepare_sources(&interest.ofd)?;
-        let mut interest_keys = ofd_wait_keys_for_interest(
+        keys.add_interest(
             &interest.ofd,
             interest.event.events as i16,
             interest.event.events & EPOLLEXCLUSIVE != 0,
-            Some(Epoll::identity(epoll)),
+            wake_group,
         )
         .map_err(|()| -errno::ENOMEM)?;
-        keys.try_reserve(interest_keys.len())
-            .map_err(|_| -errno::ENOMEM)?;
-        keys.append(&mut interest_keys);
+        // Build nested snapshot guards before preparing their concrete
+        // adapters. A mutation during/after preparation then invalidates this
+        // exact key set at the registry-lock recheck.
+        prepare_wait_sources(&interest.ofd, PrepareIo::Propagate).map_err(
+            |error| -match error {
+                PrepareError::Io => errno::EIO,
+                PrepareError::NoMemory => errno::ENOMEM,
+            },
+        )?;
         if interest.disabled {
             continue;
         }
@@ -212,44 +220,12 @@ fn evaluate(epoll: &Arc<Epoll>, maximum: usize) -> Result<Evaluation, isize> {
             break;
         }
     }
-    Ok(Evaluation { ready, keys })
-}
-
-fn prepare_sources(ofd: &Arc<OpenFileDescription>) -> Result<(), isize> {
-    match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
-            if let Some(slave) = pty {
-                let _ = slave.prepare_to_block();
-                Ok(())
-            } else {
-                drain_terminal_input(terminal).map_err(|()| -errno::EIO)
-            }
-        }
-        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-            let _ = file.prepare_to_block();
-            Ok(())
-        }
-        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-            let _ = file.prepare_to_block();
-            Ok(())
-        }
-        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-            let _ = master.prepare_to_block();
-            Ok(())
-        }
-        OpenFileKind::Epoll(epoll) => {
-            epoll.consume_notifications();
-            for interest in epoll.snapshot().map_err(|()| -errno::ENOMEM)? {
-                prepare_sources(&interest.ofd)?;
-            }
-            Ok(())
-        }
-        OpenFileKind::Socket(socket) => {
-            socket.prepare_wait();
-            Ok(())
-        }
-        _ => Ok(()),
-    }
+    let (keys, guards) = keys.finish();
+    Ok(Evaluation {
+        ready,
+        keys,
+        guards,
+    })
 }
 
 fn restore_mask_after_error(temporary_mask: bool) {
@@ -349,7 +325,7 @@ pub(crate) fn sys_epoll_pwait(
             return 0;
         }
         match wait_for_poll(evaluation.keys, deadline, || {
-            evaluate(&epoll, 1).is_ok_and(|evaluation| !evaluation.ready.is_empty())
+            evaluation.guards.changed() || epoll.has_ready()
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {

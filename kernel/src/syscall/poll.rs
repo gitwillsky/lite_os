@@ -2,7 +2,6 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
-    socket::SocketWaitSource,
     syscall::errno,
     task::{
         PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
@@ -13,6 +12,8 @@ use crate::{
 use super::timer::{TimeSpec, decode_timespec};
 
 mod select;
+mod wait_keys;
+pub(super) use wait_keys::{PollWaitGuards, PollWaitKeys};
 
 const POLLNVAL: i16 = 0x020;
 const POLLIN: i16 = 0x001;
@@ -39,186 +40,16 @@ fn descriptor_revents(descriptor: &PollDescriptor) -> i16 {
     ofd.poll_events(descriptor.events)
 }
 
-fn ofd_wait_keys(ofd: &Arc<OpenFileDescription>) -> Result<Vec<PollWaitKey>, ()> {
-    ofd_wait_keys_for_interest(ofd, i16::MAX, false, None)
-}
-
-pub(super) fn ofd_wait_keys_for_interest(
-    ofd: &Arc<OpenFileDescription>,
-    events: i16,
-    exclusive: bool,
-    wake_group: Option<usize>,
-) -> Result<Vec<PollWaitKey>, ()> {
-    let mut keys = Vec::new();
-    let push = |keys: &mut Vec<PollWaitKey>, key| {
-        keys.try_reserve(1).map_err(|_| ())?;
-        keys.push(key);
-        Ok::<(), ()>(())
-    };
-    match &ofd.kind {
-        OpenFileKind::Character(CharacterDevice::Terminal { pty, .. }) => {
-            if let Some(slave) = pty {
-                push(
-                    &mut keys,
-                    PollWaitKey::pipe(
-                        &slave.notification_pipe(),
-                        crate::ipc::PipeDirection::Read,
-                        POLLIN,
-                        exclusive,
-                        wake_group,
-                    ),
-                )?;
-                if events & POLLOUT != 0 {
-                    push(
-                        &mut keys,
-                        PollWaitKey::pipe(
-                            &slave.output_pipe(),
-                            crate::ipc::PipeDirection::Write,
-                            events,
-                            exclusive,
-                            wake_group,
-                        ),
-                    )?;
-                }
-            } else {
-                push(
-                    &mut keys,
-                    PollWaitKey::console(events, exclusive, wake_group),
-                )?;
-            }
-        }
-        OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
-            push(
-                &mut keys,
-                PollWaitKey::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN,
-                    exclusive,
-                    wake_group,
-                ),
-            )?;
-        }
-        OpenFileKind::Character(CharacterDevice::Drm(file)) => {
-            push(
-                &mut keys,
-                PollWaitKey::pipe(
-                    &file.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN,
-                    exclusive,
-                    wake_group,
-                ),
-            )?;
-        }
-        OpenFileKind::Character(CharacterDevice::PtyMaster(master)) => {
-            push(
-                &mut keys,
-                PollWaitKey::pipe(
-                    &master.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    POLLIN | POLLOUT | POLLHUP,
-                    exclusive,
-                    wake_group,
-                ),
-            )?;
-        }
-        OpenFileKind::Pipe(endpoint) => {
-            push(
-                &mut keys,
-                PollWaitKey::pipe(
-                    &endpoint.pipe(),
-                    endpoint.direction(),
-                    events,
-                    exclusive,
-                    wake_group,
-                ),
-            )?;
-        }
-        OpenFileKind::Socket(socket) => {
-            for source in socket.wait_sources().into_iter().flatten() {
-                push(
-                    &mut keys,
-                    match source {
-                        SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
-                            &pipe,
-                            crate::ipc::PipeDirection::Read,
-                            POLLIN,
-                            exclusive,
-                            wake_group,
-                        ),
-                        SocketWaitSource::Data { pipe, direction } => {
-                            PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
-                        }
-                    },
-                )?;
-            }
-        }
-        OpenFileKind::Epoll(epoll) => {
-            debug_assert!(!exclusive, "EPOLLEXCLUSIVE cannot target an epoll fd");
-            push(
-                &mut keys,
-                PollWaitKey::pipe(
-                    &epoll.notification_pipe(),
-                    crate::ipc::PipeDirection::Read,
-                    0x001,
-                    false,
-                    wake_group,
-                ),
-            )?;
-            for interest in epoll.snapshot().map_err(|_| ())? {
-                let mut nested = ofd_wait_keys_for_interest(
-                    &interest.ofd,
-                    interest.event.events as i16,
-                    interest.event.events & (1 << 28) != 0,
-                    wake_group,
-                )?;
-                keys.try_reserve(nested.len()).map_err(|_| ())?;
-                keys.append(&mut nested);
-            }
-        }
-        OpenFileKind::EventFd(event) => {
-            if events & POLLIN != 0 {
-                push(
-                    &mut keys,
-                    PollWaitKey::pipe(
-                        &event.notification_pipe(true),
-                        crate::ipc::PipeDirection::Read,
-                        POLLIN,
-                        exclusive,
-                        wake_group,
-                    ),
-                )?;
-            }
-            if events & POLLOUT != 0 {
-                push(
-                    &mut keys,
-                    PollWaitKey::pipe(
-                        &event.notification_pipe(false),
-                        crate::ipc::PipeDirection::Read,
-                        POLLOUT,
-                        exclusive,
-                        wake_group,
-                    ),
-                )?;
-            }
-        }
-        _ => {}
-    }
-    Ok(keys)
-}
-
-fn collect_wait_keys(descriptors: &[PollDescriptor]) -> Result<Vec<PollWaitKey>, ()> {
-    let mut keys = Vec::new();
+fn collect_wait_keys(
+    descriptors: &[PollDescriptor],
+) -> Result<(Vec<PollWaitKey>, PollWaitGuards), ()> {
+    let mut keys = PollWaitKeys::new();
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd {
-            let mut nested =
-                ofd_wait_keys_for_interest(ofd, descriptor.events | 0x008 | 0x010, false, None)?;
-            keys.try_reserve(nested.len()).map_err(|_| ())?;
-            keys.append(&mut nested);
+            keys.add_interest(ofd, descriptor.events | 0x008 | 0x010, false, None)?;
         }
     }
-    Ok(keys)
+    Ok(keys.finish())
 }
 
 fn evaluate(descriptors: &mut [PollDescriptor]) -> usize {
@@ -238,6 +69,19 @@ fn any_ready(descriptors: &[PollDescriptor]) -> bool {
         .any(|descriptor| descriptor_revents(descriptor) != 0)
 }
 
+/// @description adapter preparation 遇到 console I/O 错误时的 caller policy。
+#[derive(Clone, Copy)]
+pub(super) enum PrepareIo {
+    Ignore,
+    Propagate,
+}
+
+/// @description source preparation 在 publication 前可返回的稳定失败类别。
+pub(super) enum PrepareError {
+    Io,
+    NoMemory,
+}
+
 fn copy_revents(task: &TaskControlBlock, descriptors: &[PollDescriptor]) -> Result<usize, ()> {
     let mut count = 0;
     for descriptor in descriptors {
@@ -250,21 +94,44 @@ fn copy_revents(task: &TaskControlBlock, descriptors: &[PollDescriptor]) -> Resu
     Ok(count)
 }
 
-fn prepare_descriptors(descriptors: &[PollDescriptor]) {
+fn prepare_descriptors(descriptors: &[PollDescriptor]) -> Result<(), ()> {
     for descriptor in descriptors {
         if let Some(ofd) = &descriptor.ofd {
-            prepare_ofd(ofd);
+            prepare_wait_sources(ofd, PrepareIo::Ignore).map_err(|_| ())?;
         }
     }
+    Ok(())
 }
 
-fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
+fn prepare_descriptors_or_restore(
+    task: &TaskControlBlock,
+    descriptors: &[PollDescriptor],
+    temporary_mask: bool,
+) -> Result<(), isize> {
+    prepare_descriptors(descriptors).map_err(|()| {
+        if temporary_mask {
+            task.restore_temporary_signal_mask()
+                .expect("poll temporary mask disappeared");
+        }
+        -errno::ENOMEM
+    })
+}
+
+/// @description 在 wait-key snapshot 后准备同一 OFD tree 的 concrete adapters。
+/// @param ofd source tree root。
+/// @param io console adapter 失败由 epoll 传播，poll/direct blocking 保持既有忽略 policy。
+/// @return preparation 完成，或 snapshot OOM/被要求传播的 console I/O 错误。
+pub(super) fn prepare_wait_sources(
+    ofd: &Arc<OpenFileDescription>,
+    io: PrepareIo,
+) -> Result<(), PrepareError> {
     match &ofd.kind {
         OpenFileKind::Character(CharacterDevice::Terminal { terminal, pty, .. }) => {
             if let Some(slave) = pty {
                 let _ = slave.prepare_to_block();
-            } else {
-                let _ = drain_terminal_input(terminal);
+            } else if drain_terminal_input(terminal).is_err() && matches!(io, PrepareIo::Propagate)
+            {
+                return Err(PrepareError::Io);
             }
         }
         OpenFileKind::Character(CharacterDevice::Input { file, .. }) => {
@@ -277,16 +144,14 @@ fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
             let _ = master.prepare_to_block();
         }
         OpenFileKind::Epoll(epoll) => {
-            epoll.consume_notifications();
-            if let Ok(entries) = epoll.snapshot() {
-                for interest in entries {
-                    prepare_ofd(&interest.ofd);
-                }
+            for interest in epoll.snapshot().map_err(|()| PrepareError::NoMemory)? {
+                prepare_wait_sources(&interest.ofd, io)?;
             }
         }
         OpenFileKind::Socket(socket) => socket.prepare_wait(),
         _ => {}
     }
+    Ok(())
 }
 
 /// @description 通过统一 wait registry 等待一个 OFD 达到指定 level readiness。
@@ -295,12 +160,16 @@ fn prepare_ofd(ofd: &Arc<OpenFileDescription>) {
 /// @param events Linux poll event mask。
 /// @return source wake、signal interruption；无 deadline，因此不会 timeout。
 pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitResult {
-    let Ok(keys) = ofd_wait_keys(ofd) else {
+    let mut keys = PollWaitKeys::new();
+    if keys.add_interest(ofd, i16::MAX, false, None).is_err() {
         return WaitResult::OutOfMemory;
-    };
+    }
+    let (keys, guards) = keys.finish();
+    if prepare_wait_sources(ofd, PrepareIo::Ignore).is_err() {
+        return WaitResult::OutOfMemory;
+    }
     wait_for_poll(keys, None, || {
-        prepare_ofd(ofd);
-        ofd.poll_events(events) != 0
+        guards.changed() || ofd.poll_events(events) != 0
     })
 }
 
@@ -388,7 +257,9 @@ pub(crate) fn sys_ppoll(
         true
     };
     loop {
-        prepare_descriptors(&descriptors);
+        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
+            return error;
+        }
         let ready = evaluate(&mut descriptors);
         if ready != 0 || deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
             if temporary_mask {
@@ -408,9 +279,15 @@ pub(crate) fn sys_ppoll(
                 return -errno::ENOMEM;
             }
         };
+        let (keys, guards) = keys;
+        // Key generations were captured first; adapter preparation that
+        // observes a concurrent nested ctl cannot make those keys silently
+        // stale because the registry-lock guard will detect the change.
+        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
+            return error;
+        }
         match wait_for_poll(keys, deadline, || {
-            prepare_descriptors(&descriptors);
-            any_ready(&descriptors)
+            guards.changed() || any_ready(&descriptors)
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {
@@ -487,7 +364,9 @@ pub(crate) fn sys_pselect6(
         Err(error) => return error,
     };
     loop {
-        prepare_descriptors(&descriptors);
+        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
+            return error;
+        }
         evaluate(&mut descriptors);
         if descriptors.iter().any(|descriptor| descriptor.revents != 0)
             || deadline.is_some_and(|value| value <= crate::timer::get_time_ns())
@@ -517,9 +396,12 @@ pub(crate) fn sys_pselect6(
                 return -errno::ENOMEM;
             }
         };
+        let (keys, guards) = keys;
+        if let Err(error) = prepare_descriptors_or_restore(&task, &descriptors, temporary_mask) {
+            return error;
+        }
         match wait_for_poll(keys, deadline, || {
-            prepare_descriptors(&descriptors);
-            any_ready(&descriptors)
+            guards.changed() || any_ready(&descriptors)
         }) {
             WaitResult::Woken => {}
             WaitResult::TimedOut => {

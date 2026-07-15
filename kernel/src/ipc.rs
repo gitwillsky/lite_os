@@ -333,14 +333,17 @@ impl Pipe {
 
     /// @description 在 wait registry owner lock 内消费合并 readiness token，不反向通知同一 registry。
     ///
-    /// @return 无返回值；下一次真实 edge 会通过 `signal_readiness` 再次发布。
-    fn drain_readiness(self: &Arc<Self>) {
+    /// @return 排空时观察到的 read generation；即使 token 已被其他 waiter 消费，
+    /// generation 仍可证明某份更早的 snapshot 已失效。
+    fn drain_readiness(self: &Arc<Self>) -> u64 {
         let mut state = self.state.lock();
+        let generation = state.read_generation;
         if state.length != 0 {
             state.head = 0;
             state.length = 0;
             state.write_generation = crate::sync::next_readiness_generation();
         }
+        generation
     }
 }
 
@@ -377,7 +380,7 @@ impl PipeEnd {
 
     /// @description 将本 Pipe 作为内核 readiness notification source 发布一次 edge。
     ///
-    /// @return 无返回值。
+    /// @return 无返回值；token 已存在时仍推进 generation 并通知 wait registry。
     /// @errors 只允许 write endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
     pub(crate) fn signal_readiness(&self) {
         assert_eq!(self.direction, PipeDirection::Write);
@@ -386,11 +389,11 @@ impl PipeEnd {
 
     /// @description 在内核 wait owner 临界区排空 readiness token，不消费任何 userspace data Pipe。
     ///
-    /// @return 无返回值。
+    /// @return 排空时观察到的 read generation；该值在 token 被消费后仍保持。
     /// @errors 只允许 read endpoint 调用，方向错误表示 kernel 装配不变量被破坏并 fail-stop。
-    pub(crate) fn drain_readiness(&self) {
+    pub(crate) fn drain_readiness(&self) -> u64 {
         assert_eq!(self.direction, PipeDirection::Read);
-        self.pipe.drain_readiness();
+        self.pipe.drain_readiness()
     }
 }
 

@@ -308,9 +308,19 @@ impl Epoll {
         self.notification_read.pipe()
     }
 
-    /// @description 在重新求值前排空已消费的 ctl/close notification。
-    pub(crate) fn consume_notifications(&self) {
-        self.notification_read.drain_readiness();
+    /// @description 在重新求值前排空 ctl/close notification 并取得 snapshot generation。
+    ///
+    /// @return 本次 interest snapshot 必须携带的 notification read generation。
+    pub(crate) fn consume_notifications(&self) -> u64 {
+        self.notification_read.drain_readiness()
+    }
+
+    /// @description 在 wait-registry owner lock 内判断一份预建 interest snapshot 是否失效。
+    ///
+    /// notification generation 与 snapshot 不同表示 caller 预建的 source keys 已过期，
+    /// 即使 token 已被其他 waiter 消费也必须返回 true。该路径不得分配或 clone interest。
+    pub(crate) fn recheck_changed(&self, snapshot_generation: u64) -> bool {
+        self.notification_read.drain_readiness() != snapshot_generation
     }
 
     /// @description 最后一个 descriptor 引用消失时，从所有 live epoll 删除目标 OFD。
