@@ -18,7 +18,6 @@ use crate::{
 
 const UDP_PACKET_SLOTS: usize = 8;
 const UDP_BUFFER_BYTES: usize = 128 * 1024;
-const MAX_UDP_PAYLOAD: usize = 65_507;
 
 /// @description 分配 UDP packet buffer，并在唯一 NetworkStack 注册 handle。
 /// @param network 唯一协议栈 owner。
@@ -232,7 +231,7 @@ pub(super) fn send(
     input: &[u8],
     target: Option<InetAddress>,
 ) -> Result<usize, SocketError> {
-    if input.len() > MAX_UDP_PAYLOAD {
+    if input.len() > crate::socket::message_limits::MAX_IPV4_UDP_BYTES {
         return Err(SocketError::MessageTooLarge);
     }
     let mut network = stack()?.lock();

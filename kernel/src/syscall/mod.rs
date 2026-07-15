@@ -22,6 +22,7 @@ mod system_identity;
 mod system_info;
 mod timer;
 mod tty;
+mod user_iovec;
 
 use crate::syscall::{
     credentials::*, epoll::*, fs::*, futex::*, ioctl::*, memory::*, poll::*, process::*, random::*,

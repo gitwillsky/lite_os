@@ -5,13 +5,18 @@ use crate::ipc::{Pipe, PipeDirection, PipeEnd};
 
 #[path = "socket/inet.rs"]
 mod inet;
+#[path = "socket/message_limits.rs"]
+mod message_limits;
 #[path = "socket/packet.rs"]
 mod packet;
+#[path = "socket/send.rs"]
+mod send;
 #[path = "socket/unix.rs"]
 mod unix;
 
 use inet::InetSocket;
 use packet::PacketSocket;
+pub(crate) use send::{SocketSendBlocker, SocketSendError, SocketWaitGuard};
 pub(crate) use unix::UnixAddress;
 use unix::UnixSocket;
 
@@ -373,9 +378,9 @@ impl Socket {
             SocketBackend::Unix(socket) => {
                 socket
                     .receive(output)
-                    .map(|(count, source)| ReceivedMessage {
+                    .map(|(count, full_length, source)| ReceivedMessage {
                         count,
-                        full_length: count,
+                        full_length,
                         source: source.map(SocketAddress::Unix),
                         local_address: None,
                     })
@@ -470,12 +475,44 @@ impl Socket {
         matches!(&self.backend, SocketBackend::Inet(socket) if socket.packet_info())
     }
 
-    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketError> {
+    pub(crate) fn validate_send_length(&self, length: usize) -> Result<(), SocketError> {
+        message_limits::validate_send_length(
+            message_limits::protocol(self.domain, self.socket_type),
+            length,
+        )
+        .map_err(|()| SocketError::MessageTooLarge)
+    }
+
+    /// @description 为 stream send 选择固定上限 staging；atomic protocol 返回 None。
+    pub(crate) fn stream_send_staging_capacity(
+        &self,
+        requested: usize,
+        stream_max: usize,
+    ) -> Option<usize> {
+        message_limits::stream_send_capacity(
+            message_limits::protocol(self.domain, self.socket_type),
+            requested,
+            stream_max,
+        )
+    }
+
+    /// @description 选择一次 receive 的最大有用 staging capacity，不暴露 backend variant。
+    pub(crate) fn receive_staging_capacity(&self, requested: usize, stream_max: usize) -> usize {
+        message_limits::receive_capacity(
+            message_limits::protocol(self.domain, self.socket_type),
+            requested,
+            stream_max,
+        )
+    }
+
+    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketSendError> {
+        self.validate_send_length(input.len())
+            .map_err(SocketSendError::from)?;
         match &self.backend {
             SocketBackend::Unix(socket) => socket.write(input),
-            SocketBackend::Inet(socket) => socket.send_to(input, None),
-            SocketBackend::Packet(socket) => socket.send_to(input, None),
-            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
+            SocketBackend::Inet(socket) => socket.send_to(input, None).map_err(Into::into),
+            SocketBackend::Packet(socket) => socket.send_to(input, None).map_err(Into::into),
+            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported.into()),
         }
     }
 
@@ -483,23 +520,27 @@ impl Socket {
         &self,
         input: &[u8],
         target: Option<SocketAddress>,
-    ) -> Result<usize, SocketError> {
+    ) -> Result<usize, SocketSendError> {
+        self.validate_send_length(input.len())
+            .map_err(SocketSendError::from)?;
         match (&self.backend, target) {
             (SocketBackend::Unix(socket), Some(SocketAddress::Unix(address))) => {
-                let target = UnixSocket::lookup(&address)?;
+                let target = UnixSocket::lookup(&address).map_err(SocketSendError::from)?;
                 socket.send_to(input, Some(&target))
             }
             (SocketBackend::Unix(socket), None) => socket.send_to(input, None),
             (SocketBackend::Inet(socket), Some(SocketAddress::Inet(address))) => {
-                socket.send_to(input, Some(address))
+                socket.send_to(input, Some(address)).map_err(Into::into)
             }
-            (SocketBackend::Inet(socket), None) => socket.send_to(input, None),
+            (SocketBackend::Inet(socket), None) => socket.send_to(input, None).map_err(Into::into),
             (SocketBackend::Packet(socket), Some(SocketAddress::Packet(address))) => {
-                socket.send_to(input, Some(address))
+                socket.send_to(input, Some(address)).map_err(Into::into)
             }
-            (SocketBackend::Packet(socket), None) => socket.send_to(input, None),
-            (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
-            _ => Err(SocketError::Invalid),
+            (SocketBackend::Packet(socket), None) => {
+                socket.send_to(input, None).map_err(Into::into)
+            }
+            (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported.into()),
+            _ => Err(SocketError::Invalid.into()),
         }
     }
 
@@ -529,12 +570,12 @@ impl Socket {
     /// @description 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
     ///
     /// @return 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
-    pub(crate) fn wait_sources(&self) -> SocketWaitSources {
+    pub(crate) fn wait_sources(&self, events: i16) -> (SocketWaitSources, Option<SocketWaitGuard>) {
         match &self.backend {
-            SocketBackend::Unix(socket) => socket.wait_sources(),
-            SocketBackend::Inet(socket) => socket.wait_sources(),
-            SocketBackend::Packet(socket) => socket.wait_sources(),
-            SocketBackend::InterfaceControl => [None, None],
+            SocketBackend::Unix(socket) => socket.wait_sources(events),
+            SocketBackend::Inet(socket) => (socket.wait_sources(), None),
+            SocketBackend::Packet(socket) => (socket.wait_sources(), None),
+            SocketBackend::InterfaceControl => ([None, None], None),
         }
     }
 

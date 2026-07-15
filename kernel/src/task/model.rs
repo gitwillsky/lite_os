@@ -22,8 +22,8 @@ use crate::{
     memory::{
         DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
         MapPermission, MappingResourceLimits, MemoryError, MemoryMappingOwner, MemoryReclaimer,
-        MemorySet, PageFaultAccess, PageFaultOutcome, SharedFileId, SharedFileMapping,
-        TRAP_CONTEXT, UserAccessError, UserFaultLimits, VirtualAddress,
+        MemorySet, PageFaultAccess, PageFaultOutcome, SharedFileId, TRAP_CONTEXT, UserAccessError,
+        UserFaultLimits, VirtualAddress,
     },
     sync::IrqMutex,
     task::{TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId},

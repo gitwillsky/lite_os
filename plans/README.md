@@ -5,8 +5,15 @@ used the repository's fixed Linux v7.1 baseline and prioritized observable
 correctness/security before performance. Execute in order unless dependencies
 say otherwise. The working tree already contained unrelated scheduler/VirtIO
 work when these plans were written; preserve unrelated changes and never run
-Make. Phased commits require explicit user authorization and must isolate only
-the completed plan's files.
+Make. The latest operator instruction permits phased commits and pushes after
+the complete dirty tree and the applicable logical change have been reviewed.
+
+A follow-up audit on 2026-07-15 at commit `e891a3f` added Plans 013-017. Plan
+012 was already in progress in the shared workspace and modifies epoll, poll,
+IPC and architecture documents; it was reviewed, verified and committed before
+the follow-up plans started. Review every other workspace change instead of
+leaving it permanently ambiguous, and include reviewed changes in phased
+submission. Do not run Make.
 
 ## Execution order & status
 
@@ -24,6 +31,11 @@ the completed plan's files.
 | 010 | Amortize runqueue stale-generation cleanup | P1 | M | — | DONE |
 | 011 | Batch page-cache journal writeback | P1 | M | 008 | DONE |
 | 012 | Seal epoll wait publication | P1 | M | — | DONE |
+| 013 | Seal file-mapping arithmetic and fault preflight | P1 | M | 012 | DONE |
+| 014 | Linearize multi-process signal delivery | P1 | M | 012 | DONE |
+| 015 | Bound and accurately report AF_UNIX datagrams | P1 | M | 012 | IN PROGRESS |
+| 016 | Make socket message vectors protocol-aware | P1 | M | 015 | IN PROGRESS |
+| 017 | Enforce ext2 directory link limits transactionally | P1 | M | 012 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) |
 REJECTED (with one-line rationale).
@@ -35,6 +47,13 @@ REJECTED (with one-line rationale).
 - Plan 005 changes scoped interfaces and documentation that are already touched
   by unrelated working-tree changes. Its executor must reconcile, never replace,
   those changes.
+- Plans 013-017 operationally depend on Plan 012 because its in-progress edits
+  overlap the architecture contracts and the plan index. Finish and commit Plan
+  012 first so each later logical change has an auditable diff.
+- Plan 016 follows Plan 015 because both change socket message import and the
+  AF_UNIX message-size policy. It must preserve Plan 015's queue/backpressure and
+  truncation behavior while moving raw iovec import to the shared syscall seam
+  and adding bounded stream staging.
 
 ## Findings considered and rejected or deferred
 
@@ -53,3 +72,45 @@ REJECTED (with one-line rationale).
   the selected correctness and memory-cost work.
 - README display/toolchain drift and broader architecture-check fixtures are real
   DX/test debt, but do not precede the selected kernel semantic fixes.
+- Rejecting `SS_ONSTACK` as `sigaltstack` input is not a valid Linux-v7.1 fix.
+  The fixed `kernel/signal.c::do_sigaltstack` accepts modes `0`, `SS_DISABLE` and
+  `SS_ONSTACK`; the latter is needed by context restoration even though live
+  `SS_ONSTACK` reporting is dynamically projected from SP. Keep the current
+  acceptance behavior unless the pinned Linux baseline changes.
+- The `msghdr` copyout additions at offsets 8, 40 and 48 are not independent
+  pointer-wrap findings: `read_header` first validates the complete 56-byte
+  header range. The initially reported later-iovec wrap is also unreachable as
+  a standalone exploit: entry zero must first pass the low-half user-range
+  check, after which at most 1024 x 16 bytes cannot wrap `usize`. Plan 016 still
+  removes the duplicate unchecked importer through the production shared seam.
+- Ordinary ext2 hardlink creation already checks `EXT2_LINK_MAX`; Plan 017 is
+  limited to parent-directory link transitions performed by mkdir, rmdir and
+  cross-parent directory rename.
+
+## Findings deferred after the follow-up audit
+
+- Regular `write/writev/pwrite*/sendfile` still commits one ext2 transaction per
+  page. A future P1/L/HIGH plan should stage a bounded kernel-owned batch, reuse
+  Plan 011's `write_storage_batch` and capacity backoff, and preserve EFAULT
+  partial progress, append placement, limits and lock order.
+- All address spaces still use ASID 0; the trap path performs two unconditional
+  global local TLB flushes and minor faults synchronously RFENCE every online
+  hart. A future P1/L/HIGH plan must include ASID-length probing, generation
+  rollover, AddressSpace-owned active-hart publication and range/ASID-targeted
+  shootdown. Shrinking the current hart mask without that protocol is unsafe.
+- User and kernel traps unconditionally save/restore all floating-point
+  registers and initialize every task with FS=Dirty. Lazy FP ownership is a
+  future L/HIGH item because signal-frame materialization and per-hart owner
+  handoff require a separate proof.
+- VirtIO block remains a depth-one, lock-held busy-poll queue. Multi-request IRQ
+  completion is a future L/HIGH item with DMA lifetime, flush ordering and
+  driver-to-task seam work.
+- Epoll still clones all interests per wait and last-OFD close scans every epoll
+  interest. Plan 012 seals wait publication but intentionally does not add a
+  ready projection or reverse membership index; both remain L/HIGH follow-ups.
+- Socket message import's 65,535-byte stream ceiling and whole-request staging
+  are selected for Plan 016; broader sendmmsg/recvmmsg or zero-copy work remains
+  out of scope.
+- Deferred filesystem work includes delayed relatime persistence, a bounded
+  journal-aware ext2 indirect-block cache, and deterministic JBD2 commit/recovery
+  fault-point tests.

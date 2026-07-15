@@ -2,6 +2,8 @@ mod cow;
 mod device_area;
 mod error;
 mod executable_load;
+mod fault_preflight;
+mod file_page_range;
 mod futex_key;
 mod initial_stack;
 mod mapping_request;
@@ -27,17 +29,23 @@ use bitflags::bitflags;
 use core::{arch::asm, ops::Range};
 use device_area::DeviceArea;
 use error::try_memory_arc;
-use private_area::PrivateFileArea;
+use fault_preflight::{
+    FaultPermissions, FaultPreflight, FaultResidency, FileFaultState, preflight_fault,
+};
+use file_page_range::{FilePageRange, FilePageRangeError};
+use private_area::{PrivateFaultPreparation, PrivateFileArea};
 use resident::PrivateResident;
 use riscv::register::satp::{self, Satp};
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
+    fault_preflight::FaultAccess as PageFaultAccess,
     futex_key::FutexKey,
     mapping_request::{
-        DeviceMappingSource, FileMappingSource, MappingResourceLimits, MemoryAdvice,
+        DeviceMappingSource, FileMappingError, FileMappingSource, MappingResourceLimits,
+        MemoryAdvice,
     },
-    mmap::{PageFaultAccess, PageFaultOutcome},
+    mmap::PageFaultOutcome,
     user_access::UserFaultLimits,
 };
 bitflags! {
@@ -304,37 +312,8 @@ impl MapArea {
         let original_end = self.vpn_range.end;
         let right_frames = self.data_frames.split_off(&end);
         let middle_frames = self.data_frames.split_off(&start);
-        let (left_shared, middle_shared, right_shared) = if let Some(mut shared) = self.shared_file
-        {
-            let right_pages = shared.resident.split_off(&end);
-            let middle_pages = shared.resident.split_off(&start);
-            let base = shared.file_offset;
-            let page_bytes = config::PAGE_SIZE as u64;
-            let middle_offset =
-                base + (start.as_usize() - original_start.as_usize()) as u64 * page_bytes;
-            let right_offset =
-                base + (end.as_usize() - original_start.as_usize()) as u64 * page_bytes;
-            let mapping = shared.mapping;
-            (
-                Some(SharedFileArea {
-                    mapping: mapping.clone(),
-                    file_offset: base,
-                    resident: shared.resident,
-                }),
-                Some(SharedFileArea {
-                    mapping: mapping.clone(),
-                    file_offset: middle_offset,
-                    resident: middle_pages,
-                }),
-                Some(SharedFileArea {
-                    mapping,
-                    file_offset: right_offset,
-                    resident: right_pages,
-                }),
-            )
-        } else {
-            (None, None, None)
-        };
+        let (left_shared, middle_shared, right_shared) =
+            SharedFileArea::partition(self.shared_file, original_start..original_end, start..end);
         let (left_anonymous, middle_anonymous, right_anonymous) =
             SharedAnonymousArea::partition(self.shared_anonymous, original_start, start, end);
         let (left_device, middle_device, right_device) =

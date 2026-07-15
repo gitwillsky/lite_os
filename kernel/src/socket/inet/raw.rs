@@ -148,7 +148,7 @@ pub(super) fn send(
     target: Option<InetAddress>,
 ) -> Result<usize, SocketError> {
     let target = target.ok_or(SocketError::DestinationRequired)?;
-    if target.port != 0 || input.len() + IPV4_HEADER_LENGTH > u16::MAX as usize {
+    if target.port != 0 || input.len() > crate::socket::message_limits::MAX_IPV4_RAW_BYTES {
         return Err(SocketError::MessageTooLarge);
     }
     let mut network = stack()?.lock();

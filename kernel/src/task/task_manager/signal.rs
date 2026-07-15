@@ -2,12 +2,14 @@ use super::thread_selector::thread_by_tid;
 use super::*;
 
 mod job_control;
+mod selection_result;
 pub(crate) use job_control::stop_current_process;
 pub(super) use job_control::{ChildEvents, JobControlState, complete_process_stop};
 use job_control::{
     JobNotification, continue_process_locked, publish_job_notification,
     resume_for_fatal_signal_locked,
 };
+use selection_result::{SelectionAttempt, SelectionOutcome, SelectionResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalSendError {
@@ -27,6 +29,17 @@ struct GeneratedSignal {
     queued: bool,
     eligible: Option<Arc<TaskControlBlock>>,
     notification: Option<JobNotification>,
+}
+
+struct SelectedProcess {
+    tgid: usize,
+    result: SelectedProcessResult,
+}
+
+enum SelectedProcessResult {
+    Denied,
+    Probe,
+    Generated(GeneratedSignal),
 }
 
 /// @description 通过唯一 process graph 定位 Thread 并合并一个 thread-directed signal。
@@ -182,109 +195,102 @@ fn send_selected_processes(
         return Err(SignalSendError::InvalidSignal);
     }
     let mut cursor = 0usize;
-    let mut delivered = 0usize;
-    let mut denied = false;
-    while let Some(tgid) = next_process(selector, cursor) {
-        cursor = tgid;
-        match process_signal_permitted(sender.as_ref(), tgid, signal) {
-            Some(true) => {}
-            Some(false) => {
-                denied = true;
+    let mut result = SelectionResult::new();
+    while let Some(selected) =
+        select_and_generate_process_signal(selector, cursor, signal, info, sender.as_ref())
+    {
+        cursor = selected.tgid;
+        let generated = match selected.result {
+            SelectedProcessResult::Denied => {
+                result.record(SelectionAttempt::Denied);
                 continue;
             }
-            None => continue,
-        }
-        delivered += 1;
-        if signal == 0 {
-            continue;
-        }
-        let generated = generate_process_signal(tgid, signal, info)?;
+            SelectedProcessResult::Probe => {
+                result.record(SelectionAttempt::Probe);
+                continue;
+            }
+            SelectedProcessResult::Generated(generated) => generated,
+        };
+        result.record(SelectionAttempt::Generated);
         publish_job_notification(generated.notification);
         // 2. process-directed signal 选择的 Running Thread 遵循同一显式抢占协议。
         if generated.queued
-            && !wake_process_signal_waiter(tgid)
+            && !wake_process_signal_waiter(selected.tgid)
             && let Some(target) = generated.eligible
             && !interrupt_waiting_task(&target)
         {
             crate::task::processor::request_task_reschedule(&target);
         }
     }
-    if delivered != 0 {
-        Ok(delivered)
-    } else if denied {
-        Err(SignalSendError::Permission)
-    } else {
-        Err(SignalSendError::NotFound)
+    match result.finish() {
+        SelectionOutcome::Success(delivered) => Ok(delivered),
+        SelectionOutcome::Permission => Err(SignalSendError::Permission),
+        SelectionOutcome::NotFound => Err(SignalSendError::NotFound),
     }
 }
 
-fn process_signal_permitted(
-    sender: Option<&Arc<TaskControlBlock>>,
-    tgid: usize,
+fn select_and_generate_process_signal(
+    selector: ProcessSelector,
+    after: usize,
     signal: usize,
-) -> Option<bool> {
-    let Some(sender) = sender else {
-        return Some(true);
-    };
-    let graph = TASK_MANAGER.graph.lock();
-    let target_node = graph.nodes.get(&tgid)?;
-    let target = (match &target_node.state {
-        ProcessState::Live(threads) => threads.values().next(),
-        _ => None,
-    })?;
-    Some(
-        sender.may_signal(target)
-            || signal == 18
-                && graph
-                    .nodes
-                    .get(&sender.tgid())
-                    .is_some_and(|node| node.session == target_node.session),
-    )
-}
-
-fn next_process(selector: ProcessSelector, after: usize) -> Option<usize> {
-    let graph = TASK_MANAGER.graph.lock();
-    graph.nodes.iter_after(&after).find_map(|(&tgid, node)| {
-        let matches = match selector {
+    info: PendingSignal,
+    sender: Option<&Arc<TaskControlBlock>>,
+) -> Option<SelectedProcess> {
+    let mut graph = TASK_MANAGER.graph.lock();
+    let tgid = graph.nodes.iter_after(&after).find_map(|(&tgid, node)| {
+        let selected = match selector {
             ProcessSelector::Process(pid) => tgid == pid,
             ProcessSelector::Group(pgid) => node.process_group == pgid,
             ProcessSelector::AllExcept { caller } => tgid > INIT_PID && tgid != caller,
         };
-        if !matches {
-            return None;
-        }
+        (selected && matches!(&node.state, ProcessState::Live(threads) if !threads.is_empty()))
+            .then_some(tgid)
+    })?;
+    let (eligible, queued) = {
+        let node = graph
+            .nodes
+            .get(&tgid)
+            .expect("selected process disappeared under graph lock");
         let ProcessState::Live(threads) = &node.state else {
-            return None;
+            panic!("selected process stopped being live under graph lock");
         };
-        (!threads.is_empty()).then_some(tgid)
-    })
-}
-
-fn generate_process_signal(
-    tgid: usize,
-    signal: usize,
-    info: PendingSignal,
-) -> Result<GeneratedSignal, SignalSendError> {
-    let mut graph = TASK_MANAGER.graph.lock();
-    let node = graph.nodes.get(&tgid).ok_or(SignalSendError::NotFound)?;
-    let ProcessState::Live(threads) = &node.state else {
-        return Err(SignalSendError::NotFound);
-    };
-    let representative = threads
-        .values()
-        .next()
-        .cloned()
-        .ok_or(SignalSendError::NotFound)?;
-    let eligible = threads
-        .values()
-        .find(|thread| thread.accepts_process_signal(signal))
-        .cloned();
-    let queued = if representative.ignores_generated_signal_as_init(signal) {
-        false
-    } else {
-        representative
-            .queue_process_signal(threads.values(), signal, info)
-            .map_err(|()| SignalSendError::InvalidSignal)?
+        let representative = threads
+            .values()
+            .next()
+            .expect("selected process lost its representative")
+            .clone();
+        let permitted = sender.is_none_or(|sender| {
+            sender.may_signal(&representative)
+                || signal == 18
+                    && graph
+                        .nodes
+                        .get(&sender.tgid())
+                        .is_some_and(|sender| sender.session == node.session)
+        });
+        if !permitted {
+            return Some(SelectedProcess {
+                tgid,
+                result: SelectedProcessResult::Denied,
+            });
+        }
+        if signal == 0 {
+            return Some(SelectedProcess {
+                tgid,
+                result: SelectedProcessResult::Probe,
+            });
+        }
+        let eligible = threads
+            .values()
+            .find(|thread| thread.accepts_process_signal(signal))
+            .cloned();
+        let queued = if representative.ignores_generated_signal_as_init(signal) {
+            false
+        } else {
+            representative
+                .queue_process_signal(threads.values(), signal, info)
+                .expect("validated process signal became invalid")
+        };
+        (eligible, queued)
     };
     let notification = if signal == 18 {
         continue_process_locked(&mut graph, tgid)
@@ -294,10 +300,13 @@ fn generate_process_signal(
         }
         None
     };
-    Ok(GeneratedSignal {
-        queued,
-        eligible,
-        notification,
+    Some(SelectedProcess {
+        tgid,
+        result: SelectedProcessResult::Generated(GeneratedSignal {
+            queued,
+            eligible,
+            notification,
+        }),
     })
 }
 

@@ -6,17 +6,6 @@ mod device;
 mod fault;
 mod protection;
 
-/// @description 用户 page fault 请求的访问类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PageFaultAccess {
-    /// 读取用户页。
-    Read,
-    /// 写入用户页。
-    Write,
-    /// 执行用户页指令。
-    Execute,
-}
-
 /// @description 一次用户页访问 fault 的领域结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PageFaultOutcome {
@@ -132,27 +121,18 @@ impl MemorySet {
     pub(crate) fn map_private_file(
         &mut self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
         file: FileMappingSource,
         limits: MappingResourceLimits,
     ) -> Result<usize, MemoryError> {
-        let FileMappingSource {
-            mapping,
-            offset: file_offset,
-        } = file;
-        if length == 0
-            || !file_offset.is_multiple_of(config::PAGE_SIZE as u64)
-            || !permission.contains(MapPermission::U)
+        let FileMappingSource { mapping, pages } = file;
+        if !permission.contains(MapPermission::U)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);
         }
-        let page_count = length
-            .checked_add(config::PAGE_SIZE - 1)
-            .ok_or(MemoryError::InvalidRange)?
-            / config::PAGE_SIZE;
+        let page_count = usize::try_from(pages.count()).map_err(|_| MemoryError::InvalidRange)?;
         self.ensure_resource_capacity(
             page_count as u64 * config::PAGE_SIZE as u64,
             limits.address_space,
@@ -181,8 +161,7 @@ impl MemorySet {
         };
         let start = usize::from(VirtualAddress::from(range.start));
         let end = usize::from(VirtualAddress::from(range.end));
-        let source_offset = usize::try_from(file_offset).map_err(|_| MemoryError::InvalidRange)?;
-        let backing = PrivateFileArea::cached_file(mapping, start, source_offset);
+        let backing = PrivateFileArea::cached_file(mapping, start, pages);
         self.push(
             MapArea::file(start.into(), end.into(), permission, backing),
             None,
@@ -195,27 +174,18 @@ impl MemorySet {
     pub(crate) fn map_shared_file(
         &mut self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
         file: FileMappingSource,
         address_space_limit: u64,
     ) -> Result<usize, MemoryError> {
-        let FileMappingSource {
-            mapping,
-            offset: file_offset,
-        } = file;
-        if length == 0
-            || !file_offset.is_multiple_of(config::PAGE_SIZE as u64)
-            || !permission.contains(MapPermission::U)
+        let FileMappingSource { mapping, pages } = file;
+        if !permission.contains(MapPermission::U)
             || (fixed_noreplace && (address == 0 || !VirtualAddress::from(address).is_aligned()))
         {
             return Err(MemoryError::InvalidRange);
         }
-        let page_count = length
-            .checked_add(config::PAGE_SIZE - 1)
-            .ok_or(MemoryError::InvalidRange)?
-            / config::PAGE_SIZE;
+        let page_count = usize::try_from(pages.count()).map_err(|_| MemoryError::InvalidRange)?;
         self.ensure_resource_capacity(
             page_count as u64 * config::PAGE_SIZE as u64,
             address_space_limit,
@@ -245,7 +215,7 @@ impl MemorySet {
         let start = usize::from(VirtualAddress::from(range.start));
         let end = usize::from(VirtualAddress::from(range.end));
         self.push(
-            MapArea::shared_file(start.into(), end.into(), permission, mapping, file_offset),
+            MapArea::shared_file(start.into(), end.into(), permission, mapping, pages),
             None,
         )?;
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after shared mmap update");
@@ -271,18 +241,7 @@ impl MemorySet {
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             if writeback && let Some(shared) = &area.shared_file {
-                let offset = shared.file_offset
-                    + (start.as_usize() - area.vpn_range.start.as_usize()) as u64
-                        * config::PAGE_SIZE as u64;
-                let bytes = (end.as_usize() - start.as_usize()) as u64 * config::PAGE_SIZE as u64;
-                shared
-                    .mapping
-                    .sync_range(offset, bytes)
-                    .map_err(|error| match error {
-                        SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
-                        SharedFileError::Io => MemoryError::Io,
-                        SharedFileError::BeyondEof => MemoryError::InvalidRange,
-                    })?;
+                shared.sync_vma_range(area.vpn_range.start, start, end)?;
             }
             covered = covered.max(area.vpn_range.end);
         }
@@ -294,29 +253,34 @@ impl MemorySet {
     pub(crate) fn invalidate_shared_file(&mut self, id: SharedFileId, size: u64) {
         let page_table = &mut self.page_table;
         self.areas.for_each_mut(|_, area| {
-            let Some(shared) = &mut area.shared_file else {
-                return;
-            };
-            if shared.mapping.id() != id {
-                return;
-            }
             let start = area.vpn_range.start;
-            let file_offset = shared.file_offset;
-            // resident key 本身有序；直接定位 stale suffix 并逐个删除其首项，避免
-            // truncate 已提交后为临时 key snapshot 分配失败或从 map 起点反复扫描。
-            let stale_page_offset = size
-                .saturating_sub(file_offset)
-                .div_ceil(config::PAGE_SIZE as u64);
-            let Some(first_stale) = usize::try_from(stale_page_offset)
-                .ok()
-                .and_then(|offset| start.as_usize().checked_add(offset))
-                .map(VirtualPageNumber::from_vpn)
-            else {
-                return;
-            };
-            while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
-                let _ = page_table.unmap(vpn);
-                shared.resident.remove(&vpn);
+            if let Some(shared) = &mut area.shared_file
+                && shared.mapping.id() == id
+                && let Some(first_stale) = shared
+                    .pages
+                    .prefix_before(size)
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .and_then(|offset| start.as_usize().checked_add(offset))
+                    .map(VirtualPageNumber::from_vpn)
+            {
+                // resident key 本身有序；直接删除 stale suffix，避免 truncate 已提交后
+                // 为临时 key snapshot 分配失败或从 map 起点反复扫描。
+                while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
+                    let _ = page_table.unmap(vpn);
+                    shared.resident.remove(&vpn);
+                }
+            }
+            if let Some(first_stale) = area
+                .private_file
+                .as_ref()
+                .and_then(|private| private.first_stale_page(start, id, size))
+            {
+                // Linux truncate 的 even_cows 语义撤销 EOF 外 private residency，包括
+                // operation snapshot 后、truncate callback 取得 mm lock 前发布的页。
+                while let Some((&vpn, _)) = area.data_frames.iter_from(&first_stale).next() {
+                    let _ = page_table.unmap(vpn);
+                    area.data_frames.remove(&vpn);
+                }
             }
         });
         Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after truncate invalidation");
@@ -405,18 +369,7 @@ impl MemorySet {
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             if let Some(shared) = &area.shared_file {
-                let offset = shared.file_offset
-                    + (start.as_usize() - area.vpn_range.start.as_usize()) as u64
-                        * config::PAGE_SIZE as u64;
-                let length = (end.as_usize() - start.as_usize()) as u64 * config::PAGE_SIZE as u64;
-                shared
-                    .mapping
-                    .sync_range(offset, length)
-                    .map_err(|error| match error {
-                        SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
-                        SharedFileError::Io => MemoryError::Io,
-                        SharedFileError::BeyondEof => MemoryError::InvalidRange,
-                    })?;
+                shared.sync_vma_range(area.vpn_range.start, start, end)?;
             }
         }
         let mut segment_slots = segment_slots.into_iter();

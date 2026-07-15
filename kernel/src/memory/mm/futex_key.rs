@@ -64,8 +64,7 @@ impl MemorySet {
         }
         if let Some(shared) = &area.shared_file {
             let offset = shared
-                .file_offset
-                .checked_add((page_delta * config::PAGE_SIZE + page_offset) as u64)
+                .byte_within(area.vpn_range.start, vpn, page_offset)
                 .ok_or(UserAccessError::Overflow)?;
             return Ok(FutexKey::SharedFile {
                 file: shared.mapping.id(),

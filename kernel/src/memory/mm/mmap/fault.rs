@@ -1,6 +1,60 @@
 use super::*;
 
 impl MemorySet {
+    fn classify_page_fault(
+        &self,
+        vpn: VirtualPageNumber,
+        access: PageFaultAccess,
+    ) -> Result<FaultPreflight, MemoryError> {
+        let Some((_, area)) = self.areas.floor(&vpn) else {
+            return preflight_fault(
+                false,
+                FaultPermissions::new(false, false, false, false),
+                access,
+                || Ok(FileFaultState::NotFile),
+                || FaultResidency::Private {
+                    lazy: false,
+                    resident: false,
+                },
+            );
+        };
+        let contains = vpn < area.vpn_range.end;
+        let permissions = FaultPermissions::new(
+            area.map_permission.contains(MapPermission::U),
+            area.map_permission.contains(MapPermission::R),
+            area.map_permission.contains(MapPermission::W),
+            area.map_permission.contains(MapPermission::X),
+        );
+        preflight_fault(
+            contains,
+            permissions,
+            access,
+            || {
+                Ok(match &area.private_file {
+                    Some(backing) => match backing.faultable(vpn)? {
+                        true => FileFaultState::Available,
+                        false => FileFaultState::BeyondEof,
+                    },
+                    None => FileFaultState::NotFile,
+                })
+            },
+            || {
+                if area.device.is_some() {
+                    FaultResidency::Device
+                } else if area.shared_anonymous.is_some() {
+                    FaultResidency::SharedAnonymous
+                } else if area.shared_file.is_some() {
+                    FaultResidency::SharedFile
+                } else {
+                    FaultResidency::Private {
+                        lazy: area.lazy_private,
+                        resident: area.data_frames.contains_key(&vpn),
+                    }
+                }
+            },
+        )
+    }
+
     fn grow_stack_for_fault(
         &mut self,
         address: usize,
@@ -57,43 +111,50 @@ impl MemorySet {
     ) -> Result<PageFaultOutcome, MemoryError> {
         let vpn = VirtualAddress::from(address).floor();
         self.grow_stack_for_fault(address, limits.stack, limits.address_space)?;
-        let needs_private_frame = self
-            .areas
-            .floor(&vpn)
-            .map(|(_, area)| {
+        let preflight = self.classify_page_fault(vpn, access)?;
+        let prepared_private_file = if preflight == FaultPreflight::NeedsPrivateFrame {
+            let (_, area) = self.areas.floor(&vpn).ok_or(MemoryError::InvalidRange)?;
+            area.private_file
+                .as_ref()
+                .map(|backing| backing.prepare_fault(vpn))
+                .transpose()?
+        } else {
+            None
+        };
+        if matches!(
+            prepared_private_file.as_ref(),
+            Some(PrivateFaultPreparation::BeyondEof)
+        ) {
+            return Ok(PageFaultOutcome::BusError);
+        }
+        let mut prepared_private_frame = match preflight {
+            FaultPreflight::SegmentationFault => {
+                return Ok(PageFaultOutcome::SegmentationFault);
+            }
+            FaultPreflight::BusError => return Ok(PageFaultOutcome::BusError),
+            FaultPreflight::Device
+            | FaultPreflight::SharedAnonymous
+            | FaultPreflight::SharedFile
+            | FaultPreflight::Private => None,
+            FaultPreflight::NeedsPrivateFrame => Some(self.allocate_private_frame()?),
+        };
+        if prepared_private_frame.is_some() {
+            let still_missing = self.areas.floor(&vpn).is_some_and(|(_, area)| {
                 vpn < area.vpn_range.end
                     && area.lazy_private
                     && area.shared_anonymous.is_none()
                     && area.shared_file.is_none()
+                    && area.device.is_none()
                     && !area.data_frames.contains_key(&vpn)
-            })
-            .unwrap_or(false);
-        let mut prepared_private_frame = if needs_private_frame {
-            Some(self.allocate_private_frame()?)
-        } else {
-            None
-        };
+            });
+            if !still_missing {
+                return Err(MemoryError::InvalidRange);
+            }
+        }
         let Some((_, area)) = self.areas.floor_mut(&vpn) else {
-            return Ok(PageFaultOutcome::SegmentationFault);
+            return Err(MemoryError::InvalidRange);
         };
-        if vpn >= area.vpn_range.end || !area.map_permission.contains(MapPermission::U) {
-            return Ok(PageFaultOutcome::SegmentationFault);
-        }
-        let permitted = match access {
-            PageFaultAccess::Read => area.map_permission.contains(MapPermission::R),
-            PageFaultAccess::Write => area.map_permission.contains(MapPermission::W),
-            PageFaultAccess::Execute => area.map_permission.contains(MapPermission::X),
-        };
-        if !permitted {
-            return Ok(PageFaultOutcome::SegmentationFault);
-        }
-        if area
-            .private_file
-            .as_ref()
-            .is_some_and(|backing| !backing.faultable(vpn))
-        {
-            return Ok(PageFaultOutcome::BusError);
-        }
+        debug_assert!(vpn < area.vpn_range.end);
         if area.device.is_some() {
             return Ok(if self.page_table.translate(vpn).is_some() {
                 PageFaultOutcome::Handled
@@ -152,7 +213,10 @@ impl MemorySet {
                     .take()
                     .ok_or(MemoryError::OutOfMemory)?;
                 if let Some(backing) = &area.private_file {
-                    backing.fill(vpn, &mut frame)?;
+                    let prepared = prepared_private_file
+                        .as_ref()
+                        .ok_or(MemoryError::InvalidRange)?;
+                    backing.fill(vpn, &mut frame, prepared)?;
                 }
                 let ppn = frame.ppn;
                 let frame = try_memory_arc(frame)?;
@@ -190,6 +254,15 @@ impl MemorySet {
             };
         }
         let shared = area.shared_file.as_mut().unwrap();
+        let page = shared
+            .page(area.vpn_range.start, vpn)
+            .ok_or(MemoryError::InvalidRange)?;
+        let prepared_page = match shared.mapping.page(page) {
+            Ok(page) => page,
+            Err(SharedFileError::BeyondEof) => return Ok(PageFaultOutcome::BusError),
+            Err(SharedFileError::OutOfMemory) => return Err(MemoryError::OutOfMemory),
+            Err(SharedFileError::Io) => return Err(MemoryError::Io),
+        };
         if let Some(resident) = shared.resident.get(&vpn) {
             if self.page_table.translate(vpn).is_none() {
                 self.page_table.map(
@@ -202,17 +275,10 @@ impl MemorySet {
             }
             return Ok(PageFaultOutcome::Handled);
         }
-        let index = (shared.file_offset / config::PAGE_SIZE as u64)
-            + (vpn.as_usize() - area.vpn_range.start.as_usize()) as u64;
-        if index * config::PAGE_SIZE as u64 >= shared.mapping.size() {
-            return Ok(PageFaultOutcome::BusError);
-        }
-        let page = shared.mapping.page(index).map_err(|error| match error {
-            SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
-            SharedFileError::Io => MemoryError::Io,
-            SharedFileError::BeyondEof => MemoryError::InvalidRange,
-        })?;
-        let resident = SharedResident::new(page, area.map_permission.contains(MapPermission::W));
+        let resident = SharedResident::new(
+            prepared_page,
+            area.map_permission.contains(MapPermission::W),
+        );
         let ppn = resident.page.frame().ppn();
         let resident = shared
             .resident

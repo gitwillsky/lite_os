@@ -6,6 +6,10 @@ extern crate alloc;
 mod preallocated_heap;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/task/task_manager/signal/selection_result.rs"]
+mod signal_selection_result;
+
+#[cfg(test)]
 mod tests {
     use super::preallocated_heap::PreallocatedHeap;
 
@@ -117,5 +121,51 @@ mod tests {
         assert_eq!(removed, 2);
         assert_eq!(checks, 3);
         assert_eq!(heap.peek(), Some(&50));
+    }
+}
+
+#[cfg(test)]
+mod signal_selection_tests {
+    use super::signal_selection_result::{SelectionAttempt, SelectionOutcome, SelectionResult};
+
+    #[test]
+    fn success_is_sticky_across_denials() {
+        for attempts in [
+            [SelectionAttempt::Generated, SelectionAttempt::Denied],
+            [SelectionAttempt::Denied, SelectionAttempt::Generated],
+        ] {
+            let mut result = SelectionResult::new();
+            for attempt in attempts {
+                result.record(attempt);
+            }
+            assert_eq!(result.finish(), SelectionOutcome::Success(1));
+        }
+    }
+
+    #[test]
+    fn denial_is_distinct_from_no_candidate() {
+        let mut denied = SelectionResult::new();
+        denied.record(SelectionAttempt::Denied);
+
+        assert_eq!(denied.finish(), SelectionOutcome::Permission);
+        assert_eq!(SelectionResult::new().finish(), SelectionOutcome::NotFound);
+    }
+
+    #[test]
+    fn signal_zero_probe_succeeds_without_generation() {
+        let mut result = SelectionResult::new();
+        result.record(SelectionAttempt::Probe);
+
+        assert_eq!(result.finish(), SelectionOutcome::Success(1));
+    }
+
+    #[test]
+    fn kernel_group_delivery_counts_every_completed_generation() {
+        let mut result = SelectionResult::new();
+        for _ in 0..4 {
+            result.record(SelectionAttempt::Generated);
+        }
+
+        assert_eq!(result.finish(), SelectionOutcome::Success(4));
     }
 }

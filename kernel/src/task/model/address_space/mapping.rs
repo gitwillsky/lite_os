@@ -39,20 +39,17 @@ impl TaskControlBlock {
     pub(crate) fn map_private_file(
         &self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
-        mapping: Arc<dyn SharedFileMapping>,
-        offset: u64,
+        source: FileMappingSource,
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
         let data_limit = self.resource_limit(RLIMIT_DATA).unwrap().soft;
         self.process.address_space().map_private_file(
             address,
-            length,
             permission,
             fixed_noreplace,
-            FileMappingSource::new(mapping, offset),
+            source,
             MappingResourceLimits::new(address_space_limit, data_limit),
         )
     }
@@ -60,19 +57,16 @@ impl TaskControlBlock {
     pub(crate) fn map_shared_file(
         &self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
-        mapping: Arc<dyn SharedFileMapping>,
-        offset: u64,
+        source: FileMappingSource,
     ) -> Result<usize, MemoryError> {
         let address_space_limit = self.resource_limit(RLIMIT_AS).unwrap().soft;
         self.process.address_space().map_shared_file(
             address,
-            length,
             permission,
             fixed_noreplace,
-            FileMappingSource::new(mapping, offset),
+            source,
             address_space_limit,
         )
     }

@@ -1,6 +1,6 @@
 use crate::{
     fs::{CharacterDevice, InodeType, O_ACCMODE, O_RDONLY, O_WRONLY, OpenFileKind},
-    memory::{MapPermission, MemoryAdvice, MemoryError},
+    memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
     task::current_task,
 };
 
@@ -101,7 +101,10 @@ pub(crate) fn sys_mmap(
     let fixed = flags & MAP_FIXED != 0;
     // Reject cheap range errors before regular-file backing acquisition can publish a new
     // canonical page-cache owner. MemorySet remains the final full-range validator.
-    if fixed && (length == 0 || address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE)) {
+    if length == 0 {
+        return -errno::EINVAL;
+    }
+    if fixed && (address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE)) {
         return -errno::EINVAL;
     }
     let task = current_task().expect("mmap requires a current task");
@@ -110,8 +113,8 @@ pub(crate) fn sys_mmap(
         Anonymous,
         SharedAnonymous,
         Device(crate::memory::DeviceMappingSource),
-        PrivateFile(alloc::sync::Arc<dyn crate::memory::SharedFileMapping>),
-        SharedFile(alloc::sync::Arc<dyn crate::memory::SharedFileMapping>),
+        PrivateFile(FileMappingSource),
+        SharedFile(FileMappingSource),
     }
 
     // Resolve every remaining ABI/backing error before destructive MAP_FIXED replacement.
@@ -166,10 +169,15 @@ pub(crate) fn sys_mmap(
                 Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
                 Err(_) => return -errno::EIO,
             };
+            let source = match FileMappingSource::new(mapping, offset as u64, length) {
+                Ok(source) => source,
+                Err(FileMappingError::Invalid) => return -errno::EINVAL,
+                Err(FileMappingError::Overflow) => return -errno::EOVERFLOW,
+            };
             if sharing == MAP_SHARED {
-                PreparedMapping::SharedFile(mapping)
+                PreparedMapping::SharedFile(source)
             } else {
-                PreparedMapping::PrivateFile(mapping)
+                PreparedMapping::PrivateFile(source)
             }
         }
     };
@@ -192,22 +200,12 @@ pub(crate) fn sys_mmap(
         PreparedMapping::Device(source) => {
             task.map_device(address, length, permission, exact_address, source)
         }
-        PreparedMapping::PrivateFile(mapping) => task.map_private_file(
-            address,
-            length,
-            permission,
-            exact_address,
-            mapping,
-            offset as u64,
-        ),
-        PreparedMapping::SharedFile(mapping) => task.map_shared_file(
-            address,
-            length,
-            permission,
-            exact_address,
-            mapping,
-            offset as u64,
-        ),
+        PreparedMapping::PrivateFile(source) => {
+            task.map_private_file(address, permission, exact_address, source)
+        }
+        PreparedMapping::SharedFile(source) => {
+            task.map_shared_file(address, permission, exact_address, source)
+        }
     };
     result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }

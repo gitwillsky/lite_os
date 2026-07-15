@@ -92,13 +92,14 @@ pub(super) fn write_descriptor(
             written as isize
         }
         OpenFileKind::Socket(socket) => {
-            // 1. datagram/raw 必须一次 gather 完整消息；拆成多次 write 会制造额外数据报。
-            let capacity = match socket.socket_type() {
-                crate::socket::SocketType::Stream => total_length.min(64 * 1024),
-                crate::socket::SocketType::Datagram | crate::socket::SocketType::Raw => {
-                    total_length
-                }
-            };
+            if let Err(error) = socket.validate_send_length(total_length) {
+                return crate::syscall::socket::socket_error(error);
+            }
+            // 1. stream 使用 facade 选择的 bounded staging；atomic protocol 仍一次 gather
+            // 完整消息，避免拆成多个数据报。
+            let capacity = socket
+                .stream_send_staging_capacity(total_length, 64 * 1024)
+                .unwrap_or(total_length);
             let mut input = match buffer(capacity) {
                 Ok(input) => input,
                 Err(error) => return error,
@@ -124,22 +125,21 @@ pub(super) fn write_descriptor(
                     match socket.write(&input[..requested]) {
                         Ok(count) => {
                             written += count;
-                            if count < requested
-                                || socket.socket_type() != crate::socket::SocketType::Stream
-                            {
+                            if count < requested {
                                 return written as isize;
                             }
                             break;
                         }
-                        Err(crate::socket::SocketError::Again) if written != 0 => {
+                        Err(crate::socket::SocketSendError::WouldBlock) if written != 0 => {
                             return written as isize;
                         }
-                        Err(crate::socket::SocketError::Again)
-                            if *ofd.flags.lock() & O_NONBLOCK != 0 =>
-                        {
+                        Err(
+                            crate::socket::SocketSendError::WouldBlock
+                            | crate::socket::SocketSendError::PeerFull(_),
+                        ) if *ofd.flags.lock() & O_NONBLOCK != 0 => {
                             return -errno::EAGAIN;
                         }
-                        Err(crate::socket::SocketError::Again) => {
+                        Err(crate::socket::SocketSendError::WouldBlock) => {
                             match crate::syscall::poll::wait_for_ofd(ofd, 4) {
                                 WaitResult::Woken => {}
                                 WaitResult::Interrupted => return -errno::EINTR,
@@ -147,7 +147,17 @@ pub(super) fn write_descriptor(
                                 WaitResult::OutOfMemory => return -errno::ENOMEM,
                             }
                         }
-                        Err(crate::socket::SocketError::BrokenPipe) => {
+                        Err(crate::socket::SocketSendError::PeerFull(blocker)) => {
+                            match crate::syscall::poll::wait_for_socket_send(&blocker) {
+                                WaitResult::Woken => {}
+                                WaitResult::Interrupted => return -errno::EINTR,
+                                WaitResult::TimedOut => unreachable!(),
+                                WaitResult::OutOfMemory => return -errno::ENOMEM,
+                            }
+                        }
+                        Err(crate::socket::SocketSendError::Error(
+                            crate::socket::SocketError::BrokenPipe,
+                        )) => {
                             // 3. 即使已有进度，peer close 仍投递 SIGPIPE，但返回值保留已写 byte count。
                             send_thread_signal(task.tgid(), task.tid(), 13)
                                 .expect("current sequential socket writer must exist");
@@ -157,7 +167,7 @@ pub(super) fn write_descriptor(
                                 written as isize
                             };
                         }
-                        Err(error) => {
+                        Err(crate::socket::SocketSendError::Error(error)) => {
                             return if written == 0 {
                                 crate::syscall::socket::socket_error(error)
                             } else {

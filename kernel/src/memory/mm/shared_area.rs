@@ -138,15 +138,117 @@ impl Drop for SharedResident {
     }
 }
 
-/// @description shared-file VMA 的文件 identity、byte offset 与 resident-page owner。
+/// @description shared-file VMA 的文件 identity、validated page range 与 resident-page owner。
 #[derive(Debug)]
 pub(super) struct SharedFileArea {
     /// 文件系统提供的共享 mapping adapter。
     pub(super) mapping: Arc<dyn SharedFileMapping>,
-    /// VMA 起点对应的文件字节偏移。
-    pub(super) file_offset: u64,
+    /// 与当前 VMA 精确对应的已验证文件页范围。
+    pub(super) pages: FilePageRange,
     /// 已 fault-in 的共享页及 writer claims。
     pub(super) resident: FallibleMap<VirtualPageNumber, SharedResident>,
+}
+
+impl SharedFileArea {
+    /// @description 按 VMA split 边界派生精确 validated file-page views。
+    pub(super) fn partition(
+        shared: Option<Self>,
+        original: Range<VirtualPageNumber>,
+        selected: Range<VirtualPageNumber>,
+    ) -> (Option<Self>, Option<Self>, Option<Self>) {
+        let Some(mut shared) = shared else {
+            return (None, None, None);
+        };
+        debug_assert!(original.start <= selected.start && selected.end <= original.end);
+        let right_residents = shared.resident.split_off(&selected.end);
+        let middle_residents = shared.resident.split_off(&selected.start);
+        let left_count = u64::try_from(selected.start.as_usize() - original.start.as_usize())
+            .expect("VMA page count fits u64");
+        let middle_count = u64::try_from(selected.end.as_usize() - selected.start.as_usize())
+            .expect("VMA page count fits u64");
+        let right_count = u64::try_from(original.end.as_usize() - selected.end.as_usize())
+            .expect("VMA page count fits u64");
+        let middle_pages = shared
+            .pages
+            .subrange(left_count, middle_count)
+            .expect("shared-file split escaped validated range");
+        let mapping = shared.mapping;
+        let left = (left_count != 0).then(|| Self {
+            pages: shared
+                .pages
+                .subrange(0, left_count)
+                .expect("shared-file left split escaped validated range"),
+            mapping: mapping.clone(),
+            resident: shared.resident,
+        });
+        let middle = Some(Self {
+            mapping: mapping.clone(),
+            pages: middle_pages,
+            resident: middle_residents,
+        });
+        let right = (right_count != 0).then(|| Self {
+            pages: shared
+                .pages
+                .subrange(
+                    left_count
+                        .checked_add(middle_count)
+                        .expect("VMA split page count overflow"),
+                    right_count,
+                )
+                .expect("shared-file right split escaped validated range"),
+            mapping,
+            resident: right_residents,
+        });
+        (left, middle, right)
+    }
+
+    pub(super) fn page(&self, vma_start: VirtualPageNumber, vpn: VirtualPageNumber) -> Option<u64> {
+        let delta = vpn.as_usize().checked_sub(vma_start.as_usize())?;
+        self.pages.page(u64::try_from(delta).ok()?)
+    }
+
+    pub(super) fn byte_within(
+        &self,
+        vma_start: VirtualPageNumber,
+        vpn: VirtualPageNumber,
+        within_page: usize,
+    ) -> Option<u64> {
+        let delta = vpn.as_usize().checked_sub(vma_start.as_usize())?;
+        self.pages
+            .byte_within(u64::try_from(delta).ok()?, within_page)
+    }
+
+    fn page_range(
+        &self,
+        vma_start: VirtualPageNumber,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+    ) -> Option<FilePageRange> {
+        let delta = start.as_usize().checked_sub(vma_start.as_usize())?;
+        let count = end.as_usize().checked_sub(start.as_usize())?;
+        self.pages
+            .subrange(u64::try_from(delta).ok()?, u64::try_from(count).ok()?)
+    }
+
+    /// @description 同步一个 VMA 子区间对应的精确 validated file byte range。
+    pub(super) fn sync_vma_range(
+        &self,
+        vma_start: VirtualPageNumber,
+        start: VirtualPageNumber,
+        end: VirtualPageNumber,
+    ) -> Result<(), MemoryError> {
+        let (offset, bytes) = self
+            .page_range(vma_start, start, end)
+            .and_then(FilePageRange::byte_range)
+            .ok_or(MemoryError::InvalidRange)?;
+        self.mapping
+            .sync_range(offset, bytes)
+            .map_err(|error| match error {
+                SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
+                SharedFileError::Io => MemoryError::Io,
+                SharedFileError::BeyondEof => MemoryError::InvalidRange,
+            })
+    }
 }
 
 impl MapArea {
@@ -177,20 +279,25 @@ impl MapArea {
     /// @param end_va VMA 结束虚拟地址，不包含该地址。
     /// @param permissions 用户页权限。
     /// @param mapping 文件系统共享 mapping adapter。
-    /// @param file_offset VMA 起点对应的文件字节偏移。
+    /// @param pages 与 VMA 页数相同的已验证文件页范围。
     /// @return 尚未提交页表的 MapArea。
     pub(super) fn shared_file(
         start_va: VirtualAddress,
         end_va: VirtualAddress,
         permissions: MapPermission,
         mapping: Arc<dyn SharedFileMapping>,
-        file_offset: u64,
+        pages: FilePageRange,
     ) -> Self {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
+        debug_assert_eq!(
+            pages.count(),
+            u64::try_from(area.vpn_range.end.as_usize() - area.vpn_range.start.as_usize())
+                .expect("VMA page count fits u64")
+        );
         area.kind = VmaKind::File;
         area.shared_file = Some(SharedFileArea {
             mapping,
-            file_offset,
+            pages,
             resident: FallibleMap::new(),
         });
         area

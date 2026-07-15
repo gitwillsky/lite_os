@@ -2,6 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{CharacterDevice, OpenFileDescription, OpenFileKind},
+    socket::SocketSendBlocker,
     syscall::errno,
     task::{
         PollWaitKey, TaskControlBlock, WaitResult, current_task, drain_terminal_input,
@@ -171,6 +172,22 @@ pub(super) fn wait_for_ofd(ofd: &Arc<OpenFileDescription>, events: i16) -> WaitR
     wait_for_poll(keys, None, || {
         guards.changed() || ofd.poll_events(events) != 0
     })
+}
+
+/// @description 等待一次 AF_UNIX datagram send 的具体 target queue 恢复容量。
+/// @param blocker socket facade 持有的 opaque target projection。
+/// @return source wake、signal interruption或 wait-key allocation failure。
+pub(super) fn wait_for_socket_send(blocker: &SocketSendBlocker) -> WaitResult {
+    let mut keys = PollWaitKeys::new();
+    if keys
+        .add_socket_source(blocker.wait_source(), POLLOUT, false, None)
+        .is_err()
+    {
+        return WaitResult::OutOfMemory;
+    }
+    let (keys, guards) = keys.finish();
+    blocker.prepare_wait();
+    wait_for_poll(keys, None, || guards.changed() || blocker.is_ready())
 }
 
 /// @description 实现 Linux RV64 ppoll 的 fd readiness、timeout 与临时 signal mask。

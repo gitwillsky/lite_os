@@ -5,6 +5,7 @@
 #include <grp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <poll.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -23,6 +24,19 @@
 #include <unistd.h>
 
 int verify_process_spawn(void);
+
+/*
+ * OWNER: verify_unix_epoll's single-threaded SIGPIPE probe; sig_atomic_t is
+ * the only async-signal-safe observation shared with record_sigpipe.
+ * FAILURE: an ordinary flag would make signal delivery/read undefined and
+ * could falsely accept or reject MSG_NOSIGNAL/SIGPIPE behavior.
+ */
+static volatile sig_atomic_t observed_sigpipe;
+
+static void record_sigpipe(int signal)
+{
+    if (signal == SIGPIPE) ++observed_sigpipe;
+}
 
 static int resolve_host(const char *host)
 {
@@ -119,6 +133,199 @@ static int verify_unix_epoll(void)
         || send(datagram[0], "packet", 6, 0) != 6
         || recv(datagram[1], bytes, sizeof(bytes), 0) != 6
         || memcmp(bytes, "packet", 6) != 0) return 63;
+
+    char prefix[2] = { 0 };
+    struct iovec vector = { .iov_base = prefix, .iov_len = sizeof(prefix) };
+    struct msghdr message = { .msg_iov = &vector, .msg_iovlen = 1 };
+    if (send(datagram[0], "abcdef", 6, 0) != 6
+        || recvmsg(datagram[1], &message, MSG_TRUNC) != 6
+        || memcmp(prefix, "ab", 2) != 0 || !(message.msg_flags & MSG_TRUNC)
+        || send(datagram[0], "ghijkl", 6, 0) != 6
+        || recvfrom(datagram[1], prefix, sizeof(prefix), MSG_TRUNC, NULL, NULL) != 6
+        || memcmp(prefix, "gh", 2) != 0) return 70;
+
+    static char large_datagram_tail[65536];
+    struct iovec large_datagram_vectors[] = {
+        { .iov_base = prefix, .iov_len = sizeof(prefix) },
+        { .iov_base = large_datagram_tail, .iov_len = sizeof(large_datagram_tail) },
+    };
+    message.msg_iov = large_datagram_vectors;
+    message.msg_iovlen = 2;
+    message.msg_flags = 0;
+    if (send(datagram[0], "mnopqr", 6, 0) != 6
+        || recvmsg(datagram[1], &message, MSG_TRUNC) != 6
+        || memcmp(prefix, "mn", 2) != 0 || memcmp(large_datagram_tail, "opqr", 4) != 0
+        || (message.msg_flags & MSG_TRUNC)) return 83;
+
+    static char oversized[65536];
+    struct iovec oversized_vector = { .iov_base = oversized, .iov_len = sizeof(oversized) };
+    struct msghdr oversized_message = { .msg_iov = &oversized_vector, .msg_iovlen = 1 };
+    errno = 0;
+    if (write(datagram[0], oversized, sizeof(oversized)) != -1 || errno != EMSGSIZE) return 76;
+    errno = 0;
+    if (sendto(datagram[0], oversized, sizeof(oversized), 0, NULL, 0) != -1
+        || errno != EMSGSIZE) return 77;
+    errno = 0;
+    if (sendmsg(datagram[0], &oversized_message, 0) != -1 || errno != EMSGSIZE) return 78;
+    struct pollfd oversized_readable = { .fd = datagram[1], .events = POLLIN };
+    if (poll(&oversized_readable, 1, 0) != 0) return 90;
+
+    if (fcntl(datagram[0], F_SETFL, O_NONBLOCK) != 0) return 71;
+    int queued = 0;
+    while (queued < 64 && send(datagram[0], "q", 1, 0) == 1) ++queued;
+    if (queued == 0 || queued == 64 || errno != EAGAIN) return 72;
+    struct pollfd writable = { .fd = datagram[0], .events = POLLOUT };
+    interest.events = EPOLLOUT;
+    interest.data.u64 = 49;
+    if (poll(&writable, 1, 0) != 0 || (writable.revents & POLLOUT)
+        || epoll_ctl(epoll, EPOLL_CTL_ADD, datagram[0], &interest) != 0
+        || epoll_wait(epoll, &event, 1, 0) != 0
+        || recv(datagram[1], bytes, 1, 0) != 1
+        || epoll_wait(epoll, &event, 1, 1000) != 1
+        || event.data.u64 != 49 || !(event.events & EPOLLOUT)
+        || send(datagram[0], "r", 1, 0) != 1
+        || epoll_ctl(epoll, EPOLL_CTL_DEL, datagram[0], NULL) != 0) return 73;
+
+    int ready_pipe[2], done_pipe[2];
+    if (fcntl(datagram[0], F_SETFL, 0) != 0
+        || pipe(ready_pipe) != 0 || pipe(done_pipe) != 0) return 74;
+    pid_t blocked = fork();
+    if (blocked == 0) {
+        close(ready_pipe[0]); close(done_pipe[0]);
+        if (write(ready_pipe[1], "s", 1) != 1
+            || send(datagram[0], "b", 1, 0) != 1
+            || write(done_pipe[1], "d", 1) != 1) _exit(1);
+        _exit(0);
+    }
+    close(ready_pipe[1]); close(done_pipe[1]);
+    struct pollfd done = { .fd = done_pipe[0], .events = POLLIN };
+    int blocked_status;
+    if (blocked <= 0 || read(ready_pipe[0], bytes, 1) != 1
+        || poll(&done, 1, 20) != 0 || recv(datagram[1], bytes, 1, 0) != 1
+        || poll(&done, 1, 1000) != 1 || read(done_pipe[0], bytes, 1) != 1
+        || waitpid(blocked, &blocked_status, 0) != blocked
+        || !WIFEXITED(blocked_status) || WEXITSTATUS(blocked_status) != 0) {
+        if (blocked > 0) { kill(blocked, SIGKILL); waitpid(blocked, NULL, 0); }
+        return 75;
+    }
+    close(ready_pipe[0]); close(done_pipe[0]);
+
+    int reconnect_sender = socket(AF_UNIX, SOCK_DGRAM, 0);
+    int reconnect_full = socket(AF_UNIX, SOCK_DGRAM, 0);
+    int reconnect_empty = socket(AF_UNIX, SOCK_DGRAM, 0);
+    static const char full_name[] = "liteos-dgram-full";
+    static const char empty_name[] = "liteos-dgram-empty";
+    struct sockaddr_un full_address = { .sun_family = AF_UNIX };
+    struct sockaddr_un empty_address = { .sun_family = AF_UNIX };
+    memcpy(full_address.sun_path + 1, full_name, sizeof(full_name) - 1);
+    memcpy(empty_address.sun_path + 1, empty_name, sizeof(empty_name) - 1);
+    socklen_t full_length = offsetof(struct sockaddr_un, sun_path) + sizeof(full_name);
+    socklen_t empty_length = offsetof(struct sockaddr_un, sun_path) + sizeof(empty_name);
+    if (reconnect_sender < 0 || reconnect_full < 0 || reconnect_empty < 0
+        || bind(reconnect_full, (struct sockaddr *)&full_address, full_length) != 0
+        || bind(reconnect_empty, (struct sockaddr *)&empty_address, empty_length) != 0
+        || connect(reconnect_sender, (struct sockaddr *)&full_address, full_length) != 0
+        || fcntl(reconnect_sender, F_SETFL, O_NONBLOCK) != 0) return 79;
+    queued = 0;
+    while (queued < 64 && send(reconnect_sender, "f", 1, 0) == 1) ++queued;
+    interest.events = EPOLLOUT;
+    interest.data.u64 = 50;
+    if (queued == 0 || queued == 64 || errno != EAGAIN
+        || epoll_ctl(epoll, EPOLL_CTL_ADD, reconnect_sender, &interest) != 0
+        || epoll_wait(epoll, &event, 1, 0) != 0
+        || pipe(ready_pipe) != 0 || pipe(done_pipe) != 0) return 80;
+    pid_t reconnect_waiter = fork();
+    if (reconnect_waiter == 0) {
+        close(ready_pipe[0]); close(done_pipe[0]);
+        if (write(ready_pipe[1], "s", 1) != 1
+            || epoll_wait(epoll, &event, 1, 1000) != 1
+            || event.data.u64 != 50 || !(event.events & EPOLLOUT)
+            || write(done_pipe[1], "d", 1) != 1) _exit(1);
+        _exit(0);
+    }
+    close(ready_pipe[1]); close(done_pipe[1]);
+    done.fd = done_pipe[0];
+    done.events = POLLIN;
+    if (reconnect_waiter <= 0 || read(ready_pipe[0], bytes, 1) != 1
+        || poll(&done, 1, 20) != 0
+        || connect(reconnect_sender, (struct sockaddr *)&empty_address, empty_length) != 0
+        || poll(&done, 1, 1000) != 1 || read(done_pipe[0], bytes, 1) != 1
+        || waitpid(reconnect_waiter, &blocked_status, 0) != reconnect_waiter
+        || !WIFEXITED(blocked_status) || WEXITSTATUS(blocked_status) != 0) {
+        if (reconnect_waiter > 0) {
+            kill(reconnect_waiter, SIGKILL);
+            waitpid(reconnect_waiter, NULL, 0);
+        }
+        return 81;
+    }
+    if (epoll_ctl(epoll, EPOLL_CTL_DEL, reconnect_sender, NULL) != 0) return 82;
+    close(ready_pipe[0]); close(done_pipe[0]);
+    close(reconnect_sender); close(reconnect_full); close(reconnect_empty);
+
+    int message_stream[2];
+    static char large_stream_capacity[65536];
+    char stream_prefix[8] = { 0 };
+    struct iovec stream_receive_vectors[] = {
+        { .iov_base = stream_prefix, .iov_len = sizeof(stream_prefix) },
+        { .iov_base = large_stream_capacity, .iov_len = sizeof(large_stream_capacity) },
+    };
+    struct msghdr stream_message = {
+        .msg_iov = stream_receive_vectors,
+        .msg_iovlen = 2,
+    };
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, message_stream) != 0
+        || send(message_stream[0], "wide", 4, 0) != 4
+        || recvmsg(message_stream[1], &stream_message, 0) != 4
+        || memcmp(stream_prefix, "wide", 4) != 0) return 84;
+
+    char fault_prefix[] = "drop";
+    struct iovec fault_vectors[] = {
+        { .iov_base = fault_prefix, .iov_len = sizeof(fault_prefix) - 1 },
+        { .iov_base = (void *)1, .iov_len = 1 },
+    };
+    struct msghdr fault_message = { .msg_iov = fault_vectors, .msg_iovlen = 2 };
+    errno = 0;
+    struct pollfd fault_readable = { .fd = message_stream[1], .events = POLLIN };
+    if (sendmsg(message_stream[0], &fault_message, 0) != -1 || errno != EFAULT
+        || poll(&fault_readable, 1, 0) != 0) return 87;
+
+    static char stream_payload[65537];
+    static char stream_received[65537];
+    for (size_t index = 0; index < sizeof(stream_payload); ++index)
+        stream_payload[index] = (char)(index * 17u + 3u);
+    struct iovec stream_send_vectors[] = {
+        { .iov_base = stream_payload, .iov_len = 32768 },
+        { .iov_base = stream_payload + 32768, .iov_len = sizeof(stream_payload) - 32768 },
+    };
+    struct msghdr stream_send_message = {
+        .msg_iov = stream_send_vectors,
+        .msg_iovlen = 2,
+    };
+    if (fcntl(message_stream[0], F_SETFL, O_NONBLOCK) != 0) return 85;
+    ssize_t stream_sent = sendmsg(message_stream[0], &stream_send_message, 0);
+    struct pollfd stream_readable = { .fd = message_stream[1], .events = POLLIN };
+    if (stream_sent <= 0 || (size_t)stream_sent > sizeof(stream_payload)
+        || poll(&stream_readable, 1, 1000) != 1 || !(stream_readable.revents & POLLIN)
+        || recv(message_stream[1], stream_received, (size_t)stream_sent, 0) != stream_sent
+        || memcmp(stream_received, stream_payload, (size_t)stream_sent) != 0) return 86;
+    close(message_stream[0]); close(message_stream[1]);
+
+    int broken_stream[2];
+    struct sigaction pipe_action = { .sa_handler = record_sigpipe };
+    struct sigaction previous_pipe_action;
+    sigemptyset(&pipe_action.sa_mask);
+    if (sigaction(SIGPIPE, &pipe_action, &previous_pipe_action) != 0
+        || socketpair(AF_UNIX, SOCK_STREAM, 0, broken_stream) != 0
+        || close(broken_stream[1]) != 0) return 87;
+    observed_sigpipe = 0;
+    errno = 0;
+    if (send(broken_stream[0], "x", 1, MSG_NOSIGNAL) != -1 || errno != EPIPE
+        || observed_sigpipe != 0) return 88;
+    errno = 0;
+    if (send(broken_stream[0], "x", 1, 0) != -1 || errno != EPIPE
+        || observed_sigpipe != 1 || sigaction(SIGPIPE, &previous_pipe_action, NULL) != 0)
+        return 89;
+    close(broken_stream[0]);
 
     int listener = socket(AF_UNIX, SOCK_STREAM, 0);
     struct sockaddr_un address = { .sun_family = AF_UNIX };

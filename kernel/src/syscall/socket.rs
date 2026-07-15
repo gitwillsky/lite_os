@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 
 use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
@@ -16,7 +16,7 @@ mod interface;
 mod message;
 mod options;
 pub(super) use interface::socket_ioctl;
-pub(crate) use message::{sys_recvmsg, sys_sendmsg};
+pub(crate) use message::{sys_recvfrom, sys_recvmsg, sys_sendmsg, sys_sendto};
 pub(crate) use options::{sys_getsockopt, sys_setsockopt};
 
 const AF_UNIX: usize = 1;
@@ -447,112 +447,6 @@ pub(crate) fn sys_getpeername(fd: usize, address: usize, length: usize) -> isize
         .map_err(socket_error)
         .and_then(|value| write_address(value, address, length))
         .map_or_else(|error| error, |()| 0)
-}
-
-pub(crate) fn sys_sendto(
-    fd: usize,
-    buffer: usize,
-    length: usize,
-    flags: usize,
-    address: usize,
-    address_length: usize,
-) -> isize {
-    if flags & !(MSG_DONTWAIT | MSG_NOSIGNAL) != 0 {
-        return -errno::EOPNOTSUPP;
-    }
-    let (ofd, socket) = match socket_ofd(fd) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let mut input = Vec::new();
-    if input.try_reserve_exact(length).is_err() {
-        return -errno::ENOMEM;
-    }
-    input.resize(length, 0);
-    if current_task()
-        .unwrap()
-        .copy_from_user(buffer, &mut input)
-        .is_err()
-    {
-        return -errno::EFAULT;
-    }
-    let target = if address == 0 {
-        None
-    } else {
-        match read_address(address, address_length) {
-            Ok(value) => Some(value),
-            Err(error) => return error,
-        }
-    };
-    let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
-    loop {
-        match socket.send_to(&input, target.clone()) {
-            Ok(count) => return count as isize,
-            Err(SocketError::Again) if nonblocking => return -errno::EAGAIN,
-            Err(SocketError::Again) => match wait_for_ofd(&ofd, 4) {
-                WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
-                WaitResult::OutOfMemory => return -errno::ENOMEM,
-            },
-            Err(error) => return socket_error(error),
-        }
-    }
-}
-
-pub(crate) fn sys_recvfrom(
-    fd: usize,
-    buffer: usize,
-    length: usize,
-    flags: usize,
-    address: usize,
-    address_length: usize,
-) -> isize {
-    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT) != 0 {
-        return -errno::EOPNOTSUPP;
-    }
-    let (ofd, socket) = match socket_ofd(fd) {
-        Ok(value) => value,
-        Err(error) => return error,
-    };
-    let mut output = Vec::new();
-    if output.try_reserve_exact(length).is_err() {
-        return -errno::ENOMEM;
-    }
-    output.resize(length, 0);
-    loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0) {
-            Ok(received) => {
-                if current_task()
-                    .unwrap()
-                    .copy_to_user(buffer, &output[..received.count])
-                    .is_err()
-                {
-                    return -errno::EFAULT;
-                }
-                if let Err(error) = write_address(received.source, address, address_length) {
-                    return error;
-                }
-                return if flags & MSG_TRUNC != 0 {
-                    received.full_length as isize
-                } else {
-                    received.count as isize
-                };
-            }
-            Err(SocketError::Again)
-                if flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0 =>
-            {
-                return -errno::EAGAIN;
-            }
-            Err(SocketError::Again) => match wait_for_ofd(&ofd, 1) {
-                WaitResult::Woken => {}
-                WaitResult::Interrupted => return -errno::EINTR,
-                WaitResult::TimedOut => unreachable!(),
-                WaitResult::OutOfMemory => return -errno::ENOMEM,
-            },
-            Err(error) => return socket_error(error),
-        }
-    }
 }
 
 pub(crate) fn sys_shutdown(fd: usize, how: usize) -> isize {

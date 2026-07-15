@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
     fs::{CharacterDevice, Epoll, OpenFileDescription, OpenFileKind},
-    socket::SocketWaitSource,
+    socket::{SocketWaitGuard, SocketWaitSource},
     task::PollWaitKey,
 };
 
@@ -14,19 +14,24 @@ use super::{POLLHUP, POLLIN, POLLOUT};
 /// interest，不能为每个 interest 构造临时 key collection。
 pub(in crate::syscall) struct PollWaitKeys {
     keys: Vec<PollWaitKey>,
-    epoll_guards: Vec<(Arc<Epoll>, u64)>,
+    guards: Vec<PollWaitGuard>,
 }
 
-/// @description wait publication 前捕获的全部 epoll interest-snapshot generation guards。
+enum PollWaitGuard {
+    Epoll { epoll: Arc<Epoll>, generation: u64 },
+    Socket(SocketWaitGuard),
+}
+
+/// @description wait publication 前捕获的全部 source-snapshot guards。
 pub(in crate::syscall) struct PollWaitGuards {
-    epolls: Vec<(Arc<Epoll>, u64)>,
+    entries: Vec<PollWaitGuard>,
 }
 
 impl PollWaitKeys {
     pub(in crate::syscall) const fn new() -> Self {
         Self {
             keys: Vec::new(),
-            epoll_guards: Vec::new(),
+            guards: Vec::new(),
         }
     }
 
@@ -39,7 +44,7 @@ impl PollWaitKeys {
         // Finish every fallible reserve before consuming the token. OOM then
         // cannot discard the only observable evidence for another caller.
         self.keys.try_reserve(1).map_err(|_| ())?;
-        self.epoll_guards.try_reserve(1).map_err(|_| ())?;
+        self.guards.try_reserve(1).map_err(|_| ())?;
         let generation = epoll.consume_notifications();
         let notification = epoll.notification_pipe();
         self.keys.push(PollWaitKey::pipe(
@@ -53,7 +58,10 @@ impl PollWaitKeys {
             // coalesced token.
             None,
         ));
-        self.epoll_guards.push((epoll.clone(), generation));
+        self.guards.push(PollWaitGuard::Epoll {
+            epoll: epoll.clone(),
+            generation,
+        });
         Ok(())
     }
 
@@ -128,19 +136,13 @@ impl PollWaitKeys {
                 ))?;
             }
             OpenFileKind::Socket(socket) => {
-                for source in socket.wait_sources().into_iter().flatten() {
-                    self.push(match source {
-                        SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
-                            &pipe,
-                            crate::ipc::PipeDirection::Read,
-                            POLLIN,
-                            exclusive,
-                            wake_group,
-                        ),
-                        SocketWaitSource::Data { pipe, direction } => {
-                            PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
-                        }
-                    })?;
+                let (sources, guard) = socket.wait_sources(events);
+                if let Some(guard) = guard {
+                    self.guards.try_reserve(1).map_err(|_| ())?;
+                    self.guards.push(PollWaitGuard::Socket(guard));
+                }
+                for source in sources.into_iter().flatten() {
+                    self.add_socket_source(source, events, exclusive, wake_group)?;
                 }
             }
             OpenFileKind::Epoll(epoll) => {
@@ -180,12 +182,34 @@ impl PollWaitKeys {
         Ok(())
     }
 
+    /// @description 将 facade-provided socket source 追加到唯一 transient key backing。
+    pub(super) fn add_socket_source(
+        &mut self,
+        source: SocketWaitSource,
+        events: i16,
+        exclusive: bool,
+        wake_group: Option<usize>,
+    ) -> Result<(), ()> {
+        self.push(match source {
+            SocketWaitSource::Notification(pipe) => PollWaitKey::pipe(
+                &pipe,
+                crate::ipc::PipeDirection::Read,
+                POLLIN,
+                exclusive,
+                wake_group,
+            ),
+            SocketWaitSource::Data { pipe, direction } => {
+                PollWaitKey::pipe(&pipe, direction, events, exclusive, wake_group)
+            }
+        })
+    }
+
     /// @description 把完成的 key backing 与 snapshot guards 转移给 wait orchestration。
     pub(in crate::syscall) fn finish(self) -> (Vec<PollWaitKey>, PollWaitGuards) {
         (
             self.keys,
             PollWaitGuards {
-                epolls: self.epoll_guards,
+                entries: self.guards,
             },
         )
     }
@@ -202,10 +226,14 @@ impl PollWaitGuards {
     /// @return 任一 generation 已变化时返回 true；不分配、不 clone、不展开 source keys。
     pub(in crate::syscall) fn changed(&self) -> bool {
         let mut changed = false;
-        for (epoll, generation) in &self.epolls {
-            // Do not short-circuit: drain every coalesced token so the next
-            // rebuild captures one stable generation for each nested epoll.
-            changed |= epoll.recheck_changed(*generation);
+        for guard in &self.entries {
+            // Do not short-circuit: drain every coalesced epoll token and
+            // inspect every socket identity so the rebuild starts from one
+            // stable source snapshot.
+            changed |= match guard {
+                PollWaitGuard::Epoll { epoll, generation } => epoll.recheck_changed(*generation),
+                PollWaitGuard::Socket(socket) => socket.changed(),
+            };
         }
         changed
     }

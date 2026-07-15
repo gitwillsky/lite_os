@@ -10,9 +10,17 @@ use crate::{
     ipc::{PipeDirection, PipeEnd, PipeRead, PipeWrite},
 };
 
-use super::{SocketError, SocketPollState, SocketType, SocketWaitSource};
+use super::{
+    SocketError, SocketPollState, SocketSendError, SocketType, SocketWaitGuard, SocketWaitSource,
+};
+
+#[path = "unix/datagram_queue.rs"]
+mod datagram_queue;
+use datagram_queue::DatagramQueue;
 
 const UNIX_PATH_MAX: usize = 108;
+const POLLIN: i16 = 0x001;
+const POLLOUT: i16 = 0x004;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct UnixAddress {
@@ -55,7 +63,7 @@ enum SocketState {
         peer: Option<UnixAddress>,
     },
     Datagram {
-        messages: VecDeque<Datagram>,
+        messages: DatagramQueue<Datagram>,
         peer: Option<Weak<UnixSocket>>,
     },
 }
@@ -87,7 +95,7 @@ impl UnixSocket {
             state: Mutex::new(match socket_type {
                 SocketType::Stream => SocketState::Initial,
                 SocketType::Datagram => SocketState::Datagram {
-                    messages: VecDeque::new(),
+                    messages: DatagramQueue::new(),
                     peer: None,
                 },
                 SocketType::Raw => unreachable!("AF_UNIX raw type crossed Socket facade"),
@@ -242,6 +250,8 @@ impl UnixSocket {
             return Err(SocketError::WrongType);
         };
         *peer = Some(Arc::downgrade(peer_socket));
+        drop(state);
+        self.notify();
         Ok(())
     }
 
@@ -259,57 +269,62 @@ impl UnixSocket {
     pub(crate) fn receive(
         &self,
         output: &mut [u8],
-    ) -> Result<(usize, Option<UnixAddress>), SocketError> {
+    ) -> Result<(usize, usize, Option<UnixAddress>), SocketError> {
         let mut state = self.state.lock();
         match &mut *state {
             SocketState::Stream { receive, .. } => {
                 let receive = receive.clone();
                 drop(state);
                 let Some(receive) = receive else {
-                    return Ok((0, None));
+                    return Ok((0, 0, None));
                 };
                 match receive.read(output) {
-                    PipeRead::Bytes(count) => Ok((count, None)),
-                    PipeRead::Eof => Ok((0, None)),
+                    PipeRead::Bytes(count) => Ok((count, count, None)),
+                    PipeRead::Eof => Ok((0, 0, None)),
                     PipeRead::Empty => Err(SocketError::Again),
                 }
             }
             SocketState::Datagram { messages, .. } => {
-                let message = messages.pop_front().ok_or(SocketError::Again)?;
+                let (message, became_non_full) = messages.pop().ok_or(SocketError::Again)?;
                 drop(state);
                 self.consume_notify();
-                let count = output.len().min(message.bytes.len());
+                if became_non_full {
+                    self.notify();
+                }
+                let full_length = message.bytes.len();
+                let count = output.len().min(full_length);
                 output[..count].copy_from_slice(&message.bytes[..count]);
-                Ok((count, message.source))
+                Ok((count, full_length, message.source))
             }
             _ => Err(SocketError::NotConnected),
         }
     }
 
-    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketError> {
+    pub(crate) fn write(&self, input: &[u8]) -> Result<usize, SocketSendError> {
         let state = self.state.lock();
         match &*state {
             SocketState::Stream { transmit, .. } => {
                 let transmit = transmit.clone();
                 drop(state);
                 let Some(transmit) = transmit else {
-                    return Err(SocketError::BrokenPipe);
+                    return Err(SocketError::BrokenPipe.into());
                 };
                 match transmit.write_stream(input) {
                     PipeWrite::Bytes(count) => Ok(count),
-                    PipeWrite::Full => Err(SocketError::Again),
-                    PipeWrite::Broken => Err(SocketError::BrokenPipe),
+                    PipeWrite::Full => Err(SocketSendError::WouldBlock),
+                    PipeWrite::Broken => Err(SocketError::BrokenPipe.into()),
                 }
             }
             SocketState::Datagram { peer, .. } => {
                 let target = peer
                     .as_ref()
                     .and_then(Weak::upgrade)
-                    .ok_or(SocketError::NotConnected)?;
+                    .ok_or(SocketError::NotConnected)
+                    .map_err(SocketSendError::from)?;
                 drop(state);
                 target.enqueue_datagram(input, self.address())
             }
-            _ => Err(SocketError::NotConnected),
+            _ => Err(SocketError::NotConnected.into()),
         }
     }
 
@@ -317,7 +332,7 @@ impl UnixSocket {
         &self,
         input: &[u8],
         target: Option<&Arc<Self>>,
-    ) -> Result<usize, SocketError> {
+    ) -> Result<usize, SocketSendError> {
         if self.socket_type == SocketType::Stream {
             return self.write(input);
         }
@@ -330,29 +345,9 @@ impl UnixSocket {
                 };
                 peer.as_ref().and_then(Weak::upgrade)
             })
-            .ok_or(SocketError::NotConnected)?;
+            .ok_or(SocketError::NotConnected)
+            .map_err(SocketSendError::from)?;
         target.enqueue_datagram(input, self.address())
-    }
-
-    fn enqueue_datagram(
-        &self,
-        input: &[u8],
-        source: Option<UnixAddress>,
-    ) -> Result<usize, SocketError> {
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(input.len())
-            .map_err(|_| SocketError::NoMemory)?;
-        bytes.extend_from_slice(input);
-        let mut state = self.state.lock();
-        let SocketState::Datagram { messages, .. } = &mut *state else {
-            return Err(SocketError::WrongType);
-        };
-        messages.try_reserve(1).map_err(|_| SocketError::NoMemory)?;
-        messages.push_back(Datagram { bytes, source });
-        drop(state);
-        self.notify();
-        Ok(input.len())
     }
 
     pub(crate) fn poll_state(&self) -> SocketPollState {
@@ -373,6 +368,9 @@ impl UnixSocket {
             SocketState::Stream {
                 receive, transmit, ..
             } => {
+                let receive = receive.clone();
+                let transmit = transmit.clone();
+                drop(state);
                 let read = receive
                     .as_ref()
                     .map(|end| end.pipe().poll_state(PipeDirection::Read));
@@ -386,25 +384,35 @@ impl UnixSocket {
                     error: write.is_some_and(|state| state.error),
                 }
             }
-            SocketState::Datagram { messages, .. } => SocketPollState {
-                readable: !messages.is_empty(),
-                writable: true,
-                hangup: false,
-                error: false,
-            },
+            SocketState::Datagram { messages, peer } => {
+                let readable = !messages.is_empty();
+                let peer = peer.clone();
+                drop(state);
+                SocketPollState {
+                    readable,
+                    writable: peer
+                        .and_then(|peer| peer.upgrade())
+                        .is_none_or(|peer| peer.datagram_capacity_available()),
+                    hangup: false,
+                    error: false,
+                }
+            }
         }
     }
 
     /// @description 投影 socket 所有可能无条件返回或被请求的 poll 状态变化 generation。
     ///
-    /// @param _events poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
+    /// @param events poll interest；stream 的 HUP/ERR 无条件返回，因此仍观察收发两侧。
     /// @return 跨 I/O source 可比较的 generation。
-    pub(crate) fn readiness_generation(&self, _events: i16) -> u64 {
+    pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
         let state = self.state.lock();
         match &*state {
             SocketState::Stream {
                 receive, transmit, ..
             } => {
+                let receive = receive.clone();
+                let transmit = transmit.clone();
+                drop(state);
                 // HUP/ERR 不受 requested mask 限制，因此两侧 generation 都必须参与；否则只关注
                 // EPOLLIN 的 ET watcher 会在 peer write-close 时因 generation 未变化而漏掉 HUP。
                 let read = receive.as_ref().map_or(0, |end| {
@@ -414,6 +422,24 @@ impl UnixSocket {
                     end.pipe().readiness_generation(PipeDirection::Write)
                 });
                 read.max(write)
+            }
+            SocketState::Datagram { peer, .. } => {
+                let peer = (events & POLLOUT != 0).then(|| peer.clone()).flatten();
+                drop(state);
+                let own = if events & (POLLIN | POLLOUT) != 0 {
+                    self.notify_read
+                        .pipe()
+                        .readiness_generation(PipeDirection::Read)
+                } else {
+                    0
+                };
+                peer.and_then(|peer| peer.upgrade()).map_or(own, |peer| {
+                    own.max(
+                        peer.notify_read
+                            .pipe()
+                            .readiness_generation(PipeDirection::Read),
+                    )
+                })
             }
             _ => self
                 .notify_read
@@ -425,25 +451,54 @@ impl UnixSocket {
     /// @description 投影 AF_UNIX wait sources；stream 暴露真实 data Pipe，其余类型暴露内部 edge notification。
     ///
     /// @return 与当前 socket 类型和 endpoint lifecycle 一致的 source 列表。
-    pub(in crate::socket) fn wait_sources(&self) -> super::SocketWaitSources {
+    pub(in crate::socket) fn wait_sources(
+        self: &Arc<Self>,
+        events: i16,
+    ) -> (super::SocketWaitSources, Option<SocketWaitGuard>) {
         let state = self.state.lock();
         match &*state {
             SocketState::Stream {
                 receive, transmit, ..
-            } => [
-                receive.as_ref().map(|end| SocketWaitSource::Data {
-                    pipe: end.pipe(),
-                    direction: PipeDirection::Read,
-                }),
-                transmit.as_ref().map(|end| SocketWaitSource::Data {
-                    pipe: end.pipe(),
-                    direction: PipeDirection::Write,
-                }),
-            ],
-            _ => [
-                Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+            } => {
+                let receive = receive.clone();
+                let transmit = transmit.clone();
+                drop(state);
+                (
+                    [
+                        receive.map(|end| SocketWaitSource::Data {
+                            pipe: end.pipe(),
+                            direction: PipeDirection::Read,
+                        }),
+                        transmit.map(|end| SocketWaitSource::Data {
+                            pipe: end.pipe(),
+                            direction: PipeDirection::Write,
+                        }),
+                    ],
+                    None,
+                )
+            }
+            SocketState::Datagram { peer, .. } => {
+                let watches_peer = events & POLLOUT != 0;
+                let peer = watches_peer.then(|| peer.clone()).flatten();
+                let guard = watches_peer.then(|| SocketWaitGuard::new(self.clone(), peer.clone()));
+                drop(state);
+                (
+                    [
+                        (events & (POLLIN | POLLOUT) != 0)
+                            .then(|| SocketWaitSource::Notification(self.notify_read.pipe())),
+                        peer.and_then(|peer| peer.upgrade())
+                            .map(|peer| SocketWaitSource::Notification(peer.notify_read.pipe())),
+                    ],
+                    guard,
+                )
+            }
+            _ => (
+                [
+                    Some(SocketWaitSource::Notification(self.notify_read.pipe())),
+                    None,
+                ],
                 None,
-            ],
+            ),
         }
     }
 
@@ -452,17 +507,22 @@ impl UnixSocket {
     }
 
     fn consume_notify(&self) {
-        self.consume_wait_notifications();
+        self.notify_read.drain_readiness();
     }
 
     /// @description 排空 listener/datagram 的内部 readiness edge；stream 的 wait source 是真实 data Pipe，禁止从此消费。
     ///
     /// @return 无返回值；实际 socket readiness 由随后的 level recheck 决定。
     pub(in crate::socket) fn consume_wait_notifications(&self) {
-        if matches!(*self.state.lock(), SocketState::Stream { .. }) {
-            return;
-        }
+        let peer = match &*self.state.lock() {
+            SocketState::Stream { .. } => return,
+            SocketState::Datagram { peer, .. } => peer.clone(),
+            _ => None,
+        };
         self.notify_read.drain_readiness();
+        if let Some(peer) = peer.and_then(|peer| peer.upgrade()) {
+            peer.notify_read.drain_readiness();
+        }
     }
 
     pub(crate) fn shutdown(&self, how: usize) -> Result<(), SocketError> {

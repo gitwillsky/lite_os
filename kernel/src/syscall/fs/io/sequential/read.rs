@@ -60,13 +60,8 @@ pub(super) fn read_descriptor(
             scatter_result(&cursor, result)
         }
         OpenFileKind::Socket(socket) => {
-            // 1. stream 使用 bounded staging；datagram/raw 保留 caller 的完整 receive capacity。
-            let capacity = match socket.socket_type() {
-                crate::socket::SocketType::Stream => total_length.min(64 * 1024),
-                crate::socket::SocketType::Datagram | crate::socket::SocketType::Raw => {
-                    total_length
-                }
-            };
+            // 1. Socket facade 从唯一 protocol policy 投影 bounded useful capacity。
+            let capacity = socket.receive_staging_capacity(total_length, 64 * 1024);
             let mut input = match buffer(capacity) {
                 Ok(input) => input,
                 Err(error) => return error,

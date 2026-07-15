@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 
 use crate::memory::{FrameTracker, SharedFileMapping};
 
+use super::{FilePageRange, FilePageRangeError};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MemoryAdvice {
     Normal,
@@ -15,7 +17,14 @@ pub(crate) enum MemoryAdvice {
 /// @description file-backed VMA 的稳定 backing 与 page-aligned 文件偏移。
 pub(crate) struct FileMappingSource {
     pub(super) mapping: Arc<dyn SharedFileMapping>,
-    pub(super) offset: u64,
+    pub(super) pages: FilePageRange,
+}
+
+/// @description regular-file mmap source 在发布前的 ABI 范围校验结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileMappingError {
+    Invalid,
+    Overflow,
 }
 
 /// @description device-backed mmap 在 DRM 与 memory seam 之间传递的不可变 backing view。
@@ -45,10 +54,19 @@ impl FileMappingSource {
     /// @description 组合 filesystem mapping adapter 与对应起始偏移。
     ///
     /// @param mapping regular-file page-cache adapter。
-    /// @param offset page-aligned 文件起始偏移，由 memory owner 最终校验。
-    /// @return 单次 VMA transaction 消费的 file source。
-    pub(crate) fn new(mapping: Arc<dyn SharedFileMapping>, offset: u64) -> Self {
-        Self { mapping, offset }
+    /// @param offset regular-file mmap 的页对齐文件起始偏移。
+    /// @param length 原始非零 mmap 字节长度。
+    /// @return 已按 Linux signed file ceiling 验证的 file source。
+    pub(crate) fn new(
+        mapping: Arc<dyn SharedFileMapping>,
+        offset: u64,
+        length: usize,
+    ) -> Result<Self, FileMappingError> {
+        let pages = FilePageRange::new(offset, length).map_err(|error| match error {
+            FilePageRangeError::Invalid => FileMappingError::Invalid,
+            FilePageRangeError::Overflow => FileMappingError::Overflow,
+        })?;
+        Ok(Self { mapping, pages })
     }
 }
 

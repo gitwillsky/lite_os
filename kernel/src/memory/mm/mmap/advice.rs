@@ -98,18 +98,7 @@ impl MemorySet {
             };
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
-            let offset = shared.file_offset
-                + (start.as_usize() - area.vpn_range.start.as_usize()) as u64
-                    * config::PAGE_SIZE as u64;
-            let bytes = (end.as_usize() - start.as_usize()) as u64 * config::PAGE_SIZE as u64;
-            shared
-                .mapping
-                .sync_range(offset, bytes)
-                .map_err(|error| match error {
-                    SharedFileError::OutOfMemory => MemoryError::OutOfMemory,
-                    SharedFileError::Io => MemoryError::Io,
-                    SharedFileError::BeyondEof => MemoryError::InvalidRange,
-                })?;
+            shared.sync_vma_range(area.vpn_range.start, start, end)?;
         }
         Ok(())
     }

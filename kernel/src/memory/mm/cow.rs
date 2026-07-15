@@ -82,7 +82,7 @@ fn clone_shared_file_area(
         shared_anonymous: None,
         shared_file: Some(SharedFileArea {
             mapping: shared.mapping.clone(),
-            file_offset: shared.file_offset,
+            pages: shared.pages,
             resident,
         }),
         device: None,

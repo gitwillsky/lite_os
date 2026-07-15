@@ -1,7 +1,5 @@
 use super::*;
 
-const EXT2_LINK_MAX: u16 = 32_000;
-
 impl Ext2Inode {
     /// @description 释放 namespace lookup Arc，重新取得 concrete inode 并冻结真实 external ownership。
     /// @return concrete inode 与是否存在除本地 owner 之外的 live Arc。
@@ -346,12 +344,11 @@ impl Ext2Inode {
         if target_disk.i_links_count == 0 {
             return Err(FileSystemError::NotFound);
         }
-        if target_disk.i_links_count >= EXT2_LINK_MAX {
-            return Err(FileSystemError::TooManyLinks);
-        }
+        let target_links =
+            link_count::increment(target_disk.i_links_count).map_err(link_count_error)?;
         self.add_dir_entry_locked(&mut mutation, target.inode_num, name, metadata.kind)?;
         let now = Self::now();
-        target_disk.i_links_count += 1;
+        target_disk.i_links_count = target_links;
         target_disk.i_ctime = now;
         self.fs.write_inode_disk(target.inode_num, &target_disk)?;
         let mut parent = mutation.inode(self)?;
@@ -360,6 +357,173 @@ impl Ext2Inode {
         self.fs.write_inode_disk(self.inode_num, &parent)?;
         drop(parent);
         drop(target_disk);
+        mutation.commit()
+    }
+
+    /// @description 在唯一 ext2 mutation domain 内完成 rename 与 parent-link net plan。
+    pub(super) fn rename_entry(
+        &self,
+        old_name: &[u8],
+        new_parent_inode: u64,
+        new_name: &[u8],
+        no_replace: bool,
+    ) -> Result<(), FileSystemError> {
+        if self.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        Self::validate_name(old_name)?;
+        Self::validate_name(new_name)?;
+        let mut mutation = self.fs.begin_mutation()?;
+        let new_parent = Ext2Inode::load(self.fs.clone(), new_parent_inode as u32)?;
+        if new_parent.inode_type() != InodeType::Directory {
+            return Err(FileSystemError::NotDirectory);
+        }
+        let child = self.find_child(old_name)?;
+        if self.inode_num == new_parent.inode_num && old_name == new_name {
+            return Ok(());
+        }
+        let metadata = child.metadata()?;
+        if metadata.kind == InodeType::Directory {
+            let child_number = metadata.inode as u32;
+            let mut ancestor = new_parent.clone();
+            let mut reached_root = false;
+            for _ in 0..self.fs.superblock.lock().s_inodes_count {
+                if ancestor.inode_num == child_number {
+                    return Err(FileSystemError::InvalidOperation);
+                }
+                if ancestor.inode_num == 2 {
+                    reached_root = true;
+                    break;
+                }
+                let parent = ancestor.find_child(b"..")?;
+                ancestor = Ext2Inode::load(self.fs.clone(), parent.metadata()?.inode as u32)?;
+            }
+            if !reached_root {
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+        }
+        let existing = match new_parent.find_child(new_name) {
+            Ok(existing) => Some(existing),
+            Err(FileSystemError::NotFound) => None,
+            Err(error) => return Err(error),
+        };
+        let existing_metadata = if let Some(existing) = existing.as_ref() {
+            if no_replace {
+                return Err(FileSystemError::AlreadyExists);
+            }
+            let existing_meta = existing.metadata()?;
+            if existing_meta.inode == metadata.inode {
+                return Ok(());
+            }
+            if existing_meta.kind == InodeType::Directory && metadata.kind != InodeType::Directory {
+                return Err(FileSystemError::IsDirectory);
+            }
+            if existing_meta.kind != InodeType::Directory && metadata.kind == InodeType::Directory {
+                return Err(FileSystemError::NotDirectory);
+            }
+            if existing_meta.kind == InodeType::Directory
+                && existing
+                    .list()?
+                    .iter()
+                    .any(|entry| entry.name != b"." && entry.name != b"..")
+            {
+                return Err(FileSystemError::DirectoryNotEmpty);
+            }
+            Some(existing_meta)
+        } else {
+            None
+        };
+        let crosses_parent = self.inode_num != new_parent.inode_num;
+        let parent_link_plan = if metadata.kind == InodeType::Directory {
+            let old_parent_links = self.disk.lock().i_links_count;
+            let new_parent_links = if crosses_parent {
+                new_parent.disk.lock().i_links_count
+            } else {
+                old_parent_links
+            };
+            link_count::plan_rename_parent_links(
+                old_parent_links,
+                new_parent_links,
+                true,
+                crosses_parent,
+                existing_metadata.is_some_and(|existing| existing.kind == InodeType::Directory),
+            )
+            .map_err(link_count_error)?
+        } else {
+            None
+        };
+        if let (Some(existing), Some(existing_meta)) = (existing, existing_metadata) {
+            new_parent.remove_dir_entry_locked(&mut mutation, new_name)?;
+            let (existing, externally_held) =
+                self.reload_after_lookup(existing, existing_meta.inode as u32)?;
+            let mut disk = mutation.inode(&existing)?;
+            if existing_meta.kind != InodeType::Directory && disk.i_links_count > 1 {
+                disk.i_links_count =
+                    link_count::decrement(disk.i_links_count).map_err(link_count_error)?;
+                disk.i_ctime = Self::now();
+                self.fs.write_inode_disk(existing.inode_num, &disk)?;
+            } else if existing_meta.kind != InodeType::Directory && externally_held {
+                drop(disk);
+                self.fs.defer_reclaim_locked(&mut mutation, &existing)?;
+            } else {
+                drop(disk);
+                existing
+                    .reclaim_locked(&mut mutation, existing_meta.kind == InodeType::Directory)?;
+            }
+        }
+        new_parent.add_dir_entry_locked(
+            &mut mutation,
+            metadata.inode as u32,
+            new_name,
+            metadata.kind,
+        )?;
+        self.remove_dir_entry_locked(&mut mutation, old_name)?;
+        {
+            let child = Ext2Inode::load(self.fs.clone(), metadata.inode as u32)?;
+            let mut disk = mutation.inode(&child)?;
+            disk.i_ctime = Self::now();
+            self.fs.write_inode_disk(child.inode_num, &disk)?;
+        }
+        if metadata.kind == InodeType::Directory && crosses_parent {
+            let child = Ext2Inode::load(self.fs.clone(), metadata.inode as u32)?;
+            child.remove_dir_entry_locked(&mut mutation, b"..")?;
+            child.add_dir_entry_locked(
+                &mut mutation,
+                new_parent.inode_num,
+                b"..",
+                InodeType::Directory,
+            )?;
+        }
+        let now = Self::now();
+        if !crosses_parent {
+            let mut disk = mutation.inode(self)?;
+            if let Some(link_count::ParentLinkPlan::SameParent { parent }) = parent_link_plan {
+                disk.i_links_count = parent;
+            }
+            disk.i_mtime = now;
+            disk.i_ctime = now;
+            self.fs.write_inode_disk(self.inode_num, &disk)?;
+        } else {
+            let mut old_disk = mutation.inode(self)?;
+            if let Some(link_count::ParentLinkPlan::CrossParent { old_parent, .. }) =
+                parent_link_plan
+            {
+                old_disk.i_links_count = old_parent;
+            }
+            old_disk.i_mtime = now;
+            old_disk.i_ctime = now;
+            self.fs.write_inode_disk(self.inode_num, &old_disk)?;
+            drop(old_disk);
+            let mut new_disk = mutation.inode(&new_parent)?;
+            if let Some(link_count::ParentLinkPlan::CrossParent { new_parent, .. }) =
+                parent_link_plan
+            {
+                new_disk.i_links_count = new_parent;
+            }
+            new_disk.i_mtime = now;
+            new_disk.i_ctime = now;
+            self.fs.write_inode_disk(new_parent.inode_num, &new_disk)?;
+        }
         mutation.commit()
     }
 }

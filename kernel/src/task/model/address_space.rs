@@ -181,26 +181,19 @@ impl AddressSpace {
     pub(super) fn map_private_file(
         &self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
         file: FileMappingSource,
         limits: MappingResourceLimits,
     ) -> Result<usize, MemoryError> {
-        self.memory_set.lock().map_private_file(
-            address,
-            length,
-            permission,
-            fixed_noreplace,
-            file,
-            limits,
-        )
+        self.memory_set
+            .lock()
+            .map_private_file(address, permission, fixed_noreplace, file, limits)
     }
 
     pub(super) fn map_shared_file(
         &self,
         address: usize,
-        length: usize,
         permission: MapPermission,
         fixed_noreplace: bool,
         file: FileMappingSource,
@@ -208,7 +201,6 @@ impl AddressSpace {
     ) -> Result<usize, MemoryError> {
         self.memory_set.lock().map_shared_file(
             address,
-            length,
             permission,
             fixed_noreplace,
             file,

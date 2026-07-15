@@ -14,7 +14,6 @@ use crate::{
 use super::{PacketAddress, SocketError, SocketPollState, SocketWaitSource};
 
 const ETH_HEADER_LENGTH: usize = 14;
-const ETH_PAYLOAD_MTU: usize = 1500;
 const ETH_P_IP: u16 = 0x0800;
 const ARPHRD_ETHER: u16 = 1;
 const INTERFACE_INDEX: i32 = 1;
@@ -173,7 +172,7 @@ impl PacketSocket {
         input: &[u8],
         target: Option<PacketAddress>,
     ) -> Result<usize, SocketError> {
-        if input.len() > ETH_PAYLOAD_MTU {
+        if input.len() > crate::socket::message_limits::MAX_IPV4_PACKET_BYTES {
             return Err(SocketError::MessageTooLarge);
         }
         let target = target.ok_or(SocketError::DestinationRequired)?;

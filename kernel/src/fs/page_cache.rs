@@ -107,23 +107,13 @@ impl core::fmt::Debug for CachedFile {
 }
 
 impl CachedFile {
-    fn page_with_storage(&self, index: u64) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
-        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
-            return Ok((page, 0));
-        }
-        // 1. miss fill 与 storage mutation 共用 operation domain，保证读出的 bytes 和最终
-        // cache publication 之间没有 write/truncate 可以穿过。
-        let _operation = self.operation.lock();
-        // 2. 等锁期间另一个 filler 可能已经发布同一 page；必须复查，否则会重复 I/O，
-        // 并让后完成者覆盖先完成者的唯一 cache owner。
-        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
-            return Ok((page, 0));
-        }
-        // 3. 在 frame/I/O 等外部资源进入事务前预留 cache membership；缺失该步骤会在
-        //    storage read 成功后因 tree node OOM 直接 panic，且无法向 fault/read 返回 ENOMEM。
-        let page_slot = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let mut frame = SharedFrame::allocate().map_err(shared_error)?;
+    fn page_after_operation_lock(
+        &self,
+        index: u64,
+        _operation: &MutexGuard<'_, ()>,
+    ) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
+        // EOF 必须在任何 node/frame allocation 前、与 truncate 同一 operation domain 内判定。
+        // private/shared fault 以返回的 Arc 作为 fault-before-truncate 的瞬时线性化凭据。
         let offset = index
             .checked_mul(PAGE_SIZE as u64)
             .ok_or(FileSystemError::InvalidOperation)?;
@@ -131,10 +121,18 @@ impl CachedFile {
         if offset >= size {
             return Err(FileSystemError::InvalidOperation);
         }
+        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
+            return Ok((page, 0));
+        }
+        // 在 frame/I/O 等外部资源进入事务前预留 cache membership；缺失该步骤会在
+        //    storage read 成功后因 tree node OOM 直接 panic，且无法向 fault/read 返回 ENOMEM。
+        let page_slot = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut frame = SharedFrame::allocate().map_err(shared_error)?;
         let available = usize::try_from(size - offset)
             .unwrap_or(usize::MAX)
             .min(PAGE_SIZE);
-        // 4. frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
+        // frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
         // cache miss 增加一次 heap allocation 和一次最多整页 memcpy。
         let read = self
             .inode
@@ -153,6 +151,22 @@ impl CachedFile {
             .entries
             .commit_vacant(page_slot.fill(index, page.clone()));
         Ok((page, available))
+    }
+
+    fn page_with_storage(&self, index: u64) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
+        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
+            return Ok((page, 0));
+        }
+        // Regular read 保留 cache-hit fast path；miss 与 storage mutation 共用 operation domain。
+        let operation = self.operation.lock();
+        self.page_after_operation_lock(index, &operation)
+    }
+
+    fn fault_page(&self, index: u64) -> Result<Arc<CachedPage>, FileSystemError> {
+        // Fault 必须先与 truncate 串行化，即使 cache hit 也不能绕过稳定 EOF snapshot。
+        let operation = self.operation.lock();
+        self.page_after_operation_lock(index, &operation)
+            .map(|(page, _)| page)
     }
 
     fn update_cached(&self, offset: u64, input: &[u8]) {
@@ -195,8 +209,8 @@ impl SharedFileMapping for CachedFile {
     }
 
     fn page(&self, index: u64) -> Result<Arc<dyn SharedPage>, SharedFileError> {
-        self.page_with_storage(index)
-            .map(|(page, _)| page as Arc<dyn SharedPage>)
+        self.fault_page(index)
+            .map(|page| page as Arc<dyn SharedPage>)
             .map_err(fs_error)
     }
 
