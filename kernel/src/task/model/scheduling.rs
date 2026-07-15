@@ -172,7 +172,7 @@ pub(in crate::task) struct ReadyTransition<'owner> {
 
 impl ReadyTransition<'_> {
     #[inline(always)]
-    pub(in crate::task) fn into_parts(mut self) -> (Option<usize>, usize, u64) {
+    pub(in crate::task) fn consume_ready_projection_parts(mut self) -> (Option<usize>, usize, u64) {
         self.committed = true;
         (self.previous_cpu, self.target_cpu, self.generation)
     }
@@ -197,7 +197,7 @@ pub(in crate::task) struct ReadyRetirement<'owner> {
 
 impl ReadyRetirement<'_> {
     #[inline(always)]
-    pub(in crate::task) fn into_cpu(mut self) -> usize {
+    pub(in crate::task) fn consume_ready_projection_cpu(mut self) -> usize {
         self.committed = true;
         self.cpu
     }

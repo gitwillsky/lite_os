@@ -97,7 +97,13 @@ whole-runqueue validation pass.
   compaction preserves capacity/order, live overflow is fail-stop, and root
   pruning visits only the invalid prefix.
 - Static audit every Ready ingress/egress/move updates the exact per-hart count
-  under the scheduling-state lock; no other code mutates the count.
+  under the scheduling-state lock; no other code mutates the count. An AST fence
+  limits both token-consumption identifiers—including UFCS, aliases, and macro
+  tokens—to the unique top-level `ready_membership` commit function, and requires
+  synchronous consumption in its first reviewed statement. Committer shadowing
+  is rejected, and every Ready transition must be that commit's direct argument,
+  so closures, safe `mem::forget`, and `ManuallyDrop` cannot bypass the fail-stop
+  transaction.
 - Static cases cover local/remote wake bursts, Ready affinity migration,
   stop/continue, stale root/non-root tokens, full mailbox, drain overflow,
   selection to Running, and a Running task with only stale physical peers.

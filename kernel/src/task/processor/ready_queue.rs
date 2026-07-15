@@ -62,9 +62,9 @@ pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBl
             RunState::Ready { cpu, generation }
                 if cpu == processor.hart_id && generation == entry.generation =>
             {
-                let retirement =
-                    scheduling.transition_ready_to_running(processor.hart_id, entry.generation);
-                commit_ready_retirement(retirement);
+                commit_ready_retirement(
+                    scheduling.transition_ready_to_running(processor.hart_id, entry.generation),
+                );
                 drop(scheduling);
                 processor.current = Some(entry.task.clone());
                 discard_stale_ready_roots(processor);

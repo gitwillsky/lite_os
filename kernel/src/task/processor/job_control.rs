@@ -81,8 +81,7 @@ pub(in crate::task) fn request_task_stop(task: &Arc<TaskControlBlock>) {
                 None
             }
             RunState::Ready { cpu, .. } => {
-                let retirement = scheduling.transition_ready_to_stopped();
-                commit_ready_retirement(retirement);
+                commit_ready_retirement(scheduling.transition_ready_to_stopped());
                 Some(cpu)
             }
             RunState::Running { cpu } => {

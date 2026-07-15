@@ -2451,8 +2451,8 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn allows_hart (self , hart_id : usize) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn effective_bits (self) -> usize
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn from_user_bits (bits : usize) -> Option < Self >
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyRetirement < '_ > :: fn into_cpu (mut self) -> usize
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyTransition < '_ > :: fn into_parts (mut self) -> (Option < usize > , usize , u64)
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyRetirement < '_ > :: fn consume_ready_projection_cpu (mut self) -> usize
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyTransition < '_ > :: fn consume_ready_projection_parts (mut self) -> (Option < usize > , usize , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn begin_runtime (& mut self , start_time_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn checkpoint_runtime (& mut self , checkpoint_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn finish_runtime (& mut self , end_time_us : u64)
