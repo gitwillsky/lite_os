@@ -1,0 +1,28 @@
+Makefile
+  s_dd5bfa84b90cfd::t_bcd2ac3195726a 8,46,66,82
+docs/architecture.md
+  s_dd5bfa84b90cfd::t_3643f1fff1a8ca 238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1d333146ddb3c93ecc559c00a82ce7a8e21e0b66",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
