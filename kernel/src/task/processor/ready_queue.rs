@@ -3,31 +3,47 @@ use super::*;
 /// @description 将已发布 Ready generation 的 entry 加入 owner hart runqueue。
 /// @param processor 当前 hart 独占的 scheduler 执行状态。
 /// @param entry 已属于 processor hart 的 membership token。
-/// @return 无返回值。
-pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) {
+/// @return 同一 slot 当前是否已有 Running owner。
+pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -> bool {
     let slot = current_per_hart();
-    discard_stale_ready_entries(processor);
+    make_runqueue_room(processor, 1);
     processor.runqueue.push(entry);
-    publish_runqueue_state(processor, slot);
+    discard_stale_ready_roots(processor);
+    publish_vruntime_floor(processor, slot);
+    slot.running_entries.load(Ordering::Relaxed) != 0
 }
 
-fn discard_stale_ready_entries(processor: &mut Processor) {
+#[inline(always)]
+fn make_runqueue_room(processor: &mut Processor, additional: usize) {
+    let cpu = processor.hart_id;
     processor
         .runqueue
-        .retain(|candidate| candidate.is_current_ready(processor.hart_id));
+        .make_room(additional, |candidate| candidate.is_current_ready(cpu));
 }
 
-fn publish_runqueue_state(processor: &Processor, slot: &PerHartProcessor) {
+#[inline(always)]
+fn discard_stale_ready_roots(processor: &mut Processor) {
+    let cpu = processor.hart_id;
+    processor
+        .runqueue
+        .discard_stale_roots(|candidate| candidate.is_current_ready(cpu));
+}
+
+fn publish_vruntime_floor(processor: &Processor, slot: &PerHartProcessor) {
     if let Some(floor) = processor.runqueue.minimum_vruntime() {
         slot.placement_vruntime.store(floor, Ordering::Release);
     }
-    // local heap 只有 owner hart 修改；单次发布容器精确长度，不统计 mailbox/current。
-    slot.queued_entries
-        .store(processor.runqueue.len(), Ordering::Relaxed);
-    debug_assert_eq!(
-        processor.runqueue.len(),
-        slot.queued_entries.load(Ordering::Relaxed)
+}
+
+#[cold]
+#[inline(never)]
+fn compact_full_mailbox(inbound: &mut VecDeque<RunQueueEntry>, cpu_id: usize, capacity: usize) {
+    assert_eq!(
+        inbound.len(),
+        capacity,
+        "mailbox compaction requires capacity pressure"
     );
+    inbound.retain(|candidate| candidate.is_current_ready(cpu_id));
 }
 
 /// @description 消费 stale entry，完成唯一 Ready → Running membership 转换。
@@ -41,22 +57,23 @@ pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBl
     let slot = current_per_hart();
     loop {
         let entry = processor.runqueue.pop()?;
-        slot.queued_entries.fetch_sub(1, Ordering::Relaxed);
         let mut scheduling = entry.task.scheduling.state.lock();
-        match scheduling.run_state {
+        match scheduling.run_state() {
             RunState::Ready { cpu, generation }
                 if cpu == processor.hart_id && generation == entry.generation =>
             {
-                scheduling.run_state = RunState::Running {
-                    cpu: processor.hart_id,
-                };
+                let retirement =
+                    scheduling.transition_ready_to_running(processor.hart_id, entry.generation);
+                commit_ready_retirement(retirement);
                 drop(scheduling);
                 processor.current = Some(entry.task.clone());
-                let floor = processor
-                    .runqueue
-                    .minimum_vruntime()
-                    .unwrap_or(entry.vruntime);
-                slot.placement_vruntime.store(floor, Ordering::Release);
+                discard_stale_ready_roots(processor);
+                if let Some(floor) = processor.runqueue.minimum_vruntime() {
+                    slot.placement_vruntime.store(floor, Ordering::Release);
+                } else {
+                    slot.placement_vruntime
+                        .store(entry.vruntime, Ordering::Release);
+                }
                 slot.running_entries.fetch_add(1, Ordering::Relaxed);
                 return Some(entry.task);
             }
@@ -79,27 +96,15 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
         return;
     }
     inbound.retain(|candidate| candidate.is_current_ready(processor.hart_id));
-    // 非空 mailbox snapshot 总是与 local heap 组成同一 cleanup transaction；
-    // 即使 mailbox 全部 stale，也不应让 local load hint 继续保留失效 entry。
-    discard_stale_ready_entries(processor);
     if inbound.is_empty() {
-        publish_runqueue_state(processor, slot);
-        slot.inbound_entries.store(0, Ordering::Relaxed);
         return;
     }
 
-    // 在 mailbox lock 内完成 local sweep 可以使 Ready migration 的新
-    // delivery 等待，从而不会同时保留旧 local generation。
+    // inbound 每个 entry 都在这一次全量 pass 中验证；合并后只可能按 heap root
+    // 可见性复查连续 root，不再扫描 batch。local heap 仅在 batch 将越过已预留
+    // capacity 时执行全量 compaction。
     let batch = inbound.len();
-    let required = processor
-        .runqueue
-        .len()
-        .checked_add(batch)
-        .expect("scheduler membership count overflow");
-    assert!(
-        required <= slot.queue_capacity,
-        "preallocated scheduler runqueue capacity exhausted"
-    );
+    make_runqueue_room(processor, batch);
     for _ in 0..batch {
         processor.runqueue.push(
             inbound
@@ -107,8 +112,8 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
                 .expect("inbound batch shrank without mailbox owner"),
         );
     }
-    publish_runqueue_state(processor, slot);
-    slot.inbound_entries.store(0, Ordering::Relaxed);
+    discard_stale_ready_roots(processor);
+    publish_vruntime_floor(processor, slot);
 }
 
 /// @description 投递 Ready entry；busy target 同步 reschedule，避免 writer 饿死 Ready reader。
@@ -116,31 +121,38 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
 /// @param entry 带 generation 的 membership token。
 /// @return 无返回值。
 /// @errors 目标越界、未 active 或 SBI IPI 失败均 fail-stop。
+#[inline(always)]
 pub(super) fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
-    let current = hart_id();
-    if cpu_id == current {
-        with_current_processor(|processor| processor.add_ready_entry(entry));
-        if current_per_hart().running_entries.load(Ordering::Relaxed) != 0 {
-            request_reschedule();
-        }
-        return;
+    if cpu_id == hart_id() {
+        deliver_local(entry);
+    } else {
+        deliver_remote(cpu_id, entry);
     }
+}
 
+#[inline(never)]
+fn deliver_local(entry: RunQueueEntry) {
+    if with_current_processor(|processor| processor.add_ready_entry(entry)) {
+        request_reschedule();
+    }
+}
+
+#[inline(never)]
+fn deliver_remote(cpu_id: usize, entry: RunQueueEntry) {
     let target_index = hart::hart_index(cpu_id)
         .unwrap_or_else(|| panic!("target CPU {} is absent from DTB topology", cpu_id));
     let target_state = &hart::states()[target_index];
     let target = processor_at(target_index);
     assert!(target_state.is_active());
     let mut inbound = target.inbound.lock();
-    inbound.retain(|candidate| candidate.is_current_ready(cpu_id));
+    if inbound.len() == target.queue_capacity {
+        compact_full_mailbox(&mut inbound, cpu_id, target.queue_capacity);
+    }
     assert!(
         inbound.len() < target.queue_capacity,
         "preallocated scheduler mailbox capacity exhausted"
     );
     inbound.push_back(entry);
-    target
-        .inbound_entries
-        .store(inbound.len(), Ordering::Relaxed);
     drop(inbound);
     publish_reschedule_at(target_index);
 }
@@ -151,7 +163,7 @@ impl RunQueueEntry {
     /// @return 该 entry 仍是当前唯一 Ready membership 时返回 true。
     fn is_current_ready(&self, cpu: usize) -> bool {
         matches!(
-            self.task.scheduling.state.lock().run_state,
+            self.task.scheduling.state.lock().run_state(),
             RunState::Ready {
                 cpu: owner,
                 generation

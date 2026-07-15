@@ -5,8 +5,8 @@ use crate::{
         sbi,
     },
     task::{
-        CpuAffinity, RunState, StopResume, StopTransition, TaskControlBlock, WaitMembership,
-        WaitResult,
+        CpuAffinity, ReadyRetirement, ReadyTransition, RunState, StopResume, StopTransition,
+        TaskControlBlock, WaitMembership, WaitResult,
         context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
@@ -20,6 +20,7 @@ use core::{
 
 mod job_control;
 mod placement;
+mod ready_membership;
 mod ready_queue;
 pub(in crate::task) use job_control::request_tick_reschedule;
 pub(super) use job_control::{
@@ -27,6 +28,7 @@ pub(super) use job_control::{
 };
 pub(crate) use placement::enqueue_new_task;
 use placement::{ready_entry, select_cpu};
+use ready_membership::{commit_ready_retirement, commit_ready_transition};
 
 /// @description context switch 异常返回时的 fail-stop 目标。
 ///
@@ -69,9 +71,9 @@ impl Processor {
     /// @description 把已完成 Ready 状态转换的 entry 加入本地 runqueue。
     ///
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
-    /// @return 无返回值。
-    pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) {
-        ready_queue::add_ready_entry(self, entry);
+    /// @return 本 hart 当前是否已有 Running owner，供 delivery 决定 reschedule。
+    pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) -> bool {
+        ready_queue::add_ready_entry(self, entry)
     }
 
     /// @description 消费 stale entry，原子完成 Ready → Running 与 current 发布。
@@ -116,10 +118,9 @@ impl Processor {
 struct PerHartProcessor {
     local: UnsafeCell<MaybeUninit<Processor>>,
     initialized: AtomicBool,
-    // 仅供跨 hart 负载选择；Relaxed 过期值只影响选择，不发布或拥有 runqueue entry。
-    queued_entries: AtomicUsize,
-    // inbound mutex 内的修改者发布精确容器长度；Relaxed 读取只作近似负载 hint。
-    inbound_entries: AtomicUsize,
+    // SchedulingState transition 同锁发布该 hart 的精确 Ready membership 数；它只投影
+    // logical load，不拥有 heap/mailbox token，Relaxed 过期值只影响瞬时选核 hint。
+    ready_entries: AtomicUsize,
     // OWNER: processor slot 发布本 hart 当前 Running membership；缺失会让选核把 busy hart 当成 idle。
     running_entries: AtomicUsize,
     // OWNER: per-hart reschedule request 可由远端 stop signal 发布，本 hart trap return 唯一消费。
@@ -149,8 +150,7 @@ impl PerHartProcessor {
         Self {
             local: UnsafeCell::new(MaybeUninit::uninit()),
             initialized: AtomicBool::new(false),
-            queued_entries: AtomicUsize::new(0),
-            inbound_entries: AtomicUsize::new(0),
+            ready_entries: AtomicUsize::new(0),
             running_entries: AtomicUsize::new(0),
             reschedule_requested: AtomicBool::new(false),
             placement_vruntime: AtomicU64::new(0),
@@ -180,7 +180,7 @@ pub(crate) fn cpu_runtime_snapshot() -> Result<Vec<(usize, u64)>, ()> {
 }
 
 // SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 hart 只能触及
-// queued/inbound 计数和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
+// Ready/Running 投影和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
 unsafe impl Sync for PerHartProcessor {}
 
 struct ProcessorSlot {
@@ -346,11 +346,11 @@ pub(in crate::task) fn replace_task_affinity(task: &Arc<TaskControlBlock>, affin
     {
         let mut scheduling = task.scheduling.state.lock();
         scheduling.cpu_affinity = affinity;
-        if let RunState::Ready { cpu, .. } = scheduling.run_state
+        if let RunState::Ready { cpu, .. } = scheduling.run_state()
             && !affinity.allows_hart(cpu)
         {
             let target = select_cpu(task, affinity);
-            let generation = scheduling.transition_to_ready(target);
+            let generation = commit_ready_transition(scheduling.transition_to_ready(target));
             replacement = Some((target, generation));
             stale_cpu = Some(cpu);
         }
@@ -470,32 +470,33 @@ pub(in crate::task) fn wake_waiting_task(
         scheduling.wait = None;
         assert!(scheduling.wait_result.is_none());
         scheduling.wait_result = result;
-        match scheduling.run_state {
+        match scheduling.run_state() {
             RunState::Blocking { cpu } => {
-                scheduling.run_state = RunState::WakePending { cpu };
+                scheduling.replace_non_ready_state(RunState::WakePending { cpu });
                 None
             }
             RunState::Blocked => {
                 let target_cpu = select_cpu(&task, scheduling.cpu_affinity);
-                let generation = scheduling.transition_to_ready(target_cpu);
+                let generation =
+                    commit_ready_transition(scheduling.transition_to_ready(target_cpu));
                 Some((target_cpu, generation))
             }
             RunState::Stopped {
                 resume: StopResume::Blocked,
             } => {
-                scheduling.run_state = RunState::Stopped {
+                scheduling.replace_non_ready_state(RunState::Stopped {
                     resume: StopResume::Runnable,
-                };
+                });
                 None
             }
             RunState::StopPending {
                 cpu,
                 transition: StopTransition::Blocking,
             } => {
-                scheduling.run_state = RunState::StopPending {
+                scheduling.replace_non_ready_state(RunState::StopPending {
                     cpu,
                     transition: StopTransition::WakePending,
-                };
+                });
                 None
             }
             RunState::Exited => None,
@@ -517,10 +518,10 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
     let mut stopped = false;
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
-        match scheduling.run_state {
+        match scheduling.run_state() {
             RunState::Blocking { cpu: owner } => {
                 assert_eq!(owner, cpu, "blocking task returned on another CPU");
-                scheduling.run_state = RunState::Blocked;
+                scheduling.replace_non_ready_state(RunState::Blocked);
                 None
             }
             RunState::WakePending { cpu: owner } => {
@@ -530,26 +531,29 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
                 } else {
                     select_cpu(task, scheduling.cpu_affinity)
                 };
-                Some((target, scheduling.transition_to_ready(target)))
+                let generation = commit_ready_transition(scheduling.transition_to_ready(target));
+                Some((target, generation))
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting task returned on another CPU");
                 let target_cpu = select_cpu(task, scheduling.cpu_affinity);
-                Some((target_cpu, scheduling.transition_to_ready(target_cpu)))
+                let generation =
+                    commit_ready_transition(scheduling.transition_to_ready(target_cpu));
+                Some((target_cpu, generation))
             }
             RunState::StopPending {
                 cpu: owner,
                 transition,
             } => {
                 assert_eq!(owner, cpu, "stopping task returned on another CPU");
-                scheduling.run_state = RunState::Stopped {
+                scheduling.replace_non_ready_state(RunState::Stopped {
                     resume: match transition {
                         StopTransition::Blocking => StopResume::Blocked,
                         StopTransition::Running
                         | StopTransition::Preempting
                         | StopTransition::WakePending => StopResume::Runnable,
                     },
-                };
+                });
                 stopped = true;
                 None
             }

@@ -59,7 +59,8 @@
 - 每个 enqueue/dequeue/current/block/wake/exit 都检查旧 `RunState`，非法转换 fail-stop 或明确忽略 stale wake。
 - deadline sleep 不扫描 TGID table；timer softirq 只消费到期 wait queue entry。
 - wake-before-switch 不能让同一 task 在两个 hart 同时执行，重复 wake 不重复 enqueue。
-- mailbox/local queue counter 与真实容器增减一一对应；stale entry 被 pop 时也正确扣减。
+- `ready_entries` 与 authoritative logical Ready transition 一一对应；physical stale
+  entry 被 pop/retain 时不改变该投影。
 - workspace check、三组件构建、ext2 与 8 hart QEMU 启动通过；不运行测试。
 
 ## 6. 最终实现
@@ -70,7 +71,9 @@
 - deadline wait queue 使用 `(absolute_deadline, sequence)` 唯一 key，不再遍历 TGID table。Running→Blocking 时 state lock 覆盖 queue insertion；remote wake 遇到 Blocking 只写 WakePending，idle switch-return 再完成 Ready enqueue，因此 wake-before-switch 不会双核执行。
 - deadline、signal wake 和 SIGCONT 都消费唯一 membership；重复/stale wake 因 key/generation 不匹配而无效。timer softirq 每次最多处理 32 个 entry，路径中不做动态分配。
 - timer softirq 只设置 per-hart `need_reschedule`；真正 preemption 在统一用户态返回点消费 flag，hardirq/kernel interrupt 中不直接调度。
-- remote wake 先写目标 inbound mailbox，再发 SBI IPI。`queued_entries` 与 local heap、`inbound_entries` 与 mailbox 在各自锁内一一增减；Relaxed 读取只用于负载 hint，不发布 task 状态。
+- remote wake 先写目标 inbound mailbox，再发 SBI IPI。per-hart `ready_entries`
+  在 SchedulingState lock transaction 内投影 logical Ready membership，覆盖 local
+  heap 与 inbound mailbox；Relaxed 读取只用于负载/tick projection，不发布 task 状态。
 - idle 用关中断的 drain→select→WFI 窗口消除 IPI/WFI lost-wakeup；无 work 时仍使用 `wfi`，不忙轮询。
 
 ## 7. 明确不支持的策略

@@ -73,7 +73,7 @@ pub(in crate::task::task_manager) fn complete_process_stop(tgid: usize) {
                 .values()
                 .all(|thread| {
                     matches!(
-                        thread.scheduling.state.lock().run_state,
+                        thread.scheduling.state.lock().run_state(),
                         RunState::Stopped { .. }
                     )
                 })

@@ -559,7 +559,7 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
         );
     });
     assert_eq!(
-        task.scheduling.state.lock().run_state,
+        task.scheduling.state.lock().run_state(),
         RunState::Running { cpu },
         "selected task must be Running on this CPU"
     );

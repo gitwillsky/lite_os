@@ -149,7 +149,7 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
         for thread in &threads {
             total_tasks += 1;
-            let run_state = thread.scheduling.state.lock().run_state;
+            let run_state = thread.scheduling.state.lock().run_state();
             let runnable = matches!(
                 run_state,
                 RunState::New

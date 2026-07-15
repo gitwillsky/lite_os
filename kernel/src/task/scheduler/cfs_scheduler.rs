@@ -1,12 +1,17 @@
 use core::cmp::Ordering;
 
-use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
+use alloc::sync::Arc;
 
 use crate::task::TaskControlBlock;
 
+#[path = "preallocated_heap.rs"]
+mod preallocated_heap;
+
+use preallocated_heap::PreallocatedHeap;
+
 /// @description 唯一生效的 cooperative vruntime runqueue。
 pub(crate) struct CfsRunQueue {
-    tasks: BinaryHeap<RunQueueEntry>,
+    tasks: PreallocatedHeap<RunQueueEntry>,
 }
 
 /// @description 带 enqueue generation 的唯一 runqueue membership token。
@@ -22,30 +27,38 @@ impl CfsRunQueue {
     /// @param capacity 由物理页数与每 Thread kernel-stack 页数推导的上界。
     /// @return 成功返回空 runqueue；heap OOM 返回错误。
     pub(crate) fn try_with_capacity(capacity: usize) -> Result<Self, ()> {
-        let mut tasks = BinaryHeap::new();
-        tasks.try_reserve_exact(capacity).map_err(|_| ())?;
-        Ok(Self { tasks })
+        Ok(Self {
+            tasks: PreallocatedHeap::try_with_capacity(capacity)?,
+        })
     }
 
-    /// @description 插入已经声明为该 CPU Ready 的 task。
-    ///
-    /// @param entry runqueue 获得的 membership token 与 task owner。
-    /// @return 无返回值。
-    pub(crate) fn push(&mut self, entry: RunQueueEntry) {
-        assert!(
-            self.tasks.len() < self.tasks.capacity(),
-            "preallocated runqueue capacity exhausted"
-        );
-        self.tasks.push(entry);
-    }
-
-    /// @description 原地清理失效 generation，保留 heap backing storage。
+    /// @description 仅在 backing capacity 不足时原地清理失效 generation。
+    /// @param additional 即将插入的 entry 数。
     /// @param keep 判定 entry 是否仍拥有 Ready membership。
-    /// @return 删除的 stale entry 数量。
-    pub(crate) fn retain(&mut self, keep: impl FnMut(&RunQueueEntry) -> bool) -> usize {
-        let before = self.tasks.len();
-        self.tasks.retain(keep);
-        before - self.tasks.len()
+    /// @return 删除的 stale entry 数；有 spare capacity 时固定为零且不调用 keep。
+    #[inline(always)]
+    pub(crate) fn make_room(
+        &mut self,
+        additional: usize,
+        keep: impl FnMut(&RunQueueEntry) -> bool,
+    ) -> usize {
+        self.tasks.make_room(additional, keep)
+    }
+
+    /// @description 清除连续 stale heap root，使 minimum vruntime 对应 live token。
+    /// @param keep 判定 root 是否仍拥有 Ready membership。
+    /// @return 删除的 stale root 数。
+    #[inline(always)]
+    pub(crate) fn discard_stale_roots(
+        &mut self,
+        keep: impl FnMut(&RunQueueEntry) -> bool,
+    ) -> usize {
+        self.tasks.discard_invalid_roots(keep)
+    }
+
+    /// @description 插入已经完成 capacity proof 的 Ready token。
+    pub(crate) fn push(&mut self, entry: RunQueueEntry) {
+        self.tasks.push(entry);
     }
 
     /// @description 取出 vruntime 最小的 task。
@@ -60,13 +73,6 @@ impl CfsRunQueue {
     /// @return 队列为空时为 `None`。
     pub(in crate::task) fn minimum_vruntime(&self) -> Option<u64> {
         self.tasks.peek().map(|entry| entry.vruntime)
-    }
-
-    /// @description 返回真实 local heap entry 数。
-    ///
-    /// @return 当前容器长度。
-    pub(crate) fn len(&self) -> usize {
-        self.tasks.len()
     }
 }
 

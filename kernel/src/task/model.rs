@@ -44,7 +44,7 @@ pub(crate) use resource_limits::{
     RLIM_INFINITY, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NPROC, RLIMIT_STACK, ResourceLimit,
     ResourceLimitError,
 };
-pub(in crate::task) use scheduling::CpuAffinity;
+pub(in crate::task) use scheduling::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};

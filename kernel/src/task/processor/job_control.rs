@@ -10,10 +10,10 @@ pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) 
         with_current_processor(Processor::take_current).expect("preemption requires current task");
     assert!(Arc::ptr_eq(&current, task));
     let mut scheduling = task.scheduling.state.lock();
-    match scheduling.run_state {
+    match scheduling.run_state() {
         RunState::Running { cpu } => {
             assert_eq!(cpu, source_cpu, "preemption source CPU diverged");
-            scheduling.run_state = RunState::Preempting { cpu: source_cpu };
+            scheduling.replace_non_ready_state(RunState::Preempting { cpu: source_cpu });
         }
         RunState::StopPending {
             cpu,
@@ -38,10 +38,7 @@ pub(super) fn request_reschedule_on(cpu: usize) {
 /// @return 无返回值；单一 Running task 不产生无意义的自我 context switch。
 pub(in crate::task) fn request_tick_reschedule() {
     let slot = current_per_hart();
-    let competitors = slot
-        .queued_entries
-        .load(Ordering::Relaxed)
-        .saturating_add(slot.inbound_entries.load(Ordering::Relaxed));
+    let competitors = slot.ready_entries.load(Ordering::Relaxed);
     if slot.running_entries.load(Ordering::Relaxed) != 0 && competitors != 0 {
         request_reschedule();
     }
@@ -52,7 +49,7 @@ pub(in crate::task) fn request_tick_reschedule() {
 /// @param task Process graph 持有的目标 Thread。
 /// @return 无返回值；非 CPU-owned 状态已会自然进入 trap return，不发送冗余 IPI。
 pub(in crate::task) fn request_task_reschedule(task: &Arc<TaskControlBlock>) {
-    let cpu = match task.scheduling.state.lock().run_state {
+    let cpu = match task.scheduling.state.lock().run_state() {
         RunState::Running { cpu }
         | RunState::Preempting { cpu }
         | RunState::Blocking { cpu }
@@ -76,51 +73,50 @@ pub(in crate::task) fn request_task_reschedule(task: &Arc<TaskControlBlock>) {
 pub(in crate::task) fn request_task_stop(task: &Arc<TaskControlBlock>) {
     let reschedule_cpu = {
         let mut scheduling = task.scheduling.state.lock();
-        match scheduling.run_state {
+        match scheduling.run_state() {
             RunState::New => {
-                scheduling.run_state = RunState::Stopped {
+                scheduling.replace_non_ready_state(RunState::Stopped {
                     resume: StopResume::Runnable,
-                };
+                });
                 None
             }
             RunState::Ready { cpu, .. } => {
-                scheduling.run_state = RunState::Stopped {
-                    resume: StopResume::Runnable,
-                };
+                let retirement = scheduling.transition_ready_to_stopped();
+                commit_ready_retirement(retirement);
                 Some(cpu)
             }
             RunState::Running { cpu } => {
-                scheduling.run_state = RunState::StopPending {
+                scheduling.replace_non_ready_state(RunState::StopPending {
                     cpu,
                     transition: StopTransition::Running,
-                };
+                });
                 Some(cpu)
             }
             RunState::Preempting { cpu } => {
-                scheduling.run_state = RunState::StopPending {
+                scheduling.replace_non_ready_state(RunState::StopPending {
                     cpu,
                     transition: StopTransition::Preempting,
-                };
+                });
                 Some(cpu)
             }
             RunState::Blocking { cpu } => {
-                scheduling.run_state = RunState::StopPending {
+                scheduling.replace_non_ready_state(RunState::StopPending {
                     cpu,
                     transition: StopTransition::Blocking,
-                };
+                });
                 Some(cpu)
             }
             RunState::Blocked => {
-                scheduling.run_state = RunState::Stopped {
+                scheduling.replace_non_ready_state(RunState::Stopped {
                     resume: StopResume::Blocked,
-                };
+                });
                 None
             }
             RunState::WakePending { cpu } => {
-                scheduling.run_state = RunState::StopPending {
+                scheduling.replace_non_ready_state(RunState::StopPending {
                     cpu,
                     transition: StopTransition::WakePending,
-                };
+                });
                 Some(cpu)
             }
             RunState::StopPending { .. } | RunState::Stopped { .. } | RunState::Exited => None,
@@ -138,26 +134,27 @@ pub(in crate::task) fn request_task_stop(task: &Arc<TaskControlBlock>) {
 pub(in crate::task) fn continue_stopped_task(task: Arc<TaskControlBlock>) {
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
-        match scheduling.run_state {
+        match scheduling.run_state() {
             RunState::Stopped {
                 resume: StopResume::Runnable,
             } => {
                 let cpu = select_cpu(&task, scheduling.cpu_affinity);
-                Some((cpu, scheduling.transition_to_ready(cpu)))
+                let generation = commit_ready_transition(scheduling.transition_to_ready(cpu));
+                Some((cpu, generation))
             }
             RunState::Stopped {
                 resume: StopResume::Blocked,
             } => {
-                scheduling.run_state = RunState::Blocked;
+                scheduling.replace_non_ready_state(RunState::Blocked);
                 None
             }
             RunState::StopPending { cpu, transition } => {
-                scheduling.run_state = match transition {
+                scheduling.replace_non_ready_state(match transition {
                     StopTransition::Running => RunState::Running { cpu },
                     StopTransition::Preempting => RunState::Preempting { cpu },
                     StopTransition::Blocking => RunState::Blocking { cpu },
                     StopTransition::WakePending => RunState::WakePending { cpu },
-                };
+                });
                 None
             }
             _ => None,

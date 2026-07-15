@@ -12,7 +12,7 @@ impl core::fmt::Debug for TaskControlBlock {
             }}"#,
             self.tgid(),
             self.tid(),
-            self.scheduling.state.lock().run_state
+            self.scheduling.state.lock().run_state()
         )
     }
 }

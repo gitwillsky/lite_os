@@ -148,13 +148,68 @@ pub(crate) struct SchedulingEntity {
 /// @description run state、enqueue generation 与 wait membership 的唯一权威。
 #[derive(Debug)]
 pub(crate) struct SchedulingState {
-    pub(crate) run_state: RunState,
-    pub(crate) next_generation: u64,
+    run_state: RunState,
+    next_generation: u64,
     pub(crate) wait: Option<WaitMembership>,
     pub(crate) wait_result: Option<WaitResult>,
     /// OWNER: SchedulingState 与 run state 同锁拥有 Thread affinity；拆锁会让 Ready migration
     /// 与并发 wake 各自发布到不同 CPU，使旧 mask 下的 entry 再次运行。
     pub(in crate::task) cpu_affinity: CpuAffinity,
+}
+
+/// @description 已发布 `RunState::Ready`、但尚未提交 per-hart Ready 投影的线性 token。
+///
+/// 只有 processor owner 能消费该 token；遗失会让 load/tick projection 与唯一 run state
+/// 分裂，因此 Drop 必须 fail-stop。token 非 Copy，禁止同一 transition 重复计数。
+#[must_use = "Ready transition must commit its per-hart membership projection"]
+pub(in crate::task) struct ReadyTransition<'owner> {
+    previous_cpu: Option<usize>,
+    target_cpu: usize,
+    generation: u64,
+    committed: bool,
+    owner: core::marker::PhantomData<&'owner mut SchedulingState>,
+}
+
+impl ReadyTransition<'_> {
+    #[inline(always)]
+    pub(in crate::task) fn into_parts(mut self) -> (Option<usize>, usize, u64) {
+        self.committed = true;
+        (self.previous_cpu, self.target_cpu, self.generation)
+    }
+}
+
+impl Drop for ReadyTransition<'_> {
+    fn drop(&mut self) {
+        assert!(
+            self.committed,
+            "Ready state published without per-hart membership commit"
+        );
+    }
+}
+
+/// @description 已撤销 `RunState::Ready`、但尚未撤销 per-hart Ready 投影的线性 token。
+#[must_use = "Ready retirement must commit its per-hart membership projection"]
+pub(in crate::task) struct ReadyRetirement<'owner> {
+    cpu: usize,
+    committed: bool,
+    owner: core::marker::PhantomData<&'owner mut SchedulingState>,
+}
+
+impl ReadyRetirement<'_> {
+    #[inline(always)]
+    pub(in crate::task) fn into_cpu(mut self) -> usize {
+        self.committed = true;
+        self.cpu
+    }
+}
+
+impl Drop for ReadyRetirement<'_> {
+    fn drop(&mut self) {
+        assert!(
+            self.committed,
+            "Ready state retired without per-hart membership commit"
+        );
+    }
 }
 
 impl SchedulingState {
@@ -172,17 +227,92 @@ impl SchedulingState {
         }
     }
 
+    /// @description 只读投影 authoritative run state。
+    #[inline(always)]
+    pub(in crate::task) fn run_state(&self) -> RunState {
+        self.run_state
+    }
+
+    /// @description 在不进入或离开 Ready membership 时替换 run state。
+    ///
+    /// Ready ingress/egress 必须使用返回线性 token 的专用 transition；两侧任一为
+    /// Ready 都表示 caller 绕过了 per-hart projection transaction，必须 fail-stop。
+    #[inline(always)]
+    pub(in crate::task) fn replace_non_ready_state(&mut self, state: RunState) {
+        assert!(
+            !matches!(self.run_state, RunState::Ready { .. })
+                && !matches!(state, RunState::Ready { .. }),
+            "Ready membership requires a linear transition token"
+        );
+        self.run_state = state;
+    }
+
     /// @description 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
-    pub(crate) fn transition_to_ready(&mut self, cpu: usize) -> u64 {
+    #[inline(always)]
+    pub(in crate::task) fn transition_to_ready(&mut self, cpu: usize) -> ReadyTransition<'_> {
         assert!(
             self.cpu_affinity.allows_hart(cpu),
             "Ready transition selected a disallowed CPU"
         );
+        let previous_cpu = match self.run_state {
+            RunState::Ready { cpu, .. } => Some(cpu),
+            RunState::New
+            | RunState::Blocked
+            | RunState::Stopped {
+                resume: StopResume::Runnable,
+            }
+            | RunState::WakePending { .. }
+            | RunState::Preempting { .. } => None,
+            state => panic!("invalid Ready transition from {state:?}"),
+        };
         self.next_generation = self.next_generation.wrapping_add(1);
         assert_ne!(self.next_generation, 0, "runqueue generation wrapped");
         let generation = self.next_generation;
         self.run_state = RunState::Ready { cpu, generation };
-        generation
+        ReadyTransition {
+            previous_cpu,
+            target_cpu: cpu,
+            generation,
+            committed: false,
+            owner: core::marker::PhantomData,
+        }
+    }
+
+    /// @description 原子验证 queue token 并把 authoritative Ready state 改为 Running。
+    #[inline(always)]
+    pub(in crate::task) fn transition_ready_to_running(
+        &mut self,
+        cpu: usize,
+        generation: u64,
+    ) -> ReadyRetirement<'_> {
+        assert_eq!(
+            self.run_state,
+            RunState::Ready { cpu, generation },
+            "selected queue token lost Ready ownership"
+        );
+        self.run_state = RunState::Running { cpu };
+        ReadyRetirement {
+            cpu,
+            committed: false,
+            owner: core::marker::PhantomData,
+        }
+    }
+
+    /// @description 把 authoritative Ready state 改为保留 runnable resume 的 Stopped。
+    #[inline(always)]
+    pub(in crate::task) fn transition_ready_to_stopped(&mut self) -> ReadyRetirement<'_> {
+        let cpu = match self.run_state {
+            RunState::Ready { cpu, .. } => cpu,
+            state => panic!("group stop targeted non-Ready state {state:?}"),
+        };
+        self.run_state = RunState::Stopped {
+            resume: StopResume::Runnable,
+        };
+        ReadyRetirement {
+            cpu,
+            committed: false,
+            owner: core::marker::PhantomData,
+        }
     }
 
     /// @description 判断 Thread 是否仍在 affinity 排除的 CPU 上持有执行/切出 ownership。

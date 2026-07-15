@@ -242,14 +242,14 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
     {
         let mut scheduling = task.scheduling.state.lock();
         assert!(
-            matches!(scheduling.run_state, RunState::Running { .. }),
+            matches!(scheduling.run_state(), RunState::Running { .. }),
             "only current running task can exit"
         );
         assert!(
             scheduling.wait.is_none(),
             "running task cannot retain wait membership"
         );
-        scheduling.run_state = RunState::Exited;
+        scheduling.replace_non_ready_state(RunState::Exited);
     }
     task.cleanup_robust_list();
     let (removed, process_status, parent_waiters, init_waiters, parent_signal_pid) = {

@@ -15,7 +15,7 @@ mod trap_context;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
-pub(in crate::task) use model::CpuAffinity;
+pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use model::{
     CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
     ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalStack, SignalStackError,

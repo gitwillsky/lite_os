@@ -25,9 +25,8 @@ pub(super) fn select_cpu(task: &TaskControlBlock, affinity: CpuAffinity) -> usiz
         let cpu = state.hart_id();
         let slot = processor_at(cpu_index);
         let load = slot
-            .queued_entries
+            .ready_entries
             .load(Ordering::Relaxed)
-            .saturating_add(slot.inbound_entries.load(Ordering::Relaxed))
             .saturating_add(slot.running_entries.load(Ordering::Relaxed));
         if load < best_load {
             best_load = load;
@@ -87,7 +86,7 @@ fn new_task_placement_floor(cpu: usize) -> u64 {
 pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
     let mut scheduling = task.scheduling.state.lock();
     assert_eq!(
-        scheduling.run_state,
+        scheduling.run_state(),
         RunState::New,
         "task must start in New"
     );
@@ -97,7 +96,7 @@ pub(crate) fn enqueue_new_task(task: Arc<TaskControlBlock>) -> usize {
         let mut policy = task.scheduling.policy.lock();
         policy.vruntime = policy.vruntime.max(floor);
     }
-    let generation = scheduling.transition_to_ready(cpu);
+    let generation = commit_ready_transition(scheduling.transition_to_ready(cpu));
     drop(scheduling);
     deliver_ready_entry(cpu, ready_entry(task, generation));
     cpu

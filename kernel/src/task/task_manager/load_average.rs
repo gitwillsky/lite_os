@@ -174,7 +174,7 @@ pub(super) fn update(now_us: u64) {
         };
         cursor = Some(position);
         if matches!(
-            task.scheduling.state.lock().run_state,
+            task.scheduling.state.lock().run_state(),
             RunState::New
                 | RunState::Ready { .. }
                 | RunState::Running { .. }

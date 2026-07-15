@@ -2190,7 +2190,7 @@ kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
-kernel/src/task/mod.rs :: pub (in crate :: task) use model :: CpuAffinity
+kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
 kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : usize , }
 kernel/src/task/model.rs :: enum RunState :: Exited
@@ -2227,7 +2227,7 @@ kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY ,
 kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
-kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: CpuAffinity
+kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
@@ -2436,14 +2436,11 @@ kernel/src/task/model/scheduling.rs :: pub (crate) Sched :: vruntime : u64
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: last_cpu : AtomicUsize
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: policy : Mutex < Sched >
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingEntity :: state : IrqMutex < SchedulingState >
-kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: next_generation : u64
-kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: run_state : RunState
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait : Option < WaitMembership >
 kernel/src/task/model/scheduling.rs :: pub (crate) SchedulingState :: wait_result : Option < WaitResult >
 kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitMembership
 kernel/src/task/model/scheduling.rs :: pub (crate) enum WaitResult
 kernel/src/task/model/scheduling.rs :: pub (crate) impl Sched :: fn get_dynamic_priority (& self) -> i32
-kernel/src/task/model/scheduling.rs :: pub (crate) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> u64
 kernel/src/task/model/scheduling.rs :: pub (crate) impl TaskControlBlock :: fn cpu_runtime_snapshot (& self , now_us : u64) -> (u64 , u64)
 kernel/src/task/model/scheduling.rs :: pub (crate) struct Sched
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingEntity
@@ -2454,6 +2451,8 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn allows_hart (self , hart_id : usize) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn effective_bits (self) -> usize
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn from_user_bits (bits : usize) -> Option < Self >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyRetirement < '_ > :: fn into_cpu (mut self) -> usize
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyTransition < '_ > :: fn into_parts (mut self) -> (Option < usize > , usize , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn begin_runtime (& mut self , start_time_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn checkpoint_runtime (& mut self , checkpoint_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn finish_runtime (& mut self , end_time_us : u64)
@@ -2461,8 +2460,15 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn i
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn nice (& mut self , replacement : Option < i32 >) -> i32
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn reset_on_fork (& mut self , replacement : Option < bool >) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn executes_outside_affinity (& self) -> bool
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn replace_non_ready_state (& mut self , state : RunState)
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn run_state (& self) -> RunState
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_ready_to_running (& mut self , cpu : usize , generation : u64 ,) -> ReadyRetirement < '_ >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_ready_to_stopped (& mut self) -> ReadyRetirement < '_ >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> ReadyTransition < '_ >
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl TaskControlBlock :: fn thread_statistics (& self , active_now_us : Option < u64 > ,) -> (u64 , i32 , i32 , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct CpuAffinity
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct ReadyRetirement < 'owner >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct ReadyTransition < 'owner >
 kernel/src/task/model/scheduling.rs :: pub (super) impl Sched :: fn forked (& self , process_runtime_us : Arc < AtomicU64 >) -> Self
 kernel/src/task/model/scheduling.rs :: pub (super) impl Sched :: fn new (nice : i32 , vruntime : u64 , process_runtime_us : Arc < AtomicU64 >) -> Self
 kernel/src/task/model/scheduling.rs :: pub (super) impl SchedulingState :: fn new (cpu_affinity : CpuAffinity) -> Self
@@ -2513,7 +2519,7 @@ kernel/src/task/processor.rs :: pub (crate) fn cpu_runtime_snapshot () -> Result
 kernel/src/task/processor.rs :: pub (crate) fn request_reschedule ()
 kernel/src/task/processor.rs :: pub (crate) fn take_reschedule () -> bool
 kernel/src/task/processor.rs :: pub (crate) fn with_current_processor < R > (f : impl FnOnce (& mut Processor) -> R) -> R
-kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn add_ready_entry (& mut self , entry : RunQueueEntry)
+kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn add_ready_entry (& mut self , entry : RunQueueEntry) -> bool
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn drain_inbound_to_local (& mut self)
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn idle_context_ptr (& mut self) -> * mut TaskContext
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn select_task (& mut self) -> Option < Arc < TaskControlBlock > >
@@ -2546,22 +2552,33 @@ kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on
 kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> usize
 kernel/src/task/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < TaskControlBlock > , generation : u64) -> RunQueueEntry
 kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock , affinity : CpuAffinity) -> usize
-kernel/src/task/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry)
+kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_retirement (retirement : ReadyRetirement < '_ >)
+kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_transition (transition : ReadyTransition < '_ >) -> u64
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry) -> bool
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : usize , entry : RunQueueEntry)
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn drain_inbound_to_local (processor : & mut Processor)
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn select_task (processor : & mut Processor) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: task : Arc < TaskControlBlock >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64
-kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn len (& self) -> usize
+kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn discard_stale_roots (& mut self , keep : impl FnMut (& RunQueueEntry) -> bool ,) -> usize
+kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn make_room (& mut self , additional : usize , keep : impl FnMut (& RunQueueEntry) -> bool ,) -> usize
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn pop (& mut self) -> Option < RunQueueEntry >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn push (& mut self , entry : RunQueueEntry)
-kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn retain (& mut self , keep : impl FnMut (& RunQueueEntry) -> bool) -> usize
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) impl CfsRunQueue :: fn try_with_capacity (capacity : usize) -> Result < Self , () >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct CfsRunQueue
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) struct RunQueueEntry
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (in crate :: task) impl CfsRunQueue :: fn minimum_vruntime (& self) -> Option < u64 >
 kernel/src/task/scheduler/mod.rs :: pub (super) mod cfs_scheduler
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn capacity (& self) -> usize
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn discard_invalid_roots (& mut self , mut keep : impl FnMut (& T) -> bool) -> usize
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn len (& self) -> usize
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn make_room (& mut self , additional : usize , keep : impl FnMut (& T) -> bool) -> usize
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn peek (& self) -> Option < & T >
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn pop (& mut self) -> Option < T >
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn push (& mut self , entry : T)
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) impl PreallocatedHeap < T > :: fn try_with_capacity (capacity : usize) -> Result < Self , () >
+kernel/src/task/scheduler/preallocated_heap.rs :: pub (super) struct PreallocatedHeap < T : Ord >
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Again
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: Interrupted
 kernel/src/task/task_manager.rs :: enum SignalWaitError :: OutOfMemory

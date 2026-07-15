@@ -1,5 +1,11 @@
 [workspace]
-members = ["kernel", "syscall-abi", "tools/architecture-check", "tools/kernel-unit"]
+members = [
+    "kernel",
+    "syscall-abi",
+    "tools/architecture-check",
+    "tools/kernel-unit",
+    "tools/scheduler-unit",
+]
 exclude = ["bootloader"]
 default-members = ["kernel"]
 resolver = "3"

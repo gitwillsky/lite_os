@@ -58,11 +58,11 @@ pub(super) fn prepare_current_block<Owner>(
             .expect("blocking transition requires current task");
         assert!(Arc::ptr_eq(&current, task));
         let mut scheduling = task.scheduling.state.lock();
-        assert_eq!(scheduling.run_state, RunState::Running { cpu });
+        assert_eq!(scheduling.run_state(), RunState::Running { cpu });
         assert!(scheduling.wait.is_none());
         assert!(scheduling.wait_result.is_none());
         scheduling.wait = Some(publish(&mut owner, current));
-        scheduling.run_state = RunState::Blocking { cpu };
+        scheduling.replace_non_ready_state(RunState::Blocking { cpu });
     });
     // 3. token 返回前强制释放 owner；若 guard 跨 context switch，waker 会永久死锁。
     drop(owner);
