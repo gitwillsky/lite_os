@@ -1,0 +1,21 @@
+kernel/src/socket/inet/readiness.rs
+  s_f0a69312287991::t_83afaa422e3d10 200-206,211-215,220-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "34de1f06f4f4e2a4b970839366aff54bae426528",
+  "prompts": {},
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
