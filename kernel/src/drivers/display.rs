@@ -25,28 +25,48 @@ pub(crate) enum DisplayError {
     Device,
 }
 
+/// @description deferred display work 对上层发布的单一更新事实。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DisplayUpdate {
+    /// 一次 userspace scanout transaction 已完整完成。
+    ScanoutCompleted(u64),
+    /// adapter 重新查询 display-info 后观察到新的 scanout mode。
+    ModeChanged(DisplayMode),
+}
+
 /// @description 不泄漏具体 adapter 的 single-scanout display seam。
 pub(crate) trait DisplayDevice: Send + Sync {
-    /// @description 返回启动期固定的 scanout mode。
-    /// @return immutable width、height 与 pitch。
+    /// @description 返回 DRM 已确认提交的当前 scanout mode。
+    /// @return 同一代 width、height 与 pitch。
     fn mode(&self) -> DisplayMode;
 
     /// @description 取得启动期黑屏 scanout backing，供 DRM close/disable 恢复无 owner 状态。
     /// @return adapter 已建立并保活的初始连续 extent。
     fn initial_backing(&self) -> Arc<FrameTracker>;
 
-    /// @description 异步把一个连续 XRGB8888 backing 切换为当前 scanout。
+    /// @description 确认上一次 `ModeChanged` 候选已由 DRM 准备好对应 fallback owner。
+    /// @param mode 必须精确等于尚未确认的候选 mode。
+    /// @return adapter 与 DRM mode 代际共同提交后返回 unit。
+    /// @errors 候选不存在或不匹配返回 `Device`。
+    fn commit_mode(&self, mode: DisplayMode) -> Result<(), DisplayError>;
+
+    /// @description 异步把一个连续 XRGB8888 backing 切换为指定 scanout mode。
+    /// @param mode 本次 transaction 捕获的 display-info mode。
     /// @param backing 至少覆盖固定 mode pitch × height 的连续物理 extent；adapter 从提交
     /// 到资源解绑完成独立保活该 owner。
     /// @return operation fence；已有 transaction 时返回 `WouldBlock`。
     /// @errors backing 太小返回 `InvalidRectangle`；queue 满、MMIO 或 response 失败返回
     /// `Device`。
-    fn submit_scanout(&self, backing: Arc<FrameTracker>) -> Result<u64, DisplayError>;
+    fn submit_scanout(
+        &self,
+        mode: DisplayMode,
+        backing: Arc<FrameTracker>,
+    ) -> Result<u64, DisplayError>;
 
-    /// @description 有界消费一个 controlq completion，并推进 transaction state。
-    /// @return 最终 flush 完成时返回 operation fence；无 completion 返回 `None`。
+    /// @description 有界消费一个 controlq/config 更新，并推进 transaction state。
+    /// @return scanout 最终完成或 mode 改变时返回领域更新；无更新返回 `None`。
     /// @errors descriptor、fence 或 device response 不匹配返回 `Device`。
-    fn poll_completion(&self) -> Result<Option<u64>, DisplayError>;
+    fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError>;
 }
 
 // OWNER: display facade 唯一持有 DTB 选中的 primary adapter；缺失该 publication 时

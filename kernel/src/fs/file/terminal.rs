@@ -373,8 +373,16 @@ impl Terminal {
         self.state.lock().window_size
     }
 
-    pub(crate) fn set_window_size(&self, window_size: [u8; 8]) {
-        self.state.lock().window_size = window_size;
+    /// @description 原子替换窗口尺寸，并返回需要接收 `SIGWINCH` 的 foreground group。
+    /// @param window_size Linux `struct winsize` 的 8-byte native layout。
+    /// @return 尺寸变化且存在 foreground group 时返回 PGID；未变化或无 group 返回 `None`。
+    pub(crate) fn set_window_size(&self, window_size: [u8; 8]) -> Option<usize> {
+        let mut state = self.state.lock();
+        if state.window_size == window_size {
+            return None;
+        }
+        state.window_size = window_size;
+        state.foreground_pgid
     }
 
     pub(crate) fn controlling_session(&self) -> Option<usize> {

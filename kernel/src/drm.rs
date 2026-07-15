@@ -15,10 +15,9 @@ const DUMB_OFFSET_SHIFT: u32 = 32;
 mod event;
 pub(crate) use event::DrmEvent;
 use event::{EVENT_QUEUE_CAPACITY, EventQueue};
+pub(crate) mod device;
 mod master;
 mod mode;
-use mode::cvt_mode;
-pub(crate) mod device;
 
 struct CompletionState {
     // OWNER: pending 同时绑定 adapter operation fence 与目标 framebuffer；若拆分，IRQ
@@ -38,6 +37,7 @@ struct CompletionState {
 
 struct PendingScanout {
     fence: u64,
+    mode: DisplayMode,
     framebuffer: Option<u32>,
     owner: Option<u64>,
     event: Option<PendingEvent>,
@@ -54,6 +54,7 @@ struct PendingEvent {
 struct ActiveScanout {
     framebuffer: u32,
     owner: u64,
+    mode: DisplayMode,
 }
 
 struct DrmDeviceState {
@@ -63,6 +64,10 @@ struct DrmDeviceState {
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
+    // OWNER: connector mode 与对应黑屏 fallback backing 必须同锁替换；若分开发布，
+    // disable/close 可把新尺寸解释到旧 extent 并让 adapter 越界访问。
+    mode: DisplayMode,
+    fallback_backing: Arc<FrameTracker>,
     // OWNER: framebuffer IDs 是 device-wide KMS object namespace；若放进 DrmFile，
     // GETRESOURCES 与另一个 primary-node open 会观察冲突或缺失的 mode object。
     framebuffers: FallibleMap<u32, Framebuffer>,
@@ -101,10 +106,6 @@ struct DrmFileState {
 /// @description Linux DRM/KMS domain 的 primary display owner。
 struct DrmDevice {
     display: Arc<dyn DisplayDevice>,
-    _mode: DisplayMode,
-    // OWNER: fallback backing 独立于 adapter 当前 active resource 永久保活；若只依赖
-    // active owner，首次 userspace modeset 的 UNREF 会让 close/disable 无法恢复黑屏。
-    fallback_backing: Arc<FrameTracker>,
     completion_read: Arc<PipeEnd>,
     completion_write: Arc<PipeEnd>,
     // OWNER: pending/completed fence 在同一锁下完成唯一状态迁移；若拆开，IRQ completion
@@ -215,12 +216,6 @@ pub(crate) struct DrmMode {
 }
 
 impl DrmFile {
-    /// @description 读取 immutable single-connector preferred mode。
-    /// @return 与 VirtIO display-info resolution 对应的 Linux CVT 60 Hz mode。
-    pub(crate) fn mode(&self) -> DrmMode {
-        cvt_mode(self.device._mode)
-    }
-
     /// @description 创建 file-private XRGB8888 linear dumb buffer handle。
     ///
     /// @param width 非零 pixel width。
@@ -426,8 +421,9 @@ impl DrmFile {
             .active
             .is_some_and(|active| active.framebuffer == id)
         {
+            let mode = self.device.state.lock().mode;
             return self
-                .submit_scanout(&mut completion, None, None)
+                .submit_scanout(&mut completion, mode, None, None)
                 .map(FramebufferRemoval::Wait);
         }
         let removed = {
@@ -523,7 +519,11 @@ impl DrmFile {
             file: Arc::downgrade(self),
             user_data,
         });
-        self.submit_scanout(&mut completion, Some(id), event)
+        let mode = completion
+            .active
+            .map(|active| active.mode)
+            .ok_or(DrmError::Invalid)?;
+        self.submit_scanout(&mut completion, mode, Some(id), event)
     }
 
     /// @description 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
@@ -535,7 +535,8 @@ impl DrmFile {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
-        self.submit_scanout(&mut completion, Some(id), None)
+        let mode = self.device.state.lock().mode;
+        self.submit_scanout(&mut completion, mode, Some(id), None)
     }
 
     /// @description 同步恢复启动期黑屏 backing，并清除 active framebuffer state。
@@ -546,49 +547,7 @@ impl DrmFile {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
-        self.submit_scanout(&mut completion, None, None)
-    }
-
-    fn submit_scanout(
-        &self,
-        completion: &mut CompletionState,
-        framebuffer_id: Option<u32>,
-        event: Option<PendingEvent>,
-    ) -> Result<DrmWait, DrmError> {
-        if completion.pending.is_some() {
-            return Err(DrmError::Busy);
-        }
-        let (backing, owner) = if let Some(id) = framebuffer_id {
-            let state = self.device.state.lock();
-            let framebuffer = state.framebuffers.get(&id).ok_or(DrmError::NotFound)?;
-            if framebuffer.owner != self.file_identity {
-                return Err(DrmError::NotFound);
-            }
-            let mode = self.device._mode;
-            if framebuffer.width != mode.width
-                || framebuffer.height != mode.height
-                || framebuffer.pitch != mode.pitch
-            {
-                return Err(DrmError::Invalid);
-            }
-            (framebuffer.buffer.backing.clone(), Some(self.file_identity))
-        } else {
-            (self.device.fallback_backing.clone(), None)
-        };
-        let fence = self
-            .device
-            .display
-            .submit_scanout(backing)
-            .map_err(device::display_error)?;
-        completion.pending = Some(PendingScanout {
-            fence,
-            framebuffer: framebuffer_id,
-            owner,
-            event,
-        });
-        Ok(DrmWait {
-            device: self.device.clone(),
-            fence,
-        })
+        let mode = self.device.state.lock().mode;
+        self.submit_scanout(&mut completion, mode, None, None)
     }
 }

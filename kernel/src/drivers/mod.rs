@@ -13,7 +13,9 @@ mod virtio_net;
 mod virtio_queue;
 mod virtio_rng;
 
-pub(crate) use display::{DisplayDevice, DisplayError, DisplayMode, primary_display};
+pub(crate) use display::{
+    DisplayDevice, DisplayError, DisplayMode, DisplayUpdate, primary_display,
+};
 pub(crate) use goldfish_rtc::GoldfishRTCDevice;
 use hal::{
     InterruptController, InterruptError, InterruptHandler, InterruptVector, MmioBus,

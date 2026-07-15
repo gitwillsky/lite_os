@@ -1,13 +1,63 @@
 use spin::Once;
 
 use super::*;
-use crate::drivers::DisplayError;
+use crate::drivers::{DisplayError, DisplayUpdate};
 
 pub(super) fn display_error(error: DisplayError) -> DrmError {
     match error {
         DisplayError::WouldBlock => DrmError::Busy,
         DisplayError::InvalidRectangle => DrmError::Invalid,
         DisplayError::Device => DrmError::Device,
+    }
+}
+
+impl DrmFile {
+    pub(super) fn submit_scanout(
+        &self,
+        completion: &mut CompletionState,
+        mode: DisplayMode,
+        framebuffer_id: Option<u32>,
+        event: Option<PendingEvent>,
+    ) -> Result<DrmWait, DrmError> {
+        if completion.pending.is_some() {
+            return Err(DrmError::Busy);
+        }
+        let (backing, owner) = if let Some(id) = framebuffer_id {
+            let state = self.device.state.lock();
+            let framebuffer = state.framebuffers.get(&id).ok_or(DrmError::NotFound)?;
+            if framebuffer.owner != self.file_identity {
+                return Err(DrmError::NotFound);
+            }
+            if framebuffer.width != mode.width
+                || framebuffer.height != mode.height
+                || framebuffer.pitch != mode.pitch
+            {
+                return Err(DrmError::Invalid);
+            }
+            (framebuffer.buffer.backing.clone(), Some(self.file_identity))
+        } else {
+            let state = self.device.state.lock();
+            if state.mode != mode {
+                return Err(DrmError::Invalid);
+            }
+            (state.fallback_backing.clone(), None)
+        };
+        let fence = self
+            .device
+            .display
+            .submit_scanout(mode, backing)
+            .map_err(display_error)?;
+        completion.pending = Some(PendingScanout {
+            fence,
+            mode,
+            framebuffer: framebuffer_id,
+            owner,
+            event,
+        });
+        Ok(DrmWait {
+            device: self.device.clone(),
+            fence,
+        })
     }
 }
 
@@ -26,7 +76,8 @@ impl Drop for DrmFile {
             {
                 completion.reset_after_owner = Some(identity);
             } else if completion.pending.is_none() && owned_active {
-                self.submit_scanout(&mut completion, None, None)
+                let mode = self.device.state.lock().mode;
+                self.submit_scanout(&mut completion, mode, None, None)
                     .expect("closing DRM OFD failed to restore fallback scanout");
             }
             if owned_active {
@@ -83,8 +134,6 @@ pub(crate) fn init(
     let fallback_backing = display.initial_backing();
     let owner = Arc::try_new(DrmDevice {
         display,
-        _mode: mode,
-        fallback_backing,
         completion_read,
         completion_write,
         completion: Mutex::new(CompletionState {
@@ -99,6 +148,8 @@ pub(crate) fn init(
             next_file_identity: 1,
             next_framebuffer_id: 4,
             master: None,
+            mode,
+            fallback_backing,
             framebuffers: FallibleMap::new(),
         }),
     })
@@ -150,15 +201,23 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     // completion lock 必须先于 adapter controlq lock；submit path 使用同一顺序，保证
     // notify 后立即到达的 IRQ 不会在 pending fence publication 前完成归属。
     let mut state = drm.completion.lock();
-    let completion = drm
+    let update = drm
         .display
-        .poll_completion()
+        .poll_update()
         .unwrap_or_else(|error| match error {
             DisplayError::WouldBlock | DisplayError::InvalidRectangle | DisplayError::Device => {
                 panic!("display completion failed: {:?}", error)
             }
         });
-    let Some(fence) = completion else {
+    let Some(update) = update else {
+        return;
+    };
+    let DisplayUpdate::ScanoutCompleted(fence) = update else {
+        let DisplayUpdate::ModeChanged(mode) = update else {
+            unreachable!()
+        };
+        drop(state);
+        publish_mode_change(drm, mode);
         return;
     };
     let pending = state
@@ -184,19 +243,26 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
         .owner
         .is_some_and(|owner| state.reset_after_owner == Some(owner));
     state.active = match (pending.framebuffer, pending.owner) {
-        (Some(framebuffer), Some(owner)) if !reset_after_close => {
-            Some(ActiveScanout { framebuffer, owner })
-        }
+        (Some(framebuffer), Some(owner)) if !reset_after_close => Some(ActiveScanout {
+            framebuffer,
+            owner,
+            mode: pending.mode,
+        }),
         _ => None,
     };
     if reset_after_close {
         state.reset_after_owner = None;
+        let (mode, fallback_backing) = {
+            let device = drm.state.lock();
+            (device.mode, device.fallback_backing.clone())
+        };
         let reset_fence = drm
             .display
-            .submit_scanout(drm.fallback_backing.clone())
+            .submit_scanout(mode, fallback_backing)
             .expect("closed DRM OFD failed to queue fallback scanout");
         state.pending = Some(PendingScanout {
             fence: reset_fence,
+            mode,
             framebuffer: None,
             owner: None,
             event: None,
@@ -207,5 +273,63 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     debug!(
         "[DRM] asynchronous scanout completed, fence={fence}, framebuffer={:?}",
         pending.framebuffer
+    );
+}
+
+fn publish_mode_change(drm: &DrmDevice, mode: DisplayMode) {
+    let bytes = usize::try_from(mode.pitch)
+        .ok()
+        .and_then(|pitch| pitch.checked_mul(mode.height as usize));
+    let Some(bytes) = bytes else {
+        error!("[DRM] rejected display mode with overflowing extent: {mode:?}");
+        return;
+    };
+    let Some(backing) =
+        alloc_contiguous(bytes.div_ceil(PAGE_SIZE), FrameAllocationClass::Reclaimable)
+    else {
+        warn!("[DRM] preserving previous mode after resize fallback OOM: {mode:?}");
+        return;
+    };
+    let Ok(backing) = Arc::try_new(backing) else {
+        warn!("[DRM] preserving previous mode after resize Arc OOM: {mode:?}");
+        return;
+    };
+
+    let mut completion = drm.completion.lock();
+    assert!(
+        completion.pending.is_none(),
+        "mode query completed while DRM scanout remained pending"
+    );
+    let old_backing = {
+        drm.display
+            .commit_mode(mode)
+            .expect("display mode candidate changed before DRM commit");
+        let mut device = drm.state.lock();
+        if device.mode == mode {
+            return;
+        }
+        device.mode = mode;
+        core::mem::replace(&mut device.fallback_backing, backing.clone())
+    };
+    if completion.active.is_none() {
+        let fence = drm
+            .display
+            .submit_scanout(mode, backing)
+            .expect("failed to refresh fallback after display mode change");
+        completion.pending = Some(PendingScanout {
+            fence,
+            mode,
+            framebuffer: None,
+            owner: None,
+            event: None,
+        });
+    }
+    drop(completion);
+    // 旧 fallback 的最后一个引用可能进入 buddy merge，不能在 DRM state lock 内析构。
+    drop(old_backing);
+    drm.completion_write.signal_readiness();
+    info!(
+        "[DRM] display mode changed to {}x{}",
+        mode.width, mode.height
     );
 }

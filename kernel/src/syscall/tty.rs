@@ -3,7 +3,8 @@ use crate::{
     syscall::errno,
     task::{
         ProcessGroupError, TaskControlBlock, TerminalAccessError, check_terminal_access,
-        claim_controlling_terminal, set_terminal_foreground_group, terminal_foreground_group,
+        claim_controlling_terminal, resize_terminal, set_terminal_foreground_group,
+        terminal_foreground_group,
     },
 };
 
@@ -129,7 +130,7 @@ pub(super) fn tty_ioctl(
             if task.copy_from_user(argument, &mut window_size).is_err() {
                 return -errno::EFAULT;
             }
-            terminal.set_window_size(window_size);
+            resize_terminal(terminal, window_size);
             0
         }
         TIOCGSID => match terminal.controlling_session() {

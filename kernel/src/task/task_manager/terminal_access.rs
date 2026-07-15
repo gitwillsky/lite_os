@@ -20,6 +20,16 @@ pub(crate) fn hangup_terminal(terminal: &Terminal) {
     send_process_group_signal(pgid, 18);
 }
 
+/// @description 提交 TTY window size，并按 Linux tty resize 语义通知 foreground group。
+/// @param terminal `TIOCSWINSZ` fd 指向的唯一 Terminal owner。
+/// @param window_size 已完整 copy-in 的 Linux `struct winsize` bytes。
+/// @return 无返回值；尺寸未变化或无 foreground group 时幂等完成。
+pub(crate) fn resize_terminal(terminal: &Terminal, window_size: [u8; 8]) {
+    if let Some(pgid) = terminal.set_window_size(window_size) {
+        send_process_group_signal(pgid, 28);
+    }
+}
+
 /// @description 对 controlling TTY 后台访问执行唯一 job-control 判定与 signal generation。
 ///
 /// @param terminal caller 正在访问的 TTY owner。

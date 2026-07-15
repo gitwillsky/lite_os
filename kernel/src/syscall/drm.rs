@@ -304,11 +304,11 @@ fn crtc(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), 
     }
     bytes.fill(0);
     write_u32(&mut bytes, 12, CRTC_ID)?;
-    if let Some(framebuffer) = file.active_framebuffer() {
+    if let Some((framebuffer, active_mode)) = file.active_crtc() {
         write_u32(&mut bytes, 16, framebuffer)?;
         write_u32(&mut bytes, 32, 1)?;
         let mut mode = [0u8; 68];
-        encode_mode(&mut mode, file.mode())?;
+        encode_mode(&mut mode, active_mode)?;
         bytes[36..104].copy_from_slice(&mode);
     }
     copy_out(task, argument, &bytes)

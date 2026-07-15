@@ -4,6 +4,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,8 +12,10 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define IOC_NONE 0U
@@ -25,9 +28,11 @@
 #define DRM_IOCTL_MODE_GETCONNECTOR DRM_IOWR(0xa7, struct drm_connector)
 #define DRM_IOCTL_MODE_SETCRTC DRM_IOWR(0xa2, struct drm_crtc)
 #define DRM_IOCTL_MODE_ADDFB DRM_IOWR(0xae, struct drm_fb)
+#define DRM_IOCTL_MODE_RMFB DRM_IOWR(0xaf, uint32_t)
 #define DRM_IOCTL_MODE_PAGE_FLIP DRM_IOWR(0xb0, struct drm_flip)
 #define DRM_IOCTL_MODE_CREATE_DUMB DRM_IOWR(0xb2, struct drm_dumb_create)
 #define DRM_IOCTL_MODE_MAP_DUMB DRM_IOWR(0xb3, struct drm_dumb_map)
+#define DRM_IOCTL_MODE_DESTROY_DUMB DRM_IOWR(0xb4, struct drm_dumb_destroy)
 #ifndef TIOCGPTN
 #define TIOCGPTN 0x80045430UL
 #endif
@@ -41,15 +46,13 @@
 
 #define CELL_WIDTH 16U
 #define CELL_HEIGHT 32U
-#define GLYPH_WIDTH 5U
-#define GLYPH_HEIGHT 7U
-#define GLYPH_SCALE_X 2U
-#define GLYPH_SCALE_Y 4U
-#define GLYPH_OFFSET_X ((CELL_WIDTH - GLYPH_WIDTH * GLYPH_SCALE_X) / 2U)
-#define GLYPH_OFFSET_Y ((CELL_HEIGHT - GLYPH_HEIGHT * GLYPH_SCALE_Y) / 2U)
 #define CURSOR_HEIGHT 3U
+#define PSF2_MAGIC 0x864ab572U
+#define PSF2_HAS_UNICODE_TABLE 1U
+#define FONT_PATH "/usr/share/consolefonts/spleen-16x32.psfu"
 #define DRM_PAGE_FLIP_EVENT 1U
 #define EV_KEY 1U
+#define MODE_PROBE_INTERVAL_MS 1000
 
 struct drm_mode {
     uint32_t clock;
@@ -86,6 +89,10 @@ struct drm_dumb_create {
 struct drm_dumb_map {
     uint32_t handle, pad;
     uint64_t offset;
+};
+
+struct drm_dumb_destroy {
+    uint32_t handle;
 };
 
 struct drm_fb {
@@ -125,10 +132,17 @@ struct terminal {
 
 struct display {
     int fd;
-    uint32_t crtc_id, connector_id, framebuffer_id;
+    uint32_t crtc_id, connector_id, framebuffer_id, handle;
     uint32_t width, height, pitch;
     uint64_t size, sequence;
     uint32_t *pixels;
+    struct drm_mode mode;
+};
+
+struct font {
+    void *mapping;
+    size_t size;
+    const uint8_t *glyphs[128];
 };
 
 static const uint32_t palette[16] = {
@@ -138,46 +152,94 @@ static const uint32_t palette[16] = {
     0x0060a5fa, 0x00c084fc, 0x002dd4bf, 0x00f8fafc,
 };
 
-// Public-domain-style 5x7 stroke forms. Lowercase intentionally reuses uppercase so every
-// shell byte remains readable without carrying a large font or font parser into the base image.
-static const uint8_t font[128][7] = {
-    [' '] = {0, 0, 0, 0, 0, 0, 0},
-    ['!'] = {4, 4, 4, 4, 4, 0, 4}, ['"'] = {10, 10, 10, 0, 0, 0, 0},
-    ['#'] = {10, 31, 10, 10, 31, 10, 0}, ['$'] = {4, 15, 20, 14, 5, 30, 4},
-    ['%'] = {24, 25, 2, 4, 8, 19, 3}, ['&'] = {12, 18, 20, 8, 21, 18, 13},
-    ['\''] = {4, 4, 8, 0, 0, 0, 0}, ['('] = {2, 4, 8, 8, 8, 4, 2},
-    [')'] = {8, 4, 2, 2, 2, 4, 8}, ['*'] = {0, 21, 14, 31, 14, 21, 0},
-    ['+'] = {0, 4, 4, 31, 4, 4, 0}, [','] = {0, 0, 0, 0, 4, 4, 8},
-    ['-'] = {0, 0, 0, 31, 0, 0, 0}, ['.'] = {0, 0, 0, 0, 0, 12, 12},
-    ['/'] = {1, 2, 2, 4, 8, 8, 16},
-    ['0'] = {14, 17, 19, 21, 25, 17, 14}, ['1'] = {4, 12, 4, 4, 4, 4, 14},
-    ['2'] = {14, 17, 1, 2, 4, 8, 31}, ['3'] = {30, 1, 1, 14, 1, 1, 30},
-    ['4'] = {2, 6, 10, 18, 31, 2, 2}, ['5'] = {31, 16, 16, 30, 1, 1, 30},
-    ['6'] = {6, 8, 16, 30, 17, 17, 14}, ['7'] = {31, 1, 2, 4, 8, 8, 8},
-    ['8'] = {14, 17, 17, 14, 17, 17, 14}, ['9'] = {14, 17, 17, 15, 1, 2, 12},
-    [':'] = {0, 12, 12, 0, 12, 12, 0}, [';'] = {0, 12, 12, 0, 4, 4, 8},
-    ['<'] = {2, 4, 8, 16, 8, 4, 2}, ['='] = {0, 0, 31, 0, 31, 0, 0},
-    ['>'] = {8, 4, 2, 1, 2, 4, 8}, ['?'] = {14, 17, 1, 2, 4, 0, 4},
-    ['@'] = {14, 17, 23, 21, 23, 16, 14},
-    ['A'] = {14, 17, 17, 31, 17, 17, 17}, ['B'] = {30, 17, 17, 30, 17, 17, 30},
-    ['C'] = {14, 17, 16, 16, 16, 17, 14}, ['D'] = {30, 17, 17, 17, 17, 17, 30},
-    ['E'] = {31, 16, 16, 30, 16, 16, 31}, ['F'] = {31, 16, 16, 30, 16, 16, 16},
-    ['G'] = {14, 17, 16, 23, 17, 17, 15}, ['H'] = {17, 17, 17, 31, 17, 17, 17},
-    ['I'] = {14, 4, 4, 4, 4, 4, 14}, ['J'] = {7, 2, 2, 2, 2, 18, 12},
-    ['K'] = {17, 18, 20, 24, 20, 18, 17}, ['L'] = {16, 16, 16, 16, 16, 16, 31},
-    ['M'] = {17, 27, 21, 21, 17, 17, 17}, ['N'] = {17, 25, 21, 19, 17, 17, 17},
-    ['O'] = {14, 17, 17, 17, 17, 17, 14}, ['P'] = {30, 17, 17, 30, 16, 16, 16},
-    ['Q'] = {14, 17, 17, 17, 21, 18, 13}, ['R'] = {30, 17, 17, 30, 20, 18, 17},
-    ['S'] = {15, 16, 16, 14, 1, 1, 30}, ['T'] = {31, 4, 4, 4, 4, 4, 4},
-    ['U'] = {17, 17, 17, 17, 17, 17, 14}, ['V'] = {17, 17, 17, 17, 17, 10, 4},
-    ['W'] = {17, 17, 17, 21, 21, 21, 10}, ['X'] = {17, 17, 10, 4, 10, 17, 17},
-    ['Y'] = {17, 17, 10, 4, 4, 4, 4}, ['Z'] = {31, 1, 2, 4, 8, 16, 31},
-    ['['] = {14, 8, 8, 8, 8, 8, 14}, ['\\'] = {16, 8, 8, 4, 2, 2, 1},
-    [']'] = {14, 2, 2, 2, 2, 2, 14}, ['^'] = {4, 10, 17, 0, 0, 0, 0},
-    ['_'] = {0, 0, 0, 0, 0, 0, 31}, ['`'] = {8, 4, 2, 0, 0, 0, 0},
-    ['{'] = {2, 4, 4, 8, 4, 4, 2}, ['|'] = {4, 4, 4, 4, 4, 4, 4},
-    ['}'] = {8, 4, 4, 2, 4, 4, 8}, ['~'] = {0, 0, 9, 22, 0, 0, 0},
-};
+static uint32_t read_le32(const uint8_t *bytes) {
+    return (uint32_t)bytes[0] | (uint32_t)bytes[1] << 8 |
+           (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
+}
+
+static const uint8_t *decode_utf8(const uint8_t *cursor, const uint8_t *end,
+                                  uint32_t *codepoint) {
+    if (cursor == end)
+        return NULL;
+    uint8_t first = *cursor++;
+    if (first < 0x80) {
+        *codepoint = first;
+        return cursor;
+    }
+    unsigned continuation_count = first < 0xe0 ? 1U : first < 0xf0 ? 2U : 3U;
+    uint32_t value = first & (0x7fU >> continuation_count);
+    if ((size_t)(end - cursor) < continuation_count)
+        return NULL;
+    for (unsigned index = 0; index < continuation_count; ++index) {
+        if ((cursor[index] & 0xc0) != 0x80)
+            return NULL;
+        value = value << 6 | (cursor[index] & 0x3f);
+    }
+    *codepoint = value;
+    return cursor + continuation_count;
+}
+
+static int font_open(struct font *font) {
+    memset(font, 0, sizeof(*font));
+    int fd = open(FONT_PATH, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    struct stat status;
+    if (fstat(fd, &status) < 0 || status.st_size < 32)
+        goto failure;
+    size_t size = (size_t)status.st_size;
+    uint8_t *mapping = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapping == MAP_FAILED)
+        goto failure;
+    close(fd);
+
+    uint32_t header_size = read_le32(mapping + 8);
+    uint32_t flags = read_le32(mapping + 12);
+    uint32_t glyph_count = read_le32(mapping + 16);
+    uint32_t glyph_size = read_le32(mapping + 20);
+    if (read_le32(mapping) != PSF2_MAGIC || header_size < 32 || header_size > size ||
+        (flags & PSF2_HAS_UNICODE_TABLE) == 0 || read_le32(mapping + 24) != CELL_HEIGHT ||
+        read_le32(mapping + 28) != CELL_WIDTH || glyph_size != CELL_HEIGHT * 2U ||
+        glyph_count == 0 || glyph_count > (size - header_size) / glyph_size)
+        goto invalid;
+
+    const uint8_t *glyphs = mapping + header_size;
+    const uint8_t *cursor = glyphs + (size_t)glyph_count * glyph_size;
+    const uint8_t *end = mapping + size;
+    for (uint32_t glyph = 0; glyph < glyph_count; ++glyph) {
+        int sequence = 0;
+        while (cursor < end && *cursor != 0xff) {
+            if (*cursor == 0xfe) {
+                sequence = 1;
+                ++cursor;
+                continue;
+            }
+            uint32_t codepoint;
+            cursor = decode_utf8(cursor, end, &codepoint);
+            if (!cursor)
+                goto invalid;
+            if (!sequence && codepoint < 128)
+                font->glyphs[codepoint] = glyphs + (size_t)glyph * glyph_size;
+        }
+        if (cursor == end)
+            goto invalid;
+        ++cursor;
+    }
+    for (unsigned character = 0x20; character < 0x7f; ++character)
+        if (!font->glyphs[character])
+            goto invalid;
+    font->mapping = mapping;
+    font->size = size;
+    return 0;
+
+invalid:
+    munmap(mapping, size);
+    errno = EINVAL;
+    return -1;
+failure:
+    close(fd);
+    return -1;
+}
 
 static void clear_cell(struct terminal *terminal, size_t index) {
     terminal->cells[index] = (struct cell){' ', terminal->foreground, terminal->background};
@@ -187,6 +249,38 @@ static void clear_screen(struct terminal *terminal) {
     for (size_t index = 0; index < terminal->columns * terminal->rows; ++index)
         clear_cell(terminal, index);
     terminal->column = terminal->row = 0;
+}
+
+static int terminal_resize(struct terminal *terminal, size_t columns, size_t rows) {
+    if (!columns || !rows || columns > SIZE_MAX / rows)
+        return -1;
+    struct cell *cells = calloc(columns * rows, sizeof(*cells));
+    if (!cells)
+        return -1;
+    for (size_t index = 0; index < columns * rows; ++index)
+        cells[index] = (struct cell){' ', terminal->foreground, terminal->background};
+    size_t source_row = terminal->row >= rows ? terminal->row + 1 - rows : 0;
+    size_t copy_rows = rows < terminal->rows - source_row ? rows : terminal->rows - source_row;
+    size_t copy_columns = columns < terminal->columns ? columns : terminal->columns;
+    for (size_t row = 0; row < copy_rows; ++row)
+        memcpy(cells + row * columns,
+               terminal->cells + (source_row + row) * terminal->columns,
+               copy_columns * sizeof(*cells));
+    free(terminal->cells);
+    terminal->cells = cells;
+    terminal->columns = columns;
+    terminal->rows = rows;
+    terminal->row -= source_row;
+    if (terminal->column >= columns)
+        terminal->column = columns - 1;
+    return 0;
+}
+
+static int set_window_size(int master, size_t columns, size_t rows) {
+    struct {
+        uint16_t rows, columns, xpixel, ypixel;
+    } size = {(uint16_t)rows, (uint16_t)columns, 0, 0};
+    return ioctl(master, TIOCSWINSZ, &size);
 }
 
 static void line_feed(struct terminal *terminal) {
@@ -326,7 +420,8 @@ static void terminal_feed(struct terminal *terminal, const uint8_t *bytes, size_
     }
 }
 
-static void render(const struct terminal *terminal, struct display *display) {
+static void render(const struct terminal *terminal, struct display *display,
+                   const struct font *font) {
     for (uint32_t y = 0; y < display->height; ++y) {
         uint32_t *row = (uint32_t *)((uint8_t *)display->pixels + (size_t)y * display->pitch);
         for (uint32_t x = 0; x < display->width; ++x)
@@ -336,25 +431,14 @@ static void render(const struct terminal *terminal, struct display *display) {
         for (size_t column = 0; column < terminal->columns; ++column) {
             const struct cell *cell = &terminal->cells[row * terminal->columns + column];
             uint8_t character = cell->character;
-            if (character >= 'a' && character <= 'z')
-                character = (uint8_t)toupper(character);
-            const uint8_t *glyph = font[character < 128 ? character : '?'];
+            const uint8_t *glyph = font->glyphs[character < 128 ? character : '?'];
             uint32_t foreground = palette[cell->foreground & 15];
             uint32_t background = palette[cell->background & 15];
             for (unsigned y = 0; y < CELL_HEIGHT; ++y) {
                 uint32_t *pixels = (uint32_t *)((uint8_t *)display->pixels +
                     (row * CELL_HEIGHT + y) * display->pitch) + column * CELL_WIDTH;
-                unsigned glyph_row = y >= GLYPH_OFFSET_Y &&
-                                     y < GLYPH_OFFSET_Y + GLYPH_HEIGHT * GLYPH_SCALE_Y
-                                         ? (y - GLYPH_OFFSET_Y) / GLYPH_SCALE_Y
-                                         : GLYPH_HEIGHT;
                 for (unsigned x = 0; x < CELL_WIDTH; ++x) {
-                    unsigned glyph_column = x >= GLYPH_OFFSET_X &&
-                                            x < GLYPH_OFFSET_X + GLYPH_WIDTH * GLYPH_SCALE_X
-                                                ? (x - GLYPH_OFFSET_X) / GLYPH_SCALE_X
-                                                : GLYPH_WIDTH;
-                    int stroke = glyph_row < GLYPH_HEIGHT && glyph_column < GLYPH_WIDTH &&
-                                 (glyph[glyph_row] & (1U << (GLYPH_WIDTH - glyph_column - 1U)));
+                    int stroke = glyph[y * 2U + x / 8U] & (0x80U >> (x % 8U));
                     pixels[x] = stroke ? foreground : background;
                 }
             }
@@ -364,10 +448,94 @@ static void render(const struct terminal *terminal, struct display *display) {
         (terminal->row * CELL_HEIGHT + CELL_HEIGHT - CURSOR_HEIGHT) * display->pitch) +
         terminal->column * CELL_WIDTH;
     for (unsigned y = 0; y < CURSOR_HEIGHT; ++y) {
-        for (unsigned x = GLYPH_OFFSET_X; x < CELL_WIDTH - GLYPH_OFFSET_X; ++x)
+        for (unsigned x = 1; x < CELL_WIDTH - 1; ++x)
             cursor[x] = palette[terminal->foreground & 15];
         cursor = (uint32_t *)((uint8_t *)cursor + display->pitch);
     }
+}
+
+static int display_query_mode(const struct display *display, struct drm_mode *mode) {
+    memset(mode, 0, sizeof(*mode));
+    struct drm_connector connector = {
+        .mode_ptr = (uintptr_t)mode,
+        .count_modes = 1,
+        .connector_id = display->connector_id,
+    };
+    if (ioctl(display->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0 ||
+        !connector.count_modes || !mode->hdisplay || !mode->vdisplay)
+        return -1;
+    return 0;
+}
+
+static int display_set_mode(struct display *display, const struct drm_mode *mode) {
+    struct drm_dumb_create create = {
+        .height = mode->vdisplay,
+        .width = mode->hdisplay,
+        .bpp = 32,
+    };
+    uint32_t framebuffer_id = 0;
+    void *pixels = MAP_FAILED;
+    if (ioctl(display->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    struct drm_dumb_map map = {.handle = create.handle};
+    if (ioctl(display->fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
+        goto failure;
+    pixels = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                  display->fd, (off_t)map.offset);
+    if (pixels == MAP_FAILED)
+        goto failure;
+    struct drm_fb framebuffer = {
+        .width = mode->hdisplay,
+        .height = mode->vdisplay,
+        .pitch = create.pitch,
+        .bpp = 32,
+        .depth = 24,
+        .handle = create.handle,
+    };
+    if (ioctl(display->fd, DRM_IOCTL_MODE_ADDFB, &framebuffer) < 0)
+        goto failure;
+    framebuffer_id = framebuffer.fb_id;
+    memset(pixels, 0, create.size);
+    uint32_t connector_id = display->connector_id;
+    struct drm_crtc crtc = {
+        .connector_ptr = (uintptr_t)&connector_id,
+        .count_connectors = 1,
+        .crtc_id = display->crtc_id,
+        .fb_id = framebuffer_id,
+        .mode_valid = 1,
+        .mode = *mode,
+    };
+    if (ioctl(display->fd, DRM_IOCTL_MODE_SETCRTC, &crtc) < 0)
+        goto failure;
+
+    void *old_pixels = display->pixels;
+    uint64_t old_size = display->size;
+    uint32_t old_framebuffer = display->framebuffer_id;
+    uint32_t old_handle = display->handle;
+    display->pixels = pixels;
+    display->size = create.size;
+    display->framebuffer_id = framebuffer_id;
+    display->handle = create.handle;
+    display->width = mode->hdisplay;
+    display->height = mode->vdisplay;
+    display->pitch = create.pitch;
+    display->mode = *mode;
+    if (old_pixels) {
+        munmap(old_pixels, old_size);
+        (void)ioctl(display->fd, DRM_IOCTL_MODE_RMFB, &old_framebuffer);
+        struct drm_dumb_destroy destroy = {.handle = old_handle};
+        (void)ioctl(display->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    }
+    return 0;
+
+failure:
+    if (framebuffer_id)
+        (void)ioctl(display->fd, DRM_IOCTL_MODE_RMFB, &framebuffer_id);
+    if (pixels != MAP_FAILED)
+        munmap(pixels, create.size);
+    struct drm_dumb_destroy destroy = {.handle = create.handle};
+    (void)ioctl(display->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    return -1;
 }
 
 static int display_open(struct display *display) {
@@ -387,60 +555,11 @@ static int display_open(struct display *display) {
     if (ioctl(display->fd, DRM_IOCTL_MODE_GETRESOURCES, &resources) < 0 ||
         !resources.count_crtcs || !resources.count_connectors)
         goto failure;
-
-    struct drm_mode mode = {0};
-    struct drm_connector connector = {
-        .mode_ptr = (uintptr_t)&mode,
-        .count_modes = 1,
-        .connector_id = connector_id,
-    };
-    if (ioctl(display->fd, DRM_IOCTL_MODE_GETCONNECTOR, &connector) < 0 ||
-        !connector.count_modes || !mode.hdisplay || !mode.vdisplay)
-        goto failure;
-
-    struct drm_dumb_create create = {
-        .height = mode.vdisplay,
-        .width = mode.hdisplay,
-        .bpp = 32,
-    };
-    if (ioctl(display->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
-        goto failure;
-    struct drm_dumb_map map = {.handle = create.handle};
-    if (ioctl(display->fd, DRM_IOCTL_MODE_MAP_DUMB, &map) < 0)
-        goto failure;
-    void *pixels = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        display->fd, (off_t)map.offset);
-    if (pixels == MAP_FAILED)
-        goto failure;
-    display->pixels = pixels;
-    display->size = create.size;
-    struct drm_fb framebuffer = {
-        .width = mode.hdisplay,
-        .height = mode.vdisplay,
-        .pitch = create.pitch,
-        .bpp = 32,
-        .depth = 24,
-        .handle = create.handle,
-    };
-    if (ioctl(display->fd, DRM_IOCTL_MODE_ADDFB, &framebuffer) < 0)
-        goto failure;
-    memset(pixels, 0, create.size);
-    struct drm_crtc crtc = {
-        .connector_ptr = (uintptr_t)&connector_id,
-        .count_connectors = 1,
-        .crtc_id = crtc_id,
-        .fb_id = framebuffer.fb_id,
-        .mode_valid = 1,
-        .mode = mode,
-    };
-    if (ioctl(display->fd, DRM_IOCTL_MODE_SETCRTC, &crtc) < 0)
-        goto failure;
     display->crtc_id = crtc_id;
     display->connector_id = connector_id;
-    display->framebuffer_id = framebuffer.fb_id;
-    display->width = mode.hdisplay;
-    display->height = mode.vdisplay;
-    display->pitch = create.pitch;
+    struct drm_mode mode;
+    if (display_query_mode(display, &mode) < 0 || display_set_mode(display, &mode) < 0)
+        goto failure;
     return 0;
 
 failure:
@@ -450,6 +569,15 @@ failure:
     display->fd = -1;
     display->pixels = NULL;
     return -1;
+}
+
+static int display_reconfigure(struct display *display) {
+    struct drm_mode mode;
+    if (display_query_mode(display, &mode) < 0)
+        return -1;
+    if (mode.hdisplay == display->mode.hdisplay && mode.vdisplay == display->mode.vdisplay)
+        return 0;
+    return display_set_mode(display, &mode) < 0 ? -1 : 1;
 }
 
 static int display_present(struct display *display) {
@@ -484,10 +612,11 @@ static int spawn_shell(size_t columns, size_t rows, int *master_out) {
         close(master);
         return -1;
     }
-    struct {
-        uint16_t rows, columns, xpixel, ypixel;
-    } size = {(uint16_t)rows, (uint16_t)columns, 0, 0};
-    (void)ioctl(master, 0x5414, &size);
+    if (set_window_size(master, columns, rows) < 0) {
+        close(slave);
+        close(master);
+        return -1;
+    }
 
     pid_t child = fork();
     if (child < 0) {
@@ -579,6 +708,13 @@ static void write_key(int master, const char *bytes, size_t length) {
     }
 }
 
+static uint64_t monotonic_milliseconds(void) {
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) < 0)
+        return 0;
+    return (uint64_t)time.tv_sec * 1000U + (uint64_t)time.tv_nsec / 1000000U;
+}
+
 static void handle_key(int master, struct keyboard_state *state,
                        const struct input_event *event) {
     if (event->type != EV_KEY)
@@ -632,7 +768,7 @@ static void handle_key(int master, struct keyboard_state *state,
     write_key(master, &character, 1);
 }
 
-static int terminal_run(struct display *display) {
+static int terminal_run(struct display *display, const struct font *font) {
     struct terminal terminal = {
         .columns = display->width / CELL_WIDTH,
         .rows = display->height / CELL_HEIGHT,
@@ -645,7 +781,7 @@ static int terminal_run(struct display *display) {
     if (!terminal.cells)
         return -1;
     clear_screen(&terminal);
-    render(&terminal, display);
+    render(&terminal, display, font);
     if (display_present(display) < 0) {
         free(terminal.cells);
         return -1;
@@ -663,9 +799,13 @@ static int terminal_run(struct display *display) {
         {.fd = master, .events = POLLIN},
         {.fd = keyboard, .events = POLLIN},
     };
+    uint64_t next_mode_probe = monotonic_milliseconds() + MODE_PROBE_INTERVAL_MS;
     for (;;) {
+        uint64_t before_poll = monotonic_milliseconds();
+        uint64_t remaining = next_mode_probe > before_poll ? next_mode_probe - before_poll : 0;
+        int timeout = remaining > INT_MAX ? INT_MAX : (int)remaining;
         int ready;
-        do ready = poll(descriptors, 2, -1); while (ready < 0 && errno == EINTR);
+        do ready = poll(descriptors, 2, timeout); while (ready < 0 && errno == EINTR);
         if (ready < 0)
             break;
         if (descriptors[0].revents & (POLLIN | POLLHUP | POLLERR)) {
@@ -688,7 +828,7 @@ static int terminal_run(struct display *display) {
             if (!changed && closed)
                 break;
             if (changed) {
-                render(&terminal, display);
+                render(&terminal, display, font);
                 if (display_present(display) < 0)
                     break;
             }
@@ -702,6 +842,22 @@ static int terminal_run(struct display *display) {
                 for (size_t index = 0; index < (size_t)count / sizeof(events[0]); ++index)
                     handle_key(master, &keyboard_state, &events[index]);
         }
+        uint64_t now = monotonic_milliseconds();
+        if (now >= next_mode_probe) {
+            next_mode_probe = now + MODE_PROBE_INTERVAL_MS;
+            int reconfigured = display_reconfigure(display);
+            if (reconfigured > 0) {
+                size_t columns = display->width / CELL_WIDTH;
+                size_t rows = display->height / CELL_HEIGHT;
+                if (terminal_resize(&terminal, columns, rows) < 0)
+                    break;
+                if (set_window_size(master, columns, rows) < 0)
+                    break;
+                render(&terminal, display, font);
+                if (display_present(display) < 0)
+                    break;
+            }
+        }
     }
     close(master);
     if (keyboard >= 0)
@@ -712,10 +868,15 @@ static int terminal_run(struct display *display) {
 }
 
 int main(void) {
+    struct font font;
+    if (font_open(&font) < 0) {
+        perror("liteos-terminal: font");
+        return 1;
+    }
     for (;;) {
         struct display display;
         if (display_open(&display) == 0)
-            (void)terminal_run(&display);
+            (void)terminal_run(&display, &font);
         if (display.pixels)
             munmap(display.pixels, display.size);
         if (display.fd >= 0)

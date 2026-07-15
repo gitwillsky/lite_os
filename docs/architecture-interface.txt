@@ -260,18 +260,22 @@ kernel/src/drivers/block.rs :: trait BlockDevice :: fn write_block (& self , blo
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越过当前 scanout。"] InvalidRectangle
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 重新查询 display-info 后观察到新的 scanout mode。"] ModeChanged (DisplayMode)
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一次 userspace scanout transaction 已完整完成。"] ScanoutCompleted (u64)
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: height : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: pitch : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: width : u32
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
+kernel/src/drivers/display.rs :: pub (crate) enum DisplayUpdate
 kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn DisplayDevice > >
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
 kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn DisplayDevice >) -> Result < () , () >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn commit_mode (& self , mode : DisplayMode) -> Result < () , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn initial_backing (& self) -> Arc < FrameTracker >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_completion (& self) -> Result < Option < u64 > , DisplayError >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , backing : Arc < FrameTracker >) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) -> Result < Option < DisplayUpdate > , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , mode : DisplayMode , backing : Arc < FrameTracker > ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/goldfish_rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) enum RtcError
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (rtc : RTCDevice) -> Result < Self , RtcError >
@@ -326,10 +330,12 @@ kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice 
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn notify_queue (& self , queue : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn queue_max_size (& self , index : u32) -> Result < u16 , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u32 (& self , offset : usize) -> Result < u32 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u64 (& self , offset : usize) -> Result < u64 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn read_config_u8 (& self , offset : usize) -> Result < u8 , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_driver_features (& self , features : u64) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn set_status (& self , status : u32) -> Result < () , BusError >
+kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn write_config_u32 (& self , offset : usize , value : u32 ,) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) impl VirtIODevice :: fn write_config_u8 (& self , offset : usize , value : u8 ,) -> Result < () , BusError >
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtIODevice
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) struct VirtQueueAddresses
@@ -371,7 +377,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn init ()
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod network
-kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , primary_display }
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayUpdate , primary_display , }
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
@@ -418,6 +424,9 @@ kernel/src/drivers/virtio_blk.rs :: pub (super) struct VirtIOBlockDevice
 kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_gpu.rs :: pub (super) struct VirtIOGpuDevice
+kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
+kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & FrameTracker , framebuffer_bytes : usize ,) -> Option < () >
+kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_HEADER_SIZE : usize = 24
@@ -429,6 +438,9 @@ kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOUR
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_UNREF : u32 = 0x0102
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_SET_SCANOUT : u32 = 0x0103
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D : u32 = 0x0105
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENTS_CLEAR : usize = 4
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENTS_READ : usize = 0
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_EVENT_DISPLAY : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FLAG_FENCE : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM : u32 = 2
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_DISPLAY_INFO : u32 = 0x1101
@@ -521,7 +533,6 @@ kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_count (& self) -
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , index : usize) -> Option < u32 >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmWait , DrmError >
@@ -537,6 +548,7 @@ kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns :
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
+kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_scanout (& self , completion : & mut CompletionState , mode : DisplayMode , framebuffer_id : Option < u32 > , event : Option < PendingEvent > ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/event.rs :: pub (crate) impl DrmEvent :: fn encode (self) -> [u8 ; Self :: SIZE]
 kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
@@ -556,6 +568,8 @@ kernel/src/drm/event.rs :: pub (super) struct EventQueue
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn drop_master (& self , privileged : bool) -> Result < () , DrmError >
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn is_master (& self) -> bool
 kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn set_master (& self , privileged : bool) -> Result < () , DrmError >
+kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn active_crtc (& self) -> Option < (u32 , DrmMode) >
+kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
 kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn is_empty (& self) -> bool
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn len (& self) -> usize
@@ -754,7 +768,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn readiness_gene
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn release_session (& self , session : usize) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_foreground_pgid (& self , session : usize , pgid : usize) -> Result < () , () >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_termios (& self , termios : [u8 ; KERNEL_TERMIOS_SIZE])
-kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_window_size (& self , window_size : [u8 ; 8])
+kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn set_window_size (& self , window_size : [u8 ; 8]) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn signal_target_group (& self) -> Option < usize >
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn termios (& self) -> [u8 ; KERNEL_TERMIOS_SIZE]
 kernel/src/fs/file/terminal.rs :: pub (crate) impl Terminal :: fn wait_ready (& self) -> bool
@@ -2529,7 +2543,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGro
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use resource_limit :: process_resource_limit
 kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
-kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal }
+kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , resize_terminal , }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
 kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { fork_current_process , vfork_current_process }
@@ -2669,6 +2683,7 @@ kernel/src/task/task_manager/terminal_access.rs :: enum TerminalAccessError :: R
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) enum TerminalAccessError
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn check_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , TerminalAccessError >
 kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn hangup_terminal (terminal : & Terminal)
+kernel/src/task/task_manager/terminal_access.rs :: pub (crate) fn resize_terminal (terminal : & Terminal , window_size : [u8 ; 8])
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Fault
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager/thread_clone.rs :: enum ThreadCloneError :: ResourceLimit

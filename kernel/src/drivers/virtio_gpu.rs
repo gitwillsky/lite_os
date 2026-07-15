@@ -4,19 +4,21 @@ use spin::Mutex;
 use crate::memory::{FrameAllocationClass, FrameTracker, PAGE_SIZE, alloc_contiguous};
 
 use super::{
-    DisplayDevice, DisplayError, DisplayMode, InterruptError, InterruptHandler, InterruptVector,
-    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
+    DisplayDevice, DisplayError, DisplayMode, DisplayUpdate, InterruptError, InterruptHandler,
+    InterruptVector, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice, virtio_queue::VirtQueue,
 };
 
 mod wire;
 use wire::*;
+mod boot;
 
 const CONTROL_QUEUE: u32 = 0;
 const QUEUE_SIZE: u16 = 64;
 
 #[derive(Clone, Copy)]
 enum RuntimeStage {
+    DisplayInfo,
     Create,
     Attach,
     Transfer,
@@ -36,6 +38,9 @@ struct ScanoutTransition {
     // OWNER: next resource 从 CREATE publication 到最终成为 active 始终由 controlq
     // transaction 保活；缺失该字段会在多阶段 IRQ 间隙释放 backing。
     next: ScanoutResource,
+    // mode 必须随 operation 捕获；config interrupt 可在六阶段 transaction 中间改变
+    // 最新 display-info，若逐阶段读取 live mode 会把同一 resource 以两套尺寸解释。
+    mode: DisplayMode,
 }
 
 struct PendingCommand {
@@ -49,7 +54,7 @@ struct ControlQueue {
     queue: VirtQueue,
     next_fence: u64,
     request: [u8; 56],
-    response: [u8; CONTROL_HEADER_SIZE],
+    response: [u8; DISPLAY_INFO_SIZE],
     // OWNER: pending 是 descriptor head、command fence 与 stage 的唯一对应关系；若按
     // command type 分散记录，乱序或 stale completion 会推进错误 transaction。
     pending: Option<PendingCommand>,
@@ -62,6 +67,15 @@ struct ControlQueue {
     // 两个 resource ID 交替复用；只有 UNREF completion 后才归还。提前复用会让 device
     // 把新 command 误绑定到仍存在的旧 resource。
     reusable_resource_id: Option<u32>,
+    // OWNER: config event 可与正在执行的 scanout command 合并到来；该位把一次尚未提交的
+    // GET_DISPLAY_INFO 保留到 controlq 空闲，否则清除 device event 后会永久丢失 resize。
+    config_change_pending: bool,
+    // OWNER: mode 是 DRM 已确认的 adapter generation；submit/query 只在 control lock 下
+    // 读取，避免 candidate 与 accepted mode 被并发观察为同一代。
+    mode: DisplayMode,
+    // OWNER: display-info completion 只发布候选；DRM 准备好同尺寸 fallback 后才 commit。
+    // 缺失两阶段提交会在 runtime fallback OOM 时让 adapter 与 KMS mode 代际分裂。
+    pending_mode: Option<DisplayMode>,
 }
 
 /// @description VirtIO-GPU 2D single-scanout adapter。
@@ -70,7 +84,6 @@ pub(super) struct VirtIOGpuDevice {
     // OWNER: adapter 在 device ready 后永久持有 controlq DMA backing；若初始化后释放，
     // device 仍可访问已经归还 allocator 的 descriptor pages。
     control: Mutex<ControlQueue>,
-    mode: DisplayMode,
 }
 
 impl VirtIOGpuDevice {
@@ -110,13 +123,21 @@ impl VirtIOGpuDevice {
             queue,
             next_fence: 1,
             request: [0; 56],
-            response: [0; CONTROL_HEADER_SIZE],
+            response: [0; DISPLAY_INFO_SIZE],
             pending: None,
             active: None,
             transition: None,
             reusable_resource_id: None,
+            config_change_pending: false,
+            mode: DisplayMode {
+                width: 0,
+                height: 0,
+                pitch: 0,
+            },
+            pending_mode: None,
         });
         let mode = Self::display_mode(&device, &control)?;
+        control.lock().mode = mode;
         let framebuffer_bytes = usize::try_from(mode.pitch)
             .ok()?
             .checked_mul(usize::try_from(mode.height).ok()?)?;
@@ -136,162 +157,7 @@ impl VirtIOGpuDevice {
             control.reusable_resource_id = Some(ALTERNATE_RESOURCE_ID);
         }
 
-        Arc::try_new(Self {
-            device,
-            control,
-            mode,
-        })
-        .ok()
-    }
-
-    fn display_mode(device: &VirtIODevice, control: &Mutex<ControlQueue>) -> Option<DisplayMode> {
-        let mut response = [0u8; DISPLAY_INFO_SIZE];
-        Self::execute_boot(
-            device,
-            control,
-            VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
-            &mut [0u8; CONTROL_HEADER_SIZE],
-            &mut response,
-            VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-        )?;
-        for scanout in 0..16 {
-            let offset = CONTROL_HEADER_SIZE + scanout * 24;
-            let width = read_u32(&response, offset + 8)?;
-            let height = read_u32(&response, offset + 12)?;
-            let enabled = read_u32(&response, offset + 16)?;
-            if enabled != 0 && width != 0 && height != 0 {
-                return Some(DisplayMode {
-                    width,
-                    height,
-                    pitch: width.checked_mul(4)?,
-                });
-            }
-        }
-        None
-    }
-
-    fn initialize_scanout(
-        device: &VirtIODevice,
-        control: &Mutex<ControlQueue>,
-        mode: DisplayMode,
-        framebuffer: &FrameTracker,
-        framebuffer_bytes: usize,
-    ) -> Option<()> {
-        let mut create = [0u8; 40];
-        write_u32(&mut create, 24, BOOT_RESOURCE_ID)?;
-        write_u32(&mut create, 28, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM)?;
-        write_u32(&mut create, 32, mode.width)?;
-        write_u32(&mut create, 36, mode.height)?;
-        Self::execute_ok(
-            device,
-            control,
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-            &mut create,
-        )?;
-
-        let mut attach = [0u8; 48];
-        write_u32(&mut attach, 24, BOOT_RESOURCE_ID)?;
-        write_u32(&mut attach, 28, 1)?;
-        write_u64(
-            &mut attach,
-            32,
-            (framebuffer.ppn.as_usize() * PAGE_SIZE) as u64,
-        )?;
-        write_u32(&mut attach, 40, u32::try_from(framebuffer_bytes).ok()?)?;
-        Self::execute_ok(
-            device,
-            control,
-            VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-            &mut attach,
-        )?;
-
-        let mut scanout = [0u8; 48];
-        write_rect(&mut scanout, 24, mode)?;
-        write_u32(&mut scanout, 40, 0)?;
-        write_u32(&mut scanout, 44, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(device, control, VIRTIO_GPU_CMD_SET_SCANOUT, &mut scanout)?;
-
-        let mut transfer = [0u8; 56];
-        write_rect(&mut transfer, 24, mode)?;
-        write_u64(&mut transfer, 40, 0)?;
-        write_u32(&mut transfer, 48, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(
-            device,
-            control,
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
-            &mut transfer,
-        )?;
-
-        let mut flush = [0u8; 48];
-        write_rect(&mut flush, 24, mode)?;
-        write_u32(&mut flush, 40, BOOT_RESOURCE_ID)?;
-        Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_FLUSH, &mut flush)
-    }
-
-    fn execute_ok(
-        device: &VirtIODevice,
-        control: &Mutex<ControlQueue>,
-        command: u32,
-        request: &mut [u8],
-    ) -> Option<()> {
-        let mut response = [0u8; CONTROL_HEADER_SIZE];
-        Self::execute_boot(
-            device,
-            control,
-            command,
-            request,
-            &mut response,
-            VIRTIO_GPU_RESP_OK_NODATA,
-        )
-    }
-
-    fn execute_boot(
-        device: &VirtIODevice,
-        control: &Mutex<ControlQueue>,
-        command: u32,
-        request: &mut [u8],
-        response: &mut [u8],
-        expected_response: u32,
-    ) -> Option<()> {
-        if request.len() < CONTROL_HEADER_SIZE || response.len() < CONTROL_HEADER_SIZE {
-            return None;
-        }
-        let mut control = control.lock();
-        let fence = control.next_fence;
-        control.next_fence = control.next_fence.checked_add(1)?;
-
-        // 1. caller 为命令体提供固定大小 storage；只在 descriptor 发布前
-        //    写入 common header，避免为不同 GPU command 复制 queue lifecycle。
-        write_u32(request, 0, command)?;
-        write_u32(request, 4, VIRTIO_GPU_FLAG_FENCE)?;
-        write_u64(request, 8, fence)?;
-        response.fill(0);
-
-        let mut outputs = [response];
-        let head = control.queue.add_buffer(&[request], &mut outputs)?;
-        control.queue.add_to_avail(head);
-        device.notify_queue(CONTROL_QUEUE).ok()?;
-
-        // 2. 这是 scheduler/IRQ publication 之前的唯一 bootstrap transaction；runtime DRM
-        //    command 不得复用该路径，否则 page flip 会重新占用 CPU 忙等。
-        loop {
-            match control.queue.used() {
-                Ok(Some((completed, _))) if completed == head => break,
-                Ok(Some(_)) | Err(()) => return None,
-                Ok(None) => core::hint::spin_loop(),
-            }
-        }
-        if let Ok(status) = device.interrupt_status()
-            && status != 0
-        {
-            device.interrupt_ack(status).ok()?;
-        }
-
-        // 3. fence 同时证明 response 属于本次 command 且 device 已完成指定操作。
-        (read_u32(outputs[0], 0)? == expected_response
-            && read_u32(outputs[0], 4)? & VIRTIO_GPU_FLAG_FENCE != 0
-            && read_u64(outputs[0], 8)? == fence)
-            .then_some(())
+        Arc::try_new(Self { device, control }).ok()
     }
 
     fn publish_runtime(
@@ -335,6 +201,18 @@ impl VirtIOGpuDevice {
             .notify_queue(CONTROL_QUEUE)
             .map_err(|_| DisplayError::Device)?;
         Ok(operation_fence)
+    }
+
+    fn publish_display_info(&self, control: &mut ControlQueue) -> Result<(), DisplayError> {
+        control.request.fill(0);
+        self.publish_runtime(
+            control,
+            VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+            CONTROL_HEADER_SIZE,
+            Some(0),
+            RuntimeStage::DisplayInfo,
+        )?;
+        Ok(())
     }
 
     fn prepare_create(
@@ -430,7 +308,7 @@ impl InterruptHandler for VirtIOGpuIrqHandler {
             .device
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
-        if status & VIRTIO_MMIO_INT_VRING != 0 {
+        if status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG) != 0 {
             crate::arch::hart::raise_display_softirq();
         }
         Ok(())
@@ -439,7 +317,7 @@ impl InterruptHandler for VirtIOGpuIrqHandler {
 
 impl DisplayDevice for VirtIOGpuDevice {
     fn mode(&self) -> DisplayMode {
-        self.mode
+        self.control.lock().mode
     }
 
     fn initial_backing(&self) -> Arc<FrameTracker> {
@@ -452,10 +330,24 @@ impl DisplayDevice for VirtIOGpuDevice {
             .clone()
     }
 
-    fn submit_scanout(&self, backing: Arc<FrameTracker>) -> Result<u64, DisplayError> {
-        let bytes = usize::try_from(self.mode.pitch)
+    fn commit_mode(&self, mode: DisplayMode) -> Result<(), DisplayError> {
+        let mut control = self.control.lock();
+        if control.pending_mode != Some(mode) {
+            return Err(DisplayError::Device);
+        }
+        control.mode = mode;
+        control.pending_mode = None;
+        Ok(())
+    }
+
+    fn submit_scanout(
+        &self,
+        mode: DisplayMode,
+        backing: Arc<FrameTracker>,
+    ) -> Result<u64, DisplayError> {
+        let bytes = usize::try_from(mode.pitch)
             .ok()
-            .and_then(|pitch| pitch.checked_mul(self.mode.height as usize))
+            .and_then(|pitch| pitch.checked_mul(mode.height as usize))
             .ok_or(DisplayError::InvalidRectangle)?;
         if backing
             .pages
@@ -478,8 +370,9 @@ impl DisplayDevice for VirtIOGpuDevice {
                 id: resource_id,
                 backing,
             },
+            mode,
         });
-        Self::prepare_create(&mut control.request, self.mode, resource_id)?;
+        Self::prepare_create(&mut control.request, mode, resource_id)?;
         self.publish_runtime(
             &mut control,
             VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
@@ -489,29 +382,60 @@ impl DisplayDevice for VirtIOGpuDevice {
         )
     }
 
-    fn poll_completion(&self) -> Result<Option<u64>, DisplayError> {
+    fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError> {
         let mut control = self.control.lock();
+        let events = self
+            .device
+            .read_config_u32(VIRTIO_GPU_EVENTS_READ)
+            .map_err(|_| DisplayError::Device)?;
+        if events != 0 {
+            self.device
+                .write_config_u32(VIRTIO_GPU_EVENTS_CLEAR, events)
+                .map_err(|_| DisplayError::Device)?;
+            control.config_change_pending |= events & VIRTIO_GPU_EVENT_DISPLAY != 0;
+        }
         let Some((head, _)) = control.queue.used().map_err(|()| DisplayError::Device)? else {
+            if control.pending.is_none() && control.config_change_pending {
+                control.config_change_pending = false;
+                self.publish_display_info(&mut control)?;
+            }
             return Ok(None);
         };
         let pending = control.pending.take().ok_or(DisplayError::Device)?;
+        let expected_response = match pending.stage {
+            RuntimeStage::DisplayInfo => VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+            RuntimeStage::Create
+            | RuntimeStage::Attach
+            | RuntimeStage::Transfer
+            | RuntimeStage::SetScanout
+            | RuntimeStage::Flush
+            | RuntimeStage::Unref => VIRTIO_GPU_RESP_OK_NODATA,
+        };
         if head != pending.head
-            || read_u32(&control.response, 0) != Some(VIRTIO_GPU_RESP_OK_NODATA)
+            || read_u32(&control.response, 0) != Some(expected_response)
             || read_u32(&control.response, 4).is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
             || read_u64(&control.response, 8) != Some(pending.command_fence)
         {
             return Err(DisplayError::Device);
         }
-        let resource_id = control
-            .transition
-            .as_ref()
-            .map(|transition| transition.next.id)
-            .ok_or(DisplayError::Device)?;
-        match pending.stage {
+        let update = match pending.stage {
+            RuntimeStage::DisplayInfo => {
+                let mode =
+                    Self::parse_display_mode(&control.response).ok_or(DisplayError::Device)?;
+                if mode == control.mode {
+                    None
+                } else {
+                    control.pending_mode = Some(mode);
+                    Some(DisplayUpdate::ModeChanged(mode))
+                }
+            }
             RuntimeStage::Create => {
-                let bytes = usize::try_from(self.mode.pitch)
+                let transition = control.transition.as_ref().ok_or(DisplayError::Device)?;
+                let mode = transition.mode;
+                let resource_id = transition.next.id;
+                let bytes = usize::try_from(mode.pitch)
                     .ok()
-                    .and_then(|pitch| pitch.checked_mul(self.mode.height as usize))
+                    .and_then(|pitch| pitch.checked_mul(mode.height as usize))
                     .ok_or(DisplayError::InvalidRectangle)?;
                 let physical_address = control
                     .transition
@@ -526,10 +450,13 @@ impl DisplayDevice for VirtIOGpuDevice {
                     Some(pending.operation_fence),
                     RuntimeStage::Attach,
                 )?;
-                Ok(None)
+                None
             }
             RuntimeStage::Attach => {
-                Self::prepare_transfer(&mut control.request, self.mode, resource_id)?;
+                let transition = control.transition.as_ref().ok_or(DisplayError::Device)?;
+                let mode = transition.mode;
+                let resource_id = transition.next.id;
+                Self::prepare_transfer(&mut control.request, mode, resource_id)?;
                 self.publish_runtime(
                     &mut control,
                     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
@@ -537,10 +464,13 @@ impl DisplayDevice for VirtIOGpuDevice {
                     Some(pending.operation_fence),
                     RuntimeStage::Transfer,
                 )?;
-                Ok(None)
+                None
             }
             RuntimeStage::Transfer => {
-                Self::prepare_set_scanout(&mut control.request, self.mode, resource_id)?;
+                let transition = control.transition.as_ref().ok_or(DisplayError::Device)?;
+                let mode = transition.mode;
+                let resource_id = transition.next.id;
+                Self::prepare_set_scanout(&mut control.request, mode, resource_id)?;
                 self.publish_runtime(
                     &mut control,
                     VIRTIO_GPU_CMD_SET_SCANOUT,
@@ -548,10 +478,13 @@ impl DisplayDevice for VirtIOGpuDevice {
                     Some(pending.operation_fence),
                     RuntimeStage::SetScanout,
                 )?;
-                Ok(None)
+                None
             }
             RuntimeStage::SetScanout => {
-                Self::prepare_flush(&mut control.request, self.mode, resource_id)?;
+                let transition = control.transition.as_ref().ok_or(DisplayError::Device)?;
+                let mode = transition.mode;
+                let resource_id = transition.next.id;
+                Self::prepare_flush(&mut control.request, mode, resource_id)?;
                 self.publish_runtime(
                     &mut control,
                     VIRTIO_GPU_CMD_RESOURCE_FLUSH,
@@ -559,7 +492,7 @@ impl DisplayDevice for VirtIOGpuDevice {
                     Some(pending.operation_fence),
                     RuntimeStage::Flush,
                 )?;
-                Ok(None)
+                None
             }
             RuntimeStage::Flush => {
                 let old_id = control
@@ -575,7 +508,7 @@ impl DisplayDevice for VirtIOGpuDevice {
                     Some(pending.operation_fence),
                     RuntimeStage::Unref,
                 )?;
-                Ok(None)
+                None
             }
             RuntimeStage::Unref => {
                 let transition = control.transition.take().ok_or(DisplayError::Device)?;
@@ -586,12 +519,23 @@ impl DisplayDevice for VirtIOGpuDevice {
                 if control.reusable_resource_id.replace(old.id).is_some() {
                     return Err(DisplayError::Device);
                 }
+                if control.config_change_pending {
+                    control.config_change_pending = false;
+                    self.publish_display_info(&mut control)?;
+                }
                 drop(control);
                 // 最后一个 backing Arc 可能回收连续 extent；必须在 controlq lock 外析构，
                 // 否则 frame allocator latency 会阻塞后续 IRQ completion。
                 drop(old);
-                Ok(Some(pending.operation_fence))
+                return Ok(Some(DisplayUpdate::ScanoutCompleted(
+                    pending.operation_fence,
+                )));
             }
+        };
+        if control.pending.is_none() && control.config_change_pending {
+            control.config_change_pending = false;
+            self.publish_display_info(&mut control)?;
         }
+        Ok(update)
     }
 }

@@ -1,4 +1,4 @@
-use super::{DisplayMode, DrmMode};
+use super::{DisplayMode, DrmFile, DrmMode};
 
 pub(super) fn cvt_mode(mode: DisplayMode) -> DrmMode {
     const HV_FACTOR: u64 = 1000;
@@ -68,5 +68,23 @@ pub(super) fn cvt_mode(mode: DisplayMode) -> DrmMode {
         // non-reduced CVT uses positive VSync and negative HSync.
         flags: (1 << 2) | (1 << 1),
         mode_type: (1 << 3) | (1 << 6),
+    }
+}
+
+impl DrmFile {
+    /// @description 读取当前 single-connector preferred mode。
+    /// @return 与最新已提交 VirtIO display-info resolution 对应的 Linux CVT 60 Hz mode。
+    pub(crate) fn mode(&self) -> DrmMode {
+        cvt_mode(self.device.state.lock().mode)
+    }
+
+    /// @description 原子读取 completion 已确认的 active CRTC framebuffer 与 mode。
+    /// @return 尚未由 userspace modeset 时返回 `None`。
+    pub(crate) fn active_crtc(&self) -> Option<(u32, DrmMode)> {
+        self.device
+            .completion
+            .lock()
+            .active
+            .map(|active| (active.framebuffer, cvt_mode(active.mode)))
     }
 }

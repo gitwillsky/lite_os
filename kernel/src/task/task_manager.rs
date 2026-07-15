@@ -69,7 +69,9 @@ pub(crate) use signal::{
     send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
-pub(crate) use terminal_access::{TerminalAccessError, check_terminal_access, hangup_terminal};
+pub(crate) use terminal_access::{
+    TerminalAccessError, check_terminal_access, hangup_terminal, resize_terminal,
+};
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 pub(crate) use thread_selector::{parent_pid, thread_count};
 use vfork::complete_vfork;

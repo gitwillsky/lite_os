@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import io
 import lzma
 import shutil
@@ -59,7 +60,9 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 1
+ROOTFS_RECIPE_VERSION = 2
+DISPLAY_FONT_SOURCE = ROOT / "assets" / "fonts" / "spleen-16x32.psfu.b64"
+DISPLAY_FONT_SHA256 = "b3b6067d4c00c2e8acae1df68c04ab35d23b6bec47120cb29ffa7bc9b975baad"
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -795,6 +798,16 @@ def create_image(
     )
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_terminal = build_display_terminal(musl)
+    display_font_bytes = base64.b64decode(
+        b"".join(DISPLAY_FONT_SOURCE.read_bytes().split()), validate=True
+    )
+    display_font_path: Path | None = None
+    with tempfile.NamedTemporaryFile("wb", delete=False) as display_font:
+        display_font.write(display_font_bytes)
+        display_font_path = Path(display_font.name)
+    if sha256(display_font_path) != DISPLAY_FONT_SHA256:
+        display_font_path.unlink(missing_ok=True)
+        raise RuntimeError("vendored Spleen PSF2 checksum mismatch")
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
@@ -808,6 +821,9 @@ def create_image(
         "mkdir /usr",
         "mkdir /usr/lib",
         "mkdir /usr/share",
+        "mkdir /usr/share/consolefonts",
+        "mkdir /usr/share/licenses",
+        "mkdir /usr/share/licenses/spleen",
         "mkdir /usr/share/udhcpc",
         f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'group'} /etc/group",
@@ -827,6 +843,9 @@ def create_image(
         "set_inode_field /bin/dynamic-smoke mode 0100755",
         f"write {display_terminal} /bin/liteos-terminal",
         "set_inode_field /bin/liteos-terminal mode 0100755",
+        f"write {display_font_path} /usr/share/consolefonts/spleen-16x32.psfu",
+        "set_inode_field /usr/share/consolefonts/spleen-16x32.psfu mode 0100644",
+        f"write {ROOT / 'assets' / 'fonts' / 'Spleen-LICENSE'} /usr/share/licenses/spleen/LICENSE",
         "symlink /lib/ld-musl-riscv64.so.1 /usr/lib/libc.so",
     ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
@@ -857,6 +876,8 @@ def create_image(
             script_path.unlink(missing_ok=True)
         if executable_script_path is not None:
             executable_script_path.unlink(missing_ok=True)
+        if display_font_path is not None:
+            display_font_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="liteos-apk-rootfs-") as workspace:
         assemble_apk_rootfs(
             image,
@@ -966,6 +987,8 @@ def create_published_image(
             ROOT / "user/group",
             ROOT / "user/inittab",
             ROOT / "user/liteos-terminal.c",
+            ROOT / "assets/fonts/spleen-16x32.psfu.b64",
+            ROOT / "assets/fonts/Spleen-LICENSE",
             ROOT / "user/network-service",
             ROOT / "user/shutdown",
             ROOT / "user/udhcpc.script",
