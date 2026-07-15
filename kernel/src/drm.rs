@@ -1,13 +1,12 @@
 use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 
+pub(crate) use crate::drivers::DisplayRect;
 use crate::{
     drivers::{DisplayDevice, DisplayMode},
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
-    memory::{
-        DeviceMappingSource, FrameAllocationClass, FrameTracker, PAGE_SIZE, alloc_contiguous,
-    },
+    memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
 };
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
@@ -20,9 +19,9 @@ mod master;
 mod mode;
 
 struct CompletionState {
-    // OWNER: pending 同时绑定 adapter operation fence 与目标 framebuffer；若拆分，IRQ
-    // completion 与并发 RMFB/page-flip 会把 active state 发布到错误 object。
-    pending: Option<PendingScanout>,
+    // OWNER: pending 同时绑定 adapter fence 与 scanout/damage/disable 领域结果；若拆分，
+    // completion 与并发 RMFB/close 会把 active state 发布到错误 object。
+    pending: Option<PendingDisplay>,
     active: Option<ActiveScanout>,
     // completed 单调前进，waiter 以 `>= fence` 判断；若只保存一次 edge，旧 Pipe token
     // 被其他 waiter 排空后会永久丢失已完成事实。
@@ -35,12 +34,20 @@ struct CompletionState {
     reset_after_owner: Option<u64>,
 }
 
-struct PendingScanout {
+struct PendingDisplay {
     fence: u64,
-    mode: DisplayMode,
-    framebuffer: Option<u32>,
-    owner: Option<u64>,
-    event: Option<PendingEvent>,
+    operation: PendingOperation,
+}
+
+enum PendingOperation {
+    Scanout {
+        mode: DisplayMode,
+        framebuffer: u32,
+        owner: u64,
+        event: Option<PendingEvent>,
+    },
+    Damage,
+    Disable,
 }
 
 struct PendingEvent {
@@ -64,10 +71,9 @@ struct DrmDeviceState {
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
-    // OWNER: connector mode 与对应黑屏 fallback backing 必须同锁替换；若分开发布，
-    // disable/close 可把新尺寸解释到旧 extent 并让 adapter 越界访问。
+    // OWNER: connector preferred mode 独立于 completion.active CRTC mode；resize 只更新
+    // 这里并发布 hotplug，不分配 framebuffer，也不隐式 modeset。
     mode: DisplayMode,
-    fallback_backing: Arc<FrameTracker>,
     // OWNER: framebuffer IDs 是 device-wide KMS object namespace；若放进 DrmFile，
     // GETRESOURCES 与另一个 primary-node open 会观察冲突或缺失的 mode object。
     framebuffers: FallibleMap<u32, Framebuffer>,
@@ -78,7 +84,7 @@ struct DumbBuffer {
     identity: u64,
     pitch: u32,
     size: usize,
-    backing: Arc<FrameTracker>,
+    backing: Arc<DeviceBacking>,
 }
 
 struct Framebuffer {
@@ -151,7 +157,7 @@ pub(crate) enum DrmError {
 pub(crate) enum FramebufferRemoval {
     /// object 已从 device namespace 删除。
     Removed,
-    /// active object 已切换到 fallback，caller 必须等待后重试删除。
+    /// active object 的 scanout disable 尚未完成，caller 必须等待后重试删除。
     Wait(DrmWait),
 }
 
@@ -263,8 +269,9 @@ impl DrmFile {
 
         // 2. backing 与 Arc/node 全部在 handle publication 前分配；任一失败由 RAII 回收
         //    extent，file namespace 中不存在半初始化 GEM object。
-        let backing = alloc_contiguous(size / PAGE_SIZE, FrameAllocationClass::Reclaimable)
-            .ok_or(DrmError::OutOfMemory)?;
+        let backing =
+            DeviceBacking::try_allocate(size / PAGE_SIZE, FrameAllocationClass::Reclaimable)
+                .ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(DumbBuffer {
             identity,
@@ -303,8 +310,8 @@ impl DrmFile {
     pub(crate) fn destroy_dumb(&self, handle: u32) -> Result<(), DrmError> {
         let removed = self.state.lock().buffers.remove(&handle);
         let buffer = removed.ok_or(DrmError::NotFound)?;
-        // FrameTracker 的最后一个 Arc 会进入 buddy merge；必须在 GEM namespace lock
-        // 外析构，否则大 extent 回收会把 allocator lock 嵌套进 OFD transaction lock。
+        // DeviceBacking 的最后一个 Arc 会逐 extent 进入 buddy merge；必须在 GEM
+        // namespace lock 外析构，否则回收会把 allocator lock 嵌套进 OFD transaction。
         drop(buffer);
         Ok(())
     }
@@ -406,28 +413,12 @@ impl DrmFile {
 
     /// @description 删除本 OFD 创建的 framebuffer object。
     /// @param id device-wide framebuffer ID。
-    /// @return object 已删除，或 active scanout fallback transaction 的 wait token。
+    /// @return object 已删除，或 active scanout disable transaction 的 wait token。
     /// @errors object 不存在返回 NotFound；并发 flip 或 adapter/wait 失败返回对应错误。
     pub(crate) fn remove_framebuffer(&self, id: u32) -> Result<FramebufferRemoval, DrmError> {
         let mut completion = self.device.completion.lock();
-        if completion
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.framebuffer == Some(id))
         {
-            return Err(DrmError::Busy);
-        }
-        if completion
-            .active
-            .is_some_and(|active| active.framebuffer == id)
-        {
-            let mode = self.device.state.lock().mode;
-            return self
-                .submit_scanout(&mut completion, mode, None, None)
-                .map(FramebufferRemoval::Wait);
-        }
-        let removed = {
-            let mut state = self.device.state.lock();
+            let state = self.device.state.lock();
             if state
                 .framebuffers
                 .get(&id)
@@ -435,6 +426,25 @@ impl DrmFile {
             {
                 return Err(DrmError::NotFound);
             }
+        }
+        if completion.pending.as_ref().is_some_and(|pending| {
+            matches!(
+                &pending.operation,
+                PendingOperation::Scanout { framebuffer, .. } if *framebuffer == id
+            )
+        }) {
+            return Err(DrmError::Busy);
+        }
+        if completion
+            .active
+            .is_some_and(|active| active.framebuffer == id)
+        {
+            return self
+                .submit_disable(&mut completion)
+                .map(FramebufferRemoval::Wait);
+        }
+        let removed = {
+            let mut state = self.device.state.lock();
             state
                 .framebuffers
                 .remove(&id)
@@ -523,7 +533,7 @@ impl DrmFile {
             .active
             .map(|active| active.mode)
             .ok_or(DrmError::Invalid)?;
-        self.submit_scanout(&mut completion, mode, Some(id), event)
+        self.submit_scanout(&mut completion, mode, id, event)
     }
 
     /// @description 同步 modeset 到指定 framebuffer，不忙等 GPU completion。
@@ -536,18 +546,48 @@ impl DrmFile {
         }
         let mut completion = self.device.completion.lock();
         let mode = self.device.state.lock().mode;
-        self.submit_scanout(&mut completion, mode, Some(id), None)
+        self.submit_scanout(&mut completion, mode, id, None)
     }
 
-    /// @description 同步恢复启动期黑屏 backing，并清除 active framebuffer state。
-    /// @return fallback transaction 完成后返回 unit。
+    /// @description 同步把 active framebuffer 的 dirty rectangles 传输到 persistent resource。
+    /// @param id 当前 active 且属于本 OFD 的 framebuffer object ID。
+    /// @param rectangles 0..=32 个半开 scanout rectangle；零个表示 full framebuffer。
+    /// @return Linux 语义下零 clips 扩展为 full framebuffer；始终返回 TRANSFER+FLUSH wait token。
+    /// @errors framebuffer 非 active/非本 OFD、已有 operation 或 rectangle/device failure。
+    pub(crate) fn dirty_framebuffer(
+        &self,
+        id: u32,
+        rectangles: &[DisplayRect],
+    ) -> Result<DrmWait, DrmError> {
+        let mut completion = self.device.completion.lock();
+        let active = completion.active.ok_or(DrmError::Invalid)?;
+        if active.framebuffer != id || active.owner != self.file_identity {
+            return Err(DrmError::Invalid);
+        }
+        let full = [DisplayRect {
+            x: 0,
+            y: 0,
+            width: active.mode.width,
+            height: active.mode.height,
+        }];
+        self.submit_damage(
+            &mut completion,
+            if rectangles.is_empty() {
+                &full
+            } else {
+                rectangles
+            },
+        )
+    }
+
+    /// @description 同步以 resource_id=0 禁用 scanout，并清除 active framebuffer state。
+    /// @return hardware 解绑 backing 后返回 unit。
     /// @errors 已有 transaction、signal interruption、OOM 或 adapter failure。
     pub(crate) fn disable_crtc(&self) -> Result<DrmWait, DrmError> {
         if !self.is_master() {
             return Err(DrmError::Permission);
         }
         let mut completion = self.device.completion.lock();
-        let mode = self.device.state.lock().mode;
-        self.submit_scanout(&mut completion, mode, None, None)
+        self.submit_disable(&mut completion)
     }
 }

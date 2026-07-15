@@ -14,7 +14,7 @@ mod virtio_queue;
 mod virtio_rng;
 
 pub(crate) use display::{
-    DisplayDevice, DisplayError, DisplayMode, DisplayUpdate, primary_display,
+    DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
 pub(crate) use goldfish_rtc::GoldfishRTCDevice;
 use hal::{

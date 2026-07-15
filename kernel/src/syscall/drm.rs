@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{
-    drm::{DrmError, DrmFile, DrmWait, FramebufferRemoval},
+    drm::{DisplayRect, DrmError, DrmFile, DrmWait, FramebufferRemoval},
     ipc::PipeWaitCondition,
     task::{TaskControlBlock, WaitResult, wait_for_pipe},
 };
@@ -33,6 +33,7 @@ const DRM_IOCTL_MODE_GETFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xad, 28);
 const DRM_IOCTL_MODE_ADDFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xae, 28);
 const DRM_IOCTL_MODE_RMFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xaf, 4);
 const DRM_IOCTL_MODE_PAGE_FLIP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb0, 24);
+const DRM_IOCTL_MODE_DIRTYFB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb1, 24);
 const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb2, 32);
 const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb3, 16);
 const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xb4, 4);
@@ -65,6 +66,7 @@ pub(in crate::syscall) fn drm_ioctl(
         DRM_IOCTL_MODE_ADDFB => add_framebuffer(task, file, argument),
         DRM_IOCTL_MODE_RMFB => remove_framebuffer(task, file, argument),
         DRM_IOCTL_MODE_PAGE_FLIP => page_flip(task, file, argument),
+        DRM_IOCTL_MODE_DIRTYFB => dirty_framebuffer(task, file, argument),
         DRM_IOCTL_MODE_CREATE_DUMB => create_dumb(task, file, argument),
         DRM_IOCTL_MODE_MAP_DUMB => map_dumb(task, file, argument),
         DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(task, file, argument),
@@ -356,6 +358,56 @@ fn page_flip(task: &TaskControlBlock, file: &Arc<DrmFile>, argument: usize) -> R
     file.page_flip(read_u32(&bytes, 4)?, user_data)
         .map(|_| ())
         .map_err(drm_errno)
+}
+
+fn dirty_framebuffer(
+    task: &TaskControlBlock,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    const MAX_CLIPS: usize = 32;
+    const ANNOTATE_COPY: u32 = 1;
+
+    let bytes = copy_in::<24>(task, argument)?;
+    let framebuffer = read_u32(&bytes, 0)?;
+    let flags = read_u32(&bytes, 4)? & 3;
+    let count = usize::try_from(read_u32(&bytes, 12)?).map_err(|_| errno::EINVAL)?;
+    let pointer = read_u64(&bytes, 16)?;
+    if (count == 0) != (pointer == 0)
+        || count > MAX_CLIPS
+        || flags & ANNOTATE_COPY != 0 && !count.is_multiple_of(2)
+    {
+        return Err(errno::EINVAL);
+    }
+
+    let mut rectangles = [DisplayRect::default(); MAX_CLIPS];
+    for (index, rectangle) in rectangles[..count].iter_mut().enumerate() {
+        let address = usize::try_from(pointer)
+            .ok()
+            .and_then(|pointer| pointer.checked_add(index * 8))
+            .ok_or(errno::EFAULT)?;
+        let clip = copy_in::<8>(task, address)?;
+        let x1 = u32::from(read_u16(&clip, 0)?);
+        let y1 = u32::from(read_u16(&clip, 2)?);
+        let x2 = u32::from(read_u16(&clip, 4)?);
+        let y2 = u32::from(read_u16(&clip, 6)?);
+        *rectangle = DisplayRect {
+            x: x1,
+            y: y1,
+            width: x2
+                .checked_sub(x1)
+                .filter(|width| *width != 0)
+                .ok_or(errno::EINVAL)?,
+            height: y2
+                .checked_sub(y1)
+                .filter(|height| *height != 0)
+                .ok_or(errno::EINVAL)?,
+        };
+    }
+    let wait = file
+        .dirty_framebuffer(framebuffer, &rectangles[..count])
+        .map_err(drm_errno)?;
+    wait_scanout(wait)
 }
 
 fn wait_scanout(wait: DrmWait) -> Result<(), isize> {

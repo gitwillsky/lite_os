@@ -1,9 +1,9 @@
 ROOTFS_IMAGE := target/rootfs.img
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
-QEMU_GUI_DISPLAY ?= cocoa,full-screen=on,zoom-to-fit=on
-QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1200
+QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=on
+QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1080
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 
 build-kernel:
@@ -32,6 +32,10 @@ fs.img:
 
 build-apk-apps: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_apk_apps.py --build-only --image $(ROOTFS_IMAGE) --output target/apk-apps.img
+
+# 正常构建只消费 checked atlas；字体升级由显式目标完成，避免环境 FreeType 差异污染构建。
+regen-font:
+	python3 scripts/generate_terminal_font.py
 
 run: build-kernel build-bootloader fs.img
 	qemu-system-riscv64 \

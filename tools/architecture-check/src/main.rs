@@ -264,7 +264,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "dynamic-smoke.c",
         "group",
         "inittab",
-        "liteos-terminal.c",
+        "liteos-terminal",
         "liteos-stress.c",
         "musl-smoke.c",
         "network-service",
@@ -285,10 +285,112 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         }
         Err(error) => errors.push(format!("failed to inspect user/: {error}")),
     }
+    let terminal_files = ["Cargo.lock", "Cargo.toml", "src"]
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let terminal = root.join("user/liteos-terminal");
+    match fs::read_dir(&terminal) {
+        Ok(entries) => {
+            let actual = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>();
+            if actual != terminal_files {
+                errors.push(format!(
+                    "user/liteos-terminal: expected exactly {terminal_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect the unique Rust display terminal: {error}"
+        )),
+    }
+    let terminal_manifest = fs::read_to_string(terminal.join("Cargo.toml")).unwrap_or_default();
+    for required in [
+        "name = \"liteos-terminal\"",
+        "[lib]",
+        "crate-type = [\"staticlib\"]",
+        "panic = \"abort\"",
+    ] {
+        if !terminal_manifest.contains(required) {
+            errors.push(format!(
+                "user/liteos-terminal/Cargo.toml: missing `{required}`"
+            ));
+        }
+    }
+    if terminal_manifest.contains("[dependencies]") {
+        errors.push(
+            "user/liteos-terminal/Cargo.toml: the display terminal must remain dependency-free"
+                .to_owned(),
+        );
+    }
+    let terminal_source_files = [
+        "atlas.rs",
+        "display.rs",
+        "ffi.rs",
+        "lib.rs",
+        "model.rs",
+        "reactor.rs",
+    ]
+    .map(str::to_owned)
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    match fs::read_dir(terminal.join("src")) {
+        Ok(entries) => {
+            let actual = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>();
+            if actual != terminal_source_files {
+                errors.push(format!(
+                    "user/liteos-terminal/src: expected exactly {terminal_source_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect user/liteos-terminal/src: {error}"
+        )),
+    }
+    let atlas_source = fs::read_to_string(terminal.join("src/atlas.rs")).unwrap_or_default();
+    let reactor_source = fs::read_to_string(terminal.join("src/reactor.rs")).unwrap_or_default();
+    if !atlas_source.contains("pub fn metrics(&self) -> FontMetrics")
+        || !reactor_source.contains("let metrics = atlas.metrics();")
+        || reactor_source.contains("Atlas::metrics(")
+        || reactor_source.contains("next_metrics")
+    {
+        errors.push(
+            "user/liteos-terminal: font metrics must come only from the checked atlas and remain invariant across display resize"
+                .to_owned(),
+        );
+    }
+    for source in terminal_source_files
+        .iter()
+        .filter(|source| *source != "atlas.rs")
+    {
+        let contents = fs::read_to_string(terminal.join("src").join(source)).unwrap_or_default();
+        if contents.contains("FontMetrics {") {
+            errors.push(format!(
+                "user/liteos-terminal/src/{source}: only atlas.rs may construct FontMetrics"
+            ));
+        }
+    }
+    let atlas_asset = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
+    let atlas_contract = atlas_asset.get(..8) == Some(b"LTA8\0\0\0\x02")
+        && atlas_asset.get(20..22) == Some(16u16.to_le_bytes().as_slice())
+        && atlas_asset.get(22..24) == Some(32u16.to_le_bytes().as_slice())
+        && atlas_asset.get(24..28) == Some(2u32.to_le_bytes().as_slice())
+        && atlas_asset.len() <= 512 * 1024;
+    if !atlas_contract {
+        errors.push(
+            "assets/fonts/liteos-terminal.a8: expected the bounded v2 16x32 Medium/Bold atlas"
+                .to_owned(),
+        );
+    }
     for relative in ["user/Cargo.toml", "user/src", "user/linker.ld"] {
         if root.join(relative).exists() {
             errors.push(format!(
-                "{relative}: Rust userspace track is forbidden; BusyBox is the unique product rootfs"
+                "{relative}: a second Rust userspace track is forbidden; the musl-linked display terminal is the only Rust crate"
             ));
         }
     }
@@ -298,6 +400,12 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         .any(|line| line.starts_with("members") && line.split('"').any(|member| member == "user"))
     {
         errors.push("Cargo.toml: user crate must not re-enter the workspace".to_owned());
+    }
+    if !manifest.contains("exclude = [\"bootloader\", \"user/liteos-terminal\"]") {
+        errors.push(
+            "Cargo.toml: user/liteos-terminal must remain explicitly excluded from the kernel workspace"
+                .to_owned(),
+        );
     }
     let makefile = fs::read_to_string(root.join("Makefile")).unwrap_or_default();
     for forbidden in ["build-user", "release/init", "create-fs"] {

@@ -3,9 +3,9 @@ use alloc::sync::Arc;
 use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
     socket::{
-        InetAddress, PacketAddress, Socket, SocketAddress, SocketDomain, SocketError, SocketType,
-        UnixAddress, UnixConnectResources, configure_address, configure_gateway, configure_netmask,
-        configure_up, interface_snapshot,
+        InetAddress, NetlinkAddress, PacketAddress, Socket, SocketAddress, SocketDomain,
+        SocketError, SocketType, UnixAddress, UnixConnectResources, configure_address,
+        configure_gateway, configure_netmask, configure_up, interface_snapshot,
     },
     task::{self, TaskControlBlock, WaitResult, current_task},
 };
@@ -22,6 +22,7 @@ pub(crate) use options::{sys_getsockopt, sys_setsockopt};
 const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;
 const AF_PACKET: usize = 17;
+const AF_NETLINK: usize = 16;
 const SOCK_STREAM: usize = 1;
 const SOCK_DGRAM: usize = 2;
 const SOCK_RAW: usize = 3;
@@ -149,6 +150,10 @@ fn read_address(pointer: usize, length: usize) -> Result<SocketAddress, isize> {
             address_length: bytes[11],
             address: bytes[12..20].try_into().unwrap(),
         })),
+        AF_NETLINK if length >= 12 => Ok(SocketAddress::Netlink(NetlinkAddress {
+            port_id: u32::from_ne_bytes(bytes[4..8].try_into().unwrap()),
+            groups: u32::from_ne_bytes(bytes[8..12].try_into().unwrap()),
+        })),
         _ => Err(-errno::EAFNOSUPPORT),
     }
 }
@@ -201,6 +206,12 @@ fn encode_address(address: Option<SocketAddress>) -> ([u8; 110], usize) {
             encoded[12..20].copy_from_slice(&address.address);
             20
         }
+        Some(SocketAddress::Netlink(address)) => {
+            encoded[..2].copy_from_slice(&(AF_NETLINK as u16).to_ne_bytes());
+            encoded[4..8].copy_from_slice(&address.port_id.to_ne_bytes());
+            encoded[8..12].copy_from_slice(&address.groups.to_ne_bytes());
+            12
+        }
         None => {
             encoded[..2].copy_from_slice(&(AF_UNIX as u16).to_ne_bytes());
             2
@@ -214,6 +225,7 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
         AF_UNIX => SocketDomain::Unix,
         AF_INET => SocketDomain::Inet,
         AF_PACKET => SocketDomain::Packet,
+        AF_NETLINK => SocketDomain::Netlink,
         _ => return -errno::EAFNOSUPPORT,
     };
     let (kind, flags, cloexec) = match decode_type(kind) {
@@ -297,10 +309,17 @@ pub(crate) fn sys_bind(fd: usize, address: usize, length: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let address = match read_address(address, length) {
+    let mut address = match read_address(address, length) {
         Ok(value) => value,
         Err(error) => return error,
     };
+    if let SocketAddress::Netlink(NetlinkAddress { port_id: 0, groups }) = address {
+        let port_id = match u32::try_from(current_task().unwrap().tgid()) {
+            Ok(port_id) => port_id,
+            Err(_) => return -errno::EINVAL,
+        };
+        address = SocketAddress::Netlink(NetlinkAddress { port_id, groups });
+    }
     socket.bind(address).map_or_else(socket_error, |()| 0)
 }
 

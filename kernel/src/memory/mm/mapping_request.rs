@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::memory::{FrameTracker, SharedFileMapping};
+use crate::memory::{DeviceBacking, SharedFileMapping};
 
 use super::{FilePageRange, FilePageRangeError};
 
@@ -31,7 +31,7 @@ pub(crate) enum FileMappingError {
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceMappingSource {
     pub(super) identity: u64,
-    pub(super) backing: Arc<FrameTracker>,
+    pub(super) backing: Arc<DeviceBacking>,
     pub(super) page_offset: usize,
 }
 
@@ -39,9 +39,9 @@ impl DeviceMappingSource {
     /// @description 构造从 backing 首页开始的 device mapping source。
     ///
     /// @param identity 在 backing 释放后仍不复用的共享 futex identity。
-    /// @param backing 完整物理 extent 的共享生命周期 owner。
+    /// @param backing 完整 scatter/gather 物理页集合的共享生命周期 owner。
     /// @return page offset 为零的 mapping source。
-    pub(crate) fn new(identity: u64, backing: Arc<FrameTracker>) -> Self {
+    pub(crate) fn new(identity: u64, backing: Arc<DeviceBacking>) -> Self {
         Self {
             identity,
             backing,

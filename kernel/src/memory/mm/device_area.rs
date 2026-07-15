@@ -1,3 +1,4 @@
+use crate::memory::DeviceBacking;
 use alloc::sync::Arc;
 use core::ops::Range;
 
@@ -8,8 +9,8 @@ use super::*;
 pub(super) struct DeviceArea {
     /// backing 释放后仍不复用的共享 futex identity。
     pub(super) identity: u64,
-    /// handle、fork descendant 与 VMA partition 共用的物理 extent owner。
-    pub(super) backing: Arc<FrameTracker>,
+    /// handle、fork descendant 与 VMA partition 共用的 scatter/gather backing owner。
+    pub(super) backing: Arc<DeviceBacking>,
     /// 当前 VMA 首页在完整 extent 内的页偏移。
     pub(super) page_offset: usize,
 }
@@ -78,14 +79,9 @@ impl MapArea {
         let index = area
             .page_offset
             .checked_add(vpn.as_usize() - self.vpn_range.start.as_usize())
-            .filter(|index| *index < area.backing.pages)
+            .filter(|index| *index < area.backing.pages())
             .ok_or(MemoryError::InvalidRange)?;
-        area.backing
-            .ppn
-            .as_usize()
-            .checked_add(index)
-            .map(PhysicalPageNumber::from)
-            .ok_or(MemoryError::InvalidRange)
+        area.backing.page(index).ok_or(MemoryError::InvalidRange)
     }
 
     /// @description 将 device extent 直接映射到当前页表，不建立第二份 resident index。

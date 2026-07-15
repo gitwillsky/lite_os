@@ -5,8 +5,12 @@ use crate::ipc::{Pipe, PipeDirection, PipeEnd};
 
 #[path = "socket/inet.rs"]
 mod inet;
+#[path = "socket/kobject.rs"]
+mod kobject;
 #[path = "socket/message_limits.rs"]
 mod message_limits;
+#[path = "socket/observation.rs"]
+mod observation;
 #[path = "socket/packet.rs"]
 mod packet;
 #[path = "socket/send.rs"]
@@ -15,6 +19,8 @@ mod send;
 mod unix;
 
 use inet::InetSocket;
+use kobject::KobjectSocket;
+pub(crate) use kobject::publish_drm_hotplug;
 use packet::PacketSocket;
 pub(crate) use send::{SocketSendBlocker, SocketSendError, SocketWaitGuard};
 pub(crate) use unix::UnixAddress;
@@ -30,6 +36,7 @@ pub(crate) enum SocketDomain {
     Unix,
     Inet,
     Packet,
+    Netlink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +63,13 @@ pub(crate) struct PacketAddress {
     pub(crate) address: [u8; 8],
 }
 
+/// @description Linux `sockaddr_nl` 中与 KOBJECT_UEVENT 有关的语义字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NetlinkAddress {
+    pub(crate) port_id: u32,
+    pub(crate) groups: u32,
+}
+
 pub(crate) struct ReceivedMessage {
     pub(crate) count: usize,
     pub(crate) full_length: usize,
@@ -68,6 +82,7 @@ pub(crate) enum SocketAddress {
     Unix(UnixAddress),
     Inet(InetAddress),
     Packet(PacketAddress),
+    Netlink(NetlinkAddress),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +136,7 @@ enum SocketBackend {
     Unix(Arc<UnixSocket>),
     Inet(Arc<InetSocket>),
     Packet(Arc<PacketSocket>),
+    Kobject(Arc<KobjectSocket>),
     /// AF_INET raw control fd；data plane 未开放时不复制 NetworkStack 协议状态。
     InterfaceControl,
 }
@@ -185,6 +201,9 @@ impl Socket {
             (SocketDomain::Packet, SocketType::Datagram, _) => {
                 SocketBackend::Packet(PacketSocket::new(protocol, notify)?)
             }
+            (SocketDomain::Netlink, SocketType::Datagram, 15) => {
+                SocketBackend::Kobject(KobjectSocket::new(notify)?)
+            }
             (SocketDomain::Inet, SocketType::Raw, 255) => SocketBackend::InterfaceControl,
             _ => return Err(SocketError::ProtocolNotSupported),
         };
@@ -220,6 +239,9 @@ impl Socket {
             (SocketBackend::Unix(socket), SocketAddress::Unix(address)) => socket.bind(address),
             (SocketBackend::Inet(socket), SocketAddress::Inet(address)) => socket.bind(address),
             (SocketBackend::Packet(socket), SocketAddress::Packet(address)) => socket.bind(address),
+            (SocketBackend::Kobject(socket), SocketAddress::Netlink(address)) => {
+                socket.bind(address)
+            }
             (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
             _ => Err(SocketError::Invalid),
         }
@@ -230,6 +252,7 @@ impl Socket {
             SocketBackend::Unix(socket) => socket.listen(backlog),
             SocketBackend::Inet(socket) => socket.listen(backlog),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
@@ -257,6 +280,7 @@ impl Socket {
                 )
             }
             (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
+            (SocketBackend::Kobject(_), _) => Err(SocketError::OperationNotSupported),
             _ => Err(SocketError::Invalid),
         }
     }
@@ -296,6 +320,7 @@ impl Socket {
                 .map_err(|_| SocketError::NoMemory)
             }
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
@@ -313,6 +338,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.connection_result(),
             SocketBackend::Unix(_) => Ok(()),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Ok(()),
         }
     }
@@ -325,34 +351,8 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.take_error(),
             SocketBackend::Unix(_) => None,
             SocketBackend::Packet(_) => None,
+            SocketBackend::Kobject(_) => None,
             SocketBackend::InterfaceControl => None,
-        }
-    }
-
-    pub(crate) fn address(&self) -> Result<Option<SocketAddress>, SocketError> {
-        match &self.backend {
-            SocketBackend::Unix(socket) => Ok(socket.address().map(SocketAddress::Unix)),
-            SocketBackend::Inet(socket) => socket
-                .address()
-                .map(|value| Some(SocketAddress::Inet(value))),
-            SocketBackend::Packet(socket) => socket
-                .address()
-                .map(|value| Some(SocketAddress::Packet(value))),
-            SocketBackend::InterfaceControl => Ok(Some(SocketAddress::Inet(InetAddress {
-                address: Ipv4Addr::UNSPECIFIED,
-                port: 0,
-            }))),
-        }
-    }
-
-    pub(crate) fn peer_address(&self) -> Result<Option<SocketAddress>, SocketError> {
-        match &self.backend {
-            SocketBackend::Unix(socket) => Ok(socket.peer_address().map(SocketAddress::Unix)),
-            SocketBackend::Inet(socket) => socket
-                .peer_address()
-                .map(|value| Some(SocketAddress::Inet(value))),
-            SocketBackend::Packet(_) => Err(SocketError::NotConnected),
-            SocketBackend::InterfaceControl => Err(SocketError::NotConnected),
         }
     }
 
@@ -407,6 +407,8 @@ impl Socket {
                         local_address: None,
                     })
             }
+            SocketBackend::Kobject(socket) if !peek => socket.receive(output),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
@@ -416,6 +418,7 @@ impl Socket {
             SocketBackend::Inet(socket) => socket.set_packet_info(enabled),
             SocketBackend::Unix(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }
@@ -512,6 +515,7 @@ impl Socket {
             SocketBackend::Unix(socket) => socket.write(input),
             SocketBackend::Inet(socket) => socket.send_to(input, None).map_err(Into::into),
             SocketBackend::Packet(socket) => socket.send_to(input, None).map_err(Into::into),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported.into()),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported.into()),
         }
     }
@@ -539,55 +543,9 @@ impl Socket {
             (SocketBackend::Packet(socket), None) => {
                 socket.send_to(input, None).map_err(Into::into)
             }
+            (SocketBackend::Kobject(_), _) => Err(SocketError::OperationNotSupported.into()),
             (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported.into()),
             _ => Err(SocketError::Invalid.into()),
-        }
-    }
-
-    pub(crate) fn poll_state(&self) -> SocketPollState {
-        match &self.backend {
-            SocketBackend::Unix(socket) => socket.poll_state(),
-            SocketBackend::Inet(socket) => socket.poll_state(),
-            SocketBackend::Packet(socket) => socket.poll_state(),
-            SocketBackend::InterfaceControl => SocketPollState {
-                readable: false,
-                writable: true,
-                hangup: false,
-                error: false,
-            },
-        }
-    }
-
-    pub(crate) fn readiness_generation(&self, events: i16) -> u64 {
-        match &self.backend {
-            SocketBackend::Unix(socket) => socket.readiness_generation(events),
-            SocketBackend::Inet(socket) => socket.readiness_generation(),
-            SocketBackend::Packet(socket) => socket.readiness_generation(),
-            SocketBackend::InterfaceControl => 0,
-        }
-    }
-
-    /// @description 返回 socket blocking/poll 使用的唯一 wait sources，并保留 notification/data 语义。
-    ///
-    /// @return 当前 backend 的 source 列表；interface-control socket 没有可等待 source。
-    pub(crate) fn wait_sources(&self, events: i16) -> (SocketWaitSources, Option<SocketWaitGuard>) {
-        match &self.backend {
-            SocketBackend::Unix(socket) => socket.wait_sources(events),
-            SocketBackend::Inet(socket) => (socket.wait_sources(), None),
-            SocketBackend::Packet(socket) => (socket.wait_sources(), None),
-            SocketBackend::InterfaceControl => ([None, None], None),
-        }
-    }
-
-    /// @description 在 poll registry owner lock 内清理 socket adapter 的内部 edge token，为同一临界区的 level recheck 做准备。
-    ///
-    /// @return 无返回值；AF_UNIX stream 保留真实 data Pipe 内容。
-    pub(crate) fn prepare_wait(&self) {
-        match &self.backend {
-            SocketBackend::Unix(socket) => socket.consume_wait_notifications(),
-            SocketBackend::Inet(socket) => socket.consume_wait_notifications(),
-            SocketBackend::Packet(socket) => socket.consume_wait_notifications(),
-            SocketBackend::InterfaceControl => {}
         }
     }
 
@@ -596,6 +554,7 @@ impl Socket {
             SocketBackend::Unix(socket) => socket.shutdown(how),
             SocketBackend::Inet(socket) => socket.shutdown(how),
             SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
+            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
     }

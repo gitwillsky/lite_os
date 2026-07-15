@@ -263,21 +263,26 @@ kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " rectangle 越�
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " transport、queue 或 response 损坏。"] Device
 kernel/src/drivers/display.rs :: enum DisplayError :: # [doc = " 已有 command 尚未完成，调用方应等待 completion edge。"] WouldBlock
 kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " adapter 重新查询 display-info 后观察到新的 scanout mode。"] ModeChanged (DisplayMode)
-kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一次 userspace scanout transaction 已完整完成。"] ScanoutCompleted (u64)
+kernel/src/drivers/display.rs :: enum DisplayUpdate :: # [doc = " 一次 userspace scanout、damage 或 disable operation 已完整完成。"] OperationCompleted (u64)
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: height : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: pitch : u32
 kernel/src/drivers/display.rs :: pub (crate) DisplayMode :: width : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: height : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: width : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: x : u32
+kernel/src/drivers/display.rs :: pub (crate) DisplayRect :: y : u32
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayUpdate
 kernel/src/drivers/display.rs :: pub (crate) fn primary_display () -> Option < Arc < dyn DisplayDevice > >
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
+kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
 kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn DisplayDevice >) -> Result < () , () >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn commit_mode (& self , mode : DisplayMode) -> Result < () , DisplayError >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn initial_backing (& self) -> Arc < FrameTracker >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) -> Result < Option < DisplayUpdate > , DisplayError >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , mode : DisplayMode , backing : Arc < FrameTracker > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , rectangles : & [DisplayRect]) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/goldfish_rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) enum RtcError
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (rtc : RTCDevice) -> Result < Self , RtcError >
@@ -379,7 +384,7 @@ kernel/src/drivers/mod.rs :: pub (crate) fn init ()
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod network
-kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayUpdate , primary_display , }
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , primary_display , }
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
@@ -427,7 +432,7 @@ kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn irq_h
 kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/drivers/virtio_gpu.rs :: pub (super) struct VirtIOGpuDevice
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
-kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & FrameTracker , framebuffer_bytes : usize ,) -> Option < () >
+kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
@@ -447,8 +452,15 @@ kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FLAG_FENCE
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM : u32 = 2
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_DISPLAY_INFO : u32 = 0x1101
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_RESP_OK_NODATA : u32 = 0x1100
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_attach (request : & mut [u8] , resource_id : u32 , backing : & DeviceBacking ,) -> Result < usize , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_create (request : & mut [u8] , mode : DisplayMode , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_flush (request : & mut [u8] , rectangle : DisplayRect , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_set_scanout (request : & mut [u8] , mode : DisplayMode , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_transfer (request : & mut [u8] , mode : DisplayMode , rectangle : DisplayRect , resource_id : u32 ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn prepare_unref (request : & mut [u8] , resource_id : u32) -> Result < () , DisplayError >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_display_rect (bytes : & mut [u8] , offset : usize , rectangle : DisplayRect ,) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_rect (bytes : & mut [u8] , offset : usize , mode : DisplayMode) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
@@ -502,7 +514,7 @@ kernel/src/drm.rs :: enum DrmError :: # [doc = " monotonic identity 或 handle �
 kernel/src/drm.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD 不是 KMS master，或无权重新取得 master。"] Permission
-kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " active object 已切换到 fallback，caller 必须等待后重试删除。"] Wait (DrmWait)
+kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " active object 的 scanout disable 尚未完成，caller 必须等待后重试删除。"] Wait (DrmWait)
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
 kernel/src/drm.rs :: pub (crate) DrmMode :: clock : u32
 kernel/src/drm.rs :: pub (crate) DrmMode :: flags : u32
@@ -529,6 +541,7 @@ kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn active_framebuffer (& self) 
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn add_framebuffer (& self , handle : u32 , width : u32 , height : u32 , pitch : u32 ,) -> Result < u32 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn create_dumb (& self , width : u32 , height : u32 , bpp : u32 , flags : u32 ,) -> Result < DumbBufferInfo , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn destroy_dumb (& self , handle : u32) -> Result < () , DrmError >
+kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn dirty_framebuffer (& self , id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn disable_crtc (& self) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer (& self , id : u32) -> Result < FramebufferInfo , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_count (& self) -> usize
@@ -545,12 +558,15 @@ kernel/src/drm.rs :: pub (crate) struct DrmMode
 kernel/src/drm.rs :: pub (crate) struct DrmWait
 kernel/src/drm.rs :: pub (crate) struct DumbBufferInfo
 kernel/src/drm.rs :: pub (crate) struct FramebufferInfo
+kernel/src/drm.rs :: pub (crate) use crate :: drivers :: DisplayRect
 kernel/src/drm.rs :: pub (crate) use event :: DrmEvent
 kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
-kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_scanout (& self , completion : & mut CompletionState , mode : DisplayMode , framebuffer_id : Option < u32 > , event : Option < PendingEvent > ,) -> Result < DrmWait , DrmError >
+kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_damage (& self , completion : & mut CompletionState , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
+kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_disable (& self , completion : & mut CompletionState ,) -> Result < DrmWait , DrmError >
+kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_scanout (& self , completion : & mut CompletionState , mode : DisplayMode , framebuffer_id : u32 , event : Option < PendingEvent > ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/event.rs :: pub (crate) impl DrmEvent :: fn encode (self) -> [u8 ; Self :: SIZE]
 kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/drm/event.rs :: pub (crate) impl DrmFile :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
@@ -1408,6 +1424,12 @@ kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = TRAMPOLI
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) const VIRTUAL_ADDRESS_WIDTH : usize = 39
 kernel/src/memory/config.rs :: pub (crate) const VPN_WIDTH : usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent (& self , index : usize) -> Option < (PhysicalPageNumber , usize) >
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent_count (& self) -> usize
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn page (& self , index : usize) -> Option < PhysicalPageNumber >
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn pages (& self) -> usize
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn try_allocate (pages : usize , class : FrameAllocationClass) -> Option < Self >
+kernel/src/memory/device_backing.rs :: pub (crate) struct DeviceBacking
 kernel/src/memory/executable.rs :: enum ElfKind :: Executable
 kernel/src/memory/executable.rs :: enum ElfKind :: SharedObject
 kernel/src/memory/executable.rs :: enum ExecutableParseError :: # [doc = " ELF header、program header 或 PT_INTERP 不满足 RV64 loader contract。"] InvalidElf
@@ -1493,7 +1515,7 @@ kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryErr
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn handle_cow_fault (& mut self , address : usize) -> Result < bool , MemoryError >
 kernel/src/memory/mm/cow.rs :: pub (crate) impl MemorySet :: fn try_clone_for_fork (& mut self) -> Result < Self , MemoryError >
 kernel/src/memory/mm/device_area.rs :: pub (in crate :: memory :: mm) impl MapArea :: fn device (start_va : VirtualAddress , end_va : VirtualAddress , permissions : MapPermission , source : DeviceMappingSource ,) -> Self
-kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: backing : Arc < FrameTracker >
+kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: backing : Arc < DeviceBacking >
 kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: identity : u64
 kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: page_offset : usize
 kernel/src/memory/mm/device_area.rs :: pub (super) impl DeviceArea :: fn partition (area : Option < Self > , original_start : VirtualPageNumber , start : VirtualPageNumber , end : VirtualPageNumber ,) -> (Option < Self > , Option < Self > , Option < Self >)
@@ -1579,13 +1601,13 @@ kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: Sequential
 kernel/src/memory/mm/mapping_request.rs :: enum MemoryAdvice :: WillNeed
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum FileMappingError
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
-kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < FrameTracker >) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking >) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64 , length : usize ,) -> Result < Self , FileMappingError >
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl MappingResourceLimits :: const fn new (address_space : u64 , data : u64) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct DeviceMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct FileMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct MappingResourceLimits
-kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: backing : Arc < FrameTracker >
+kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: backing : Arc < DeviceBacking >
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: identity : u64
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: page_offset : usize
 kernel/src/memory/mm/mapping_request.rs :: pub (super) FileMappingSource :: mapping : Arc < dyn SharedFileMapping >
@@ -1674,6 +1696,7 @@ kernel/src/memory/mod.rs :: pub (crate) fn strampoline ()
 kernel/src/memory/mod.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex < MemorySet > >
 kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , VirtualAddress }
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
+kernel/src/memory/mod.rs :: pub (crate) use device_backing :: DeviceBacking
 kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
@@ -1746,9 +1769,11 @@ kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & S
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
 kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
 kernel/src/socket.rs :: enum SocketAddress :: Inet (InetAddress)
+kernel/src/socket.rs :: enum SocketAddress :: Netlink (NetlinkAddress)
 kernel/src/socket.rs :: enum SocketAddress :: Packet (PacketAddress)
 kernel/src/socket.rs :: enum SocketAddress :: Unix (UnixAddress)
 kernel/src/socket.rs :: enum SocketDomain :: Inet
+kernel/src/socket.rs :: enum SocketDomain :: Netlink
 kernel/src/socket.rs :: enum SocketDomain :: Packet
 kernel/src/socket.rs :: enum SocketDomain :: Unix
 kernel/src/socket.rs :: enum SocketError :: # [doc = " active connect 已启动，调用方应进入 writable/error wait。"] InProgress
@@ -1779,6 +1804,8 @@ kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " AF_UNIX stream 的�
 kernel/src/socket.rs :: enum SocketWaitSource :: # [doc = " 内部 notification Pipe 只表示“socket 状态发生变化”，不继承 userspace event mask。"] Notification (Arc < Pipe >)
 kernel/src/socket.rs :: pub (crate) InetAddress :: address : Ipv4Addr
 kernel/src/socket.rs :: pub (crate) InetAddress :: port : u16
+kernel/src/socket.rs :: pub (crate) NetlinkAddress :: groups : u32
+kernel/src/socket.rs :: pub (crate) NetlinkAddress :: port_id : u32
 kernel/src/socket.rs :: pub (crate) PacketAddress :: address : [u8 ; 8]
 kernel/src/socket.rs :: pub (crate) PacketAddress :: address_length : u8
 kernel/src/socket.rs :: pub (crate) PacketAddress :: hardware_type : u16
@@ -1803,7 +1830,6 @@ kernel/src/socket.rs :: pub (crate) enum SocketType
 kernel/src/socket.rs :: pub (crate) enum SocketWaitSource
 kernel/src/socket.rs :: pub (crate) fn init ()
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn accept_with_notify (& self , notify : Option < (Arc < PipeEnd > , Arc < PipeEnd >) > ,) -> Result < Arc < Self > , SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn bind (self : & Arc < Self > , address : SocketAddress) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn bind_to_device (& self , name : & [u8]) -> Result < () , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn connect (self : & Arc < Self > , address : SocketAddress , resources : Option < UnixConnectResources > ,) -> Result < () , SocketError >
@@ -1814,11 +1840,7 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn listen (& self , backlog :
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn new (domain : SocketDomain , socket_type : SocketType , protocol : usize , notify : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn object_id (& self) -> u64
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn pair (first : & Arc < Self > , second : & Arc < Self > , first_to_second : (Arc < PipeEnd > , Arc < PipeEnd >) , second_to_first : (Arc < PipeEnd > , Arc < PipeEnd >) ,) -> Result < () , SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn peer_address (& self) -> Result < Option < SocketAddress > , SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn poll_state (& self) -> SocketPollState
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn prepare_wait (& self)
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn read (& self , output : & mut [u8]) -> Result < usize , SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn readiness_generation (& self , events : i16) -> u64
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive (& self , output : & mut [u8] ,) -> Result < (usize , Option < SocketAddress >) , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive_message (& self , output : & mut [u8] , peek : bool ,) -> Result < ReceivedMessage , SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn receive_staging_capacity (& self , requested : usize , stream_max : usize) -> usize
@@ -1833,10 +1855,10 @@ kernel/src/socket.rs :: pub (crate) impl Socket :: fn socket_type (& self) -> So
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn stream_send_staging_capacity (& self , requested : usize , stream_max : usize ,) -> Option < usize >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn take_error (& self) -> Option < SocketError >
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn validate_send_length (& self , length : usize) -> Result < () , SocketError >
-kernel/src/socket.rs :: pub (crate) impl Socket :: fn wait_sources (& self , events : i16) -> (SocketWaitSources , Option < SocketWaitGuard >)
 kernel/src/socket.rs :: pub (crate) impl Socket :: fn write (& self , input : & [u8]) -> Result < usize , SocketSendError >
 kernel/src/socket.rs :: pub (crate) impl SocketPollState :: const fn error () -> Self
 kernel/src/socket.rs :: pub (crate) struct InetAddress
+kernel/src/socket.rs :: pub (crate) struct NetlinkAddress
 kernel/src/socket.rs :: pub (crate) struct PacketAddress
 kernel/src/socket.rs :: pub (crate) struct ReceivedMessage
 kernel/src/socket.rs :: pub (crate) struct Socket
@@ -1844,6 +1866,7 @@ kernel/src/socket.rs :: pub (crate) struct SocketPollState
 kernel/src/socket.rs :: pub (crate) struct UnixConnectResources
 kernel/src/socket.rs :: pub (crate) type SocketWaitSources  = [Option < SocketWaitSource > ; 2]
 kernel/src/socket.rs :: pub (crate) use inet :: { configure_address , configure_gateway , configure_netmask , configure_up , dispatch_network_work , interface_snapshot , network_snapshot , network_work_due , }
+kernel/src/socket.rs :: pub (crate) use kobject :: publish_drm_hotplug
 kernel/src/socket.rs :: pub (crate) use send :: { SocketSendBlocker , SocketSendError , SocketWaitGuard }
 kernel/src/socket.rs :: pub (crate) use unix :: UnixAddress
 kernel/src/socket/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
@@ -1959,9 +1982,20 @@ kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn
 kernel/src/socket/inet/wait.rs :: pub (in crate :: socket) impl InetSocket :: fn wait_sources (& self) -> crate :: socket :: SocketWaitSources
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn consume_notify (& self)
 kernel/src/socket/inet/wait.rs :: pub (super) impl InetSocket :: fn notify (& self)
+kernel/src/socket/kobject.rs :: pub (crate) fn publish_drm_hotplug ()
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn address (& self) -> NetlinkAddress
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn bind (& self , address : NetlinkAddress) -> Result < () , SocketError >
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn consume_wait_notification (& self)
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn new (notify : (Arc < PipeEnd > , Arc < PipeEnd >)) -> Result < Arc < Self > , SocketError >
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn poll_state (& self) -> SocketPollState
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn readiness_generation (& self) -> u64
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn receive (& self , output : & mut [u8]) -> Result < ReceivedMessage , SocketError >
+kernel/src/socket/kobject.rs :: pub (super) impl KobjectSocket :: fn wait_source (& self) -> Arc < Pipe >
+kernel/src/socket/kobject.rs :: pub (super) struct KobjectSocket
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: Ipv4Packet
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: Ipv4Raw
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: Ipv4Udp
+kernel/src/socket/message_limits.rs :: enum MessageProtocol :: NetlinkUevent
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: Stream
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: UnixDatagram
 kernel/src/socket/message_limits.rs :: enum MessageProtocol :: Unsupported
@@ -1974,6 +2008,12 @@ kernel/src/socket/message_limits.rs :: pub (super) fn protocol (domain : SocketD
 kernel/src/socket/message_limits.rs :: pub (super) fn receive_capacity (protocol : MessageProtocol , requested : usize , stream_maximum : usize ,) -> usize
 kernel/src/socket/message_limits.rs :: pub (super) fn stream_send_capacity (protocol : MessageProtocol , requested : usize , stream_maximum : usize ,) -> Option < usize >
 kernel/src/socket/message_limits.rs :: pub (super) fn validate_send_length (protocol : MessageProtocol , length : usize) -> Result < () , () >
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn peer_address (& self) -> Result < Option < SocketAddress > , SocketError >
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn poll_state (& self) -> SocketPollState
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn prepare_wait (& self)
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn readiness_generation (& self , events : i16) -> u64
+kernel/src/socket/observation.rs :: pub (crate) impl Socket :: fn wait_sources (& self , events : i16) -> (SocketWaitSources , Option < SocketWaitGuard >)
 kernel/src/socket/packet.rs :: pub (super) fn deliver (frame : & [u8])
 kernel/src/socket/packet.rs :: pub (super) fn init ()
 kernel/src/socket/packet.rs :: pub (super) fn publish_transmit_ready ()

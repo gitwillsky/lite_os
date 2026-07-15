@@ -5,6 +5,7 @@ use crate::arch::dtb;
 
 mod address;
 mod config;
+mod device_backing;
 mod executable;
 mod frame_allocator;
 mod heap_allocator;
@@ -24,6 +25,7 @@ const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
 
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
+pub(crate) use device_backing::DeviceBacking;
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
 };

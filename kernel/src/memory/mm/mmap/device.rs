@@ -33,7 +33,7 @@ impl MemorySet {
         if source
             .page_offset
             .checked_add(page_count)
-            .is_none_or(|end| end > source.backing.pages)
+            .is_none_or(|end| end > source.backing.pages())
         {
             return Err(MemoryError::InvalidRange);
         }

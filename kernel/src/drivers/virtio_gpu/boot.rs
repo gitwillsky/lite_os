@@ -1,8 +1,11 @@
 use spin::Mutex;
 
-use crate::memory::{FrameTracker, PAGE_SIZE};
+use crate::memory::{DeviceBacking, PAGE_SIZE};
 
-use super::{CONTROL_QUEUE, ControlQueue, DisplayMode, VirtIODevice, VirtIOGpuDevice, wire::*};
+use super::{
+    ATTACH_REQUEST_SIZE, CONTROL_QUEUE, ControlQueue, DisplayMode, VirtIODevice, VirtIOGpuDevice,
+    wire::*,
+};
 
 impl VirtIOGpuDevice {
     pub(super) fn display_mode(
@@ -42,8 +45,7 @@ impl VirtIOGpuDevice {
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
         mode: DisplayMode,
-        framebuffer: &FrameTracker,
-        framebuffer_bytes: usize,
+        framebuffer: &DeviceBacking,
     ) -> Option<()> {
         let mut create = [0u8; 40];
         write_u32(&mut create, 24, BOOT_RESOURCE_ID)?;
@@ -57,20 +59,29 @@ impl VirtIOGpuDevice {
             &mut create,
         )?;
 
-        let mut attach = [0u8; 48];
+        let mut attach = [0u8; ATTACH_REQUEST_SIZE];
         write_u32(&mut attach, 24, BOOT_RESOURCE_ID)?;
-        write_u32(&mut attach, 28, 1)?;
-        write_u64(
+        write_u32(
             &mut attach,
-            32,
-            (framebuffer.ppn.as_usize() * PAGE_SIZE) as u64,
+            28,
+            u32::try_from(framebuffer.extent_count()).ok()?,
         )?;
-        write_u32(&mut attach, 40, u32::try_from(framebuffer_bytes).ok()?)?;
+        for index in 0..framebuffer.extent_count() {
+            let (ppn, pages) = framebuffer.extent(index)?;
+            let offset = 32 + index * 16;
+            write_u64(&mut attach, offset, (ppn.as_usize() * PAGE_SIZE) as u64)?;
+            write_u32(
+                &mut attach,
+                offset + 8,
+                u32::try_from(pages.checked_mul(PAGE_SIZE)?).ok()?,
+            )?;
+        }
+        let attach_length = 32 + framebuffer.extent_count() * 16;
         Self::execute_ok(
             device,
             control,
             VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-            &mut attach,
+            &mut attach[..attach_length],
         )?;
 
         let mut scanout = [0u8; 48];

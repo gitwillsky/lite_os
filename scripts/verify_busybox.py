@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import io
 import lzma
 import shutil
@@ -60,9 +59,7 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 3
-DISPLAY_FONT_SOURCE = ROOT / "assets" / "fonts" / "spleen-16x32.psfu.b64"
-DISPLAY_FONT_SHA256 = "b3b6067d4c00c2e8acae1df68c04ab35d23b6bec47120cb29ffa7bc9b975baad"
+ROOTFS_RECIPE_VERSION = 4
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -731,13 +728,26 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
 
 def build_display_terminal(musl: MuslCachePaths) -> Path:
     """构建 rootfs 唯一 DRM/evdev/PTY terminal consumer。"""
-    source = ROOT / "user/liteos-terminal.c"
+    crate = ROOT / "user/liteos-terminal"
+    sources = tuple(sorted(crate.glob("src/*.rs")))
+    cargo = shutil.which("cargo")
+    rustc = shutil.which("rustc")
+    if cargo is None or rustc is None:
+        raise RuntimeError("nightly Cargo and rustc are required for liteos-terminal")
     payload = {
         "kind": "display-terminal",
-        "recipe_version": 1,
+        "recipe_version": 2,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
-        "source_sha256": sha256(source),
+        "cargo": run([cargo, "--version"], ROOT).strip(),
+        "rustc": run([rustc, "--version"], ROOT).strip(),
+        "manifest_sha256": sha256(crate / "Cargo.toml"),
+        "lock_sha256": sha256(crate / "Cargo.lock"),
+        "source_sha256": {
+            str(source.relative_to(crate)): sha256(source)
+            for source in sources
+        },
+        "atlas_sha256": sha256(ROOT / "assets/fonts/liteos-terminal.a8"),
     }
     entry = WORK / "display-terminals" / fingerprint(payload)
     if manifest_matches(entry, payload, ("liteos-terminal",)):
@@ -749,27 +759,47 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
         "LITEOS_MUSL_LLD": str(musl.linker),
         "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
         "LITEOS_MUSL_SYSROOT": str(musl.install),
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": str(generation / "cargo-target"),
+        "RUSTFLAGS": "-C relocation-model=pic -D warnings",
     })
     published = False
     try:
         run(
             [
+                cargo,
+                "build",
+                "-Z",
+                "build-std=core,compiler_builtins",
+                "--manifest-path",
+                str(crate / "Cargo.toml"),
+                "--target",
+                "riscv64gc-unknown-linux-musl",
+                "--release",
+                "--locked",
+            ],
+            ROOT,
+            env,
+        )
+        archive = (
+            generation
+            / "cargo-target/riscv64gc-unknown-linux-musl/release/libliteos_terminal.a"
+        )
+        run(
+            [
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
-                str(source),
-                "-std=c11",
-                "-D_GNU_SOURCE",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
+                str(archive),
                 "-fPIE",
                 "-pie",
+                "-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack",
                 "-o",
                 str(generation / "liteos-terminal"),
             ],
             ROOT,
             env,
         )
+        shutil.rmtree(generation / "cargo-target")
         write_manifest(generation, payload)
         publish_generation(generation, entry)
         published = True
@@ -852,16 +882,6 @@ def create_image(
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_terminal = build_display_terminal(musl)
     stress_tools = build_stress_tools(musl)
-    display_font_bytes = base64.b64decode(
-        b"".join(DISPLAY_FONT_SOURCE.read_bytes().split()), validate=True
-    )
-    display_font_path: Path | None = None
-    with tempfile.NamedTemporaryFile("wb", delete=False) as display_font:
-        display_font.write(display_font_bytes)
-        display_font_path = Path(display_font.name)
-    if sha256(display_font_path) != DISPLAY_FONT_SHA256:
-        display_font_path.unlink(missing_ok=True)
-        raise RuntimeError("vendored Spleen PSF2 checksum mismatch")
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
@@ -875,9 +895,6 @@ def create_image(
         "mkdir /usr",
         "mkdir /usr/lib",
         "mkdir /usr/share",
-        "mkdir /usr/share/consolefonts",
-        "mkdir /usr/share/licenses",
-        "mkdir /usr/share/licenses/spleen",
         "mkdir /usr/share/udhcpc",
         f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'group'} /etc/group",
@@ -903,9 +920,6 @@ def create_image(
         "ln /bin/liteos-stress /bin/memtest",
         "ln /bin/liteos-stress /bin/cachetest",
         f"set_inode_field /bin/liteos-stress links_count {len(STRESS_LINKS) + 1}",
-        f"write {display_font_path} /usr/share/consolefonts/spleen-16x32.psfu",
-        "set_inode_field /usr/share/consolefonts/spleen-16x32.psfu mode 0100644",
-        f"write {ROOT / 'assets' / 'fonts' / 'Spleen-LICENSE'} /usr/share/licenses/spleen/LICENSE",
         "symlink /lib/ld-musl-riscv64.so.1 /usr/lib/libc.so",
     ]
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
@@ -936,8 +950,6 @@ def create_image(
             script_path.unlink(missing_ok=True)
         if executable_script_path is not None:
             executable_script_path.unlink(missing_ok=True)
-        if display_font_path is not None:
-            display_font_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="liteos-apk-rootfs-") as workspace:
         assemble_apk_rootfs(
             image,
@@ -1039,46 +1051,55 @@ def create_published_image(
     alpine_keys = tuple(
         sorted(path for path in bootstrap.alpine_keys.iterdir() if path.is_file())
     )
-    payload = runtime_gate_payload(
-        "busybox-rootfs-image",
-        ROOTFS_RECIPE_VERSION,
-        (
-            ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
-            ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
-            binary,
-            musl.install / "usr/lib/libc.so",
-            dynamic_probe,
-            dynamic_library,
-            display_terminal,
-            stress_tools,
-            openssl.binary,
-            bootstrap.apk_static,
-            bootstrap.ca_certificates_bundle,
-            bootstrap.private_key,
-            bootstrap.public_key,
-            *alpine_keys,
-            ROOT / "user/passwd",
-            ROOT / "user/group",
-            ROOT / "user/inittab",
-            ROOT / "user/liteos-terminal.c",
-            ROOT / "user/liteos-stress.c",
-            ROOT / "assets/fonts/spleen-16x32.psfu.b64",
-            ROOT / "assets/fonts/Spleen-LICENSE",
-            ROOT / "user/network-service",
-            ROOT / "user/shutdown",
-            ROOT / "user/udhcpc.script",
-            ROOT / "create_fs.py",
-            Path(__file__).resolve(),
-            ROOT / "scripts/apk_cache.py",
-            ROOT / "scripts/apk_package.py",
-            ROOT / "scripts/apk_rootfs.py",
-            ROOT / "scripts/ext2_image.py",
-            ROOT / "scripts/qemu_gate.py",
-            find_mke2fs(),
-            find_debugfs(),
-            Path(host_openssl),
-        ),
+    inputs = (
+        ROOT / "target/riscv64gc-unknown-none-elf/debug/kernel",
+        ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
+        binary,
+        musl.install / "usr/lib/libc.so",
+        dynamic_probe,
+        dynamic_library,
+        display_terminal,
+        stress_tools,
+        openssl.binary,
+        bootstrap.apk_static,
+        bootstrap.ca_certificates_bundle,
+        bootstrap.private_key,
+        bootstrap.public_key,
+        *alpine_keys,
+        ROOT / "user/passwd",
+        ROOT / "user/group",
+        ROOT / "user/inittab",
+        ROOT / "user/liteos-terminal/Cargo.toml",
+        ROOT / "user/liteos-terminal/Cargo.lock",
+        ROOT / "user/liteos-terminal/src/lib.rs",
+        ROOT / "user/liteos-terminal/src/ffi.rs",
+        ROOT / "user/liteos-terminal/src/atlas.rs",
+        ROOT / "user/liteos-terminal/src/model.rs",
+        ROOT / "user/liteos-terminal/src/display.rs",
+        ROOT / "user/liteos-terminal/src/reactor.rs",
+        ROOT / "user/liteos-stress.c",
+        ROOT / "assets/fonts/liteos-terminal.a8",
+        ROOT / "user/network-service",
+        ROOT / "user/shutdown",
+        ROOT / "user/udhcpc.script",
+        ROOT / "create_fs.py",
+        Path(__file__).resolve(),
+        ROOT / "scripts/apk_cache.py",
+        ROOT / "scripts/apk_package.py",
+        ROOT / "scripts/apk_rootfs.py",
+        ROOT / "scripts/ext2_image.py",
+        ROOT / "scripts/qemu_gate.py",
+        find_mke2fs(),
+        find_debugfs(),
+        Path(host_openssl),
     )
+    # rootfs 是纯构建产物，缓存身份只取决于输入 bytes 与 recipe。APK 数据库虽然要在
+    # target guest 中生成，但 host QEMU 可执行文件的版本不改变最终镜像语义，不能进入缓存键。
+    payload = {
+        "kind": "busybox-rootfs-image",
+        "recipe_version": ROOTFS_RECIPE_VERSION,
+        "inputs": {str(path): sha256(path) for path in inputs},
+    }
     identity = fingerprint(payload)
     cache = WORK / "rootfs-images" / identity
     with cache_lock(WORK / ".rootfs.lock"):
@@ -1106,7 +1127,7 @@ def main() -> int:
     parser.add_argument(
         "--build-only",
         action="store_true",
-        help="只构建并校验固定 BusyBox rootfs，不启动 QEMU",
+        help="只构建 rootfs，不执行 runtime gates；cache miss 时仍启动 target guest 装配 APK 数据库",
     )
     parser.add_argument(
         "--image",

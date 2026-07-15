@@ -8,6 +8,7 @@ pub(super) enum MessageProtocol {
     Ipv4Udp,
     Ipv4Raw,
     Ipv4Packet,
+    NetlinkUevent,
     Unsupported,
 }
 
@@ -24,6 +25,7 @@ pub(super) fn protocol(domain: SocketDomain, socket_type: SocketType) -> Message
         (SocketDomain::Inet, SocketType::Datagram) => MessageProtocol::Ipv4Udp,
         (SocketDomain::Inet, SocketType::Raw) => MessageProtocol::Ipv4Raw,
         (SocketDomain::Packet, SocketType::Datagram) => MessageProtocol::Ipv4Packet,
+        (SocketDomain::Netlink, SocketType::Datagram) => MessageProtocol::NetlinkUevent,
         _ => MessageProtocol::Unsupported,
     }
 }
@@ -35,6 +37,7 @@ fn maximum_send_length(protocol: MessageProtocol) -> Option<usize> {
         MessageProtocol::Ipv4Udp => Some(MAX_IPV4_UDP_BYTES),
         MessageProtocol::Ipv4Raw => Some(MAX_IPV4_RAW_BYTES),
         MessageProtocol::Ipv4Packet => Some(MAX_IPV4_PACKET_BYTES),
+        MessageProtocol::NetlinkUevent => Some(u16::MAX as usize),
         MessageProtocol::Unsupported => Some(0),
     }
 }
@@ -74,6 +77,7 @@ pub(super) fn receive_capacity(
         // Raw receive 含内核重建的 IPv4 header，最大为完整 u16 total length。
         MessageProtocol::Ipv4Raw => u16::MAX as usize,
         MessageProtocol::Ipv4Packet => MAX_IPV4_PACKET_BYTES,
+        MessageProtocol::NetlinkUevent => u16::MAX as usize,
         MessageProtocol::Unsupported => 0,
     };
     requested.min(maximum)
