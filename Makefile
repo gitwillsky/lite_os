@@ -1,9 +1,10 @@
 ROOTFS_IMAGE := target/rootfs.img
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gui run-gui-fullscreen run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
-QEMU_GUI_DISPLAY ?= cocoa
-QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=2160,yres=1400
+QEMU_GUI_DISPLAY ?= cocoa,full-screen=on,zoom-to-fit=on
+QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1200
+QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -54,7 +55,8 @@ run-gui: build-kernel build-bootloader fs.img
 	-machine virt \
 	-global virtio-mmio.force-legacy=false \
 	-display $(QEMU_GUI_DISPLAY) \
-	-serial mon:stdio \
+	-serial file:$(QEMU_GUI_SERIAL_LOG) \
+	-monitor none \
 	-smp 8 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
@@ -68,9 +70,6 @@ run-gui: build-kernel build-bootloader fs.img
 	-device virtio-tablet-device \
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
-
-run-gui-fullscreen: QEMU_GUI_DISPLAY := cocoa,full-screen=on,zoom-to-fit=on
-run-gui-fullscreen: run-gui
 
 run-gdb: build-kernel build-bootloader fs.img
 	qemu-system-riscv64 -machine virt -global virtio-mmio.force-legacy=false -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s

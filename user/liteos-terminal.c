@@ -120,6 +120,7 @@ _Static_assert(sizeof(struct input_event) == 24, "evdev event ABI drift");
 
 struct cell {
     uint8_t character, foreground, background;
+    uint8_t dirty;
 };
 
 struct terminal {
@@ -242,7 +243,17 @@ failure:
 }
 
 static void clear_cell(struct terminal *terminal, size_t index) {
-    terminal->cells[index] = (struct cell){' ', terminal->foreground, terminal->background};
+    terminal->cells[index] =
+        (struct cell){' ', terminal->foreground, terminal->background, 1};
+}
+
+static void dirty_all_cells(struct terminal *terminal) {
+    for (size_t index = 0; index < terminal->columns * terminal->rows; ++index)
+        terminal->cells[index].dirty = 1;
+}
+
+static void dirty_cursor_cell(struct terminal *terminal) {
+    terminal->cells[terminal->row * terminal->columns + terminal->column].dirty = 1;
 }
 
 static void clear_screen(struct terminal *terminal) {
@@ -258,7 +269,7 @@ static int terminal_resize(struct terminal *terminal, size_t columns, size_t row
     if (!cells)
         return -1;
     for (size_t index = 0; index < columns * rows; ++index)
-        cells[index] = (struct cell){' ', terminal->foreground, terminal->background};
+        cells[index] = (struct cell){' ', terminal->foreground, terminal->background, 1};
     size_t source_row = terminal->row >= rows ? terminal->row + 1 - rows : 0;
     size_t copy_rows = rows < terminal->rows - source_row ? rows : terminal->rows - source_row;
     size_t copy_columns = columns < terminal->columns ? columns : terminal->columns;
@@ -273,6 +284,7 @@ static int terminal_resize(struct terminal *terminal, size_t columns, size_t row
     terminal->row -= source_row;
     if (terminal->column >= columns)
         terminal->column = columns - 1;
+    dirty_all_cells(terminal);
     return 0;
 }
 
@@ -292,6 +304,7 @@ static void line_feed(struct terminal *terminal) {
     terminal->row = terminal->rows - 1;
     for (size_t column = 0; column < terminal->columns; ++column)
         clear_cell(terminal, terminal->row * terminal->columns + column);
+    dirty_all_cells(terminal);
 }
 
 static unsigned parameter(const struct terminal *terminal, unsigned index, unsigned fallback) {
@@ -370,12 +383,13 @@ static void execute_csi(struct terminal *terminal, uint8_t final) {
 
 static void put_character(struct terminal *terminal, uint8_t character) {
     terminal->cells[terminal->row * terminal->columns + terminal->column] =
-        (struct cell){character, terminal->foreground, terminal->background};
+        (struct cell){character, terminal->foreground, terminal->background, 1};
     if (++terminal->column == terminal->columns)
         line_feed(terminal);
 }
 
 static void terminal_feed(struct terminal *terminal, const uint8_t *bytes, size_t length) {
+    dirty_cursor_cell(terminal);
     for (size_t index = 0; index < length; ++index) {
         uint8_t byte = bytes[index];
         if (terminal->parser == 1) {
@@ -418,18 +432,39 @@ static void terminal_feed(struct terminal *terminal, const uint8_t *bytes, size_
             break;
         }
     }
+    dirty_cursor_cell(terminal);
 }
 
-static void render(const struct terminal *terminal, struct display *display,
-                   const struct font *font) {
-    for (uint32_t y = 0; y < display->height; ++y) {
-        uint32_t *row = (uint32_t *)((uint8_t *)display->pixels + (size_t)y * display->pitch);
-        for (uint32_t x = 0; x < display->width; ++x)
-            row[x] = palette[0];
+static void replay_boot_log(struct terminal *terminal) {
+    int descriptor = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (descriptor < 0)
+        return;
+    uint8_t record[256];
+    for (;;) {
+        ssize_t length = read(descriptor, record, sizeof(record));
+        if (length < 0 && errno == EPIPE)
+            continue;
+        if (length <= 0)
+            break;
+        uint8_t *message = memchr(record, ';', (size_t)length);
+        if (!message)
+            continue;
+        ++message;
+        size_t message_length = (size_t)(record + length - message);
+        if (message_length && message[message_length - 1] == '\n')
+            --message_length;
+        terminal_feed(terminal, message, message_length);
+        terminal_feed(terminal, (const uint8_t *)"\n", 1);
     }
+    close(descriptor);
+}
+
+static void render(struct terminal *terminal, struct display *display, const struct font *font) {
     for (size_t row = 0; row < terminal->rows; ++row) {
         for (size_t column = 0; column < terminal->columns; ++column) {
-            const struct cell *cell = &terminal->cells[row * terminal->columns + column];
+            struct cell *cell = &terminal->cells[row * terminal->columns + column];
+            if (!cell->dirty)
+                continue;
             uint8_t character = cell->character;
             const uint8_t *glyph = font->glyphs[character < 128 ? character : '?'];
             uint32_t foreground = palette[cell->foreground & 15];
@@ -442,6 +477,7 @@ static void render(const struct terminal *terminal, struct display *display,
                     pixels[x] = stroke ? foreground : background;
                 }
             }
+            cell->dirty = 0;
         }
     }
     uint32_t *cursor = (uint32_t *)((uint8_t *)display->pixels +
@@ -467,7 +503,8 @@ static int display_query_mode(const struct display *display, struct drm_mode *mo
     return 0;
 }
 
-static int display_set_mode(struct display *display, const struct drm_mode *mode) {
+static int display_set_mode(struct display *display, const struct drm_mode *mode,
+                            struct terminal *terminal, const struct font *font) {
     struct drm_dumb_create create = {
         .height = mode->vdisplay,
         .width = mode->hdisplay,
@@ -495,7 +532,30 @@ static int display_set_mode(struct display *display, const struct drm_mode *mode
     if (ioctl(display->fd, DRM_IOCTL_MODE_ADDFB, &framebuffer) < 0)
         goto failure;
     framebuffer_id = framebuffer.fb_id;
-    memset(pixels, 0, create.size);
+
+    struct display next = {
+        .fd = display->fd,
+        .crtc_id = display->crtc_id,
+        .connector_id = display->connector_id,
+        .framebuffer_id = framebuffer_id,
+        .handle = create.handle,
+        .width = mode->hdisplay,
+        .height = mode->vdisplay,
+        .pitch = create.pitch,
+        .size = create.size,
+        .sequence = display->sequence,
+        .pixels = pixels,
+        .mode = *mode,
+    };
+    for (uint32_t y = 0; y < next.height; ++y) {
+        uint32_t *row =
+            (uint32_t *)((uint8_t *)next.pixels + (size_t)y * next.pitch);
+        for (uint32_t x = 0; x < next.width; ++x)
+            row[x] = palette[0];
+    }
+    dirty_all_cells(terminal);
+    render(terminal, &next, font);
+
     uint32_t connector_id = display->connector_id;
     struct drm_crtc crtc = {
         .connector_ptr = (uintptr_t)&connector_id,
@@ -512,14 +572,7 @@ static int display_set_mode(struct display *display, const struct drm_mode *mode
     uint64_t old_size = display->size;
     uint32_t old_framebuffer = display->framebuffer_id;
     uint32_t old_handle = display->handle;
-    display->pixels = pixels;
-    display->size = create.size;
-    display->framebuffer_id = framebuffer_id;
-    display->handle = create.handle;
-    display->width = mode->hdisplay;
-    display->height = mode->vdisplay;
-    display->pitch = create.pitch;
-    display->mode = *mode;
+    *display = next;
     if (old_pixels) {
         munmap(old_pixels, old_size);
         (void)ioctl(display->fd, DRM_IOCTL_MODE_RMFB, &old_framebuffer);
@@ -558,8 +611,11 @@ static int display_open(struct display *display) {
     display->crtc_id = crtc_id;
     display->connector_id = connector_id;
     struct drm_mode mode;
-    if (display_query_mode(display, &mode) < 0 || display_set_mode(display, &mode) < 0)
+    if (display_query_mode(display, &mode) < 0)
         goto failure;
+    display->width = mode.hdisplay;
+    display->height = mode.vdisplay;
+    display->mode = mode;
     return 0;
 
 failure:
@@ -569,15 +625,6 @@ failure:
     display->fd = -1;
     display->pixels = NULL;
     return -1;
-}
-
-static int display_reconfigure(struct display *display) {
-    struct drm_mode mode;
-    if (display_query_mode(display, &mode) < 0)
-        return -1;
-    if (mode.hdisplay == display->mode.hdisplay && mode.vdisplay == display->mode.vdisplay)
-        return 0;
-    return display_set_mode(display, &mode) < 0 ? -1 : 1;
 }
 
 static int display_present(struct display *display) {
@@ -781,8 +828,23 @@ static int terminal_run(struct display *display, const struct font *font) {
     if (!terminal.cells)
         return -1;
     clear_screen(&terminal);
-    render(&terminal, display, font);
-    if (display_present(display) < 0) {
+
+    int keyboard = open_keyboard();
+    static const uint8_t boot_message[] =
+        "\033[2J\033[HLiteOS\n\n";
+    terminal_feed(&terminal, boot_message, sizeof(boot_message) - 1);
+    replay_boot_log(&terminal);
+    static const uint8_t display_ready[] = "[ OK ] DRM/KMS display session acquired\n";
+    terminal_feed(&terminal, display_ready, sizeof(display_ready) - 1);
+    static const uint8_t input_ready[] = "[ OK ] Keyboard input ready\n";
+    static const uint8_t input_missing[] = "[WARN] Keyboard input unavailable\n";
+    terminal_feed(&terminal, keyboard >= 0 ? input_ready : input_missing,
+                  keyboard >= 0 ? sizeof(input_ready) - 1 : sizeof(input_missing) - 1);
+    static const uint8_t shell_message[] = "[....] Starting shell\n\n";
+    terminal_feed(&terminal, shell_message, sizeof(shell_message) - 1);
+    if (display_set_mode(display, &display->mode, &terminal, font) < 0) {
+        if (keyboard >= 0)
+            close(keyboard);
         free(terminal.cells);
         return -1;
     }
@@ -790,10 +852,11 @@ static int terminal_run(struct display *display, const struct font *font) {
     int master;
     pid_t child = spawn_shell(terminal.columns, terminal.rows, &master);
     if (child < 0) {
+        if (keyboard >= 0)
+            close(keyboard);
         free(terminal.cells);
         return -1;
     }
-    int keyboard = open_keyboard();
     struct keyboard_state keyboard_state = {0};
     struct pollfd descriptors[2] = {
         {.fd = master, .events = POLLIN},
@@ -845,16 +908,18 @@ static int terminal_run(struct display *display, const struct font *font) {
         uint64_t now = monotonic_milliseconds();
         if (now >= next_mode_probe) {
             next_mode_probe = now + MODE_PROBE_INTERVAL_MS;
-            int reconfigured = display_reconfigure(display);
-            if (reconfigured > 0) {
-                size_t columns = display->width / CELL_WIDTH;
-                size_t rows = display->height / CELL_HEIGHT;
+            struct drm_mode mode;
+            if (display_query_mode(display, &mode) < 0)
+                break;
+            if (mode.hdisplay != display->mode.hdisplay ||
+                mode.vdisplay != display->mode.vdisplay) {
+                size_t columns = mode.hdisplay / CELL_WIDTH;
+                size_t rows = mode.vdisplay / CELL_HEIGHT;
                 if (terminal_resize(&terminal, columns, rows) < 0)
                     break;
-                if (set_window_size(master, columns, rows) < 0)
+                if (display_set_mode(display, &mode, &terminal, font) < 0)
                     break;
-                render(&terminal, display, font);
-                if (display_present(display) < 0)
+                if (set_window_size(master, columns, rows) < 0)
                     break;
             }
         }
@@ -873,14 +938,16 @@ int main(void) {
         perror("liteos-terminal: font");
         return 1;
     }
-    for (;;) {
-        struct display display;
-        if (display_open(&display) == 0)
-            (void)terminal_run(&display, &font);
-        if (display.pixels)
-            munmap(display.pixels, display.size);
-        if (display.fd >= 0)
-            close(display.fd);
-        sleep(5);
+    struct display display;
+    if (display_open(&display) < 0) {
+        perror("liteos-terminal: display");
+        munmap(font.mapping, font.size);
+        return 1;
     }
+    int result = terminal_run(&display, &font);
+    if (display.pixels)
+        munmap(display.pixels, display.size);
+    close(display.fd);
+    munmap(font.mapping, font.size);
+    return result < 0 ? 1 : 0;
 }

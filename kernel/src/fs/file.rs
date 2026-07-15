@@ -5,7 +5,7 @@ mod descriptor_table;
 #[path = "file/proc.rs"]
 mod proc;
 mod terminal;
-pub(crate) use character::CharacterDevice;
+pub(crate) use character::{CharacterDevice, KmsgDeviceRead};
 pub(crate) use descriptor_table::{
     DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable, MAX_FILE_DESCRIPTORS,
 };

@@ -734,7 +734,7 @@ kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn socket (sock
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn terminal (terminal : Arc < Terminal > , backing_opened : Arc < OpenedFile > , flags : u32 ,) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) struct OpenFileDescription
 kernel/src/fs/file.rs :: pub (crate) trait Console
-kernel/src/fs/file.rs :: pub (crate) use character :: CharacterDevice
+kernel/src/fs/file.rs :: pub (crate) use character :: { CharacterDevice , KmsgDeviceRead }
 kernel/src/fs/file.rs :: pub (crate) use descriptor_table :: { DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , }
 kernel/src/fs/file.rs :: pub (crate) use terminal :: { Terminal , TerminalAccess , TerminalRead , TerminalReadMode }
 kernel/src/fs/file.rs :: trait Console :: fn input_ready (& self) -> bool
@@ -743,11 +743,18 @@ kernel/src/fs/file.rs :: trait Console :: fn write (& self , bytes : & [u8]) -> 
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Drm (Arc < DrmFile >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Entropy
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Input { file : Arc < InputFile > , }
+kernel/src/fs/file/character.rs :: enum CharacterDevice :: Kmsg (KmsgReader)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Null
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: PtyMaster (Arc < PtyMaster >)
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Terminal { terminal : Arc < Terminal > , kind : DeviceKind , pty : Option < Arc < PtySlave > > , }
 kernel/src/fs/file/character.rs :: enum CharacterDevice :: Zero
+kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " caller buffer 过小。"] BufferTooSmall
+kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " producer 尚无新 record。"] Empty
+kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " reader cursor 已被环覆盖。"] Overrun
+kernel/src/fs/file/character.rs :: enum KmsgDeviceRead :: # [doc = " 一个完整 record 及其长度。"] Record (usize)
 kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
+kernel/src/fs/file/character.rs :: pub (crate) enum KmsgDeviceRead
+kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn read_kmsg (& self , output : & mut [u8]) -> KmsgDeviceRead
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , FileSystemError >
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
@@ -827,6 +834,7 @@ kernel/src/fs/file/terminal.rs :: pub (crate) struct Terminal
 kernel/src/fs/inode.rs :: enum DeviceKind :: Console
 kernel/src/fs/inode.rs :: enum DeviceKind :: DriCard0
 kernel/src/fs/inode.rs :: enum DeviceKind :: InputEvent (u16)
+kernel/src/fs/inode.rs :: enum DeviceKind :: Kmsg
 kernel/src/fs/inode.rs :: enum DeviceKind :: Null
 kernel/src/fs/inode.rs :: enum DeviceKind :: Ptmx
 kernel/src/fs/inode.rs :: enum DeviceKind :: PtySlave (u32)
@@ -931,7 +939,7 @@ kernel/src/fs/mod.rs :: pub (crate) use devfs :: DevFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use devpts :: DevPtsFileSystem
 kernel/src/fs/mod.rs :: pub (crate) use epoll :: { Epoll , EpollChange , EpollChangeError , EpollEvent }
 kernel/src/fs/mod.rs :: pub (crate) use ext2 :: Ext2FileSystem
-kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
+kernel/src/fs/mod.rs :: pub (crate) use file :: { CharacterDevice , Console , DetachedFileDescriptor , FileDescriptorError , FileDescriptorTable , KmsgDeviceRead , MAX_FILE_DESCRIPTORS , O_ACCMODE , O_APPEND , O_CLOEXEC , O_NONBLOCK , O_RDONLY , O_RDWR , O_WRONLY , OpenFileDescription , OpenFileKind , Terminal , TerminalAccess , TerminalRead , TerminalReadMode , }
 kernel/src/fs/mod.rs :: pub (crate) use inode :: { DeviceKind , DirectoryEntry , Inode , InodeMetadata , InodeType , StorageWriter , }
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
@@ -1340,18 +1348,29 @@ kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn readiness_generation
 kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn writable (& self) -> bool
 kernel/src/ipc/eventfd.rs :: pub (crate) impl EventFd :: fn write (& self , value : u64) -> EventFdWrite
 kernel/src/ipc/eventfd.rs :: pub (crate) struct EventFd
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " caller buffer 无法容纳一个完整 record。"] BufferTooSmall
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " reader 已追上当前 producer sequence。"] Empty
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " 一个完整 Linux devkmsg text record。"] Record (usize)
+kernel/src/log.rs :: enum KmsgRead :: # [doc = " 环覆盖了 reader 尚未消费的 sequence；下一次读取从当前最老 record 继续。"] Overrun
 kernel/src/log.rs :: enum LogLevel :: Debug = 0
 kernel/src/log.rs :: enum LogLevel :: Error = 3
 kernel/src/log.rs :: enum LogLevel :: Info = 1
 kernel/src/log.rs :: enum LogLevel :: Warn = 2
+kernel/src/log.rs :: pub (crate) const KMSG_READ_BUFFER_SIZE : usize = 256
+kernel/src/log.rs :: pub (crate) enum KmsgRead
 kernel/src/log.rs :: pub (crate) enum LogLevel
 kernel/src/log.rs :: pub (crate) fn __log (level : LogLevel , module : & str , args : fmt :: Arguments)
 kernel/src/log.rs :: pub (crate) fn disable_module (module : & str) -> bool
 kernel/src/log.rs :: pub (crate) fn init ()
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn open () -> Self
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn read (& self , output : & mut [u8]) -> KmsgRead
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readable (& self) -> bool
+kernel/src/log.rs :: pub (crate) impl KmsgReader :: fn readiness_generation (& self) -> u64
 kernel/src/log.rs :: pub (crate) impl LogLevel :: fn colored_str (& self) -> & 'static str
 kernel/src/log.rs :: pub (crate) impl Logger :: fn disable_module (& mut self , module : & str) -> bool
-kernel/src/log.rs :: pub (crate) impl Logger :: fn log (& self , level : LogLevel , module : & str , args : fmt :: Arguments)
+kernel/src/log.rs :: pub (crate) impl Logger :: fn log (& mut self , level : LogLevel , module : & str , args : fmt :: Arguments)
 kernel/src/log.rs :: pub (crate) impl Logger :: fn set_level (& mut self , level : LogLevel)
+kernel/src/log.rs :: pub (crate) struct KmsgReader
 kernel/src/log.rs :: pub (crate) struct Logger
 kernel/src/log.rs :: pub (crate) struct ModuleFilter
 kernel/src/memory/address.rs :: pub (crate) impl PhysicalAddress :: fn as_mut_ptr < T > (& self) -> * mut T

@@ -261,7 +261,10 @@ pub(super) fn write_descriptor(
             }
             if matches!(
                 device,
-                CharacterDevice::Entropy | CharacterDevice::Drm(_) | CharacterDevice::Input { .. }
+                CharacterDevice::Entropy
+                    | CharacterDevice::Kmsg(_)
+                    | CharacterDevice::Drm(_)
+                    | CharacterDevice::Input { .. }
             ) {
                 return -errno::EOPNOTSUPP;
             }
@@ -382,6 +385,7 @@ pub(super) fn write_descriptor(
                         }
                     },
                     CharacterDevice::Entropy => unreachable!("entropy write rejected above"),
+                    CharacterDevice::Kmsg(_) => unreachable!("kmsg write rejected above"),
                     CharacterDevice::Drm(_) => unreachable!("DRM write rejected above"),
                     CharacterDevice::Input { .. } => unreachable!("input write rejected above"),
                 };

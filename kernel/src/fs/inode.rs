@@ -19,6 +19,7 @@ pub(crate) enum DeviceKind {
     Zero,
     Random,
     Urandom,
+    Kmsg,
     Tty,
     Console,
     Ptmx,
@@ -35,6 +36,7 @@ impl DeviceKind {
             Self::Zero => (1, 5),
             Self::Random => (1, 8),
             Self::Urandom => (1, 9),
+            Self::Kmsg => (1, 11),
             Self::Tty => (5, 0),
             Self::Console => (5, 1),
             Self::Ptmx => (5, 2),
@@ -50,6 +52,7 @@ impl DeviceKind {
             Self::Zero => 3,
             Self::Random => 10,
             Self::Urandom => 11,
+            Self::Kmsg => 17,
             Self::Tty => 4,
             Self::Console => 5,
             Self::Ptmx => 15,
@@ -61,7 +64,7 @@ impl DeviceKind {
 
     pub(crate) fn mode(self) -> u32 {
         match self {
-            Self::Console | Self::PtySlave(_) | Self::InputEvent(_) => 0o020600,
+            Self::Kmsg | Self::Console | Self::PtySlave(_) | Self::InputEvent(_) => 0o020600,
             Self::Null
             | Self::Zero
             | Self::Random

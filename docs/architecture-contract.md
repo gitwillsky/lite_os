@@ -23,14 +23,14 @@
 | `input` | `drivers`, `ipc`, `sync`, `timer` | 只消费通用 input seam，并拥有 evdev 事件域；不感知 VirtIO adapter、task、filesystem 或 syscall ABI |
 | `ipc` | `id`, `sync` | 只拥有 Pipe byte/endpoint，不感知 fd、task、socket 或 syscall；`id` 仅分配 anonymous inode identity |
 | `socket` | `drivers`, `fallible_tree`, `id`, `ipc`, `sync`, `timer` | 拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 仅分配 anonymous inode identity |
-| `fs` | `drivers`, `drm`, `fallible_tree`, `input`, `ipc`, `memory`, `socket`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`drm`/`input` 仅允许 OFD backend；socket 仅允许统一 OFD backend facade；`memory` 仅允许 shared-page seam |
+| `fs` | `drivers`, `drm`, `fallible_tree`, `input`, `ipc`, `log`, `memory`, `socket`, `sync`, `timer` | `drivers` 仅允许 `block` seam；`drm`/`input`/`log` 仅允许 OFD backend；socket 仅允许统一 OFD backend facade；`memory` 仅允许 shared-page seam |
 | `task` | `arch`, `drm`, `fallible_tree`, `fs`, `input`, `ipc`, `memory`, `socket`, `sync`, `timer` | 不依赖具体 device 或 syscall/trap entry；只在 deferred context 推进 network、display 与 input work |
 | `trap` | `arch`, `drivers`, `memory`, `syscall`, `task`, `timer` | 只做入口、分类和事件投递 |
 | `syscall` | `drm`, `fs`, `input`, `ipc`, `memory`, `random`, `socket`, `system`, `task`, `timer` | DRM/evdev 只编解码标准 UAPI；不得绕过 facade 接触 adapter/scheduler/page table |
 | `random` | `drivers` | entropy facade；只消费 RNG device seam，不生成伪随机 fallback |
 | `system` | `arch` | 只拥有 whole-system reset/shutdown/CAD policy |
 | `timer` | `arch`, `config`, `drivers`, `sync` | RTC adapter 由 timer 唯一拥有 |
-| `log` | `arch`, `sync` | 日志策略和输出在本 module 内闭合 |
+| `log` | `arch`, `sync`, `timer` | 日志策略、有界 record owner 与输出在本 module 内闭合；timer 只提供 monotonic timestamp |
 | `id` | 无 | 纯 ID allocation mechanism |
 | `lang_item` | `arch` | 只使用 architecture fail-stop mechanism |
 | `main` | `arch`, `config`, `drivers`, `drm`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root |
@@ -70,6 +70,7 @@
 | primary display adapter、DRM pending/completed fence、active framebuffer/mode、connector mode 与同代 fallback、master identity 与 completion notification | drivers::display 只发布唯一 `DisplayDevice` seam；drm::DrmDevice 唯一把该 seam、scanout backing lifecycle、mode 两阶段提交、master 与 Pipe edge 组合，task deferred 只调用 update façade，不复制 fence/master state；syscall 只消费 `DrmWait`/event 完成事实与 Pipe source后进入 task wait，不允许 drm 反向依赖 task |
 | `/dev/dri/card0` 固定 object topology、动态 connector mode、buffer identity、device-wide framebuffer、per-open GEM handle namespace 与 event space | drm::DrmDevice/DrmFile；devfs 只发布 major/minor pathname identity，syscall 只编码固定 CRTC/encoder/connector ID、当前 CVT mode 与 Linux dumb/KMS/event UAPI；handle/event 只在所属 OFD 可见，VMA、framebuffer、pending/active adapter resource 各自以 Arc 独立保活 backing |
 | input adapter registry、device live key/absolute state、client registry、exclusive grab、per-OFD packet ring/clock 与 completion notification | drivers::input 只拥有 DTB probe 顺序与 raw adapter Arc；input::EvdevDevice/InputFile 唯一拥有 evdev state 和 queue；devfs 只投影 event index/13:64+ minor，syscall 只编码 Linux input UAPI，task deferred 只调用 event fanout façade |
+| kernel log filter、sequence 与 bounded record ring | log::Logger；每条启用 record 在同一 IRQ-safe lock 内先写入固定 128×192-byte 环，再同步投影到 UART；`/dev/kmsg` OFD 只保存独立 sequence cursor，不复制文本或覆盖状态 |
 | Unix98 PTY index namespace、lock/master/slave-open lifecycle、双向 byte stream 与 readiness generation | fs::pty 的 PtyRegistry/PtyPair；devpts 只动态投影 live-master index，OFD 只持 PtyMaster/PtySlave Arc；byte Pipe 与 notification Pipe 分离，master close 只经 composition root 注入的 task hangup seam 发布 foreground consequence |
 | epoll `(fd, OFD)` interest、ET generation、MOD revision、delivery cursor、ONESHOT state、ctl notification 与无环嵌套图 | fs::Epoll；内部 notification Pipe 与 readiness generation 均接入 ppoll 的同一 source/wait seam，消费到 ctl/close token 表示旧 source-key snapshot 必须重建 |
 | eventfd 64-bit counter、semaphore mode 与 read/write readiness generation | ipc::EventFd；OFD/fd table 只持 Arc，notification Pipe 只承载 edge，不复制 counter |
@@ -232,6 +233,7 @@
 - UART hardirq 不调度、不分配，只清空设备 FIFO并发布 console softirq；console read 在统一 indexed wait owner 内复查 RX ring，deferred consumer 才移除 membership 并 wake task。
 - syscall handler 只能向 dispatcher 返回内部 restart 结果；trap layer 将其暂存为 `EINTR` 并把原 `a0..a5/a7/ecall PC` 交给当前 Thread。实际交付的 handler disposition 含 `SA_RESTART` 时才把 replay context 写入 signal frame，否则 frame 保留 `EINTR`；内部结果不得进入 U-mode。
 - dispatcher 对未接入 number 只返回 `ENOSYS`，不得为每次未知调用打印日志；syscall number 与调用频率完全由 U-mode 控制，逐调用日志会把正常 capability/io_uring feature probe 变成 console I/O 放大与拒绝服务面。诊断必须使用显式临时探针并在完成后移除。
+- `log::Logger` 是 UART 与只读 `/dev/kmsg` 的唯一 record owner；固定环禁止分配且允许 hardirq/softirq/task 同步写入。devfs 只发布 Linux 1:11 identity，`KmsgReader` 每 OFD 从当前最老 sequence 开始，每次只消费一个完整 text record；小 buffer、覆盖与空分别返回 `EINVAL/EPIPE/EAGAIN`。当前不发布 write、seek、blocking wait 或 poll wake source，禁止用周期自旋伪造缺失的异步唤醒。
 - Thread exit 发布顺序固定为 robust cleanup -> process graph removal -> clear-child-tid/futex wake；join completion 不得早于 Thread owner 注销。exec commit 必须在替换旧 AddressSpace 前执行同一 robust cleanup 并清 registration。`model::robust_list::set_robust_list` 只允许 syscall registration 调用，长度正确的 NULL head 注销，`cleanup_robust_list` 只允许 `model::process_exec` 与 `task_manager::process_exit` 的 calling-Thread lifecycle 调用；模块持有 Thread robust-list registration 的唯一 mutation seam，不另存 membership。cleanup 必须一次快照旧 AddressSpace 与 user-fault limits，禁止在 CAS 持 mm lock 时再取 resource-limit lock；`task_manager::futex_wake_with_key` 只允许普通 futex wake 与 robust old-mm resolver 调用，固定 queue→memory 锁序，退出 MemorySet/queue guard 后才 wake task。non-PI robust OWNER_DIED publication 必须在每次 CAS conflict 后用返回的 live word 重查 owner TID，无独立 retry cap；成功替换且旧值含 WAITERS 才 wake。`list_op_pending` 的 zero-owner 状态必须补偿 userspace 尚未来得及执行的 wake，pending node 若已在主链只能处理一次。NULL/unaligned address、link read、futex read/CAS fault 必须停止 traversal；第 2048 个已处理 node 的 next 超出 traversal bound，不得阻止最终 pending cleanup。
 - vfork caller 使用独立 `WaitMembership::Vfork(child)` 且不可被 signal 提前解除；child Process 与 parent 精确共享同一 AddressSpace Arc，并使用按 TID 分配的 supervisor trap page。只有 exec 原子替换 child handle并删除临时页，或 exit 先删除临时页，才能消费 child node 的唯一 caller waiter；不得挂起整个 parent Process。
 - child exit/stop/continue event 必须在 process graph 锁内 claim；status copyout 成功后才消费，失败必须 release。多个 parent Thread 可分别等待，但同一 event 不得被重复返回或回收。
@@ -242,7 +244,7 @@
 - raw CSR、DMA、page-table pointer、trap context 和 packed disk unsafe 必须有局部 `SAFETY:` 证明。
 - 禁止 `static mut`、私有 syscall、固定 hart 容量、console syscall 旁路、deprecated/feature-flag 双轨。
 - 禁止 `common/utils/helpers/misc/manager/base/shared/core` 等无领域含义的目录。
-- `user/` 顶层只允许固定 BusyBox config、passwd/group identity、inittab/network service/udhcpc lease script、musl consumer、dynamic-loader C probe 与单 ELF `liteos-stress`；后者只通过 `cputest/memtest/cachetest` hardlink 提供有界 CPU、anonymous/COW 和 shared-file dirty/reclaim 诊断，不得形成第二 runtime 或默认 init。围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact。
+- `user/` 顶层只允许固定 BusyBox config、passwd/group identity、inittab/network service/udhcpc lease script、musl consumer、dynamic-loader C probe 与单 ELF `liteos-stress`；后者只通过 `cputest/memtest/cachetest` hardlink 提供有界 CPU、anonymous/COW 和 shared-file dirty/reclaim 诊断，不得形成第二 runtime 或默认 init。当前围栏禁止 Rust user crate/source/linker、`build-user` 和旧 init artifact；若引入 Rust Linux-ABI consumer，必须先证明它经同一动态 musl loader/libc、没有私有 syscall/runtime 或第二 rootfs build track，并与首个真实程序在同一变更中收紧构建围栏，不能只放宽 allowlist。
 
 ## 6. Change contract
 

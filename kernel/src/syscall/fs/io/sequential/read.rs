@@ -166,6 +166,19 @@ pub(super) fn read_descriptor(
                 }
                 total_length as isize
             }
+            CharacterDevice::Kmsg(_) => {
+                let mut record = [0u8; CharacterDevice::KMSG_RECORD_MAX];
+                let capacity = total_length.min(record.len());
+                let length = match device.read_kmsg(&mut record[..capacity]) {
+                    crate::fs::KmsgDeviceRead::Record(length) => length,
+                    crate::fs::KmsgDeviceRead::Empty => return -errno::EAGAIN,
+                    crate::fs::KmsgDeviceRead::Overrun => return -errno::EPIPE,
+                    crate::fs::KmsgDeviceRead::BufferTooSmall => return -errno::EINVAL,
+                };
+                let mut cursor = UserIoCursor::new(vectors);
+                let result = cursor.copy_to_user(task, &record[..length]);
+                scatter_result(&cursor, result)
+            }
             CharacterDevice::Drm(file) => {
                 const EVENT_SIZE: usize = crate::drm::DrmEvent::SIZE;
                 let maximum = total_length / EVENT_SIZE;

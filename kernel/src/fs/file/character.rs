@@ -4,12 +4,26 @@ use super::Terminal;
 use crate::drm::DrmFile;
 use crate::fs::{DeviceKind, FileSystemError, PtyMaster, PtySlave};
 use crate::input::InputFile;
+use crate::log::KmsgReader;
+
+/// @description character-device seam 对 `/dev/kmsg` 单 record read 的稳定结果。
+pub(crate) enum KmsgDeviceRead {
+    /// 一个完整 record 及其长度。
+    Record(usize),
+    /// producer 尚无新 record。
+    Empty,
+    /// reader cursor 已被环覆盖。
+    Overrun,
+    /// caller buffer 过小。
+    BufferTooSmall,
+}
 
 /// @description 标准 character-device OFD backend；设备 identity 与运行时 owner 保持在一起。
 pub(crate) enum CharacterDevice {
     Null,
     Zero,
     Entropy,
+    Kmsg(KmsgReader),
     Drm(Arc<DrmFile>),
     PtyMaster(Arc<PtyMaster>),
     Input {
@@ -25,6 +39,22 @@ pub(crate) enum CharacterDevice {
 impl CharacterDevice {
     const INPUT: i16 = 0x001;
     const OUTPUT: i16 = 0x004;
+    pub(crate) const KMSG_RECORD_MAX: usize = crate::log::KMSG_READ_BUFFER_SIZE;
+
+    /// @description 从 kmsg backend 消费一个完整 record。
+    /// @param output kernel-owned record buffer。
+    /// @return kmsg device 的单 record 结果；非 kmsg backend 不得调用。
+    pub(crate) fn read_kmsg(&self, output: &mut [u8]) -> KmsgDeviceRead {
+        let Self::Kmsg(reader) = self else {
+            panic!("read_kmsg called for non-kmsg character device")
+        };
+        match reader.read(output) {
+            crate::log::KmsgRead::Record(length) => KmsgDeviceRead::Record(length),
+            crate::log::KmsgRead::Empty => KmsgDeviceRead::Empty,
+            crate::log::KmsgRead::Overrun => KmsgDeviceRead::Overrun,
+            crate::log::KmsgRead::BufferTooSmall => KmsgDeviceRead::BufferTooSmall,
+        }
+    }
 
     /// @description 从 devfs device identity 构造唯一 character backend。
     ///
@@ -36,6 +66,7 @@ impl CharacterDevice {
             DeviceKind::Null => Self::Null,
             DeviceKind::Zero => Self::Zero,
             DeviceKind::Random | DeviceKind::Urandom => Self::Entropy,
+            DeviceKind::Kmsg => Self::Kmsg(KmsgReader::open()),
             DeviceKind::Tty | DeviceKind::Console => Self::Terminal {
                 terminal,
                 kind,
@@ -67,6 +98,13 @@ impl CharacterDevice {
         match self {
             Self::Null | Self::Zero => events & (Self::INPUT | Self::OUTPUT),
             Self::Entropy => events & Self::INPUT,
+            Self::Kmsg(reader) => {
+                if reader.readable() {
+                    events & Self::INPUT
+                } else {
+                    0
+                }
+            }
             Self::PtyMaster(master) => {
                 let hung_up = master.peer_hung_up();
                 (if master.readable() {
@@ -122,6 +160,7 @@ impl CharacterDevice {
             ),
             Self::Input { file, .. } => file.readiness_generation(),
             Self::Drm(file) => file.readiness_generation(),
+            Self::Kmsg(reader) => reader.readiness_generation(),
             Self::PtyMaster(master) => master
                 .notification_pipe()
                 .readiness_generation(crate::ipc::PipeDirection::Read),
