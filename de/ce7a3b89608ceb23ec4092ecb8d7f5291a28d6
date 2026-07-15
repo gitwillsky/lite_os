@@ -1,0 +1,72 @@
+Makefile
+  h_3c88a3bd48cce1 3,5-6,48,56,66,72-73,76
+assets/fonts/Spleen-LICENSE
+  s_f0a69312287991::t_bd568f6eb4ef02 1-25
+assets/fonts/spleen-16x32.psfu.b64
+  s_f0a69312287991::t_d6fa3e1e964736 1-2
+docs/architecture-contract.md
+  s_f0a69312287991::t_706993a3726ce1 65,67-68,182,184
+docs/architecture-interface.txt
+  s_f0a69312287991::t_14d1403825a3cc 263-264,269,274,277-278,333,338,380,427-429,441-443,551,571-572,771,2546,2686
+docs/architecture.md
+  s_f0a69312287991::t_37e900dd6ccac6 190-191,193,210
+docs/standards-baseline.md
+  s_f0a69312287991::t_2b7c4bede7b516 22
+docs/syscall-support.md
+  s_f0a69312287991::t_5d07f0a1aef006 40
+kernel/src/drivers/display.rs
+  s_f0a69312287991::t_9b2cc15bf12ad8 28-36,39-40,47-54,60-64,66-67,69
+kernel/src/drivers/hal/virtio.rs
+  s_f0a69312287991::t_1e445d4fe2265e 190-210
+kernel/src/drivers/mod.rs
+  s_f0a69312287991::t_c371c956fe82be 16-18
+kernel/src/drivers/virtio_gpu.rs
+  s_f0a69312287991::t_a944ddabae979f 7-8,14,21,41-43,57,70-78,126,131-137,140,160,206-217,311,320,333-348,350,373,375,385,387-396,398-401,405-413,415,421-431,433-436,438,453,456-459,467,470-473,481,484-487,495,511,522-525,530-532,534-537,539
+kernel/src/drivers/virtio_gpu/boot.rs
+  s_f0a69312287991::t_fee0b5f60b3111 1-161
+kernel/src/drivers/virtio_gpu/wire.rs
+  s_f0a69312287991::t_582f1df3d1b49a 14-16
+kernel/src/drm.rs
+  s_f0a69312287991::t_aa5f337696e349 18,40,57,67-70,424,426,522-526,538-539,550-551
+kernel/src/drm/device.rs
+  s_f0a69312287991::t_2b2720014e0e2c 4,14-63,79-80,151-152,204,206,212-220,246-250,255-258,261,265,278-335
+kernel/src/drm/mode.rs
+  s_f0a69312287991::t_9efb5b84fc0aed 1,73-90
+kernel/src/fs/file/terminal.rs
+  s_f0a69312287991::t_e2c266cfd12bfe 376-385
+kernel/src/syscall/drm.rs
+  s_f0a69312287991::t_d8faac4f5b8124 307,311
+kernel/src/syscall/tty.rs
+  s_f0a69312287991::t_e53e98074834b4 6-7,133
+kernel/src/task/task_manager.rs
+  s_f0a69312287991::t_4f67288f097aa4 72-74
+kernel/src/task/task_manager/terminal_access.rs
+  s_f0a69312287991::t_161f06ac0a4914 23-32
+scripts/verify_busybox.py
+  s_f0a69312287991::t_461df58a737d75 7,63-65,801-810,824-826,846-848,879-880,990-991
+user/liteos-terminal.c
+  s_f0a69312287991::t_37ae315bd148ce 7,15,18,31,35,50-52,55,94-97,135,139-145,155-242,254-285,423-424,434,441,451,457-458,460,462,465-468,470,472-473,476-477,479,483-484,488-489,497,499,503-504,506,510-557,560-562,574-582,615-619,711-717,771,784,802,804-806,808,831,845-860,871-875,879
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dece7a3b89608ceb23ec4092ecb8d7f5291a28d6",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_f0a69312287991": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5c89-552e-7721-bed3-539f1329a3ed",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
