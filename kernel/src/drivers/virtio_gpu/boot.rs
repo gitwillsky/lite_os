@@ -27,9 +27,13 @@ impl VirtIOGpuDevice {
     pub(super) fn parse_display_mode(response: &[u8]) -> Option<DisplayMode> {
         for scanout in 0..16 {
             let offset = CONTROL_HEADER_SIZE + scanout * 24;
-            let width = read_u32(response, offset + 8)?;
+            let host_width = read_u32(response, offset + 8)?;
             let height = read_u32(response, offset + 12)?;
             let enabled = read_u32(response, offset + 16)?;
+            // Linux virtio-gpu 把 display-info 宽度转换为 8-pixel granular CVT mode，后续
+            // resource 与 SET_SCANOUT 也只消费该 mode；若保留 host 原始宽度，DRM 暴露的
+            // hdisplay 与 adapter 校验会成为两套事实，非 8 对齐窗口永远返回 EINVAL。
+            let width = host_width - host_width % 8;
             if enabled != 0 && width != 0 && height != 0 {
                 return Some(DisplayMode {
                     width,

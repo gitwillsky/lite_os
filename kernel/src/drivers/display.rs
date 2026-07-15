@@ -3,10 +3,10 @@ use spin::Once;
 
 use crate::memory::DeviceBacking;
 
-/// @description single-scanout adapter 的不可变显示模式。
+/// @description single-scanout adapter 的 canonical CVT/scanout 显示模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DisplayMode {
-    /// 水平 pixel 数。
+    /// 8-pixel granular 水平 pixel 数；connector、resource 与 scanout 必须共用该值。
     pub(crate) width: u32,
     /// 垂直 pixel 数。
     pub(crate) height: u32,

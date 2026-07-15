@@ -353,6 +353,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         )),
     }
     let atlas_source = fs::read_to_string(terminal.join("src/atlas.rs")).unwrap_or_default();
+    let display_source = fs::read_to_string(terminal.join("src/display.rs")).unwrap_or_default();
     let reactor_source = fs::read_to_string(terminal.join("src/reactor.rs")).unwrap_or_default();
     if !atlas_source.contains("pub fn metrics(&self) -> FontMetrics")
         || !reactor_source.contains("let metrics = atlas.metrics();")
@@ -361,6 +362,40 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     {
         errors.push(
             "user/liteos-terminal: font metrics must come only from the checked atlas and remain invariant across display resize"
+                .to_owned(),
+        );
+    }
+    if !display_source.contains("Transient")
+        || !display_source.contains("OutOfMemory")
+        || !display_source.contains("OverBudget")
+        || !display_source.contains("fn system_error() -> DisplayError")
+        || !display_source.contains("fn commit_error() -> DisplayError")
+    {
+        errors.push(
+            "user/liteos-terminal: resize must distinguish transient contention, policy budget rejection, ENOMEM and other system failures"
+                .to_owned(),
+        );
+    }
+    if !reactor_source.contains("struct PreparedResize")
+        || !reactor_source.contains("const RESIZE_RETRY_MS: u64 = FRAME_INTERVAL_MS;")
+        || !reactor_source.contains("Err(ResizeFailure::Transient)")
+    {
+        errors.push(
+            "user/liteos-terminal: a prepared resize must remain singly owned and retry transient DRM contention until modes converge"
+                .to_owned(),
+        );
+    }
+    let resize_reporter = reactor_source
+        .split_once("fn report_resize_failure(error: DisplayError)")
+        .and_then(|(_, tail)| tail.split_once("\nfn schedule_render"))
+        .map(|(body, _)| body)
+        .unwrap_or_default();
+    if reactor_source.contains("[WARN] resize")
+        || !resize_reporter.contains("ffi::write(")
+        || !resize_reporter.contains("                2,")
+    {
+        errors.push(
+            "user/liteos-terminal: resize diagnostics must use the single stderr reporter and never enter the terminal model"
                 .to_owned(),
         );
     }
@@ -420,6 +455,14 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         errors.push(format!(
             "Makefile: default rootfs must be built through `{required}`"
         ));
+    }
+    if !makefile.contains("QEMU_MEMORY ?= 512M")
+        || makefile.matches("-m $(QEMU_MEMORY)").count() != 3
+    {
+        errors.push(
+            "Makefile: run, run-gui and run-gdb must share the explicit 512 MiB guest-memory baseline"
+                .to_owned(),
+        );
     }
 }
 
@@ -1035,6 +1078,25 @@ fn check_source_patterns(root: &Path, sources: &[SourceFile], errors: &mut Vec<S
                 source.at(line)
             ));
         }
+    }
+
+    let gpu_boot = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/boot.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let drm_mode = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drm/mode.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    if !gpu_boot.contains("let width = host_width - host_width % 8;")
+        || !drm_mode.contains("width.is_multiple_of(H_GRANULARITY)")
+    {
+        errors.push(
+            "display mode must be canonicalized once at the VirtIO boundary and consumed unchanged by DRM"
+                .to_owned(),
+        );
     }
 
     let garbage = [

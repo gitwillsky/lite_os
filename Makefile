@@ -5,6 +5,7 @@ ROOTFS_IMAGE := target/rootfs.img
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=on
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1080
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
+QEMU_MEMORY ?= 512M
 
 build-kernel:
 	cd kernel && cargo build  && cd -
@@ -42,6 +43,7 @@ run: build-kernel build-bootloader fs.img
 	-machine virt \
 	-global virtio-mmio.force-legacy=false \
 	-nographic \
+	-m $(QEMU_MEMORY) \
 	-smp 8 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
@@ -61,6 +63,7 @@ run-gui: build-kernel build-bootloader fs.img
 	-display $(QEMU_GUI_DISPLAY) \
 	-serial file:$(QEMU_GUI_SERIAL_LOG) \
 	-monitor none \
+	-m $(QEMU_MEMORY) \
 	-smp 8 \
 	-rtc base=localtime \
 	-bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader \
@@ -76,7 +79,7 @@ run-gui: build-kernel build-bootloader fs.img
 	-device virtio-net-device,netdev=net0
 
 run-gdb: build-kernel build-bootloader fs.img
-	qemu-system-riscv64 -machine virt -global virtio-mmio.force-legacy=false -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
+	qemu-system-riscv64 -machine virt -global virtio-mmio.force-legacy=false -m $(QEMU_MEMORY) -bios bootloader/target/riscv64gc-unknown-none-elf/release/bootloader -nographic -kernel target/riscv64gc-unknown-none-elf/debug/kernel -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
 	cargo clean

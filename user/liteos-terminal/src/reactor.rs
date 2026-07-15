@@ -2,20 +2,36 @@ use core::{ffi::c_void, ptr};
 
 use crate::{
     atlas::{Atlas, FontMetrics},
-    display::{Display, DisplayError},
+    display::{CandidateBuffer, Display, DisplayError},
     ffi::{self, DrmMode, InputEvent, PollFd, SockaddrNl, WindowSize},
-    model::{Grid, Model},
+    model::{Grid, Model, ResizeCandidate},
 };
 
 const FRAME_INTERVAL_MS: u64 = 17;
 const RESIZE_QUIET_MS: u64 = 50;
+// VirtIO display-info completion 没有独立 userspace edge；瞬时 EBUSY 后若不做有界重试，
+// 最后一个重复 config event 会让 active mode 永久落后于 preferred mode。
+const RESIZE_RETRY_MS: u64 = FRAME_INTERVAL_MS;
 const PTY_BUDGET: usize = 64 * 1024;
 const INPUT_CAPACITY: usize = 4 * 1024;
 const MAX_KEY_BYTES: usize = 4;
 
 enum ResizeFailure {
-    Retryable(DrmMode, DisplayError),
+    Transient,
+    Rejected(DrmMode, DisplayError),
     Fatal,
+}
+
+/// 一次尚未对外发布的 resize transaction。
+///
+/// reactor 是这些候选对象的唯一 owner；瞬时 DRM busy 时保留它们可避免重复申请大块
+/// framebuffer，mode 换代时整体丢弃则避免把旧网格提交到新 connector generation。
+struct PreparedResize {
+    mode: DrmMode,
+    columns: usize,
+    rows: usize,
+    model: ResizeCandidate,
+    buffer: CandidateBuffer,
 }
 
 pub fn run() -> Result<(), ()> {
@@ -45,7 +61,8 @@ pub fn run() -> Result<(), ()> {
     let initial = display
         .prepare(mode, &model, &atlas, metrics)
         .map_err(|_| ())?;
-    display.commit(initial).map_err(|_| ())?;
+    let mut initial = initial;
+    display.commit(&mut initial).map_err(|_| ())?;
     model.clear_all_dirty();
 
     let (master, child) = spawn_shell(model.columns(), model.rows(), mode).ok_or(())?;
@@ -82,6 +99,7 @@ fn event_loop(
     let mut input = InputQueue::new();
     let mut render_due = None::<u64>;
     let mut resize_due = None::<u64>;
+    let mut prepared_resize = None::<PreparedResize>;
     let mut last_present = ffi::monotonic_milliseconds();
     let mut warned_mode = None::<(u16, u16, u8)>;
     loop {
@@ -93,23 +111,22 @@ fn event_loop(
         }
         if resize_due.is_some_and(|deadline| deadline <= now) {
             resize_due = None;
-            match resize(display, atlas, model, metrics, master) {
+            match resize(display, atlas, model, metrics, master, &mut prepared_resize) {
                 Ok(()) => warned_mode = None,
-                Err(ResizeFailure::Retryable(mode, error)) => {
-                    let kind = if error == DisplayError::OverBudget {
-                        1
-                    } else {
-                        2
+                Err(ResizeFailure::Transient) => {
+                    resize_due = Some(now.saturating_add(RESIZE_RETRY_MS));
+                }
+                Err(ResizeFailure::Rejected(mode, error)) => {
+                    let kind = match error {
+                        DisplayError::OverBudget => 1,
+                        DisplayError::OutOfMemory => 2,
+                        DisplayError::System => 3,
+                        DisplayError::Transient => unreachable!(),
                     };
                     let key = (mode.hdisplay, mode.vdisplay, kind);
                     if warned_mode != Some(key) {
                         warned_mode = Some(key);
-                        model.feed(if kind == 1 {
-                            b"\r\n[WARN] resize exceeds framebuffer budget; preserving active mode\r\n"
-                        } else {
-                            b"\r\n[WARN] resize allocation failed; preserving active mode\r\n"
-                        });
-                        schedule_render(&mut render_due, last_present, now);
+                        report_resize_failure(error);
                     }
                 }
                 Err(ResizeFailure::Fatal) => return Err(()),
@@ -185,40 +202,123 @@ fn resize(
     model: &mut Model,
     metrics: FontMetrics,
     master: i32,
+    prepared: &mut Option<PreparedResize>,
 ) -> Result<(), ResizeFailure> {
-    let mode = display
-        .query_mode()
-        .map_err(|error| ResizeFailure::Retryable(DrmMode::default(), error))?;
+    let mode = match display.query_mode() {
+        Ok(mode) => mode,
+        Err(DisplayError::Transient) => return Err(ResizeFailure::Transient),
+        Err(error) => {
+            prepared.take();
+            return Err(ResizeFailure::Rejected(DrmMode::default(), error));
+        }
+    };
     if display.mode().is_some_and(|active| same_mode(active, mode)) {
+        prepared.take();
         return Ok(());
     }
-    let columns = usize::from(mode.hdisplay) / metrics.width();
-    let rows = usize::from(mode.vdisplay) / metrics.height();
-    let candidate_model = model
-        .prepare_resize(columns, rows)
-        .ok_or(ResizeFailure::Retryable(mode, DisplayError::System))?;
-    let candidate_buffer = display
-        .prepare(mode, &candidate_model, atlas, metrics)
-        .map_err(|error| ResizeFailure::Retryable(mode, error))?;
-    let confirmed = display
-        .query_mode()
-        .map_err(|error| ResizeFailure::Retryable(mode, error))?;
-    if !same_mode(mode, confirmed) {
-        return Ok(());
+    if prepared
+        .as_ref()
+        .is_some_and(|candidate| !same_mode(candidate.mode, mode))
+    {
+        prepared.take();
     }
-    display
-        .commit(candidate_buffer)
-        .map_err(|error| ResizeFailure::Retryable(mode, error))?;
-    model.commit_resize(candidate_model);
+    if prepared.is_none() {
+        let columns = usize::from(mode.hdisplay) / metrics.width();
+        let rows = usize::from(mode.vdisplay) / metrics.height();
+        if columns == 0 || rows == 0 {
+            return Err(ResizeFailure::Rejected(mode, DisplayError::System));
+        }
+        let candidate_model = model
+            .prepare_resize(columns, rows)
+            .ok_or(ResizeFailure::Rejected(mode, DisplayError::OutOfMemory))?;
+        let candidate_buffer = display
+            .prepare(mode, &candidate_model, atlas, metrics)
+            .map_err(|error| resize_error(mode, error))?;
+        *prepared = Some(PreparedResize {
+            mode,
+            columns,
+            rows,
+            model: candidate_model,
+            buffer: candidate_buffer,
+        });
+        let confirmed = match display.query_mode() {
+            Ok(mode) => mode,
+            Err(DisplayError::Transient) => return Err(ResizeFailure::Transient),
+            Err(error) => {
+                prepared.take();
+                return Err(ResizeFailure::Rejected(mode, error));
+            }
+        };
+        if !same_mode(mode, confirmed) {
+            prepared.take();
+            return Err(ResizeFailure::Transient);
+        }
+    }
+    let result = display.commit(&mut prepared.as_mut().unwrap().buffer);
+    if let Err(error) = result {
+        if error == DisplayError::Transient {
+            return Err(ResizeFailure::Transient);
+        }
+        prepared.take();
+        return Err(ResizeFailure::Rejected(mode, error));
+    }
+    let candidate = prepared.take().unwrap();
+    model.commit_resize(candidate.model);
     model.clear_all_dirty();
     // SETCRTC 已对外可见；此时回滚 PTY size 会与下一次 hotplug 竞争，因此失败后退出，
     // 由 init 从单一事实源完整重建 session。
-    set_window_size(master, columns, rows, mode.hdisplay, mode.vdisplay)
-        .map_err(|()| ResizeFailure::Fatal)
+    set_window_size(
+        master,
+        candidate.columns,
+        candidate.rows,
+        candidate.mode.hdisplay,
+        candidate.mode.vdisplay,
+    )
+    .map_err(|()| ResizeFailure::Fatal)
+}
+
+fn resize_error(mode: DrmMode, error: DisplayError) -> ResizeFailure {
+    if error == DisplayError::Transient {
+        ResizeFailure::Transient
+    } else {
+        ResizeFailure::Rejected(mode, error)
+    }
 }
 
 fn same_mode(first: DrmMode, second: DrmMode) -> bool {
     first.hdisplay == second.hdisplay && first.vdisplay == second.vdisplay
+}
+
+fn report_resize_failure(error: DisplayError) {
+    let message: &[u8] = match error {
+        DisplayError::Transient => return,
+        DisplayError::OverBudget => {
+            b"liteos-terminal: resize exceeds framebuffer budget; preserving active mode\n"
+        }
+        DisplayError::OutOfMemory => {
+            b"liteos-terminal: resize out of memory; preserving active mode\n"
+        }
+        DisplayError::System => {
+            b"liteos-terminal: resize transaction failed; preserving active mode\n"
+        }
+    };
+    let mut written = 0;
+    while written < message.len() {
+        let count = unsafe {
+            ffi::write(
+                2,
+                message[written..].as_ptr().cast(),
+                message.len() - written,
+            )
+        };
+        if count > 0 {
+            written += count as usize;
+        } else if count < 0 && ffi::errno() == ffi::EINTR {
+            continue;
+        } else {
+            break;
+        }
+    }
 }
 
 fn schedule_render(deadline: &mut Option<u64>, last_present: u64, now: u64) {

@@ -15,6 +15,8 @@ const BACKGROUND: u32 = 0x00101418;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DisplayError {
     System,
+    Transient,
+    OutOfMemory,
     OverBudget,
 }
 
@@ -51,7 +53,7 @@ impl Display {
             )
         };
         if fd < 0 {
-            return Err(DisplayError::System);
+            return Err(system_error());
         }
         let mut crtc_id = 0u32;
         let mut connector_id = 0u32;
@@ -69,9 +71,12 @@ impl Display {
                 (&mut resources as *mut DrmResources).cast(),
             )
         } < 0
-            || resources.crtc_count == 0
-            || resources.connector_count == 0
         {
+            let error = system_error();
+            unsafe { ffi::close(fd) };
+            return Err(error);
+        }
+        if resources.crtc_count == 0 || resources.connector_count == 0 {
             unsafe { ffi::close(fd) };
             return Err(DisplayError::System);
         }
@@ -99,10 +104,10 @@ impl Display {
                 (&mut connector as *mut DrmConnector).cast(),
             )
         } < 0
-            || connector.mode_count == 0
-            || mode.hdisplay == 0
-            || mode.vdisplay == 0
         {
+            return Err(system_error());
+        }
+        if connector.mode_count == 0 || mode.hdisplay == 0 || mode.vdisplay == 0 {
             return Err(DisplayError::System);
         }
         Ok(mode)
@@ -136,7 +141,7 @@ impl Display {
             )
         } < 0
         {
-            return Err(DisplayError::System);
+            return Err(system_error());
         }
         let size = usize::try_from(create.size).map_err(|_| DisplayError::System)?;
         let required = usize::try_from(create.pitch)
@@ -163,8 +168,9 @@ impl Display {
             )
         } < 0
         {
+            let error = system_error();
             destroy_handle(self.fd, create.handle);
-            return Err(DisplayError::System);
+            return Err(error);
         }
         let pixels = unsafe {
             ffi::mmap(
@@ -177,8 +183,9 @@ impl Display {
             )
         };
         if pixels as usize == usize::MAX {
+            let error = system_error();
             destroy_handle(self.fd, create.handle);
-            return Err(DisplayError::System);
+            return Err(error);
         }
         let mut framebuffer = DrmFramebuffer {
             width: u32::from(mode.hdisplay),
@@ -197,9 +204,10 @@ impl Display {
             )
         } < 0
         {
+            let error = system_error();
             unsafe { ffi::munmap(pixels, size) };
             destroy_handle(self.fd, create.handle);
-            return Err(DisplayError::System);
+            return Err(error);
         }
         let mut candidate = CandidateBuffer {
             fd: self.fd,
@@ -218,7 +226,7 @@ impl Display {
         Ok(candidate)
     }
 
-    pub fn commit(&mut self, mut candidate: CandidateBuffer) -> Result<(), DisplayError> {
+    pub fn commit(&mut self, candidate: &mut CandidateBuffer) -> Result<(), DisplayError> {
         let buffer = candidate.buffer.as_ref().ok_or(DisplayError::System)?;
         let connector_id = self.connector_id;
         let mut crtc = DrmCrtc {
@@ -238,7 +246,7 @@ impl Display {
             )
         } < 0
         {
-            return Err(DisplayError::System);
+            return Err(commit_error());
         }
         let next = candidate.buffer.take().unwrap();
         if let Some(old) = self.active.replace(next) {
@@ -311,7 +319,7 @@ impl Display {
             )
         } < 0
         {
-            return Err(DisplayError::System);
+            return Err(system_error());
         }
         for row in 0..model.rows() {
             model.clear_dirty(row);
@@ -468,6 +476,24 @@ fn destroy_handle(fd: i32, handle: u32) {
             (&mut handle as *mut u32).cast(),
         )
     };
+}
+
+fn system_error() -> DisplayError {
+    match ffi::errno() {
+        ffi::EBUSY | ffi::EINTR | ffi::EINVAL => DisplayError::Transient,
+        ffi::ENOMEM => DisplayError::OutOfMemory,
+        _ => DisplayError::System,
+    }
+}
+
+fn commit_error() -> DisplayError {
+    match ffi::errno() {
+        // SETCRTC 在第二次 GETCONNECTOR 后仍可与 display-info 换代或 adapter 内部
+        // command 竞争；候选 framebuffer 保持有效，重试是唯一无损恢复路径。
+        ffi::EBUSY | ffi::EINTR => DisplayError::Transient,
+        ffi::ENOMEM => DisplayError::OutOfMemory,
+        _ => DisplayError::System,
+    }
 }
 
 fn framebuffer_budget() -> usize {

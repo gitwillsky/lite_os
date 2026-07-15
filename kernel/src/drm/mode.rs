@@ -11,11 +11,11 @@ pub(super) fn cvt_mode(mode: DisplayMode) -> DrmMode {
     const CLOCK_STEP_KHZ: u64 = 250;
     const REFRESH: u64 = 60;
 
-    let width = u64::from(mode.width) / H_GRANULARITY * H_GRANULARITY;
+    let width = u64::from(mode.width);
     let height = u64::from(mode.height);
     assert!(
-        width != 0 && height != 0,
-        "DRM mode dimensions must be nonzero"
+        width != 0 && width.is_multiple_of(H_GRANULARITY) && height != 0,
+        "DRM mode must be a canonical nonzero display mode"
     );
     let vsync = if height.is_multiple_of(3) && height * 4 / 3 == width {
         4
