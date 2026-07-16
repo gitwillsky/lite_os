@@ -331,8 +331,6 @@ pub(crate) fn open_master() -> Result<Arc<PtyMaster>, FileSystemError> {
         }),
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
-    let terminal = Terminal::new(console.clone()).map_err(|()| FileSystemError::OutOfMemory)?;
-
     let mut registry = registry.lock();
     let index = if let Some(index) = registry
         .slots
@@ -347,6 +345,8 @@ pub(crate) fn open_master() -> Result<Arc<PtyMaster>, FileSystemError> {
             .map_err(|_| FileSystemError::OutOfMemory)?;
         u32::try_from(registry.slots.len()).map_err(|_| FileSystemError::NoSpace)?
     };
+    let terminal = Terminal::new(console.clone(), crate::fs::DeviceKind::PtySlave(index))
+        .map_err(|()| FileSystemError::OutOfMemory)?;
     let pair = Arc::try_new(PtyPair {
         index,
         console,

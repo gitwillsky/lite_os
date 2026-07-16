@@ -4,17 +4,19 @@ use crate::{
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR, OpenFileDescription, OpenFileKind},
     socket::{
         InetAddress, NetlinkAddress, PacketAddress, Socket, SocketAddress, SocketDomain,
-        SocketError, SocketType, UnixAddress, UnixConnectResources, configure_address,
-        configure_gateway, configure_netmask, configure_up, interface_snapshot,
+        SocketError, SocketType, UnixAddress, UnixConnectResources, UnixCredentials,
+        configure_address, configure_gateway, configure_netmask, configure_up, interface_snapshot,
     },
     task::{self, TaskControlBlock, WaitResult, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};
 
+mod control;
 mod interface;
 mod message;
 mod options;
+mod unix_path;
 pub(super) use interface::socket_ioctl;
 pub(crate) use message::{sys_recvfrom, sys_recvmsg, sys_sendmsg, sys_sendto};
 pub(crate) use options::{sys_getsockopt, sys_setsockopt};
@@ -80,6 +82,7 @@ pub(super) fn socket_error(error: SocketError) -> isize {
         SocketError::BrokenPipe => errno::EPIPE,
         SocketError::PermissionDenied => errno::EACCES,
         SocketError::NoDevice => errno::ENODEV,
+        SocketError::TooManyReferences => errno::ETOOMANYREFS,
     }
 }
 
@@ -105,9 +108,21 @@ fn new_socket(
     kind: SocketType,
     protocol: usize,
 ) -> Result<Arc<Socket>, isize> {
+    let credentials = (domain == SocketDomain::Unix).then(current_unix_credentials);
     task::create_notification_endpoints()
         .map_err(|_| -errno::ENOMEM)
-        .and_then(|notify| Socket::new(domain, kind, protocol, notify).map_err(socket_error))
+        .and_then(|notify| {
+            Socket::new(domain, kind, protocol, notify, credentials).map_err(socket_error)
+        })
+}
+
+fn current_unix_credentials() -> UnixCredentials {
+    let task = current_task().expect("AF_UNIX operation requires current task");
+    UnixCredentials {
+        pid: task.tgid() as i32,
+        uid: task.credential_id(true, true),
+        gid: task.credential_id(false, true),
+    }
 }
 
 fn socket_ofd(fd: usize) -> Result<(Arc<OpenFileDescription>, Arc<Socket>), isize> {
@@ -129,10 +144,12 @@ fn read_address(pointer: usize, length: usize) -> Result<SocketAddress, isize> {
         .map_err(|_| -errno::EFAULT)?;
     match u16::from_ne_bytes(bytes[..2].try_into().unwrap()) as usize {
         AF_UNIX if length >= 3 => {
-            let path = if bytes[2] == 0 {
-                &bytes[2..length]
+            let raw = &bytes[2..length];
+            let path = if raw[0] == 0 {
+                raw
             } else {
-                return Err(-errno::EOPNOTSUPP);
+                let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+                &raw[..end]
             };
             UnixAddress::new(path)
                 .map(SocketAddress::Unix)
@@ -320,7 +337,13 @@ pub(crate) fn sys_bind(fd: usize, address: usize, length: usize) -> isize {
         };
         address = SocketAddress::Netlink(NetlinkAddress { port_id, groups });
     }
-    socket.bind(address).map_or_else(socket_error, |()| 0)
+    let SocketAddress::Unix(unix) = &address else {
+        return socket.bind(address).map_or_else(socket_error, |()| 0);
+    };
+    if unix.is_abstract() {
+        return socket.bind(address).map_or_else(socket_error, |()| 0);
+    }
+    unix_path::bind(&socket, *unix)
 }
 
 pub(crate) fn sys_listen(fd: usize, backlog: isize) -> isize {
@@ -364,7 +387,16 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         } else {
             None
         };
-    match client.connect(address, resources) {
+    let credentials = (client.domain() == SocketDomain::Unix).then(current_unix_credentials);
+    let unix_path = match &address {
+        SocketAddress::Unix(unix) if !unix.is_abstract() => match unix_path::resolve(unix, true) {
+            Ok(resolved) => Some(resolved),
+            Err(error) => return error,
+        },
+        _ => None,
+    };
+    let unix_identity = unix_path.as_ref().map(|(_, identity)| *identity);
+    match client.connect(address, resources, credentials, unix_identity) {
         Ok(()) => 0,
         Err(SocketError::InProgress) if *ofd.flags.lock() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
         Err(SocketError::InProgress) => loop {

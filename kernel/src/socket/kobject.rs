@@ -184,6 +184,7 @@ impl KobjectSocket {
             full_length,
             source: Some(SocketAddress::Netlink(source)),
             local_address: None,
+            rights: None,
         })
     }
 

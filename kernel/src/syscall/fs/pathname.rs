@@ -9,7 +9,7 @@ use crate::{
 
 use super::AT_FDCWD;
 
-pub(super) fn ferr(error: FileSystemError) -> isize {
+pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
     -(match error {
         FileSystemError::NotFound => errno::ENOENT,
         FileSystemError::AlreadyExists => errno::EEXIST,

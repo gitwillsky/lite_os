@@ -11,8 +11,12 @@ mod kobject;
 mod message_limits;
 #[path = "socket/observation.rs"]
 mod observation;
+#[path = "socket/options.rs"]
+mod options;
 #[path = "socket/packet.rs"]
 mod packet;
+#[path = "socket/rights.rs"]
+mod rights;
 #[path = "socket/send.rs"]
 mod send;
 #[path = "socket/unix.rs"]
@@ -23,8 +27,10 @@ use kobject::KobjectSocket;
 pub(crate) use kobject::publish_drm_hotplug;
 use packet::PacketSocket;
 pub(crate) use send::{SocketSendBlocker, SocketSendError, SocketWaitGuard};
-pub(crate) use unix::UnixAddress;
 use unix::UnixSocket;
+pub(crate) use unix::{
+    SCM_MAX_FD, UnixAddress, UnixNode, UnixPassedFile, UnixPathIdentity, UnixRights,
+};
 
 pub(crate) use inet::{
     configure_address, configure_gateway, configure_netmask, configure_up, dispatch_network_work,
@@ -70,11 +76,20 @@ pub(crate) struct NetlinkAddress {
     pub(crate) groups: u32,
 }
 
+/// @description Linux AF_UNIX peer credential 的 domain value。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UnixCredentials {
+    pub(crate) pid: i32,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+}
+
 pub(crate) struct ReceivedMessage {
     pub(crate) count: usize,
     pub(crate) full_length: usize,
     pub(crate) source: Option<SocketAddress>,
     pub(crate) local_address: Option<Ipv4Addr>,
+    pub(crate) rights: Option<UnixRights>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +126,8 @@ pub(crate) enum SocketError {
     PermissionDenied,
     NoDevice,
     WrongType,
+    /// real-UID SCM_RIGHTS inflight 超过 sender RLIMIT_NOFILE。
+    TooManyReferences,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,10 +201,17 @@ impl Socket {
         socket_type: SocketType,
         protocol: usize,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+        unix_credentials: Option<UnixCredentials>,
     ) -> Result<Arc<Self>, SocketError> {
+        let object_id = crate::id::next_runtime_object_id();
         let backend = match (domain, socket_type, protocol) {
             (SocketDomain::Unix, SocketType::Stream | SocketType::Datagram, 0) => {
-                SocketBackend::Unix(UnixSocket::new(socket_type, notify)?)
+                SocketBackend::Unix(UnixSocket::new(
+                    socket_type,
+                    notify,
+                    unix_credentials.ok_or(SocketError::Invalid)?,
+                    object_id,
+                )?)
             }
             (SocketDomain::Inet, SocketType::Datagram, 0 | 17) => {
                 SocketBackend::Inet(InetSocket::new(SocketType::Datagram, notify)?)
@@ -208,7 +232,7 @@ impl Socket {
             _ => return Err(SocketError::ProtocolNotSupported),
         };
         Arc::try_new(Self {
-            object_id: crate::id::next_runtime_object_id(),
+            object_id,
             domain,
             socket_type,
             backend,
@@ -217,8 +241,9 @@ impl Socket {
     }
 
     fn from_unix(socket: Arc<UnixSocket>) -> Result<Arc<Self>, SocketError> {
+        let object_id = socket.node_id();
         Arc::try_new(Self {
-            object_id: crate::id::next_runtime_object_id(),
+            object_id,
             domain: SocketDomain::Unix,
             socket_type: socket.socket_type(),
             backend: SocketBackend::Unix(socket),
@@ -247,6 +272,22 @@ impl Socket {
         }
     }
 
+    /// @description 将 AF_UNIX endpoint 绑定到已创建的 VFS socket inode。
+    /// @param address canonical pathname sockaddr value。
+    /// @param identity VFS 返回的稳定 inode identity。
+    /// @return endpoint namespace publication 成功。
+    /// @errors 非 AF_UNIX、重复 bind、collision 或 OOM 返回明确错误。
+    pub(crate) fn bind_unix_path(
+        self: &Arc<Self>,
+        address: UnixAddress,
+        identity: UnixPathIdentity,
+    ) -> Result<(), SocketError> {
+        match &self.backend {
+            SocketBackend::Unix(socket) => socket.bind_path(address, identity),
+            _ => Err(SocketError::Invalid),
+        }
+    }
+
     pub(crate) fn listen(&self, backlog: usize) -> Result<(), SocketError> {
         match &self.backend {
             SocketBackend::Unix(socket) => socket.listen(backlog),
@@ -261,22 +302,34 @@ impl Socket {
         self: &Arc<Self>,
         address: SocketAddress,
         resources: Option<UnixConnectResources>,
+        unix_credentials: Option<UnixCredentials>,
+        unix_path: Option<UnixPathIdentity>,
     ) -> Result<(), SocketError> {
         match (&self.backend, address) {
             (SocketBackend::Inet(socket), SocketAddress::Inet(address)) => socket.connect(address),
             (SocketBackend::Unix(client), SocketAddress::Unix(address)) => {
-                let listener = UnixSocket::lookup(&address)?;
+                let listener = if let Some(identity) = unix_path {
+                    UnixSocket::lookup_path(identity)?
+                } else {
+                    UnixSocket::lookup(&address)?
+                };
                 if self.socket_type == SocketType::Datagram {
                     return client.connect_datagram(&listener);
                 }
                 let resources = resources.ok_or(SocketError::NoMemory)?;
-                let server = UnixSocket::new(SocketType::Stream, resources.server_notify)?;
+                let server = UnixSocket::new(
+                    SocketType::Stream,
+                    resources.server_notify,
+                    listener.credentials(),
+                    crate::id::next_runtime_object_id(),
+                )?;
                 UnixSocket::connect_stream(
                     client,
                     &listener,
                     server,
                     resources.client_to_server,
                     resources.server_to_client,
+                    unix_credentials.ok_or(SocketError::Invalid)?,
                 )
             }
             (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),
@@ -364,7 +417,7 @@ impl Socket {
         &self,
         output: &mut [u8],
     ) -> Result<(usize, Option<SocketAddress>), SocketError> {
-        self.receive_message(output, false)
+        self.receive_message(output, false, false)
             .map(|message| (message.count, message.source))
     }
 
@@ -372,19 +425,19 @@ impl Socket {
         &self,
         output: &mut [u8],
         peek: bool,
+        receive_rights: bool,
     ) -> Result<ReceivedMessage, SocketError> {
         match &self.backend {
             SocketBackend::Unix(_) if peek => Err(SocketError::OperationNotSupported),
-            SocketBackend::Unix(socket) => {
-                socket
-                    .receive(output)
-                    .map(|(count, full_length, source)| ReceivedMessage {
-                        count,
-                        full_length,
-                        source: source.map(SocketAddress::Unix),
-                        local_address: None,
-                    })
-            }
+            SocketBackend::Unix(socket) => socket.receive(output, receive_rights).map(
+                |(count, full_length, source, rights)| ReceivedMessage {
+                    count,
+                    full_length,
+                    source: source.map(SocketAddress::Unix),
+                    local_address: None,
+                    rights,
+                },
+            ),
             SocketBackend::Inet(socket) => {
                 socket
                     .receive(output, peek)
@@ -394,6 +447,7 @@ impl Socket {
                             full_length,
                             source: Some(SocketAddress::Inet(source)),
                             local_address,
+                            rights: None,
                         },
                     )
             }
@@ -405,77 +459,13 @@ impl Socket {
                         full_length,
                         source: Some(SocketAddress::Packet(source)),
                         local_address: None,
+                        rights: None,
                     })
             }
             SocketBackend::Kobject(socket) if !peek => socket.receive(output),
             SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
             SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
         }
-    }
-
-    pub(crate) fn set_ipv4_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_packet_info(enabled),
-            SocketBackend::Unix(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::Packet(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::Kobject(_) => Err(SocketError::OperationNotSupported),
-            SocketBackend::InterfaceControl => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    /// @description 将 SO_REUSEADDR policy 提交给具体 endpoint owner。
-    /// @param enabled 非零 userspace option value 的布尔投影。
-    /// @return AF_INET endpoint 成功更新返回 unit。
-    /// @errors 不支持的 domain 或失效 endpoint 返回错误。
-    pub(crate) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_reuse_address(enabled),
-            _ => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    /// @description 将 SO_BROADCAST policy 提交给 UDP endpoint owner。
-    /// @param enabled 非零 userspace option value 的布尔投影。
-    /// @return AF_INET UDP endpoint 成功更新返回 unit。
-    /// @errors 不支持的 domain/type 或失效 endpoint 返回错误。
-    pub(crate) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_broadcast(enabled),
-            _ => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    /// @description 将 SO_BINDTODEVICE interface name 提交给 endpoint owner。
-    /// @param name 已去除 NUL 的 interface name；空值解除绑定。
-    /// @return 当前唯一 eth0 binding 成功更新返回 unit。
-    /// @errors 未知 interface、domain 或失效 endpoint 返回错误。
-    pub(crate) fn bind_to_device(&self, name: &[u8]) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.bind_to_device(name),
-            _ => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    /// @description 设置 AF_INET raw endpoint 的 IPv4 hop limit。
-    /// @param value 已按 Linux `IP_TTL` 约束验证的 1..=255 值。
-    /// @return raw ICMP endpoint 成功提交返回 unit。
-    /// @errors 非 AF_INET endpoint 或失效 endpoint 返回错误。
-    pub(crate) fn set_ipv4_hop_limit(&self, value: u8) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_hop_limit(value),
-            _ => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    pub(crate) fn set_tcp_no_delay(&self, enabled: bool) -> Result<(), SocketError> {
-        match &self.backend {
-            SocketBackend::Inet(socket) => socket.set_no_delay(enabled),
-            _ => Err(SocketError::OperationNotSupported),
-        }
-    }
-
-    pub(crate) fn ipv4_packet_info(&self) -> bool {
-        matches!(&self.backend, SocketBackend::Inet(socket) if socket.packet_info())
     }
 
     pub(crate) fn validate_send_length(&self, length: usize) -> Result<(), SocketError> {
@@ -520,19 +510,26 @@ impl Socket {
         }
     }
 
-    pub(crate) fn send_to(
+    /// @description 发送 payload，并只允许 AF_UNIX backend 原子提交 SCM_RIGHTS。
+    /// @param input 本次 byte payload。
+    /// @param target 可选显式 socket address。
+    /// @param rights 尚未提交的 passed-file capability 集合。
+    /// @return 实际 byte count；失败时 rights 不被消费。
+    pub(crate) fn send_to_with_rights(
         &self,
         input: &[u8],
         target: Option<SocketAddress>,
+        rights: &mut Option<UnixRights>,
     ) -> Result<usize, SocketSendError> {
         self.validate_send_length(input.len())
             .map_err(SocketSendError::from)?;
         match (&self.backend, target) {
             (SocketBackend::Unix(socket), Some(SocketAddress::Unix(address))) => {
                 let target = UnixSocket::lookup(&address).map_err(SocketSendError::from)?;
-                socket.send_to(input, Some(&target))
+                socket.send_to_with_rights(input, Some(&target), rights)
             }
-            (SocketBackend::Unix(socket), None) => socket.send_to(input, None),
+            (SocketBackend::Unix(socket), None) => socket.send_to_with_rights(input, None, rights),
+            (_, _) if rights.is_some() => Err(SocketError::OperationNotSupported.into()),
             (SocketBackend::Inet(socket), Some(SocketAddress::Inet(address))) => {
                 socket.send_to(input, Some(address)).map_err(Into::into)
             }

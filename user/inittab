@@ -1,3 +1,4 @@
+::once:/bin/display-session-guard
 ::respawn:/bin/liteos-terminal
 ::respawn:/etc/init.d/network-service
 ::respawn:-/bin/sh

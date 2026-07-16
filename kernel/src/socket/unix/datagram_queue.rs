@@ -56,6 +56,12 @@ impl<T> DatagramQueue<T> {
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
+
+    /// @description 无分配摘除全部 queued messages，供 cycle GC 在 owner lock 外析构 rights。
+    /// @return 原 queue backing 与全部 entries；self 立即变为空 queue。
+    pub(super) fn take_all(&mut self) -> VecDeque<T> {
+        core::mem::take(&mut self.entries)
+    }
 }
 
 pub(super) fn peer_identity_changed<T>(
@@ -75,6 +81,7 @@ impl UnixSocket {
         self: &alloc::sync::Arc<Self>,
         input: &[u8],
         source: Option<UnixAddress>,
+        rights: &mut Option<super::rights::UnixRights>,
     ) -> Result<usize, SocketSendError> {
         if input.len() > crate::socket::message_limits::MAX_UNIX_DATAGRAM_BYTES {
             return Err(SocketError::MessageTooLarge.into());
@@ -95,27 +102,61 @@ impl UnixSocket {
             .try_reserve_exact(input.len())
             .map_err(|_| SocketSendError::Error(SocketError::NoMemory))?;
         bytes.extend_from_slice(input);
-        let mut state = self.state.lock();
-        let SocketState::Datagram { messages, .. } = &mut *state else {
-            return Err(SocketError::WrongType.into());
-        };
-        let result = messages.push(Datagram { bytes, source });
-        drop(state);
-        match result {
-            Ok(()) => {
-                self.notify();
-                Ok(input.len())
-            }
-            Err(PushError::Full(message)) => {
-                drop(message);
-                Err(SocketSendError::PeerFull(SocketSendBlocker::new(
+        loop {
+            let mut state = self.state.lock();
+            let SocketState::Datagram { messages, .. } = &mut *state else {
+                return Err(SocketError::WrongType.into());
+            };
+            if messages.is_full() {
+                return Err(SocketSendError::PeerFull(SocketSendBlocker::new(
                     self.clone(),
-                )))
+                )));
             }
-            Err(PushError::NoMemory(message)) => {
-                drop(message);
-                Err(SocketSendError::Error(SocketError::NoMemory))
+            if let Some(message_rights) = rights.as_mut() {
+                match message_rights.try_attach(self) {
+                    Ok(()) => {}
+                    Err(super::rights_graph::AttachError::NeedsCollection) => {
+                        drop(state);
+                        message_rights.collect().map_err(SocketSendError::from)?;
+                        continue;
+                    }
+                    Err(super::rights_graph::AttachError::Socket(error)) => {
+                        return Err(error.into());
+                    }
+                }
             }
+            let result = messages.push(Datagram {
+                bytes,
+                source,
+                rights: rights.take(),
+            });
+            drop(state);
+            return match result {
+                Ok(()) => {
+                    self.notify();
+                    Ok(input.len())
+                }
+                Err(PushError::Full(mut message)) => {
+                    let mut restored = message.rights.take();
+                    if let Some(restored) = restored.as_mut() {
+                        restored.detach();
+                    }
+                    *rights = restored;
+                    drop(message);
+                    Err(SocketSendError::PeerFull(SocketSendBlocker::new(
+                        self.clone(),
+                    )))
+                }
+                Err(PushError::NoMemory(mut message)) => {
+                    let mut restored = message.rights.take();
+                    if let Some(restored) = restored.as_mut() {
+                        restored.detach();
+                    }
+                    *rights = restored;
+                    drop(message);
+                    Err(SocketSendError::Error(SocketError::NoMemory))
+                }
+            };
         }
     }
 

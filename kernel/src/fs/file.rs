@@ -7,7 +7,8 @@ mod proc;
 mod terminal;
 pub(crate) use character::{CharacterDevice, KmsgDeviceRead};
 pub(crate) use descriptor_table::{
-    DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable, MAX_FILE_DESCRIPTORS,
+    CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
+    MAX_FILE_DESCRIPTORS,
 };
 pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead, TerminalReadMode};
 
@@ -18,8 +19,28 @@ use spin::Mutex;
 use super::{DeviceKind, Epoll, FileSystemError, FileSystemStatistics, Inode, OpenedFile, vfs};
 use crate::{
     ipc::{EventFd, PipeEnd},
-    socket::Socket,
+    socket::{Socket, UnixNode, UnixPassedFile},
 };
+
+impl UnixPassedFile for OpenFileDescription {
+    fn into_any(self: Arc<Self>) -> Arc<dyn core::any::Any + Send + Sync> {
+        self
+    }
+
+    fn unix_node(&self) -> Option<UnixNode> {
+        match &self.kind {
+            OpenFileKind::Socket(socket) => socket.unix_node(),
+            _ => None,
+        }
+    }
+
+    fn externally_referenced(self: Arc<Self>, inflight: usize) -> bool {
+        // 1. graph 每条 outgoing edge 持有一个 OFD Arc。
+        // 2. Weak::upgrade 为本次 probe 临时增加一个 Arc。
+        // 3. 超过两者的引用才是 descriptor/active syscall 等外部 root；漏掉 +1 会误保活 cycle。
+        Arc::strong_count(&self) > inflight.saturating_add(1)
+    }
+}
 
 pub(crate) const O_ACCMODE: u32 = 3;
 pub(crate) const O_RDONLY: u32 = 0;
@@ -233,14 +254,17 @@ impl OpenFileDescription {
     }
 
     pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Result<Arc<Self>, ()> {
-        Arc::try_new(Self {
-            kind: OpenFileKind::Socket(socket),
+        let ofd = Arc::try_new(Self {
+            kind: OpenFileKind::Socket(socket.clone()),
             offset: Mutex::new(0),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
         })
-        .map_err(|_| ())
+        .map_err(|_| ())?;
+        let owner: Arc<dyn UnixPassedFile> = ofd.clone();
+        socket.bind_unix_rights_owner(Arc::downgrade(&owner));
+        Ok(ofd)
     }
 
     pub(crate) fn epoll(epoll: Arc<Epoll>) -> Result<Arc<Self>, ()> {

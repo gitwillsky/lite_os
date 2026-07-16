@@ -35,6 +35,7 @@ from build_cache import (
     write_manifest,
 )
 from qemu_gate import boot, power_cut
+from display_stack_cache import DisplayStackPaths, build_display_stack
 from openssl_cache import OpenSslPaths, build_openssl
 from ext2_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
@@ -59,7 +60,7 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 4
+ROOTFS_RECIPE_VERSION = 6
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -627,7 +628,12 @@ def build_busybox(
     return binary.resolve()
 
 
-def verify_elf(binary: Path, compiler: Path) -> None:
+def verify_elf(
+    binary: Path,
+    compiler: Path,
+    required_libraries: tuple[str, ...] = ("libc.so",),
+    identity: str = "BusyBox",
+) -> None:
     """要求动态 RISC-V PIE、标准 musl interpreter、RELRO、W^X 与 NX stack。"""
     prefix = str(compiler)[: -len("gcc")]
     readelf = Path(f"{prefix}readelf")
@@ -641,26 +647,35 @@ def verify_elf(binary: Path, compiler: Path) -> None:
     )
     for marker in ("ELF64", "RISC-V", "DYN ("):
         if marker not in output:
-            raise RuntimeError(f"BusyBox ELF lacks {marker!r}")
+            raise RuntimeError(f"{identity} ELF lacks {marker!r}")
     headers = [line.split() for line in output.splitlines()]
     if output.count("Requesting program interpreter:") != 1 or "/lib/ld-musl-riscv64.so.1" not in output:
-        raise RuntimeError("BusyBox must use the standard RISC-V musl interpreter")
-    for marker in ("DYNAMIC", "GNU_RELRO", "Shared library: [libc.so]", "NOW PIE"):
+        raise RuntimeError(f"{identity} must use the standard RISC-V musl interpreter")
+    for marker in ("DYNAMIC", "GNU_RELRO", "NOW PIE"):
         if marker not in output:
-            raise RuntimeError(f"BusyBox dynamic ELF lacks {marker!r}")
+            raise RuntimeError(f"{identity} dynamic ELF lacks {marker!r}")
+    needed = {
+        line.split("Shared library: [", 1)[1].split("]", 1)[0]
+        for line in output.splitlines()
+        if "Shared library: [" in line
+    }
+    if needed != set(required_libraries):
+        raise RuntimeError(
+            f"{identity} ELF dependencies differ: expected {sorted(required_libraries)}, got {sorted(needed)}"
+        )
     if "TEXTREL" in output:
-        raise RuntimeError("BusyBox dynamic ELF contains text relocations")
+        raise RuntimeError(f"{identity} dynamic ELF contains text relocations")
     loads = [columns for columns in headers if columns and columns[0] == "LOAD"]
     if not loads or not any(int(columns[1], 16) == 0 for columns in loads):
-        raise RuntimeError("BusyBox PIE PHDR table is not covered by an offset-zero LOAD")
+        raise RuntimeError(f"{identity} PIE PHDR table is not covered by an offset-zero LOAD")
     for columns in headers:
         if len(columns) < 8 or columns[0] not in {"LOAD", "GNU_STACK"}:
             continue
         flags = "".join(columns[6:-1])
         if columns[0] == "LOAD" and "W" in flags and "E" in flags:
-            raise RuntimeError("BusyBox contains a writable executable LOAD")
+            raise RuntimeError(f"{identity} contains a writable executable LOAD")
         if columns[0] == "GNU_STACK" and "E" in flags:
-            raise RuntimeError("BusyBox requests an executable stack")
+            raise RuntimeError(f"{identity} requests an executable stack")
 
 
 def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
@@ -726,17 +741,25 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
 
 
-def build_display_terminal(musl: MuslCachePaths) -> Path:
-    """构建 rootfs 唯一 DRM/evdev/PTY terminal consumer。"""
-    crate = ROOT / "user/liteos-terminal"
+def build_rust_user_program(
+    musl: MuslCachePaths,
+    crate_name: str,
+    binary_name: str,
+    kind: str,
+    recipe_version: int,
+    extra_inputs: tuple[Path, ...] = (),
+    libraries: tuple[Path, ...] = (),
+) -> Path:
+    """经唯一 Cargo→musl PIE 路径构建一个 dependency-free Rust userspace 程序。"""
+    crate = ROOT / "user" / crate_name
     sources = tuple(sorted((crate / "src").rglob("*.rs")))
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
     if cargo is None or rustc is None:
-        raise RuntimeError("nightly Cargo and rustc are required for liteos-terminal")
+        raise RuntimeError(f"nightly Cargo and rustc are required for {crate_name}")
     payload = {
-        "kind": "display-terminal",
-        "recipe_version": 2,
+        "kind": kind,
+        "recipe_version": recipe_version,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
         "cargo": run([cargo, "--version"], ROOT).strip(),
@@ -747,12 +770,18 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
             str(source.relative_to(crate)): sha256(source)
             for source in sources
         },
-        "atlas_sha256": sha256(ROOT / "assets/fonts/liteos-terminal.a8"),
+        "extra_sha256": {
+            str(source.relative_to(ROOT)): sha256(source)
+            for source in extra_inputs
+        },
+        "library_sha256": {library.name: sha256(library) for library in libraries},
     }
-    entry = WORK / "display-terminals" / fingerprint(payload)
-    if manifest_matches(entry, payload, ("liteos-terminal",)):
-        return entry / "liteos-terminal"
-    generation = generation_directory(WORK / "display-terminal-generations", fingerprint(payload))
+    entry = WORK / "rust-user-programs" / fingerprint(payload)
+    required_libraries = tuple(library.name for library in libraries) + ("libc.so",)
+    if manifest_matches(entry, payload, (binary_name,)):
+        verify_elf(entry / binary_name, musl.compiler, required_libraries, binary_name)
+        return entry / binary_name
+    generation = generation_directory(WORK / "rust-user-program-generations", fingerprint(payload))
     env = build_environment()
     env.update({
         "LITEOS_MUSL_CLANG": str(musl.compiler),
@@ -770,7 +799,7 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
                 cargo,
                 "build",
                 "-Z",
-                "build-std=core,compiler_builtins",
+                "build-std=core,alloc,compiler_builtins",
                 "--manifest-path",
                 str(crate / "Cargo.toml"),
                 "--target",
@@ -783,21 +812,29 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
         )
         archive = (
             generation
-            / "cargo-target/riscv64gc-unknown-linux-musl/release/libliteos_terminal.a"
+            / f"cargo-target/riscv64gc-unknown-linux-musl/release/lib{crate_name.replace('-', '_')}.a"
         )
         run(
             [
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
                 str(archive),
+                *(f"-L{library.parent}" for library in libraries),
+                *(f"-l{library.name.removeprefix('lib').split('.so')[0]}" for library in libraries),
                 "-fPIE",
                 "-pie",
                 "-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack",
                 "-o",
-                str(generation / "liteos-terminal"),
+                str(generation / binary_name),
             ],
             ROOT,
             env,
+        )
+        verify_elf(
+            generation / binary_name,
+            musl.compiler,
+            required_libraries,
+            binary_name,
         )
         shutil.rmtree(generation / "cargo-target")
         write_manifest(generation, payload)
@@ -806,7 +843,54 @@ def build_display_terminal(musl: MuslCachePaths) -> Path:
     finally:
         if not published:
             shutil.rmtree(generation, ignore_errors=True)
-    return entry / "liteos-terminal"
+    return entry / binary_name
+
+
+def build_display_terminal(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
+    """构建 rootfs 唯一 DRM/input/PTY terminal consumer。"""
+    return build_rust_user_program(
+        musl,
+        "liteos-terminal",
+        "liteos-terminal",
+        "display-terminal",
+        3,
+        (*display_client_inputs(), ROOT / "assets/fonts/liteos-terminal.a8"),
+        (stack.libseat, stack.libdrm),
+    )
+
+
+def build_display_session(musl: MuslCachePaths) -> Path:
+    """构建 seat0 capability transition 的唯一 userspace owner。"""
+    return build_rust_user_program(
+        musl,
+        "display-session",
+        "display-session",
+        "display-session",
+        1,
+    )
+
+
+def build_2d_client(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
+    """构建首个可独立退出的 double-buffered DRM graphics consumer。"""
+    return build_rust_user_program(
+        musl,
+        "liteos-2d",
+        "liteos-2d",
+        "display-2d-client",
+        1,
+        display_client_inputs(),
+        (stack.libseat, stack.libdrm),
+    )
+
+
+def display_client_inputs() -> tuple[Path, ...]:
+    """返回共享 libseat lifecycle crate 的完整、精确构建输入。"""
+    crate = ROOT / "user/display-client"
+    return (
+        crate / "Cargo.toml",
+        crate / "Cargo.lock",
+        *sorted((crate / "src").rglob("*.rs")),
+    )
 
 
 def build_stress_tools(musl: MuslCachePaths) -> Path:
@@ -880,7 +964,10 @@ def create_image(
         ROOT,
     )
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-    display_terminal = build_display_terminal(musl)
+    display_session = build_display_session(musl)
+    display_stack = build_display_stack(musl)
+    display_terminal = build_display_terminal(musl, display_stack)
+    display_2d = build_2d_client(musl, display_stack)
     stress_tools = build_stress_tools(musl)
     commands = [
         "mkdir /etc",
@@ -901,6 +988,8 @@ def create_image(
         f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
+        f"write {ROOT / 'user' / 'display-session-guard'} /bin/display-session-guard",
+        "set_inode_field /bin/display-session-guard mode 0100755",
         f"write {ROOT / 'user' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -912,11 +1001,19 @@ def create_image(
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
+        f"write {display_stack.libseat} /usr/lib/libseat.so.1",
+        "set_inode_field /usr/lib/libseat.so.1 mode 0100755",
+        f"write {display_stack.libdrm} /usr/lib/libdrm.so.2",
+        "set_inode_field /usr/lib/libdrm.so.2 mode 0100755",
         f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
         f"write {dynamic_probe} /bin/dynamic-smoke",
         "set_inode_field /bin/dynamic-smoke mode 0100755",
         f"write {display_terminal} /bin/liteos-terminal",
         "set_inode_field /bin/liteos-terminal mode 0100755",
+        f"write {display_2d} /bin/liteos-2d",
+        "set_inode_field /bin/liteos-2d mode 0100755",
+        f"write {display_session} /bin/display-session",
+        "set_inode_field /bin/display-session mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1013,6 +1110,14 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
+    for path in ("/bin/display-session", "/bin/liteos-terminal", "/bin/liteos-2d"):
+        metadata = run([str(find_debugfs()), "-R", f"stat {path}", str(image)], ROOT)
+        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
+            raise RuntimeError(f"BusyBox rootfs lacks registered display program {path}")
+    for path in ("/usr/lib/libseat.so.1", "/usr/lib/libdrm.so.2"):
+        metadata = run([str(find_debugfs()), "-R", f"stat {path}", str(image)], ROOT)
+        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
+            raise RuntimeError(f"BusyBox rootfs lacks pinned display library {path}")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
@@ -1045,7 +1150,10 @@ def create_published_image(
         OSError: cache publication 或 output copy 失败。
     """
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-    display_terminal = build_display_terminal(musl)
+    display_session = build_display_session(musl)
+    display_stack = build_display_stack(musl)
+    display_terminal = build_display_terminal(musl, display_stack)
+    display_2d = build_2d_client(musl, display_stack)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1061,7 +1169,11 @@ def create_published_image(
         musl.install / "usr/lib/libc.so",
         dynamic_probe,
         dynamic_library,
+        display_session,
         display_terminal,
+        display_2d,
+        display_stack.libseat,
+        display_stack.libdrm,
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
@@ -1072,6 +1184,14 @@ def create_published_image(
         ROOT / "user/passwd",
         ROOT / "user/group",
         ROOT / "user/inittab",
+        ROOT / "user/display-session-guard",
+        ROOT / "user/display-session/Cargo.toml",
+        ROOT / "user/display-session/Cargo.lock",
+        *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
+        *display_client_inputs(),
+        ROOT / "user/liteos-2d/Cargo.toml",
+        ROOT / "user/liteos-2d/Cargo.lock",
+        *sorted((ROOT / "user/liteos-2d/src").rglob("*.rs")),
         ROOT / "user/liteos-terminal/Cargo.toml",
         ROOT / "user/liteos-terminal/Cargo.lock",
         *sorted((ROOT / "user/liteos-terminal/src").rglob("*.rs")),
@@ -1159,6 +1279,7 @@ def main() -> int:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
+        display_stack = build_display_stack(musl)
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
@@ -1170,10 +1291,16 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
+                display_stack.libseat,
+                display_stack.libdrm,
                 openssl.binary,
                 ROOT / "user/passwd",
                 ROOT / "user/group",
                 ROOT / "user/inittab",
+                ROOT / "user/display-session-guard",
+                ROOT / "user/display-session/Cargo.toml",
+                ROOT / "user/display-session/Cargo.lock",
+                *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
                 ROOT / "user/network-service",
                 ROOT / "user/shutdown",
                 ROOT / "user/udhcpc.script",

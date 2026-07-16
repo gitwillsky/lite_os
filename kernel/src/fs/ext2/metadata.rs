@@ -57,7 +57,7 @@ impl Ext2Inode {
         let (mut mutation, update) = MutationGuard::begin_after(&self.fs, || {
             let disk = self.disk.lock();
             change.authorize(OwnerModeState::new(
-                Self::kind_from_mode(disk.i_mode),
+                inode_kind::from_mode(disk.i_mode),
                 disk.i_mode,
                 disk.uid(),
                 disk.gid(),

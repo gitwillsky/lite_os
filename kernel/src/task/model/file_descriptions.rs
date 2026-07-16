@@ -2,8 +2,8 @@ use alloc::sync::Arc;
 
 use super::TaskControlBlock;
 use crate::fs::{
-    DetachedFileDescriptor, FileDescriptorError, OpenFileDescription, ProcFileDescriptorSnapshot,
-    vfs,
+    CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, OpenFileDescription,
+    ProcFileDescriptorSnapshot, vfs,
 };
 
 const CLOEXEC_CLOSE_BATCH: usize = 32;
@@ -36,6 +36,52 @@ impl TaskControlBlock {
             cloexec,
             self.file_descriptor_limit(),
         )
+    }
+
+    /// @description 在 Process files owner 内一次性捕获 SCM_RIGHTS source descriptors。
+    /// @param descriptors 已完成 raw cmsg 解码的 fd numbers。
+    /// @return 同序 OFD Arc 集合。
+    /// @errors 任一 fd 无效或 staging OOM 时不返回部分集合。
+    pub(crate) fn fd_capture_many(
+        &self,
+        descriptors: &[usize],
+    ) -> Result<alloc::vec::Vec<Arc<OpenFileDescription>>, FileDescriptorError> {
+        self.process.files.lock().capture_many(descriptors)
+    }
+
+    /// @description 占用一个 lookup 不可见的 SCM_RIGHTS receive slot。
+    /// @param file transport 已转交给 receiver 的 OFD。
+    /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
+    /// @return 最低可用 reserved fd；达到 limit 时返回 None。
+    /// @errors backing reserve OOM 返回 OutOfMemory。
+    pub(crate) fn fd_reserve_received(
+        &self,
+        file: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<Option<usize>, FileDescriptorError> {
+        match self.process.files.lock().reserve_received(
+            file,
+            cloexec,
+            self.file_descriptor_limit(),
+        ) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(FileDescriptorError::Limit) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// @description 无分配公开已成功 copyout fd number 的 receive reservation。
+    /// @param fd 当前 recvmsg transaction 唯一拥有的 reserved slot。
+    /// @return 无返回值；错误 token fail-stop。
+    pub(crate) fn fd_publish_received(&self, fd: usize) {
+        self.process.files.lock().publish_received(fd);
+    }
+
+    /// @description 回滚 copyout 失败的 receive reservation。
+    /// @param fd 当前 recvmsg transaction 唯一拥有的 reserved slot。
+    /// @return 锁外 cleanup capability；caller 丢弃即可完成 descriptor_refs cleanup。
+    pub(crate) fn fd_cancel_received(&self, fd: usize) -> CancelledFileReservation {
+        self.process.files.lock().cancel_received(fd)
     }
 
     pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {

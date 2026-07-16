@@ -6,6 +6,10 @@ use crate::{
     ipc::{Pipe, PipeDirection, PipeEnd},
 };
 
+#[path = "input/client_queue.rs"]
+mod client_queue;
+use client_queue::{ClientQueue, EventTimes, InputClock};
+
 const EV_SYN: u16 = 0x00;
 const EV_KEY: u16 = 0x01;
 const EV_REL: u16 = 0x02;
@@ -20,7 +24,6 @@ const SYN_DROPPED: u16 = 3;
 const SYN_MAX: u16 = 0x0f;
 const KEY_BITMAP_BYTES: usize = 96;
 const ABS_COUNT: usize = 64;
-const CLIENT_BUFFER_SIZE: usize = 64;
 const EVENT_BATCH: usize = 64;
 
 /// @description 一个 Linux RV64 native `struct input_event` 的领域值。
@@ -64,6 +67,7 @@ pub(crate) enum InputError {
     OutOfMemory,
     Busy,
     Invalid,
+    Revoked,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,158 +77,16 @@ pub(crate) enum InputString {
     Serial,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InputClock {
-    Realtime,
-    Monotonic,
-    Boottime,
-}
-
-#[derive(Clone, Copy)]
-struct EventTimes {
-    realtime_ns: u64,
-    monotonic_ns: u64,
-}
-
-struct ClientQueue {
-    buffer: [InputEvent; CLIENT_BUFFER_SIZE],
-    head: usize,
-    tail: usize,
-    packet_head: usize,
-    clock: InputClock,
-}
-
-impl ClientQueue {
-    fn new() -> Self {
-        Self {
-            buffer: [InputEvent::default(); CLIENT_BUFFER_SIZE],
-            head: 0,
-            tail: 0,
-            packet_head: 0,
-            clock: InputClock::Realtime,
-        }
-    }
-
-    fn readable(&self) -> bool {
-        self.packet_head != self.tail
-    }
-
-    fn readable_count(&self) -> usize {
-        self.packet_head
-            .wrapping_sub(self.tail)
-            .wrapping_add(CLIENT_BUFFER_SIZE)
-            % CLIENT_BUFFER_SIZE
-    }
-
-    fn timestamp(&self, times: EventTimes) -> (i64, i64) {
-        let nanoseconds = match self.clock {
-            InputClock::Realtime => times.realtime_ns,
-            // LiteOS 尚无 suspend domain；CLOCK_BOOTTIME 与 CLOCK_MONOTONIC 同源且不会漂移。
-            InputClock::Monotonic | InputClock::Boottime => times.monotonic_ns,
-        };
-        (
-            (nanoseconds / 1_000_000_000) as i64,
-            (nanoseconds % 1_000_000_000 / 1_000) as i64,
-        )
-    }
-
-    fn pass(&mut self, raw: RawInputEvent, times: EventTimes) -> bool {
-        let was_readable = self.readable();
-        if raw.event_type == EV_SYN && raw.code == SYN_REPORT && self.packet_head == self.head {
-            return false;
-        }
-        let (seconds, microseconds) = self.timestamp(times);
-        let event = InputEvent {
-            seconds,
-            microseconds,
-            event_type: raw.event_type,
-            code: raw.code,
-            value: raw.value,
-        };
-        self.buffer[self.head] = event;
-        self.head = (self.head + 1) & (CLIENT_BUFFER_SIZE - 1);
-        if self.head == self.tail {
-            // 与 Linux evdev 相同：保留 SYN_DROPPED 和最新事件，packet_head 停在 dropped；
-            // 直到下一 SYN_REPORT 到达前 read/poll 都不得暴露不完整 packet。
-            self.tail = (self.head + CLIENT_BUFFER_SIZE - 2) & (CLIENT_BUFFER_SIZE - 1);
-            self.buffer[self.tail] = InputEvent {
-                code: SYN_DROPPED,
-                event_type: EV_SYN,
-                value: 0,
-                seconds,
-                microseconds,
-            };
-            self.packet_head = self.tail;
-        }
-        if raw.event_type == EV_SYN && raw.code == SYN_REPORT {
-            self.packet_head = self.head;
-        }
-        !was_readable && self.readable()
-    }
-
-    fn read(&mut self, output: &mut [InputEvent]) -> usize {
-        let count = output.len().min(self.readable_count());
-        for event in output.iter_mut().take(count) {
-            *event = self.buffer[self.tail];
-            self.tail = (self.tail + 1) & (CLIENT_BUFFER_SIZE - 1);
-        }
-        count
-    }
-
-    fn flush_type(&mut self, event_type: u16) {
-        debug_assert_ne!(event_type, EV_SYN);
-        let old_head = self.head;
-        let mut source = self.tail;
-        let mut destination = self.tail;
-        self.packet_head = self.tail;
-        // Linux 保留 leading SYN_REPORT，因此从 1 开始；删除某 type 后，空 packet 的
-        // SYN_REPORT 也必须删除，否则 userspace 会观察到没有状态变化的伪 packet。
-        let mut packet_entries = 1usize;
-        while source != old_head {
-            let event = self.buffer[source];
-            source = (source + 1) & (CLIENT_BUFFER_SIZE - 1);
-            let report = event.event_type == EV_SYN && event.code == SYN_REPORT;
-            if event.event_type == event_type || (report && packet_entries == 0) {
-                continue;
-            }
-            self.buffer[destination] = event;
-            destination = (destination + 1) & (CLIENT_BUFFER_SIZE - 1);
-            packet_entries += 1;
-            if report {
-                packet_entries = 0;
-                self.packet_head = destination;
-            }
-        }
-        self.head = destination;
-    }
-
-    fn set_clock(&mut self, clock: InputClock, times: EventTimes) {
-        if self.clock == clock {
-            return;
-        }
-        self.clock = clock;
-        if self.head == self.tail {
-            return;
-        }
-        self.head = self.tail;
-        self.packet_head = self.tail;
-        let (seconds, microseconds) = self.timestamp(times);
-        self.buffer[self.head] = InputEvent {
-            seconds,
-            microseconds,
-            event_type: EV_SYN,
-            code: SYN_DROPPED,
-            value: 0,
-        };
-        self.head = (self.head + 1) & (CLIENT_BUFFER_SIZE - 1);
-    }
-}
-
 struct InputDeviceState {
     clients: Vec<Weak<InputFile>>,
     grabbed: Option<Weak<InputFile>>,
     keys: [u8; KEY_BITMAP_BYTES],
     absolute_values: [i32; ABS_COUNT],
+}
+
+struct InputClientState {
+    queue: ClientQueue,
+    revoked: bool,
 }
 
 struct EvdevDevice {
@@ -239,14 +101,19 @@ struct EvdevDevice {
 /// @description 一个 open evdev OFD 的独立 packet queue 与 clock policy。
 pub(crate) struct InputFile {
     device: Arc<EvdevDevice>,
-    queue: Mutex<ClientQueue>,
+    // OWNER: queue 与 revoked 必须由同一 lock 线性化。拆分会让 read 在 revoke 已返回后
+    // 继续消费旧事件，或让 fanout 在强制撤销后重新发布 readiness。
+    client: Mutex<InputClientState>,
 }
 
 impl InputFile {
     fn new(device: Arc<EvdevDevice>) -> Result<Arc<Self>, InputError> {
         let file = Arc::try_new(Self {
             device: device.clone(),
-            queue: Mutex::new(ClientQueue::new()),
+            client: Mutex::new(InputClientState {
+                queue: ClientQueue::new(),
+                revoked: false,
+            }),
         })
         .map_err(|_| InputError::OutOfMemory)?;
         let mut state = device.state.lock();
@@ -269,25 +136,37 @@ impl InputFile {
 
     /// @description 返回完整 packet 中当前可读的 event 数。
     /// @return 零表示 read 必须阻塞或返回 EAGAIN。
-    pub(crate) fn readable_count(&self) -> usize {
-        self.queue.lock().readable_count()
+    /// @errors 已撤销 OFD 返回 Revoked。
+    pub(crate) fn readable_count(&self) -> Result<usize, InputError> {
+        let client = self.client.lock();
+        if client.revoked {
+            return Err(InputError::Revoked);
+        }
+        Ok(client.queue.readable_count())
     }
 
     /// @description 原子消费不超过 output 长度的完整 packet events。
     /// @param output kernel stack staging event slice。
     /// @return 实际消费 event 数；不会越过最后一个 SYN_REPORT。
-    pub(crate) fn read(&self, output: &mut [InputEvent]) -> usize {
-        self.queue.lock().read(output)
+    /// @errors 已撤销 OFD 返回 Revoked。
+    pub(crate) fn read(&self, output: &mut [InputEvent]) -> Result<usize, InputError> {
+        let mut client = self.client.lock();
+        if client.revoked {
+            return Err(InputError::Revoked);
+        }
+        Ok(client.queue.read(output))
     }
 
     /// @description 排空旧 notification token 后复查当前 OFD 的 level readiness。
     /// @return 仍需阻塞时返回共享 device Pipe；已有完整 packet 返回 None。
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.readable_count() != 0 {
+        if !matches!(self.readable_count(), Ok(0)) {
             return None;
         }
         self.device.notification_read.drain_readiness();
-        (self.readable_count() == 0).then(|| self.device.notification_read.pipe())
+        self.readable_count()
+            .is_ok_and(|readable| readable == 0)
+            .then(|| self.device.notification_read.pipe())
     }
 
     /// @description 返回设备级 notification source 的最新 generation。
@@ -303,6 +182,28 @@ impl InputFile {
     /// @return device read-side Pipe Arc。
     pub(crate) fn notification_pipe(&self) -> Arc<Pipe> {
         self.device.notification_read.pipe()
+    }
+
+    /// @description 投影 Linux evdev read/hangup readiness。
+    /// @param events caller 关注的 poll mask。
+    /// @return live client 的完整 packet readiness；撤销后无条件包含 HUP 与 ERR。
+    pub(crate) fn poll_events(&self, events: i16) -> i16 {
+        const INPUT: i16 = 0x001;
+        const ERROR: i16 = 0x008;
+        const HANGUP: i16 = 0x010;
+        let client = self.client.lock();
+        let readable = if client.queue.readable_count() != 0 {
+            events & INPUT
+        } else {
+            0
+        };
+        readable | if client.revoked { ERROR | HANGUP } else { 0 }
+    }
+
+    /// @description 查询该 evdev OFD 是否已被不可逆撤销。
+    /// @return `EVIOCREVOKE` 已完成时为 true。
+    pub(crate) fn is_revoked(&self) -> bool {
+        self.client.lock().revoked
     }
 
     /// @description 复制 Linux `input_id` 值。
@@ -365,14 +266,14 @@ impl InputFile {
         output[..count].copy_from_slice(&state.keys[..count]);
         // 与 Linux evdev_handle_get_val 一致：state snapshot 后清除该 client 已排队的
         // EV_KEY，避免调用者先取得最新 bitmap、随后又重复应用旧 key transition。
-        self.queue.lock().flush_type(EV_KEY);
+        self.client.lock().queue.flush_type(EV_KEY);
         count
     }
 
     /// @description 在 state ioctl copyout 失败后标记 client event stream 已失步。
     /// @return 无返回值；下一 SYN_REPORT 前该 marker 不可读。
     pub(crate) fn mark_sync_lost(&self) {
-        self.queue.lock().pass(
+        self.client.lock().queue.pass(
             RawInputEvent {
                 event_type: EV_SYN,
                 code: SYN_DROPPED,
@@ -420,7 +321,7 @@ impl InputFile {
             7 => InputClock::Boottime,
             _ => return Err(InputError::Invalid),
         };
-        self.queue.lock().set_clock(clock, current_times());
+        self.client.lock().queue.set_clock(clock, current_times());
         Ok(())
     }
 
@@ -431,6 +332,9 @@ impl InputFile {
     /// @errors 其他 live client 已 grab 返回 Busy；非 owner release 返回 Invalid。
     pub(crate) fn set_grab(file: &Arc<Self>, grab: bool) -> Result<(), InputError> {
         let mut state = file.device.state.lock();
+        if file.client.lock().revoked {
+            return Err(InputError::Revoked);
+        }
         let current = state.grabbed.as_ref().and_then(Weak::upgrade);
         if grab {
             if current
@@ -448,6 +352,34 @@ impl InputFile {
         } else {
             return Err(InputError::Invalid);
         }
+        Ok(())
+    }
+
+    /// @description 不可逆撤销当前 evdev OFD，并释放其 exclusive grab。
+    /// @param file 当前 ioctl 所属 InputFile Arc。
+    /// @return live client 成功转为 revoked。
+    /// @errors 已撤销 client 返回 Revoked。
+    pub(crate) fn revoke(file: &Arc<Self>) -> Result<(), InputError> {
+        let mut state = file.device.state.lock();
+        let mut client = file.client.lock();
+        if client.revoked {
+            return Err(InputError::Revoked);
+        }
+        client.revoked = true;
+        if state
+            .grabbed
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .as_ref()
+            .is_some_and(|owner| Arc::ptr_eq(owner, file))
+        {
+            state.grabbed = None;
+        }
+        drop(client);
+        drop(state);
+        // 发布现有 device notification；缺失该 wakeup 会让 revoke 前已阻塞的 read/poll
+        // 永久睡眠，无法观察 Linux 要求的 ENODEV/EPOLLHUP。
+        file.device.notification_write.signal_readiness();
         Ok(())
     }
 }
@@ -481,13 +413,19 @@ impl EvdevDevice {
 
         let mut notify = false;
         if let Some(grabbed) = state.grabbed.as_ref().and_then(Weak::upgrade) {
-            notify |= grabbed.queue.lock().pass(raw, times);
+            let mut client = grabbed.client.lock();
+            if !client.revoked {
+                notify |= client.queue.pass(raw, times);
+            }
         } else {
             state.grabbed = None;
             let mut index = 0;
             while index < state.clients.len() {
                 if let Some(client) = state.clients[index].upgrade() {
-                    notify |= client.queue.lock().pass(raw, times);
+                    let mut client = client.client.lock();
+                    if !client.revoked {
+                        notify |= client.queue.pass(raw, times);
+                    }
                     index += 1;
                 } else {
                     state.clients.swap_remove(index);

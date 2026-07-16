@@ -2,10 +2,7 @@ use core::{ffi::c_void, ptr, slice};
 
 use crate::{
     atlas::{self, Atlas, FontMetrics},
-    ffi::{
-        self, DrmClip, DrmConnector, DrmCrtc, DrmDirty, DrmDumbCreate, DrmDumbMap, DrmFramebuffer,
-        DrmMode, DrmResources,
-    },
+    ffi::{self, DrmClip, DrmDumbCreate, DrmDumbMap, DrmMode},
     model::{
         ATTR_BLINK, ATTR_BOLD, ATTR_DIM, ATTR_HIDDEN, ATTR_INVERSE, ATTR_UNDERLINE, Cell, Grid,
         Model,
@@ -48,41 +45,23 @@ struct Buffer {
 }
 
 impl Display {
-    pub fn open() -> Result<Self, DisplayError> {
-        let fd = unsafe {
-            ffi::open(
-                ffi::c_str(b"/dev/dri/card0\0"),
-                ffi::O_RDWR | ffi::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
+    pub fn open(fd: i32) -> Result<Self, DisplayError> {
+        let resources = unsafe { ffi::drmModeGetResources(fd) };
+        if resources.is_null() {
             return Err(system_error());
         }
-        let mut crtc_id = 0u32;
-        let mut connector_id = 0u32;
-        let mut resources = DrmResources {
-            crtc_ids: (&mut crtc_id as *mut u32) as u64,
-            connector_ids: (&mut connector_id as *mut u32) as u64,
-            crtc_count: 1,
-            connector_count: 1,
-            ..DrmResources::default()
-        };
-        if unsafe {
-            ffi::ioctl(
-                fd,
-                ffi::DRM_IOCTL_MODE_GETRESOURCES,
-                (&mut resources as *mut DrmResources).cast(),
-            )
-        } < 0
+        let resources_ref = unsafe { &*resources };
+        if resources_ref.crtc_count <= 0
+            || resources_ref.connector_count <= 0
+            || resources_ref.crtc_ids.is_null()
+            || resources_ref.connector_ids.is_null()
         {
-            let error = system_error();
-            unsafe { ffi::close(fd) };
-            return Err(error);
-        }
-        if resources.crtc_count == 0 || resources.connector_count == 0 {
-            unsafe { ffi::close(fd) };
+            unsafe { ffi::drmModeFreeResources(resources) };
             return Err(DisplayError::System);
         }
+        let crtc_id = unsafe { *resources_ref.crtc_ids };
+        let connector_id = unsafe { *resources_ref.connector_ids };
+        unsafe { ffi::drmModeFreeResources(resources) };
         Ok(Self {
             fd,
             crtc_id,
@@ -93,24 +72,18 @@ impl Display {
     }
 
     pub fn query_mode(&self) -> Result<DrmMode, DisplayError> {
-        let mut mode = DrmMode::default();
-        let mut connector = DrmConnector {
-            modes: (&mut mode as *mut DrmMode) as u64,
-            mode_count: 1,
-            connector_id: self.connector_id,
-            ..DrmConnector::default()
-        };
-        if unsafe {
-            ffi::ioctl(
-                self.fd,
-                ffi::DRM_IOCTL_MODE_GETCONNECTOR,
-                (&mut connector as *mut DrmConnector).cast(),
-            )
-        } < 0
-        {
+        let connector = unsafe { ffi::drmModeGetConnector(self.fd, self.connector_id) };
+        if connector.is_null() {
             return Err(system_error());
         }
-        if connector.mode_count == 0 || mode.hdisplay == 0 || mode.vdisplay == 0 {
+        let connector_ref = unsafe { &*connector };
+        if connector_ref.mode_count <= 0 || connector_ref.modes.is_null() {
+            unsafe { ffi::drmModeFreeConnector(connector) };
+            return Err(DisplayError::System);
+        }
+        let mode = unsafe { *connector_ref.modes };
+        unsafe { ffi::drmModeFreeConnector(connector) };
+        if mode.hdisplay == 0 || mode.vdisplay == 0 {
             return Err(DisplayError::System);
         }
         Ok(mode)
@@ -137,7 +110,7 @@ impl Display {
             ..DrmDumbCreate::default()
         };
         if unsafe {
-            ffi::ioctl(
+            ffi::drmIoctl(
                 self.fd,
                 ffi::DRM_IOCTL_MODE_CREATE_DUMB,
                 (&mut create as *mut DrmDumbCreate).cast(),
@@ -164,7 +137,7 @@ impl Display {
             ..DrmDumbMap::default()
         };
         if unsafe {
-            ffi::ioctl(
+            ffi::drmIoctl(
                 self.fd,
                 ffi::DRM_IOCTL_MODE_MAP_DUMB,
                 (&mut map as *mut DrmDumbMap).cast(),
@@ -190,20 +163,17 @@ impl Display {
             destroy_handle(self.fd, create.handle);
             return Err(error);
         }
-        let mut framebuffer = DrmFramebuffer {
-            width: u32::from(mode.hdisplay),
-            height: u32::from(mode.vdisplay),
-            pitch: create.pitch,
-            bpp: 32,
-            depth: 24,
-            handle: create.handle,
-            ..DrmFramebuffer::default()
-        };
+        let mut framebuffer_id = 0;
         if unsafe {
-            ffi::ioctl(
+            ffi::drmModeAddFB(
                 self.fd,
-                ffi::DRM_IOCTL_MODE_ADDFB,
-                (&mut framebuffer as *mut DrmFramebuffer).cast(),
+                u32::from(mode.hdisplay),
+                u32::from(mode.vdisplay),
+                24,
+                32,
+                create.pitch,
+                create.handle,
+                &mut framebuffer_id,
             )
         } < 0
         {
@@ -215,7 +185,7 @@ impl Display {
         let mut candidate = CandidateBuffer {
             fd: self.fd,
             buffer: Some(Buffer {
-                framebuffer_id: framebuffer.framebuffer_id,
+                framebuffer_id,
                 handle: create.handle,
                 pixels: pixels.cast(),
                 size,
@@ -231,21 +201,18 @@ impl Display {
 
     pub fn commit(&mut self, candidate: &mut CandidateBuffer) -> Result<(), DisplayError> {
         let buffer = candidate.buffer.as_ref().ok_or(DisplayError::System)?;
-        let connector_id = self.connector_id;
-        let mut crtc = DrmCrtc {
-            connectors: (&connector_id as *const u32) as u64,
-            connector_count: 1,
-            crtc_id: self.crtc_id,
-            framebuffer_id: buffer.framebuffer_id,
-            mode_valid: 1,
-            mode: buffer.mode,
-            ..DrmCrtc::default()
-        };
+        let mut connector_id = self.connector_id;
+        let mut mode = buffer.mode;
         if unsafe {
-            ffi::ioctl(
+            ffi::drmModeSetCrtc(
                 self.fd,
-                ffi::DRM_IOCTL_MODE_SETCRTC,
-                (&mut crtc as *mut DrmCrtc).cast(),
+                self.crtc_id,
+                buffer.framebuffer_id,
+                0,
+                0,
+                &mut connector_id,
+                1,
+                &mut mode,
             )
         } < 0
         {
@@ -307,18 +274,12 @@ impl Display {
             clips[0] = clip(union)?;
             clip_count = 1;
         }
-        let mut dirty = DrmDirty {
-            framebuffer_id: buffer.framebuffer_id,
-            flags: 0,
-            color: 0,
-            clip_count: clip_count as u32,
-            clips: clips.as_ptr() as u64,
-        };
         if unsafe {
-            ffi::ioctl(
+            ffi::drmModeDirtyFB(
                 self.fd,
-                ffi::DRM_IOCTL_MODE_DIRTYFB,
-                (&mut dirty as *mut DrmDirty).cast(),
+                buffer.framebuffer_id,
+                clips.as_mut_ptr(),
+                clip_count as u32,
             )
         } < 0
         {
@@ -344,7 +305,6 @@ impl Drop for Display {
         if let Some(buffer) = self.active.take() {
             cleanup_buffer(self.fd, buffer);
         }
-        unsafe { ffi::close(self.fd) };
     }
 }
 
@@ -471,14 +431,7 @@ fn clip(rectangle: (usize, usize, usize, usize)) -> Result<DrmClip, DisplayError
 }
 
 fn cleanup_buffer(fd: i32, buffer: Buffer) {
-    let mut framebuffer_id = buffer.framebuffer_id;
-    unsafe {
-        ffi::ioctl(
-            fd,
-            ffi::DRM_IOCTL_MODE_RMFB,
-            (&mut framebuffer_id as *mut u32).cast(),
-        )
-    };
+    unsafe { ffi::drmModeRmFB(fd, buffer.framebuffer_id) };
     unsafe { ffi::munmap(buffer.pixels.cast::<c_void>(), buffer.size) };
     destroy_handle(fd, buffer.handle);
 }
@@ -486,7 +439,7 @@ fn cleanup_buffer(fd: i32, buffer: Buffer) {
 fn destroy_handle(fd: i32, handle: u32) {
     let mut handle = handle;
     unsafe {
-        ffi::ioctl(
+        ffi::drmIoctl(
             fd,
             ffi::DRM_IOCTL_MODE_DESTROY_DUMB,
             (&mut handle as *mut u32).cast(),

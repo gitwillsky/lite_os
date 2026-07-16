@@ -1,5 +1,7 @@
 use core::ffi::c_void;
 
+use display_client::{Device, Seat};
+
 use crate::{
     ffi::{self, InputEvent},
     model::Model,
@@ -13,8 +15,8 @@ pub(super) const MAX_KEY_BYTES: usize = 8;
 // session 可以在读取 PTY 前证明本批全部 device reply 都能原子进入固定 ring。
 pub(super) const PTY_REPLY_EXPANSION: usize = 8;
 
-pub(super) fn open_keyboard() -> i32 {
-    evdev::open_matching(&[b"keyboard"])
+pub(super) fn open_keyboard(seat: &mut Seat) -> Result<Option<Device>, ()> {
+    evdev::open_matching(seat, &[b"keyboard"])
 }
 
 #[derive(Default)]

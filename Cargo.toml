@@ -6,7 +6,7 @@ members = [
     "tools/kernel-unit",
     "tools/scheduler-unit",
 ]
-exclude = ["bootloader", "user/liteos-terminal"]
+exclude = ["bootloader", "user/display-client", "user/display-session", "user/liteos-2d", "user/liteos-terminal"]
 default-members = ["kernel"]
 resolver = "3"
 

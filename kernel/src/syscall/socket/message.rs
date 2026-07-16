@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{
     MSG_DONTWAIT, MSG_NOSIGNAL, MSG_PEEK, MSG_TRUNC, O_NONBLOCK, SocketAddress, SocketError,
-    TaskControlBlock, WaitResult, encode_address, errno, interface_snapshot, read_address,
-    socket_error, socket_ofd, wait_for_ofd, write_address,
+    TaskControlBlock, WaitResult, errno, read_address, socket_error, socket_ofd, wait_for_ofd,
+    write_address,
 };
 use crate::{
     fs::OpenFileDescription,
@@ -21,12 +21,6 @@ use crate::{
 const MESSAGE_HEADER_SIZE: usize = 56;
 const STREAM_STAGING_BYTES: usize = 64 * 1024;
 const SOCKET_MAX_RW_COUNT: usize = 0x7fff_f000;
-const MSG_CTRUNC: i32 = 0x8;
-const IPPROTO_IP: i32 = 0;
-const IP_PKTINFO: i32 = 8;
-const CMSG_LENGTH: usize = 28;
-const CMSG_SPACE: usize = 32;
-const INTERFACE_INDEX: i32 = 1;
 
 struct MessageHeader {
     name: usize,
@@ -90,34 +84,6 @@ fn message_buffer(length: usize) -> Result<Vec<u8>, isize> {
     Ok(bytes)
 }
 
-fn validate_send_control(task: &TaskControlBlock, header: &MessageHeader) -> Result<(), isize> {
-    if header.control_length == 0 {
-        return Ok(());
-    }
-    if header.control == 0 || header.control_length < CMSG_LENGTH {
-        return Err(-errno::EINVAL);
-    }
-    let mut control = [0u8; CMSG_LENGTH];
-    task.copy_from_user(header.control, &mut control)
-        .map_err(|_| -errno::EFAULT)?;
-    if usize::from_ne_bytes(control[..8].try_into().unwrap()) < CMSG_LENGTH
-        || i32::from_ne_bytes(control[8..12].try_into().unwrap()) != IPPROTO_IP
-        || i32::from_ne_bytes(control[12..16].try_into().unwrap()) != IP_PKTINFO
-    {
-        return Err(-errno::EOPNOTSUPP);
-    }
-    let requested = core::net::Ipv4Addr::from(<[u8; 4]>::try_from(&control[20..24]).unwrap());
-    if !requested.is_unspecified()
-        && interface_snapshot()
-            .map_err(socket_error)?
-            .address
-            .is_none_or(|address| address != requested)
-    {
-        return Err(-errno::EADDRNOTAVAIL);
-    }
-    Ok(())
-}
-
 fn send_error(
     task: &TaskControlBlock,
     flags: usize,
@@ -135,22 +101,37 @@ fn send_error(
     }
 }
 
-fn send_one_message(
-    task: &TaskControlBlock,
-    ofd: &Arc<OpenFileDescription>,
-    socket: &Arc<Socket>,
-    bytes: &[u8],
+struct SendContext<'a> {
+    task: &'a TaskControlBlock,
+    ofd: &'a Arc<OpenFileDescription>,
+    socket: &'a Arc<Socket>,
     target: Option<SocketAddress>,
     flags: usize,
+}
+
+impl SendContext<'_> {
+    fn nonblocking(&self) -> bool {
+        self.flags & MSG_DONTWAIT != 0 || *self.ofd.flags.lock() & O_NONBLOCK != 0
+    }
+}
+
+fn send_one_message(
+    context: &SendContext<'_>,
+    bytes: &[u8],
+    rights: &mut Option<crate::socket::UnixRights>,
 ) -> isize {
-    let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
     loop {
-        match socket.send_to(bytes, target.clone()) {
+        match context
+            .socket
+            .send_to_with_rights(bytes, context.target.clone(), rights)
+        {
             Ok(count) => return count as isize,
-            Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_)) if nonblocking => {
+            Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_))
+                if context.nonblocking() =>
+            {
                 return -errno::EAGAIN;
             }
-            Err(SocketSendError::WouldBlock) => match wait_for_ofd(ofd, 4) {
+            Err(SocketSendError::WouldBlock) => match wait_for_ofd(context.ofd, 4) {
                 WaitResult::Woken => {}
                 WaitResult::Interrupted => return -errno::EINTR,
                 WaitResult::TimedOut => unreachable!(),
@@ -162,35 +143,38 @@ fn send_one_message(
                 WaitResult::TimedOut => unreachable!(),
                 WaitResult::OutOfMemory => return -errno::ENOMEM,
             },
-            Err(SocketSendError::Error(error)) => return send_error(task, flags, error, 0),
+            Err(SocketSendError::Error(error)) => {
+                return send_error(context.task, context.flags, error, 0);
+            }
         }
     }
 }
 
 fn send_stream_message(
-    task: &TaskControlBlock,
-    ofd: &Arc<OpenFileDescription>,
-    socket: &Arc<Socket>,
+    context: &SendContext<'_>,
     vectors: &[UserIoVec],
     total_length: usize,
-    target: Option<SocketAddress>,
-    flags: usize,
+    mut rights: Option<crate::socket::UnixRights>,
 ) -> isize {
     if total_length == 0 {
-        return send_one_message(task, ofd, socket, &[], target, flags);
+        return if rights.is_some() {
+            -errno::EINVAL
+        } else {
+            send_one_message(context, &[], &mut rights)
+        };
     }
-    let staging_capacity = socket
+    let staging_capacity = context
+        .socket
         .stream_send_staging_capacity(total_length, STREAM_STAGING_BYTES)
         .expect("stream send path must retain facade-selected staging policy");
     let mut staging = match message_buffer(staging_capacity) {
         Ok(bytes) => bytes,
         Err(error) => return error,
     };
-    let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
     let mut cursor = UserIoCursor::new(vectors);
     while cursor.completed() < total_length {
         let capacity = bounded_staging_capacity(total_length - cursor.completed(), staging.len());
-        let staged = cursor.stage_from_user(task, &mut staging[..capacity]);
+        let staged = cursor.stage_from_user(context.task, &mut staging[..capacity]);
         if staged.faulted {
             return if cursor.completed() == 0 {
                 -errno::EFAULT
@@ -206,7 +190,11 @@ fn send_stream_message(
             };
         }
         loop {
-            match socket.send_to(&staging[..staged.count], target.clone()) {
+            match context.socket.send_to_with_rights(
+                &staging[..staged.count],
+                context.target.clone(),
+                &mut rights,
+            ) {
                 Ok(sent) => {
                     assert!(sent <= staged.count, "socket consumed beyond staged prefix");
                     cursor.advance(sent);
@@ -220,10 +208,12 @@ fn send_stream_message(
                 {
                     return cursor.completed() as isize;
                 }
-                Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_)) if nonblocking => {
+                Err(SocketSendError::WouldBlock | SocketSendError::PeerFull(_))
+                    if context.nonblocking() =>
+                {
                     return -errno::EAGAIN;
                 }
-                Err(SocketSendError::WouldBlock) => match wait_for_ofd(ofd, 4) {
+                Err(SocketSendError::WouldBlock) => match wait_for_ofd(context.ofd, 4) {
                     WaitResult::Woken => {}
                     WaitResult::Interrupted => return -errno::EINTR,
                     WaitResult::TimedOut => unreachable!(),
@@ -236,7 +226,7 @@ fn send_stream_message(
                     WaitResult::OutOfMemory => return -errno::ENOMEM,
                 },
                 Err(SocketSendError::Error(error)) => {
-                    return send_error(task, flags, error, cursor.completed());
+                    return send_error(context.task, context.flags, error, cursor.completed());
                 }
             }
         }
@@ -245,32 +235,33 @@ fn send_stream_message(
 }
 
 fn send_message(
-    task: &TaskControlBlock,
-    ofd: &Arc<OpenFileDescription>,
-    socket: &Arc<Socket>,
+    context: SendContext<'_>,
     vectors: &[UserIoVec],
     total_length: usize,
-    target: Option<SocketAddress>,
-    flags: usize,
+    rights: Option<crate::socket::UnixRights>,
 ) -> isize {
-    if let Err(error) = socket.validate_send_length(total_length) {
+    if let Err(error) = context.socket.validate_send_length(total_length) {
         return socket_error(error);
     }
-    if socket
+    if context
+        .socket
         .stream_send_staging_capacity(total_length, STREAM_STAGING_BYTES)
         .is_some()
     {
-        return send_stream_message(task, ofd, socket, vectors, total_length, target, flags);
+        return send_stream_message(&context, vectors, total_length, rights);
     }
     let mut bytes = match message_buffer(total_length) {
         Ok(bytes) => bytes,
         Err(error) => return error,
     };
     let mut cursor = UserIoCursor::new(vectors);
-    if cursor.copy_from_user(task, &mut bytes).is_err() || cursor.completed() != total_length {
+    if cursor.copy_from_user(context.task, &mut bytes).is_err()
+        || cursor.completed() != total_length
+    {
         return -errno::EFAULT;
     }
-    send_one_message(task, ofd, socket, &bytes, target, flags)
+    let mut rights = rights;
+    send_one_message(&context, &bytes, &mut rights)
 }
 
 /// @description Linux sendmsg scatter/gather ABI，复用唯一 socket send path。
@@ -291,9 +282,11 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    if let Err(error) = validate_send_control(&task, &header) {
-        return error;
-    }
+    let rights =
+        match super::control::parse_send(&task, &socket, header.control, header.control_length) {
+            Ok(rights) => rights,
+            Err(error) => return error,
+        };
     let target = if header.name == 0 {
         None
     } else {
@@ -302,7 +295,18 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
             Err(error) => return error,
         }
     };
-    send_message(&task, &ofd, &socket, &iovecs, total_length, target, flags)
+    send_message(
+        SendContext {
+            task: &task,
+            ofd: &ofd,
+            socket: &socket,
+            target,
+            flags,
+        },
+        &iovecs,
+        total_length,
+        rights,
+    )
 }
 
 pub(crate) fn sys_sendto(
@@ -337,7 +341,18 @@ pub(crate) fn sys_sendto(
             Err(error) => return error,
         }
     };
-    send_message(&task, &ofd, &socket, &vectors, length, target, flags)
+    send_message(
+        SendContext {
+            task: &task,
+            ofd: &ofd,
+            socket: &socket,
+            target,
+            flags,
+        },
+        &vectors,
+        length,
+        None,
+    )
 }
 
 pub(crate) fn sys_recvfrom(
@@ -370,7 +385,7 @@ pub(crate) fn sys_recvfrom(
         Err(error) => return error,
     };
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0) {
+        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&vectors);
                 if cursor
@@ -404,49 +419,9 @@ pub(crate) fn sys_recvfrom(
     }
 }
 
-fn write_receive_metadata(
-    task: &TaskControlBlock,
-    pointer: usize,
-    header: &MessageHeader,
-    source: Option<SocketAddress>,
-    local: Option<core::net::Ipv4Addr>,
-    packet_info: bool,
-    truncated: bool,
-) -> Result<(), isize> {
-    let mut output_flags = if truncated { MSG_TRUNC as i32 } else { 0 };
-    if header.name != 0 {
-        let (encoded, actual) = encode_address(source);
-        task.copy_to_user(header.name, &encoded[..actual.min(header.name_length)])
-            .map_err(|_| -errno::EFAULT)?;
-        task.copy_to_user(pointer + 8, &(actual as u32).to_ne_bytes())
-            .map_err(|_| -errno::EFAULT)?;
-    }
-    let mut control_written = 0usize;
-    if packet_info && let Some(local) = local {
-        if header.control != 0 && header.control_length >= CMSG_SPACE {
-            let mut control = [0u8; CMSG_SPACE];
-            control[..8].copy_from_slice(&CMSG_LENGTH.to_ne_bytes());
-            control[8..12].copy_from_slice(&IPPROTO_IP.to_ne_bytes());
-            control[12..16].copy_from_slice(&IP_PKTINFO.to_ne_bytes());
-            control[16..20].copy_from_slice(&INTERFACE_INDEX.to_ne_bytes());
-            control[20..24].copy_from_slice(&local.octets());
-            control[24..28].copy_from_slice(&local.octets());
-            task.copy_to_user(header.control, &control)
-                .map_err(|_| -errno::EFAULT)?;
-            control_written = CMSG_SPACE;
-        } else {
-            output_flags |= MSG_CTRUNC;
-        }
-    }
-    task.copy_to_user(pointer + 40, &control_written.to_ne_bytes())
-        .map_err(|_| -errno::EFAULT)?;
-    task.copy_to_user(pointer + 48, &output_flags.to_ne_bytes())
-        .map_err(|_| -errno::EFAULT)
-}
-
 /// @description Linux recvmsg scatter/gather、MSG_PEEK 与 IPv4 PKTINFO ancillary ABI。
 pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
-    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT) != 0 {
+    if flags & !(MSG_PEEK | MSG_TRUNC | MSG_DONTWAIT | super::control::MSG_CMSG_CLOEXEC) != 0 {
         return -errno::EOPNOTSUPP;
     }
     let (ofd, socket) = match socket_ofd(fd) {
@@ -469,7 +444,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
     };
     let nonblocking = flags & MSG_DONTWAIT != 0 || *ofd.flags.lock() & O_NONBLOCK != 0;
     loop {
-        match socket.receive_message(&mut output, flags & MSG_PEEK != 0) {
+        match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true) {
             Ok(received) => {
                 let mut cursor = UserIoCursor::new(&iovecs);
                 if cursor
@@ -479,15 +454,21 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
                 {
                     return -errno::EFAULT;
                 }
-                if let Err(error) = write_receive_metadata(
-                    &task,
+                let target = super::control::ReceiveTarget {
+                    task: &task,
                     message,
-                    &header,
-                    received.source,
-                    received.local_address,
-                    socket.ipv4_packet_info(),
-                    received.full_length > received.count,
-                ) {
+                    name: (header.name, header.name_length),
+                    control: (header.control, header.control_length),
+                };
+                let content = super::control::ReceiveContent {
+                    source: received.source,
+                    local: received.local_address,
+                    packet_info: socket.ipv4_packet_info(),
+                    rights: received.rights,
+                    cloexec: flags & super::control::MSG_CMSG_CLOEXEC != 0,
+                    truncated: received.full_length > received.count,
+                };
+                if let Err(error) = super::control::write_receive(target, content) {
                     return error;
                 }
                 return if flags & MSG_TRUNC != 0 {

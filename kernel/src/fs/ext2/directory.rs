@@ -43,7 +43,7 @@ impl Ext2Inode {
                     inode: child,
                     rec_len: self.fs.block_size as u16,
                     name_len: name.len() as u8,
-                    file_type: Self::file_type(kind),
+                    file_type: inode_kind::file_type(kind),
                 };
                 // SAFETY: a fresh complete block has room for the header and validated name.
                 unsafe {
@@ -75,7 +75,7 @@ impl Ext2Inode {
                 if header.inode == 0 && record >= needed {
                     header.inode = child;
                     header.name_len = name.len() as u8;
-                    header.file_type = Self::file_type(kind);
+                    header.file_type = inode_kind::file_type(kind);
                     // SAFETY: directory validation proved `record` covers a complete header at
                     // `pos`; write_unaligned updates that on-disk header without forming a reference.
                     unsafe {
@@ -104,7 +104,7 @@ impl Ext2Inode {
                         inode: child,
                         rec_len: (record - ideal) as u16,
                         name_len: name.len() as u8,
-                        file_type: Self::file_type(kind),
+                        file_type: inode_kind::file_type(kind),
                     };
                     // SAFETY: split condition proves `new_pos + header_size <= pos + record`, so
                     // the new unaligned header lies wholly inside the current block buffer.

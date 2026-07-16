@@ -7,6 +7,9 @@ publish = false
 [lib]
 crate-type = ["staticlib"]
 
+[dependencies]
+display-client = { path = "../display-client" }
+
 [profile.release]
 panic = "abort"
 opt-level = "s"

@@ -16,6 +16,7 @@ use crate::{
 
 mod directory;
 mod filesystem;
+mod inode_kind;
 mod journal;
 mod journal_layout;
 mod link_count;
@@ -1035,19 +1036,9 @@ impl Ext2Inode {
         Ok(inode)
     }
 
-    fn kind_from_mode(mode: u16) -> InodeType {
-        match mode & 0xF000 {
-            0x4000 => InodeType::Directory,
-            0xA000 => InodeType::SymLink,
-            0x2000 => InodeType::CharacterDevice,
-            0x1000 => InodeType::Fifo,
-            _ => InodeType::File,
-        }
-    }
-
     fn disk_size(inode: &Ext2InodeDisk) -> u64 {
         let low = inode.i_size_lo as u64;
-        if Self::kind_from_mode(inode.i_mode) == InodeType::File {
+        if inode_kind::from_mode(inode.i_mode) == InodeType::File {
             low | ((inode.i_dir_acl_or_size_high as u64) << 32)
         } else {
             low
@@ -1056,7 +1047,7 @@ impl Ext2Inode {
 
     fn set_disk_size(inode: &mut Ext2InodeDisk, size: u64) {
         inode.i_size_lo = size as u32;
-        inode.i_dir_acl_or_size_high = if Self::kind_from_mode(inode.i_mode) == InodeType::File {
+        inode.i_dir_acl_or_size_high = if inode_kind::from_mode(inode.i_mode) == InodeType::File {
             (size >> 32) as u32
         } else {
             0
@@ -1065,16 +1056,6 @@ impl Ext2Inode {
 
     fn now() -> u32 {
         (crate::timer::get_realtime_ns() / 1_000_000_000) as u32
-    }
-
-    fn file_type(kind: InodeType) -> u8 {
-        match kind {
-            InodeType::File => 1,
-            InodeType::Directory => 2,
-            InodeType::SymLink => 7,
-            InodeType::CharacterDevice => 3,
-            InodeType::Fifo => 5,
-        }
     }
 
     fn validate_name(name: &[u8]) -> Result<(), FileSystemError> {
@@ -1499,7 +1480,7 @@ impl Inode for Ext2Inode {
         Ok(InodeMetadata {
             filesystem: 1,
             inode: self.inode_num as u64,
-            kind: Self::kind_from_mode(inode.i_mode),
+            kind: inode_kind::from_mode(inode.i_mode),
             mode: inode.i_mode as u32,
             links: inode.i_links_count as u32,
             uid: inode.uid(),
@@ -1516,7 +1497,7 @@ impl Inode for Ext2Inode {
 
     fn inode_type(&self) -> InodeType {
         let ino = self.disk.lock();
-        Self::kind_from_mode(ino.i_mode)
+        inode_kind::from_mode(ino.i_mode)
     }
 
     fn size(&self) -> u64 {
@@ -1583,7 +1564,7 @@ impl Inode for Ext2Inode {
 
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
         let inode = *self.disk.lock();
-        if Self::kind_from_mode(inode.i_mode) != InodeType::SymLink {
+        if inode_kind::from_mode(inode.i_mode) != InodeType::SymLink {
             return Err(FileSystemError::InvalidOperation);
         }
         let size = usize::try_from(Self::disk_size(&inode))
@@ -1662,6 +1643,7 @@ impl Inode for Ext2Inode {
                     7 => InodeType::SymLink,
                     3 => InodeType::CharacterDevice,
                     5 => InodeType::Fifo,
+                    6 => InodeType::Socket,
                     _ => InodeType::File,
                 };
                 let mut owned_name = Vec::new();
@@ -1714,7 +1696,10 @@ impl Inode for Ext2Inode {
             return Err(FileSystemError::NotDirectory);
         }
         Self::validate_name(name)?;
-        if !matches!(kind, InodeType::File | InodeType::Directory) {
+        if !matches!(
+            kind,
+            InodeType::File | InodeType::Directory | InodeType::Socket
+        ) {
             return Err(FileSystemError::InvalidOperation);
         }
         let mut mutation = self.fs.begin_mutation()?;
@@ -1735,11 +1720,7 @@ impl Inode for Ext2Inode {
         mutation.discard_inode_on_abort(number)?;
         let now = Self::now();
         let mut disk = Ext2InodeDisk {
-            i_mode: (if kind == InodeType::Directory {
-                0x4000
-            } else {
-                0x8000
-            }) | (metadata.mode as u16 & 0o7777),
+            i_mode: inode_kind::create_mode(kind, metadata.mode),
             i_atime: now,
             i_ctime: now,
             i_mtime: now,

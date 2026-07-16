@@ -184,7 +184,8 @@ impl TaskControlBlock {
         let kernel_stack_top = kernel_stack.get_top();
         let trap_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
-        let terminal = Terminal::new(console).map_err(|()| ElfLoadError::OutOfMemory)?;
+        let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
+            .map_err(|()| ElfLoadError::OutOfMemory)?;
         let address_space = AddressSpace::new(memory_set)?;
         let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
         let io_accounting = try_elf_arc(IoAccounting::default())?;

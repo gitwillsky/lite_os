@@ -126,13 +126,7 @@ impl CharacterDevice {
                     0
                 }
             }
-            Self::Input { file, .. } => {
-                if file.readable_count() != 0 {
-                    events & Self::INPUT
-                } else {
-                    0
-                }
-            }
+            Self::Input { file, .. } => file.poll_events(events),
             Self::Terminal { terminal, pty, .. } => {
                 let hung_up = pty.as_ref().is_some_and(|slave| slave.master_hung_up());
                 (if hung_up {

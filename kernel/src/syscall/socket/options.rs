@@ -10,6 +10,7 @@ const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
 const SO_ERROR: usize = 4;
 const SO_BROADCAST: usize = 6;
+const SO_PEERCRED: usize = 17;
 const SO_BINDTODEVICE: usize = 25;
 const IFNAMSIZ: usize = 16;
 
@@ -121,15 +122,34 @@ pub(crate) fn sys_getsockopt(
     if level != SOL_SOCKET || value == 0 || length == 0 {
         return -errno::ENOPROTOOPT;
     }
-    let result: i32 = match option {
-        SO_TYPE => match socket.socket_type() {
-            SocketType::Stream => 1,
-            SocketType::Datagram => 2,
-            SocketType::Raw => 3,
-        },
-        SO_ERROR => socket
-            .take_error()
-            .map_or(0, |error| (-socket_error(error)) as i32),
+    let mut result = [0u8; 12];
+    let result_length = match option {
+        SO_TYPE => {
+            let value: i32 = match socket.socket_type() {
+                SocketType::Stream => 1,
+                SocketType::Datagram => 2,
+                SocketType::Raw => 3,
+            };
+            result[..4].copy_from_slice(&value.to_ne_bytes());
+            4
+        }
+        SO_ERROR => {
+            let value = socket
+                .take_error()
+                .map_or(0, |error| (-socket_error(error)) as i32);
+            result[..4].copy_from_slice(&value.to_ne_bytes());
+            4
+        }
+        SO_PEERCRED => {
+            let credentials = match socket.peer_credentials() {
+                Ok(credentials) => credentials,
+                Err(error) => return socket_error(error),
+            };
+            result[..4].copy_from_slice(&credentials.pid.to_ne_bytes());
+            result[4..8].copy_from_slice(&credentials.uid.to_ne_bytes());
+            result[8..12].copy_from_slice(&credentials.gid.to_ne_bytes());
+            12
+        }
         _ => return -errno::ENOPROTOOPT,
     };
     let task = current_task().unwrap();
@@ -137,11 +157,11 @@ pub(crate) fn sys_getsockopt(
     if task.copy_from_user(length, &mut size).is_err() {
         return -errno::EFAULT;
     }
-    let count = (u32::from_ne_bytes(size) as usize).min(4);
-    if task
-        .copy_to_user(value, &result.to_ne_bytes()[..count])
-        .is_err()
-        || task.copy_to_user(length, &4u32.to_ne_bytes()).is_err()
+    let count = (u32::from_ne_bytes(size) as usize).min(result_length);
+    if task.copy_to_user(value, &result[..count]).is_err()
+        || task
+            .copy_to_user(length, &(result_length as u32).to_ne_bytes())
+            .is_err()
     {
         return -errno::EFAULT;
     }

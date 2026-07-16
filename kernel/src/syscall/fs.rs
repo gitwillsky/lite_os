@@ -23,6 +23,7 @@ pub(crate) use io::{
 pub(crate) use links::{sys_linkat, sys_symlinkat};
 pub(crate) use namespace::{sys_mkdirat, sys_mknodat, sys_renameat2, sys_unlinkat};
 pub(crate) use open::{sys_chdir, sys_fchdir, sys_openat};
+pub(in crate::syscall) use pathname::ferr as filesystem_error;
 use pathname::{base, ferr, path};
 pub(crate) use readlink::sys_readlinkat;
 
@@ -504,6 +505,7 @@ pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isiz
             InodeType::Fifo => 1,
             InodeType::SymLink => 10,
             InodeType::CharacterDevice => 2,
+            InodeType::Socket => 12,
             InodeType::File => 8,
         });
         output.extend_from_slice(&entry.name);

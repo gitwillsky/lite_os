@@ -263,8 +263,12 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "busybox.config",
         "dynamic-smoke-lib.c",
         "dynamic-smoke.c",
+        "display-client",
+        "display-session",
+        "display-session-guard",
         "group",
         "inittab",
+        "liteos-2d",
         "liteos-terminal",
         "liteos-stress.c",
         "liteos.terminfo",
@@ -321,10 +325,102 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             ));
         }
     }
-    if terminal_manifest.contains("[dependencies]") {
+    if !terminal_manifest.contains("display-client = { path = \"../display-client\" }")
+        || terminal_manifest.matches(" path = ").count() != 1
+    {
         errors.push(
-            "user/liteos-terminal/Cargo.toml: the display terminal must remain dependency-free"
+            "user/liteos-terminal/Cargo.toml: the terminal may depend only on the shared display-client lifecycle crate"
                 .to_owned(),
+        );
+    }
+    let display_client = root.join("user/display-client");
+    match fs::read_dir(&display_client) {
+        Ok(entries) => {
+            let actual = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>();
+            if actual != terminal_files {
+                errors.push(format!(
+                    "user/display-client: expected exactly {terminal_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect the shared display client lifecycle crate: {error}"
+        )),
+    }
+    let client_manifest = fs::read_to_string(display_client.join("Cargo.toml")).unwrap_or_default();
+    if !client_manifest.contains("name = \"display-client\"")
+        || !client_manifest.contains("crate-type = [\"rlib\"]")
+        || client_manifest.contains("[dependencies]")
+    {
+        errors.push(
+            "user/display-client/Cargo.toml: shared seat lifecycle must remain a dependency-free rlib"
+                .to_owned(),
+        );
+    }
+    let session = root.join("user/display-session");
+    match fs::read_dir(&session) {
+        Ok(entries) => {
+            let actual = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>();
+            if actual != terminal_files {
+                errors.push(format!(
+                    "user/display-session: expected exactly {terminal_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect the unique display-session broker: {error}"
+        )),
+    }
+    let session_manifest = fs::read_to_string(session.join("Cargo.toml")).unwrap_or_default();
+    for required in [
+        "name = \"display-session\"",
+        "[lib]",
+        "crate-type = [\"staticlib\"]",
+        "panic = \"abort\"",
+    ] {
+        if !session_manifest.contains(required) {
+            errors.push(format!(
+                "user/display-session/Cargo.toml: missing `{required}`"
+            ));
+        }
+    }
+    if session_manifest.contains("[dependencies]") {
+        errors.push(
+            "user/display-session/Cargo.toml: the seat broker must remain dependency-free"
+                .to_owned(),
+        );
+    }
+    let graphics = root.join("user/liteos-2d");
+    match fs::read_dir(&graphics) {
+        Ok(entries) => {
+            let actual = entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<BTreeSet<_>>();
+            if actual != terminal_files {
+                errors.push(format!(
+                    "user/liteos-2d: expected exactly {terminal_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect the unique 2D reference client: {error}"
+        )),
+    }
+    let graphics_manifest = fs::read_to_string(graphics.join("Cargo.toml")).unwrap_or_default();
+    if !graphics_manifest.contains("name = \"liteos-2d\"")
+        || !graphics_manifest.contains("crate-type = [\"staticlib\"]")
+        || !graphics_manifest.contains("display-client = { path = \"../display-client\" }")
+        || graphics_manifest.matches(" path = ").count() != 1
+    {
+        errors.push(
+            "user/liteos-2d/Cargo.toml: the 2D client may depend only on display-client".to_owned(),
         );
     }
     let terminfo_source = fs::read_to_string(root.join("user/liteos.terminfo")).unwrap_or_default();
@@ -352,6 +448,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "model/screen.rs",
         "model/style.rs",
         "reactor.rs",
+        "reactor/active.rs",
         "reactor/evdev.rs",
         "reactor/input.rs",
         "reactor/pointer.rs",
@@ -381,8 +478,110 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             "failed to inspect user/liteos-terminal/src: {error}"
         )),
     }
+    let session_source_files = [
+        "broker.rs",
+        "client.rs",
+        "ffi.rs",
+        "lib.rs",
+        "peer.rs",
+        "protocol.rs",
+    ]
+    .map(str::to_owned)
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let mut session_paths = Vec::new();
+    match rust_files(&session.join("src"), &mut session_paths) {
+        Ok(()) => {
+            let actual = session_paths
+                .into_iter()
+                .filter_map(|path| {
+                    path.strip_prefix(session.join("src"))
+                        .ok()
+                        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                })
+                .collect::<BTreeSet<_>>();
+            if actual != session_source_files {
+                errors.push(format!(
+                    "user/display-session/src: expected exactly {session_source_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect user/display-session/src: {error}"
+        )),
+    }
+    let display_client_source_files = ["ffi.rs", "lib.rs", "seat.rs"]
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let mut client_paths = Vec::new();
+    match rust_files(&display_client.join("src"), &mut client_paths) {
+        Ok(()) => {
+            let actual = client_paths
+                .into_iter()
+                .filter_map(|path| {
+                    path.strip_prefix(display_client.join("src"))
+                        .ok()
+                        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                })
+                .collect::<BTreeSet<_>>();
+            if actual != display_client_source_files {
+                errors.push(format!(
+                    "user/display-client/src: expected exactly {display_client_source_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!(
+            "failed to inspect user/display-client/src: {error}"
+        )),
+    }
+    let graphics_source_files = [
+        "display.rs",
+        "ffi.rs",
+        "input.rs",
+        "lib.rs",
+        "reactor.rs",
+        "scene.rs",
+    ]
+    .map(str::to_owned)
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    let mut graphics_paths = Vec::new();
+    match rust_files(&graphics.join("src"), &mut graphics_paths) {
+        Ok(()) => {
+            let actual = graphics_paths
+                .into_iter()
+                .filter_map(|path| {
+                    path.strip_prefix(graphics.join("src"))
+                        .ok()
+                        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                })
+                .collect::<BTreeSet<_>>();
+            if actual != graphics_source_files {
+                errors.push(format!(
+                    "user/liteos-2d/src: expected exactly {graphics_source_files:?}, found {actual:?}"
+                ));
+            }
+        }
+        Err(error) => errors.push(format!("failed to inspect user/liteos-2d/src: {error}")),
+    }
+    let session_broker = fs::read_to_string(session.join("src/broker.rs")).unwrap_or_default();
+    let session_client = fs::read_to_string(session.join("src/client.rs")).unwrap_or_default();
+    if !session_broker.contains("const REVOKE_DEADLINE_MS: u64 = 250;")
+        || !session_broker.contains("next_generation")
+        || !session_broker.contains("try_reserve_exact(MAX_CLIENTS)")
+        || !session_client.contains("pub fn force_revoke(&mut self) -> Result<(), ()>")
+    {
+        errors.push(
+            "user/display-session: the fixed 250 ms generation transition and pre-reserved allocation-free revoke path are mandatory"
+                .to_owned(),
+        );
+    }
     let atlas_source = fs::read_to_string(terminal.join("src/atlas.rs")).unwrap_or_default();
     let display_source = fs::read_to_string(terminal.join("src/display.rs")).unwrap_or_default();
+    let seat_source = fs::read_to_string(display_client.join("src/seat.rs")).unwrap_or_default();
+    let evdev_source =
+        fs::read_to_string(terminal.join("src/reactor/evdev.rs")).unwrap_or_default();
     let model_source = fs::read_to_string(terminal.join("src/model.rs")).unwrap_or_default();
     let reactor_source = fs::read_to_string(terminal.join("src/reactor.rs")).unwrap_or_default();
     if !atlas_source.contains("pub fn metrics(&self) -> FontMetrics")
@@ -406,6 +605,39 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    if !seat_source.contains("ffi::libseat_open_seat")
+        || !seat_source.contains("ffi::libseat_open_device")
+        || !display_source.contains("ffi::drmModeGetResources")
+        || !display_source.contains("ffi::drmModeSetCrtc")
+        || display_source.contains("DRM_IOCTL_MODE_GETRESOURCES")
+        || display_source.contains("b\"/dev/dri/card0")
+        || evdev_source.contains("ffi::open(")
+    {
+        errors.push(
+            "user/liteos-terminal: all seat devices must use pinned libseat and all KMS topology/commit codec must use pinned libdrm without a raw-open/ioctl track"
+                .to_owned(),
+        );
+    }
+    let graphics_display = fs::read_to_string(graphics.join("src/display.rs")).unwrap_or_default();
+    let graphics_reactor = fs::read_to_string(graphics.join("src/reactor.rs")).unwrap_or_default();
+    let graphics_scene = fs::read_to_string(graphics.join("src/scene.rs")).unwrap_or_default();
+    if !graphics_display.contains("buffers: [Option<Buffer>; 2]")
+        || !graphics_display.contains("ffi::drmModePageFlip")
+        || !graphics_display.contains("DRM_EVENT_FLIP_COMPLETE")
+        || !graphics_reactor.contains("const FRAME_INTERVAL_MS: u64 = 17;")
+        || !graphics_reactor.contains("const RESIZE_QUIET_MS: u64 = 50;")
+        || !graphics_reactor.contains("struct PreparedResize")
+        || !graphics_reactor.contains("active.display.query_mode().map_err(resize_error)?")
+        || !graphics_reactor.contains("Err(ResizeFailure::Transient)")
+        || !graphics_reactor.contains("deadline_timeout")
+        || !graphics_scene.contains("pub fn render(")
+        || !graphics_scene.contains("pub fn union(")
+    {
+        errors.push(
+            "user/liteos-2d: reference client must retain two dumb buffers, consume page-flip events, damage-render geometry and block on a single 60 fps/hotplug reactor"
+                .to_owned(),
+        );
+    }
     if !reactor_source.contains("struct PreparedResize")
         || !reactor_source.contains("const RESIZE_RETRY_MS: u64 = FRAME_INTERVAL_MS;")
         || !reactor_source.contains("Err(ResizeFailure::Transient)")
@@ -417,7 +649,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     }
     if !model_source.contains("pub fn begin_shell_session(&mut self)")
         || !reactor_source.contains("model.begin_shell_session();")
-        || !reactor_source.contains("display.present(&mut model, &atlas, metrics)")
+        || !reactor_source.contains(".present(&mut model, atlas, metrics)")
     {
         errors.push(
             "user/liteos-terminal: successful PTY creation must atomically replace boot content with a fully presented clean shell session"
@@ -465,7 +697,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     for relative in ["user/Cargo.toml", "user/src", "user/linker.ld"] {
         if root.join(relative).exists() {
             errors.push(format!(
-                "{relative}: a second Rust userspace track is forbidden; the musl-linked display terminal is the only Rust crate"
+                "{relative}: a second Rust userspace build track is forbidden; registered consumers must use their own standard crate root"
             ));
         }
     }
@@ -476,21 +708,30 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     {
         errors.push("Cargo.toml: user crate must not re-enter the workspace".to_owned());
     }
-    if !manifest.contains("exclude = [\"bootloader\", \"user/liteos-terminal\"]") {
+    if !manifest
+        .contains("exclude = [\"bootloader\", \"user/display-client\", \"user/display-session\", \"user/liteos-2d\", \"user/liteos-terminal\"]")
+    {
         errors.push(
-            "Cargo.toml: user/liteos-terminal must remain explicitly excluded from the kernel workspace"
+            "Cargo.toml: every userspace Rust crate must remain explicitly excluded from the kernel workspace"
                 .to_owned(),
         );
     }
     let rootfs_builder =
         fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
-    if !rootfs_builder.contains("(crate / \"src\").rglob(\"*.rs\")")
+    if !rootfs_builder.contains("def build_rust_user_program(")
+        || !rootfs_builder.contains("(crate / \"src\").rglob(\"*.rs\")")
+        || !rootfs_builder.contains("(ROOT / \"user/display-session/src\").rglob(\"*.rs\")")
+        || !rootfs_builder.contains("def build_2d_client(")
+        || !rootfs_builder.contains("def display_client_inputs(")
         || !rootfs_builder.contains("(ROOT / \"user/liteos-terminal/src\").rglob(\"*.rs\")")
+        || !rootfs_builder.contains("/bin/liteos-2d")
+        || !rootfs_builder.contains("/usr/lib/libseat.so.1")
+        || !rootfs_builder.contains("/usr/lib/libdrm.so.2")
         || !rootfs_builder.contains("/etc/terminfo/l/liteos")
         || rootfs_builder.contains("/usr/share/terminfo/6c/liteos")
     {
         errors.push(
-            "terminal build/cache inputs must cover every Rust module and install terminfo at Alpine's exact database path"
+            "the unique Rust userspace build/cache seam must cover every registered module and install terminfo at Alpine's exact database path"
                 .to_owned(),
         );
     }

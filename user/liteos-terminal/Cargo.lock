@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "display-client"
+version = "0.1.0"
+
+[[package]]
 name = "liteos-terminal"
 version = "0.1.0"
+dependencies = [
+ "display-client",
+]

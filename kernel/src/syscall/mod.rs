@@ -42,6 +42,7 @@ fn file_descriptor_error(error: crate::fs::FileDescriptorError) -> isize {
         crate::fs::FileDescriptorError::NotFound => errno::EBADF,
         crate::fs::FileDescriptorError::Limit => errno::EMFILE,
         crate::fs::FileDescriptorError::OutOfMemory => errno::ENOMEM,
+        crate::fs::FileDescriptorError::Busy => errno::EBUSY,
     }
 }
 

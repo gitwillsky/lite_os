@@ -1,5 +1,7 @@
 use core::ptr;
 
+use display_client::Seat;
+
 use crate::{
     atlas::{Atlas, FontMetrics},
     display::{CandidateBuffer, Display, DisplayError},
@@ -7,14 +9,15 @@ use crate::{
     model::{Grid, Model, ResizeCandidate},
 };
 
+mod active;
 mod evdev;
 mod input;
 mod pointer;
 mod session;
 
+use active::Active;
 use input::{
-    InputQueue, KeyboardState, MAX_KEY_BYTES, PTY_REPLY_EXPANSION, flush_input, open_keyboard,
-    read_keyboard,
+    InputQueue, KeyboardState, MAX_KEY_BYTES, PTY_REPLY_EXPANSION, flush_input, read_keyboard,
 };
 use pointer::{MAX_POINTER_BYTES, Pointer};
 use session::{read_pty, replay_boot_log, set_window_size, spawn_shell};
@@ -46,11 +49,35 @@ struct PreparedResize {
 
 pub fn run() -> Result<(), ()> {
     let atlas = Atlas::checked().ok_or(())?;
-    let mut display = Display::open().map_err(|_| ())?;
+    // netlink 不属于 seat capability；先取得它可保证后续任一 bootstrap failure 都由
+    // 普通 fd RAII/显式 close 收口，而不会留下半开的 seat device transaction。
+    let netlink = open_hotplug().ok_or(())?;
+    let mut seat = Seat::open()?;
+    let active = Active::open(&mut seat)?;
+    let mut active = Some(active);
+    let result = run_session(&mut seat, &mut active, &atlas, netlink);
+    let release = match active.take() {
+        Some(active) => active.release(&mut seat),
+        None => Ok(()),
+    };
+    unsafe { ffi::close(netlink) };
+    result.and(release)
+}
+
+fn run_session(
+    seat: &mut Seat,
+    active: &mut Option<Active>,
+    atlas: &Atlas,
+    netlink: i32,
+) -> Result<(), ()> {
     // 先订阅再查询初始 mode；否则 host resize 可消失在 query→event-loop 窗口，
     // userspace 会永久提交一个已经过期的 connector mode。
-    let netlink = open_hotplug().ok_or(())?;
-    let mode = display.query_mode().map_err(|_| ())?;
+    let mode = active
+        .as_ref()
+        .unwrap()
+        .display
+        .query_mode()
+        .map_err(|_| ())?;
     let metrics = atlas.metrics();
     let mut model = Model::new(
         usize::from(mode.hdisplay) / metrics.width(),
@@ -61,55 +88,52 @@ pub fn run() -> Result<(), ()> {
     replay_boot_log(&mut model);
     model.feed(b"[ OK ] DRM/KMS display session acquired\n", |_| {});
 
-    let keyboard = open_keyboard();
-    let mut pointer = Pointer::open();
-    if keyboard >= 0 {
+    if active.as_ref().unwrap().keyboard_fd() >= 0 {
         model.feed(b"[ OK ] Keyboard input ready\n", |_| {});
     } else {
         model.feed(b"[WARN] Keyboard input unavailable\n", |_| {});
     }
     model.feed(b"[....] Starting shell\n\n", |_| {});
-    let initial = display
-        .prepare(mode, &model, &atlas, metrics)
+    let initial = active
+        .as_ref()
+        .unwrap()
+        .display
+        .prepare(mode, &model, atlas, metrics)
         .map_err(|_| ())?;
     let mut initial = initial;
-    display.commit(&mut initial).map_err(|_| ())?;
+    active
+        .as_mut()
+        .unwrap()
+        .display
+        .commit(&mut initial)
+        .map_err(|_| ())?;
     model.clear_all_dirty();
 
     let (master, child) = spawn_shell(model.columns(), model.rows(), mode).ok_or(())?;
     model.begin_shell_session();
-    let result = match display.present(&mut model, &atlas, metrics) {
-        Ok(()) => event_loop(
-            &mut display,
-            &atlas,
-            &mut model,
-            metrics,
-            master,
-            keyboard,
-            &mut pointer,
-            netlink,
-        ),
+    let result = match active
+        .as_mut()
+        .unwrap()
+        .display
+        .present(&mut model, atlas, metrics)
+    {
+        Ok(()) => event_loop(seat, active, atlas, &mut model, metrics, master, netlink),
         Err(_) => Err(()),
     };
     unsafe {
         ffi::close(master);
-        ffi::close(netlink);
-        if keyboard >= 0 {
-            ffi::close(keyboard);
-        }
         ffi::waitpid(child, ptr::null_mut(), 0);
     }
     result
 }
 
 fn event_loop(
-    display: &mut Display,
+    seat: &mut Seat,
+    active: &mut Option<Active>,
     atlas: &Atlas,
     model: &mut Model,
     metrics: FontMetrics,
     master: i32,
-    keyboard: i32,
-    pointer: &mut Option<Pointer>,
     netlink: i32,
 ) -> Result<(), ()> {
     let mut keyboard_state = KeyboardState::default();
@@ -123,12 +147,18 @@ fn event_loop(
     loop {
         let now = ffi::monotonic_milliseconds();
         if render_due.is_some_and(|deadline| deadline <= now) {
-            display.present(model, atlas, metrics).map_err(|_| ())?;
+            active
+                .as_mut()
+                .ok_or(())?
+                .display
+                .present(model, atlas, metrics)
+                .map_err(|_| ())?;
             render_due = None;
             last_present = now;
         }
         if resize_due.is_some_and(|deadline| deadline <= now) {
             resize_due = None;
+            let display = &mut active.as_mut().ok_or(())?.display;
             match resize(display, atlas, model, metrics, master, &mut prepared_resize) {
                 Ok(()) => warned_mode = None,
                 Err(ResizeFailure::Transient) => {
@@ -166,6 +196,11 @@ fn event_loop(
             blink_due,
             ffi::monotonic_milliseconds(),
         );
+        let keyboard = active.as_ref().map_or(-1, Active::keyboard_fd);
+        let pointer = active
+            .as_ref()
+            .and_then(Active::pointer)
+            .map_or(-1, Pointer::fd);
         let mut descriptors = [
             PollFd {
                 fd: master,
@@ -182,6 +217,11 @@ fn event_loop(
                 returned: 0,
             },
             PollFd {
+                fd: seat.fd(),
+                events: ffi::POLLIN,
+                returned: 0,
+            },
+            PollFd {
                 fd: keyboard,
                 events: if input.remaining() >= MAX_KEY_BYTES {
                     ffi::POLLIN
@@ -191,7 +231,7 @@ fn event_loop(
                 returned: 0,
             },
             PollFd {
-                fd: pointer.as_ref().map_or(-1, Pointer::fd),
+                fd: pointer,
                 events: if input.remaining() >= MAX_POINTER_BYTES {
                     ffi::POLLIN
                 } else {
@@ -200,7 +240,7 @@ fn event_loop(
                 returned: 0,
             },
         ];
-        let count = 4;
+        let count = 5;
         let ready = loop {
             let result = unsafe { ffi::poll(descriptors.as_mut_ptr(), count, timeout) };
             if result < 0 && ffi::errno() == ffi::EINTR {
@@ -212,6 +252,33 @@ fn event_loop(
             return Err(());
         }
         let now = ffi::monotonic_milliseconds();
+        if descriptors[2].returned & (ffi::POLLERR | ffi::POLLHUP) != 0 {
+            return Err(());
+        }
+        if descriptors[2].returned & ffi::POLLIN != 0 {
+            seat.dispatch()?;
+            if let Some(enabled) = seat.take_change() {
+                if enabled {
+                    if active.is_some() {
+                        return Err(());
+                    }
+                    *active = Some(Active::reacquire(seat, atlas, model, metrics, master)?);
+                    keyboard_state = KeyboardState::default();
+                    blink_due = model
+                        .has_blinking_cells()
+                        .then(|| now.saturating_add(BLINK_INTERVAL_MS));
+                } else {
+                    let current = active.take().ok_or(())?;
+                    current.release(seat)?;
+                    seat.acknowledge_disable()?;
+                    prepared_resize.take();
+                    render_due = None;
+                    resize_due = None;
+                    blink_due = None;
+                    keyboard_state = KeyboardState::default();
+                }
+            }
+        }
         let mut closed = false;
         if descriptors[0].returned & (ffi::POLLIN | ffi::POLLERR | ffi::POLLHUP) != 0 {
             let (changed, ended) = read_pty(master, model, &mut input);
@@ -219,7 +286,7 @@ fn event_loop(
             // 等待下一次 POLLOUT edge 或超时，键盘/鼠标输入仍与回复共用唯一有界队列。
             flush_input(master, &mut input);
             closed = ended;
-            if changed {
+            if changed && active.is_some() {
                 schedule_render(&mut render_due, last_present, now);
                 if blink_due.is_none() && model.has_blinking_cells() {
                     blink_due = Some(now.saturating_add(BLINK_INTERVAL_MS));
@@ -229,21 +296,27 @@ fn event_loop(
         if descriptors[0].returned & ffi::POLLOUT != 0 {
             flush_input(master, &mut input);
         }
-        if descriptors[1].returned & ffi::POLLIN != 0 && drain_hotplug(netlink) {
+        if descriptors[1].returned & ffi::POLLIN != 0 && drain_hotplug(netlink) && active.is_some()
+        {
             resize_due = Some(now.saturating_add(RESIZE_QUIET_MS));
         }
-        if keyboard >= 0 && descriptors[2].returned & ffi::POLLIN != 0 {
+        if keyboard >= 0 && descriptors[3].returned & ffi::POLLIN != 0 {
             read_keyboard(keyboard, &mut input, &mut keyboard_state, model);
             flush_input(master, &mut input);
         }
-        if descriptors[3].returned & ffi::POLLIN != 0
-            && let Some(pointer) = pointer.as_mut()
+        if descriptors[4].returned & ffi::POLLIN != 0
+            && let Some(pointer) = active.as_mut().and_then(Active::pointer_mut)
         {
             pointer.read(&mut input, model);
             flush_input(master, &mut input);
         }
         if render_due.is_some_and(|deadline| deadline <= now) {
-            display.present(model, atlas, metrics).map_err(|_| ())?;
+            active
+                .as_mut()
+                .ok_or(())?
+                .display
+                .present(model, atlas, metrics)
+                .map_err(|_| ())?;
             render_due = None;
             last_present = now;
         }

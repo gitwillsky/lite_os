@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use super::{Console, FileSystemError};
+use super::{Console, DeviceKind, FileSystemError};
 
 const KERNEL_TERMIOS_SIZE: usize = 36;
 const TERMINAL_INPUT_CAPACITY: usize = 4096;
@@ -87,15 +87,25 @@ impl TerminalState {
 /// @description console device、termios 与 session/foreground ownership 的唯一 TTY 对象。
 pub(crate) struct Terminal {
     console: Arc<dyn Console>,
+    // OWNER: 每个 Terminal 永久绑定创建它的实际 character device；`/dev/tty` 只是当前
+    // Process handle 的别名。缺失该 identity 会让关闭所有 tty fd 后的 `/proc/pid/stat`
+    // 无法继续准确投影 controlling terminal。
+    device: DeviceKind,
     state: Mutex<TerminalState>,
 }
 
 impl Terminal {
     /// @description 用 Linux 风格 sane defaults 包装唯一 platform console。
     ///
-    /// @param console UART-backed raw byte device。
+    /// @param console raw byte device adapter。
+    /// @param device `/dev/console` 或实际 `/dev/pts/N` identity；不得传入 `/dev/tty` 别名。
     /// @return 可由所有 console OFD 共享的 TTY owner。
-    pub(crate) fn new(console: Arc<dyn Console>) -> Result<Arc<Self>, ()> {
+    pub(crate) fn new(console: Arc<dyn Console>, device: DeviceKind) -> Result<Arc<Self>, ()> {
+        assert_ne!(
+            device,
+            DeviceKind::Tty,
+            "terminal cannot own /dev/tty alias"
+        );
         let mut termios = [0u8; KERNEL_TERMIOS_SIZE];
         termios[0..4].copy_from_slice(&0x500u32.to_ne_bytes());
         termios[4..8].copy_from_slice(&0x5u32.to_ne_bytes());
@@ -107,6 +117,7 @@ impl Terminal {
         window_size[2..4].copy_from_slice(&80u16.to_ne_bytes());
         Arc::try_new(Self {
             console,
+            device,
             state: Mutex::new(TerminalState {
                 termios,
                 window_size,
@@ -122,6 +133,23 @@ impl Terminal {
             }),
         })
         .map_err(|_| ())
+    }
+
+    /// @description 一次锁快照投影 Linux proc stat 的 controlling-terminal 字段。
+    /// @param session 目标 Process 的 process-graph session ID。
+    /// @return `(tty_nr, tpgid)`；无 controlling terminal 时固定为 `(0, -1)`。
+    pub(crate) fn proc_identity(&self, session: usize) -> (u32, isize) {
+        let state = self.state.lock();
+        if state.controlling_session != Some(session) {
+            return (0, -1);
+        }
+        let (major, minor) = self.device.numbers();
+        // Linux new_encode_dev 保留低 8-bit minor，并把扩展 minor 放到 bit 20 以上。
+        let device = (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12);
+        (
+            device,
+            state.foreground_pgid.map_or(-1, |pgid| pgid as isize),
+        )
     }
 
     /// @description 从 line discipline 唯一 cooked queue 非阻塞读取。

@@ -101,13 +101,15 @@ fn format_task_stat(
     };
     let virtual_size = process.virtual_pages.saturating_mul(4096);
     proc_text(format_args!(
-        "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
+        "{} ({}) {} {} {} {} {} {} 0 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
         task.pid,
         comm,
         task.state as char,
         process.ppid,
         process.process_group,
         process.session,
+        process.tty_number,
+        process.terminal_process_group,
         ticks(task.runtime_us),
         task.priority,
         task.nice,

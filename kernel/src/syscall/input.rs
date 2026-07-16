@@ -19,6 +19,7 @@ const fn input_ioc(direction: usize, number: usize, size: usize) -> usize {
 const EVIOCGVERSION: usize = input_ioc(IOC_READ, 0x01, 4);
 const EVIOCGID: usize = input_ioc(IOC_READ, 0x02, 8);
 const EVIOCGRAB: usize = input_ioc(IOC_WRITE, 0x90, 4);
+const EVIOCREVOKE: usize = input_ioc(IOC_WRITE, 0x91, 4);
 const EVIOCSCLOCKID: usize = input_ioc(IOC_WRITE, 0xa0, 4);
 
 fn input_errno(error: InputError) -> isize {
@@ -27,6 +28,7 @@ fn input_errno(error: InputError) -> isize {
         InputError::OutOfMemory => errno::ENOMEM,
         InputError::Busy => errno::EBUSY,
         InputError::Invalid => errno::EINVAL,
+        InputError::Revoked => errno::ENODEV,
     }
 }
 
@@ -125,7 +127,7 @@ fn copy_variable(
 /// @param task 当前 userspace address-space owner。
 /// @param file `/dev/input/eventN` 的独立 client backend。
 /// @param request Linux input ioctl number。
-/// @param argument request-specific pointer；`EVIOCGRAB` 按 Linux 语义直接解释为标量。
+/// @param argument request-specific pointer；`EVIOCGRAB/EVIOCREVOKE` 按 Linux 语义解释为标量。
 /// @return fixed ioctl 返回零；variable query 返回复制 byte count；失败返回负 errno。
 pub(in crate::syscall) fn input_ioctl(
     task: &TaskControlBlock,
@@ -133,6 +135,9 @@ pub(in crate::syscall) fn input_ioctl(
     request: usize,
     argument: usize,
 ) -> isize {
+    if file.is_revoked() {
+        return -errno::ENODEV;
+    }
     let result = match request {
         EVIOCGVERSION => copy_out(task, argument, &EV_VERSION.to_ne_bytes()).map(|()| 0),
         EVIOCGID => {
@@ -147,6 +152,13 @@ pub(in crate::syscall) fn input_ioctl(
         EVIOCGRAB => InputFile::set_grab(file, argument != 0)
             .map(|()| 0)
             .map_err(input_errno),
+        EVIOCREVOKE => {
+            if argument != 0 {
+                Err(errno::EINVAL)
+            } else {
+                InputFile::revoke(file).map(|()| 0).map_err(input_errno)
+            }
+        }
         EVIOCSCLOCKID => copy_in_i32(task, argument)
             .and_then(|clock| file.set_clock(clock).map_err(input_errno))
             .map(|()| 0),

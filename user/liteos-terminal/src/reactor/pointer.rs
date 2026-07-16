@@ -3,7 +3,7 @@ use crate::{
     model::{Grid, Model},
 };
 
-use super::{evdev, input::InputQueue};
+use super::input::InputQueue;
 
 pub(super) const MAX_POINTER_BYTES: usize = 6;
 
@@ -15,11 +15,7 @@ pub(super) struct Pointer {
 }
 
 impl Pointer {
-    pub(super) fn open() -> Option<Self> {
-        let fd = evdev::open_matching(&[b"tablet", b"mouse"]);
-        if fd < 0 {
-            return None;
-        }
+    pub(super) fn open(fd: i32) -> Option<Self> {
         let mut x = InputAbsInfo::default();
         let mut y = InputAbsInfo::default();
         if unsafe {
@@ -28,7 +24,6 @@ impl Pointer {
         } || x.minimum >= x.maximum
             || y.minimum >= y.maximum
         {
-            unsafe { ffi::close(fd) };
             return None;
         }
         Some(Self {
@@ -99,12 +94,6 @@ impl Pointer {
             32 + column as u8 + 1,
             32 + row as u8 + 1,
         ]);
-    }
-}
-
-impl Drop for Pointer {
-    fn drop(&mut self) {
-        unsafe { ffi::close(self.fd) };
     }
 }
 

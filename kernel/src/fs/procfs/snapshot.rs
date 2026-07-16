@@ -29,6 +29,8 @@ pub(crate) struct ProcProcessSnapshot {
     pub(crate) ppid: usize,
     pub(crate) process_group: usize,
     pub(crate) session: usize,
+    pub(crate) tty_number: u32,
+    pub(crate) terminal_process_group: isize,
     pub(crate) comm: Vec<u8>,
     pub(crate) uids: [u32; 3],
     pub(crate) gids: [u32; 3],

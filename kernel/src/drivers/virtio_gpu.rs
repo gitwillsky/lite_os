@@ -13,10 +13,11 @@ use super::{
 mod wire;
 use wire::*;
 mod boot;
+mod damage;
+use damage::{DamageTransition, MAX_DAMAGE_RECTS};
 
 const CONTROL_QUEUE: u32 = 0;
 const QUEUE_SIZE: u16 = 64;
-const MAX_DAMAGE_RECTS: usize = 32;
 const ATTACH_REQUEST_SIZE: usize = 32 + DeviceBacking::MAX_EXTENTS * 16;
 
 #[derive(Clone, Copy)]
@@ -48,17 +49,9 @@ struct ScanoutTransition {
     next: ScanoutResource,
 }
 
-struct DamageTransition {
-    // OWNER: DIRTYFB 的 userspace clip array 只能在 ioctl frame 内存在；固定副本让后续
-    // completion 不访问 userspace，也保证 operation 内绝不分配。
-    rectangles: [DisplayRect; MAX_DAMAGE_RECTS],
-    count: u8,
-    index: u8,
-}
-
 enum RuntimeOperation {
     Scanout(ScanoutTransition),
-    Damage(DamageTransition),
+    Damage,
     Disable,
 }
 
@@ -85,6 +78,10 @@ struct ControlQueue {
     // OWNER: operation 串联 scanout、damage 或 disable 的唯一多阶段状态；缺失时每个 IRQ
     // stage 无法证明 request、backing 与 operation fence 属于同一事务。
     operation: Option<RuntimeOperation>,
+    // OWNER: damage 是 controlq 唯一的固定运行期 clip scratch；只有 operation=Damage 时
+    // 内容有效。把它塞进 enum 会让每个非 damage operation 膨胀到 520 bytes，改用 Box
+    // 又会让 DIRTYFB 热路径分配并在内存压力下失败。
+    damage: DamageTransition,
     // 两个 resource ID 只有在 UNREF completion 后才放回固定 free slots。用单 Option 会
     // 在 disable 后丢失第二个 free ID，导致下一次真实 framebuffer switch 无法进行。
     free_resource_ids: [Option<u32>; 2],
@@ -161,6 +158,7 @@ impl VirtIOGpuDevice {
             pending: None,
             active: None,
             operation: None,
+            damage: DamageTransition::new(),
             free_resource_ids: [None, None],
             config_change_pending: false,
             mode: DisplayMode {
@@ -372,11 +370,8 @@ impl DisplayDevice for VirtIOGpuDevice {
             *destination = rectangle;
         }
         prepare_transfer(&mut control.request, mode, copied[0], resource_id)?;
-        control.operation = Some(RuntimeOperation::Damage(DamageTransition {
-            rectangles: copied,
-            count: rectangles.len() as u8,
-            index: 0,
-        }));
+        control.damage.begin(copied, rectangles.len());
+        control.operation = Some(RuntimeOperation::Damage);
         let result = self.publish_runtime(
             &mut control,
             VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
@@ -601,8 +596,8 @@ impl DisplayDevice for VirtIOGpuDevice {
             RuntimeStage::TransferDamage => {
                 let (rectangle, resource_id) =
                     match (control.operation.as_ref(), control.active.as_ref()) {
-                        (Some(RuntimeOperation::Damage(damage)), Some(active)) => {
-                            (damage.rectangles[usize::from(damage.index)], active.id)
+                        (Some(RuntimeOperation::Damage), Some(active)) => {
+                            (control.damage.current(), active.id)
                         }
                         _ => return Err(DisplayError::Device),
                     };
@@ -617,12 +612,8 @@ impl DisplayDevice for VirtIOGpuDevice {
                 None
             }
             RuntimeStage::FlushDamage => {
-                let next_rectangle = match control.operation.as_mut() {
-                    Some(RuntimeOperation::Damage(damage)) => {
-                        damage.index += 1;
-                        (damage.index < damage.count)
-                            .then(|| damage.rectangles[usize::from(damage.index)])
-                    }
+                let next_rectangle = match control.operation.as_ref() {
+                    Some(RuntimeOperation::Damage) => control.damage.advance(),
                     _ => return Err(DisplayError::Device),
                 };
                 if let Some(rectangle) = next_rectangle {
@@ -640,7 +631,7 @@ impl DisplayDevice for VirtIOGpuDevice {
                     None
                 } else {
                     match control.operation.take() {
-                        Some(RuntimeOperation::Damage(_)) => {}
+                        Some(RuntimeOperation::Damage) => {}
                         _ => return Err(DisplayError::Device),
                     }
                     if control.config_change_pending {

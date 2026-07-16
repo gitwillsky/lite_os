@@ -14,7 +14,10 @@
 
 - abstract stream/datagram 保持当前范围；stream transport 使用 64 KiB data Pipe，write 在任意发送容量可用时允许非零短写，并以统一 Pipe readiness 完成 backpressure、EOF 与 `SIGPIPE`。
 - AF_UNIX datagram receive queue 固定最多十条、单条最多 65,535 bytes；atomic limit 在完整 payload gather 前验证。nonblocking full send 返回 `EAGAIN`，blocking send 直接等待目标容量，connected `poll/epoll(POLLOUT)` 投影 live peer capacity。
-- pathname AF_UNIX、`SCM_RIGHTS`、credentials 与 socket-buffer sockopts 尚未开放。
+- connected stream/datagram 与 socketpair 支持 `getsockopt(SOL_SOCKET, SO_PEERCRED)`；AF_UNIX endpoint 捕获 immutable effective identity，stream server 端在 connect transaction 捕获 caller 的实时 effective UID/GID，syscall 只编码 12-byte `struct ucred`。
+- pathname bind 创建真实 ext2 socket inode并遵循目录 mutation/permission/umask；runtime namespace 以 filesystem+inode identity 解析 live endpoint，因此 rename/hardlink 保持连接 identity，unlink 后既有 endpoint 继续存活而旧 pathname 立即不可达，unlink/recreate 不会命中旧 socket。关闭 endpoint 后 socket inode继续存在，connect 稳定返回 `ECONNREFUSED`，直到显式 unlink。
+- stream 与 datagram 支持 `SCM_RIGHTS`；sendmsg 在 transport byte/message commit 时原子附着 control batch，recvmsg 按 Linux `receive_fd()` 顺序逐个预留不可见 fd、copyout fd number、再发布。当前 fd copyout 失败只取消当前 reservation，保留已发布前缀并以 `MSG_CTRUNC` 丢弃后缀；`MSG_CMSG_CLOEXEC` 在发布前设置 descriptor flag。
+- SCM inflight 按发送者 real UID 计数；超过发送者 `RLIMIT_NOFILE` 时同步执行无分配 cycle-safe AF_UNIX graph collection，回收后仍超限返回 `ETOOMANYREFS`。socket-buffer sockopts 尚未开放。
 
 ## 3. AF_INET 与 AF_PACKET
 

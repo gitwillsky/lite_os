@@ -17,6 +17,7 @@ pub(crate) enum FileDescriptorError {
     NotFound,
     Limit,
     OutOfMemory,
+    Busy,
 }
 
 impl From<SlotInsertError> for FileDescriptorError {
@@ -31,6 +32,7 @@ impl From<SlotInsertError> for FileDescriptorError {
 struct FileDescriptor {
     ofd: Arc<OpenFileDescription>,
     cloexec: bool,
+    published: bool,
 }
 
 const _: () = assert!(
@@ -40,21 +42,38 @@ const _: () = assert!(
 
 impl FileDescriptor {
     fn new(ofd: Arc<OpenFileDescription>, cloexec: bool) -> Self {
+        Self::with_state(ofd, cloexec, true)
+    }
+
+    fn reserved(ofd: Arc<OpenFileDescription>, cloexec: bool) -> Self {
+        Self::with_state(ofd, cloexec, false)
+    }
+
+    fn with_state(ofd: Arc<OpenFileDescription>, cloexec: bool, published: bool) -> Self {
         // fd table lock/Process publication owns entry visibility；该原子只计数，不发布 OFD 数据，
         // 因此 increment 使用 Relaxed。缺少 increment 会让任一 close 提前删除仍存活的 interest。
-        ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
-        Self { ofd, cloexec }
+        if published {
+            ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
+        }
+        Self {
+            ofd,
+            cloexec,
+            published,
+        }
     }
 }
 
 impl Clone for FileDescriptor {
     fn clone(&self) -> Self {
-        Self::new(self.ofd.clone(), self.cloexec)
+        Self::with_state(self.ofd.clone(), self.cloexec, self.published)
     }
 }
 
 impl Drop for FileDescriptor {
     fn drop(&mut self) {
+        if !self.published {
+            return;
+        }
         // Release/Acquire 与其他 fd table 的最后 decrement 配对，确保判定为最后引用后才执行
         // 全局 cleanup；缺少原子 RMW 会让 fork 后两个 table 同时误判生命周期。
         if self.ofd.descriptor_refs.fetch_sub(1, Ordering::Release) == 1 {
@@ -67,6 +86,11 @@ impl Drop for FileDescriptor {
 
 /// @description 已从 fd table 原子摘除、等待在 Process files lock 外完成析构的 entry。
 pub(crate) struct DetachedFileDescriptor(FileDescriptor);
+
+/// @description 已回滚、等待在 Process files lock 外析构的不可见 recvmsg slot。
+pub(crate) struct CancelledFileReservation {
+    _descriptor: FileDescriptor,
+}
 
 impl DetachedFileDescriptor {
     /// @description 完成 descriptor_refs/epoll/flock cleanup，并保留 OFD 供 record-lock cleanup。
@@ -99,9 +123,11 @@ impl FileDescriptorTable {
     /// @description 复制 fd entries，同时保持每个 entry 共享原 OFD Arc。
     /// @return 成功返回独立 descriptor table；kernel heap 耗尽返回错误。
     pub(crate) fn try_clone(&self) -> Result<Self, ()> {
-        Ok(Self {
-            slots: self.slots.try_clone()?,
-        })
+        let mut slots = self.slots.try_clone()?;
+        for fd in 0..slots.len() {
+            drop(slots.take_if(fd, |entry| !entry.published));
+        }
+        Ok(Self { slots })
     }
 
     /// @description 构造 init 的三个 inherited console descriptor。
@@ -134,7 +160,28 @@ impl FileDescriptorTable {
     }
 
     pub(crate) fn get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
-        self.slots.get(fd).map(|entry| entry.ofd.clone())
+        self.slots
+            .get(fd)
+            .filter(|entry| entry.published)
+            .map(|entry| entry.ofd.clone())
+    }
+
+    /// @description 在一次 fd-table owner lock 内捕获完整 SCM_RIGHTS descriptor 集合。
+    /// @param descriptors 用户 cmsg 中按序验证的 descriptor numbers。
+    /// @return 与输入同序、共享原 OFD 的 Arc 集合。
+    /// @errors 任一 fd 不存在时整批返回 NotFound；staging OOM 返回 OutOfMemory。
+    pub(crate) fn capture_many(
+        &self,
+        descriptors: &[usize],
+    ) -> Result<Vec<Arc<OpenFileDescription>>, FileDescriptorError> {
+        let mut files = Vec::new();
+        files
+            .try_reserve_exact(descriptors.len())
+            .map_err(|_| FileDescriptorError::OutOfMemory)?;
+        for &fd in descriptors {
+            files.push(self.get(fd).ok_or(FileDescriptorError::NotFound)?);
+        }
+        Ok(files)
     }
 
     pub(crate) fn allocate(
@@ -172,11 +219,56 @@ impl FileDescriptorTable {
             .map_err(Into::into)
     }
 
+    /// @description 为单个 SCM_RIGHTS file 占用最低空闲、但 lookup 不可见的 fd slot。
+    /// @param file 待接收 OFD；reservation/cancel/publication 全程拥有其引用。
+    /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
+    /// @param limit Process 当前 fd limit。
+    /// @return 已占用且不可由 get/close/dup 观察的 fd number。
+    /// @errors fd limit 或 backing OOM 返回稳定分类。
+    pub(crate) fn reserve_received(
+        &mut self,
+        file: Arc<OpenFileDescription>,
+        cloexec: bool,
+        limit: usize,
+    ) -> Result<usize, FileDescriptorError> {
+        self.slots
+            .insert_with(0, limit, || FileDescriptor::reserved(file, cloexec))
+            .map_err(Into::into)
+    }
+
+    /// @description 无分配提交 copyout 已成功的 receive reservation。
+    /// @param fd 仍由当前 recvmsg transaction 唯一拥有的 reserved slot。
+    /// @return 无返回值；重复/错误 publication fail-stop。
+    pub(crate) fn publish_received(&mut self, fd: usize) {
+        let entry = self
+            .slots
+            .get_mut(fd)
+            .expect("SCM_RIGHTS reservation disappeared before publication");
+        assert!(!entry.published, "SCM_RIGHTS reservation published twice");
+        entry.ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
+        entry.published = true;
+    }
+
+    /// @description 无分配摘除 copyout 失败的 receive reservation。
+    /// @param fd 仍不可见的 reserved slot。
+    /// @return 独立 cleanup capability，调用者必须在 files lock 外析构。
+    pub(crate) fn cancel_received(&mut self, fd: usize) -> CancelledFileReservation {
+        CancelledFileReservation {
+            _descriptor: self
+                .slots
+                .take_if(fd, |entry| !entry.published)
+                .expect("SCM_RIGHTS reservation disappeared before rollback"),
+        }
+    }
+
     /// @description 原子摘除一个 entry，不在 fd-table owner lock 内执行其 Drop cleanup。
     /// @param fd 待关闭 descriptor。
     /// @return detached entry；空洞或越界返回错误。
     pub(crate) fn detach(&mut self, fd: usize) -> Result<DetachedFileDescriptor, ()> {
-        self.slots.take(fd).map(DetachedFileDescriptor).ok_or(())
+        self.slots
+            .take_if(fd, |entry| entry.published)
+            .map(DetachedFileDescriptor)
+            .ok_or(())
     }
 
     /// @description 从 live Process 原子取走全部 fd entry，供 exit 在 files lock 外关闭。
@@ -211,6 +303,9 @@ impl FileDescriptorTable {
             return Err(FileDescriptorError::Limit);
         }
         let ofd = self.get(old).ok_or(FileDescriptorError::NotFound)?;
+        if self.slots.get(new).is_some_and(|entry| !entry.published) {
+            return Err(FileDescriptorError::Busy);
+        }
         Ok(self
             .slots
             .replace_with(new, limit, || FileDescriptor::new(ofd, cloexec))?
@@ -218,15 +313,20 @@ impl FileDescriptorTable {
     }
 
     pub(crate) fn descriptor_flags(&self, fd: usize) -> Result<u32, ()> {
-        Ok(if self.slots.get(fd).ok_or(())?.cloexec {
-            1
-        } else {
-            0
-        })
+        let entry = self
+            .slots
+            .get(fd)
+            .filter(|entry| entry.published)
+            .ok_or(())?;
+        Ok(if entry.cloexec { 1 } else { 0 })
     }
 
     pub(crate) fn set_descriptor_flags(&mut self, fd: usize, flags: u32) -> Result<(), ()> {
-        self.slots.get_mut(fd).ok_or(())?.cloexec = flags & 1 != 0;
+        self.slots
+            .get_mut(fd)
+            .filter(|entry| entry.published)
+            .ok_or(())?
+            .cloexec = flags & 1 != 0;
         Ok(())
     }
 
@@ -248,7 +348,10 @@ impl FileDescriptorTable {
         while *cursor < self.slots.len() && count < output.len() {
             let fd = *cursor;
             *cursor += 1;
-            if let Some(entry) = self.slots.take_if(fd, |entry| entry.cloexec) {
+            if let Some(entry) = self
+                .slots
+                .take_if(fd, |entry| entry.published && entry.cloexec)
+            {
                 output[count] = Some(DetachedFileDescriptor(entry));
                 count += 1;
             }
@@ -259,10 +362,19 @@ impl FileDescriptorTable {
     /// @description 在 fd-table lock 内复制 live descriptor/OFD identity，供 procfs 锁外解析路径。
     /// @return 按 fd 递增的 `(descriptor, OFD)` 快照；内存不足返回错误。
     pub(crate) fn snapshot(&self) -> Result<Vec<(usize, Arc<OpenFileDescription>)>, ()> {
-        let count = self.slots.iter().count();
+        let count = self
+            .slots
+            .iter()
+            .filter(|(_, entry)| entry.published)
+            .count();
         let mut snapshot = Vec::new();
         snapshot.try_reserve_exact(count).map_err(|_| ())?;
-        snapshot.extend(self.slots.iter().map(|(fd, entry)| (fd, entry.ofd.clone())));
+        snapshot.extend(
+            self.slots
+                .iter()
+                .filter(|(_, entry)| entry.published)
+                .map(|(fd, entry)| (fd, entry.ofd.clone())),
+        );
         Ok(snapshot)
     }
 }

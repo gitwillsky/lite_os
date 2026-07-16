@@ -25,10 +25,14 @@ def main() -> int:
     libgcc = required_path("LITEOS_MUSL_LIBGCC")
     sysroot = Path(os.environ["LITEOS_MUSL_SYSROOT"])
     arguments = sys.argv[1:]
+    query = {"--version", "-dumpmachine", "-dumpversion", "-print-search-dirs"}
+    if arguments and all(argument in query for argument in arguments):
+        return subprocess.run(
+            [str(clang), "--target=riscv64-linux-musl", *arguments]
+        ).returncode
     command = [
         str(clang),
         "--target=riscv64-linux-musl",
-        f"--ld-path={linker}",
         "-nostdlibinc",
         "-isystem",
         str(sysroot / "usr/include"),
@@ -61,23 +65,28 @@ def main() -> int:
         return subprocess.run(
             ["ld.lld", "-r", "-o", output, *object_inputs], executable=str(linker)
         ).returncode
+    if not compiling:
+        command.insert(2, f"--ld-path={linker}")
     if compiling or relocatable:
         command.extend(arguments)
     else:
         library = sysroot / "usr/lib"
-        command.extend(
-            [
-                "-nostdlib",
-                str(library / "Scrt1.o"),
-                str(library / "crti.o"),
-                f"-L{library}",
-                *arguments,
-                "-lc",
-                str(libgcc),
-                str(library / "crtn.o"),
-                "-Wl,-dynamic-linker,/lib/ld-musl-riscv64.so.1",
-            ]
-        )
+        if "-shared" in arguments:
+            command.extend(["-nostdlib", f"-L{library}", *arguments, "-lc", str(libgcc)])
+        else:
+            command.extend(
+                [
+                    "-nostdlib",
+                    str(library / "Scrt1.o"),
+                    str(library / "crti.o"),
+                    f"-L{library}",
+                    *arguments,
+                    "-lc",
+                    str(libgcc),
+                    str(library / "crtn.o"),
+                    "-Wl,-dynamic-linker,/lib/ld-musl-riscv64.so.1",
+                ]
+            )
     return subprocess.run(command).returncode
 
 

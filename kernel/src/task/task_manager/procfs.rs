@@ -210,11 +210,14 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
         let groups = representative
             .supplementary_groups()
             .map_err(|()| crate::fs::FileSystemError::OutOfMemory)?;
+        let (tty_number, terminal_process_group) = representative.terminal_proc_identity(session);
         processes.push(ProcProcessSnapshot {
             pid,
             ppid,
             process_group,
             session,
+            tty_number,
+            terminal_process_group,
             comm: statistics.comm,
             uids,
             gids,

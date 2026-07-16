@@ -10,6 +10,7 @@ pub(crate) enum InodeType {
     SymLink = 2,
     CharacterDevice = 3,
     Fifo = 4,
+    Socket = 5,
 }
 
 /// @description devfs inode 与打开后的 character OFD 共享的标准设备 identity。

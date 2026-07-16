@@ -31,12 +31,6 @@ const fn drm_iowr(number: usize, size: usize) -> usize {
     ioc(IOC_READ | IOC_WRITE, b'd' as usize, number, size)
 }
 
-pub const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_iowr(0xa0, 64);
-pub const DRM_IOCTL_MODE_SETCRTC: usize = drm_iowr(0xa2, 104);
-pub const DRM_IOCTL_MODE_GETCONNECTOR: usize = drm_iowr(0xa7, 80);
-pub const DRM_IOCTL_MODE_ADDFB: usize = drm_iowr(0xae, 28);
-pub const DRM_IOCTL_MODE_RMFB: usize = drm_iowr(0xaf, 4);
-pub const DRM_IOCTL_MODE_DIRTYFB: usize = drm_iowr(0xb1, 24);
 pub const DRM_IOCTL_MODE_CREATE_DUMB: usize = drm_iowr(0xb2, 32);
 pub const DRM_IOCTL_MODE_MAP_DUMB: usize = drm_iowr(0xb3, 16);
 pub const DRM_IOCTL_MODE_DESTROY_DUMB: usize = drm_iowr(0xb4, 4);
@@ -70,16 +64,15 @@ pub struct DrmMode {
 }
 
 #[repr(C)]
-#[derive(Default)]
-pub struct DrmResources {
-    pub framebuffer_ids: u64,
-    pub crtc_ids: u64,
-    pub connector_ids: u64,
-    pub encoder_ids: u64,
-    pub framebuffer_count: u32,
-    pub crtc_count: u32,
-    pub connector_count: u32,
-    pub encoder_count: u32,
+pub struct LibDrmResources {
+    pub framebuffer_count: i32,
+    pub framebuffer_ids: *mut u32,
+    pub crtc_count: i32,
+    pub crtc_ids: *mut u32,
+    pub connector_count: i32,
+    pub connector_ids: *mut u32,
+    pub encoder_count: i32,
+    pub encoder_ids: *mut u32,
     pub min_width: u32,
     pub max_width: u32,
     pub min_height: u32,
@@ -87,38 +80,22 @@ pub struct DrmResources {
 }
 
 #[repr(C)]
-#[derive(Default)]
-pub struct DrmConnector {
-    pub encoder_ids: u64,
-    pub modes: u64,
-    pub properties: u64,
-    pub property_values: u64,
-    pub mode_count: u32,
-    pub property_count: u32,
-    pub encoder_count: u32,
-    pub encoder_id: u32,
+pub struct LibDrmConnector {
     pub connector_id: u32,
+    pub encoder_id: u32,
     pub connector_type: u32,
     pub connector_type_id: u32,
     pub connection: u32,
     pub width_mm: u32,
     pub height_mm: u32,
     pub subpixel: u32,
-    pub padding: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-pub struct DrmCrtc {
-    pub connectors: u64,
-    pub connector_count: u32,
-    pub crtc_id: u32,
-    pub framebuffer_id: u32,
-    pub x: u32,
-    pub y: u32,
-    pub gamma_size: u32,
-    pub mode_valid: u32,
-    pub mode: DrmMode,
+    pub mode_count: i32,
+    pub modes: *mut DrmMode,
+    pub property_count: i32,
+    pub properties: *mut u32,
+    pub property_values: *mut u64,
+    pub encoder_count: i32,
+    pub encoders: *mut u32,
 }
 
 #[repr(C)]
@@ -139,27 +116,6 @@ pub struct DrmDumbMap {
     pub handle: u32,
     pub padding: u32,
     pub offset: u64,
-}
-
-#[repr(C)]
-#[derive(Default)]
-pub struct DrmFramebuffer {
-    pub framebuffer_id: u32,
-    pub width: u32,
-    pub height: u32,
-    pub pitch: u32,
-    pub bpp: u32,
-    pub depth: u32,
-    pub handle: u32,
-}
-
-#[repr(C)]
-pub struct DrmDirty {
-    pub framebuffer_id: u32,
-    pub flags: u32,
-    pub color: u32,
-    pub clip_count: u32,
-    pub clips: u64,
 }
 
 #[repr(C)]
@@ -222,11 +178,9 @@ pub struct SockaddrNl {
 }
 
 const _: () = assert!(core::mem::size_of::<DrmMode>() == 68);
-const _: () = assert!(core::mem::size_of::<DrmResources>() == 64);
-const _: () = assert!(core::mem::size_of::<DrmConnector>() == 80);
-const _: () = assert!(core::mem::size_of::<DrmCrtc>() == 104);
+const _: () = assert!(core::mem::size_of::<LibDrmResources>() == 80);
+const _: () = assert!(core::mem::size_of::<LibDrmConnector>() == 88);
 const _: () = assert!(core::mem::size_of::<DrmDumbCreate>() == 32);
-const _: () = assert!(core::mem::size_of::<DrmDirty>() == 24);
 const _: () = assert!(core::mem::size_of::<InputEvent>() == 24);
 const _: () = assert!(core::mem::size_of::<InputAbsInfo>() == 24);
 
@@ -265,6 +219,38 @@ unsafe extern "C" {
     pub fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     pub fn _exit(status: c_int) -> !;
     pub fn __errno_location() -> *mut c_int;
+    pub fn drmIoctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;
+    pub fn drmModeGetResources(fd: c_int) -> *mut LibDrmResources;
+    pub fn drmModeFreeResources(resources: *mut LibDrmResources);
+    pub fn drmModeGetConnector(fd: c_int, connector_id: u32) -> *mut LibDrmConnector;
+    pub fn drmModeFreeConnector(connector: *mut LibDrmConnector);
+    pub fn drmModeAddFB(
+        fd: c_int,
+        width: u32,
+        height: u32,
+        depth: u8,
+        bits_per_pixel: u8,
+        pitch: u32,
+        handle: u32,
+        framebuffer_id: *mut u32,
+    ) -> c_int;
+    pub fn drmModeRmFB(fd: c_int, framebuffer_id: u32) -> c_int;
+    pub fn drmModeDirtyFB(
+        fd: c_int,
+        framebuffer_id: u32,
+        clips: *mut DrmClip,
+        clip_count: u32,
+    ) -> c_int;
+    pub fn drmModeSetCrtc(
+        fd: c_int,
+        crtc_id: u32,
+        framebuffer_id: u32,
+        x: u32,
+        y: u32,
+        connectors: *mut u32,
+        connector_count: c_int,
+        mode: *mut DrmMode,
+    ) -> c_int;
 }
 
 pub fn errno() -> c_int {

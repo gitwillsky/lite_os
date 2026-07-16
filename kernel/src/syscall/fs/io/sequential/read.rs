@@ -303,7 +303,17 @@ pub(super) fn read_descriptor(
                 let mut events = [crate::input::InputEvent::default(); 16];
                 let mut consumed = 0usize;
                 loop {
-                    let available = file.readable_count().min(maximum - consumed);
+                    let available = match file.readable_count() {
+                        Ok(readable) => readable.min(maximum - consumed),
+                        Err(crate::input::InputError::Revoked) => {
+                            return if consumed == 0 {
+                                -errno::ENODEV
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                        Err(_) => unreachable!("readable evdev state has no other failure"),
+                    };
                     if available == 0 {
                         if consumed != 0 || consumed == maximum {
                             break;
@@ -332,7 +342,17 @@ pub(super) fn read_descriptor(
                         };
                     }
                     // 2. 并发 reader 可能先消费同一 OFD queue，因此只提交实际取得的 events。
-                    let read = file.read(&mut events[..requested]);
+                    let read = match file.read(&mut events[..requested]) {
+                        Ok(read) => read,
+                        Err(crate::input::InputError::Revoked) => {
+                            return if consumed == 0 {
+                                -errno::ENODEV
+                            } else {
+                                cursor.completed() as isize
+                            };
+                        }
+                        Err(_) => unreachable!("evdev queue read has no other failure"),
+                    };
                     if read == 0 {
                         if consumed != 0 {
                             break;

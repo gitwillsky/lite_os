@@ -82,6 +82,8 @@ pub(crate) const EALREADY: isize = 114;
 pub(crate) const EINPROGRESS: isize = 115;
 pub(crate) const ENOTCONN: isize = 107;
 pub(crate) const EISCONN: isize = 106;
+/// real-UID SCM_RIGHTS inflight 已达到 RLIMIT_NOFILE resource bound。
+pub(crate) const ETOOMANYREFS: isize = 109;
 /// 已建立连接被 peer reset。
 pub(crate) const ECONNRESET: isize = 104;
 pub(crate) const ECONNREFUSED: isize = 111;

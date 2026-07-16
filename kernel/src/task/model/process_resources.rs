@@ -23,6 +23,13 @@ impl TaskControlBlock {
         self.process.terminal.lock().clone()
     }
 
+    /// @description 投影当前 Process controlling terminal 的 Linux proc stat identity。
+    /// @param session process graph 唯一拥有的当前 SID。
+    /// @return `(tty_nr, tpgid)`；handle 未控制该 session 时为 `(0, -1)`。
+    pub(crate) fn terminal_proc_identity(&self, session: usize) -> (u32, isize) {
+        self.process.terminal.lock().proc_identity(session)
+    }
+
     /// @description 在成功 TIOCSCTTY 后原子替换 Process controlling Terminal。
     /// @param terminal 已由 Terminal owner 接受当前 session 的新 identity。
     /// @return 无返回值；后续 fork 与 `/dev/tty` lookup 观察同一 Arc。

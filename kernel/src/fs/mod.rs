@@ -20,10 +20,10 @@ pub(crate) use devpts::DevPtsFileSystem;
 pub(crate) use epoll::{Epoll, EpollChange, EpollChangeError, EpollEvent};
 pub(crate) use ext2::Ext2FileSystem;
 pub(crate) use file::{
-    CharacterDevice, Console, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
-    KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE, O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY,
-    O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind, Terminal, TerminalAccess, TerminalRead,
-    TerminalReadMode,
+    CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
+    FileDescriptorError, FileDescriptorTable, KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE,
+    O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind,
+    Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
 };
 pub(crate) use inode::{
     DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType, StorageWriter,
