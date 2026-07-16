@@ -1,0 +1,66 @@
+README.md
+  s_dd5bfa84b90cfd::t_dd95b7827e4379 17
+docs/architecture-contract.md
+  s_dd5bfa84b90cfd::t_0664f4472adeec 63,146-148,196
+docs/architecture-contract/display-terminal.md
+  s_dd5bfa84b90cfd::t_a84c98f173aa4c 29
+docs/architecture-interface.txt
+  s_dd5bfa84b90cfd::t_4bd87ec7918963 2343,2345-2350,2425,2724,2832,2841,2849,2952,3001-3045
+docs/architecture.md
+  s_dd5bfa84b90cfd::t_397113b0264a16 85
+docs/syscall-support.md
+  s_dd5bfa84b90cfd::t_939b3f11111175 79-80
+kernel/src/syscall/mod.rs
+  s_dd5bfa84b90cfd::t_f77e795e091f4d 185-191
+kernel/src/syscall/timer.rs
+  s_dd5bfa84b90cfd::t_1fb28ba76f5985 6-8,85-93,126-128,131-134,138-141,352
+kernel/src/syscall/timer/posix.rs
+  s_dd5bfa84b90cfd::t_7e034e5d6f593f 1-187
+kernel/src/task/mod.rs
+  s_dd5bfa84b90cfd::t_93041b8185f51f 29-33
+kernel/src/task/model/process_exec.rs
+  s_dd5bfa84b90cfd::t_3af54b4f030ddb 51-53
+kernel/src/task/model/signal_state.rs
+  s_dd5bfa84b90cfd::t_75249b51a40054 37,50,63,77,91,105,118,130-145,158-163
+kernel/src/task/task_manager.rs
+  s_dd5bfa84b90cfd::t_7d92935e352681 36,44,70-71,126-128,161
+kernel/src/task/task_manager/deferred.rs
+  s_dd5bfa84b90cfd::t_42e18ed52c5805 13-18,24,26,28,30,33,35,38-66,135,139
+kernel/src/task/task_manager/process_exit.rs
+  s_dd5bfa84b90cfd::t_d3e5e19712f156 291
+kernel/src/task/task_manager/signal.rs
+  s_dd5bfa84b90cfd::t_ec8d463a466fa5 69-78
+kernel/src/task/task_manager/timer_queue.rs
+  s_dd5bfa84b90cfd::t_df99b54634dd6f 1-524
+syscall-abi/src/lib.rs
+  s_dd5bfa84b90cfd::t_60ad085b96bf09 62-66
+user/liteos-terminal/src/model.rs
+  s_dd5bfa84b90cfd::t_3aebaba891983d 145,208,255
+user/liteos-terminal/src/model/parser.rs
+  s_dd5bfa84b90cfd::t_c3987b6607a2b4 145-148,221,315-320
+user/liteos-terminal/src/reactor.rs
+  s_dd5bfa84b90cfd::t_29fe3943adc766 218-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "aecf9f55ebce6a3f9d7b0757683ab356ee94e654",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
