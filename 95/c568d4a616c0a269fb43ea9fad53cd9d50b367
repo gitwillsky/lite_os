@@ -1,0 +1,40 @@
+docs/architecture-contract/display-terminal.md
+  s_dd5bfa84b90cfd::t_f7bc1e02cff38a 30
+docs/architecture/display-terminal.md
+  s_dd5bfa84b90cfd::t_e4fc3b4a4af703 31,36
+docs/phase-60-display-session.md
+  s_dd5bfa84b90cfd::t_f4c63916d7de14 31
+user/liteos-2d/src/display.rs
+  s_dd5bfa84b90cfd::t_b42d2ad8fb767a 4,8-10,19-21,123-129,306,343-346
+user/liteos-2d/src/display/damage.rs
+  s_dd5bfa84b90cfd::t_cb68b7e368c165 1-282
+user/liteos-2d/src/ffi.rs
+  s_dd5bfa84b90cfd::t_16d27ad7b5f42e 5,167-168,194-201
+user/liteos-2d/src/lib.rs
+  s_dd5bfa84b90cfd::t_aeb761e820cde4 7
+user/liteos-2d/src/presenter.rs
+  s_dd5bfa84b90cfd::t_d957651384db0e 1-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "95c568d4a616c0a269fb43ea9fad53cd9d50b367",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
