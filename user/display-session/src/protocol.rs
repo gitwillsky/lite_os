@@ -9,10 +9,7 @@ pub const SERVER_SEAT_OPENED: u16 = 0x8001;
 pub const SERVER_SEAT_CLOSED: u16 = 0x8002;
 pub const SERVER_DEVICE_OPENED: u16 = 0x8003;
 pub const SERVER_DEVICE_CLOSED: u16 = 0x8004;
-pub const SERVER_DISABLE_SEAT: u16 = 0x8005;
-pub const SERVER_ENABLE_SEAT: u16 = 0x8006;
 pub const SERVER_PONG: u16 = 0x8007;
-pub const SERVER_SEAT_DISABLED: u16 = 0x8009;
 pub const SERVER_ERROR: u16 = 0xffff;
 pub const MAX_PATH: usize = 256;
 

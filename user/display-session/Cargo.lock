@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "display-session"
 version = "0.1.0"
+dependencies = [
+ "service-activation",
+]
+
+[[package]]
+name = "service-activation"
+version = "0.1.0"

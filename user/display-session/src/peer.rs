@@ -1,16 +1,37 @@
 use crate::ffi;
 
+const COMPOSITOR_COMM: &[u8] = b"liteui-composit";
+const SESSION_COMM: &[u8] = b"liteui-session";
+
 #[derive(Clone, Copy)]
 pub struct ProcessStat {
-    pub comm: [u8; 15],
-    pub comm_length: usize,
-    pub parent: i32,
-    pub group: i32,
-    pub tty: i32,
-    pub terminal_group: i32,
+    comm: [u8; 15],
+    comm_length: usize,
+    parent: i32,
 }
 
-pub fn read_stat(pid: i32) -> Option<ProcessStat> {
+/// Authorizes only the root compositor directly spawned by init's session owner.
+///
+/// The Linux comm field is capped at 15 bytes, hence the explicit compositor
+/// truncation. Checking the parent chain prevents an arbitrary root recovery
+/// shell process from acquiring DRM/input authority through the broker.
+pub fn is_controller(uid: u32, pid: i32) -> bool {
+    if uid != 0 {
+        return false;
+    }
+    let Some(compositor) = read_stat(pid) else {
+        return false;
+    };
+    if compositor.name() != COMPOSITOR_COMM || compositor.parent <= 1 {
+        return false;
+    }
+    let Some(session) = read_stat(compositor.parent) else {
+        return false;
+    };
+    session.name() == SESSION_COMM && session.parent == 1
+}
+
+fn read_stat(pid: i32) -> Option<ProcessStat> {
     if pid <= 0 {
         return None;
     }
@@ -19,9 +40,8 @@ pub fn read_stat(pid: i32) -> Option<ProcessStat> {
     path[..prefix.len()].copy_from_slice(prefix);
     let mut length = prefix.len();
     length += decimal(pid as u32, &mut path[length..]);
-    let suffix = b"/stat";
-    path[length..length + suffix.len()].copy_from_slice(suffix);
-    length += suffix.len();
+    path[length..length + 5].copy_from_slice(b"/stat");
+    length += 5;
     path[length] = 0;
     let fd = unsafe { ffi::open(path.as_ptr().cast(), ffi::O_RDONLY | ffi::O_CLOEXEC) };
     if fd < 0 {
@@ -41,77 +61,38 @@ pub fn read_stat(pid: i32) -> Option<ProcessStat> {
         .flatten()
 }
 
-pub fn is_terminal(uid: u32, stat: ProcessStat) -> bool {
-    uid == 0 && stat.parent == 1 && &stat.comm[..stat.comm_length] == b"liteos-terminal"
-}
-
-pub fn is_foreground_descendant(pid: i32, terminal_pid: i32) -> bool {
-    let Some(peer) = read_stat(pid) else {
-        return false;
-    };
-    if peer.tty == 0 || peer.group <= 0 || peer.group != peer.terminal_group {
-        return false;
-    }
-    let mut current = pid;
-    for _ in 0..64 {
-        if current == terminal_pid {
-            return true;
-        }
-        let Some(stat) = read_stat(current) else {
-            return false;
-        };
-        if stat.parent <= 1 || stat.parent == current {
-            return stat.parent == terminal_pid;
-        }
-        current = stat.parent;
-    }
-    false
-}
-
 fn parse(bytes: &[u8]) -> Option<ProcessStat> {
     let open = bytes.iter().position(|byte| *byte == b'(')?;
     let close = bytes.iter().rposition(|byte| *byte == b')')?;
-    if close <= open || bytes.get(close + 1) != Some(&b' ') {
-        return None;
-    }
     let name = bytes.get(open + 1..close)?;
-    if name.len() > 15 {
+    if name.len() > 15 || bytes.get(close + 1) != Some(&b' ') {
         return None;
     }
+    let mut fields = bytes[close + 2..].split(u8::is_ascii_whitespace);
+    fields.next()?;
+    let parent = number(fields.next()?)?;
     let mut comm = [0u8; 15];
     comm[..name.len()].copy_from_slice(name);
-    let mut fields = bytes[close + 2..].split(|byte| byte.is_ascii_whitespace());
-    fields.next()?;
     Some(ProcessStat {
         comm,
         comm_length: name.len(),
-        parent: number(fields.next()?)?,
-        group: number(fields.next()?)?,
-        tty: {
-            fields.next()?;
-            number(fields.next()?)?
-        },
-        terminal_group: number(fields.next()?)?,
+        parent,
     })
 }
 
+impl ProcessStat {
+    fn name(&self) -> &[u8] {
+        &self.comm[..self.comm_length]
+    }
+}
+
 fn number(bytes: &[u8]) -> Option<i32> {
-    let (negative, digits) = if bytes.first() == Some(&b'-') {
-        (true, &bytes[1..])
-    } else {
-        (false, bytes)
-    };
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+    if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let value = digits.iter().try_fold(0i32, |value, byte| {
+    bytes.iter().try_fold(0i32, |value, byte| {
         value.checked_mul(10)?.checked_add(i32::from(byte - b'0'))
-    })?;
-    if negative {
-        value.checked_neg()
-    } else {
-        Some(value)
-    }
+    })
 }
 
 fn decimal(mut value: u32, output: &mut [u8]) -> usize {

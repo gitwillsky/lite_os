@@ -9,17 +9,13 @@ const OUTPUT_SLOTS: usize = 16;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Identity {
     Unknown,
-    Terminal,
-    Graphics,
+    Controller,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
     New,
-    PendingOpen,
     Active,
-    Disabling,
-    Inactive,
     Closed,
 }
 

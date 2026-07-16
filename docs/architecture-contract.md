@@ -7,6 +7,7 @@
 | 领域 | 权威文件 | 覆盖范围 |
 |---|---|---|
 | Display / input / terminal | [architecture-contract/display-terminal.md](architecture-contract/display-terminal.md) | DeviceBacking、display/DRM、kobject、evdev/PTY 与 Rust terminal capability 证明 |
+| Desktop runtime | [architecture-contract/desktop.md](architecture-contract/desktop.md) | session、compositor、LiteUI core、QuickJS host、应用事务与 APK profile |
 | 机器读取 contract | 本文件第 2–4 节 | 正向依赖、状态 owner、持久 FallibleMap 精确清单、source-size review；checker 只从这里读取 |
 | 其余 interface contract | 本文件第 5 节 | 尚未迁移的领域；迁移时必须删除原文，禁止双份 contract |
 
@@ -14,7 +15,7 @@
 
 - `bootloader` 是独立 M-mode domain，不依赖 kernel 或 userspace。
 - `syscall-abi` 只保存 kernel dispatcher 接入的 Linux/riscv64 ABI 常量，不依赖实现 crate。
-- 产品 userspace 只有固定上游 musl + BusyBox rootfs、经同一动态 musl CRT/libc seam 链接的精确登记 Rust consumers（`display-session`、`liteos-terminal` 与 `liteos-2d`）、只承载 libseat client lifecycle 的 `display-client` rlib，以及复用同一 runtime 的单 ELF `liteos-stress`；禁止自有 syscall/runtime/init 或第二条默认镜像路径。
+- 产品 userspace 只有固定上游 musl + BusyBox rootfs、同一动态 musl CRT/libc seam 链接的精确登记 Rust crates（`display-client`、`display-session`、`liteui-core`、`liteui-compositor`、`liteui-host`、`liteui-session`、`service-activation`、`terminal-service`）、固定无 `quickjs-libc` 的 QuickJS engine、script-free LiteUI APK profile，以及复用同一 runtime 的单 ELF `liteos-stress`；禁止自有 syscall/runtime/init 或第二条默认镜像路径。
 - kernel 的 `main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。
 
 ## 2. Kernel dependency contract
@@ -155,7 +156,11 @@
 
 ## 4. Source size contract
 
-生产 Rust 源文件采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致验证失败；超过 1200 行默认拒绝。reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam，选择拆成深 module，或在下表登记精确审查额度。登记是超过 1200 行的唯一例外入口，也可用于记录 601–1200 行文件的审查结论；必须同时给出状态 owner、不可立即拆分的原因与消除条件。每个登记额度就是该文件的硬上限，只能随重构下降，不得为功能开发上调；文件低于登记额度时 checker 强制同步下调。行数只是退化信号，禁止按行数机械切片或建立 pass-through module。
+生产 kernel/bootloader Rust 源文件采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致验证失败；超过 1200 行默认拒绝。reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam，选择拆成深 module，或在下表登记精确审查额度。登记是超过 1200 行的唯一例外入口，也可用于记录 601–1200 行文件的审查结论；必须同时给出状态 owner、不可立即拆分的原因与消除条件。每个登记额度就是该文件的硬上限，只能随重构下降，不得为功能开发上调；文件低于登记额度时 checker 强制同步下调。行数只是退化信号，禁止按行数机械切片或建立 pass-through module。
+
+`user/` 下全部 Rust/C/header/JS/TypeScript/CSS source 采用单文件 600 行硬上限，不提供 review
+例外。超过上限必须按状态 owner/interface 拆分；checker 递归扫描实际文件集，避免新 crate、
+应用或 native bridge 绕过围栏。
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|

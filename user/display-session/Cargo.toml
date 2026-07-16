@@ -7,6 +7,9 @@ publish = false
 [lib]
 crate-type = ["staticlib"]
 
+[dependencies]
+service-activation = { path = "../service-activation" }
+
 [profile.release]
 panic = "abort"
 opt-level = "s"

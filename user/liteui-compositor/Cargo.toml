@@ -1,0 +1,19 @@
+[package]
+name = "liteui-compositor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+display-client = { path = "../display-client" }
+liteui-core = { path = "../liteui-core" }
+service-activation = { path = "../service-activation" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1

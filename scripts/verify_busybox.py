@@ -17,6 +17,8 @@ from pathlib import Path
 
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
+from liteui_package import build_calculator_apk, build_system_shell_apk
+from quickjs_cache import build_quickjs, build_quickjs_bridge
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -60,7 +62,7 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 6
+ROOTFS_RECIPE_VERSION = 7
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -749,8 +751,10 @@ def build_rust_user_program(
     recipe_version: int,
     extra_inputs: tuple[Path, ...] = (),
     libraries: tuple[Path, ...] = (),
+    static_archives: tuple[Path, ...] = (),
+    system_libraries: tuple[str, ...] = (),
 ) -> Path:
-    """经唯一 Cargo→musl PIE 路径构建一个 dependency-free Rust userspace 程序。"""
+    """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序。"""
     crate = ROOT / "user" / crate_name
     sources = tuple(sorted((crate / "src").rglob("*.rs")))
     cargo = shutil.which("cargo")
@@ -775,6 +779,10 @@ def build_rust_user_program(
             for source in extra_inputs
         },
         "library_sha256": {library.name: sha256(library) for library in libraries},
+        "static_archive_sha256": {
+            str(archive): sha256(archive) for archive in static_archives
+        },
+        "system_libraries": system_libraries,
     }
     entry = WORK / "rust-user-programs" / fingerprint(payload)
     required_libraries = tuple(library.name for library in libraries) + ("libc.so",)
@@ -819,8 +827,10 @@ def build_rust_user_program(
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
                 str(archive),
+                *(str(archive) for archive in static_archives),
                 *(f"-L{library.parent}" for library in libraries),
                 *(f"-l{library.name.removeprefix('lib').split('.so')[0]}" for library in libraries),
+                *(f"-l{library}" for library in system_libraries),
                 "-fPIE",
                 "-pie",
                 "-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack",
@@ -846,19 +856,6 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def build_display_terminal(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
-    """构建 rootfs 唯一 DRM/input/PTY terminal consumer。"""
-    return build_rust_user_program(
-        musl,
-        "liteos-terminal",
-        "liteos-terminal",
-        "display-terminal",
-        3,
-        (*display_client_inputs(), ROOT / "assets/fonts/liteos-terminal.a8"),
-        (stack.libseat, stack.libdrm),
-    )
-
-
 def build_display_session(musl: MuslCachePaths) -> Path:
     """构建 seat0 capability transition 的唯一 userspace owner。"""
     return build_rust_user_program(
@@ -866,26 +863,91 @@ def build_display_session(musl: MuslCachePaths) -> Path:
         "display-session",
         "display-session",
         "display-session",
+        2,
+        service_activation_inputs(),
+    )
+
+
+def build_compositor(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
+    """构建图形 session 的唯一 double-buffered compositor owner。"""
+    return build_rust_user_program(
+        musl,
+        "liteui-compositor",
+        "liteui-compositor",
+        "liteui-compositor",
+        2,
+        (
+            *display_client_inputs(),
+            *liteui_core_inputs(),
+            *service_activation_inputs(),
+            ROOT / "assets/fonts/liteos-terminal.a8",
+        ),
+        (stack.libseat, stack.libdrm),
+    )
+
+
+def build_liteui_session(musl: MuslCachePaths) -> Path:
+    """构建图形 generation 与进程 failure domain 的唯一 owner。"""
+    return build_rust_user_program(
+        musl,
+        "liteui-session",
+        "liteui-session",
+        "liteui-session",
         1,
     )
 
 
-def build_2d_client(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
-    """构建首个可独立退出的 double-buffered DRM graphics consumer。"""
+def build_terminal_service(musl: MuslCachePaths) -> Path:
+    """构建只拥有 PTY/ANSI model 的非特权图形 terminal service。"""
     return build_rust_user_program(
         musl,
-        "liteos-2d",
-        "liteos-2d",
-        "display-2d-client",
+        "terminal-service",
+        "terminal-service",
+        "terminal-service",
         1,
-        display_client_inputs(),
-        (stack.libseat, stack.libdrm),
+    )
+
+
+def build_liteui_host(musl: MuslCachePaths) -> Path:
+    """构建一个 application/process/runtime 的 capability-free QuickJS host。"""
+    quickjs = build_quickjs(musl)
+    bridge_source = ROOT / "user/liteui-host/native/bridge.c"
+    bridge = build_quickjs_bridge(musl, quickjs, bridge_source)
+    return build_rust_user_program(
+        musl,
+        "liteui-host",
+        "liteui-host",
+        "liteui-host",
+        1,
+        (bridge_source, ROOT / "scripts/quickjs_cache.py"),
+        static_archives=(bridge, quickjs.library),
+        system_libraries=("m",),
     )
 
 
 def display_client_inputs() -> tuple[Path, ...]:
     """返回共享 libseat lifecycle crate 的完整、精确构建输入。"""
     crate = ROOT / "user/display-client"
+    return (
+        crate / "Cargo.toml",
+        crate / "Cargo.lock",
+        *sorted((crate / "src").rglob("*.rs")),
+    )
+
+
+def liteui_core_inputs() -> tuple[Path, ...]:
+    """返回无 I/O LiteUI deep module 的完整、精确构建输入。"""
+    crate = ROOT / "user/liteui-core"
+    return (
+        crate / "Cargo.toml",
+        crate / "Cargo.lock",
+        *sorted((crate / "src").rglob("*.rs")),
+    )
+
+
+def service_activation_inputs() -> tuple[Path, ...]:
+    """返回两个 activated listener consumers 共用的完整契约输入。"""
+    crate = ROOT / "user/service-activation"
     return (
         crate / "Cargo.toml",
         crate / "Cargo.lock",
@@ -966,9 +1028,14 @@ def create_image(
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_session = build_display_session(musl)
     display_stack = build_display_stack(musl)
-    display_terminal = build_display_terminal(musl, display_stack)
-    display_2d = build_2d_client(musl, display_stack)
+    compositor = build_compositor(musl, display_stack)
+    liteui_host = build_liteui_host(musl)
+    liteui_session = build_liteui_session(musl)
+    terminal_service = build_terminal_service(musl)
     stress_tools = build_stress_tools(musl)
+    bootstrap = cached_apk_bootstrap()
+    system_shell = build_system_shell_apk(bootstrap, WORK / "liteui-apks")
+    calculator = build_calculator_apk(bootstrap, WORK / "liteui-apks")
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
@@ -977,19 +1044,39 @@ def create_image(
         "mkdir /etc/terminfo/l",
         "mkdir /lib",
         "mkdir /run",
+        "mkdir /run/liteui",
+        "set_inode_field /run/liteui uid 100",
+        "set_inode_field /run/liteui gid 100",
+        "set_inode_field /run/liteui mode 040770",
         "mkdir /root",
         "set_inode_field /root mode 040700",
+        "mkdir /home",
+        "mkdir /home/liteui-terminal",
+        "set_inode_field /home/liteui-terminal uid 101",
+        "set_inode_field /home/liteui-terminal gid 100",
+        "set_inode_field /home/liteui-terminal mode 040700",
         "mkdir /tmp",
         "set_inode_field /tmp mode 041777",
         "mkdir /usr",
         "mkdir /usr/lib",
         "mkdir /usr/share",
         "mkdir /usr/share/udhcpc",
+        "mkdir /var",
+        "mkdir /var/cache",
+        "mkdir /var/cache/liteui",
+        "set_inode_field /var/cache/liteui mode 040755",
+        "mkdir /var/cache/liteui/100",
+        "set_inode_field /var/cache/liteui/100 uid 100",
+        "set_inode_field /var/cache/liteui/100 gid 100",
+        "set_inode_field /var/cache/liteui/100 mode 040700",
+        "mkdir /var/cache/liteui/102",
+        "set_inode_field /var/cache/liteui/102 uid 102",
+        "set_inode_field /var/cache/liteui/102 gid 100",
+        "set_inode_field /var/cache/liteui/102 mode 040700",
+        "mkdir /var/empty",
         f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
-        f"write {ROOT / 'user' / 'display-session-guard'} /bin/display-session-guard",
-        "set_inode_field /bin/display-session-guard mode 0100755",
         f"write {ROOT / 'user' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -1008,10 +1095,14 @@ def create_image(
         f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
         f"write {dynamic_probe} /bin/dynamic-smoke",
         "set_inode_field /bin/dynamic-smoke mode 0100755",
-        f"write {display_terminal} /bin/liteos-terminal",
-        "set_inode_field /bin/liteos-terminal mode 0100755",
-        f"write {display_2d} /bin/liteos-2d",
-        "set_inode_field /bin/liteos-2d mode 0100755",
+        f"write {compositor} /bin/liteui-compositor",
+        "set_inode_field /bin/liteui-compositor mode 0100755",
+        f"write {liteui_host} /bin/liteui-host",
+        "set_inode_field /bin/liteui-host mode 0100755",
+        f"write {liteui_session} /bin/liteui-session",
+        "set_inode_field /bin/liteui-session mode 0100755",
+        f"write {terminal_service} /bin/terminal-service",
+        "set_inode_field /bin/terminal-service mode 0100755",
         f"write {display_session} /bin/display-session",
         "set_inode_field /bin/display-session mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
@@ -1058,6 +1149,7 @@ def create_image(
             BUSYBOX_LINKS,
             STRESS_LINKS,
             FORBIDDEN_BOOT_MARKERS,
+            (system_shell, calculator),
         )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
@@ -1110,7 +1202,13 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    for path in ("/bin/display-session", "/bin/liteos-terminal", "/bin/liteos-2d"):
+    for path in (
+        "/bin/display-session",
+        "/bin/liteui-compositor",
+        "/bin/liteui-host",
+        "/bin/liteui-session",
+        "/bin/terminal-service",
+    ):
         metadata = run([str(find_debugfs()), "-R", f"stat {path}", str(image)], ROOT)
         if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
             raise RuntimeError(f"BusyBox rootfs lacks registered display program {path}")
@@ -1152,10 +1250,14 @@ def create_published_image(
     dynamic_probe, dynamic_library = build_dynamic_probe(musl)
     display_session = build_display_session(musl)
     display_stack = build_display_stack(musl)
-    display_terminal = build_display_terminal(musl, display_stack)
-    display_2d = build_2d_client(musl, display_stack)
+    compositor = build_compositor(musl, display_stack)
+    liteui_host = build_liteui_host(musl)
+    liteui_session = build_liteui_session(musl)
+    terminal_service = build_terminal_service(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
+    system_shell = build_system_shell_apk(bootstrap, WORK / "liteui-apks")
+    calculator = build_calculator_apk(bootstrap, WORK / "liteui-apks")
     host_openssl = shutil.which("openssl")
     if host_openssl is None:
         raise RuntimeError("host OpenSSL is required to sign the rootfs package")
@@ -1170,8 +1272,10 @@ def create_published_image(
         dynamic_probe,
         dynamic_library,
         display_session,
-        display_terminal,
-        display_2d,
+        compositor,
+        liteui_host,
+        liteui_session,
+        terminal_service,
         display_stack.libseat,
         display_stack.libdrm,
         stress_tools,
@@ -1180,23 +1284,35 @@ def create_published_image(
         bootstrap.ca_certificates_bundle,
         bootstrap.private_key,
         bootstrap.public_key,
+        system_shell,
+        calculator,
         *alpine_keys,
         ROOT / "user/passwd",
         ROOT / "user/group",
         ROOT / "user/inittab",
-        ROOT / "user/display-session-guard",
         ROOT / "user/display-session/Cargo.toml",
         ROOT / "user/display-session/Cargo.lock",
         *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
         *display_client_inputs(),
-        ROOT / "user/liteos-2d/Cargo.toml",
-        ROOT / "user/liteos-2d/Cargo.lock",
-        *sorted((ROOT / "user/liteos-2d/src").rglob("*.rs")),
-        ROOT / "user/liteos-terminal/Cargo.toml",
-        ROOT / "user/liteos-terminal/Cargo.lock",
-        *sorted((ROOT / "user/liteos-terminal/src").rglob("*.rs")),
+        *service_activation_inputs(),
+        ROOT / "user/liteui-compositor/Cargo.toml",
+        ROOT / "user/liteui-compositor/Cargo.lock",
+        *sorted((ROOT / "user/liteui-compositor/src").rglob("*.rs")),
+        *liteui_core_inputs(),
+        ROOT / "user/liteui-host/Cargo.toml",
+        ROOT / "user/liteui-host/Cargo.lock",
+        *sorted((ROOT / "user/liteui-host/src").rglob("*.rs")),
+        ROOT / "user/liteui-host/native/bridge.c",
+        ROOT / "user/liteui-session/Cargo.toml",
+        ROOT / "user/liteui-session/Cargo.lock",
+        *sorted((ROOT / "user/liteui-session/src").rglob("*.rs")),
+        ROOT / "user/terminal-service/Cargo.toml",
+        ROOT / "user/terminal-service/Cargo.lock",
+        *sorted((ROOT / "user/terminal-service/src").rglob("*.rs")),
+        *sorted((ROOT / "user/apps/system-shell/src").iterdir()),
+        *sorted((ROOT / "user/apps/calculator/src").iterdir()),
+        ROOT / "user/apps/runtime/app-runtime.mjs",
         ROOT / "user/liteos-stress.c",
-        ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "assets/terminfo/l/liteos",
         ROOT / "user/liteos.terminfo",
         ROOT / "user/network-service",
@@ -1207,6 +1323,9 @@ def create_published_image(
         ROOT / "scripts/apk_cache.py",
         ROOT / "scripts/apk_package.py",
         ROOT / "scripts/apk_rootfs.py",
+        ROOT / "scripts/liteui_package.py",
+        ROOT / "scripts/quickjs_cache.py",
+        ROOT / "scripts/solidjs_cache.py",
         ROOT / "scripts/ext2_image.py",
         ROOT / "scripts/qemu_gate.py",
         find_mke2fs(),
@@ -1297,7 +1416,6 @@ def main() -> int:
                 ROOT / "user/passwd",
                 ROOT / "user/group",
                 ROOT / "user/inittab",
-                ROOT / "user/display-session-guard",
                 ROOT / "user/display-session/Cargo.toml",
                 ROOT / "user/display-session/Cargo.lock",
                 *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
