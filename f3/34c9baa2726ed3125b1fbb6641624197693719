@@ -1,0 +1,64 @@
+docs/architecture-contract.md
+  s_dd5bfa84b90cfd::t_0398e328e7b53c 78,80-81
+docs/architecture-contract/display-terminal.md
+  s_dd5bfa84b90cfd::t_9c76c6743d22b2 12,17-18,30
+docs/architecture-interface.txt
+  s_dd5bfa84b90cfd::t_f6ec26bf6dacbd 284-286,440,442-449,451-507,509,512,514,572,593,640,642
+docs/architecture/display-terminal.md
+  s_dd5bfa84b90cfd::t_c727acee23d11f 13,16-17,31,36
+docs/phase-60-display-session.md
+  s_dd5bfa84b90cfd::t_bc36728b40cd76 31
+docs/syscall-support.md
+  s_dd5bfa84b90cfd::t_3ad65b7563d1f0 47
+kernel/src/drivers/display.rs
+  s_dd5bfa84b90cfd::t_42364824e19122 57,66,71-75,77-90
+kernel/src/drivers/virtio_gpu.rs
+  s_dd5bfa84b90cfd::t_6c9c4c92dcfde4 17-22,34-36,99,120,185-205,246,250,253-264,268,283-315,326-327,332,334,336,356-367,369-371,383-408,412-418,430-437,448-457,463,471-472,478-480,488-489,494-528,531-532,534,538-542,545-546,548,552-553,555,560-563
+kernel/src/drivers/virtio_gpu/damage.rs
+  s_dd5bfa84b90cfd::t_3e43a0087a7246 1-13,16-38,40,43-51,56,66-76,88-97,99-222,225-228,231-334
+kernel/src/drivers/virtio_gpu/resource.rs
+  s_dd5bfa84b90cfd::t_0a6746e3c2e284 1-586
+kernel/src/drivers/virtio_gpu/wire.rs
+  s_dd5bfa84b90cfd::t_38230726c458d2 19-21
+kernel/src/drivers/virtio_queue.rs
+  s_dd5bfa84b90cfd::t_ae26b2e4ef48dd 163-168
+kernel/src/drm.rs
+  s_dd5bfa84b90cfd::t_1af50362b26a79 49-54,165,511-512,515,522-533,537-538,542
+kernel/src/drm/device.rs
+  s_dd5bfa84b90cfd::t_450141db659556 15-72,103,123,129-147,151,155,200-206,358-359,386-387
+tools/architecture-check/src/main.rs
+  s_dd5bfa84b90cfd::t_71af2d6b77e854 622-623,626-640,642-646,649-650,656-665,671,1370-1401,1478-1487,1509-1537
+user/liteos-2d/src/display.rs
+  s_dd5bfa84b90cfd::t_26e8406137c069 4,8-9,16-79,202-203,207-216,223-258,266,268-292,309-310,465-466,526-538
+user/liteos-2d/src/ffi.rs
+  s_dd5bfa84b90cfd::t_33b0d48b793886 115-123,170,209-214
+user/liteos-2d/src/input.rs
+  s_dd5bfa84b90cfd::t_5d425afc51cd74 94
+user/liteos-2d/src/reactor.rs
+  s_dd5bfa84b90cfd::t_e8273e9f7bc144 64-65,129,138,166,174-176,189,204-209,212-217
+user/liteos-2d/src/scene.rs
+  s_dd5bfa84b90cfd::t_e4a6526cb0f667 83,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f334c9baa2726ed3125b1fbb6641624197693719",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
