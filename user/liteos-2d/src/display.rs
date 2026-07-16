@@ -1,11 +1,13 @@
 use core::{ffi::c_void, ptr};
 
 use crate::{
-    ffi::{self, DrmClip, DrmDumbCreate, DrmDumbMap, DrmMode},
+    ffi::{self, DrmDumbCreate, DrmDumbMap, DrmMode},
     scene::{Rect, Scene},
 };
 
-const MAX_DAMAGE_RECTS: usize = 32;
+mod damage;
+use damage::DamageSet;
+pub(crate) use damage::{DamageRequest, DamageTarget};
 
 struct Buffer {
     framebuffer_id: u32,
@@ -14,69 +16,12 @@ struct Buffer {
     size: usize,
     pitch: usize,
     damage: DamageSet,
+    // OWNER: prepare_damage 把本次像素 snapshot 移入 inflight，直到 presenter completion
+    // 才提交或重新合并；缺失该 owner 会让 worker 阻塞期间到达的新输入被错误 clear。
+    inflight: Option<DamageSet>,
     // DIRTYFB 成功后，inactive resource 已可直接 SET_SCANOUT；缺失该 fact 会在 page-flip
     // 因 EBUSY/EINTR 重试时重复传输相同 geometry damage。
     prepared_for_flip: bool,
-}
-
-#[derive(Clone, Copy)]
-struct DamageSet {
-    rectangles: [Rect; MAX_DAMAGE_RECTS],
-    count: usize,
-}
-
-impl DamageSet {
-    const EMPTY: Self = Self {
-        rectangles: [Rect {
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 0,
-        }; MAX_DAMAGE_RECTS],
-        count: 0,
-    };
-
-    fn push(&mut self, mut rectangle: Rect) {
-        if rectangle.x1 >= rectangle.x2 || rectangle.y1 >= rectangle.y2 {
-            return;
-        }
-        // 1. 先合并相交或相邻区域，避免同一帧重复传输重叠像素。
-        let mut index = 0;
-        while index < self.count {
-            if touches(self.rectangles[index], rectangle) {
-                rectangle = rectangle.union(self.rectangles[index]);
-                self.count -= 1;
-                self.rectangles[index] = self.rectangles[self.count];
-                index = 0;
-            } else {
-                index += 1;
-            }
-        }
-        // 2. 有空位时保留离散矩形，pointer 只传输旧、新光标覆盖的像素。
-        if self.count < MAX_DAMAGE_RECTS {
-            self.rectangles[self.count] = rectangle;
-            self.count += 1;
-            return;
-        }
-        // 3. 固定数组耗尽时合并为单一区域，保持无分配且不丢失 damage。
-        for current in &self.rectangles {
-            rectangle = rectangle.union(*current);
-        }
-        self.rectangles[0] = rectangle;
-        self.count = 1;
-    }
-
-    fn clear(&mut self) {
-        self.count = 0;
-    }
-
-    fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    fn rectangles(&self) -> &[Rect] {
-        &self.rectangles[..self.count]
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -175,7 +120,13 @@ impl Display {
     }
 
     pub fn commit(&mut self, candidate: &mut Candidate) -> Result<(), DisplayError> {
-        if self.flip_pending {
+        if self.flip_pending
+            || self
+                .buffers
+                .iter()
+                .flatten()
+                .any(|buffer| buffer.inflight.is_some())
+        {
             return Err(DisplayError::Transient);
         }
         let framebuffer_id = candidate.buffers[0]
@@ -197,119 +148,8 @@ impl Display {
         Ok(())
     }
 
-    pub fn damage(&mut self, rectangle: Rect) {
-        for buffer in self.buffers.iter_mut().flatten() {
-            buffer.damage.push(rectangle);
-            buffer.prepared_for_flip = false;
-        }
-    }
-
-    pub fn has_active_damage(&self) -> bool {
-        self.buffers[self.front]
-            .as_ref()
-            .is_some_and(|buffer| !buffer.damage.is_empty())
-    }
-
-    pub fn has_flip_damage(&self) -> bool {
-        self.buffers[self.front ^ 1]
-            .as_ref()
-            .is_some_and(|buffer| !buffer.damage.is_empty())
-    }
-
     pub fn flip_pending(&self) -> bool {
         self.flip_pending
-    }
-
-    pub fn present_damage(&mut self, scene: &Scene) -> Result<bool, ()> {
-        if self.flip_pending {
-            return Ok(false);
-        }
-        let Some(buffer) = self.buffers[self.front].as_mut() else {
-            return Err(());
-        };
-        if buffer.damage.is_empty() {
-            return Ok(false);
-        }
-        let damage = buffer.damage;
-        let mut clips = [DrmClip::default(); MAX_DAMAGE_RECTS];
-        for (index, rectangle) in damage.rectangles().iter().copied().enumerate() {
-            scene.render(buffer.pixels, buffer.pitch, rectangle);
-            clips[index] = clip(rectangle)?;
-        }
-        if unsafe {
-            ffi::drmModeDirtyFB(
-                self.fd,
-                buffer.framebuffer_id,
-                clips.as_mut_ptr(),
-                damage.count as u32,
-            )
-        } < 0
-        {
-            return if matches!(ffi::errno(), ffi::EBUSY | ffi::EINTR) {
-                Ok(false)
-            } else {
-                Err(())
-            };
-        }
-        buffer.damage.clear();
-        Ok(true)
-    }
-
-    pub fn present_flip(&mut self, scene: &Scene) -> Result<bool, ()> {
-        if self.flip_pending {
-            return Ok(false);
-        }
-        let back = self.front ^ 1;
-        let Some(buffer) = self.buffers[back].as_mut() else {
-            return Err(());
-        };
-        if buffer.damage.is_empty() {
-            return Ok(false);
-        }
-        let damage = buffer.damage;
-        if !buffer.prepared_for_flip {
-            let mut clips = [DrmClip::default(); MAX_DAMAGE_RECTS];
-            for (index, rectangle) in damage.rectangles().iter().copied().enumerate() {
-                scene.render(buffer.pixels, buffer.pitch, rectangle);
-                clips[index] = clip(rectangle)?;
-            }
-            if unsafe {
-                ffi::drmModeDirtyFB(
-                    self.fd,
-                    buffer.framebuffer_id,
-                    clips.as_mut_ptr(),
-                    damage.count as u32,
-                )
-            } < 0
-            {
-                return if matches!(ffi::errno(), ffi::EBUSY | ffi::EINTR) {
-                    Ok(false)
-                } else {
-                    Err(())
-                };
-            }
-            buffer.prepared_for_flip = true;
-        }
-        if unsafe {
-            ffi::drmModePageFlip(
-                self.fd,
-                self.crtc_id,
-                buffer.framebuffer_id,
-                ffi::DRM_MODE_PAGE_FLIP_EVENT,
-                ptr::null_mut(),
-            )
-        } < 0
-        {
-            return if matches!(ffi::errno(), ffi::EBUSY | ffi::EINTR | ffi::EINVAL) {
-                Ok(false)
-            } else {
-                Err(())
-            };
-        }
-        buffer.damage.clear();
-        buffer.prepared_for_flip = false;
-        self.flip_pending = true;
-        Ok(true)
     }
 
     pub fn read_events(&mut self) -> Result<(), ()> {
@@ -463,6 +303,7 @@ fn create_buffer(fd: i32, mode: DrmMode, scene: &Scene) -> Result<Buffer, Displa
         size,
         pitch: create.pitch as usize,
         damage: DamageSet::EMPTY,
+        inflight: None,
         prepared_for_flip: false,
     };
     scene.render(
@@ -499,6 +340,10 @@ fn set_crtc(
 
 fn cleanup_pair(fd: i32, pair: [Option<Buffer>; 2]) {
     for buffer in pair.into_iter().flatten() {
+        assert!(
+            buffer.inflight.is_none(),
+            "framebuffer destroyed while presenter still owns damage"
+        );
         unsafe { ffi::drmModeRmFB(fd, buffer.framebuffer_id) };
         unsafe { ffi::munmap(buffer.pixels.cast::<c_void>(), buffer.size) };
         destroy_handle(fd, buffer.handle);
@@ -522,17 +367,4 @@ fn system_error() -> DisplayError {
         ffi::ENOMEM => DisplayError::OutOfMemory,
         _ => DisplayError::System,
     }
-}
-
-fn clip(rectangle: Rect) -> Result<DrmClip, ()> {
-    Ok(DrmClip {
-        x1: u16::try_from(rectangle.x1).map_err(|_| ())?,
-        y1: u16::try_from(rectangle.y1).map_err(|_| ())?,
-        x2: u16::try_from(rectangle.x2).map_err(|_| ())?,
-        y2: u16::try_from(rectangle.y2).map_err(|_| ())?,
-    })
-}
-
-fn touches(first: Rect, second: Rect) -> bool {
-    first.x1 <= second.x2 && second.x1 <= first.x2 && first.y1 <= second.y2 && second.y1 <= first.y2
 }

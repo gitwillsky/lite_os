@@ -1,9 +1,10 @@
 use display_client::{Device, Seat};
 
 use crate::{
-    display::{Candidate, Display, DisplayError},
+    display::{Candidate, DamageRequest, DamageTarget, Display, DisplayError},
     ffi::{self, PollFd, SockaddrNl},
     input::Input,
+    presenter::Presenter,
     scene::Scene,
 };
 
@@ -28,6 +29,14 @@ enum ResizeFailure {
 }
 
 pub fn run() -> Result<(), ()> {
+    let mut presenter = core::pin::pin!(Presenter::new()?);
+    presenter.as_mut().start()?;
+    let result = run_session(presenter.as_ref().get_ref());
+    presenter.as_mut().stop();
+    result
+}
+
+fn run_session(presenter: &Presenter) -> Result<(), ()> {
     let netlink = open_hotplug()?;
     let mut seat = match Seat::open() {
         Ok(seat) => seat,
@@ -44,10 +53,21 @@ pub fn run() -> Result<(), ()> {
         }
     };
     let mut active = Some(first);
-    let result = event_loop(&mut seat, netlink, &mut active, &mut scene);
-    let release = active
-        .take()
-        .map_or(Ok(()), |active| active.release(&mut seat));
+    // OWNER: damage_pending 是 reactor 对 presenter 非 IDLE epoch 的唯一镜像；它在 submit
+    // 后置位、completion 提交后清零。缺失该门禁会在 worker 仍读取 framebuffer 时 resize/RMFB。
+    let mut damage_pending = false;
+    let result = event_loop(
+        &mut seat,
+        netlink,
+        &mut active,
+        &mut scene,
+        presenter,
+        &mut damage_pending,
+    );
+    let release = active.take().map_or(Ok(()), |mut active| {
+        drain_damage(presenter, &mut active, &mut damage_pending);
+        active.release(&mut seat)
+    });
     unsafe { ffi::close(netlink) };
     result.and(release)
 }
@@ -57,6 +77,8 @@ fn event_loop(
     netlink: i32,
     active: &mut Option<Active>,
     scene: &mut Scene,
+    presenter: &Presenter,
+    damage_pending: &mut bool,
 ) -> Result<(), ()> {
     let mut render_due = None;
     let mut resize_due = None;
@@ -67,7 +89,14 @@ fn event_loop(
     loop {
         let now = ffi::monotonic_milliseconds();
         let timeout = if active.is_some() {
-            deadline_timeout(render_due, resize_due, now)
+            // completion eventfd 是在途 request 的唯一唤醒源。若仍保留 render/resize deadline，
+            // blocking ioctl 期间会每 17 ms 空转 poll，重新制造输入掉帧时的 CPU 峰值。
+            let (render_deadline, resize_deadline) = if *damage_pending {
+                (None, None)
+            } else {
+                (render_due, resize_due)
+            };
+            deadline_timeout(render_deadline, resize_deadline, now)
         } else {
             -1
         };
@@ -96,6 +125,11 @@ fn event_loop(
             },
             PollFd {
                 fd: pointer,
+                events: ffi::POLLIN,
+                returned: 0,
+            },
+            PollFd {
+                fd: presenter.completion_fd(),
                 events: ffi::POLLIN,
                 returned: 0,
             },
@@ -129,9 +163,11 @@ fn event_loop(
                     flip_requested = false;
                     last_present = now;
                 } else {
-                    let current = active.take().ok_or(())?;
-                    current.release(seat)?;
-                    seat.acknowledge_disable()?;
+                    let mut current = active.take().ok_or(())?;
+                    drain_damage(presenter, &mut current, damage_pending);
+                    let release = current.release(seat);
+                    let acknowledge = seat.acknowledge_disable();
+                    release.and(acknowledge)?;
                     render_due = None;
                     resize_due = None;
                     prepared_resize.take();
@@ -139,7 +175,7 @@ fn event_loop(
                 }
             }
         }
-        let hotplug = if descriptors[4].returned & ffi::POLLIN != 0 {
+        let hotplug = if descriptors[5].returned & ffi::POLLIN != 0 {
             drain_hotplug(netlink)?
         } else {
             false
@@ -147,7 +183,7 @@ fn event_loop(
         let Some(current) = active.as_mut() else {
             continue;
         };
-        for descriptor in &descriptors[1..4] {
+        for descriptor in &descriptors[1..5] {
             if descriptor.returned & (ffi::POLLERR | ffi::POLLHUP) != 0 {
                 return Err(());
             }
@@ -176,11 +212,23 @@ fn event_loop(
             }
             schedule_render(&mut render_due, last_present, now);
         }
+        if descriptors[4].returned & ffi::POLLIN != 0 {
+            let (completed, prepares_flip) =
+                finish_damage(presenter, current, damage_pending, false)?.ok_or(())?;
+            if completed && !prepares_flip {
+                last_present = now;
+            }
+            if flip_requested || current.display.has_active_damage() {
+                schedule_render(&mut render_due, last_present, now);
+            } else {
+                render_due = None;
+            }
+        }
         if hotplug {
             prepared_resize.take();
             resize_due = Some(now.saturating_add(RESIZE_QUIET_MS));
         }
-        if resize_due.is_some_and(|deadline| deadline <= now) {
+        if !*damage_pending && resize_due.is_some_and(|deadline| deadline <= now) {
             match resize(current, scene, &mut prepared_resize) {
                 Ok(changed) => {
                     resize_due = None;
@@ -200,26 +248,89 @@ fn event_loop(
                 }
             }
         }
-        if render_due.is_some_and(|deadline| deadline <= now) {
-            let presented = if flip_requested {
-                current.display.present_flip(scene)?
-            } else {
-                current.display.present_damage(scene)?
-            };
-            if presented {
+        if !*damage_pending && render_due.is_some_and(|deadline| deadline <= now) {
+            if flip_requested && current.display.present_flip()? {
                 last_present = now;
                 render_due = None;
                 flip_requested = false;
-            } else if if flip_requested {
-                current.display.has_flip_damage()
             } else {
-                current.display.has_active_damage()
-            } {
-                render_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
-            } else {
-                render_due = None;
+                let target = if flip_requested {
+                    DamageTarget::Flip
+                } else {
+                    DamageTarget::Active
+                };
+                match current.display.prepare_damage(scene, target)? {
+                    Some(request) => {
+                        submit_damage(presenter, &mut current.display, request)?;
+                        *damage_pending = true;
+                        render_due = None;
+                    }
+                    None if if flip_requested {
+                        current.display.has_flip_work()
+                    } else {
+                        current.display.has_active_damage()
+                    } => {
+                        render_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
+                    }
+                    None => render_due = None,
+                }
             }
         }
+    }
+}
+
+/// @description 发布唯一 presenter request；publication failure 会先归还 Display snapshot。
+/// @param presenter 固定 SPSC worker owner。
+/// @param display request 对应 framebuffer/inflight owner。
+/// @param request prepare_damage 返回的自包含 request。
+/// @return request 成功交给 worker 时返回 unit。
+/// @errors presenter protocol/publication failure 返回 unit error，damage 已恢复可清理状态。
+fn submit_damage(
+    presenter: &Presenter,
+    display: &mut Display,
+    request: DamageRequest,
+) -> Result<(), ()> {
+    match presenter.submit(request) {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(()) => {
+            let _ = display.complete_damage(request, ffi::EBUSY);
+            Err(())
+        }
+    }
+}
+
+/// @description 收割一个 presenter completion，并原子提交或恢复 Display damage snapshot。
+/// @param presenter 固定 SPSC worker owner。
+/// @param active 当前仍拥有 request framebuffer 的 display session。
+/// @param pending reactor 对唯一在途 request 的事实；completion 后清零。
+/// @param wait revoke/exit cleanup 为 true，普通 poll path 为 false。
+/// @return 无 request 为 None；完成时返回（成功、是否准备 flip）。
+/// @errors presenter protocol、request owner 或不可恢复 DIRTYFB failure 返回 unit error。
+fn finish_damage(
+    presenter: &Presenter,
+    active: &mut Active,
+    pending: &mut bool,
+    wait: bool,
+) -> Result<Option<(bool, bool)>, ()> {
+    if !*pending {
+        return Ok(None);
+    }
+    let (request, error) = presenter.completion(wait)?.ok_or(())?;
+    *pending = false;
+    let prepares_flip = request.prepares_flip();
+    let completed = active.display.complete_damage(request, error)?;
+    Ok(Some((completed, prepares_flip)))
+}
+
+/// @description 在 framebuffer cleanup 前同步收回 presenter ownership；协议损坏时 fail-stop。
+/// @param presenter 固定 SPSC worker owner。
+/// @param active 仍拥有 request framebuffer 的 display session。
+/// @param pending reactor 对唯一在途 request 的事实。
+fn drain_damage(presenter: &Presenter, active: &mut Active, pending: &mut bool) {
+    if finish_damage(presenter, active, pending, true).is_err() {
+        // 无法证明 worker 已归还 framebuffer 时，任何 Rust unwind/drop 都可能触发并发 RMFB。
+        // _exit 终止整个进程及 worker，由内核按 file lifetime 回收 DRM 对象。
+        unsafe { ffi::_exit(126) };
     }
 }
 

@@ -4,6 +4,7 @@
 mod display;
 mod ffi;
 mod input;
+mod presenter;
 mod reactor;
 mod scene;
 

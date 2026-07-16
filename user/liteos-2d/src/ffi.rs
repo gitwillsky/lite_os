@@ -2,6 +2,7 @@ use core::ffi::{c_char, c_int, c_void};
 
 pub const O_NONBLOCK: c_int = 0x800;
 pub const O_CLOEXEC: c_int = 0x80000;
+pub const EFD_CLOEXEC: c_int = O_CLOEXEC;
 pub const PROT_READ: c_int = 1;
 pub const PROT_WRITE: c_int = 2;
 pub const MAP_SHARED: c_int = 1;
@@ -163,6 +164,8 @@ pub struct SockaddrNl {
     pub groups: u32,
 }
 
+pub type Pthread = *mut c_void;
+
 const _: () = assert!(core::mem::size_of::<DrmMode>() == 68);
 const _: () = assert!(core::mem::size_of::<LibDrmResources>() == 80);
 const _: () = assert!(core::mem::size_of::<LibDrmConnector>() == 88);
@@ -188,6 +191,14 @@ unsafe extern "C" {
     pub fn clock_gettime(clock: c_int, value: *mut Timespec) -> c_int;
     pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
     pub fn bind(fd: c_int, address: *const SockaddrNl, length: u32) -> c_int;
+    pub fn eventfd(initial: u32, flags: c_int) -> c_int;
+    pub fn pthread_create(
+        thread: *mut Pthread,
+        attributes: *const c_void,
+        start: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+        argument: *mut c_void,
+    ) -> c_int;
+    pub fn pthread_join(thread: Pthread, result: *mut *mut c_void) -> c_int;
     pub fn __errno_location() -> *mut c_int;
     pub fn _exit(status: c_int) -> !;
     pub fn drmIoctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;
