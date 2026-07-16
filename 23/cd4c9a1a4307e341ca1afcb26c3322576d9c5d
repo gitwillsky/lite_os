@@ -1,0 +1,202 @@
+Cargo.toml
+  s_dd5bfa84b90cfd::t_dcc7a12974aec7 9
+docs/architecture-contract.md
+  s_dd5bfa84b90cfd::t_034c50799bb06d 17,60,72-73,78,82,143-145,162-163,206-207
+docs/architecture-contract/display-terminal.md
+  s_dd5bfa84b90cfd::t_dc02df72b653fd 24-30
+docs/architecture-interface.txt
+  s_dd5bfa84b90cfd::t_14eff46732d726 437-442,685-687,763,787,796-797,803-804,812,851-852,881,975,1136,1139,1298,1320,1323,1325-1326,1328,1334-1347,1818,1856,1865-1867,1876-1877,1881,1886,1888,1903,1908,2054-2061,2077-2078,2091,2094-2095,2098-2099,2103-2104,2108,2110-2111,2114-2118,2134-2135,2137-2186,2259,2287,2325,2428-2443,2451-2452,2707-2708,2714-2715,2746
+docs/architecture.md
+  s_dd5bfa84b90cfd::t_c04645d9822903 236,238,278,292
+docs/architecture/display-terminal.md
+  s_dd5bfa84b90cfd::t_64197658b70191 23-24,27,31,36
+docs/phase-60-display-session.md
+  s_dd5bfa84b90cfd::t_99f4d34f45ed91 1-33
+docs/standards-baseline.md
+  s_dd5bfa84b90cfd::t_b02e7a0016695b 23-24,72-74
+docs/syscall-support.md
+  s_dd5bfa84b90cfd::t_0a1bffeab75d27 47,107
+docs/syscall/socket.md
+  s_dd5bfa84b90cfd::t_a3dc471ae5f084 17-20
+kernel/src/drivers/virtio_gpu.rs
+  s_dd5bfa84b90cfd::t_b58922c34485f0 16-17,54,81-84,161,373-374,599-600,615-616,634
+kernel/src/drivers/virtio_gpu/damage.rs
+  s_dd5bfa84b90cfd::t_9f69236586d54d 1-54
+kernel/src/fs/ext2.rs
+  s_dd5bfa84b90cfd::t_a1596658748b62 19,1041,1050,1483,1500,1567,1646,1699-1702,1723
+kernel/src/fs/ext2/directory.rs
+  s_dd5bfa84b90cfd::t_3495437b6012aa 46,78,107
+kernel/src/fs/ext2/inode_kind.rs
+  s_dd5bfa84b90cfd::t_a6c715c262d816 1-43
+kernel/src/fs/ext2/metadata.rs
+  s_dd5bfa84b90cfd::t_c65a6ac7a09de9 60
+kernel/src/fs/file.rs
+  s_dd5bfa84b90cfd::t_cc700fd5832563 10-11,22,25-44,257-258,264-267
+kernel/src/fs/file/character.rs
+  s_dd5bfa84b90cfd::t_cb5daa838a08b6 129
+kernel/src/fs/file/descriptor_table.rs
+  s_dd5bfa84b90cfd::t_9f483ff1aff451 20,35,45-52,55-62,68,74-76,90-94,126-130,163-184,222-263,268-271,306-308,316-321,325-329,351-354,365-369,372-377
+kernel/src/fs/file/terminal.rs
+  s_dd5bfa84b90cfd::t_28b9cc68193121 4,90-93,100-101,103-108,120,138-154
+kernel/src/fs/inode.rs
+  s_dd5bfa84b90cfd::t_b2ed5cda247c40 13
+kernel/src/fs/mod.rs
+  s_dd5bfa84b90cfd::t_250e44ea3adc08 23-26
+kernel/src/fs/procfs/process.rs
+  s_dd5bfa84b90cfd::t_8e4b3a9a2c1c4f 104,111-112
+kernel/src/fs/procfs/snapshot.rs
+  s_dd5bfa84b90cfd::t_f84320292dacab 32-33
+kernel/src/fs/pty.rs
+  s_dd5bfa84b90cfd::t_34d752af03cd9b 348-349
+kernel/src/input.rs
+  s_dd5bfa84b90cfd::t_8938da90d3034f 9-12,70,87-91,104-106,113-116,139-145,151-157,163,167-169,187-208,269,276,324,335-337,357-384,416-419,425-428
+kernel/src/input/client_queue.rs
+  s_dd5bfa84b90cfd::t_6670103e337b00 1-153
+kernel/src/socket.rs
+  s_dd5bfa84b90cfd::t_db4cd50e6eafdb 14-15,18-19,31-33,79-86,92,129-130,204,206,209-214,235,244,246,275-290,305-306,311-315,320-325,332,420,428,432-440,450,462,513-518,522,529,531-532
+kernel/src/socket/kobject.rs
+  s_dd5bfa84b90cfd::t_0bcdab99791909 187
+kernel/src/socket/options.rs
+  s_dd5bfa84b90cfd::t_791039d8a26463 1-85
+kernel/src/socket/rights.rs
+  s_dd5bfa84b90cfd::t_ce8341f776eaaf 1-23
+kernel/src/socket/unix.rs
+  s_dd5bfa84b90cfd::t_e749bef15475e6 6,8,12,18-33,41-47,57-58,60,65,71-73,75-77,83-86,95-96,99,101,107,112,123-174,176,179-205,207-211,216,227-231,255-256,263,265-268,281,287-291,300-303,316,322-331,335,338,351,375-376,384,415-418,553-554
+kernel/src/socket/unix/datagram_queue.rs
+  s_dd5bfa84b90cfd::t_c2b0e9bb81aafb 59-64,84,105-111,113,115-126,128-159
+kernel/src/socket/unix/lifecycle.rs
+  s_dd5bfa84b90cfd::t_d9602f01965b16 1-181
+kernel/src/socket/unix/namespace.rs
+  s_dd5bfa84b90cfd::t_5abe41d438aeb6 1-110
+kernel/src/socket/unix/rights.rs
+  s_dd5bfa84b90cfd::t_c59b91e9d642bd 1-139
+kernel/src/socket/unix/rights_graph.rs
+  s_dd5bfa84b90cfd::t_d6fd7c4a5f0f56 1-497
+kernel/src/socket/unix/stream.rs
+  s_dd5bfa84b90cfd::t_d7dda9e0bf7578 1-201
+kernel/src/syscall/errno.rs
+  s_dd5bfa84b90cfd::t_fd0ec600ca614f 85-86
+kernel/src/syscall/fs.rs
+  s_dd5bfa84b90cfd::t_9df062746e2e00 26,508
+kernel/src/syscall/fs/io/sequential/read.rs
+  s_dd5bfa84b90cfd::t_54cfd895417bfc 306-316,345-355
+kernel/src/syscall/fs/pathname.rs
+  s_dd5bfa84b90cfd::t_52c37cbbc50558 12
+kernel/src/syscall/input.rs
+  s_dd5bfa84b90cfd::t_af093c8ad7229b 22,31,130,138-140,155-161
+kernel/src/syscall/mod.rs
+  s_dd5bfa84b90cfd::t_d69827a5e1617c 45
+kernel/src/syscall/socket.rs
+  s_dd5bfa84b90cfd::t_f47982d0cce98e 7-8,15,19,85,111,114-125,147-149,151-152,340-346,390-399
+kernel/src/syscall/socket/control.rs
+  s_dd5bfa84b90cfd::t_d61c9bdae1719d 1-293
+kernel/src/syscall/socket/message.rs
+  s_dd5bfa84b90cfd::t_def270d2070c8e 5-6,104-107,110-121,124-127,129-131,134,146-148,154,157,160-164,166-167,177,193-197,211-213,216,229,238,241,243,246-247,251,258-260,263-264,285-289,298-309,344-355,388,424,447,457-458,460-471
+kernel/src/syscall/socket/options.rs
+  s_dd5bfa84b90cfd::t_816b464680ebfd 13,125-152,160-164
+kernel/src/syscall/socket/unix_path.rs
+  s_dd5bfa84b90cfd::t_4f85600111defc 1-89
+kernel/src/task/model.rs
+  s_dd5bfa84b90cfd::t_014d4a9f2ecdc6 187-188
+kernel/src/task/model/file_descriptions.rs
+  s_dd5bfa84b90cfd::t_5bed166caa32d1 5-6,41-86
+kernel/src/task/model/process_resources.rs
+  s_dd5bfa84b90cfd::t_275f0d693441de 26-32
+kernel/src/task/task_manager/procfs.rs
+  s_dd5bfa84b90cfd::t_baf9b9dbe2e13f 213,219-220
+scripts/display_stack_cache.py
+  s_dd5bfa84b90cfd::t_4c35dcb835c594 1-215
+scripts/musl_clang.py
+  s_dd5bfa84b90cfd::t_530c0494212b2c 28-32,68-69,74-89
+scripts/verify_busybox.py
+  s_dd5bfa84b90cfd::t_853e8b7cc11002 38,63,631-636,650,653-654,656-665,667,670,676,678,744-754,759,761-762,773-777,779-784,802,815,822-823,828,833-838,846-893,967-970,991-992,1004-1007,1013-1016,1113-1120,1153-1156,1172,1174-1176,1187-1194,1282,1294-1295,1300-1303
+tools/architecture-check/src/main.rs
+  s_dd5bfa84b90cfd::t_578810f82685f7 266-268,271,328-393,395,399-425,451,481-579,582-584,608-640,652,700,711-713,715,721-725,727-729,734
+user/display-client/Cargo.lock
+  s_dd5bfa84b90cfd::t_696e0b61620cb2 1-7
+user/display-client/Cargo.toml
+  s_dd5bfa84b90cfd::t_c29cdaabfbcc7e 1-14
+user/display-client/src/ffi.rs
+  s_dd5bfa84b90cfd::t_3c5c145e6a6732 1-31
+user/display-client/src/lib.rs
+  s_dd5bfa84b90cfd::t_a6ccc39eb25527 1-6
+user/display-client/src/seat.rs
+  s_dd5bfa84b90cfd::t_c6fe083ff7c0f2 1-133
+user/display-session-guard
+  s_dd5bfa84b90cfd::t_1231db0f648242 1-10
+user/display-session/Cargo.lock
+  s_dd5bfa84b90cfd::t_746f745e96f4cd 1-7
+user/display-session/Cargo.toml
+  s_dd5bfa84b90cfd::t_6fd79b67ade11f 1-14
+user/display-session/src/broker.rs
+  s_dd5bfa84b90cfd::t_a6c2e9e4c78a65 1-427
+user/display-session/src/client.rs
+  s_dd5bfa84b90cfd::t_04879a08ac6e8a 1-328
+user/display-session/src/ffi.rs
+  s_dd5bfa84b90cfd::t_786be906fe24ee 1-152
+user/display-session/src/lib.rs
+  s_dd5bfa84b90cfd::t_e5b4d9c4143ae2 1-55
+user/display-session/src/peer.rs
+  s_dd5bfa84b90cfd::t_62bb33df669a28 1-132
+user/display-session/src/protocol.rs
+  s_dd5bfa84b90cfd::t_1d661a054ef82d 1-102
+user/inittab
+  s_dd5bfa84b90cfd::t_eadbdd9c4ce17a 1
+user/liteos-2d/Cargo.lock
+  s_dd5bfa84b90cfd::t_e3a8163c9215b8 1-14
+user/liteos-2d/Cargo.toml
+  s_dd5bfa84b90cfd::t_4c9a7377893d0d 1-17
+user/liteos-2d/src/display.rs
+  s_dd5bfa84b90cfd::t_f7429ed5cd0b2f 1-396
+user/liteos-2d/src/ffi.rs
+  s_dd5bfa84b90cfd::t_456fede2528ee2 1-237
+user/liteos-2d/src/input.rs
+  s_dd5bfa84b90cfd::t_dc0d12855c7a07 1-232
+user/liteos-2d/src/lib.rs
+  s_dd5bfa84b90cfd::t_bd226595a693b3 1-31
+user/liteos-2d/src/reactor.rs
+  s_dd5bfa84b90cfd::t_1e5ce10138eb25 1-401
+user/liteos-2d/src/scene.rs
+  s_dd5bfa84b90cfd::t_cc3ea32766d397 1-151
+user/liteos-terminal/Cargo.lock
+  s_dd5bfa84b90cfd::t_b85ddc70cb9dc7 5-8,12-14
+user/liteos-terminal/Cargo.toml
+  s_dd5bfa84b90cfd::t_2cb7d884691b4d 10-12
+user/liteos-terminal/src/display.rs
+  s_dd5bfa84b90cfd::t_b6d7a4cc82cfbd 5,48-50,53-57,59,62-64,75-76,79-86,113,140,166,168,170-176,188,204-205,207,209-215,278,280-282,434,442
+user/liteos-terminal/src/ffi.rs
+  s_dd5bfa84b90cfd::t_8c8598218d48a0 67-75,83,85,92-98,181-182,222-253
+user/liteos-terminal/src/reactor.rs
+  s_dd5bfa84b90cfd::t_7048239d7f3c15 3-4,12,18,20,52-72,75-80,91,97-101,104-109,114-120,131-132,150-155,161,199-203,219-223,234,243,255-281,289,299-300,303,307-308,314-319
+user/liteos-terminal/src/reactor/active.rs
+  s_dd5bfa84b90cfd::t_691686c4ea9a52 1-139
+user/liteos-terminal/src/reactor/evdev.rs
+  s_dd5bfa84b90cfd::t_618ee807ba7e41 1-2,7,15,17,19-20,23-24,26,28
+user/liteos-terminal/src/reactor/input.rs
+  s_dd5bfa84b90cfd::t_c155ee864de8c4 3-4,18-19
+user/liteos-terminal/src/reactor/pointer.rs
+  s_dd5bfa84b90cfd::t_52eb757410ff87 6,18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "23cd4c9a1a4307e341ca1afcb26c3322576d9c5d",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_dd5bfa84b90cfd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f65db-d447-7ca1-b743-fb152998ac76",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
