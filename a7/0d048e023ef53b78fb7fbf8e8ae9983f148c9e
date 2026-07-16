@@ -1,0 +1,28 @@
+scripts/build_cache.py
+  s_eca7e55bad5cec::t_f410cfc56e03d4 28-40,42,47-48
+scripts/quickjs_cache.py
+  s_eca7e55bad5cec::t_97cf8ddbfc4bda 17,63-74,76-103,126-130,132-142,186-193,195-241,243,245-257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a70d048e023ef53b78fb7fbf8e8ae9983f148c9e",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_eca7e55bad5cec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6b06-7683-7fe3-abc7-435fef640b14",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
