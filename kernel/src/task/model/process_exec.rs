@@ -48,6 +48,9 @@ impl TaskControlBlock {
         // Linux exec 在旧 mm 仍可访问时完成 robust owner-death publication，并清除
         // per-Thread registration；否则相同 VA 在新映像中会被误当成旧 robust list。
         self.cleanup_robust_list();
+        // POSIX timers 不跨 exec 保留；在旧映像仍唯一运行、且提交已不可失败时清理，
+        // 否则新程序会收到由旧 handler/value 创建的异步 signal。
+        crate::task::remove_posix_timers_for_exec(self.tgid());
 
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。

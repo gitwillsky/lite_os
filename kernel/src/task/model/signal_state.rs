@@ -34,6 +34,7 @@ pub(crate) struct PendingSignal {
     code: i32,
     pid: i32,
     status: i32,
+    value: u64,
 }
 
 impl PendingSignal {
@@ -46,6 +47,7 @@ impl PendingSignal {
             code: -6,
             pid: pid as i32,
             status: 0,
+            value: 0,
         }
     }
 
@@ -58,6 +60,7 @@ impl PendingSignal {
             code: 0,
             pid: pid as i32,
             status: 0,
+            value: 0,
         }
     }
 
@@ -71,6 +74,7 @@ impl PendingSignal {
             code: 1,
             pid: pid as i32,
             status,
+            value: 0,
         }
     }
 
@@ -84,6 +88,7 @@ impl PendingSignal {
             code: 2,
             pid: pid as i32,
             status: signal as i32,
+            value: 0,
         }
     }
 
@@ -97,6 +102,7 @@ impl PendingSignal {
             code: 5,
             pid: pid as i32,
             status: signal as i32,
+            value: 0,
         }
     }
 
@@ -109,6 +115,7 @@ impl PendingSignal {
             code: 6,
             pid: pid as i32,
             status: 18,
+            value: 0,
         }
     }
 
@@ -120,6 +127,22 @@ impl PendingSignal {
             code: 128,
             pid: 0,
             status: 0,
+            value: 0,
+        }
+    }
+
+    /// 构造 POSIX timer expiration 的 `SI_TIMER` 来源。
+    ///
+    /// @param id 创建进程内的 timer ID。
+    /// @param overrun 最近一次 expiration 的 overrun count。
+    /// @param value `sigev_value` 的原始 64-bit union payload。
+    /// @return 可供 signal frame 与 `rt_sigtimedwait` 观察的 timer siginfo。
+    pub(crate) fn timer(id: i32, overrun: i32, value: u64) -> Self {
+        Self {
+            code: -2,
+            pid: id,
+            status: overrun,
+            value,
         }
     }
 
@@ -132,7 +155,12 @@ impl PendingSignal {
         bytes[0..4].copy_from_slice(&(signal as i32).to_ne_bytes());
         bytes[8..12].copy_from_slice(&self.code.to_ne_bytes());
         bytes[16..20].copy_from_slice(&self.pid.to_ne_bytes());
-        bytes[24..28].copy_from_slice(&self.status.to_ne_bytes());
+        if self.code == -2 {
+            bytes[20..24].copy_from_slice(&self.status.to_ne_bytes());
+            bytes[24..32].copy_from_slice(&self.value.to_ne_bytes());
+        } else {
+            bytes[24..28].copy_from_slice(&self.status.to_ne_bytes());
+        }
         bytes
     }
 }

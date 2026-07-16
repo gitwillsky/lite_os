@@ -142,6 +142,7 @@ pub struct Model {
     palette: [u32; 16],
     parser: ParserState,
     private_csi: bool,
+    secondary_csi: bool,
     ignored_csi: bool,
     parameters: [u32; 16],
     parameter_count: usize,
@@ -204,6 +205,7 @@ impl Model {
             palette: DEFAULT_COLORS,
             parser: ParserState::Ground,
             private_csi: false,
+            secondary_csi: false,
             ignored_csi: false,
             parameters: [0; 16],
             parameter_count: 0,
@@ -250,6 +252,7 @@ impl Model {
         self.alternate_active = false;
         self.parser = ParserState::Ground;
         self.private_csi = false;
+        self.secondary_csi = false;
         self.ignored_csi = false;
         self.parameters = [0; 16];
         self.parameter_count = 0;

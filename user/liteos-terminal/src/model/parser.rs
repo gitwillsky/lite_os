@@ -142,7 +142,10 @@ impl Model {
                 b'?' if self.parameter_count == 1 && self.parameters[0] == 0 => {
                     self.private_csi = true
                 }
-                b'>' | b'=' | b'<' if self.parameter_count == 1 && self.parameters[0] == 0 => {
+                b'>' if self.parameter_count == 1 && self.parameters[0] == 0 => {
+                    self.secondary_csi = true
+                }
+                b'=' | b'<' if self.parameter_count == 1 && self.parameters[0] == 0 => {
                     self.ignored_csi = true
                 }
                 0x20..=0x2f => self.ignored_csi = true,
@@ -215,6 +218,7 @@ impl Model {
         self.parameters = [0; 16];
         self.parameter_count = 1;
         self.private_csi = false;
+        self.secondary_csi = false;
         self.ignored_csi = false;
     }
 
@@ -308,6 +312,12 @@ impl Model {
     }
 
     pub(super) fn execute_csi(&mut self, final_byte: u8, reply: &mut impl FnMut(&[u8])) {
+        if self.secondary_csi {
+            if final_byte == b'c' {
+                reply(b"\x1b[>0;1;0c");
+            }
+            return;
+        }
         if self.private_csi {
             if matches!(final_byte, b'h' | b'l') {
                 self.set_private_modes(final_byte == b'h');

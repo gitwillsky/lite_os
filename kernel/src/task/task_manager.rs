@@ -33,6 +33,7 @@ mod signal;
 mod terminal_access;
 mod thread_clone;
 mod thread_selector;
+pub(in crate::task) mod timer_queue;
 pub(in crate::task) mod vfork;
 mod wait_child;
 mod wait_key;
@@ -40,9 +41,7 @@ mod wait_registry;
 
 pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
 use context_switch::{prepare_current_block, schedule_with_task_context};
-pub(crate) use deferred::{
-    RealTimerError, dispatch_pending_deferred_work, real_timer, set_real_timer,
-};
+pub(crate) use deferred::dispatch_pending_deferred_work;
 pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
 pub(crate) use pipe_wait::{
@@ -68,8 +67,8 @@ pub(crate) use resource_limit::process_resource_limit;
 use resource_limit::{check_process_slot, enforce_cpu_limit};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
-    SignalSendError, send_kernel_thread_signal, send_process_signal, send_thread_signal,
-    send_tid_signal, stop_current_process,
+    SignalSendError, send_kernel_thread_signal, send_kernel_thread_signal_info,
+    send_process_signal, send_thread_signal, send_tid_signal, stop_current_process,
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{
@@ -124,9 +123,9 @@ struct ProcessGraph {
 /// @description parent relation、live task 或最小 exit record 的唯一 process graph owner。
 struct TaskManager {
     graph: IrqMutex<ProcessGraph>,
-    // OWNER: RealTimerQueue 独占 record+deadline index；graph → timer 锁序把 TGID lifecycle
-    // 与 set/get/exit 串行化。缺失 exit cleanup 会向已经退出的 Process 投递 stale SIGALRM。
-    real_timers: IrqMutex<deferred::RealTimerQueue>,
+    // OWNER: TimerQueue 独占 ITIMER_REAL/POSIX record 与统一 deadline index；graph → timer
+    // 锁序把 TGID lifecycle 与 timer mutation 串行化。缺失 cleanup 会向退出进程投递 stale signal。
+    timers: IrqMutex<timer_queue::TimerQueue>,
     load_average: load_average::LoadAverage,
     // OWNER: clone/fork/vfork 从 RLIMIT_NPROC 检查到 graph publish 的唯一串行化锁。
     // 缺失它会让并发创建者同时通过同一剩余 slot，越过 Process soft limit。
@@ -159,7 +158,7 @@ impl TaskManager {
                 processes_created: 1,
                 nodes: FallibleMap::new(),
             }),
-            real_timers: IrqMutex::new(deferred::RealTimerQueue::new()),
+            timers: IrqMutex::new(timer_queue::TimerQueue::new()),
             load_average: load_average::LoadAverage::new(),
             process_creation: IrqMutex::new(()),
         }

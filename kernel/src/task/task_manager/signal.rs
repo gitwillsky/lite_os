@@ -66,6 +66,16 @@ pub(crate) fn send_kernel_thread_signal(
     send_selected_thread_signal(Some(tgid), tid, signal, Some(PendingSignal::kernel()))
 }
 
+/// 向指定 Thread 投递带领域 siginfo 的 kernel-generated signal。
+pub(crate) fn send_kernel_thread_signal_info(
+    tgid: usize,
+    tid: usize,
+    signal: usize,
+    info: PendingSignal,
+) -> Result<(), SignalSendError> {
+    send_selected_thread_signal(Some(tgid), tid, signal, Some(info))
+}
+
 /// @description 按全局 TID 定位 Thread，并复用唯一 thread-signal generation seam。
 ///
 /// @param tid 目标 Thread ID。

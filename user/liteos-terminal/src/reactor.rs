@@ -215,6 +215,9 @@ fn event_loop(
         let mut closed = false;
         if descriptors[0].returned & (ffi::POLLIN | ffi::POLLERR | ffi::POLLHUP) != 0 {
             let (changed, ended) = read_pty(master, model, &mut input);
+            // Device-status/attributes 查询属于 PTY request/reply；同轮立即写回可避免全屏程序
+            // 等待下一次 POLLOUT edge 或超时，键盘/鼠标输入仍与回复共用唯一有界队列。
+            flush_input(master, &mut input);
             closed = ended;
             if changed {
                 schedule_render(&mut render_due, last_present, now);

@@ -182,6 +182,13 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
             args[0] as *const timer::TimeSpec,
             args[1] as *mut timer::TimeSpec,
         ),
+        SYSCALL_TIMER_CREATE => sys_timer_create(args[0] as i32, args[1], args[2]),
+        SYSCALL_TIMER_GETTIME => sys_timer_gettime(args[0] as i32, args[1]),
+        SYSCALL_TIMER_GETOVERRUN => sys_timer_getoverrun(args[0] as i32),
+        SYSCALL_TIMER_SETTIME => {
+            sys_timer_settime(args[0] as i32, args[1] as i32, args[2], args[3])
+        }
+        SYSCALL_TIMER_DELETE => sys_timer_delete(args[0] as i32),
         SYSCALL_CLOCK_GETTIME => sys_clock_gettime(args[0] as i32, args[1] as *mut timer::TimeSpec),
         SYSCALL_CLOCK_GETRES => sys_clock_getres(args[0] as i32, args[1] as *mut timer::TimeSpec),
         SYSCALL_CLOCK_NANOSLEEP => sys_clock_nanosleep(

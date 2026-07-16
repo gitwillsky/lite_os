@@ -288,7 +288,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
         assert!(Arc::ptr_eq(&removed, &task));
         if process_status.is_some() {
             // graph → timer 与 set/get 共用唯一锁序；持 graph 期间删除使 exit 后不存在 stale timer。
-            TASK_MANAGER.real_timers.lock().remove(exiting_pid);
+            TASK_MANAGER.timers.lock().remove_process(exiting_pid);
         }
 
         match process_status {

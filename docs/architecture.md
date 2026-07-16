@@ -82,7 +82,7 @@ logger 在唯一 IRQ-safe owner 内同时维护 level/filter、严格递增 sequ
 - `TrapContext` 保存 32 个 GPR（包括用户 `gp/tp`）、32 个 FP register、`fcsr`、`sepc/sstatus` 和 kernel return metadata。
 - 进入 kernel 后恢复 kernel `gp/tp`，返回前恢复用户值，因此 U-mode `tp` 可作为未来 TLS base，但当前未初始化 TLS。
 - S-mode trap 不开启 nested interrupt；kernel exception fail-stop，用户 illegal/breakpoint/page fault 只终止当前 task。
-- timer hardirq 只发布 per-hart deferred work 并触发 software interrupt；user-return 与 scheduler idle 共用同一 consumer，不在 hardirq 中切换。deferred timer 仅在本 hart 确有 queued/inbound 竞争者时请求抢占，单一 Running task 不做空转 context switch。到期 wait 在一次 registry lock 内摘取固定 32-entry 栈上 batch、锁外 wake；ITIMER_REAL 由独立有序 deadline queue 摘取同样大小的栈上 batch、沿原始相位重装，锁外发送 SIGALRM，空 queue 不扫描 process graph 或分配内存。两者的 backlog 通过同一独立合并 softirq 立即续批，既不无界占用 deferred context，也不延迟到下一 hardware tick。全局 load average 只由到期 timer claimant 每 5 秒采样 runnable Thread；普通 tick 只做 atomic deadline read，不获取全局 IRQ-safe value lock，procfs/sysinfo 只读取最近 committed sample。
+- timer hardirq 只发布 per-hart deferred work 并触发 software interrupt；user-return 与 scheduler idle 共用同一 consumer，不在 hardirq 中切换。deferred timer 仅在本 hart 确有 queued/inbound 竞争者时请求抢占，单一 Running task 不做空转 context switch。到期 wait 在一次 registry lock 内摘取固定 32-entry 栈上 batch、锁外 wake；ITIMER_REAL 与 POSIX wall-clock timers 共用 TaskManager 唯一有序 deadline index，摘取同样大小的栈上 batch、沿原始相位重装，锁外向 Process 或精确 Thread 发布 SIGALRM/SI_TIMER，空 queue 不扫描 process graph 或分配内存。两者的 backlog 通过同一独立合并 softirq 立即续批，既不无界占用 deferred context，也不延迟到下一 hardware tick。全局 load average 只由到期 timer claimant 每 5 秒采样 runnable Thread；普通 tick 只做 atomic deadline read，不获取全局 IRQ-safe value lock，procfs/sysinfo 只读取最近 committed sample。
 - external interrupt 只从当前 hart 的 QEMU S-mode PLIC context `2 * hart + 1` claim/complete。
 
 ## 6. 并发与同步

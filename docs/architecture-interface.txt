@@ -2340,7 +2340,14 @@ kernel/src/syscall/timer.rs :: pub (crate) fn sys_gettimeofday (timeval : usize 
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_nanosleep (req : * const TimeSpec , rem : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_setitimer (which : usize , replacement : usize , previous : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
+kernel/src/syscall/timer.rs :: pub (crate) use posix :: *
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
+kernel/src/syscall/timer.rs :: pub (super) fn encode_timespec (value : TimeSpec) -> [u8 ; core :: mem :: size_of :: < TimeSpec > ()]
+kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_create (clock_id : i32 , event : usize , output : usize) -> isize
+kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_delete (id : i32) -> isize
+kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_getoverrun (id : i32) -> isize
+kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_gettime (id : i32 , output : usize) -> isize
+kernel/src/syscall/timer/posix.rs :: pub (crate) fn sys_timer_settime (id : i32 , flags : i32 , replacement : usize , previous : usize) -> isize
 kernel/src/syscall/tty.rs :: pub (super) fn guard_terminal_access (terminal : & Terminal , access : TerminalAccess ,) -> Result < () , isize >
 kernel/src/syscall/tty.rs :: pub (super) fn pty_master_ioctl (task : & TaskControlBlock , master : & PtyMaster , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/tty.rs :: pub (super) fn tty_ioctl (task : & TaskControlBlock , terminal : & alloc :: sync :: Arc < Terminal > , request : usize , argument : usize ,) -> isize
@@ -2415,6 +2422,7 @@ kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoS
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
+kernel/src/task/mod.rs :: pub (crate) use task_manager :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerError , TimerSetting , create_posix_timer , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
 kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
 kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
@@ -2713,6 +2721,7 @@ kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn en
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn kernel () -> Self
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn process_directed (pid : usize) -> Self
 kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn thread_directed (pid : usize) -> Self
+kernel/src/task/model/signal_state.rs :: pub (crate) impl PendingSignal :: fn timer (id : i32 , overrun : i32 , value : u64) -> Self
 kernel/src/task/model/signal_state.rs :: pub (crate) impl TaskControlBlock :: fn prepare_signal_delivery (& self) -> Result < SignalDelivery , UserAccessError >
 kernel/src/task/model/signal_state.rs :: pub (crate) impl TaskControlBlock :: fn restore_signal_frame (& self) -> Result < usize , UserAccessError >
 kernel/src/task/model/signal_state.rs :: pub (crate) struct PendingSignal
@@ -2820,7 +2829,7 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_poll (mut keys : allo
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal (mask : u64 , deadline : Option < u64 > ,) -> Result < (usize , PendingSignal) , SignalWaitError >
 kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deliverable_set : u64) -> WaitResult
 kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
-kernel/src/task/task_manager.rs :: pub (crate) use deferred :: { RealTimerError , dispatch_pending_deferred_work , real_timer , set_real_timer , }
+kernel/src/task/task_manager.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
@@ -2829,7 +2838,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_curren
 kernel/src/task/task_manager.rs :: pub (crate) use process_group :: { ProcessGroupError , SetProcessGroupError , claim_controlling_terminal , create_session , process_group , session_id , set_process_group , set_terminal_foreground_group , terminal_foreground_group , }
 kernel/src/task/task_manager.rs :: pub (crate) use procfs :: { KernelProcSource , SystemInfoSnapshot , system_info_snapshot }
 kernel/src/task/task_manager.rs :: pub (crate) use resource_limit :: process_resource_limit
-kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
+kernel/src/task/task_manager.rs :: pub (crate) use signal :: { SignalSendError , send_kernel_thread_signal , send_kernel_thread_signal_info , send_process_signal , send_thread_signal , send_tid_signal , stop_current_process , }
 kernel/src/task/task_manager.rs :: pub (crate) use terminal_access :: { TerminalAccessError , check_terminal_access , hangup_terminal , resize_terminal , }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_clone :: { ThreadCloneError , clone_current_thread }
 kernel/src/task/task_manager.rs :: pub (crate) use thread_selector :: { parent_pid , thread_count }
@@ -2837,6 +2846,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use vfork :: { ProcessCloneError 
 kernel/src/task/task_manager.rs :: pub (crate) use wait_child :: { WaitChildError , consume_child_status , release_child_status , wait_child , }
 kernel/src/task/task_manager.rs :: pub (crate) use wait_key :: PollWaitKey
 kernel/src/task/task_manager.rs :: pub (in crate :: task) mod advisory_lock
+kernel/src/task/task_manager.rs :: pub (in crate :: task) mod timer_queue
 kernel/src/task/task_manager.rs :: pub (in crate :: task) mod vfork
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use futex :: futex_wake_with_key
 kernel/src/task/task_manager.rs :: pub (in crate :: task) use process_group :: { current_process_group_is_orphaned , mark_process_exec }
@@ -2859,15 +2869,7 @@ kernel/src/task/task_manager/context_switch.rs :: pub (super) fn prepare_current
 kernel/src/task/task_manager/context_switch.rs :: pub (super) fn schedule_with_task_context (task : Arc < TaskControlBlock >)
 kernel/src/task/task_manager/context_switch.rs :: pub (super) impl PreparedBlock :: fn suspend (mut self) -> WaitResult
 kernel/src/task/task_manager/context_switch.rs :: pub (super) struct PreparedBlock
-kernel/src/task/task_manager/deferred.rs :: enum RealTimerError :: NotFound
-kernel/src/task/task_manager/deferred.rs :: enum RealTimerError :: OutOfMemory
-kernel/src/task/task_manager/deferred.rs :: pub (crate) enum RealTimerError
 kernel/src/task/task_manager/deferred.rs :: pub (crate) fn dispatch_pending_deferred_work ()
-kernel/src/task/task_manager/deferred.rs :: pub (crate) fn real_timer (tgid : usize , now_us : u64) -> Result < (u64 , u64) , () >
-kernel/src/task/task_manager/deferred.rs :: pub (crate) fn set_real_timer (tgid : usize , value_us : u64 , interval_us : u64 , now_us : u64 ,) -> Result < (u64 , u64) , RealTimerError >
-kernel/src/task/task_manager/deferred.rs :: pub (super) impl RealTimerQueue :: fn new () -> Self
-kernel/src/task/task_manager/deferred.rs :: pub (super) impl RealTimerQueue :: fn remove (& mut self , tgid : usize)
-kernel/src/task/task_manager/deferred.rs :: pub (super) struct RealTimerQueue
 kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " WAIT value 或 CMP_REQUEUE expected 不匹配。"] Again
 kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " absolute monotonic deadline 已到期。"] TimedOut
 kernel/src/task/task_manager/futex.rs :: enum FutexWaitError :: # [doc = " futex word 不可从 calling address space 读取。"] Fault
@@ -2947,6 +2949,7 @@ kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: NotFound
 kernel/src/task/task_manager/signal.rs :: enum SignalSendError :: Permission
 kernel/src/task/task_manager/signal.rs :: pub (crate) enum SignalSendError
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_kernel_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
+kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_kernel_thread_signal_info (tgid : usize , tid : usize , signal : usize , info : PendingSignal ,) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_process_signal (pid : i32 , signal : usize) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_thread_signal (tgid : usize , tid : usize , signal : usize ,) -> Result < () , SignalSendError >
 kernel/src/task/task_manager/signal.rs :: pub (crate) fn send_tid_signal (tid : usize , signal : usize) -> Result < () , SignalSendError >
@@ -2995,6 +2998,51 @@ kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn parent_pid (pi
 kernel/src/task/task_manager/thread_selector.rs :: pub (crate) fn thread_count (tgid : usize) -> usize
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn scheduler_thread (tid : usize , caller : & Arc < TaskControlBlock > ,) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/task_manager/thread_selector.rs :: pub (super) fn thread_by_tid (graph : & ProcessGraph , tid : usize ,) -> Option < (usize , Arc < TaskControlBlock >) >
+kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Posix (ExpiredPosixTimer)
+kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Real (usize)
+kernel/src/task/task_manager/timer_queue.rs :: enum ExpiredTimer :: Silent
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerClock :: Monotonic
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerClock :: Realtime
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_NONE`：推进 timer，但不发布 signal。"] None
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_SIGNAL`：向创建进程发布 signal。"] Process { signal : usize , value : u64 }
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `SIGEV_THREAD_ID`：向创建进程中的指定 Thread 发布 signal。"] Thread { tid : usize , signal : usize , value : u64 , }
+kernel/src/task/task_manager/timer_queue.rs :: enum PosixTimerNotification :: # [doc = " `timer_create(..., NULL, ...)`：SIGALRM，且 `sival_int` 为分配后的 timer ID。"] Default
+kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: Exhausted
+kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: NotFound
+kernel/src/task/task_manager/timer_queue.rs :: enum TimerError :: OutOfMemory
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) TimerSetting :: interval_ns : u64
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) TimerSetting :: remaining_ns : u64
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerClock
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum PosixTimerNotification
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) enum TimerError
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn create_posix_timer (tgid : usize , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < i32 , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn delete_posix_timer (tgid : usize , id : i32) -> Result < () , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn posix_timer (tgid : usize , id : i32 , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn posix_timer_overrun (tgid : usize , id : i32) -> Result < i32 , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn real_timer (tgid : usize , now_ns : u64) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn remove_posix_timers_for_exec (tgid : usize)
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_posix_timer (tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) fn set_real_timer (tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (crate) struct TimerSetting
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: id : i32
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: notification : PosixTimerNotification
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: overrun : i32
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) ExpiredPosixTimer :: tgid : usize
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) enum ExpiredTimer
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn create_posix (& mut self , tgid : usize , clock : PosixTimerClock , notification : PosixTimerNotification ,) -> Result < i32 , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn delete_posix (& mut self , tgid : usize , id : i32) -> Result < () , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn has_expired (& self , now_ns : u64) -> bool
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn new () -> Self
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn pop_expired (& mut self , now_ns : u64) -> Option < ExpiredTimer >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix (& self , tgid : usize , id : i32 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn posix_overrun (& self , tgid : usize , id : i32) -> Result < i32 , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn real (& self , tgid : usize , now_ns : u64) -> TimerSetting
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_posix_timers (& mut self , tgid : usize)
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn remove_process (& mut self , tgid : usize)
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn replace_posix (& mut self , tgid : usize , id : i32 , value_ns : u64 , interval_ns : u64 , absolute : bool , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) impl TimerQueue :: fn replace_real (& mut self , tgid : usize , value_ns : u64 , interval_ns : u64 , now_ns : u64 ,) -> Result < TimerSetting , TimerError >
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) struct ExpiredPosixTimer
+kernel/src/task/task_manager/timer_queue.rs :: pub (super) struct TimerQueue
 kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: Memory (crate :: memory :: MemoryError)
 kernel/src/task/task_manager/vfork.rs :: enum ProcessCloneError :: ResourceLimit
 kernel/src/task/task_manager/vfork.rs :: pub (crate) enum ProcessCloneError

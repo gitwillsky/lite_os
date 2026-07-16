@@ -3,6 +3,9 @@ use crate::{
     task::{WaitResult, current_task},
 };
 
+mod posix;
+pub(crate) use posix::*;
+
 /// @description Linux/riscv64 `timespec` 的最小 64 位布局。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -79,13 +82,15 @@ pub(crate) fn sys_getitimer(which: usize, output: usize) -> isize {
     if output == 0 {
         return -EFAULT;
     }
-    let (value_us, interval_us) =
-        match crate::task::real_timer(task.tgid(), crate::timer::get_time_us()) {
-            Ok(value) => value,
-            Err(()) => return -EINVAL,
-        };
-    task.copy_to_user(output, &encode_itimerval(interval_us, value_us))
-        .map_or(-EFAULT, |()| 0)
+    let setting = match crate::task::real_timer(task.tgid(), crate::timer::get_time_ns()) {
+        Ok(value) => value,
+        Err(_) => return -EINVAL,
+    };
+    task.copy_to_user(
+        output,
+        &encode_itimerval(setting.interval_ns / 1_000, setting.remaining_ns / 1_000),
+    )
+    .map_or(-EFAULT, |()| 0)
 }
 
 /// @description 原子替换当前 Process 的 Linux ITIMER_REAL，并由 timer softirq 发布 SIGALRM。
@@ -118,17 +123,22 @@ pub(crate) fn sys_setitimer(which: usize, replacement: usize, previous: usize) -
     };
     let old = match crate::task::set_real_timer(
         task.tgid(),
-        value_us,
-        interval_us,
-        crate::timer::get_time_us(),
+        value_us.saturating_mul(1_000),
+        interval_us.saturating_mul(1_000),
+        crate::timer::get_time_ns(),
     ) {
         Ok(value) => value,
-        Err(crate::task::RealTimerError::NotFound) => return -EINVAL,
-        Err(crate::task::RealTimerError::OutOfMemory) => return -ENOMEM,
+        Err(crate::task::TimerError::NotFound | crate::task::TimerError::Exhausted) => {
+            return -EINVAL;
+        }
+        Err(crate::task::TimerError::OutOfMemory) => return -ENOMEM,
     };
     if previous != 0
         && task
-            .copy_to_user(previous, &encode_itimerval(old.1, old.0))
+            .copy_to_user(
+                previous,
+                &encode_itimerval(old.interval_ns / 1_000, old.remaining_ns / 1_000),
+            )
             .is_err()
     {
         return -EFAULT;
@@ -339,7 +349,7 @@ pub(super) fn decode_timespec(bytes: &[u8; core::mem::size_of::<TimeSpec>()]) ->
     }
 }
 
-fn encode_timespec(value: TimeSpec) -> [u8; core::mem::size_of::<TimeSpec>()] {
+pub(super) fn encode_timespec(value: TimeSpec) -> [u8; core::mem::size_of::<TimeSpec>()] {
     let mut bytes = [0u8; core::mem::size_of::<TimeSpec>()];
     bytes[..8].copy_from_slice(&value.tv_sec.to_ne_bytes());
     bytes[8..].copy_from_slice(&value.tv_nsec.to_ne_bytes());

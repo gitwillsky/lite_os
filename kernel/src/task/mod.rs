@@ -26,6 +26,11 @@ pub(crate) use task_manager::advisory_lock::{
     AdvisoryLockWaitError, install_advisory_lock_notifier, wait_for_advisory_lock,
     wait_for_record_lock,
 };
+pub(crate) use task_manager::timer_queue::{
+    PosixTimerClock, PosixTimerNotification, TimerError, TimerSetting, create_posix_timer,
+    delete_posix_timer, posix_timer, posix_timer_overrun, real_timer, remove_posix_timers_for_exec,
+    set_posix_timer, set_real_timer,
+};
 pub(crate) use task_manager::*;
 pub(crate) use trap_context::TrapContext;
 
