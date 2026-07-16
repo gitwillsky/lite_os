@@ -80,11 +80,11 @@ impl Scene {
         self.square_rect()
     }
 
-    pub fn move_pointer(&mut self, x: usize, y: usize) -> Rect {
+    pub fn move_pointer(&mut self, x: usize, y: usize) -> [Rect; 2] {
         let old = self.pointer_rect();
         self.pointer_x = x.min(self.width.saturating_sub(1));
         self.pointer_y = y.min(self.height.saturating_sub(1));
-        old.union(self.pointer_rect())
+        [old, self.pointer_rect()]
     }
 
     pub fn render(&self, pixels: *mut u32, pitch: usize, rectangle: Rect) {

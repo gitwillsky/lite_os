@@ -46,7 +46,12 @@ enum PendingOperation {
         owner: u64,
         event: Option<PendingEvent>,
     },
-    Damage,
+    Damage {
+        owner: u64,
+    },
+    Release {
+        owner: u64,
+    },
     Disable,
 }
 
@@ -157,7 +162,7 @@ pub(crate) enum DrmError {
 pub(crate) enum FramebufferRemoval {
     /// object 已从 device namespace 删除。
     Removed,
-    /// active object 的 scanout disable 尚未完成，caller 必须等待后重试删除。
+    /// scanout disable 或 inactive RESOURCE_UNREF 尚未完成，caller 必须等待后重试删除。
     Wait(DrmWait),
 }
 
@@ -411,52 +416,6 @@ impl DrmFile {
         Ok(id)
     }
 
-    /// @description 删除本 OFD 创建的 framebuffer object。
-    /// @param id device-wide framebuffer ID。
-    /// @return object 已删除，或 active scanout disable transaction 的 wait token。
-    /// @errors object 不存在返回 NotFound；并发 flip 或 adapter/wait 失败返回对应错误。
-    pub(crate) fn remove_framebuffer(&self, id: u32) -> Result<FramebufferRemoval, DrmError> {
-        let mut completion = self.device.completion.lock();
-        {
-            let state = self.device.state.lock();
-            if state
-                .framebuffers
-                .get(&id)
-                .is_none_or(|framebuffer| framebuffer.owner != self.file_identity)
-            {
-                return Err(DrmError::NotFound);
-            }
-        }
-        if completion.pending.as_ref().is_some_and(|pending| {
-            matches!(
-                &pending.operation,
-                PendingOperation::Scanout { framebuffer, .. } if *framebuffer == id
-            )
-        }) {
-            return Err(DrmError::Busy);
-        }
-        if completion
-            .active
-            .is_some_and(|active| active.framebuffer == id)
-        {
-            return self
-                .submit_disable(&mut completion)
-                .map(FramebufferRemoval::Wait);
-        }
-        let removed = {
-            let mut state = self.device.state.lock();
-            state
-                .framebuffers
-                .remove(&id)
-                .expect("validated framebuffer disappeared under owner lock")
-        };
-        drop(completion);
-        // framebuffer 可能持有 GEM backing 的最后一个 Arc；页回收不得发生在 device
-        // object namespace lock 内，否则 close/RMFB 会放大所有 KMS query 的尾延迟。
-        drop(removed);
-        Ok(FramebufferRemoval::Removed)
-    }
-
     /// @description 返回当前 device-wide framebuffer object 数量。
     pub(crate) fn framebuffer_count(&self) -> usize {
         self.device.state.lock().framebuffers.len()
@@ -549,29 +508,38 @@ impl DrmFile {
         self.submit_scanout(&mut completion, mode, id, None)
     }
 
-    /// @description 同步把 active framebuffer 的 dirty rectangles 传输到 persistent resource。
-    /// @param id 当前 active 且属于本 OFD 的 framebuffer object ID。
+    /// @description 同步把任一本 OFD framebuffer 的 dirty rectangles 传输到 resident resource。
+    /// @param id 属于本 OFD 的 framebuffer object ID；允许在 page flip 前同步 inactive buffer。
     /// @param rectangles 0..=32 个半开 scanout rectangle；零个表示 full framebuffer。
     /// @return Linux 语义下零 clips 扩展为 full framebuffer；始终返回 TRANSFER+FLUSH wait token。
-    /// @errors framebuffer 非 active/非本 OFD、已有 operation 或 rectangle/device failure。
+    /// @errors framebuffer 非本 OFD、已有 operation 或 rectangle/device failure。
     pub(crate) fn dirty_framebuffer(
         &self,
         id: u32,
         rectangles: &[DisplayRect],
     ) -> Result<DrmWait, DrmError> {
         let mut completion = self.device.completion.lock();
-        let active = completion.active.ok_or(DrmError::Invalid)?;
-        if active.framebuffer != id || active.owner != self.file_identity {
-            return Err(DrmError::Invalid);
-        }
+        let mode = {
+            let state = self.device.state.lock();
+            let framebuffer = state.framebuffers.get(&id).ok_or(DrmError::NotFound)?;
+            if framebuffer.owner != self.file_identity {
+                return Err(DrmError::NotFound);
+            }
+            DisplayMode {
+                width: framebuffer.width,
+                height: framebuffer.height,
+                pitch: framebuffer.pitch,
+            }
+        };
         let full = [DisplayRect {
             x: 0,
             y: 0,
-            width: active.mode.width,
-            height: active.mode.height,
+            width: mode.width,
+            height: mode.height,
         }];
         self.submit_damage(
             &mut completion,
+            id,
             if rectangles.is_empty() {
                 &full
             } else {

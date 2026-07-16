@@ -61,6 +61,8 @@ fn event_loop(
     let mut render_due = None;
     let mut resize_due = None;
     let mut prepared_resize = None;
+    // geometry 必须切换到已同步的备用 buffer；若缺少此标记，pointer damage 也会退化为整帧 page flip。
+    let mut flip_requested = false;
     let mut last_present = ffi::monotonic_milliseconds();
     loop {
         let now = ffi::monotonic_milliseconds();
@@ -124,6 +126,7 @@ fn event_loop(
                     let (next, next_scene) = Active::open(seat, Some(*scene))?;
                     *scene = next_scene;
                     *active = Some(next);
+                    flip_requested = false;
                     last_present = now;
                 } else {
                     let current = active.take().ok_or(())?;
@@ -132,6 +135,7 @@ fn event_loop(
                     render_due = None;
                     resize_due = None;
                     prepared_resize.take();
+                    flip_requested = false;
                 }
             }
         }
@@ -159,6 +163,7 @@ fn event_loop(
             if let Some(damage) = change.damage {
                 prepared_resize.take();
                 current.display.damage(damage);
+                flip_requested = true;
                 schedule_render(&mut render_due, last_present, now);
             }
         }
@@ -166,7 +171,9 @@ fn event_loop(
             && let Some(damage) = current.input.read_pointer(scene)?
         {
             prepared_resize.take();
-            current.display.damage(damage);
+            for rectangle in damage {
+                current.display.damage(rectangle);
+            }
             schedule_render(&mut render_due, last_present, now);
         }
         if hotplug {
@@ -179,6 +186,7 @@ fn event_loop(
                     resize_due = None;
                     if changed {
                         render_due = None;
+                        flip_requested = false;
                         last_present = now;
                     }
                 }
@@ -193,10 +201,20 @@ fn event_loop(
             }
         }
         if render_due.is_some_and(|deadline| deadline <= now) {
-            if current.display.present(scene)? {
+            let presented = if flip_requested {
+                current.display.present_flip(scene)?
+            } else {
+                current.display.present_damage(scene)?
+            };
+            if presented {
                 last_present = now;
                 render_due = None;
-            } else if current.display.has_damage() {
+                flip_requested = false;
+            } else if if flip_requested {
+                current.display.has_flip_damage()
+            } else {
+                current.display.has_active_damage()
+            } {
                 render_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
             } else {
                 render_due = None;

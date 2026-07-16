@@ -12,6 +12,64 @@ pub(super) fn display_error(error: DisplayError) -> DrmError {
 }
 
 impl DrmFile {
+    /// @description 删除本 OFD 创建的 framebuffer，并显式释放 adapter residency。
+    /// @param id device-wide framebuffer ID。
+    /// @return object 已删除，或 disable/RESOURCE_UNREF transaction 的 wait token。
+    /// @errors object 不存在返回 NotFound；并发 operation 或 adapter failure 返回对应错误。
+    pub(crate) fn remove_framebuffer(&self, id: u32) -> Result<FramebufferRemoval, DrmError> {
+        let mut completion = self.device.completion.lock();
+        {
+            let state = self.device.state.lock();
+            if state
+                .framebuffers
+                .get(&id)
+                .is_none_or(|framebuffer| framebuffer.owner != self.file_identity)
+            {
+                return Err(DrmError::NotFound);
+            }
+        }
+        if completion.pending.is_some() {
+            return Err(DrmError::Busy);
+        }
+        if completion
+            .active
+            .is_some_and(|active| active.framebuffer == id)
+        {
+            return self
+                .submit_disable(&mut completion)
+                .map(FramebufferRemoval::Wait);
+        }
+        if let Some(fence) = self
+            .device
+            .display
+            .release_buffer(u64::from(id))
+            .map_err(display_error)?
+        {
+            completion.pending = Some(PendingDisplay {
+                fence,
+                operation: PendingOperation::Release {
+                    owner: self.file_identity,
+                },
+            });
+            return Ok(FramebufferRemoval::Wait(DrmWait {
+                device: self.device.clone(),
+                fence,
+            }));
+        }
+        let removed = self
+            .device
+            .state
+            .lock()
+            .framebuffers
+            .remove(&id)
+            .expect("validated framebuffer disappeared under owner lock");
+        drop(completion);
+        // framebuffer 可能持有 GEM backing 的最后一个 Arc；页回收不得发生在 device
+        // object namespace lock 内，否则 close/RMFB 会放大所有 KMS query 的尾延迟。
+        drop(removed);
+        Ok(FramebufferRemoval::Removed)
+    }
+
     pub(super) fn submit_scanout(
         &self,
         completion: &mut CompletionState,
@@ -42,7 +100,7 @@ impl DrmFile {
         let fence = self
             .device
             .display
-            .submit_scanout(mode, backing)
+            .submit_scanout(u64::from(framebuffer_id), mode, backing)
             .map_err(display_error)?;
         completion.pending = Some(PendingDisplay {
             fence,
@@ -62,19 +120,39 @@ impl DrmFile {
     pub(super) fn submit_damage(
         &self,
         completion: &mut CompletionState,
+        framebuffer_id: u32,
         rectangles: &[DisplayRect],
     ) -> Result<DrmWait, DrmError> {
         if completion.pending.is_some() {
             return Err(DrmError::Busy);
         }
+        let (mode, backing, owner) = {
+            let state = self.device.state.lock();
+            let framebuffer = state
+                .framebuffers
+                .get(&framebuffer_id)
+                .ok_or(DrmError::NotFound)?;
+            if framebuffer.owner != self.file_identity {
+                return Err(DrmError::NotFound);
+            }
+            (
+                DisplayMode {
+                    width: framebuffer.width,
+                    height: framebuffer.height,
+                    pitch: framebuffer.pitch,
+                },
+                framebuffer.buffer.backing.clone(),
+                framebuffer.owner,
+            )
+        };
         let fence = self
             .device
             .display
-            .submit_damage(rectangles)
+            .submit_damage(u64::from(framebuffer_id), mode, backing, rectangles)
             .map_err(display_error)?;
         completion.pending = Some(PendingDisplay {
             fence,
-            operation: PendingOperation::Damage,
+            operation: PendingOperation::Damage { owner },
         });
         Ok(DrmWait {
             device: self.device.clone(),
@@ -119,12 +197,13 @@ impl Drop for DrmFile {
                     PendingOperation::Scanout { owner, .. } if *owner == identity
                 )
             });
-            let pending_damage_on_owned = owned_active
-                && completion
-                    .pending
-                    .as_ref()
-                    .is_some_and(|pending| matches!(&pending.operation, PendingOperation::Damage));
-            if pending_owned_scanout || pending_damage_on_owned {
+            let pending_damage_on_owned = completion.pending.as_ref().is_some_and(|pending| {
+                matches!(&pending.operation, PendingOperation::Damage { owner } if *owner == identity)
+            });
+            let pending_release_on_owned = completion.pending.as_ref().is_some_and(|pending| {
+                matches!(&pending.operation, PendingOperation::Release { owner } if *owner == identity)
+            });
+            if pending_owned_scanout || pending_damage_on_owned || pending_release_on_owned {
                 completion.reset_after_owner = Some(identity);
             } else if completion.pending.is_none() && owned_active {
                 self.submit_disable(&mut completion)
@@ -276,7 +355,8 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     state.completed = state.completed.max(fence);
     let reset_after_close = match &pending.operation {
         PendingOperation::Scanout { owner, .. } => state.reset_after_owner == Some(*owner),
-        PendingOperation::Damage => state.reset_after_owner.is_some(),
+        PendingOperation::Damage { owner } => state.reset_after_owner == Some(*owner),
+        PendingOperation::Release { owner } => state.reset_after_owner == Some(*owner),
         PendingOperation::Disable => false,
     };
     match pending.operation {
@@ -303,7 +383,8 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
                 mode,
             });
         }
-        PendingOperation::Damage => {}
+        PendingOperation::Damage { .. } => {}
+        PendingOperation::Release { .. } => {}
         PendingOperation::Disable => state.active = None,
     }
     if reset_after_close {
@@ -319,7 +400,6 @@ pub(crate) fn dispatch_display_work(timestamp_ns: u64) {
     }
     drop(state);
     drm.completion_write.signal_readiness();
-    debug!("[DRM] asynchronous display operation completed, fence={fence}");
 }
 
 fn publish_mode_change(drm: &DrmDevice, mode: DisplayMode) {

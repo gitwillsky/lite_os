@@ -619,22 +619,56 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         );
     }
     let graphics_display = fs::read_to_string(graphics.join("src/display.rs")).unwrap_or_default();
+    let graphics_ffi = fs::read_to_string(graphics.join("src/ffi.rs")).unwrap_or_default();
+    let graphics_input = fs::read_to_string(graphics.join("src/input.rs")).unwrap_or_default();
     let graphics_reactor = fs::read_to_string(graphics.join("src/reactor.rs")).unwrap_or_default();
     let graphics_scene = fs::read_to_string(graphics.join("src/scene.rs")).unwrap_or_default();
+    let pointer_path = graphics_reactor
+        .split_once("if descriptors[3].returned & ffi::POLLIN != 0")
+        .and_then(|(_, tail)| tail.split_once("        if hotplug"))
+        .map(|(body, _)| body)
+        .unwrap_or_default();
+    let damage_presenter = graphics_display
+        .split_once("pub fn present_damage(")
+        .and_then(|(_, tail)| tail.split_once("    pub fn present_flip("))
+        .map(|(body, _)| body)
+        .unwrap_or_default();
+    let flip_presenter = graphics_display
+        .split_once("pub fn present_flip(")
+        .and_then(|(_, tail)| tail.split_once("    pub fn read_events("))
+        .map(|(body, _)| body)
+        .unwrap_or_default();
     if !graphics_display.contains("buffers: [Option<Buffer>; 2]")
+        || !graphics_display.contains("const MAX_DAMAGE_RECTS: usize = 32;")
+        || !graphics_display.contains("struct DamageSet")
+        || !graphics_display.contains("pub fn present_damage(")
+        || !graphics_display.contains("ffi::drmModeDirtyFB")
+        || !graphics_display.contains("pub fn present_flip(")
         || !graphics_display.contains("ffi::drmModePageFlip")
         || !graphics_display.contains("DRM_EVENT_FLIP_COMPLETE")
+        || !graphics_ffi.contains("pub fn drmModeDirtyFB(")
+        || !graphics_input.contains("Result<Option<[Rect; 2]>, ()>")
         || !graphics_reactor.contains("const FRAME_INTERVAL_MS: u64 = 17;")
         || !graphics_reactor.contains("const RESIZE_QUIET_MS: u64 = 50;")
         || !graphics_reactor.contains("struct PreparedResize")
         || !graphics_reactor.contains("active.display.query_mode().map_err(resize_error)?")
         || !graphics_reactor.contains("Err(ResizeFailure::Transient)")
+        || !graphics_reactor.contains("current.display.present_damage(scene)?")
+        || !graphics_reactor.contains("current.display.present_flip(scene)?")
+        || !pointer_path.contains("for rectangle in damage")
+        || pointer_path.contains("flip_requested = true")
+        || !damage_presenter.contains("self.buffers[self.front]")
+        || !damage_presenter.contains("ffi::drmModeDirtyFB")
+        || damage_presenter.contains("ffi::drmModePageFlip")
+        || !flip_presenter.contains("let back = self.front ^ 1;")
+        || !flip_presenter.contains("ffi::drmModePageFlip")
+        || !flip_presenter.contains("ffi::drmModeDirtyFB")
         || !graphics_reactor.contains("deadline_timeout")
         || !graphics_scene.contains("pub fn render(")
         || !graphics_scene.contains("pub fn union(")
     {
         errors.push(
-            "user/liteos-2d: reference client must retain two dumb buffers, consume page-flip events, damage-render geometry and block on a single 60 fps/hotplug reactor"
+            "user/liteos-2d: reference client must retain two dumb buffers, use fixed allocation-free DIRTYFB pointer damage, reserve page flips for geometry, and block on a single 60 fps/hotplug reactor"
                 .to_owned(),
         );
     }
@@ -1333,6 +1367,38 @@ struct PatternVisitor {
     unfinished: Vec<usize>,
 }
 
+#[derive(Default)]
+struct DisplayCompletionLogVisitor {
+    inside_completion: bool,
+    violations: Vec<(usize, String)>,
+}
+
+impl<'ast> Visit<'ast> for DisplayCompletionLogVisitor {
+    fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+        let previous = self.inside_completion;
+        self.inside_completion = item.sig.ident == "dispatch_display_work";
+        syn::visit::visit_item_fn(self, item);
+        self.inside_completion = previous;
+    }
+
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        if self.inside_completion
+            && let Some(name) = node
+                .path
+                .segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+            && matches!(
+                name.as_str(),
+                "trace" | "debug" | "info" | "warn" | "error" | "print" | "println"
+            )
+        {
+            self.violations.push((node.path.span().start().line, name));
+        }
+        syn::visit::visit_macro(self, node);
+    }
+}
+
 impl<'ast> Visit<'ast> for PatternVisitor {
     fn visit_item_static(&mut self, item: &'ast ItemStatic) {
         if matches!(item.mutability, syn::StaticMutability::Mut(_)) {
@@ -1409,6 +1475,16 @@ fn check_source_patterns(root: &Path, sources: &[SourceFile], errors: &mut Vec<S
                 source.at(line)
             ));
         }
+        if source.relative == "kernel/src/drm/device.rs" {
+            let mut hot_path = DisplayCompletionLogVisitor::default();
+            hot_path.visit_file(&source.syntax);
+            for (line, name) in hot_path.violations {
+                errors.push(format!(
+                    "{}: display completion hot path must not invoke synchronous `{name}!` logging",
+                    source.at(line)
+                ));
+            }
+        }
     }
 
     let gpu_boot = sources
@@ -1426,6 +1502,35 @@ fn check_source_patterns(root: &Path, sources: &[SourceFile], errors: &mut Vec<S
     {
         errors.push(
             "display mode must be canonicalized once at the VirtIO boundary and consumed unchanged by DRM"
+                .to_owned(),
+        );
+    }
+
+    let gpu_runtime = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let gpu_damage = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/damage.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    let gpu_resources = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/drivers/virtio_gpu/resource.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
+    if !gpu_resources.contains("target.synchronized(&control.resources)")
+        || gpu_runtime.contains("UnrefReplaced")
+        || !gpu_damage.contains("fn publish_next(")
+        || !gpu_damage.contains("usize::from(free_descriptors / 4)")
+        || !gpu_damage.contains("queue.add_to_avail(command.head)")
+        || !gpu_resources.contains("slots: [Option<ResidentResource>; 2]")
+        || !gpu_resources.contains("fn release_resident(")
+    {
+        errors.push(
+            "VirtIO-GPU runtime must retain the two-slot framebuffer residency cache, batch independent DIRTYFB transfers with capacity proof, and explicitly release RMFB resources"
                 .to_owned(),
         );
     }

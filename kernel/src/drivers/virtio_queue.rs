@@ -160,6 +160,12 @@ impl VirtQueue {
         self.addresses
     }
 
+    /// @description 返回尚未被 driver-owned descriptor chain 占用的 entry 数量。
+    /// @return 外层 queue lock 下稳定的 free-list 容量。
+    pub(super) fn free_descriptor_count(&self) -> u16 {
+        self.num_free
+    }
+
     // Write descriptor from shadow to actual - inspired by virtio-drivers
     fn write_desc(&mut self, index: u16) {
         let index = index as usize;

@@ -54,6 +54,7 @@ pub(crate) trait DisplayDevice: Send + Sync {
     fn mode(&self) -> DisplayMode;
 
     /// @description 异步把一个 XRGB8888 scatter/gather backing 切换为指定 scanout mode。
+    /// @param identity DRM framebuffer 的全局单调 identity，用于命中 resident resource。
     /// @param mode 本次 transaction 捕获的 display-info mode。
     /// @param backing 至少覆盖固定 mode pitch × height；adapter 从提交到资源解绑完成独立
     /// 保活该 owner。
@@ -62,15 +63,31 @@ pub(crate) trait DisplayDevice: Send + Sync {
     /// `Device`。
     fn submit_scanout(
         &self,
+        identity: u64,
         mode: DisplayMode,
         backing: Arc<DeviceBacking>,
     ) -> Result<u64, DisplayError>;
 
-    /// @description 把当前 active resource 的若干 damage rectangle 传输并 flush 到 host。
-    /// @param rectangles 1..=32 个已合并、非空且位于 active mode 内的 rectangle。
+    /// @description 把指定 stable framebuffer 的若干 damage rectangle 批量传输到 host。
+    /// @param identity DRM framebuffer 的全局单调 identity，用于复用 resident resource。
+    /// @param mode target framebuffer 的完整 linear mode。
+    /// @param backing target framebuffer 的 SG owner；adapter 保活到 eviction completion。
+    /// @param rectangles 1..=32 个已合并、非空且位于 target mode 内的 rectangle。
     /// @return blocking DIRTYFB 等待的 operation fence。
-    /// @errors 无 active resource、rectangle 越界、已有 operation 或 device failure。
-    fn submit_damage(&self, rectangles: &[DisplayRect]) -> Result<u64, DisplayError>;
+    /// @errors identity/backing 不一致、rectangle 越界、已有 operation 或 device failure。
+    fn submit_damage(
+        &self,
+        identity: u64,
+        mode: DisplayMode,
+        backing: Arc<DeviceBacking>,
+        rectangles: &[DisplayRect],
+    ) -> Result<u64, DisplayError>;
+
+    /// @description 释放一个已删除 framebuffer 对应的 inactive resident resource。
+    /// @param identity DRM framebuffer 的全局单调 identity。
+    /// @return resource 未 resident 时为 None；否则返回 RESOURCE_UNREF operation fence。
+    /// @errors identity 仍 active、已有 operation 或 device failure。
+    fn release_buffer(&self, identity: u64) -> Result<Option<u64>, DisplayError>;
 
     /// @description 以标准 resource_id=0 禁用 scanout，再解绑并释放 active resource。
     /// @return disable operation fence；hardware 不再引用 backing 后才完成。

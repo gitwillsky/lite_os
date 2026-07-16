@@ -113,6 +113,15 @@ pub struct DrmDumbMap {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct DrmClip {
+    pub x1: u16,
+    pub y1: u16,
+    pub x2: u16,
+    pub y2: u16,
+}
+
+#[repr(C)]
 pub struct PollFd {
     pub fd: c_int,
     pub events: i16,
@@ -158,6 +167,7 @@ const _: () = assert!(core::mem::size_of::<DrmMode>() == 68);
 const _: () = assert!(core::mem::size_of::<LibDrmResources>() == 80);
 const _: () = assert!(core::mem::size_of::<LibDrmConnector>() == 88);
 const _: () = assert!(core::mem::size_of::<DrmDumbCreate>() == 32);
+const _: () = assert!(core::mem::size_of::<DrmClip>() == 8);
 const _: () = assert!(core::mem::size_of::<InputEvent>() == 24);
 
 unsafe extern "C" {
@@ -196,6 +206,12 @@ unsafe extern "C" {
         framebuffer_id: *mut u32,
     ) -> c_int;
     pub fn drmModeRmFB(fd: c_int, framebuffer_id: u32) -> c_int;
+    pub fn drmModeDirtyFB(
+        fd: c_int,
+        framebuffer_id: u32,
+        clips: *mut DrmClip,
+        clip_count: u32,
+    ) -> c_int;
     pub fn drmModeSetCrtc(
         fd: c_int,
         crtc_id: u32,

@@ -91,7 +91,7 @@ impl Input {
         Ok(Change { damage, quit })
     }
 
-    pub fn read_pointer(&mut self, scene: &mut Scene) -> Result<Option<Rect>, ()> {
+    pub fn read_pointer(&mut self, scene: &mut Scene) -> Result<Option<[Rect; 2]>, ()> {
         let Some((device, pointer)) = self.pointer.as_mut() else {
             return Ok(None);
         };

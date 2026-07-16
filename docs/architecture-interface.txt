@@ -281,8 +281,9 @@ kernel/src/drivers/display.rs :: pub (super) fn register (device : Arc < dyn Dis
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) -> Result < Option < DisplayUpdate > , DisplayError >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , rectangles : & [DisplayRect]) -> Result < u64 , DisplayError >
-kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn release_buffer (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/goldfish_rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) enum RtcError
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (rtc : RTCDevice) -> Result < Self , RtcError >
@@ -436,14 +437,81 @@ kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn 
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) const MAX_DAMAGE_RECTS : usize = 32
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: const fn new () -> Self
-kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn advance (& mut self) -> Option < DisplayRect >
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn batch_active (& self) -> bool
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn begin (& mut self , rectangles : [DisplayRect ; MAX_DAMAGE_RECTS] , count : usize)
-kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn current (& self) -> DisplayRect
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn cancel (& mut self)
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn complete (& mut self , head : u16) -> Result < bool , DisplayError >
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn finish_batch (& mut self)
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn flush_rectangle (& self) -> DisplayRect
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn has_remaining (& self) -> bool
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn operation_fence (& self) -> u64
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl DamageTransition :: fn publish_next (& mut self , queue : & mut VirtQueue , next_fence : & mut u64 , operation_fence : Option < u64 > , mode : DisplayMode , resource_id : u32 ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_resident_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/virtio_gpu/damage.rs :: pub (super) struct DamageTransition
+kernel/src/drivers/virtio_gpu/resource.rs :: enum ResourceTarget :: New { slot : usize , next : ResidentResource , evicted : Option < ResidentResource > , }
+kernel/src/drivers/virtio_gpu/resource.rs :: enum ResourceTarget :: Resident (usize)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Damage (ResourceTarget)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Disable (ResourceSnapshot)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Release (ResourceRelease)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: RetireBoot { boot : ResourceRelease , evicted : Option < ResidentResource > , }
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeOperation :: Scanout (ResourceTarget)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: Attach
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: Create
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: DisableScanout
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: DisplayInfo
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: FlushDamage
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: FlushScanout
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: SetScanout
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: TransferScanout
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: UnrefBoot
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: UnrefDisabled (u8)
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: UnrefEvicted
+kernel/src/drivers/virtio_gpu/resource.rs :: enum RuntimeStage :: UnrefReleased
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) PendingCommand :: command_fence : u64
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) PendingCommand :: head : u16
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) PendingCommand :: operation_fence : u64
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) PendingCommand :: stage : RuntimeStage
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum ResourceTarget
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum RuntimeOperation
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) enum RuntimeStage
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn disabled_resource (operation : & Option < RuntimeOperation > , start : usize ,) -> Result < Option < (usize , u32) > , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn full_rectangle (mode : DisplayMode) -> crate :: drivers :: DisplayRect
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn operation_target (operation : & Option < RuntimeOperation > , resources : & ResourceSet ,) -> Result < (DisplayMode , u32) , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn operation_target_ref (operation : & Option < RuntimeOperation > ,) -> Result < & ResourceTarget , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) fn validate_backing (mode : DisplayMode , backing : & DeviceBacking ,) -> Result < () , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResidentResource :: fn id (& self) -> u32
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceRelease :: fn id (& self) -> u32
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: const fn empty () -> Self
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn active_mode (& self) -> Option < DisplayMode >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn cancel (& mut self , target : ResourceTarget) -> Option < ResidentResource >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn complete (& mut self , target : ResourceTarget , activate : bool , synchronized : bool ,) -> Option < ResidentResource >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn prepare (& mut self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < ResourceTarget , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn release (& mut self , identity : u64 ,) -> Result < Option < ResourceRelease > , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn restore_all (& mut self , resources : ResourceSnapshot)
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn restore_release (& mut self , release : ResourceRelease)
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn take_all (& mut self) -> ResourceSnapshot
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceSet :: fn with_boot (backing : Arc < DeviceBacking > , mode : DisplayMode) -> Self
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn backing_owner (& self , resources : & ResourceSet) -> Arc < DeviceBacking >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn evicted_id (& self) -> Option < u32 >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn id (& self , resources : & ResourceSet) -> u32
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn is_new (& self) -> bool
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn mode (& self , resources : & ResourceSet) -> DisplayMode
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl ResourceTarget :: fn synchronized (& self , resources : & ResourceSet) -> bool
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn disable_resident (& self) -> Result < u64 , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn release_resident (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_resident_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct PendingCommand
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResidentResource
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResourceRelease
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResourceSet
+kernel/src/drivers/virtio_gpu/resource.rs :: pub (super) struct ResourceSnapshot
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const ATTACH_REQUEST_SIZE : usize = 32 + DeviceBacking :: MAX_EXTENTS * 16
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_HEADER_SIZE : usize = 24
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const CONTROL_QUEUE : u32 = 0
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const DISPLAY_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16 * 24
+kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const QUEUE_SIZE : u16 = 64
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_DISPLAY_INFO : u32 = 0x0100
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING : u32 = 0x0106
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D : u32 = 0x0101
@@ -501,6 +569,7 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) const VIRTQ_DESC_F_WRITE : u16
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_buffer (& mut self , inputs : & [& [u8]] , outputs : & mut [& mut [u8]] ,) -> Option < u16 >
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn add_to_avail (& mut self , desc_idx : u16)
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn addresses (& self) -> VirtQueueAddresses
+kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn free_descriptor_count (& self) -> u16
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn has_used (& self) -> bool
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn new (size : u16) -> Option < Self >
 kernel/src/drivers/virtio_queue.rs :: pub (super) impl VirtQueue :: fn used (& mut self) -> Result < Option < (u16 , u32) > , () >
@@ -520,8 +589,8 @@ kernel/src/drm.rs :: enum DrmError :: # [doc = " monotonic identity 或 handle �
 kernel/src/drm.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
 kernel/src/drm.rs :: enum DrmError :: # [doc = " 当前 OFD 不是 KMS master，或无权重新取得 master。"] Permission
-kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " active object 的 scanout disable 尚未完成，caller 必须等待后重试删除。"] Wait (DrmWait)
 kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
+kernel/src/drm.rs :: enum FramebufferRemoval :: # [doc = " scanout disable 或 inactive RESOURCE_UNREF 尚未完成，caller 必须等待后重试删除。"] Wait (DrmWait)
 kernel/src/drm.rs :: pub (crate) DrmMode :: clock : u32
 kernel/src/drm.rs :: pub (crate) DrmMode :: flags : u32
 kernel/src/drm.rs :: pub (crate) DrmMode :: hdisplay : u16
@@ -555,7 +624,6 @@ kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn framebuffer_id (& self , ind
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn map_dumb (& self , handle : u32) -> Result < u64 , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn mapping (& self , offset : u64 , length : usize ,) -> Result < DeviceMappingSource , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn page_flip (self : & Arc < Self > , id : u32 , user_data : Option < u64 > ,) -> Result < DrmWait , DrmError >
-kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32) -> Result < DrmWait , DrmError >
 kernel/src/drm.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
 kernel/src/drm.rs :: pub (crate) mod device
@@ -569,8 +637,9 @@ kernel/src/drm.rs :: pub (crate) use event :: DrmEvent
 kernel/src/drm/device.rs :: pub (crate) fn dispatch_display_work (timestamp_ns : u64)
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn DisplayDevice > , completion_read : Arc < PipeEnd > , completion_write : Arc < PipeEnd > ,) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) fn open () -> Result < Arc < DrmFile > , () >
+kernel/src/drm/device.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
-kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_damage (& self , completion : & mut CompletionState , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
+kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_damage (& self , completion : & mut CompletionState , framebuffer_id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_disable (& self , completion : & mut CompletionState ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_scanout (& self , completion : & mut CompletionState , mode : DisplayMode , framebuffer_id : u32 , event : Option < PendingEvent > ,) -> Result < DrmWait , DrmError >
 kernel/src/drm/event.rs :: pub (crate) impl DrmEvent :: fn encode (self) -> [u8 ; Self :: SIZE]
