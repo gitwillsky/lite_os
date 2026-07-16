@@ -6,7 +6,7 @@
 > a reviewer owns the index.
 >
 > **Drift check (run first)**:
-> `git diff --stat e891a3f..HEAD -- kernel/src/syscall/mod.rs kernel/src/syscall/user_iovec.rs kernel/src/syscall/fs/io.rs kernel/src/syscall/fs/io/user_vector.rs kernel/src/syscall/fs/io/sequential/read.rs kernel/src/syscall/fs/io/sequential/write.rs kernel/src/syscall/socket.rs kernel/src/syscall/socket/message.rs kernel/src/socket.rs kernel/src/socket/message_limits.rs kernel/src/socket/unix.rs kernel/src/socket/inet/raw.rs kernel/src/socket/inet/udp.rs kernel/src/socket/packet.rs tools/kernel-unit/src/lib.rs user/dynamic-smoke.c docs/architecture.md docs/architecture-contract.md docs/architecture-interface.txt docs/syscall-support.md plans/README.md`
+> `git diff --stat e891a3f..HEAD -- kernel/src/syscall/mod.rs kernel/src/syscall/user_iovec.rs kernel/src/syscall/fs/io.rs kernel/src/syscall/fs/io/user_vector.rs kernel/src/syscall/fs/io/sequential/read.rs kernel/src/syscall/fs/io/sequential/write.rs kernel/src/syscall/socket.rs kernel/src/syscall/socket/message.rs kernel/src/socket.rs kernel/src/socket/message_limits.rs kernel/src/socket/unix.rs kernel/src/socket/inet/raw.rs kernel/src/socket/inet/udp.rs kernel/src/socket/packet.rs tools/kernel-unit/src/lib.rs user/probes/dynamic-smoke.c docs/architecture.md docs/architecture-contract.md docs/architecture-interface.txt docs/syscall-support.md plans/README.md`
 > Plans 012-015 must already be committed. Plans 013-015 may update the shared
 > architecture documents; Plan 015 is expected to change the socket send
 > outcome, AF_UNIX message-size preflight, truncation and direct peer-capacity
@@ -124,7 +124,7 @@ Never run Make.
 - `kernel/src/socket/packet.rs`
 - `kernel/src/socket/unix.rs`
 - `tools/kernel-unit/src/lib.rs`
-- `user/dynamic-smoke.c`
+- `user/probes/dynamic-smoke.c`
 - `docs/architecture.md`
 - `docs/architecture-contract.md`
 - `docs/architecture-interface.txt` (generated scoped-interface baseline)
@@ -275,7 +275,7 @@ Include the production raw-iovec layout/chunk helper through `kernel-unit`. Test
 - stream staging plans 65,536, 65,537 and multi-megabyte totals into bounded
   chunks without a request-sized allocation.
 
-Extend `user/dynamic-smoke.c` to prove:
+Extend `user/probes/dynamic-smoke.c` to prove:
 
 - AF_UNIX stream recvmsg with destination capacity >65,535 receives a small
   message instead of EMSGSIZE;

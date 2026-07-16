@@ -38,4 +38,4 @@ consumer 只证明这些实际执行路径，不是通用 Linux/POSIX conformanc
 
 `make verify` 执行 AST 架构围栏、workspace check/clippy、三组件构建、ELF 静态检查、Rust init QEMU `-smp 1/3/8` 冷启动，以及固定 musl consumer 冷启动。静态审计同时确认内部 sentinel 只有 dispatcher 可见、所有 Thread 构造器都初始化空 record、record 只在 signal delivery 消费。
 
-本阶段同时建立后续 tracer bullet 的输入基线：BusyBox 官方 release `1.37.0`、固定 tarball SHA-256 与唯一 `user/busybox.config` 已可用未修改的上游源码和固定 musl sysroot 构建为静态 RISC-V `ET_EXEC`。该 gate 只证明 source/config/toolchain/ELF 边界，不将 BusyBox 放入当前 init 镜像，也不宣称 runtime syscall 已满足。
+本阶段同时建立后续 tracer bullet 的输入基线：BusyBox 官方 release `1.37.0`、固定 tarball SHA-256 与唯一 `user/base/busybox.config` 已可用未修改的上游源码和固定 musl sysroot 构建为静态 RISC-V `ET_EXEC`。该 gate 只证明 source/config/toolchain/ELF 边界，不将 BusyBox 放入当前 init 镜像，也不宣称 runtime syscall 已满足。

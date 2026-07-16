@@ -6,7 +6,7 @@
 > reviewer owns the index.
 >
 > **Drift check (run first)**:
-> `git diff --stat e891a3f..HEAD -- kernel/src/socket.rs kernel/src/socket/unix.rs kernel/src/syscall/socket.rs kernel/src/syscall/socket/message.rs kernel/src/syscall/fs/io/sequential/write.rs kernel/src/syscall/poll.rs kernel/src/syscall/poll/wait_keys.rs kernel/src/ipc.rs tools/kernel-unit/src/lib.rs user/dynamic-smoke.c docs/architecture-contract.md docs/syscall-support.md`
+> `git diff --stat e891a3f..HEAD -- kernel/src/socket.rs kernel/src/socket/unix.rs kernel/src/syscall/socket.rs kernel/src/syscall/socket/message.rs kernel/src/syscall/fs/io/sequential/write.rs kernel/src/syscall/poll.rs kernel/src/syscall/poll/wait_keys.rs kernel/src/ipc.rs tools/kernel-unit/src/lib.rs user/probes/dynamic-smoke.c docs/architecture-contract.md docs/syscall-support.md`
 > Plan 012 is expected to change poll wait-key collection and IPC notification
 > draining; Plans 012-014 may all update the architecture documents. They must
 > be committed first. Re-read and preserve their final interfaces/content;
@@ -119,7 +119,7 @@ Never run Make.
 - `kernel/src/syscall/poll.rs`
 - `kernel/src/syscall/poll/wait_keys.rs`
 - `tools/kernel-unit/src/lib.rs`
-- `user/dynamic-smoke.c`
+- `user/probes/dynamic-smoke.c`
 - `docs/architecture.md`
 - `docs/architecture-contract.md`
 - `docs/architecture-interface.txt` (official generator output only)
@@ -291,7 +291,7 @@ tests for:
 - empty and maximum-size message entries count as one slot; and
 - repeated fill/drain cycles never grow logical capacity or duplicate items.
 
-Extend `user/dynamic-smoke.c::verify_unix_epoll` with self-checking tests that:
+Extend `user/probes/dynamic-smoke.c::verify_unix_epoll` with self-checking tests that:
 
 - send a six-byte datagram into a two-byte recvmsg iovec and verify copied
   prefix, output MSG_TRUNC and return 6 with input MSG_TRUNC;

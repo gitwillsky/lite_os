@@ -5,7 +5,7 @@
 - musl `v1.2.6`，tag commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`。
 - 官方 release：`https://musl.libc.org/releases/musl-1.2.6.tar.gz`。
 - tarball SHA-256：`d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a`。
-- consumer：`user/musl-smoke.c`，静态 RV64GC LP64D `ET_EXEC`，无 `PT_INTERP/PT_DYNAMIC/PT_TLS`。
+- consumer：`user/probes/musl-smoke.c`，静态 RV64GC LP64D `ET_EXEC`，无 `PT_INTERP/PT_DYNAMIC/PT_TLS`。
 
 源码与构建产物只存在于忽略的 `target/musl-static/`。仓库不 vendor musl，不使用 Zig 内置的其他 musl revision，也不维护第二套 libc patch。
 

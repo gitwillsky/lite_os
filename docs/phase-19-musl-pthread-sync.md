@@ -4,7 +4,7 @@
 
 ## 固定 consumer
 
-继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/musl-smoke.c` 在 Phase 18 的 create/join 路径上增加：
+继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/probes/musl-smoke.c` 在 Phase 18 的 create/join 路径上增加：
 
 1. parent/child 通过同一 `pthread_mutex_t` 与 `pthread_cond_t` 完成双向交接；
 2. parent join child，验证 clear-child-tid 与 private futex wake 仍成立；

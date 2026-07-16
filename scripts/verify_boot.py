@@ -68,7 +68,7 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
-                ROOT / "user/inittab",
+                ROOT / "user/base/inittab",
                 ROOT / "create_fs.py",
                 ROOT / "scripts/verify_busybox.py",
                 Path(__file__).resolve(),

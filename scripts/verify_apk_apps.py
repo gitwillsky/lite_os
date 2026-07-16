@@ -91,7 +91,7 @@ def inject_sqlite_recovery_assets(image: Path, directory: Path) -> None:
         f"write {recovery} /run/{recovery.name}\n"
         f"set_inode_field /run/{recovery.name} mode 0100755\n"
         f"write {inittab} /run/sqlite-recovery.inittab\n"
-        f"write {ROOT / 'user' / 'inittab'} /run/normal.inittab\n"
+        f"write {ROOT / 'user' / 'base' / 'inittab'} /run/normal.inittab\n"
     )
     apply_debugfs_script(image, transaction)
 
@@ -125,7 +125,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
     temporary = directory / "installed.img"
     shutil.copyfile(base_image, temporary)
-    normal_inittab = ROOT / "user" / "inittab"
+    normal_inittab = ROOT / "user" / "base" / "inittab"
     bootstrap_inittab = directory / "install.inittab"
     bootstrap_inittab.write_text("::sysinit:/bin/sh /run/verify-apk-install.sh\n")
     transaction = directory / "install.debugfs"

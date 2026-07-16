@@ -262,27 +262,19 @@ fn check_source_sizes(
 fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     check_user_source_sizes(root, errors);
     let allowed_user_files = BTreeSet::from([
-        "busybox.config",
+        "README.md",
         "apps",
-        "dynamic-smoke-lib.c",
-        "dynamic-smoke.c",
+        "base",
+        "diagnostics",
         "display-client",
         "display-session",
-        "group",
-        "inittab",
-        "liteos-stress.c",
-        "liteos.terminfo",
         "liteui-compositor",
         "liteui-core",
         "liteui-host",
         "liteui-session",
-        "musl-smoke.c",
-        "network-service",
-        "passwd",
-        "shutdown",
+        "probes",
         "service-activation",
         "terminal-service",
-        "udhcpc.script",
     ]);
     match fs::read_dir(root.join("user")) {
         Ok(entries) => {
@@ -296,6 +288,45 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             }
         }
         Err(error) => errors.push(format!("failed to inspect user/: {error}")),
+    }
+    for (directory, expected) in [
+        (
+            "base",
+            &[
+                "busybox.config",
+                "group",
+                "inittab",
+                "liteos.terminfo",
+                "network-service",
+                "passwd",
+                "shutdown",
+                "udhcpc.script",
+            ][..],
+        ),
+        (
+            "probes",
+            &["dynamic-smoke-lib.c", "dynamic-smoke.c", "musl-smoke.c"][..],
+        ),
+        ("diagnostics", &["liteos-stress.c"][..]),
+    ] {
+        let expected = expected
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<BTreeSet<_>>();
+        match fs::read_dir(root.join("user").join(directory)) {
+            Ok(entries) => {
+                let actual = entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect::<BTreeSet<_>>();
+                if actual != expected {
+                    errors.push(format!(
+                        "user/{directory}: expected exactly {expected:?}, found {actual:?}"
+                    ));
+                }
+            }
+            Err(error) => errors.push(format!("failed to inspect user/{directory}: {error}")),
+        }
     }
     let terminal_files = ["Cargo.lock", "Cargo.toml", "src"]
         .map(str::to_owned)
@@ -536,7 +567,8 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
-    let terminfo_source = fs::read_to_string(root.join("user/liteos.terminfo")).unwrap_or_default();
+    let terminfo_source =
+        fs::read_to_string(root.join("user/base/liteos.terminfo")).unwrap_or_default();
     let terminfo = fs::read(root.join("assets/terminfo/l/liteos")).unwrap_or_default();
     if terminfo_source
         != "liteos|LiteOS display terminal,\n\tsmcup=\\E[?1049h,\n\trmcup=\\E[?1049l,\n\tuse=linux,\n"

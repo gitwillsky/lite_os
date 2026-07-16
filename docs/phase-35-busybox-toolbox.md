@@ -2,7 +2,7 @@
 
 ## 目标与单一路径
 
-默认 rootfs 继续只有一个 BusyBox ELF inode。新增 applet 只通过唯一 `user/busybox.config` 进入产物，并由 rootfs builder 建立指向 `/bin/init` 的 hardlink；不存在独立二进制、shell builtin 替代路径或 BusyBox source patch。
+默认 rootfs 继续只有一个 BusyBox ELF inode。新增 applet 只通过唯一 `user/base/busybox.config` 进入产物，并由 rootfs builder 建立指向 `/bin/init` 的 hardlink；不存在独立二进制、shell builtin 替代路径或 BusyBox source patch。
 
 本阶段实际启用并运行：
 

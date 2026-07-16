@@ -51,7 +51,7 @@ from verify_musl import (
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "busybox-runtime"
-CONFIG_FRAGMENT = ROOT / "user" / "busybox.config"
+CONFIG_FRAGMENT = ROOT / "user" / "base" / "busybox.config"
 BUSYBOX_VERSION = "1.37.0"
 BUSYBOX_URL = f"https://busybox.net/downloads/busybox-{BUSYBOX_VERSION}.tar.bz2"
 BUSYBOX_SHA256 = "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4"
@@ -686,9 +686,9 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
         "recipe_version": 2,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
-        "main_sha256": sha256(ROOT / "user/dynamic-smoke.c"),
+        "main_sha256": sha256(ROOT / "user/probes/dynamic-smoke.c"),
         "spawn_sha256": sha256(ROOT / "scripts/fixtures/musl-process-spawn.c"),
-        "library_sha256": sha256(ROOT / "user/dynamic-smoke-lib.c"),
+        "library_sha256": sha256(ROOT / "user/probes/dynamic-smoke-lib.c"),
     }
     entry = WORK / "dynamic-probes" / fingerprint(payload)
     if manifest_matches(entry, payload, ("dynamic-smoke", "libliteos-smoke.so")):
@@ -712,7 +712,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
                 "-shared",
                 "-fPIC",
                 "-Wl,-z,relro,-z,now,-z,noexecstack",
-                str(ROOT / "user/dynamic-smoke-lib.c"),
+                str(ROOT / "user/probes/dynamic-smoke-lib.c"),
                 "-o",
                 str(generation / "libliteos-smoke.so"),
             ],
@@ -723,7 +723,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
             [
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
-                str(ROOT / "user/dynamic-smoke.c"),
+                str(ROOT / "user/probes/dynamic-smoke.c"),
                 str(ROOT / "scripts/fixtures/musl-process-spawn.c"),
                 "-fPIE",
                 "-pie",
@@ -957,7 +957,7 @@ def service_activation_inputs() -> tuple[Path, ...]:
 
 def build_stress_tools(musl: MuslCachePaths) -> Path:
     """构建 rootfs 单一 CPU/memory/page-cache 诊断程序。"""
-    source = ROOT / "user/liteos-stress.c"
+    source = ROOT / "user/diagnostics/liteos-stress.c"
     payload = {
         "kind": "liteos-stress-tools",
         "recipe_version": 1,
@@ -1074,15 +1074,15 @@ def create_image(
         "set_inode_field /var/cache/liteui/102 gid 100",
         "set_inode_field /var/cache/liteui/102 mode 040700",
         "mkdir /var/empty",
-        f"write {ROOT / 'user' / 'passwd'} /etc/passwd",
-        f"write {ROOT / 'user' / 'group'} /etc/group",
-        f"write {ROOT / 'user' / 'inittab'} /etc/inittab",
-        f"write {ROOT / 'user' / 'network-service'} /etc/init.d/network-service",
+        f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
+        f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
+        f"write {ROOT / 'user' / 'base' / 'inittab'} /etc/inittab",
+        f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
-        f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
+        f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
         f"write {ROOT / 'assets' / 'terminfo' / 'l' / 'liteos'} /etc/terminfo/l/liteos",
-        f"write {ROOT / 'user' / 'shutdown'} /bin/shutdown",
+        f"write {ROOT / 'user' / 'base' / 'shutdown'} /bin/shutdown",
         "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
@@ -1287,9 +1287,9 @@ def create_published_image(
         system_shell,
         calculator,
         *alpine_keys,
-        ROOT / "user/passwd",
-        ROOT / "user/group",
-        ROOT / "user/inittab",
+        ROOT / "user/base/passwd",
+        ROOT / "user/base/group",
+        ROOT / "user/base/inittab",
         ROOT / "user/display-session/Cargo.toml",
         ROOT / "user/display-session/Cargo.lock",
         *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
@@ -1312,12 +1312,12 @@ def create_published_image(
         *sorted((ROOT / "user/apps/system-shell/src").iterdir()),
         *sorted((ROOT / "user/apps/calculator/src").iterdir()),
         ROOT / "user/apps/runtime/app-runtime.mjs",
-        ROOT / "user/liteos-stress.c",
+        ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
-        ROOT / "user/liteos.terminfo",
-        ROOT / "user/network-service",
-        ROOT / "user/shutdown",
-        ROOT / "user/udhcpc.script",
+        ROOT / "user/base/liteos.terminfo",
+        ROOT / "user/base/network-service",
+        ROOT / "user/base/shutdown",
+        ROOT / "user/base/udhcpc.script",
         ROOT / "create_fs.py",
         Path(__file__).resolve(),
         ROOT / "scripts/apk_cache.py",
@@ -1413,15 +1413,15 @@ def main() -> int:
                 display_stack.libseat,
                 display_stack.libdrm,
                 openssl.binary,
-                ROOT / "user/passwd",
-                ROOT / "user/group",
-                ROOT / "user/inittab",
+                ROOT / "user/base/passwd",
+                ROOT / "user/base/group",
+                ROOT / "user/base/inittab",
                 ROOT / "user/display-session/Cargo.toml",
                 ROOT / "user/display-session/Cargo.lock",
                 *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
-                ROOT / "user/network-service",
-                ROOT / "user/shutdown",
-                ROOT / "user/udhcpc.script",
+                ROOT / "user/base/network-service",
+                ROOT / "user/base/shutdown",
+                ROOT / "user/base/udhcpc.script",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 ROOT / "scripts/https_gate.py",
@@ -1555,15 +1555,15 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DNS_51",
-                    f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode(),
+                    f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode(),
                 ),
                 (
                     "LITEOS_HTTP_51",
-                    f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode(),
+                    f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/base/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode(),
                 ),
                 (
                     "LITEOS_TLS_REJECT_52",
-                    f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode(),
+                    f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode(),
                 ),
                 (
                     "LITEOS_HTTPS_52",

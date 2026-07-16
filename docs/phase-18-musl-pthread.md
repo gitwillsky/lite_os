@@ -4,7 +4,7 @@
 
 ## 实际调用链
 
-固定 consumer 继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/musl-smoke.c` 在原静态启动、heap、clock 与输出路径上增加一个 joinable Thread：
+固定 consumer 继续使用 musl `v1.2.6` commit `9fa28ece75d8a2191de7c5bb53bed224c5947417`，不修改 libc。`user/probes/musl-smoke.c` 在原静态启动、heap、clock 与输出路径上增加一个 joinable Thread：
 
 `pthread_create -> mmap(PROT_NONE) -> mprotect(RW) -> clone -> child TLS/start -> pthread_exit -> private futex wake -> pthread_join -> munmap`
 
