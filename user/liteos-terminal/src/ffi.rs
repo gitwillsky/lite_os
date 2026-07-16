@@ -45,6 +45,8 @@ pub const TIOCSPTLCK: usize = 0x4004_5431;
 pub const TIOCSCTTY: usize = 0x540e;
 pub const TIOCSWINSZ: usize = 0x5414;
 pub const EVIOCGNAME_128: usize = ioc(IOC_READ, b'E' as usize, 0x06, 128);
+pub const EVIOCGABS_X: usize = ioc(IOC_READ, b'E' as usize, 0x40, 24);
+pub const EVIOCGABS_Y: usize = ioc(IOC_READ, b'E' as usize, 0x41, 24);
 pub const EVIOCGRAB: usize = ioc(IOC_WRITE, b'E' as usize, 0x90, 4);
 
 #[repr(C)]
@@ -187,6 +189,17 @@ pub struct InputEvent {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct InputAbsInfo {
+    pub value: i32,
+    pub minimum: i32,
+    pub maximum: i32,
+    pub fuzz: i32,
+    pub flat: i32,
+    pub resolution: i32,
+}
+
+#[repr(C)]
 pub struct Timespec {
     pub seconds: i64,
     pub nanoseconds: i64,
@@ -215,6 +228,7 @@ const _: () = assert!(core::mem::size_of::<DrmCrtc>() == 104);
 const _: () = assert!(core::mem::size_of::<DrmDumbCreate>() == 32);
 const _: () = assert!(core::mem::size_of::<DrmDirty>() == 24);
 const _: () = assert!(core::mem::size_of::<InputEvent>() == 24);
+const _: () = assert!(core::mem::size_of::<InputAbsInfo>() == 24);
 
 unsafe extern "C" {
     pub static mut environ: *mut *const c_char;

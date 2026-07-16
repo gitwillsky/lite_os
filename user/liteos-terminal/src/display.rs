@@ -6,7 +6,10 @@ use crate::{
         self, DrmClip, DrmConnector, DrmCrtc, DrmDirty, DrmDumbCreate, DrmDumbMap, DrmFramebuffer,
         DrmMode, DrmResources,
     },
-    model::{ATTR_BOLD, ATTR_DIM, ATTR_HIDDEN, ATTR_INVERSE, ATTR_UNDERLINE, Cell, Grid, Model},
+    model::{
+        ATTR_BLINK, ATTR_BOLD, ATTR_DIM, ATTR_HIDDEN, ATTR_INVERSE, ATTR_UNDERLINE, Cell, Grid,
+        Model,
+    },
 };
 
 const MAX_CLIPS: usize = 32;
@@ -374,7 +377,16 @@ fn render_cells<G: Grid>(
 ) {
     for column in first..end {
         let cell = grid.cell(row, column);
-        render_cell(buffer, atlas, metrics, row, column, cell);
+        render_cell(
+            buffer,
+            atlas,
+            metrics,
+            row,
+            column,
+            cell,
+            grid.reverse_screen(),
+            grid.blink_visible(),
+        );
     }
 }
 
@@ -385,12 +397,14 @@ fn render_cell(
     row: usize,
     column: usize,
     cell: Cell,
+    reverse_screen: bool,
+    blink_visible: bool,
 ) {
     let (mut foreground, mut background) = (cell.foreground, cell.background);
-    if cell.attributes & ATTR_INVERSE != 0 {
+    if (cell.attributes & ATTR_INVERSE != 0) ^ reverse_screen {
         core::mem::swap(&mut foreground, &mut background);
     }
-    if cell.attributes & ATTR_HIDDEN != 0 {
+    if cell.attributes & ATTR_HIDDEN != 0 || cell.attributes & ATTR_BLINK != 0 && !blink_visible {
         foreground = background;
     }
     if cell.attributes & ATTR_DIM != 0 {
@@ -425,7 +439,9 @@ fn render_cell(
 }
 
 fn render_cursor<G: Grid>(buffer: &mut Buffer, grid: &G, metrics: FontMetrics) {
-    let (row, column) = grid.cursor();
+    let Some((row, column)) = grid.cursor() else {
+        return;
+    };
     let y = (row + 1) * metrics.height() - 3;
     let x = column * metrics.width();
     for offset_y in 0..3 {

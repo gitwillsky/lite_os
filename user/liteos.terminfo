@@ -1,0 +1,4 @@
+liteos|LiteOS display terminal,
+	smcup=\E[?1049h,
+	rmcup=\E[?1049l,
+	use=linux,

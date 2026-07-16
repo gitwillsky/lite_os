@@ -258,6 +258,7 @@ fn check_source_sizes(
 }
 
 fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
+    check_user_source_sizes(root, errors);
     let allowed_user_files = BTreeSet::from([
         "busybox.config",
         "dynamic-smoke-lib.c",
@@ -266,6 +267,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "inittab",
         "liteos-terminal",
         "liteos-stress.c",
+        "liteos.terminfo",
         "musl-smoke.c",
         "network-service",
         "passwd",
@@ -325,22 +327,49 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    let terminfo_source = fs::read_to_string(root.join("user/liteos.terminfo")).unwrap_or_default();
+    let terminfo = fs::read(root.join("assets/terminfo/l/liteos")).unwrap_or_default();
+    if terminfo_source
+        != "liteos|LiteOS display terminal,\n\tsmcup=\\E[?1049h,\n\trmcup=\\E[?1049l,\n\tuse=linux,\n"
+        || terminfo.len() > 4 * 1024
+        || !terminfo.windows(8).any(|window| window == b"liteos|L")
+        || !terminfo.windows(8).any(|window| window == b"\x1b[?1049h")
+        || !terminfo.windows(8).any(|window| window == b"\x1b[?1049l")
+    {
+        errors.push(
+            "LiteOS terminfo must be the checked Linux-console base plus exact ?1049 alternate-screen capabilities"
+                .to_owned(),
+        );
+    }
     let terminal_source_files = [
         "atlas.rs",
         "display.rs",
         "ffi.rs",
         "lib.rs",
         "model.rs",
+        "model/parser.rs",
+        "model/reflow.rs",
+        "model/screen.rs",
+        "model/style.rs",
         "reactor.rs",
+        "reactor/evdev.rs",
+        "reactor/input.rs",
+        "reactor/pointer.rs",
+        "reactor/session.rs",
     ]
     .map(str::to_owned)
     .into_iter()
     .collect::<BTreeSet<_>>();
-    match fs::read_dir(terminal.join("src")) {
-        Ok(entries) => {
-            let actual = entries
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+    let mut terminal_paths = Vec::new();
+    match rust_files(&terminal.join("src"), &mut terminal_paths) {
+        Ok(()) => {
+            let actual = terminal_paths
+                .into_iter()
+                .filter_map(|path| {
+                    path.strip_prefix(terminal.join("src"))
+                        .ok()
+                        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                })
                 .collect::<BTreeSet<_>>();
             if actual != terminal_source_files {
                 errors.push(format!(
@@ -354,6 +383,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     }
     let atlas_source = fs::read_to_string(terminal.join("src/atlas.rs")).unwrap_or_default();
     let display_source = fs::read_to_string(terminal.join("src/display.rs")).unwrap_or_default();
+    let model_source = fs::read_to_string(terminal.join("src/model.rs")).unwrap_or_default();
     let reactor_source = fs::read_to_string(terminal.join("src/reactor.rs")).unwrap_or_default();
     if !atlas_source.contains("pub fn metrics(&self) -> FontMetrics")
         || !reactor_source.contains("let metrics = atlas.metrics();")
@@ -385,6 +415,15 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    if !model_source.contains("pub fn begin_shell_session(&mut self)")
+        || !reactor_source.contains("model.begin_shell_session();")
+        || !reactor_source.contains("display.present(&mut model, &atlas, metrics)")
+    {
+        errors.push(
+            "user/liteos-terminal: successful PTY creation must atomically replace boot content with a fully presented clean shell session"
+                .to_owned(),
+        );
+    }
     let resize_reporter = reactor_source
         .split_once("fn report_resize_failure(error: DisplayError)")
         .and_then(|(_, tail)| tail.split_once("\nfn schedule_render"))
@@ -412,6 +451,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     }
     let atlas_asset = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
     let atlas_contract = atlas_asset.get(..8) == Some(b"LTA8\0\0\0\x02")
+        && atlas_asset.get(8..12) == Some(468u32.to_le_bytes().as_slice())
         && atlas_asset.get(20..22) == Some(16u16.to_le_bytes().as_slice())
         && atlas_asset.get(22..24) == Some(32u16.to_le_bytes().as_slice())
         && atlas_asset.get(24..28) == Some(2u32.to_le_bytes().as_slice())
@@ -442,6 +482,18 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    let rootfs_builder =
+        fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
+    if !rootfs_builder.contains("(crate / \"src\").rglob(\"*.rs\")")
+        || !rootfs_builder.contains("(ROOT / \"user/liteos-terminal/src\").rglob(\"*.rs\")")
+        || !rootfs_builder.contains("/etc/terminfo/l/liteos")
+        || rootfs_builder.contains("/usr/share/terminfo/6c/liteos")
+    {
+        errors.push(
+            "terminal build/cache inputs must cover every Rust module and install terminfo at Alpine's exact database path"
+                .to_owned(),
+        );
+    }
     let makefile = fs::read_to_string(root.join("Makefile")).unwrap_or_default();
     for forbidden in ["build-user", "release/init", "create-fs"] {
         if makefile.contains(forbidden) {
@@ -463,6 +515,44 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             "Makefile: run, run-gui and run-gdb must share the explicit 512 MiB guest-memory baseline"
                 .to_owned(),
         );
+    }
+}
+
+fn check_user_source_sizes(root: &Path, errors: &mut Vec<String>) {
+    let mut pending = vec![root.join("user")];
+    while let Some(directory) = pending.pop() {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                errors.push(format!(
+                    "failed to inspect {}: {error}",
+                    directory.display()
+                ));
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let extension = path.extension().and_then(|extension| extension.to_str());
+            if !matches!(extension, Some("rs" | "c" | "h")) {
+                continue;
+            }
+            let Ok(source) = fs::read_to_string(&path) else {
+                errors.push(format!("failed to read user source {}", path.display()));
+                continue;
+            };
+            let lines = source.lines().count();
+            if lines > SOURCE_REVIEW_LINE_THRESHOLD {
+                let relative = path.strip_prefix(root).unwrap_or(&path).display();
+                errors.push(format!(
+                    "{relative}: {lines} lines exceeds the hard {SOURCE_REVIEW_LINE_THRESHOLD}-line user-module limit; split at an owner/interface seam"
+                ));
+            }
+        }
     }
 }
 

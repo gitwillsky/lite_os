@@ -1,6 +1,6 @@
 const BYTES: &[u8] = include_bytes!("../../../assets/fonts/liteos-terminal.a8");
 const MAGIC: &[u8; 8] = b"LTA8\0\0\0\x02";
-const GLYPH_COUNT: usize = 464;
+const GLYPH_COUNT: usize = 468;
 const FACE_COUNT: usize = 2;
 
 #[derive(Clone, Copy)]

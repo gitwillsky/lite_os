@@ -729,7 +729,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
 def build_display_terminal(musl: MuslCachePaths) -> Path:
     """构建 rootfs 唯一 DRM/evdev/PTY terminal consumer。"""
     crate = ROOT / "user/liteos-terminal"
-    sources = tuple(sorted(crate.glob("src/*.rs")))
+    sources = tuple(sorted((crate / "src").rglob("*.rs")))
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")
     if cargo is None or rustc is None:
@@ -886,6 +886,8 @@ def create_image(
         "mkdir /etc",
         "mkdir /etc/init.d",
         "mkdir /etc/ssl",
+        "mkdir /etc/terminfo",
+        "mkdir /etc/terminfo/l",
         "mkdir /lib",
         "mkdir /run",
         "mkdir /root",
@@ -903,6 +905,7 @@ def create_image(
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
         "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
+        f"write {ROOT / 'assets' / 'terminfo' / 'l' / 'liteos'} /etc/terminfo/l/liteos",
         f"write {ROOT / 'user' / 'shutdown'} /bin/shutdown",
         "set_inode_field /bin/shutdown mode 0100755",
         f"write {openssl.binary} /bin/openssl",
@@ -1071,14 +1074,11 @@ def create_published_image(
         ROOT / "user/inittab",
         ROOT / "user/liteos-terminal/Cargo.toml",
         ROOT / "user/liteos-terminal/Cargo.lock",
-        ROOT / "user/liteos-terminal/src/lib.rs",
-        ROOT / "user/liteos-terminal/src/ffi.rs",
-        ROOT / "user/liteos-terminal/src/atlas.rs",
-        ROOT / "user/liteos-terminal/src/model.rs",
-        ROOT / "user/liteos-terminal/src/display.rs",
-        ROOT / "user/liteos-terminal/src/reactor.rs",
+        *sorted((ROOT / "user/liteos-terminal/src").rglob("*.rs")),
         ROOT / "user/liteos-stress.c",
         ROOT / "assets/fonts/liteos-terminal.a8",
+        ROOT / "assets/terminfo/l/liteos",
+        ROOT / "user/liteos.terminfo",
         ROOT / "user/network-service",
         ROOT / "user/shutdown",
         ROOT / "user/udhcpc.script",

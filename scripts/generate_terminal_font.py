@@ -39,6 +39,10 @@ def codepoints() -> list[int]:
         *range(0x2190, 0x2200),
         *range(0x2500, 0x2580),
         *range(0x2580, 0x25A0),
+        0x25B2,
+        0x25B3,
+        0x25BC,
+        0x25BD,
         0xFFFD,
     }
     return sorted(values)
