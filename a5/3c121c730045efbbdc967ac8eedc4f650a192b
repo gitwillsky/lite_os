@@ -1,0 +1,54 @@
+README.md
+  s_eca7e55bad5cec::t_99bd7e8ae977e1 113
+docs/architecture-contract/display-terminal.md
+  s_eca7e55bad5cec::t_0699cdfa9c55e7 26
+docs/phase-17-musl-static.md
+  s_eca7e55bad5cec::t_35f63fd5cec9f5 8
+docs/phase-18-musl-pthread.md
+  s_eca7e55bad5cec::t_92592e0bce14cf 7
+docs/phase-19-musl-pthread-sync.md
+  s_eca7e55bad5cec::t_20c92841b86d87 7
+docs/phase-21-syscall-restart.md
+  s_eca7e55bad5cec::t_c3b3a0cbeb42b5 41
+docs/phase-35-busybox-toolbox.md
+  s_eca7e55bad5cec::t_392141292072e6 5
+plans/015-bound-and-report-unix-datagrams.md
+  s_eca7e55bad5cec::t_d65112904dc5d1 9,122,294
+plans/016-make-socket-message-vectors-protocol-aware.md
+  s_eca7e55bad5cec::t_4acb3ca39b7ac8 9,127,278
+scripts/verify_apk_apps.py
+  s_eca7e55bad5cec::t_69bfa5aa1cc273 94,128
+scripts/verify_boot.py
+  s_eca7e55bad5cec::t_fcceded5475943 71
+scripts/verify_busybox.py
+  s_eca7e55bad5cec::t_94998c40c4cba8 54,689,691,715,726,960,1077-1080,1082,1085,1290-1292,1315,1317-1320,1416-1418,1422-1424,1558,1562,1566
+scripts/verify_musl.py
+  s_eca7e55bad5cec::t_c6af3053807c9a 408,445
+tools/architecture-check/src/main.rs
+  s_eca7e55bad5cec::t_c3621ffc0d92bc 265,267-268,275,292-330,570-571
+user/README.md
+  s_eca7e55bad5cec::t_b2a6cd6394d436 1-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a53c121c730045efbbdc967ac8eedc4f650a192b",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_eca7e55bad5cec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6b06-7683-7fe3-abc7-435fef640b14",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
