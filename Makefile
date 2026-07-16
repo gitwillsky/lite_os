@@ -2,8 +2,8 @@ ROOTFS_IMAGE := target/rootfs.img
 
 .PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
-QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=on
-QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=1920,yres=1080
+QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
+QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
 QEMU_GUI_SERIAL_LOG ?= target/run-gui-serial.log
 QEMU_MEMORY ?= 512M
 
