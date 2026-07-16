@@ -25,13 +25,27 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _canonical_recipe(
+    payload: dict[str, object],
+) -> tuple[bytes, dict[str, object]]:
+    """返回 fingerprint 与持久 manifest 共用的规范 JSON recipe。"""
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return encoded, json.loads(encoded)
+
+
 def fingerprint(payload: dict[str, object]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    encoded, _ = _canonical_recipe(payload)
     return hashlib.sha256(encoded).hexdigest()
 
 
 def expected_manifest(payload: dict[str, object]) -> dict[str, object]:
-    return {"fingerprint": fingerprint(payload), "recipe": payload}
+    encoded, recipe = _canonical_recipe(payload)
+    return {"fingerprint": hashlib.sha256(encoded).hexdigest(), "recipe": recipe}
 
 
 def manifest_matches(

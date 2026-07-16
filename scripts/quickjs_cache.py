@@ -14,6 +14,7 @@ from pathlib import Path
 
 from build_cache import (
     build_environment,
+    cache_lock,
     fingerprint,
     manifest_matches,
     publish_directory,
@@ -59,46 +60,47 @@ def build_quickjs_bridge(
     }
     identity = fingerprint(payload)
     entry = WORK / "bridges" / identity
-    if manifest_matches(entry, payload, ("liblitejs-bridge.a",)):
-        return entry / "liblitejs-bridge.a"
-    temporary = temporary_directory(WORK / "bridges", "bridge")
-    environment = build_environment()
-    environment.update(
-        {
-            "LITEOS_MUSL_CLANG": str(musl.compiler),
-            "LITEOS_MUSL_LLD": str(musl.linker),
-            "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
-            "LITEOS_MUSL_SYSROOT": str(musl.install),
-        }
-    )
-    try:
-        output = temporary / "bridge.o"
-        _run(
-            [
-                sys.executable,
-                str(ROOT / "scripts/musl_clang.py"),
-                "-c",
-                str(source),
-                "-std=c11",
-                "-O2",
-                "-fPIC",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-Wno-unused-parameter",
-                "-I",
-                str(quickjs.include),
-                "-o",
-                str(output),
-            ],
-            env=environment,
+    with cache_lock(WORK / "locks" / f"bridge-{identity}.lock"):
+        if manifest_matches(entry, payload, ("liblitejs-bridge.a",)):
+            return entry / "liblitejs-bridge.a"
+        temporary = temporary_directory(WORK / "bridges", "bridge")
+        environment = build_environment()
+        environment.update(
+            {
+                "LITEOS_MUSL_CLANG": str(musl.compiler),
+                "LITEOS_MUSL_LLD": str(musl.linker),
+                "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+                "LITEOS_MUSL_SYSROOT": str(musl.install),
+            }
         )
-        library = temporary / "liblitejs-bridge.a"
-        _run([_archiver(), "rcsD", str(library), str(output)])
-        write_manifest(temporary, payload)
-        publish_directory(temporary, entry)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        try:
+            output = temporary / "bridge.o"
+            _run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/musl_clang.py"),
+                    "-c",
+                    str(source),
+                    "-std=c11",
+                    "-O2",
+                    "-fPIC",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-Wno-unused-parameter",
+                    "-I",
+                    str(quickjs.include),
+                    "-o",
+                    str(output),
+                ],
+                env=environment,
+            )
+            library = temporary / "liblitejs-bridge.a"
+            _run([_archiver(), "rcsD", str(library), str(output)])
+            write_manifest(temporary, payload)
+            publish_directory(temporary, entry)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
     return entry / "liblitejs-bridge.a"
 
 
@@ -121,20 +123,23 @@ def _download() -> Path:
     archives = WORK / "archives"
     archives.mkdir(parents=True, exist_ok=True)
     archive = archives / ARCHIVE_NAME
-    if archive.is_file() and sha256(archive) == ARCHIVE_SHA256:
-        return archive
-    archive.unlink(missing_ok=True)
-    temporary = archive.with_suffix(".download")
-    temporary.unlink(missing_ok=True)
-    try:
-        urllib.request.urlretrieve(ARCHIVE_URL, temporary)
-    except Exception as error:
+    with cache_lock(WORK / "locks/archive.lock"):
+        if archive.is_file() and sha256(archive) == ARCHIVE_SHA256:
+            return archive
+        archive.unlink(missing_ok=True)
+        temporary = archive.with_suffix(".download")
         temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"failed to download fixed QuickJS {VERSION}: {error}") from error
-    if sha256(temporary) != ARCHIVE_SHA256:
-        temporary.unlink(missing_ok=True)
-        raise RuntimeError(f"QuickJS archive SHA-256 mismatch: {VERSION}")
-    os.replace(temporary, archive)
+        try:
+            urllib.request.urlretrieve(ARCHIVE_URL, temporary)
+        except Exception as error:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"failed to download fixed QuickJS {VERSION}: {error}"
+            ) from error
+        if sha256(temporary) != ARCHIVE_SHA256:
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError(f"QuickJS archive SHA-256 mismatch: {VERSION}")
+        os.replace(temporary, archive)
     return archive
 
 
@@ -178,70 +183,78 @@ def build_quickjs(musl: MuslCachePaths) -> QuickJsPaths:
     identity = fingerprint(payload)
     entry = WORK / "engines" / identity
     required = ("lib/libquickjs.a", "include/quickjs.h")
-    if manifest_matches(entry, payload, required):
-        return QuickJsPaths(
-            library=entry / required[0],
-            include=entry / "include",
-            build_id=VERSION,
-            fingerprint=identity,
-        )
-
-    temporary = temporary_directory(WORK / "engines", "quickjs")
-    source = _extract(archive, temporary / "source")
-    objects = temporary / "objects"
-    objects.mkdir()
-    environment = build_environment()
-    environment.update(
-        {
-            "LITEOS_MUSL_CLANG": str(musl.compiler),
-            "LITEOS_MUSL_LLD": str(musl.linker),
-            "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
-            "LITEOS_MUSL_SYSROOT": str(musl.install),
-        }
-    )
-    try:
-        compiled: list[Path] = []
-        for name in SOURCES:
-            output = objects / f"{Path(name).stem}.o"
-            _run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts/musl_clang.py"),
-                    "-c",
-                    str(source / name),
-                    "-std=c11",
-                    "-D_GNU_SOURCE",
-                    f'-DCONFIG_VERSION="{VERSION}"',
-                    "-O2",
-                    "-fPIC",
-                    "-fwrapv",
-                    "-Wall",
-                    "-Wextra",
-                    "-Werror",
-                    "-Wno-array-bounds",
-                    "-Wno-format-truncation",
-                    "-Wno-infinite-recursion",
-                    "-Wno-sign-compare",
-                    "-Wno-unused-parameter",
-                    "-I",
-                    str(source),
-                    "-o",
-                    str(output),
-                ],
-                env=environment,
+    with cache_lock(WORK / "locks" / f"engine-{identity}.lock"):
+        if manifest_matches(entry, payload, required):
+            return QuickJsPaths(
+                library=entry / required[0],
+                include=entry / "include",
+                build_id=VERSION,
+                fingerprint=identity,
             )
-            compiled.append(output)
-        library = temporary / "lib/libquickjs.a"
-        library.parent.mkdir()
-        _run([_archiver(), "rcsD", str(library), *(str(path) for path in compiled)])
-        include = temporary / "include"
-        include.mkdir()
-        for name in ("quickjs.h", "quickjs-atom.h", "quickjs-opcode.h", "cutils.h"):
-            shutil.copy2(source / name, include / name)
-        write_manifest(temporary, payload)
-        publish_directory(temporary, entry)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+
+        temporary = temporary_directory(WORK / "engines", "quickjs")
+        source = _extract(archive, temporary / "source")
+        objects = temporary / "objects"
+        objects.mkdir()
+        environment = build_environment()
+        environment.update(
+            {
+                "LITEOS_MUSL_CLANG": str(musl.compiler),
+                "LITEOS_MUSL_LLD": str(musl.linker),
+                "LITEOS_MUSL_LIBGCC": str(musl.libgcc),
+                "LITEOS_MUSL_SYSROOT": str(musl.install),
+            }
+        )
+        try:
+            compiled: list[Path] = []
+            for name in SOURCES:
+                output = objects / f"{Path(name).stem}.o"
+                _run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/musl_clang.py"),
+                        "-c",
+                        str(source / name),
+                        "-std=c11",
+                        "-D_GNU_SOURCE",
+                        f'-DCONFIG_VERSION="{VERSION}"',
+                        "-O2",
+                        "-fPIC",
+                        "-fwrapv",
+                        "-Wall",
+                        "-Wextra",
+                        "-Werror",
+                        "-Wno-array-bounds",
+                        "-Wno-format-truncation",
+                        "-Wno-infinite-recursion",
+                        "-Wno-sign-compare",
+                        "-Wno-unused-parameter",
+                        "-I",
+                        str(source),
+                        "-o",
+                        str(output),
+                    ],
+                    env=environment,
+                )
+                compiled.append(output)
+            library = temporary / "lib/libquickjs.a"
+            library.parent.mkdir()
+            _run(
+                [_archiver(), "rcsD", str(library), *(str(path) for path in compiled)]
+            )
+            include = temporary / "include"
+            include.mkdir()
+            for name in (
+                "quickjs.h",
+                "quickjs-atom.h",
+                "quickjs-opcode.h",
+                "cutils.h",
+            ):
+                shutil.copy2(source / name, include / name)
+            write_manifest(temporary, payload)
+            publish_directory(temporary, entry)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
     return QuickJsPaths(
         library=entry / required[0],
         include=entry / "include",
