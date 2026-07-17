@@ -98,7 +98,8 @@
 - 每个 `liteui-host` 只拥有一个 QuickJS Runtime/Context；QuickJS heap 由 engine allocator 与
   `JS_SetMemoryLimit` 独立计量，Rust source/error scaffolding 由进程唯一 musl allocator 拥有，两者
   禁止混合，否则应用 quota 无法证明。interrupt handler 只读取 host 设置的 monotonic deadline，
-  startup 上限 100 ms、单轮 job 上限 4 ms；deadline 缺失会让 JS 永久占用 session reactor。
+  cold source compile 上限 2000 ms、compiled module evaluation/startup 上限 100 ms、单轮 job 上限
+  4 ms；deadline 缺失会让 JS 永久占用 session reactor。
 - 首期 System Shell QuickJS heap 上限 8 MiB，普通应用默认 4 MiB；UI scene state 不含 framebuffer
   的目标上限 16 MiB。双 1920x1080 XRGB framebuffer 约 16 MiB，必须作为独立 scanout budget
   报告，禁止混入 JS heap 或 scene quota。

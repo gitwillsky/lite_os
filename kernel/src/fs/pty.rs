@@ -79,6 +79,8 @@ struct PtyState {
 /// @description Unix98 PTY master/slave 共用的 line-discipline 与生命周期 owner。
 pub(crate) struct PtyPair {
     index: u32,
+    owner_uid: u32,
+    owner_gid: u32,
     console: Arc<PtyConsole>,
     terminal: Arc<Terminal>,
     slave_notification_read: Arc<PipeEnd>,
@@ -308,9 +310,14 @@ pub(crate) fn init(
     Ok(())
 }
 
-/// @description 分配新 Unix98 pair 并返回 ptmx master backend。
+/// @description 分配新 Unix98 pair，并把 ptmx opener 记录为 slave inode owner。
+/// @param owner_uid open `/dev/ptmx` 时的 effective UID。
+/// @param owner_gid open `/dev/ptmx` 时的 effective GID。
 /// @return master；Pipe、Terminal、Arc 或 registry storage OOM 返回错误。
-pub(crate) fn open_master() -> Result<Arc<PtyMaster>, FileSystemError> {
+pub(crate) fn open_master(
+    owner_uid: u32,
+    owner_gid: u32,
+) -> Result<Arc<PtyMaster>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
     let (pipes, hangup) = {
         let registry = registry.lock();
@@ -349,6 +356,8 @@ pub(crate) fn open_master() -> Result<Arc<PtyMaster>, FileSystemError> {
         .map_err(|()| FileSystemError::OutOfMemory)?;
     let pair = Arc::try_new(PtyPair {
         index,
+        owner_uid,
+        owner_gid,
         console,
         terminal,
         slave_notification_read,
@@ -414,6 +423,21 @@ pub(crate) fn slave_exists(index: u32) -> bool {
             .get(index as usize)
             .and_then(Weak::upgrade)
             .is_some_and(|pair| pair.state.lock().master_open)
+    })
+}
+
+/// @description 读取 live slave 的唯一 owner snapshot，供 devpts metadata 与 VFS permission 共用。
+/// @param index TIOCGPTN 返回的 device index。
+/// @return master 存活时返回 ptmx opener 的 effective UID/GID，否则 None。
+pub(crate) fn slave_owner(index: u32) -> Option<(u32, u32)> {
+    PTYS.get().and_then(|registry| {
+        registry
+            .lock()
+            .slots
+            .get(index as usize)
+            .and_then(Weak::upgrade)
+            .filter(|pair| pair.state.lock().master_open)
+            .map(|pair| (pair.owner_uid, pair.owner_gid))
     })
 }
 

@@ -16,7 +16,10 @@ use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
 use spin::Mutex;
 
-use super::{DeviceKind, Epoll, FileSystemError, FileSystemStatistics, Inode, OpenedFile, vfs};
+use super::{
+    AccessIdentity, DeviceKind, Epoll, FileSystemError, FileSystemStatistics, Inode, OpenedFile,
+    vfs,
+};
 use crate::{
     ipc::{EventFd, PipeEnd},
     socket::{Socket, UnixNode, UnixPassedFile},
@@ -217,10 +220,11 @@ impl OpenFileDescription {
     pub(crate) fn character(
         kind: DeviceKind,
         terminal: Arc<Terminal>,
+        identity: &AccessIdentity,
         flags: u32,
         backing_opened: Arc<OpenedFile>,
     ) -> Result<Arc<Self>, FileSystemError> {
-        let device = CharacterDevice::open(kind, terminal)?;
+        let device = CharacterDevice::open(kind, terminal, identity)?;
         Arc::try_new(Self {
             kind: OpenFileKind::Character(device),
             offset: Mutex::new(0),

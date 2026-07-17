@@ -1,4 +1,4 @@
-use liteui_core::{GridUpdate, NodeRole};
+use liteui_core::{ATTR_BLINK, GridSnapshot, GridUpdate, NodeRole};
 
 use super::{Damage, Rect, Scene, contains};
 
@@ -22,8 +22,12 @@ pub struct TerminalPointer {
 
 impl Scene {
     pub fn publish_grid(&mut self, update: GridUpdate<'_>) -> Result<Damage, ()> {
+        let damage = self
+            .text_grid_bounds()
+            .map(|bounds| changed_grid_damage(bounds, self.text_grid.snapshot(), &update))
+            .unwrap_or(Damage::EMPTY);
         self.text_grid.commit(update).map_err(|_| ())?;
-        Ok(self.text_grid_bounds().map_or(Damage::EMPTY, Damage::one))
+        Ok(damage)
     }
 
     pub fn deactivate_grid(&mut self) -> Damage {
@@ -77,5 +81,79 @@ impl Scene {
                     .then(|| self.windows.project(info))
                     .flatten()
             })
+    }
+}
+
+fn changed_grid_damage(
+    bounds: Rect,
+    previous: Option<GridSnapshot<'_>>,
+    update: &GridUpdate<'_>,
+) -> Damage {
+    let Some(cell_count) = update.columns.checked_mul(update.rows) else {
+        return Damage::one(bounds);
+    };
+    if cell_count == 0 || update.cells.len() != cell_count {
+        return Damage::one(bounds);
+    }
+    let Some(previous) = previous else {
+        return Damage::one(bounds);
+    };
+    if previous.columns() != update.columns
+        || previous.rows() != update.rows
+        || previous.reverse() != update.reverse
+    {
+        return Damage::one(bounds);
+    }
+
+    let blink_changed = previous.blink_visible() != update.blink_visible;
+    let mut damage = Damage::EMPTY;
+    for row in 0..update.rows {
+        let mut first_changed = None;
+        for column in 0..=update.columns {
+            let changed = if column == update.columns {
+                false
+            } else {
+                let Some(old) = previous.cell(row, column) else {
+                    return Damage::one(bounds);
+                };
+                let new = update.cells[row * update.columns + column];
+                old != new || blink_changed && (old.attributes | new.attributes) & ATTR_BLINK != 0
+            };
+            match (first_changed, changed) {
+                (None, true) => first_changed = Some(column),
+                (Some(first), false) => {
+                    damage.push(grid_span(bounds, row, first, column));
+                    first_changed = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // The cursor is rendered as part of its cell; both positions must be
+    // repainted or the old underline remains visible after a move.
+    if previous.cursor() != update.cursor {
+        if let Some((row, column)) = previous.cursor() {
+            damage.push(grid_span(bounds, row, column, column + 1));
+        }
+        if let Some((row, column)) = update.cursor {
+            damage.push(grid_span(bounds, row, column, column + 1));
+        }
+    }
+    damage
+}
+
+fn grid_span(bounds: Rect, row: usize, first_column: usize, end_column: usize) -> Rect {
+    Rect {
+        x1: bounds.x1.saturating_add(first_column.saturating_mul(16)),
+        y1: bounds.y1.saturating_add(row.saturating_mul(32)),
+        x2: bounds
+            .x1
+            .saturating_add(end_column.saturating_mul(16))
+            .min(bounds.x2),
+        y2: bounds
+            .y1
+            .saturating_add(row.saturating_add(1).saturating_mul(32))
+            .min(bounds.y2),
     }
 }

@@ -153,7 +153,7 @@ pub(crate) fn sys_openat(fd: isize, name: *const u8, flags: u32, mode: u32) -> i
                 return -errno::ENXIO;
             }
         }
-        match OpenFileDescription::character(device, terminal, ofd_flags, opened) {
+        match OpenFileDescription::character(device, terminal, &identity, ofd_flags, opened) {
             Ok(ofd) => ofd,
             Err(error) => return ferr(error),
         }

@@ -813,7 +813,7 @@ kernel/src/fs/file.rs :: pub (crate) const O_RDONLY : u32 = 0
 kernel/src/fs/file.rs :: pub (crate) const O_RDWR : u32 = 2
 kernel/src/fs/file.rs :: pub (crate) const O_WRONLY : u32 = 1
 kernel/src/fs/file.rs :: pub (crate) enum OpenFileKind
-kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn character (kind : DeviceKind , terminal : Arc < Terminal > , identity : & AccessIdentity , flags : u32 , backing_opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll (epoll : Arc < Epoll >) -> Result < Arc < Self > , () >
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn epoll_pollable (& self) -> bool
 kernel/src/fs/file.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Result < Arc < Self > , () >
@@ -850,7 +850,7 @@ kernel/src/fs/file/character.rs :: pub (crate) enum CharacterDevice
 kernel/src/fs/file/character.rs :: pub (crate) enum KmsgDeviceRead
 kernel/src/fs/file/character.rs :: pub (crate) impl CharacterDevice :: fn read_kmsg (& self , output : & mut [u8]) -> KmsgDeviceRead
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn epoll_pollable (& self) -> bool
-kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal >) -> Result < Self , FileSystemError >
+kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn open (kind : DeviceKind , terminal : Arc < Terminal > , identity : & AccessIdentity ,) -> Result < Self , FileSystemError >
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn poll_events (& self , events : i16) -> i16
 kernel/src/fs/file/character.rs :: pub (super) impl CharacterDevice :: fn readiness_generation (& self) -> u64
 kernel/src/fs/file/descriptor_table.rs :: enum FileDescriptorError :: Busy
@@ -1253,10 +1253,11 @@ kernel/src/fs/procfs/system.rs :: pub (super) fn format_uptime (snapshot : & Pro
 kernel/src/fs/procfs/system.rs :: pub (super) fn format_vmstat (snapshot : & ProcSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/system.rs :: pub (super) fn ticks (microseconds : u64) -> u64
 kernel/src/fs/pty.rs :: pub (crate) fn init (data_factory : PipeFactory , notification_factory : PipeFactory , hangup : HangupNotifier ,) -> Result < () , () >
-kernel/src/fs/pty.rs :: pub (crate) fn open_master () -> Result < Arc < PtyMaster > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) fn open_master (owner_uid : u32 , owner_gid : u32 ,) -> Result < Arc < PtyMaster > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn open_slave (index : u32) -> Result < Arc < PtySlave > , FileSystemError >
 kernel/src/fs/pty.rs :: pub (crate) fn slave_exists (index : u32) -> bool
 kernel/src/fs/pty.rs :: pub (crate) fn slave_indices () -> Result < Vec < u32 > , FileSystemError >
+kernel/src/fs/pty.rs :: pub (crate) fn slave_owner (index : u32) -> Option < (u32 , u32) >
 kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn index (& self) -> u32
 kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn notification_pipe (& self) -> Arc < Pipe >
 kernel/src/fs/pty.rs :: pub (crate) impl PtyMaster :: fn peer_hung_up (& self) -> bool
@@ -2453,6 +2454,7 @@ kernel/src/syscall/process.rs :: pub (crate) fn sys_set_tid_address (address : u
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setpgid (pid : usize , pgid : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_setsid () -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_wait4 (pid : isize , status : * mut i32 , options : usize , rusage : * mut u8) -> isize
+kernel/src/syscall/process_control.rs :: pub (crate) fn sys_prctl (option : usize , argument : usize) -> isize
 kernel/src/syscall/random.rs :: pub (crate) fn sys_getrandom (buffer : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/reboot.rs :: pub (crate) fn sys_reboot (magic : usize , magic2 : usize , command : usize , argument : usize) -> isize
 kernel/src/syscall/resource_limit.rs :: pub (crate) fn sys_prlimit64 (pid : usize , resource : usize , replacement : usize , previous : usize ,) -> isize
@@ -2654,6 +2656,10 @@ kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEn
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
 kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
 kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: { CpuAffinity , ReadyRetirement , ReadyTransition }
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn clear_parent_death_signal (& self)
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn mark_parent_death (& self , parent_tgid : usize)
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn parent_death_signal (& self , replacement : Option < usize >) -> usize
+kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn take_parent_death (& self) -> Option < (usize , usize) >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
@@ -3029,6 +3035,7 @@ kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffini
 kernel/src/task/task_manager.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
 kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
+kernel/src/task/task_manager.rs :: pub (crate) use parent_death :: parent_death_signal
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -3082,6 +3089,9 @@ kernel/src/task/task_manager/load_average.rs :: pub (super) fn update (now_us : 
 kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: fn new () -> Self
 kernel/src/task/task_manager/load_average.rs :: pub (super) impl LoadAverage :: fn values (& self) -> [u64 ; 3]
 kernel/src/task/task_manager/load_average.rs :: pub (super) struct LoadAverage
+kernel/src/task/task_manager/parent_death.rs :: pub (crate) fn parent_death_signal (replacement : Option < usize >) -> Result < usize , () >
+kernel/src/task/task_manager/parent_death.rs :: pub (super) fn drain_parent_death_signals ()
+kernel/src/task/task_manager/parent_death.rs :: pub (super) fn mark_parent_exit (graph : & mut ProcessGraph , parent_tgid : usize , parent_tid : usize , replacement_tid : usize ,)
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_notification_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn create_pipe_endpoints () -> Result < (Arc < PipeEnd > , Arc < PipeEnd >) , () >
 kernel/src/task/task_manager/pipe_wait.rs :: pub (crate) fn wait_for_pipe (pipe : & Arc < Pipe > , condition : PipeWaitCondition) -> WaitResult

@@ -113,6 +113,9 @@ struct ThreadContext {
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
     // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 ecall 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<Option<SyscallRestart>>,
+    // OWNER: Thread 独占 Linux pdeath signal 与已生成但尚未投递的 parent-exit event；
+    // 如果放进 Process，任一 sibling 的 prctl 会错误覆盖其他 Thread 的设置。
+    parent_death: Mutex<ParentDeathState>,
     // OWNER: Thread 独占 altstack registration；active 只从 SP/range 推导，复制 flag 会与 sigreturn 分裂。
     alternate_signal_stack: Mutex<AlternateSignalStack>,
     // OWNER: ThreadContext 独占当前 Thread 的 Linux I/O counters；Process 聚合只保存
@@ -126,6 +129,12 @@ struct SyscallRestart {
     syscall_id: usize,
     args: [usize; 6],
     ecall_pc: usize,
+}
+
+#[derive(Debug, Default)]
+struct ParentDeathState {
+    signal: usize,
+    pending: Option<(usize, usize)>,
 }
 
 /// @description Process 级资源 owner；当前恰好由一个 Task/Thread 引用。
@@ -226,6 +235,7 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                parent_death: Mutex::new(ParentDeathState::default()),
                 alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
                 io_accounting: IoAccounting::default(),
             },
@@ -300,6 +310,7 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                parent_death: Mutex::new(ParentDeathState::default()),
                 alternate_signal_stack: Mutex::new(AlternateSignalStack::disabled()),
                 io_accounting: IoAccounting::default(),
             },
@@ -321,6 +332,40 @@ impl TaskControlBlock {
     pub(crate) fn set_clear_child_tid(&self, address: usize) -> usize {
         *self.thread.clear_child_tid.lock() = (address != 0).then_some(address);
         self.tid()
+    }
+
+    /// @description 查询或替换 calling Thread 的 Linux parent-death signal。
+    /// @param replacement `Some(signal)` 设置 `0..=64` 中的 signal；`None` 只查询。
+    /// @return 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
+    pub(in crate::task) fn parent_death_signal(&self, replacement: Option<usize>) -> usize {
+        let mut state = self.thread.parent_death.lock();
+        let previous = state.signal;
+        if let Some(signal) = replacement {
+            state.signal = signal;
+        }
+        previous
+    }
+
+    /// @description 在 creator parent Thread 退出事务中冻结一次 process-directed signal。
+    /// @param parent_tgid 退出 parent 的 thread-group ID，用作 Linux `si_pid`。
+    /// @return 无返回值；signal 为零时不生成事件。
+    pub(in crate::task) fn mark_parent_death(&self, parent_tgid: usize) {
+        let mut state = self.thread.parent_death.lock();
+        if state.signal != 0 {
+            state.pending = Some((state.signal, parent_tgid));
+        }
+    }
+
+    /// @description 消费已由 process graph 冻结的 parent-death signal。
+    /// @return `(signal,parent_tgid)`；没有待投递事件时为 `None`。
+    pub(in crate::task) fn take_parent_death(&self) -> Option<(usize, usize)> {
+        self.thread.parent_death.lock().pending.take()
+    }
+
+    /// @description 按 Linux credential transition 规则清除 calling Thread 的 pdeath 设置。
+    /// @return 无返回值；已生成的 pending event 不撤销。
+    pub(in crate::task) fn clear_parent_death_signal(&self) {
+        self.thread.parent_death.lock().signal = 0;
     }
 
     /// @description 查询或原子替换当前 Process 共享的 signal disposition。

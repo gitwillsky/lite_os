@@ -19,7 +19,7 @@
 
 - U-mode `ecall`：`a7=number`，`a0..a5=args`，`a0=result`。
 - kernel error 为 `-errno`；user raw wrapper 不伪造 libc `errno`。
-- `syscall-abi` 只定义下表 140 个 Linux/riscv64 number。
+- `syscall-abi` 只定义下表 146 个 Linux/riscv64 number。
 - dispatcher 对所有其他 number 安静地返回 `-ENOSYS`；正常 capability/io_uring 等 userspace probe 不得放大为逐调用 kernel log。
 - 没有 LiteOS 私有 syscall number、旧编号转发或 feature-flag 双轨；固定 consumer 必需的 legacy `tkill` 只增加标准 ABI selector，不复制 signal implementation。
 
@@ -35,7 +35,7 @@
 
 `Complete` 不能外推为完整 Linux/POSIX/musl 兼容。例如 `set_tid_address` 的 clear/wake 契约成立，不表示 futex PI/requeue、所有 syscall 的 restart 或完整 pthread runtime 已成立。
 
-## 2. 当前暴露的 140 个入口
+## 2. 当前暴露的 146 个入口
 
 | 编号 | Linux 名称 | 参数 / userspace ABI | 返回与 errno | POSIX / musl 路径 | 状态与精确边界 | 代码 |
 |---:|---|---|---|---|---|---|
@@ -97,6 +97,7 @@
 | 144/146-150/158-159/166/174-177 | credentials 与 umask | Linux uid/gid/group/mask ABI | ID/0/old mask；`EFAULT/EINVAL/ENOMEM/EPERM` | POSIX/musl；BusyBox id | **Complete**（单 user namespace、无 capabilities）。Process 单锁拥有 real/effective/saved IDs、supplementary groups 与 umask；Thread 共享、fork 复制、exec set-id 原子提交。 | `kernel/src/syscall/credentials.rs`, `kernel/src/task/model/credentials.rs` |
 | 154-157 | `setpgid/getpgid/getsid/setsid` | PID/PGID 或无参数 | 0/ID；`ESRCH/EPERM/EACCES` | POSIX session/job control；BusyBox init/ash | **Partial**。process graph 唯一拥有 SID/PGID/exec generation 与既有 job-control 生命周期；无 PID namespace。 | `kernel/src/syscall/process.rs`, `kernel/src/task/task_manager/process_group.rs` |
 | 160 | `uname` | RV64 390-byte `struct new_utsname *` | 0；`EFAULT` | POSIX uname；musl direct wrapper；BusyBox uname/arch | **Complete**（当前 immutable identity 模型）。system module 唯一提供 `LiteOS/liteos/<package-version>/#1 SMP PREEMPT/riscv64/(none)` 六字段；每字段 65 bytes 且尾部清零。无 sethostname/setdomainname 或 UTS namespace。 | `kernel/src/syscall/system_identity.rs`, `kernel/src/system.rs` |
+| 167 | `prctl` | `PR_SET_PDEATHSIG` signal；`PR_GET_PDEATHSIG` `int *` | 0；`EFAULT/EINVAL` | Linux process supervision；图形 terminal child lifecycle | **Partial（parent-death operations complete）**。setting 与 frozen exit event 由 calling Thread 单锁拥有，process graph 唯一保存 creator parent Thread relation；fork/vfork/thread clone 清零，creator exit 与 replacement parent 在同一 graph transaction 排序，signal 作为 process-directed `SI_USER` 投递并携带 parent TGID。effective UID/GID transition 与 set-ID exec 清除 setting，已生成 event 不撤销。其他 option 返回 `EINVAL`。 | `kernel/src/syscall/process_control.rs`, `kernel/src/task/task_manager/parent_death.rs`, `kernel/src/task/model.rs` |
 | 168 | `getcpu` | 可选 `unsigned *cpu/node`、忽略 cache pointer | 0；`EFAULT` | Linux CPU locality；musl `sched_getcpu` fallback | **Complete**（当前单 NUMA domain）。system façade 将有序 DTB hart table 紧凑映射为 Linux logical CPU index；CPU 与 node copyout 依 Linux 顺序分别尝试，node 固定为 0。raw hart ID 不泄漏到该 ABI；同一映射也用于 procfs processor 字段与 hwprobe CPU mask。 | `kernel/src/syscall/system_info.rs`, `kernel/src/system.rs`, `kernel/src/arch/riscv64/hart.rs` |
 | 169 | `gettimeofday` | 可选 RV64 16-byte timeval、可选 8-byte timezone | 0；`EFAULT` | Linux legacy time API；musl compatibility | **Complete**（当前 realtime 模型）。与 `clock_gettime(CLOCK_REALTIME)` 共用 RTC+monotonic offset，microseconds 向下截断；按 Linux 顺序先 copy timeval 再 copy timezone，固定 UTC policy 返回 `{0,0}`。无 settimeofday/timezone mutation。 | `kernel/src/syscall/timer.rs`, `kernel/src/timer.rs` |
 | 172 | `getpid` | 无参数 | TGID | POSIX `getpid`；musl direct wrapper | **Complete**。返回 Process owner 的 TGID，不从 scheduler ID 推导。 | `kernel/src/syscall/process.rs` |
@@ -128,7 +129,7 @@
 
 ## 4. musl 结论
 
-当前 140 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git、htop 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
+当前 146 个入口支撑固定 musl pthread consumer、动态 BusyBox、`dlopen`、multithreaded `posix_spawn/system/popen`、AF_UNIX epoll event-loop、AF_INET UDP/TCP/raw ICMP、AF_PACKET DHCP/DNS/HTTP、OpenSSL HTTPS consumer，以及真实 Alpine curl、SQLite、Git、htop 的固定竖切。验证仍不表示任意 musl 程序可运行；剩余缺口包括：
 
 1. futex PI/PI-requeue/WAKE_OP 与完整 clone flags；
 2. 其他 syscall 的 restart coverage、带 relative timeout futex 的正确剩余时间与 queued realtime signal；

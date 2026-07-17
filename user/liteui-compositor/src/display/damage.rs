@@ -4,6 +4,7 @@ use crate::{
 };
 
 use super::Display;
+use crate::diagnostics::FrameMetrics;
 
 const MAX_DAMAGE_RECTS: usize = 32;
 
@@ -35,20 +36,22 @@ impl DamageSet {
         count: 0,
     };
 
-    /// @description 合并一个矩形；相邻/相交区域折叠，容量耗尽时退化为 union。
+    /// @description 合并一个矩形；先消除 containment，容量耗尽时选择最小 overdraw。
     /// @param rectangle scene 坐标中的半开 damage 区域。
-    pub(super) fn push(&mut self, mut rectangle: Rect) {
+    pub(super) fn push(&mut self, rectangle: Rect) {
         if rectangle.x1 >= rectangle.x2 || rectangle.y1 >= rectangle.y2 {
             return;
         }
-        // 1. 先合并相交或相邻区域，避免同一帧重复传输重叠像素。
+        // 1. containment 不增加传输面积；普通 overlap 不能合并，否则连续光标轨迹
+        // 会递归膨胀为覆盖整条路径的包围盒。
         let mut index = 0;
         while index < self.count {
-            if touches(self.rectangles[index], rectangle) {
-                rectangle = rectangle.union(self.rectangles[index]);
+            if contains(self.rectangles[index], rectangle) {
+                return;
+            }
+            if contains(rectangle, self.rectangles[index]) {
                 self.count -= 1;
                 self.rectangles[index] = self.rectangles[self.count];
-                index = 0;
             } else {
                 index += 1;
             }
@@ -59,12 +62,20 @@ impl DamageSet {
             self.count += 1;
             return;
         }
-        // 3. 固定数组耗尽时合并为单一区域，保持无分配且不丢失 damage。
-        for current in &self.rectangles {
-            rectangle = rectangle.union(*current);
+        // 3. 只有 UAPI clip 容量确实耗尽时才引入 overdraw，并选择面积膨胀最小的
+        // existing rectangle；全量 union 会把一次局部输入放大到整屏。
+        let mut selected = 0;
+        let mut selected_overdraw = usize::MAX;
+        let incoming_area = area(rectangle);
+        for (index, current) in self.rectangles.iter().copied().enumerate() {
+            let union = rectangle.union(current);
+            let overdraw = area(union).saturating_sub(area(current).saturating_add(incoming_area));
+            if overdraw < selected_overdraw {
+                selected = index;
+                selected_overdraw = overdraw;
+            }
         }
-        self.rectangles[0] = rectangle;
-        self.count = 1;
+        self.rectangles[selected] = self.rectangles[selected].union(rectangle);
     }
 
     fn clear(&mut self) {
@@ -89,6 +100,17 @@ impl DamageSet {
 }
 
 impl DamageRequest {
+    pub(crate) fn metrics(&self) -> FrameMetrics {
+        let pixels = self.clips[..self.clip_count as usize]
+            .iter()
+            .map(|clip| u64::from(clip.x2 - clip.x1).saturating_mul(u64::from(clip.y2 - clip.y1)))
+            .fold(0u64, u64::saturating_add);
+        FrameMetrics {
+            clips: self.clip_count,
+            pixels,
+        }
+    }
+
     /// @description 在 presenter worker 上执行标准 blocking DRM DIRTYFB ioctl。
     /// @return 成功为零；失败为 worker thread-local errno。
     pub(crate) fn execute(&mut self) -> i32 {
@@ -195,6 +217,13 @@ fn clip(rectangle: Rect) -> Result<DrmClip, ()> {
     })
 }
 
-fn touches(first: Rect, second: Rect) -> bool {
-    first.x1 <= second.x2 && second.x1 <= first.x2 && first.y1 <= second.y2 && second.y1 <= first.y2
+fn contains(outer: Rect, inner: Rect) -> bool {
+    outer.x1 <= inner.x1 && outer.y1 <= inner.y1 && outer.x2 >= inner.x2 && outer.y2 >= inner.y2
+}
+
+fn area(rectangle: Rect) -> usize {
+    rectangle
+        .x2
+        .saturating_sub(rectangle.x1)
+        .saturating_mul(rectangle.y2.saturating_sub(rectangle.y1))
 }

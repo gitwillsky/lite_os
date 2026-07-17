@@ -14,6 +14,7 @@ pub(crate) enum ProcessCloneError {
 /// @return 无返回值；PID 重复或 parent 非 live 表示 graph 不变量损坏并 fail-stop。
 fn publish_child(
     parent: usize,
+    parent_thread: usize,
     child: Arc<TaskControlBlock>,
     vfork_parent: Option<Arc<TaskControlBlock>>,
     thread_slot: crate::fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
@@ -34,6 +35,7 @@ fn publish_child(
         pid,
         ProcessNode {
             parent: Some(parent),
+            parent_thread: Some(parent_thread),
             session,
             process_group,
             has_execed: false,
@@ -73,6 +75,7 @@ pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
     let child_pid = child.tgid();
     publish_child(
         parent.tgid(),
+        parent.tid(),
         child.clone(),
         None,
         thread_slot,
@@ -111,6 +114,7 @@ pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, Process
     let child_pid = child.tgid();
     publish_child(
         parent.tgid(),
+        parent.tid(),
         child.clone(),
         Some(parent.clone()),
         thread_slot,

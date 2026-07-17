@@ -34,8 +34,30 @@ struct Pointer {
     dropped: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PointerReport {
+    x: i32,
+    y: i32,
+    left_down: bool,
+    position_pending: bool,
+    button_pending: bool,
+    action_pending: Option<(u8, bool)>,
+    since_ms: u64,
+}
+
+const EMPTY_POINTER_REPORT: PointerReport = PointerReport {
+    x: 0,
+    y: 0,
+    left_down: false,
+    position_pending: false,
+    button_pending: false,
+    action_pending: None,
+    since_ms: 0,
+};
+
 pub struct Change {
     pub damage: Damage,
+    pub damage_since_ms: Option<u64>,
     pub quit: bool,
     pub event: Option<NodeId>,
     pub pointer: Option<TerminalPointer>,
@@ -55,6 +77,7 @@ impl Change {
     fn empty() -> Self {
         Self {
             damage: Damage::EMPTY,
+            damage_since_ms: None,
             quit: false,
             event: None,
             pointer: None,
@@ -63,7 +86,13 @@ impl Change {
         }
     }
 
-    fn merge_scene(&mut self, update: (Damage, bool)) {
+    fn merge_scene(&mut self, update: (Damage, bool), since_ms: u64) {
+        if !update.0.rectangles().is_empty() {
+            self.damage_since_ms = Some(
+                self.damage_since_ms
+                    .map_or(since_ms, |current| current.min(since_ms)),
+            );
+        }
         self.damage.merge(update.0);
     }
 
@@ -82,6 +111,10 @@ impl Change {
 impl Input {
     pub fn open(seat: &mut Seat) -> Result<Self, ()> {
         let keyboard = open_matching(seat, &[b"keyboard"])?.ok_or(())?;
+        if set_monotonic_clock(keyboard.fd).is_err() {
+            seat.close_device(keyboard)?;
+            return Err(());
+        }
         let pointer_device = match open_matching(seat, &[b"tablet", b"mouse"]) {
             Ok(device) => device,
             Err(()) => {
@@ -90,9 +123,11 @@ impl Input {
             }
         };
         let pointer = match pointer_device {
-            Some(device) => match Pointer::open(device.fd) {
-                Some(pointer) => Some((device, pointer)),
-                None => {
+            Some(device) => match set_monotonic_clock(device.fd)
+                .and_then(|()| Pointer::open(device.fd).ok_or(()))
+            {
+                Ok(pointer) => Some((device, pointer)),
+                Err(()) => {
                     if seat.close_device(device).is_err() {
                         let _ = seat.close_device(keyboard);
                         return Err(());
@@ -150,7 +185,7 @@ impl Input {
                 57 => (scene.cycle_accent()?, false),
                 _ => continue,
             };
-            change.merge_scene(update);
+            change.merge_scene(update, event_milliseconds(event)?);
         }
         Ok(change)
     }
@@ -161,7 +196,8 @@ impl Input {
         };
         let mut events = empty_events();
         let count = read_events(device.fd, &mut events)?;
-        let mut change = Change::empty();
+        let mut reports = [EMPTY_POINTER_REPORT; 32];
+        let mut report_count = 0;
         for event in &events[..count] {
             match (event.kind, event.code) {
                 (EV_ABS, ABS_X) if !pointer.dropped => {
@@ -195,9 +231,23 @@ impl Input {
                     if pointer.dropped {
                         pointer.resynchronize(device.fd)?;
                     }
-                    pointer.publish(scene, &mut change)?;
+                    let slot = reports.get_mut(report_count).ok_or(())?;
+                    *slot = pointer.take_report(event_milliseconds(event)?);
+                    report_count += 1;
                 }
                 _ => {}
+            }
+        }
+        let last_position = reports[..report_count]
+            .iter()
+            .rposition(|report| report.position_pending);
+        let mut change = Change::empty();
+        for (index, report) in reports[..report_count].iter().enumerate() {
+            if report.button_pending
+                || report.action_pending.is_some()
+                || last_position == Some(index)
+            {
+                report.publish(pointer, scene, &mut change)?;
             }
         }
         Ok(change)
@@ -269,23 +319,69 @@ impl Pointer {
         Ok(())
     }
 
-    fn publish(&mut self, scene: &mut Scene, change: &mut Change) -> Result<(), ()> {
-        if self.position_pending {
+    fn take_report(&mut self, since_ms: u64) -> PointerReport {
+        let report = PointerReport {
+            x: self.x.value,
+            y: self.y.value,
+            left_down: self.left_down,
+            position_pending: self.position_pending,
+            button_pending: self.button_pending,
+            action_pending: self.action_pending,
+            since_ms,
+        };
+        self.position_pending = false;
+        self.button_pending = false;
+        self.action_pending = None;
+        report
+    }
+}
+
+impl PointerReport {
+    fn publish(self, pointer: &Pointer, scene: &mut Scene, change: &mut Change) -> Result<(), ()> {
+        if self.position_pending || self.button_pending || self.action_pending.is_some() {
             let (width, height) = scene.dimensions();
-            change.merge_scene(scene.move_pointer(axis(self.x, width), axis(self.y, height))?);
-            self.position_pending = false;
+            change.merge_scene(
+                scene.move_pointer(
+                    axis(pointer.x.minimum, pointer.x.maximum, self.x, width),
+                    axis(pointer.y.minimum, pointer.y.maximum, self.y, height),
+                )?,
+                self.since_ms,
+            );
         }
         if self.button_pending {
             let update = scene.set_primary_button(self.left_down)?;
+            if !update.0.rectangles().is_empty() {
+                change.damage_since_ms = Some(
+                    change
+                        .damage_since_ms
+                        .map_or(self.since_ms, |current| current.min(self.since_ms)),
+                );
+            }
             change.damage.merge(update.0);
             change.event = update.2;
-            self.button_pending = false;
         }
-        if let Some((button, pressed)) = self.action_pending.take() {
+        if let Some((button, pressed)) = self.action_pending {
             change.pointer = scene.terminal_pointer(button, pressed);
         }
         Ok(())
     }
+}
+
+fn set_monotonic_clock(fd: i32) -> Result<(), ()> {
+    let mut clock = ffi::CLOCK_MONOTONIC;
+    (unsafe { ffi::ioctl(fd, ffi::EVIOCSCLOCKID, (&mut clock as *mut i32).cast()) } == 0)
+        .then_some(())
+        .ok_or(())
+}
+
+fn event_milliseconds(event: &InputEvent) -> Result<u64, ()> {
+    if event.seconds < 0 || !(0..1_000_000).contains(&event.microseconds) {
+        return Err(());
+    }
+    (event.seconds as u64)
+        .checked_mul(1_000)
+        .and_then(|seconds| seconds.checked_add(event.microseconds as u64 / 1_000))
+        .ok_or(())
 }
 
 fn read_events(fd: i32, events: &mut [InputEvent; 32]) -> Result<usize, ()> {
@@ -335,9 +431,9 @@ fn empty_events() -> [InputEvent; 32] {
     }; 32]
 }
 
-fn axis(value: InputAbsInfo, pixels: usize) -> usize {
-    let span = i64::from(value.maximum) - i64::from(value.minimum) + 1;
-    let offset = (i64::from(value.value) - i64::from(value.minimum)).clamp(0, span - 1);
+fn axis(minimum: i32, maximum: i32, value: i32, pixels: usize) -> usize {
+    let span = i64::from(maximum) - i64::from(minimum) + 1;
+    let offset = (i64::from(value) - i64::from(minimum)).clamp(0, span - 1);
     (offset as usize).saturating_mul(pixels) / span as usize
 }
 

@@ -97,7 +97,10 @@ fn event_loop(
             connection.flush()?;
         }
         if descriptors[0].returned & ffi::POLLIN != 0 {
-            while let Some(event) = connection.read_event()? {
+            loop {
+                let Some(event) = connection.read_event()? else {
+                    break;
+                };
                 match event {
                     Event::Key { code, value } => {
                         input::handle_key(code, value, &mut input, &mut keyboard, model);

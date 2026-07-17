@@ -23,6 +23,7 @@ mod context_switch;
 mod deferred;
 mod futex;
 mod load_average;
+mod parent_death;
 mod pipe_wait;
 mod policy;
 mod process_exit;
@@ -44,6 +45,7 @@ use context_switch::{prepare_current_block, schedule_with_task_context};
 pub(crate) use deferred::dispatch_pending_deferred_work;
 pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake};
+pub(crate) use parent_death::parent_death_signal;
 pub(crate) use pipe_wait::{
     create_notification_endpoints, create_pipe_endpoints, wait_for_pipe, wait_for_pipe_until,
 };
@@ -89,9 +91,10 @@ enum ProcessState {
     Live(FallibleMap<usize, Arc<TaskControlBlock>>),
     Exited(ProcessExitStatus),
 }
-
 struct ProcessNode {
     parent: Option<usize>,
+    // OWNER: graph 独占 creator Thread；只存 parent TGID 会在错误的 sibling exit 生成 pdeath signal。
+    parent_thread: Option<usize>,
     session: usize,
     process_group: usize,
     // 标记 exec point-of-no-return；缺少它会让 parent 在新映像生效后仍成功 setpgid。
@@ -178,6 +181,7 @@ impl TaskManager {
                 tgid,
                 ProcessNode {
                     parent: None,
+                    parent_thread: None,
                     session: INIT_PID,
                     process_group: INIT_PID,
                     has_execed: true,

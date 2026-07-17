@@ -9,6 +9,7 @@ use crate::{
 const STACK_LIMIT: usize = 512 * 1024;
 const MAX_TRANSACTION_BYTES: usize = 256 * 1024;
 const MAX_TRANSACTION_OPERATIONS: u32 = 256;
+const COMPILE_DEADLINE_MS: u32 = 2_000;
 const STARTUP_DEADLINE_MS: u32 = 100;
 const JOB_DEADLINE_MS: u32 = 4;
 const MAX_PENDING_JOBS: u32 = 1024;
@@ -48,6 +49,7 @@ impl Runtime {
                 source.as_ptr(),
                 source.len(),
                 filename.cast(),
+                COMPILE_DEADLINE_MS,
                 STARTUP_DEADLINE_MS,
                 &mut bytecode,
                 &mut bytecode_length,

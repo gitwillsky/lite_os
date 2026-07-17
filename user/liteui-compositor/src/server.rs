@@ -7,8 +7,10 @@ use liteui_core::{
 
 mod events;
 mod frame;
+mod peer;
 
 use frame::{FrameKind, Header, decode_grid_cell};
+use peer::Peer;
 
 use crate::{
     ffi,
@@ -95,6 +97,15 @@ impl Server {
         })
     }
 
+    pub fn client_mask(&self) -> u32 {
+        self.clients
+            .iter()
+            .enumerate()
+            .fold(0u32, |mask, (index, client)| {
+                mask | u32::from(client.is_some()) << index
+            })
+    }
+
     pub fn flush(&mut self, slot: ClientSlot) -> Result<(), ()> {
         self.clients[slot.index()].as_mut().ok_or(())?.flush()
     }
@@ -177,7 +188,7 @@ impl Server {
         client.events.push(5, payload)
     }
 
-    pub fn accept(&mut self) -> Result<(), ()> {
+    pub fn accept(&mut self, diagnostics: &[u8]) -> Result<(), ()> {
         loop {
             let fd = unsafe {
                 ffi::accept4(
@@ -194,8 +205,12 @@ impl Server {
                     _ => Err(()),
                 };
             }
-            let Some(slot) = trusted_peer(fd) else {
+            let Some(peer) = peer::classify(fd) else {
                 unsafe { ffi::close(fd) };
+                continue;
+            };
+            let Peer::Client(slot) = peer else {
+                peer::send_snapshot(fd, diagnostics);
                 continue;
             };
             if self.clients[slot.index()].is_some() {
@@ -516,32 +531,6 @@ fn layer_style(style: Style) -> Style {
         role: NodeRole::Normal,
         ..style
     }
-}
-
-fn trusted_peer(fd: i32) -> Option<ClientSlot> {
-    let mut credential = ffi::Ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length = core::mem::size_of::<ffi::Ucred>() as u32;
-    let obtained = unsafe {
-        ffi::getsockopt(
-            fd,
-            ffi::SOL_SOCKET,
-            ffi::SO_PEERCRED,
-            (&mut credential as *mut ffi::Ucred).cast(),
-            &mut length,
-        ) == 0
-    };
-    (obtained && length as usize == core::mem::size_of::<ffi::Ucred>())
-        .then(|| {
-            CLIENT_UIDS
-                .iter()
-                .position(|uid| *uid == credential.uid)
-                .map(ClientSlot)
-        })
-        .flatten()
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, ()> {

@@ -126,6 +126,7 @@ impl TaskControlBlock {
                 pending_signals: Mutex::new(PendingSignals::new()),
                 suspend_restore_mask: Mutex::new(None),
                 syscall_restart: Mutex::new(None),
+                parent_death: Mutex::new(ParentDeathState::default()),
                 alternate_signal_stack: Mutex::new(alternate_signal_stack),
                 io_accounting: IoAccounting::default(),
             },

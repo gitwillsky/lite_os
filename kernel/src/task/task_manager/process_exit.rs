@@ -263,7 +263,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
             // membership，避免不可失败的 exit 路径分配 group/member snapshot。
             mark_orphaned_stopped_groups(&mut graph, EXIT_EFFECT_WAS_ORPHANED_STOPPED);
         }
-        let (removed, process_status, parent, session_leader) = {
+        let (removed, process_status, parent, session_leader, replacement_parent_tid) = {
             let node = graph
                 .nodes
                 .get_mut(&exiting_pid)
@@ -277,15 +277,29 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
             let process_status = threads
                 .is_empty()
                 .then(|| node.group_exit.take().unwrap_or(requested));
+            let replacement_parent_tid =
+                threads.first_key_value().map_or(INIT_PID, |(&tid, _)| tid);
             let parent = node.parent;
             let session_leader = node.session == exiting_pid;
             if let Some(status) = process_status {
                 assert!(node.child_waiters.is_empty());
                 node.state = ProcessState::Exited(status);
             }
-            (removed, process_status, parent, session_leader)
+            (
+                removed,
+                process_status,
+                parent,
+                session_leader,
+                replacement_parent_tid,
+            )
         };
         assert!(Arc::ptr_eq(&removed, &task));
+        super::parent_death::mark_parent_exit(
+            &mut graph,
+            exiting_pid,
+            task.tid(),
+            replacement_parent_tid,
+        );
         if process_status.is_some() {
             // graph → timer 与 set/get 共用唯一锁序；持 graph 期间删除使 exit 后不存在 stale timer。
             TASK_MANAGER.timers.lock().remove_process(exiting_pid);
@@ -355,6 +369,10 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
             }
         }
     };
+
+    // pdeath generation 已在 graph mutation 内冻结；锁外先投递，保证 creator exit
+    // consequence 不晚于 orphan/session 与 SIGCHLD observer。
+    super::parent_death::drain_parent_death_signals();
 
     // 退出导致的 terminal/orphan signal 必须先于 parent wake/SIGCHLD；否则 parent 可先
     // reap 并推进 shell 状态，使 POSIX exit consequences 的观察顺序依赖调度竞态。

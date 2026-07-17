@@ -6,8 +6,8 @@ use crate::{
 };
 
 mod damage;
-use damage::DamageSet;
 pub(crate) use damage::DamageRequest;
+use damage::DamageSet;
 
 struct Buffer {
     framebuffer_id: u32,

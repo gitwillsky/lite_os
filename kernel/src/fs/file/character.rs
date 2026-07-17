@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use super::Terminal;
 use crate::drm::DrmFile;
-use crate::fs::{DeviceKind, FileSystemError, PtyMaster, PtySlave};
+use crate::fs::{AccessIdentity, DeviceKind, FileSystemError, PtyMaster, PtySlave};
 use crate::input::InputFile;
 use crate::log::KmsgReader;
 
@@ -61,7 +61,11 @@ impl CharacterDevice {
     /// @param kind pathname inode 发布的标准设备 identity。
     /// @param terminal TTY/console 共享的 line-discipline owner。
     /// @return 对应 backend；设备状态错误与 OOM 保留为明确 filesystem error。
-    pub(super) fn open(kind: DeviceKind, terminal: Arc<Terminal>) -> Result<Self, FileSystemError> {
+    pub(super) fn open(
+        kind: DeviceKind,
+        terminal: Arc<Terminal>,
+        identity: &AccessIdentity,
+    ) -> Result<Self, FileSystemError> {
         Ok(match kind {
             DeviceKind::Null => Self::Null,
             DeviceKind::Zero => Self::Zero,
@@ -72,7 +76,10 @@ impl CharacterDevice {
                 kind,
                 pty: None,
             },
-            DeviceKind::Ptmx => Self::PtyMaster(super::super::pty::open_master()?),
+            DeviceKind::Ptmx => Self::PtyMaster(super::super::pty::open_master(
+                identity.uid(),
+                identity.gid(),
+            )?),
             DeviceKind::PtySlave(index) => {
                 let slave = super::super::pty::open_slave(index)?;
                 Self::Terminal {

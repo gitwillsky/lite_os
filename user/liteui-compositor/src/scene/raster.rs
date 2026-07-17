@@ -54,6 +54,19 @@ pub(super) fn render_scene(
             }
         }
     }
+    if let Some(preview) = windows.preview() {
+        // Damage 只包含 old/new preview 的四条边，因此 fill 不会覆盖窗口内部。
+        paint_rectangle(
+            pixels,
+            pitch,
+            screen_width,
+            damage,
+            preview,
+            0,
+            0x00ffffff,
+            2,
+        );
+    }
     paint_pointer(pixels, pitch, screen_width, damage, pointer);
 }
 

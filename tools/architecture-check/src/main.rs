@@ -679,6 +679,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     }
     let graphics_source_files = [
         "allocator.rs",
+        "diagnostics.rs",
         "display.rs",
         "display/damage.rs",
         "ffi.rs",
@@ -690,6 +691,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "reactor/clients.rs",
         "reactor/hotplug.rs",
         "scene.rs",
+        "scene/damage.rs",
         "scene/raster.rs",
         "scene/raster/grid.rs",
         "scene/recovery.rs",
@@ -697,6 +699,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         "server.rs",
         "server/events.rs",
         "server/frame.rs",
+        "server/peer.rs",
         "window.rs",
     ]
     .map(str::to_owned)
@@ -843,6 +846,8 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     let host_runtime = fs::read_to_string(host.join("src/runtime.rs")).unwrap_or_default();
     let host_publisher = fs::read_to_string(host.join("src/publisher.rs")).unwrap_or_default();
     let compositor_server = fs::read_to_string(graphics.join("src/server.rs")).unwrap_or_default();
+    let compositor_peer =
+        fs::read_to_string(graphics.join("src/server/peer.rs")).unwrap_or_default();
     let host_cache = fs::read_to_string(host.join("src/cache.rs")).unwrap_or_default();
     let host_bridge = fs::read_to_string(host.join("native/bridge.c")).unwrap_or_default();
     let quickjs_builder =
@@ -858,7 +863,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         || !host_publisher.contains("ffi::MSG_NOSIGNAL")
         || !compositor_server.contains("const MAX_OPERATIONS: usize = 256;")
         || !compositor_server.contains("const MAX_PAYLOAD_BYTES: usize = 256 * 1024;")
-        || !compositor_server.contains("ffi::SO_PEERCRED")
+        || !compositor_peer.contains("ffi::SO_PEERCRED")
         || !host_cache.contains("const QUICKJS_BUILD_ID: &[u8; 10] = b\"2026-06-04\";")
         || !host_cache.contains("const LITEUI_ABI: u32 = 1;")
         || !host_cache.contains("const COMPILER_OPTIONS: u32 = 0;")
@@ -1019,6 +1024,8 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         fs::read_to_string(graphics.join("src/presenter.rs")).unwrap_or_default();
     let graphics_reactor = fs::read_to_string(graphics.join("src/reactor.rs")).unwrap_or_default();
     let graphics_scene = fs::read_to_string(graphics.join("src/scene.rs")).unwrap_or_default();
+    let graphics_scene_damage =
+        fs::read_to_string(graphics.join("src/scene/damage.rs")).unwrap_or_default();
     let pointer_path = graphics_reactor
         .split_once("if descriptors[3].returned & ffi::POLLIN != 0")
         .and_then(|(_, tail)| tail.split_once("        if descriptors[4].returned"))
@@ -1056,7 +1063,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         || !graphics_presenter.contains("slot: UnsafeCell<Slot>")
         || !graphics_presenter.contains("slot.request.assume_init_mut() }.execute()")
         || !graphics_presenter.contains("ffi::pthread_join")
-        || !graphics_reactor.contains("const FRAME_INTERVAL_MS: u64 = 17;")
+        || !graphics_reactor.contains("const FRAME_INTERVAL_MS: u64 = 16;")
         || !graphics_reactor.contains("const RESIZE_QUIET_MS: u64 = 50;")
         || !graphics_reactor.contains("struct PreparedResize")
         || !graphics_reactor.contains("active.display.query_mode().map_err(resize_error)?")
@@ -1076,7 +1083,7 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         || !graphics_reactor.contains("if *damage_pending {\n                (None, None)")
         || !graphics_reactor.contains("if current.display.has_damage()")
         || !graphics_scene.contains("pub fn render(")
-        || !graphics_scene.contains("pub fn union(")
+        || !graphics_scene_damage.contains("pub fn union(")
     {
         errors.push(
             "user/liteui-compositor: compositor must retain one persistent scanout buffer, isolate blocking DIRTYFB behind one fixed SPSC presenter, keep input/resize reactor nonblocking and deadline-free while a request is pending, and forbid compositor page-flip history"
@@ -1163,6 +1170,25 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
             "Makefile: run, run-gui and run-gdb must share the explicit 512 MiB guest-memory baseline"
                 .to_owned(),
         );
+    }
+    let runtime_gates = makefile
+        .lines()
+        .find_map(|line| line.strip_prefix("verify-runtime-gates:"))
+        .map(|dependencies| dependencies.split_whitespace().collect::<BTreeSet<_>>())
+        .unwrap_or_default();
+    let required_runtime_gates = [
+        "verify-runtime-boot",
+        "verify-runtime-musl",
+        "verify-runtime-busybox",
+        "verify-runtime-apk-apps",
+        "verify-runtime-desktop",
+    ]
+    .into_iter()
+    .collect::<BTreeSet<_>>();
+    if runtime_gates != required_runtime_gates {
+        errors.push(format!(
+            "Makefile: verify-runtime-gates must contain exactly {required_runtime_gates:?}"
+        ));
     }
 }
 

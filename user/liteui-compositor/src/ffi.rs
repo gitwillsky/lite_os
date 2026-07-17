@@ -41,6 +41,7 @@ pub const EVIOCGABS_X: usize = ioc(IOC_READ, b'E' as usize, 0x40, 24);
 pub const EVIOCGABS_Y: usize = ioc(IOC_READ, b'E' as usize, 0x41, 24);
 pub const EVIOCGKEY_96: usize = ioc(IOC_READ, b'E' as usize, 0x18, 96);
 pub const EVIOCGRAB: usize = ioc(IOC_WRITE, b'E' as usize, 0x90, 4);
+pub const EVIOCSCLOCKID: usize = ioc(IOC_WRITE, b'E' as usize, 0xa0, 4);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]

@@ -5,6 +5,7 @@
 extern crate alloc;
 
 mod allocator;
+mod diagnostics;
 mod display;
 mod ffi;
 mod font;

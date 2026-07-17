@@ -11,6 +11,7 @@ mod membarrier;
 mod memory;
 mod poll;
 mod process;
+mod process_control;
 mod random;
 mod reboot;
 mod resource_limit;
@@ -30,6 +31,7 @@ use crate::syscall::{
 };
 use eventfd::sys_eventfd2;
 use membarrier::sys_membarrier;
+use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
 use riscv_hwprobe::sys_riscv_hwprobe;
 use syscall_abi::*;
@@ -243,6 +245,7 @@ pub(crate) fn syscall(syscall_id: usize, args: [usize; 6]) -> SyscallOutcome {
         SYSCALL_GETITIMER => sys_getitimer(args[0], args[1]),
         SYSCALL_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
         SYSCALL_UMASK => sys_umask(args[0] as u32),
+        SYSCALL_PRCTL => sys_prctl(args[0], args[1]),
         SYSCALL_GETCPU => sys_getcpu(args[0], args[1], args[2]),
         SYSCALL_GETPID => sys_get_pid(),
         SYSCALL_GETPPID => sys_get_ppid(),

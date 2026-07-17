@@ -4,6 +4,7 @@ mod hotplug;
 use display_client::{Device, Seat};
 
 use crate::{
+    diagnostics::Diagnostics,
     display::{Candidate, DamageRequest, Display, DisplayError},
     ffi::{self, PollFd},
     input::Input,
@@ -12,7 +13,7 @@ use crate::{
     server::Server,
 };
 
-const FRAME_INTERVAL_MS: u64 = 17;
+const FRAME_INTERVAL_MS: u64 = 16;
 const RESIZE_QUIET_MS: u64 = 50;
 
 struct Active {
@@ -64,6 +65,7 @@ fn run_session(presenter: &Presenter) -> Result<(), ()> {
         }
     };
     let mut active = Some(first);
+    let mut diagnostics = Diagnostics::new();
     // OWNER: damage_pending 是 reactor 对 presenter 非 IDLE epoch 的唯一镜像；它在 submit
     // 后置位、completion 提交后清零。缺失该门禁会在 worker 仍读取 framebuffer 时 resize/RMFB。
     let mut damage_pending = false;
@@ -75,9 +77,15 @@ fn run_session(presenter: &Presenter) -> Result<(), ()> {
         &mut server,
         presenter,
         &mut damage_pending,
+        &mut diagnostics,
     );
     let release = active.take().map_or(Ok(()), |mut active| {
-        drain_damage(presenter, &mut active, &mut damage_pending);
+        drain_damage(
+            presenter,
+            &mut active,
+            &mut damage_pending,
+            &mut diagnostics,
+        );
         active.release(&mut seat)
     });
     unsafe { ffi::close(netlink) };
@@ -92,11 +100,12 @@ fn event_loop(
     server: &mut Server,
     presenter: &Presenter,
     damage_pending: &mut bool,
+    diagnostics: &mut Diagnostics,
 ) -> Result<(), ()> {
     let mut render_due = None;
     let mut resize_due = None;
     let mut prepared_resize = None;
-    let mut last_present = ffi::monotonic_milliseconds();
+    let mut last_submit = ffi::monotonic_milliseconds();
     loop {
         let now = ffi::monotonic_milliseconds();
         let timeout = if active.is_some() {
@@ -202,10 +211,10 @@ fn event_loop(
                     let (next, next_scene) = Active::open(seat, Some(scene))?;
                     *scene = next_scene;
                     *active = Some(next);
-                    last_present = now;
+                    last_submit = now;
                 } else {
                     let mut current = active.take().ok_or(())?;
-                    drain_damage(presenter, &mut current, damage_pending);
+                    drain_damage(presenter, &mut current, damage_pending, diagnostics);
                     let release = current.release(seat);
                     let acknowledge = seat.acknowledge_disable();
                     release.and(acknowledge)?;
@@ -225,7 +234,17 @@ fn event_loop(
         // though its predecessor has already closed the transport.
         let client_damage = clients::collect(server, scene, &descriptors[7..])?;
         if descriptors[6].returned & ffi::POLLIN != 0 {
-            server.accept()?;
+            let (width, height) = active
+                .as_ref()
+                .map_or((0, 0), |current| current.display.dimensions());
+            let snapshot = diagnostics.snapshot(
+                width,
+                height,
+                *damage_pending,
+                scene.preview_active(),
+                server.client_mask(),
+            );
+            server.accept(&snapshot)?;
         }
         let Some(current) = active.as_mut() else {
             continue;
@@ -240,7 +259,7 @@ fn event_loop(
             for rectangle in client_damage.rectangles().iter().copied() {
                 current.display.damage(rectangle);
             }
-            schedule_render(&mut render_due, last_present, now);
+            schedule_render(&mut render_due, last_submit, now);
         }
         if descriptors[2].returned & ffi::POLLIN != 0 {
             let change = current.input.read_keyboard(scene)?;
@@ -257,11 +276,14 @@ fn event_loop(
                 for rectangle in change.damage.rectangles().iter().copied() {
                     current.display.damage(rectangle);
                 }
-                schedule_render(&mut render_due, last_present, now);
+                schedule_render(&mut render_due, last_submit, now);
             }
         }
         if descriptors[3].returned & ffi::POLLIN != 0 {
             let change = current.input.read_pointer(scene)?;
+            if let Some(since_ms) = change.damage_since_ms {
+                diagnostics.pointer_input(since_ms);
+            }
             if let Some(event) = change.event {
                 let _ = server.queue_click(event)?;
             }
@@ -277,21 +299,22 @@ fn event_loop(
                 current.display.damage(rectangle);
             }
             if !change.damage.rectangles().is_empty() {
-                schedule_render(&mut render_due, last_present, now);
+                // Pointer/click is the software-cursor fast lane. The single presenter slot
+                // still serializes DIRTYFB; waiting for the normal scene cadence here adds a
+                // full refresh interval before a tiny overlay can become visible.
+                render_due = Some(now);
             }
         }
         if descriptors[4].returned & ffi::POLLIN != 0 {
-            let completed = finish_damage(presenter, current, damage_pending, false)?.ok_or(())?;
-            if completed {
-                last_present = now;
-            }
+            finish_damage(presenter, current, damage_pending, diagnostics, now, false)?.ok_or(())?;
             if current.display.has_damage() {
-                schedule_render(&mut render_due, last_present, now);
+                schedule_render(&mut render_due, last_submit, now);
             } else {
                 render_due = None;
             }
         }
         if hotplug {
+            diagnostics.resize_notice();
             prepared_resize.take();
             resize_due = Some(now.saturating_add(RESIZE_QUIET_MS));
         }
@@ -299,18 +322,22 @@ fn event_loop(
             let _ = server.queue_grid_configuration(configuration)?;
         }
         if !*damage_pending && resize_due.is_some_and(|deadline| deadline <= now) {
+            diagnostics.resize_attempt();
             match resize(current, scene, &mut prepared_resize) {
                 Ok(changed) => {
                     resize_due = None;
                     if changed {
+                        diagnostics.resize_commit(now);
                         render_due = None;
-                        last_present = now;
+                        last_submit = now;
                     }
                 }
                 Err(ResizeFailure::Transient) => {
+                    diagnostics.resize_transient();
                     resize_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
                 }
                 Err(ResizeFailure::Rejected(error)) => {
+                    diagnostics.resize_rejected();
                     prepared_resize.take();
                     resize_due = None;
                     report_resize_failure(error);
@@ -320,8 +347,11 @@ fn event_loop(
         if !*damage_pending && render_due.is_some_and(|deadline| deadline <= now) {
             match current.display.prepare_damage(scene)? {
                 Some(request) => {
+                    let metrics = request.metrics();
                     submit_damage(presenter, &mut current.display, request)?;
+                    last_submit = now;
                     *damage_pending = true;
+                    diagnostics.frame_submitted(metrics)?;
                     render_due = None;
                 }
                 None if current.display.has_damage() => {
@@ -364,6 +394,8 @@ fn finish_damage(
     presenter: &Presenter,
     active: &mut Active,
     pending: &mut bool,
+    diagnostics: &mut Diagnostics,
+    now_ms: u64,
     wait: bool,
 ) -> Result<Option<bool>, ()> {
     if !*pending {
@@ -372,6 +404,7 @@ fn finish_damage(
     let (request, error) = presenter.completion(wait)?.ok_or(())?;
     *pending = false;
     let completed = active.display.complete_damage(request, error)?;
+    diagnostics.frame_completed(now_ms, completed);
     Ok(Some(completed))
 }
 
@@ -379,8 +412,22 @@ fn finish_damage(
 /// @param presenter 固定 SPSC worker owner。
 /// @param active 仍拥有 request framebuffer 的 display session。
 /// @param pending reactor 对唯一在途 request 的事实。
-fn drain_damage(presenter: &Presenter, active: &mut Active, pending: &mut bool) {
-    if finish_damage(presenter, active, pending, true).is_err() {
+fn drain_damage(
+    presenter: &Presenter,
+    active: &mut Active,
+    pending: &mut bool,
+    diagnostics: &mut Diagnostics,
+) {
+    if finish_damage(
+        presenter,
+        active,
+        pending,
+        diagnostics,
+        ffi::monotonic_milliseconds(),
+        true,
+    )
+    .is_err()
+    {
         // 无法证明 worker 已归还 framebuffer 时，任何 Rust unwind/drop 都可能触发并发 RMFB。
         // _exit 终止整个进程及 worker，由内核按 file lifetime 回收 DRM 对象。
         unsafe { ffi::_exit(126) };

@@ -11,7 +11,7 @@ const ATTRIBUTE_MASK: u16 =
 
 /// Backend-neutral terminal cell copied across the TextGrid transaction seam.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct GridCell {
     pub codepoint: u32,
     pub foreground: u32,

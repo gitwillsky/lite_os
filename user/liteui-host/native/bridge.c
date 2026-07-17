@@ -205,13 +205,23 @@ static int copy_exception(LiteJs *engine, uint8_t *output, size_t capacity) {
     const JSValueConst message = JS_IsString(stack) ? stack : exception;
     size_t length;
     const char *text = JS_ToCStringLen(engine->context, &length, message);
-    if (text != NULL) {
+    if (text != NULL && length != 0) {
         const size_t copied = length < capacity - 1 ? length : capacity - 1;
         memcpy(output, text, copied);
         output[copied] = 0;
         JS_FreeCString(engine->context, text);
     } else {
-        output[0] = 0;
+        if (text != NULL) {
+            JS_FreeCString(engine->context, text);
+        }
+        if (monotonic_ns() >= engine->deadline_ns) {
+            const char message[] = "execution deadline exceeded";
+            const size_t copied = sizeof(message) < capacity ? sizeof(message) : capacity;
+            memcpy(output, message, copied);
+            output[copied - 1] = 0;
+        } else {
+            output[0] = 0;
+        }
     }
     JS_FreeValue(engine->context, stack);
     JS_FreeValue(engine->context, exception);
@@ -223,7 +233,8 @@ int litejs_compile_module(
     const uint8_t *source,
     size_t source_length,
     const char *filename,
-    uint32_t deadline_ms,
+    uint32_t compile_deadline_ms,
+    uint32_t evaluate_deadline_ms,
     uint8_t **bytecode,
     size_t *bytecode_length,
     uint8_t *error,
@@ -235,7 +246,7 @@ int litejs_compile_module(
     }
     *bytecode = NULL;
     *bytecode_length = 0;
-    set_deadline(engine, deadline_ms);
+    set_deadline(engine, compile_deadline_ms);
     JSValue module = JS_Eval(
         engine->context,
         (const char *)source,
@@ -261,6 +272,7 @@ int litejs_compile_module(
         JS_FreeValue(engine->context, module);
         return copy_exception(engine, error, error_capacity);
     }
+    set_deadline(engine, evaluate_deadline_ms);
     JSValue result = JS_EvalFunction(engine->context, module);
     if (JS_IsException(result)) {
         js_free(engine->context, *bytecode);

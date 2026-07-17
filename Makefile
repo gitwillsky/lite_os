@@ -1,6 +1,6 @@
 ROOTFS_IMAGE := target/rootfs.img
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-runtime-desktop verify-musl verify-busybox verify-apk-apps verify-desktop gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
@@ -105,7 +105,7 @@ verify:
 	$(MAKE) -j4 verify-runtime-gates
 	git diff --check
 
-verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
+verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-runtime-desktop
 
 verify-runtime-boot:
 	python3 scripts/verify_boot.py --image $(ROOTFS_IMAGE)
@@ -119,6 +119,9 @@ verify-runtime-busybox:
 verify-runtime-apk-apps:
 	python3 scripts/verify_apk_apps.py --image $(ROOTFS_IMAGE)
 
+verify-runtime-desktop: build-kernel build-bootloader build-rootfs
+	python3 scripts/verify_desktop.py --image $(ROOTFS_IMAGE)
+
 verify-musl: build-kernel build-bootloader
 	python3 scripts/verify_musl.py
 
@@ -127,6 +130,8 @@ verify-busybox: build-kernel build-bootloader build-rootfs
 
 verify-apk-apps: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_apk_apps.py --image $(ROOTFS_IMAGE)
+
+verify-desktop: verify-runtime-desktop
 
 gdb:
 	riscv64-elf-gdb -ex 'file target/riscv64gc-unknown-none-elf/debug/kernel' -ex 'target remote :1234' -ex 'set arch riscv:rv64'

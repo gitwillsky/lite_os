@@ -1,3 +1,4 @@
+mod damage;
 mod raster;
 mod recovery;
 mod text_grid;
@@ -7,10 +8,10 @@ use liteui_core::{DrawList, Mutation, Scene as UiScene, TextGrid, Transaction};
 use crate::font::Atlas;
 use crate::server::ClientSlot;
 use crate::window::WindowManager;
+pub use damage::{Damage, Rect};
 use recovery::{TASKBAR_HEIGHT, TITLE_HEIGHT};
 pub use text_grid::{GridConfiguration, TEXT_GRID_CAPACITY, TerminalPointer};
 
-const MAX_DAMAGE_RECTS: usize = 4;
 const POINTER_WIDTH: usize = 18;
 const POINTER_HEIGHT: usize = 24;
 const UI_NODE_CAPACITY: usize = 16;
@@ -18,110 +19,6 @@ const CLIENT_NODE_CAPACITY: usize = 256;
 const CLIENT_COUNT: usize = 3;
 const CLIENT_SCENE_CAPACITY: usize = 1 + CLIENT_NODE_CAPACITY * CLIENT_COUNT;
 const CLIENT_DRAW_CAPACITY: usize = CLIENT_SCENE_CAPACITY * 2;
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Rect {
-    pub x1: usize,
-    pub y1: usize,
-    pub x2: usize,
-    pub y2: usize,
-}
-
-impl Rect {
-    pub fn full(width: usize, height: usize) -> Self {
-        Self {
-            x1: 0,
-            y1: 0,
-            x2: width,
-            y2: height,
-        }
-    }
-
-    pub fn union(self, other: Self) -> Self {
-        Self {
-            x1: self.x1.min(other.x1),
-            y1: self.y1.min(other.y1),
-            x2: self.x2.max(other.x2),
-            y2: self.y2.max(other.y2),
-        }
-    }
-
-    pub(super) fn from_ui(rectangle: liteui_core::Rect) -> Self {
-        let x = rectangle.x.floor_pixels().max(0) as usize;
-        let y = rectangle.y.floor_pixels().max(0) as usize;
-        Self {
-            x1: x,
-            y1: y,
-            x2: rectangle
-                .x
-                .floor_pixels()
-                .saturating_add(rectangle.width.ceil_pixels())
-                .max(0) as usize,
-            y2: rectangle
-                .y
-                .floor_pixels()
-                .saturating_add(rectangle.height.ceil_pixels())
-                .max(0) as usize,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct Damage {
-    rectangles: [Rect; MAX_DAMAGE_RECTS],
-    count: usize,
-}
-
-impl Damage {
-    pub const EMPTY: Self = Self {
-        rectangles: [Rect {
-            x1: 0,
-            y1: 0,
-            x2: 0,
-            y2: 0,
-        }; MAX_DAMAGE_RECTS],
-        count: 0,
-    };
-
-    pub fn rectangles(&self) -> &[Rect] {
-        &self.rectangles[..self.count]
-    }
-
-    pub fn push(&mut self, rectangle: Rect) {
-        if rectangle.x1 >= rectangle.x2 || rectangle.y1 >= rectangle.y2 {
-            return;
-        }
-        if self.count < MAX_DAMAGE_RECTS {
-            self.rectangles[self.count] = rectangle;
-            self.count += 1;
-            return;
-        }
-        let mut merged = rectangle;
-        for current in &self.rectangles {
-            merged = merged.union(*current);
-        }
-        self.rectangles[0] = merged;
-        self.count = 1;
-    }
-
-    pub fn merge(&mut self, other: Self) {
-        for rectangle in other.rectangles().iter().copied() {
-            self.push(rectangle);
-        }
-    }
-
-    pub(super) fn one(rectangle: Rect) -> Self {
-        let mut damage = Self::EMPTY;
-        damage.push(rectangle);
-        damage
-    }
-
-    pub(super) fn pair(first: Rect, second: Rect) -> Self {
-        let mut damage = Self::one(first);
-        damage.push(second);
-        damage
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(super) struct Size {
     width: usize,
@@ -320,6 +217,10 @@ impl Scene {
 
     pub fn dimensions(&self) -> (usize, usize) {
         (self.viewport.width, self.viewport.height)
+    }
+
+    pub(super) fn preview_active(&self) -> bool {
+        self.windows.preview().is_some()
     }
 
     pub fn move_window(&mut self, dx: isize, dy: isize) -> Result<Damage, ()> {

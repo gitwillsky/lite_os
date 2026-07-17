@@ -78,21 +78,55 @@ impl TaskControlBlock {
     /// @description 原子执行 setuid 或 setgid credential transition。
     pub(crate) fn set_credential_id(&self, uid: bool, value: u32) -> Result<(), ()> {
         let mut credentials = self.process.credentials.lock();
-        if uid {
+        let previous = if uid {
+            credentials.uid(true)
+        } else {
+            credentials.gid(true)
+        };
+        let result = if uid {
             credentials.set_uid(value)
         } else {
             credentials.set_gid(value)
+        };
+        let changed = result.is_ok()
+            && previous
+                != if uid {
+                    credentials.uid(true)
+                } else {
+                    credentials.gid(true)
+                };
+        drop(credentials);
+        if changed {
+            self.clear_parent_death_signal();
         }
+        result
     }
 
     /// @description 原子执行 setresuid 或 setresgid credential transition。
     pub(crate) fn set_credential_res_ids(&self, uid: bool, values: [u32; 3]) -> Result<(), ()> {
         let mut credentials = self.process.credentials.lock();
-        if uid {
+        let previous = if uid {
+            credentials.uid(true)
+        } else {
+            credentials.gid(true)
+        };
+        let result = if uid {
             credentials.set_resuids(values)
         } else {
             credentials.set_resgids(values)
+        };
+        let changed = result.is_ok()
+            && previous
+                != if uid {
+                    credentials.uid(true)
+                } else {
+                    credentials.gid(true)
+                };
+        drop(credentials);
+        if changed {
+            self.clear_parent_death_signal();
         }
+        result
     }
 
     /// @description 复制当前 supplementary group list。
@@ -125,10 +159,12 @@ impl TaskControlBlock {
     }
 
     pub(super) fn apply_exec_setid(&self, mode: u32, uid: u32, gid: u32) {
-        self.process
-            .credentials
-            .lock()
-            .apply_exec_setid(mode, uid, gid);
+        let mut credentials = self.process.credentials.lock();
+        credentials.apply_exec_setid(mode, uid, gid);
+        drop(credentials);
+        if mode & 0o6000 != 0 {
+            self.clear_parent_death_signal();
+        }
     }
 }
 

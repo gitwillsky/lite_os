@@ -49,6 +49,7 @@ enum Interaction {
         window: NodeId,
         offset_x: usize,
         offset_y: usize,
+        preview: Rect,
     },
     Resizing {
         window: NodeId,
@@ -56,6 +57,7 @@ enum Interaction {
         pointer_x: usize,
         pointer_y: usize,
         edges: u8,
+        preview: Rect,
     },
     Action {
         node: NodeId,
@@ -178,6 +180,17 @@ impl WindowManager {
             .map(|window| window.id)
     }
 
+    /// @description 返回 move/resize transaction 尚未提交的唯一轮廓位置。
+    /// @return 无交互时为 None；拖动或缩放时为 compositor-owned preview rectangle。
+    pub(super) fn preview(&self) -> Option<Rect> {
+        match self.interaction {
+            Interaction::Dragging { preview, .. } | Interaction::Resizing { preview, .. } => {
+                Some(preview)
+            }
+            Interaction::Idle | Interaction::Action { .. } => None,
+        }
+    }
+
     pub fn focused_contains(&self, role: NodeRole, primitives: &[Primitive]) -> bool {
         let Some(focused) = self.focused else {
             return false;
@@ -217,13 +230,18 @@ impl WindowManager {
     ) -> (Damage, bool, Option<NodeId>) {
         if !pressed {
             let previous = core::mem::replace(&mut self.interaction, Interaction::Idle);
-            let event = match previous {
-                Interaction::Action { node } if self.action_at(x, y, primitives) == Some(node) => {
-                    Some(node)
+            return match previous {
+                Interaction::Dragging {
+                    window, preview, ..
                 }
-                _ => None,
+                | Interaction::Resizing {
+                    window, preview, ..
+                } => self.commit_preview(window, preview),
+                Interaction::Action { node } if self.action_at(x, y, primitives) == Some(node) => {
+                    (Damage::EMPTY, false, Some(node))
+                }
+                _ => (Damage::EMPTY, false, None),
             };
-            return (Damage::EMPTY, false, event);
         }
         let non_window_hit = primitives
             .iter()
@@ -286,6 +304,7 @@ impl WindowManager {
                     window,
                     offset_x: x.saturating_sub(geometry.x1),
                     offset_y: y.saturating_sub(geometry.y1),
+                    preview: geometry,
                 };
                 (Damage::EMPTY, false, None)
             }
@@ -298,6 +317,7 @@ impl WindowManager {
                         pointer_x: x,
                         pointer_y: y,
                         edges,
+                        preview: geometry,
                     };
                 }
                 (Damage::EMPTY, false, None)
@@ -311,13 +331,14 @@ impl WindowManager {
     }
 
     pub fn pointer_moved(&mut self, x: usize, y: usize) -> (Damage, bool) {
-        let (window, next) = match self.interaction {
+        let (window, previous, next, interaction) = match self.interaction {
             Interaction::Idle => return (Damage::EMPTY, false),
             Interaction::Action { .. } => return (Damage::EMPTY, false),
             Interaction::Dragging {
                 window,
                 offset_x,
                 offset_y,
+                preview,
             } => {
                 let Some(index) = self.index(window) else {
                     self.interaction = Interaction::Idle;
@@ -332,7 +353,18 @@ impl WindowManager {
                 let top = y
                     .saturating_sub(offset_y)
                     .min(self.height.saturating_sub(TASKBAR_HEIGHT + height));
-                (window, rectangle(left, top, width, height))
+                let next = rectangle(left, top, width, height);
+                (
+                    window,
+                    preview,
+                    next,
+                    Interaction::Dragging {
+                        window,
+                        offset_x,
+                        offset_y,
+                        preview: next,
+                    },
+                )
             }
             Interaction::Resizing {
                 window,
@@ -340,9 +372,9 @@ impl WindowManager {
                 pointer_x,
                 pointer_y,
                 edges,
-            } => (
-                window,
-                resized(
+                preview,
+            } => {
+                let next = resized(
                     initial,
                     x,
                     y,
@@ -351,20 +383,43 @@ impl WindowManager {
                     edges,
                     self.width,
                     self.height,
-                ),
-            ),
+                );
+                (
+                    window,
+                    preview,
+                    next,
+                    Interaction::Resizing {
+                        window,
+                        initial,
+                        pointer_x,
+                        pointer_y,
+                        edges,
+                        preview: next,
+                    },
+                )
+            }
         };
-        let Some(index) = self.index(window) else {
+        if self.index(window).is_none() {
             self.interaction = Interaction::Idle;
             return (Damage::EMPTY, false);
-        };
-        let old = self.windows[index].geometry;
-        if old == next {
+        }
+        if previous == next {
             return (Damage::EMPTY, false);
         }
-        self.windows[index].geometry = next;
-        self.windows[index].restore = next;
-        (Damage::pair(old, next), true)
+        self.interaction = interaction;
+        let mut damage = outline_damage(previous);
+        damage.merge(outline_damage(next));
+        (damage, false)
+    }
+
+    fn commit_preview(&mut self, window: NodeId, preview: Rect) -> (Damage, bool, Option<NodeId>) {
+        let Some(index) = self.index(window) else {
+            return (Damage::EMPTY, false, None);
+        };
+        let previous = self.windows[index].geometry;
+        self.windows[index].geometry = preview;
+        self.windows[index].restore = preview;
+        (Damage::pair(previous, preview), previous != preview, None)
     }
 
     fn restore_focused(&mut self) -> (Damage, bool) {
@@ -464,6 +519,28 @@ fn rectangle(x: usize, y: usize, width: usize, height: usize) -> Rect {
     }
 }
 
+fn outline_damage(rectangle: Rect) -> Damage {
+    const WIDTH: usize = 2;
+    let mut damage = Damage::EMPTY;
+    damage.push(Rect {
+        y2: rectangle.y1.saturating_add(WIDTH).min(rectangle.y2),
+        ..rectangle
+    });
+    damage.push(Rect {
+        y1: rectangle.y2.saturating_sub(WIDTH).max(rectangle.y1),
+        ..rectangle
+    });
+    damage.push(Rect {
+        x2: rectangle.x1.saturating_add(WIDTH).min(rectangle.x2),
+        ..rectangle
+    });
+    damage.push(Rect {
+        x1: rectangle.x2.saturating_sub(WIDTH).max(rectangle.x1),
+        ..rectangle
+    });
+    damage
+}
+
 fn clamped(value: Rect, width: usize, height: usize) -> Rect {
     let available_height = height.saturating_sub(TASKBAR_HEIGHT);
     let window_width = value.x2.saturating_sub(value.x1).min(width);
@@ -519,9 +596,5 @@ fn resized(
 }
 
 fn shifted(value: usize, delta: isize, maximum: usize) -> usize {
-    if delta < 0 {
-        value.saturating_sub(delta.unsigned_abs())
-    } else {
-        value.saturating_add(delta as usize).min(maximum)
-    }
+    value.saturating_add_signed(delta).min(maximum)
 }

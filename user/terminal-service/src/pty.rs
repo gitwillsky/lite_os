@@ -73,11 +73,13 @@ pub(super) fn spawn_shell(
     let length = prefix.len() + decimal(index, &mut path[prefix.len()..capacity]);
     path[length] = 0;
     let slave = unsafe { ffi::open(path.as_ptr().cast(), ffi::O_RDWR | ffi::O_CLOEXEC) };
-    if slave < 0 || set_window_size(master, columns, rows, pixel_width, pixel_height).is_err() {
+    if slave < 0 {
+        unsafe { ffi::close(master) };
+        return None;
+    }
+    if set_window_size(master, columns, rows, pixel_width, pixel_height).is_err() {
         unsafe {
-            if slave >= 0 {
-                ffi::close(slave);
-            }
+            ffi::close(slave);
             ffi::close(master);
         }
         return None;
@@ -98,10 +100,10 @@ pub(super) fn spawn_shell(
                 || ffi::getppid() != parent
                 || ffi::setsid() < 0
                 || ffi::ioctl(slave, ffi::TIOCSCTTY, ptr::null_mut()) < 0
-                || ffi::dup2(slave, 0) < 0
-                || ffi::dup2(slave, 1) < 0
-                || ffi::dup2(slave, 2) < 0
             {
+                ffi::_exit(126);
+            }
+            if ffi::dup2(slave, 0) < 0 || ffi::dup2(slave, 1) < 0 || ffi::dup2(slave, 2) < 0 {
                 ffi::_exit(126);
             }
             if slave > 2 {

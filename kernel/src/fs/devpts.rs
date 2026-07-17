@@ -84,13 +84,18 @@ impl Inode for DevPtsInode {
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
-        let (kind, mode, device) = match self.node {
-            DevPtsNode::Root => (InodeType::Directory, 0o040755, None),
-            DevPtsNode::Slave(index) => (
-                InodeType::CharacterDevice,
-                DeviceKind::PtySlave(index).mode(),
-                Some(DeviceKind::PtySlave(index)),
-            ),
+        let (kind, mode, device, uid, gid) = match self.node {
+            DevPtsNode::Root => (InodeType::Directory, 0o040755, None, 0, 0),
+            DevPtsNode::Slave(index) => {
+                let (uid, gid) = super::pty::slave_owner(index).ok_or(FileSystemError::NotFound)?;
+                (
+                    InodeType::CharacterDevice,
+                    DeviceKind::PtySlave(index).mode(),
+                    Some(DeviceKind::PtySlave(index)),
+                    uid,
+                    gid,
+                )
+            }
         };
         Ok(InodeMetadata {
             filesystem: DEVPTS_FILESYSTEM_ID as u64,
@@ -102,8 +107,8 @@ impl Inode for DevPtsInode {
             } else {
                 1
             },
-            uid: 0,
-            gid: 0,
+            uid,
+            gid,
             size: 0,
             blocks: 0,
             block_size: 4096,

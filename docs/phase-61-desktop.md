@@ -27,6 +27,13 @@ compositor、完整 crate/source 集、APK profile、禁止脚本与 QuickJS cac
   APK、terminal-service/PTY、failure-atomic TextGrid、窗口输入路由与 session supervision 已进入 rootfs。
 - terminal grid 使用 `LUG1` 完整 snapshot，compositor event 使用固定 64×24-byte `LUE1` ring；
   keyboard backpressure 留在 evdev OFD，resize 由 compositor geometry 经 configure→TIOCSWINSZ 单轨提交。
-- architecture checker 与 Linux-musl rootfs build 已通过；仓库规则禁止执行测试用例，因此 milestone
-  中 pointer latency、连续 resize、idle CPU、RSS 与 crash recovery 仍需后续显式运行时测量，不能以
-  build 成功冒充性能门通过。
+- compositor 以 root-only、固定 160-byte、无动态分配的 `LUD1` snapshot 投影 pointer/damage/resize
+  运行指标；诊断只读取 reactor 的标量投影，不复制 scene，也不成为第二状态 owner。
+- `make verify-runtime-desktop` 已在真实 QEMU `virt -smp 8` 中通过：RFB pointer sweep 的可见延迟
+  不超过 20 ms 且 damage 小于屏幕八分之一；持续 titlebar drag 只更新 outline preview，release 一次提交
+  geometry；keyboard key-to-visible 不超过 50 ms；连续 `800×600 → 1024×768 → 1280×720` host
+  resize 合并为一次 commit，session 与全部 client PID 保持不变；稳定 idle 两秒的六个桌面进程总增量
+  不超过 4 ticks；各角色 RSS 低于 milestone gate；Shell 与 compositor `SIGKILL` 后均按 generation
+  契约恢复。
+- runtime gate 消费基准 rootfs 的私有副本，并以完整 build/runtime 输入和 QEMU identity 做内容寻址缓存；
+  因此日常迭代可命中已验证结果，执行过的路径也不会被误写成对任意负载或真实硬件的外推证明。
