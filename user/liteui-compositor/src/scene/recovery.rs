@@ -27,6 +27,7 @@ pub(super) fn create_nodes(
     accent: usize,
 ) -> [Mutation; 8] {
     let sidebar_width = (window.width / 4).max(72);
+    let content_height = window.height.saturating_sub(TITLE_HEIGHT + 4);
     [
         Mutation::Create {
             id: SHADOW_NODE,
@@ -51,7 +52,7 @@ pub(super) fn create_nodes(
                     3,
                     TITLE_HEIGHT + 1,
                     window.width.saturating_sub(6),
-                    window.height.saturating_sub(TITLE_HEIGHT + 4),
+                    content_height,
                 ),
                 0x00ffffff,
             ),
@@ -59,7 +60,7 @@ pub(super) fn create_nodes(
         Mutation::Create {
             id: SIDEBAR_NODE,
             parent: CONTENT_NODE,
-            style: flat_style(ui_rect(0, 0, sidebar_width, window.height), 0x00d4d0c8),
+            style: flat_style(ui_rect(0, 0, sidebar_width, content_height), 0x00d4d0c8),
         },
         Mutation::Create {
             id: CARD_NODE,

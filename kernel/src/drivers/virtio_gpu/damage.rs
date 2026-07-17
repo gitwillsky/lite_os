@@ -10,7 +10,10 @@ use super::wire::{
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA,
     prepare_create, prepare_transfer, prepare_unref, read_u32, read_u64, write_u32, write_u64,
 };
-use super::{RuntimeOperation, RuntimeStage, VirtIOGpuDevice, resource::validate_backing};
+use super::{
+    RuntimeOperation, RuntimeStage, VirtIOGpuDevice,
+    resource::{full_rectangle, validate_backing},
+};
 
 pub(super) const MAX_DAMAGE_RECTS: usize = 32;
 const DAMAGE_BATCH_CAPACITY: usize = 15;
@@ -284,8 +287,16 @@ impl VirtIOGpuDevice {
             *destination = rectangle;
         }
         let target = control.resources.prepare(identity, mode, backing)?;
-        control.damage.begin(copied, rectangles.len());
         let resource_id = target.id(&control.resources);
+        let damage_count = if target.is_new() {
+            // 新 host resource 没有 framebuffer 的历史内容。若只上传本次局部 damage，
+            // 随后的 scanout 会把未同步区域显示为黑色，并留下移动内容的轨迹。
+            copied[0] = full_rectangle(mode);
+            1
+        } else {
+            rectangles.len()
+        };
+        control.damage.begin(copied, damage_count);
         let prepared = (|| {
             if let Some(evicted) = target.evicted_id() {
                 prepare_unref(&mut control.request, evicted)?;

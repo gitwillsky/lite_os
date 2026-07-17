@@ -1,5 +1,3 @@
-use core::ptr;
-
 use crate::{
     ffi::{self, DrmClip},
     scene::{Rect, Scene},
@@ -9,15 +7,6 @@ use super::Display;
 
 const MAX_DAMAGE_RECTS: usize = 32;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-/// @description presenter request 的 framebuffer role；不泄漏 reactor scene ownership。
-pub(crate) enum DamageTarget {
-    /// 当前 scanout buffer 上的局部更新。
-    Active,
-    /// inactive buffer 上为后续 page flip 准备的更新。
-    Flip,
-}
-
 #[derive(Clone, Copy)]
 /// @description 可跨固定 SPSC seam 复制、且不借用 Display/Scene 的 DIRTYFB request。
 pub(crate) struct DamageRequest {
@@ -25,8 +14,6 @@ pub(crate) struct DamageRequest {
     framebuffer_id: u32,
     clips: [DrmClip; MAX_DAMAGE_RECTS],
     clip_count: u32,
-    buffer: u8,
-    target: DamageTarget,
 }
 
 #[derive(Clone, Copy)]
@@ -119,58 +106,31 @@ impl DamageRequest {
             ffi::errno()
         }
     }
-
-    /// @description 返回本次同步是否为 geometry page flip 的 inactive buffer 准备。
-    /// @return inactive flip target 返回 true，active pointer target 返回 false。
-    pub(crate) fn prepares_flip(&self) -> bool {
-        self.target == DamageTarget::Flip
-    }
 }
 
 impl Display {
-    /// @description 将 scene damage 累积到所有 buffer，并撤销旧的 flip-ready 事实。
+    /// @description 将 scene damage 累积到唯一持久 scanout buffer。
     /// @param rectangle scene 坐标中的半开 damage 区域。
     pub(crate) fn damage(&mut self, rectangle: Rect) {
-        for buffer in self.buffers.iter_mut().flatten() {
+        if let Some(buffer) = self.buffer.as_mut() {
             buffer.damage.push(rectangle);
-            buffer.prepared_for_flip = false;
         }
     }
 
-    /// @description 判断当前 scanout buffer 是否存在待同步 damage。
-    /// @return active buffer 有 damage 时返回 true。
-    pub(crate) fn has_active_damage(&self) -> bool {
-        self.buffers[self.front]
+    /// @description 判断唯一 scanout buffer 是否存在待同步 damage。
+    /// @return buffer 有 damage 时返回 true。
+    pub(crate) fn has_damage(&self) -> bool {
+        self.buffer
             .as_ref()
             .is_some_and(|buffer| !buffer.damage.is_empty())
     }
 
-    /// @description 判断 inactive buffer 是否仍有未同步 damage 或已同步待重试 flip。
-    /// @return 任一工作事实存在时返回 true。
-    pub(crate) fn has_flip_work(&self) -> bool {
-        self.buffers[self.front ^ 1]
-            .as_ref()
-            .is_some_and(|buffer| !buffer.damage.is_empty() || buffer.prepared_for_flip)
-    }
-
     /// @description 渲染并摘下一个 immutable damage snapshot，交给唯一 presenter worker。
     /// @param scene reactor 当前 scene snapshot；worker 不借用或修改它。
-    /// @param target active pointer update 或 inactive geometry flip preparation。
-    /// @return 无 damage/flip pending 时为 None；否则返回完全自包含的固定 request。
+    /// @return 无 damage 时为 None；否则返回完全自包含的固定 request。
     /// @errors buffer/inflight state 损坏或 clip 无法编码时返回 unit error。
-    pub(crate) fn prepare_damage(
-        &mut self,
-        scene: &Scene,
-        target: DamageTarget,
-    ) -> Result<Option<DamageRequest>, ()> {
-        if self.flip_pending {
-            return Ok(None);
-        }
-        let index = match target {
-            DamageTarget::Active => self.front,
-            DamageTarget::Flip => self.front ^ 1,
-        };
-        let Some(buffer) = self.buffers[index].as_mut() else {
+    pub(crate) fn prepare_damage(&mut self, scene: &Scene) -> Result<Option<DamageRequest>, ()> {
+        let Some(buffer) = self.buffer.as_mut() else {
             return Err(());
         };
         if buffer.damage.is_empty() {
@@ -194,8 +154,6 @@ impl Display {
             framebuffer_id: buffer.framebuffer_id,
             clips,
             clip_count: damage.count as u32,
-            buffer: index as u8,
-            target,
         }))
     }
 
@@ -209,8 +167,7 @@ impl Display {
         request: DamageRequest,
         error: i32,
     ) -> Result<bool, ()> {
-        let index = usize::from(request.buffer);
-        let Some(buffer) = self.buffers.get_mut(index).and_then(Option::as_mut) else {
+        let Some(buffer) = self.buffer.as_mut() else {
             return Err(());
         };
         if buffer.framebuffer_id != request.framebuffer_id {
@@ -219,51 +176,12 @@ impl Display {
         let inflight = buffer.inflight.take().ok_or(())?;
         if error != 0 {
             buffer.damage.merge(inflight);
-            buffer.prepared_for_flip = false;
             return if matches!(error, ffi::EBUSY | ffi::EINTR) {
                 Ok(false)
             } else {
                 Err(())
             };
         }
-        if request.target == DamageTarget::Flip && buffer.damage.is_empty() {
-            buffer.prepared_for_flip = true;
-        }
-        Ok(true)
-    }
-
-    /// @description 对已由 presenter 同步且未被新输入污染的 inactive buffer 提交 page flip。
-    /// @return page flip 已异步排队为 true；尚未 prepared/仍有 damage/瞬时忙为 false。
-    /// @errors buffer state 或不可恢复的 page-flip error 返回 unit error。
-    pub(crate) fn present_flip(&mut self) -> Result<bool, ()> {
-        if self.flip_pending {
-            return Ok(false);
-        }
-        let back = self.front ^ 1;
-        let Some(buffer) = self.buffers[back].as_mut() else {
-            return Err(());
-        };
-        if !buffer.prepared_for_flip || !buffer.damage.is_empty() || buffer.inflight.is_some() {
-            return Ok(false);
-        }
-        if unsafe {
-            ffi::drmModePageFlip(
-                self.fd,
-                self.crtc_id,
-                buffer.framebuffer_id,
-                ffi::DRM_MODE_PAGE_FLIP_EVENT,
-                ptr::null_mut(),
-            )
-        } < 0
-        {
-            return if matches!(ffi::errno(), ffi::EBUSY | ffi::EINTR | ffi::EINVAL) {
-                Ok(false)
-            } else {
-                Err(())
-            };
-        }
-        buffer.prepared_for_flip = false;
-        self.flip_pending = true;
         Ok(true)
     }
 }

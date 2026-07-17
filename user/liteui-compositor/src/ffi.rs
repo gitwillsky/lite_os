@@ -24,9 +24,6 @@ pub const SOCK_CLOEXEC: c_int = O_CLOEXEC;
 pub const SOL_SOCKET: c_int = 1;
 pub const SO_PEERCRED: c_int = 17;
 pub const NETLINK_KOBJECT_UEVENT: c_int = 15;
-pub const DRM_MODE_PAGE_FLIP_EVENT: u32 = 1;
-pub const DRM_EVENT_FLIP_COMPLETE: u32 = 2;
-
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
 const fn ioc(direction: usize, kind: usize, number: usize, size: usize) -> usize {
@@ -259,13 +256,6 @@ unsafe extern "C" {
         connectors: *mut u32,
         connector_count: c_int,
         mode: *mut DrmMode,
-    ) -> c_int;
-    pub fn drmModePageFlip(
-        fd: c_int,
-        crtc_id: u32,
-        framebuffer_id: u32,
-        flags: u32,
-        user_data: *mut c_void,
     ) -> c_int;
 }
 

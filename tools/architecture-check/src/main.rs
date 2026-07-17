@@ -1029,24 +1029,22 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         .and_then(|(_, tail)| tail.split_once("    /// @description 提交 presenter completion"))
         .map(|(body, _)| body)
         .unwrap_or_default();
-    let flip_presenter = graphics_damage
-        .split_once("pub(crate) fn present_flip(")
-        .and_then(|(_, tail)| tail.split_once("\n    }\n}"))
-        .map(|(body, _)| body)
-        .unwrap_or_default();
     if !graphics_allocator.contains("static ALLOCATOR: MuslAllocator")
         || !graphics_allocator.contains("ffi::aligned_alloc(layout.align(), aligned_size)")
         || !graphics_allocator.contains("fn allocation_failure(_layout: Layout) -> !")
-        || !graphics_display.contains("buffers: [Option<Buffer>; 2]")
+        || !graphics_display.contains("buffer: Option<Buffer>")
+        || graphics_display.contains("buffers: [Option<Buffer>; 2]")
+        || graphics_display.contains("fn create_pair(")
         || !graphics_display.contains("inflight: Option<DamageSet>")
-        || !graphics_display.contains("DRM_EVENT_FLIP_COMPLETE")
+        || graphics_display.contains("DRM_EVENT_FLIP_COMPLETE")
         || !graphics_damage.contains("const MAX_DAMAGE_RECTS: usize = 32;")
         || !graphics_damage.contains("struct DamageSet")
         || !graphics_damage.contains("pub(crate) fn prepare_damage(")
         || !graphics_damage.contains("pub(crate) fn complete_damage(")
         || !graphics_damage.contains("ffi::drmModeDirtyFB")
-        || !graphics_damage.contains("pub(crate) fn present_flip(")
+        || graphics_damage.contains("pub(crate) fn present_flip(")
         || !graphics_ffi.contains("pub fn drmModeDirtyFB(")
+        || graphics_ffi.contains("drmModePageFlip")
         || !graphics_ffi.contains("pub fn eventfd(")
         || !graphics_ffi.contains("pub fn pthread_create(")
         || !graphics_input
@@ -1066,25 +1064,22 @@ fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
         || !graphics_reactor.contains("presenter.completion_fd()")
         || !graphics_reactor.contains("presenter.submit(request)")
         || !graphics_reactor.contains("finish_damage(presenter")
-        || !graphics_reactor.contains("current.display.prepare_damage(scene, target)?")
-        || !graphics_reactor.contains("current.display.present_flip()?")
+        || !graphics_reactor.contains("current.display.prepare_damage(scene)?")
+        || graphics_reactor.contains("current.display.present_flip()?")
+        || graphics_reactor.contains("flip_requested")
         || graphics_reactor.contains("drmModeDirtyFB")
         || !pointer_path.contains("for rectangle in change.damage.rectangles().iter().copied()")
-        || !pointer_path.contains("if change.geometry {")
-        || !pointer_path.contains("flip_requested = true")
-        || !damage_preparer.contains("DamageTarget::Active => self.front")
+        || pointer_path.contains("change.geometry")
+        || !damage_preparer.contains("let Some(buffer) = self.buffer.as_mut()")
         || damage_preparer.contains("ffi::drmModeDirtyFB")
-        || !flip_presenter.contains("let back = self.front ^ 1;")
-        || !flip_presenter.contains("ffi::drmModePageFlip")
-        || flip_presenter.contains("ffi::drmModeDirtyFB")
         || !graphics_reactor.contains("deadline_timeout")
         || !graphics_reactor.contains("if *damage_pending {\n                (None, None)")
-        || !graphics_reactor.contains("if flip_requested || current.display.has_active_damage()")
+        || !graphics_reactor.contains("if current.display.has_damage()")
         || !graphics_scene.contains("pub fn render(")
         || !graphics_scene.contains("pub fn union(")
     {
         errors.push(
-            "user/liteui-compositor: compositor must retain two dumb buffers, isolate blocking DIRTYFB behind one fixed SPSC presenter, keep input/resize reactor nonblocking and deadline-free while a request is pending, and reserve page flips for geometry"
+            "user/liteui-compositor: compositor must retain one persistent scanout buffer, isolate blocking DIRTYFB behind one fixed SPSC presenter, keep input/resize reactor nonblocking and deadline-free while a request is pending, and forbid compositor page-flip history"
                 .to_owned(),
         );
     }

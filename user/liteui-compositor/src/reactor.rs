@@ -4,7 +4,7 @@ mod hotplug;
 use display_client::{Device, Seat};
 
 use crate::{
-    display::{Candidate, DamageRequest, DamageTarget, Display, DisplayError},
+    display::{Candidate, DamageRequest, Display, DisplayError},
     ffi::{self, PollFd},
     input::Input,
     presenter::Presenter,
@@ -96,8 +96,6 @@ fn event_loop(
     let mut render_due = None;
     let mut resize_due = None;
     let mut prepared_resize = None;
-    // geometry 必须切换到已同步的备用 buffer；若缺少此标记，pointer damage 也会退化为整帧 page flip。
-    let mut flip_requested = false;
     let mut last_present = ffi::monotonic_milliseconds();
     loop {
         let now = ffi::monotonic_milliseconds();
@@ -113,12 +111,8 @@ fn event_loop(
         } else {
             -1
         };
-        let (drm, mut keyboard, mut pointer) = active.as_ref().map_or((-1, -1, -1), |active| {
-            (
-                active.drm.fd,
-                active.input.keyboard_fd(),
-                active.input.pointer_fd(),
-            )
+        let (mut keyboard, mut pointer) = active.as_ref().map_or((-1, -1), |active| {
+            (active.input.keyboard_fd(), active.input.pointer_fd())
         });
         if scene.terminal_focused() && !server.terminal_accepts_key_batch() {
             // The evdev OFD remains the backpressure owner until the terminal drains its
@@ -139,7 +133,7 @@ fn event_loop(
                 returned: 0,
             },
             PollFd {
-                fd: drm,
+                fd: -1,
                 events: ffi::POLLIN,
                 returned: 0,
             },
@@ -208,7 +202,6 @@ fn event_loop(
                     let (next, next_scene) = Active::open(seat, Some(scene))?;
                     *scene = next_scene;
                     *active = Some(next);
-                    flip_requested = false;
                     last_present = now;
                 } else {
                     let mut current = active.take().ok_or(())?;
@@ -219,7 +212,6 @@ fn event_loop(
                     render_due = None;
                     resize_due = None;
                     prepared_resize.take();
-                    flip_requested = false;
                 }
             }
         }
@@ -248,11 +240,7 @@ fn event_loop(
             for rectangle in client_damage.rectangles().iter().copied() {
                 current.display.damage(rectangle);
             }
-            flip_requested = true;
             schedule_render(&mut render_due, last_present, now);
-        }
-        if descriptors[1].returned & ffi::POLLIN != 0 {
-            current.display.read_events()?;
         }
         if descriptors[2].returned & ffi::POLLIN != 0 {
             let change = current.input.read_keyboard(scene)?;
@@ -269,7 +257,6 @@ fn event_loop(
                 for rectangle in change.damage.rectangles().iter().copied() {
                     current.display.damage(rectangle);
                 }
-                flip_requested |= change.geometry;
                 schedule_render(&mut render_due, last_present, now);
             }
         }
@@ -290,19 +277,15 @@ fn event_loop(
                 current.display.damage(rectangle);
             }
             if !change.damage.rectangles().is_empty() {
-                if change.geometry {
-                    flip_requested = true;
-                }
                 schedule_render(&mut render_due, last_present, now);
             }
         }
         if descriptors[4].returned & ffi::POLLIN != 0 {
-            let (completed, prepares_flip) =
-                finish_damage(presenter, current, damage_pending, false)?.ok_or(())?;
-            if completed && !prepares_flip {
+            let completed = finish_damage(presenter, current, damage_pending, false)?.ok_or(())?;
+            if completed {
                 last_present = now;
             }
-            if flip_requested || current.display.has_active_damage() {
+            if current.display.has_damage() {
                 schedule_render(&mut render_due, last_present, now);
             } else {
                 render_due = None;
@@ -321,7 +304,6 @@ fn event_loop(
                     resize_due = None;
                     if changed {
                         render_due = None;
-                        flip_requested = false;
                         last_present = now;
                     }
                 }
@@ -336,32 +318,16 @@ fn event_loop(
             }
         }
         if !*damage_pending && render_due.is_some_and(|deadline| deadline <= now) {
-            if flip_requested && current.display.present_flip()? {
-                last_present = now;
-                render_due = None;
-                flip_requested = false;
-            } else {
-                let target = if flip_requested {
-                    DamageTarget::Flip
-                } else {
-                    DamageTarget::Active
-                };
-                match current.display.prepare_damage(scene, target)? {
-                    Some(request) => {
-                        submit_damage(presenter, &mut current.display, request)?;
-                        *damage_pending = true;
-                        render_due = None;
-                    }
-                    None if if flip_requested {
-                        current.display.has_flip_work()
-                    } else {
-                        current.display.has_active_damage()
-                    } =>
-                    {
-                        render_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
-                    }
-                    None => render_due = None,
+            match current.display.prepare_damage(scene)? {
+                Some(request) => {
+                    submit_damage(presenter, &mut current.display, request)?;
+                    *damage_pending = true;
+                    render_due = None;
                 }
+                None if current.display.has_damage() => {
+                    render_due = Some(now.saturating_add(FRAME_INTERVAL_MS));
+                }
+                None => render_due = None,
             }
         }
     }
@@ -392,22 +358,21 @@ fn submit_damage(
 /// @param active 当前仍拥有 request framebuffer 的 display session。
 /// @param pending reactor 对唯一在途 request 的事实；completion 后清零。
 /// @param wait revoke/exit cleanup 为 true，普通 poll path 为 false。
-/// @return 无 request 为 None；完成时返回（成功、是否准备 flip）。
+/// @return 无 request 为 None；完成时返回 DIRTYFB 是否成功。
 /// @errors presenter protocol、request owner 或不可恢复 DIRTYFB failure 返回 unit error。
 fn finish_damage(
     presenter: &Presenter,
     active: &mut Active,
     pending: &mut bool,
     wait: bool,
-) -> Result<Option<(bool, bool)>, ()> {
+) -> Result<Option<bool>, ()> {
     if !*pending {
         return Ok(None);
     }
     let (request, error) = presenter.completion(wait)?.ok_or(())?;
     *pending = false;
-    let prepares_flip = request.prepares_flip();
     let completed = active.display.complete_damage(request, error)?;
-    Ok(Some((completed, prepares_flip)))
+    Ok(Some(completed))
 }
 
 /// @description 在 framebuffer cleanup 前同步收回 presenter ownership；协议损坏时 fail-stop。
@@ -427,9 +392,6 @@ fn resize(
     scene: &mut Scene,
     prepared: &mut Option<PreparedResize>,
 ) -> Result<bool, ResizeFailure> {
-    if active.display.flip_pending() {
-        return Err(ResizeFailure::Transient);
-    }
     let mode = active.display.query_mode().map_err(resize_error)?;
     if !active.display.mode_changed(mode) {
         prepared.take();

@@ -9,6 +9,7 @@
 | [runtime.md](runtime.md) | 进程拓扑、信任边界、启动与失败恢复 |
 | [protocol.md](protocol.md) | Solid HostOps、有界 transaction、frame/input 时序 |
 | [milestone-1.md](milestone-1.md) | 第一阶段功能、非目标、预算与验收 |
+| [display-damage.md](display-damage.md) | 显示 damage 不变量、残影诊断顺序与案例复盘 |
 
 外部设计基线：PocketJS 只提供“JS adapter + 单 Rust UI core + backend-neutral DrawList”的架构
 参考；LiteOS 不直接暴露或 fork `pocketjs-core`。语言引擎固定 QuickJS，layout mechanism 固定

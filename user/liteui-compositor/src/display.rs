@@ -7,7 +7,7 @@ use crate::{
 
 mod damage;
 use damage::DamageSet;
-pub(crate) use damage::{DamageRequest, DamageTarget};
+pub(crate) use damage::DamageRequest;
 
 struct Buffer {
     framebuffer_id: u32,
@@ -19,9 +19,6 @@ struct Buffer {
     // OWNER: prepare_damage 把本次像素 snapshot 移入 inflight，直到 presenter completion
     // 才提交或重新合并；缺失该 owner 会让 worker 阻塞期间到达的新输入被错误 clear。
     inflight: Option<DamageSet>,
-    // DIRTYFB 成功后，inactive resource 已可直接 SET_SCANOUT；缺失该 fact 会在 page-flip
-    // 因 EBUSY/EINTR 重试时重复传输相同 geometry damage。
-    prepared_for_flip: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,7 +31,7 @@ pub enum DisplayError {
 pub struct Candidate {
     fd: i32,
     mode: DrmMode,
-    buffers: [Option<Buffer>; 2],
+    buffer: Option<Buffer>,
 }
 
 pub struct Display {
@@ -42,9 +39,7 @@ pub struct Display {
     crtc_id: u32,
     connector_id: u32,
     mode: DrmMode,
-    buffers: [Option<Buffer>; 2],
-    front: usize,
-    flip_pending: bool,
+    buffer: Option<Buffer>,
 }
 
 impl Display {
@@ -70,9 +65,7 @@ impl Display {
             crtc_id,
             connector_id,
             mode: DrmMode::default(),
-            buffers: [None, None],
-            front: 0,
-            flip_pending: false,
+            buffer: None,
         };
         display.mode = display.query_mode().map_err(|_| ())?;
         Ok(display)
@@ -115,21 +108,20 @@ impl Display {
         Ok(Candidate {
             fd: self.fd,
             mode,
-            buffers: create_pair(self.fd, mode, scene)?,
+            buffer: Some(create_buffer(self.fd, mode, scene)?),
         })
     }
 
     pub fn commit(&mut self, candidate: &mut Candidate) -> Result<(), DisplayError> {
-        if self.flip_pending
-            || self
-                .buffers
-                .iter()
-                .flatten()
-                .any(|buffer| buffer.inflight.is_some())
+        if self
+            .buffer
+            .as_ref()
+            .is_some_and(|buffer| buffer.inflight.is_some())
         {
             return Err(DisplayError::Transient);
         }
-        let framebuffer_id = candidate.buffers[0]
+        let framebuffer_id = candidate
+            .buffer
             .as_ref()
             .ok_or(DisplayError::System)?
             .framebuffer_id;
@@ -140,72 +132,23 @@ impl Display {
             candidate.mode,
             framebuffer_id,
         )?;
-        let next = core::mem::take(&mut candidate.buffers);
-        cleanup_pair(self.fd, core::mem::replace(&mut self.buffers, next));
+        let next = candidate.buffer.take();
+        cleanup_buffer(self.fd, core::mem::replace(&mut self.buffer, next));
         self.mode = candidate.mode;
-        self.front = 0;
-        self.flip_pending = false;
-        Ok(())
-    }
-
-    pub fn flip_pending(&self) -> bool {
-        self.flip_pending
-    }
-
-    pub fn read_events(&mut self) -> Result<(), ()> {
-        let mut bytes = [0u8; 256];
-        let count = unsafe { ffi::read(self.fd, bytes.as_mut_ptr().cast(), bytes.len()) };
-        if count <= 0 {
-            return Err(());
-        }
-        let mut offset = 0usize;
-        while offset < count as usize {
-            let header = bytes.get(offset..offset + 8).ok_or(())?;
-            let kind = u32::from_ne_bytes(header[..4].try_into().map_err(|_| ())?);
-            let length = u32::from_ne_bytes(header[4..8].try_into().map_err(|_| ())?) as usize;
-            if length < 8
-                || offset
-                    .checked_add(length)
-                    .is_none_or(|end| end > count as usize)
-            {
-                return Err(());
-            }
-            if kind == ffi::DRM_EVENT_FLIP_COMPLETE {
-                if !self.flip_pending {
-                    return Err(());
-                }
-                self.front ^= 1;
-                self.flip_pending = false;
-            }
-            offset += length;
-        }
         Ok(())
     }
 }
 
 impl Drop for Candidate {
     fn drop(&mut self) {
-        cleanup_pair(self.fd, core::mem::take(&mut self.buffers));
+        cleanup_buffer(self.fd, self.buffer.take());
     }
 }
 
 impl Drop for Display {
     fn drop(&mut self) {
-        cleanup_pair(self.fd, core::mem::take(&mut self.buffers));
+        cleanup_buffer(self.fd, self.buffer.take());
     }
-}
-
-fn create_pair(fd: i32, mode: DrmMode, scene: &Scene) -> Result<[Option<Buffer>; 2], DisplayError> {
-    let mut pair = [None, None];
-    pair[0] = Some(create_buffer(fd, mode, scene)?);
-    pair[1] = match create_buffer(fd, mode, scene) {
-        Ok(buffer) => Some(buffer),
-        Err(error) => {
-            cleanup_pair(fd, pair);
-            return Err(error);
-        }
-    };
-    Ok(pair)
 }
 
 fn create_buffer(fd: i32, mode: DrmMode, scene: &Scene) -> Result<Buffer, DisplayError> {
@@ -304,7 +247,6 @@ fn create_buffer(fd: i32, mode: DrmMode, scene: &Scene) -> Result<Buffer, Displa
         pitch: create.pitch as usize,
         damage: DamageSet::EMPTY,
         inflight: None,
-        prepared_for_flip: false,
     };
     scene.render(
         buffer.pixels,
@@ -338,16 +280,17 @@ fn set_crtc(
         .ok_or_else(system_error)
 }
 
-fn cleanup_pair(fd: i32, pair: [Option<Buffer>; 2]) {
-    for buffer in pair.into_iter().flatten() {
-        assert!(
-            buffer.inflight.is_none(),
-            "framebuffer destroyed while presenter still owns damage"
-        );
-        unsafe { ffi::drmModeRmFB(fd, buffer.framebuffer_id) };
-        unsafe { ffi::munmap(buffer.pixels.cast::<c_void>(), buffer.size) };
-        destroy_handle(fd, buffer.handle);
-    }
+fn cleanup_buffer(fd: i32, buffer: Option<Buffer>) {
+    let Some(buffer) = buffer else {
+        return;
+    };
+    assert!(
+        buffer.inflight.is_none(),
+        "framebuffer destroyed while presenter still owns damage"
+    );
+    unsafe { ffi::drmModeRmFB(fd, buffer.framebuffer_id) };
+    unsafe { ffi::munmap(buffer.pixels.cast::<c_void>(), buffer.size) };
+    destroy_handle(fd, buffer.handle);
 }
 
 fn destroy_handle(fd: i32, handle: u32) {

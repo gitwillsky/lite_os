@@ -36,7 +36,6 @@ struct Pointer {
 
 pub struct Change {
     pub damage: Damage,
-    pub geometry: bool,
     pub quit: bool,
     pub event: Option<NodeId>,
     pub pointer: Option<TerminalPointer>,
@@ -56,7 +55,6 @@ impl Change {
     fn empty() -> Self {
         Self {
             damage: Damage::EMPTY,
-            geometry: false,
             quit: false,
             event: None,
             pointer: None,
@@ -67,7 +65,6 @@ impl Change {
 
     fn merge_scene(&mut self, update: (Damage, bool)) {
         self.damage.merge(update.0);
-        self.geometry |= update.1;
     }
 
     fn push_key(&mut self, event: KeyEvent) -> Result<(), ()> {
@@ -281,7 +278,6 @@ impl Pointer {
         if self.button_pending {
             let update = scene.set_primary_button(self.left_down)?;
             change.damage.merge(update.0);
-            change.geometry |= update.1;
             change.event = update.2;
             self.button_pending = false;
         }
