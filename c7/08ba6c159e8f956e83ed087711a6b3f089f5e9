@@ -1,0 +1,36 @@
+kernel/src/drivers/virtio_gpu/damage.rs
+  s_eca7e55bad5cec::t_af152476845254 13-16,291-299
+tools/architecture-check/src/main.rs
+  s_eca7e55bad5cec::t_8b57c32d53a10a 1035-1037,1039,1045,1047,1067-1069,1072-1073,1077,1082
+user/liteui-compositor/src/display.rs
+  s_eca7e55bad5cec::t_62ead8149cfdea 10,34,42,68,111,116-119,123-124,135-136,144,150,283-293
+user/liteui-compositor/src/display/damage.rs
+  s_eca7e55bad5cec::t_c7ab101a473fd0 112,115,120-123,130,132-133,170
+user/liteui-compositor/src/reactor.rs
+  s_eca7e55bad5cec::t_5d5a09894b5eef 7,114-115,136,284-285,288,321-328,330,361,368,375
+user/liteui-compositor/src/scene/recovery.rs
+  s_eca7e55bad5cec::t_14113e3bfb7d96 30,55,63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c708ba6c159e8f956e83ed087711a6b3f089f5e9",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_eca7e55bad5cec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f6b06-7683-7fe3-abc7-435fef640b14",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
