@@ -1,0 +1,104 @@
+Makefile
+  s_a241f671fb821f::t_c7032cd71f42a4 3,108,122-124,134-135
+README.md
+  s_a241f671fb821f::t_5a13ebc9c24ca5 17
+docs/architecture-contract.md
+  s_a241f671fb821f::t_45471f28cf7cc2 247
+docs/architecture-contract/desktop.md
+  s_a241f671fb821f::t_222e260e4ac023 101-102
+docs/architecture-interface.txt
+  s_a241f671fb821f::t_5e2aebdee7a14d 816,853,1256,1260,2457,2659-2662,3038,3092-3094
+docs/architecture.md
+  s_a241f671fb821f::t_363a1b60c37e6a 292,303-306
+docs/syscall-support.md
+  s_a241f671fb821f::t_ca9b0968d76774 22,38,100,132
+kernel/src/fs/devpts.rs
+  s_a241f671fb821f::t_e5f8baddc65166 87-98,110-111
+kernel/src/fs/file.rs
+  s_a241f671fb821f::t_352742b6543005 19-22,223,227
+kernel/src/fs/file/character.rs
+  s_a241f671fb821f::t_6e7bd1fec1ae3a 5,64-68,79-82
+kernel/src/fs/pty.rs
+  s_a241f671fb821f::t_192aaaf8140c05 82-83,313-315,317-320,359-360,429-443
+kernel/src/syscall/fs/open.rs
+  s_a241f671fb821f::t_994329a3140d63 156
+kernel/src/syscall/mod.rs
+  s_a241f671fb821f::t_f534d6aa6774cd 14,34,248
+kernel/src/syscall/process_control.rs
+  s_a241f671fb821f::t_ee19e396886fba 1-29
+kernel/src/task/model.rs
+  s_a241f671fb821f::t_17e97e99b550cb 116-118,134-139,238,313,337-370
+kernel/src/task/model/credentials.rs
+  s_a241f671fb821f::t_5ef5531cdd4d3f 81-86,90-100,102,108-113,117-127,129,162-167
+kernel/src/task/model/process_clone.rs
+  s_a241f671fb821f::t_03db7d46fb6a85 129
+kernel/src/task/task_manager.rs
+  s_a241f671fb821f::t_477e8c28425dd9 26,48,96-97,184
+kernel/src/task/task_manager/parent_death.rs
+  s_a241f671fb821f::t_8cd7012105d6c9 1-70
+kernel/src/task/task_manager/process_exit.rs
+  s_a241f671fb821f::t_540608fe2db59c 266,280-281,288-294,297-302,373-376
+kernel/src/task/task_manager/vfork.rs
+  s_a241f671fb821f::t_fb17006db40e73 17,38,78,117
+scripts/fixtures/desktop/liteui-inspect.c
+  s_a241f671fb821f::t_abe246c9d67805 1-393
+syscall-abi/src/lib.rs
+  s_a241f671fb821f::t_cba4c43425260e 109
+user/liteui-compositor/src/diagnostics.rs
+  s_a241f671fb821f::t_2e9f93a4f60909 1-199
+user/liteui-compositor/src/display.rs
+  s_a241f671fb821f::t_b9051630a9f70f 10
+user/liteui-compositor/src/display/damage.rs
+  s_a241f671fb821f::t_76b983062b4025 7,39,41,45-46,49-52,65-76,78,103-113,220-228
+user/liteui-compositor/src/ffi.rs
+  s_a241f671fb821f::t_517142dfdd941e 44
+user/liteui-compositor/src/input.rs
+  s_a241f671fb821f::t_248d7c90b27493 37-57,60,80,89-95,114-117,126-130,188,199-200,234-236,241-252,322-341,343-349,353-359,363,370-386,434-436
+user/liteui-compositor/src/lib.rs
+  s_a241f671fb821f::t_8fe8e33eed6075 8
+user/liteui-compositor/src/scene.rs
+  s_a241f671fb821f::t_66e3e5642a8239 1,11,222-225
+user/liteui-compositor/src/scene/damage.rs
+  s_a241f671fb821f::t_706d749b14966c 1-106
+user/liteui-compositor/src/scene/raster.rs
+  s_a241f671fb821f::t_6b95d79729a1bc 57-69
+user/liteui-compositor/src/server.rs
+  s_a241f671fb821f::t_1cdf04b59ab3e5 10,13,100-108,191,208,212-215
+user/liteui-compositor/src/server/peer.rs
+  s_a241f671fb821f::t_df74c322e7d1d3 1-61
+user/liteui-compositor/src/window.rs
+  s_a241f671fb821f::t_ee1be406acce8d 52,60,183-193,233-239,241,243,307,320,334,341,356-367,375-377,386-400,402,405-406,409-422,522-543,599
+user/liteui-host/native/bridge.c
+  s_a241f671fb821f::t_4fed581a917f0d 208,214-224,236-237,249,275
+user/liteui-host/src/ffi.rs
+  s_a241f671fb821f::t_b1f32140c0c8f8 74-75
+user/liteui-host/src/runtime.rs
+  s_a241f671fb821f::t_8dc1c66f2f08e2 12,52
+user/terminal-service/src/pty.rs
+  s_a241f671fb821f::t_db7670c9adf5b7 76-80,82,106-108
+user/terminal-service/src/reactor.rs
+  s_a241f671fb821f::t_46ed341ebe6158 100-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0894a13b8fe0faa25bc87a078c7cb6e59ef9fdb",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_a241f671fb821f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7034-9d0f-76e0-b23e-353f867f8b17",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
