@@ -1,0 +1,26 @@
+user/liteui-compositor/src/scene/raster.rs
+  s_a241f671fb821f::t_6515f8449bb037 58,169-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "089f048b32fb4782287d21cdeb4351e7bd208206",
+  "prompts": {},
+  "humans": {
+    "h_3c88a3bd48cce1": {
+      "author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "sessions": {
+    "s_a241f671fb821f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7034-9d0f-76e0-b23e-353f867f8b17",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
