@@ -55,17 +55,7 @@ pub(super) fn render_scene(
         }
     }
     if let Some(preview) = windows.preview() {
-        // Damage 只包含 old/new preview 的四条边，因此 fill 不会覆盖窗口内部。
-        paint_rectangle(
-            pixels,
-            pitch,
-            screen_width,
-            damage,
-            preview,
-            0,
-            0x00ffffff,
-            2,
-        );
+        paint_outline(pixels, pitch, screen_width, damage, preview, 0x00ffffff, 2);
     }
     paint_pointer(pixels, pitch, screen_width, damage, pointer);
 }
@@ -172,6 +162,42 @@ fn paint_rectangle(
                     || y < primitive_bounds.y1.saturating_add(border)
                     || y.saturating_add(border) >= primitive_bounds.y2);
             *pixel = if edge { border_color } else { fill };
+        }
+    }
+}
+
+fn paint_outline(
+    pixels: *mut u32,
+    pitch: usize,
+    screen_width: usize,
+    damage: Rect,
+    bounds: Rect,
+    color: u32,
+    width: u8,
+) {
+    let border = usize::from(width);
+    if border == 0 {
+        return;
+    }
+    let clipped = intersect(damage, bounds);
+    if clipped.x1 >= clipped.x2 || clipped.y1 >= clipped.y2 {
+        return;
+    }
+    for y in clipped.y1..clipped.y2 {
+        let row = unsafe {
+            slice::from_raw_parts_mut(
+                (pixels as *mut u8).add(y * pitch).cast::<u32>(),
+                screen_width,
+            )
+        };
+        for (x, pixel) in row.iter_mut().enumerate().take(clipped.x2).skip(clipped.x1) {
+            if x < bounds.x1.saturating_add(border)
+                || x.saturating_add(border) >= bounds.x2
+                || y < bounds.y1.saturating_add(border)
+                || y.saturating_add(border) >= bounds.y2
+            {
+                *pixel = color;
+            }
         }
     }
 }
