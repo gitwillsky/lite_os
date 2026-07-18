@@ -56,10 +56,6 @@ fn publish_child(
 /// @return parent 成功获得 child PID；COW/page-table 事务 OOM 时 graph 不发布 child。
 /// @errors 地址空间/Process 分配失败返回 Memory，RLIMIT_NPROC/PID namespace 耗尽返回 ResourceLimit。
 pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
-    let creation = TASK_MANAGER.process_creation.lock();
-    if !super::check_process_slot() {
-        return Err(ProcessCloneError::ResourceLimit);
-    }
     let parent = current_task().expect("fork requires current task");
     let pid = TASK_MANAGER
         .allocate_pid()
@@ -73,15 +69,45 @@ pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
         || parent.fork_process(pid).map_err(ProcessCloneError::Memory),
     )?;
     let child_pid = child.tgid();
-    publish_child(
-        parent.tgid(),
-        parent.tid(),
-        child.clone(),
-        None,
-        thread_slot,
-        process_slot,
-    );
-    drop(creation);
+    let mut minimum_snapshot_capacity = 0;
+    let mut snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            child.remove_thread_trap_context();
+            return Err(ProcessCloneError::Memory(error));
+        }
+    };
+    loop {
+        let creation = TASK_MANAGER.process_creation.lock();
+        if let Err(required) = snapshot.capture() {
+            drop(creation);
+            minimum_snapshot_capacity = required;
+            snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    child.remove_thread_trap_context();
+                    return Err(ProcessCloneError::Memory(error));
+                }
+            };
+            continue;
+        }
+        if !snapshot.allows_current() {
+            drop(creation);
+            child.remove_thread_trap_context();
+            return Err(ProcessCloneError::ResourceLimit);
+        }
+        publish_child(
+            parent.tgid(),
+            parent.tid(),
+            child.clone(),
+            None,
+            thread_slot,
+            process_slot,
+        );
+        drop(creation);
+        break;
+    }
+    drop(snapshot);
     enqueue_new_task(child);
     Ok(child_pid)
 }
@@ -91,10 +117,6 @@ pub(crate) fn fork_current_process() -> Result<usize, ProcessCloneError> {
 /// @return parent 恢复后获得 child PID；准备失败时不发布 child 或 wait membership。
 /// @errors 地址空间/Process 分配失败返回 Memory，RLIMIT_NPROC/PID namespace 耗尽返回 ResourceLimit。
 pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, ProcessCloneError> {
-    let creation = TASK_MANAGER.process_creation.lock();
-    if !super::check_process_slot() {
-        return Err(ProcessCloneError::ResourceLimit);
-    }
     let parent = current_task().expect("vfork requires current task");
     let pid = TASK_MANAGER
         .allocate_pid()
@@ -112,15 +134,45 @@ pub(crate) fn vfork_current_process(child_stack: usize) -> Result<usize, Process
         },
     )?;
     let child_pid = child.tgid();
-    publish_child(
-        parent.tgid(),
-        parent.tid(),
-        child.clone(),
-        Some(parent.clone()),
-        thread_slot,
-        process_slot,
-    );
-    drop(creation);
+    let mut minimum_snapshot_capacity = 0;
+    let mut snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            child.remove_thread_trap_context();
+            return Err(ProcessCloneError::Memory(error));
+        }
+    };
+    loop {
+        let creation = TASK_MANAGER.process_creation.lock();
+        if let Err(required) = snapshot.capture() {
+            drop(creation);
+            minimum_snapshot_capacity = required;
+            snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    child.remove_thread_trap_context();
+                    return Err(ProcessCloneError::Memory(error));
+                }
+            };
+            continue;
+        }
+        if !snapshot.allows_current() {
+            drop(creation);
+            child.remove_thread_trap_context();
+            return Err(ProcessCloneError::ResourceLimit);
+        }
+        publish_child(
+            parent.tgid(),
+            parent.tid(),
+            child.clone(),
+            Some(parent.clone()),
+            thread_slot,
+            process_slot,
+        );
+        drop(creation);
+        break;
+    }
+    drop(snapshot);
 
     let prepared = super::context_switch::prepare_current_block(&parent, (), |_, _| {
         WaitMembership::Vfork(child_pid)

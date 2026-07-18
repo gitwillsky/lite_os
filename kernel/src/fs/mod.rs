@@ -23,7 +23,7 @@ pub(crate) use file::{
     CancelledFileReservation, CharacterDevice, Console, DetachedFileDescriptor,
     FileDescriptorError, FileDescriptorTable, KmsgDeviceRead, MAX_FILE_DESCRIPTORS, O_ACCMODE,
     O_APPEND, O_CLOEXEC, O_NONBLOCK, O_RDONLY, O_RDWR, O_WRONLY, OpenFileDescription, OpenFileKind,
-    Terminal, TerminalAccess, TerminalRead, TerminalReadMode,
+    Terminal, TerminalAccess, TerminalRead, TerminalReadMode, character_write_chunk,
 };
 pub(crate) use inode::{
     DeviceKind, DirectoryEntry, Inode, InodeMetadata, InodeType, StorageWriter,
@@ -41,7 +41,8 @@ pub(crate) use pty::{PtyMaster, PtySlave, init as init_pty};
 pub(crate) use sysfs::SysFileSystem;
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, OpenedFile, RecordLockMode, RecordLockRange, init as init_vfs, vfs,
+    AdvisoryLockNotifier, OpenedFile, PreparedAdvisoryLock, PreparedLockAttempt,
+    PreparedRecordLock, RecordLockMode, RecordLockRange, init as init_vfs, vfs,
 };
 
 /// @description filesystem adapter 向 VFS 投影的容量、inode 与类型快照。

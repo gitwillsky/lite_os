@@ -81,3 +81,9 @@ pub(crate) fn read_console(bytes: &mut [u8]) -> usize {
 pub(crate) fn console_input_ready() -> bool {
     uart::input_ready()
 }
+
+/// @description 原子丢弃唯一 UART RX ring 中尚未消费的输入。
+/// @return 被丢弃的 byte 数。
+pub(crate) fn discard_console_input() -> usize {
+    uart::discard_input()
+}

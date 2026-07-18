@@ -38,32 +38,58 @@ pub(crate) fn futex_wait(
     if address == 0 || address & 3 != 0 || bitset == 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    let prepared = task
-        .with_futex_word(address, private, |key, current_value| {
-            if current_value != expected {
-                return Err(FutexWaitError::Again);
-            }
-            if deadline.is_some_and(|value| value <= get_time_ns()) {
-                return Err(FutexWaitError::TimedOut);
-            }
-            if task.has_deliverable_signal() {
-                return Err(FutexWaitError::Interrupted);
-            }
+    let prepared = loop {
+        let key = task
+            .with_futex_word(address, private, |key, current_value| {
+                if current_value != expected {
+                    return Err(FutexWaitError::Again);
+                }
+                if deadline.is_some_and(|value| value <= get_time_ns()) {
+                    return Err(FutexWaitError::TimedOut);
+                }
+                if task.has_deliverable_signal() {
+                    return Err(FutexWaitError::Interrupted);
+                }
+                Ok(key)
+            })
+            .map_err(|_| FutexWaitError::Fault)??;
+        let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+        let wait = ticket.prepare_futex(key, bitset, deadline, task.clone());
 
-            let prepared = queue
-                .prepare_futex(key, bitset, deadline, task.clone())
-                .map_err(|()| FutexWaitError::OutOfMemory)?;
-            Ok(super::context_switch::prepare_current_block(
-                &task,
-                queue,
-                move |queue, _| {
-                    let wait_id = queue.commit(prepared);
-                    WaitMembership::Futex(wait_id)
-                },
-            ))
-        })
-        .map_err(|_| FutexWaitError::Fault)??;
+        // queue→memory 的第二次解析是 publication linearization point；mapping key 在锁外
+        // staging 期间改变时，未发布节点由 PreparedWait 回收并按新 key 重试。
+        let queue = INDEXED_WAIT_QUEUE.lock();
+        let confirmed = task
+            .with_futex_word(address, private, |confirmed_key, current_value| {
+                if confirmed_key != key {
+                    return Ok(None);
+                }
+                if current_value != expected {
+                    return Err(FutexWaitError::Again);
+                }
+                if deadline.is_some_and(|value| value <= get_time_ns()) {
+                    return Err(FutexWaitError::TimedOut);
+                }
+                if task.has_deliverable_signal() {
+                    return Err(FutexWaitError::Interrupted);
+                }
+                let wait = wait.map_err(|()| FutexWaitError::OutOfMemory)?;
+
+                Ok(Some(super::context_switch::prepare_current_block(
+                    &task,
+                    queue,
+                    move |queue, _| {
+                        let wait_id = queue.commit(wait);
+                        WaitMembership::Futex(wait_id)
+                    },
+                )))
+            })
+            .map_err(|_| FutexWaitError::Fault)??;
+        let Some(prepared) = confirmed else {
+            continue;
+        };
+        break prepared;
+    };
     match prepared.suspend() {
         WaitResult::Woken => Ok(()),
         WaitResult::TimedOut => Err(FutexWaitError::TimedOut),

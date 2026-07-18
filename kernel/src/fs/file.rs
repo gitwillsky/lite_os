@@ -2,6 +2,8 @@
 mod character;
 #[path = "file/descriptor_table.rs"]
 mod descriptor_table;
+#[path = "file/position.rs"]
+mod position;
 #[path = "file/proc.rs"]
 mod proc;
 mod terminal;
@@ -10,11 +12,16 @@ pub(crate) use descriptor_table::{
     CancelledFileReservation, DetachedFileDescriptor, FileDescriptorError, FileDescriptorTable,
     MAX_FILE_DESCRIPTORS,
 };
-pub(crate) use terminal::{Terminal, TerminalAccess, TerminalRead, TerminalReadMode};
+pub(in crate::fs) use terminal::clear_terminal_raw_input;
+pub(crate) use terminal::{
+    Terminal, TerminalAccess, TerminalRead, TerminalReadMode, character_write_chunk,
+};
 
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
 use spin::Mutex;
+
+use position::FilePosition;
 
 use super::{
     AccessIdentity, DeviceKind, Epoll, FileSystemError, FileSystemStatistics, Inode, OpenedFile,
@@ -74,17 +81,21 @@ pub(crate) trait Console: Send + Sync {
     /// @description 查询 console 是否可读，只允许在 wait owner lock 内封闭 read/enqueue race。
     fn input_ready(&self) -> bool;
 
-    /// @description 同步写出完整或部分 console 字节流。
+    /// @description 原子丢弃 adapter 尚未交给 line discipline 的全部 raw input。
+    /// @return 被丢弃的 byte 数。
+    fn discard_input(&self) -> usize;
+
+    /// @description 同步且不睡眠等待地写出完整或部分 console 字节流。
     ///
     /// @param bytes kernel 已完成 user-copy 的连续字节。
-    /// @return 实际写出长度；底层 console 失败返回 `IoError`。
+    /// @return 实际写出长度；底层 console 失败返回 `IoError`。返回时不得保留待发送队列。
     fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError>;
 }
 
 /// @description Linux open file description，共享偏移和状态标志。
 pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
-    pub(crate) offset: Mutex<u64>,
+    position: FilePosition,
     pub(crate) flags: Mutex<u32>,
     character_opened: Option<Arc<OpenedFile>>,
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
@@ -93,6 +104,47 @@ pub(crate) struct OpenFileDescription {
 }
 
 impl OpenFileDescription {
+    /// @description 在该 OFD 共享 position 的唯一临界区内执行一次完整操作。
+    /// @param operation 依赖并可推进当前 position 的完整 operation。
+    /// @return operation 的原始返回值。
+    pub(crate) fn with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> R {
+        self.position.with(operation)
+    }
+
+    /// @description 返回该 OFD 共享 position 的瞬时快照，不推进 position。
+    /// @return 当前共享 position。
+    pub(crate) fn position_snapshot(&self) -> u64 {
+        self.position.snapshot()
+    }
+
+    /// @description 原子计算并发布 signed Linux file position；失败时保持原值。
+    /// @param offset signed byte delta。
+    /// @param base 把当前 position 投影为本次 seek 基准的 closure。
+    /// @return 成功发布的新 position。
+    /// @errors 结果为负或超出 `i64::MAX` 时返回错误。
+    pub(crate) fn seek_position(
+        &self,
+        offset: i64,
+        base: impl FnOnce(u64) -> u64,
+    ) -> Result<u64, ()> {
+        self.position.seek(offset, base)
+    }
+
+    /// @description 按全局地址顺序锁定两个不同 OFD 的 positions，并保持 caller 参数顺序。
+    ///
+    /// 同一 OFD 返回 `None`，caller 必须单独定义单 position 的操作语义。
+    /// @param first caller 语义中的第一个 OFD。
+    /// @param second caller 语义中的第二个 OFD。
+    /// @param operation 同时依赖并可推进两个 positions 的完整 operation。
+    /// @return OFD 不同时返回 operation 结果；相同时返回 `None`。
+    pub(crate) fn with_positions<R>(
+        first: &Self,
+        second: &Self,
+        operation: impl FnOnce(&mut u64, &mut u64) -> R,
+    ) -> Option<R> {
+        FilePosition::with_pair(&first.position, &second.position, operation)
+    }
+
     /// @description 从唯一 OFD backend 投影 poll/epoll readiness，不注册 waiter。
     pub(crate) fn poll_events(&self, events: i16) -> i16 {
         const INPUT: i16 = 0x001;
@@ -202,7 +254,7 @@ impl OpenFileDescription {
                 kind: DeviceKind::Console,
                 pty: None,
             }),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
@@ -227,7 +279,7 @@ impl OpenFileDescription {
         let device = CharacterDevice::open(kind, terminal, identity)?;
         Arc::try_new(Self {
             kind: OpenFileKind::Character(device),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: Some(backing_opened),
             descriptor_refs: AtomicUsize::new(0),
@@ -238,7 +290,7 @@ impl OpenFileDescription {
     pub(crate) fn inode(opened: Arc<OpenedFile>, flags: u32) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::Inode(opened),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
@@ -249,7 +301,7 @@ impl OpenFileDescription {
     pub(crate) fn pipe(endpoint: Arc<PipeEnd>, flags: u32) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::Pipe(endpoint),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
@@ -260,7 +312,7 @@ impl OpenFileDescription {
     pub(crate) fn socket(socket: Arc<Socket>, flags: u32) -> Result<Arc<Self>, ()> {
         let ofd = Arc::try_new(Self {
             kind: OpenFileKind::Socket(socket.clone()),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
@@ -274,7 +326,7 @@ impl OpenFileDescription {
     pub(crate) fn epoll(epoll: Arc<Epoll>) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::Epoll(epoll),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(O_RDWR),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),
@@ -285,7 +337,7 @@ impl OpenFileDescription {
     pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
             kind: OpenFileKind::EventFd(event),
-            offset: Mutex::new(0),
+            position: FilePosition::new(),
             flags: Mutex::new(O_RDWR | flags),
             character_opened: None,
             descriptor_refs: AtomicUsize::new(0),

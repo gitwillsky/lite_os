@@ -1,5 +1,8 @@
 use alloc::sync::Arc;
 
+use super::plic_policy::{
+    MAX_INTERRUPT_VECTOR, dispatch_claim_batch, enable_word_offset, valid_interrupt_vector,
+};
 use crate::{
     cpu::{self, CpuSet},
     drivers::{InterruptController, InterruptError, InterruptHandler, InterruptVector},
@@ -9,17 +12,32 @@ use crate::{
 /// QEMU virt PLIC adapter。hardware context 编码仅存在于 platform backend。
 pub(super) struct PlicInterruptController {
     base_addr: usize,
-    max_interrupts: u32,
     possible_cpus: CpuSet,
     handlers: FallibleMap<InterruptVector, Arc<dyn InterruptHandler>>,
     affinities: FallibleMap<InterruptVector, CpuSet>,
 }
 
 impl PlicInterruptController {
+    /// 从 DTB MMIO extent 与已发布 CPU topology 初始化 QEMU virt PLIC adapter。
+    ///
+    /// # Parameters
+    ///
+    /// - `base_addr`: PLIC MMIO base address。
+    /// - `size`: DTB 声明的 PLIC MMIO extent bytes。
+    /// - `possible_cpus`: 已验证且可映射到 supervisor context 的 logical CPUs。
+    ///
+    /// # Returns
+    ///
+    /// 初始化 threshold 后的 controller。
+    ///
+    /// # Errors
+    ///
+    /// CPU topology 为空、hardware ID 超出 `u32` 或 MMIO extent 无法覆盖标准
+    /// priority/enable/context register geometry 时返回 `InterruptError::InvalidVector`；已发布但无法编码
+    /// supervisor context 的 topology 违反启动不变量并 fail-stop。
     pub(super) fn new(
         base_addr: usize,
         size: usize,
-        max_interrupts: u32,
         possible_cpus: CpuSet,
     ) -> Result<Self, InterruptError> {
         if possible_cpus.is_empty() {
@@ -37,7 +55,7 @@ impl PlicInterruptController {
         let required_context_bytes = 0x200004usize
             .checked_add(last_context as usize * 0x1000)
             .and_then(|offset| offset.checked_add(4));
-        let required_priority_bytes = (max_interrupts as usize)
+        let required_priority_bytes = (MAX_INTERRUPT_VECTOR as usize)
             .checked_add(1)
             .and_then(|count| count.checked_mul(4));
         if base_addr == 0
@@ -50,7 +68,6 @@ impl PlicInterruptController {
 
         let controller = Self {
             base_addr,
-            max_interrupts,
             possible_cpus,
             handlers: FallibleMap::new(),
             affinities: FallibleMap::new(),
@@ -104,10 +121,12 @@ impl PlicInterruptController {
     }
 
     fn enable_for_context(&self, vector: u32, context: u32, enabled: bool) {
-        let word = vector / 32;
-        let bit = vector % 32;
-        let address = self.enable_offset(context) + word as usize * 4;
-        // SAFETY: context comes from discovered CPUs and vector is within the validated MMIO extent.
+        let word_offset =
+            enable_word_offset(vector).expect("PLIC vector must be validated before MMIO access");
+        let bit = vector % u32::BITS;
+        let address = self.enable_offset(context) + word_offset;
+        // SAFETY: context comes from discovered CPUs and the validated vector remains within its
+        // 0x80-byte enable bitmap instead of crossing into the next context.
         unsafe {
             let current = core::ptr::read_volatile(address as *const u32);
             let replacement = if enabled {
@@ -142,7 +161,7 @@ impl InterruptController for PlicInterruptController {
         vector: InterruptVector,
         handler: Arc<dyn InterruptHandler>,
     ) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
+        if !valid_interrupt_vector(vector) {
             return Err(InterruptError::InvalidVector);
         }
         self.handlers
@@ -152,7 +171,7 @@ impl InterruptController for PlicInterruptController {
     }
 
     fn enable_interrupt(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
+        if !valid_interrupt_vector(vector) {
             return Err(InterruptError::InvalidVector);
         }
         if !self.handlers.contains_key(&vector) {
@@ -170,7 +189,7 @@ impl InterruptController for PlicInterruptController {
     }
 
     fn set_priority(&mut self, vector: InterruptVector) -> Result<(), InterruptError> {
-        if vector == 0 || vector > self.max_interrupts {
+        if !valid_interrupt_vector(vector) {
             return Err(InterruptError::InvalidVector);
         }
         self.set_interrupt_priority_raw(vector, 1);
@@ -182,8 +201,7 @@ impl InterruptController for PlicInterruptController {
         vector: InterruptVector,
         cpus: CpuSet,
     ) -> Result<(), InterruptError> {
-        if vector == 0
-            || vector > self.max_interrupts
+        if !valid_interrupt_vector(vector)
             || cpus.is_empty()
             || cpus.iter().any(|cpu| !self.possible_cpus.contains(cpu))
         {
@@ -204,24 +222,20 @@ impl InterruptController for PlicInterruptController {
             return Err(InterruptError::InvalidVector);
         }
         let context = Self::context_for(current);
-        let mut first_error = None;
-        loop {
-            let vector = self.claim(context);
-            if vector == 0 {
-                break;
-            }
-            let result = self
-                .handlers
-                .get(&vector)
-                .cloned()
-                .ok_or(InterruptError::HandlerNotSet)
-                .and_then(|handler| handler.handle_interrupt(vector));
-            self.complete(context, vector);
-            if first_error.is_none() {
-                first_error = result.err();
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        dispatch_claim_batch(
+            || self.claim(context),
+            |vector| {
+                if !valid_interrupt_vector(vector) {
+                    return Err(InterruptError::InvalidVector);
+                }
+                self.handlers
+                    .get(&vector)
+                    .cloned()
+                    .ok_or(InterruptError::HandlerNotSet)
+                    .and_then(|handler| handler.handle_interrupt(vector))
+            },
+            |vector| self.complete(context, vector),
+        )
     }
 
     fn supports_cpu_affinity(&self) -> bool {

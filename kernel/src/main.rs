@@ -74,6 +74,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
         task::create_pipe_endpoints,
         task::create_notification_endpoints,
         task::hangup_terminal,
+        task::publish_terminal_input_signals,
     )
     .expect("Unix98 PTY initialization failed");
     socket::init();
@@ -149,6 +150,10 @@ impl fs::Console for PlatformConsole {
 
     fn input_ready(&self) -> bool {
         drivers::console_input_ready()
+    }
+
+    fn discard_input(&self) -> usize {
+        drivers::discard_console_input()
     }
 
     fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {

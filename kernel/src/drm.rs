@@ -17,6 +17,9 @@ use event::{EVENT_QUEUE_CAPACITY, EventQueue};
 pub(crate) mod device;
 mod master;
 mod mode;
+mod publication;
+mod publication_order;
+pub(crate) use publication::{PreparedDumbBuffer, PreparedFramebuffer};
 
 struct CompletionState {
     // OWNER: pending 同时绑定 adapter fence 与 scanout/damage/disable 领域结果；若拆分，
@@ -227,22 +230,22 @@ pub(crate) struct DrmMode {
 }
 
 impl DrmFile {
-    /// @description 创建 file-private XRGB8888 linear dumb buffer handle。
+    /// @description 准备 file-private XRGB8888 linear dumb buffer，不提前发布 handle。
     ///
     /// @param width 非零 pixel width。
     /// @param height 非零 pixel height。
     /// @param bpp 仅支持标准 XRGB8888 color mode 32。
     /// @param flags Linux UAPI 要求为零。
-    /// @return 新 handle、linear pitch 与 page-aligned logical size。
+    /// @return 已预留全部 fallible storage 的 publication transaction。
     /// @errors 参数/溢出返回 Invalid；frame/control/node OOM 返回 OutOfMemory；identity/handle
     /// 耗尽返回 NoSpace。
-    pub(crate) fn create_dumb(
+    pub(crate) fn prepare_dumb(
         &self,
         width: u32,
         height: u32,
         bpp: u32,
         flags: u32,
-    ) -> Result<DumbBufferInfo, DrmError> {
+    ) -> Result<PreparedDumbBuffer<'_>, DrmError> {
         if width == 0 || height == 0 || bpp != 32 || flags != 0 {
             return Err(DrmError::Invalid);
         }
@@ -257,20 +260,10 @@ impl DrmFile {
             .filter(|size| *size != 0)
             .ok_or(DrmError::Invalid)?;
 
-        // 1. identity/handle 只做单调预留且不跨 allocation 持锁；失败允许留下 hole，
-        //    但绝不复用已向 futex/mmap publication 暴露过的 identity。
-        let identity = {
-            let mut state = self.device.state.lock();
-            let identity = state.next_buffer_identity;
-            state.next_buffer_identity = identity.checked_add(1).ok_or(DrmError::NoSpace)?;
-            identity
-        };
-        let handle = {
-            let mut state = self.state.lock();
-            let handle = state.next_handle;
-            state.next_handle = handle.checked_add(1).ok_or(DrmError::NoSpace)?;
-            handle
-        };
+        // 1. 未发布 identity/handle 由 reservation token 独占；后续 OOM/copyout failure 会把
+        //    最新 reservation 退回 allocator，已成功 publication 的 identity 仍绝不复用。
+        let handle = publication::DumbHandleReservation::reserve(self)?;
+        let identity = publication::BufferIdentityReservation::reserve(self)?;
 
         // 2. backing 与 Arc/node 全部在 handle publication 前分配；任一失败由 RAII 回收
         //    extent，file namespace 中不存在半初始化 GEM object。
@@ -279,22 +272,20 @@ impl DrmFile {
                 .ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(DumbBuffer {
-            identity,
+            identity: identity.identity,
             pitch,
             size,
             backing,
         })
         .map_err(|_| DrmError::OutOfMemory)?;
-        let prepared =
-            FallibleMap::try_prepare(handle, buffer).map_err(|_| DrmError::OutOfMemory)?;
-
-        // 3. handle 在唯一 OFD lock 下原子可见；mmap/DESTROY 只能观察完整 object。
-        self.state.lock().buffers.commit_vacant(prepared);
-        Ok(DumbBufferInfo {
-            handle,
+        let entry =
+            FallibleMap::try_prepare(handle.handle, buffer).map_err(|_| DrmError::OutOfMemory)?;
+        let info = DumbBufferInfo {
+            handle: handle.handle,
             pitch,
             size: size as u64,
-        })
+        };
+        Ok(PreparedDumbBuffer::new(handle, identity, entry, info))
     }
 
     /// @description 为 file-private dumb handle 返回后续 mmap 使用的 fake byte offset。
@@ -356,21 +347,21 @@ impl DrmFile {
         ))
     }
 
-    /// @description 从 file-private dumb handle 创建 device-wide legacy framebuffer object。
+    /// @description 准备 device-wide legacy framebuffer object，不提前发布 ID。
     ///
     /// @param handle 当前 OFD 的 dumb handle。
     /// @param width framebuffer pixel width。
     /// @param height framebuffer pixel height。
     /// @param pitch linear scanline bytes，必须与 dumb allocation 一致。
-    /// @return 新的 device-wide framebuffer object ID。
+    /// @return 已预留全部 fallible storage 的 publication transaction。
     /// @errors handle/尺寸非法返回对应错误；ID/node 耗尽返回 NoSpace/OutOfMemory。
-    pub(crate) fn add_framebuffer(
+    pub(crate) fn prepare_framebuffer(
         &self,
         handle: u32,
         width: u32,
         height: u32,
         pitch: u32,
-    ) -> Result<u32, DrmError> {
+    ) -> Result<PreparedFramebuffer<'_>, DrmError> {
         let buffer = self
             .state
             .lock()
@@ -391,14 +382,9 @@ impl DrmFile {
         {
             return Err(DrmError::Invalid);
         }
-        let id = {
-            let mut state = self.device.state.lock();
-            let id = state.next_framebuffer_id;
-            state.next_framebuffer_id = id.checked_add(1).ok_or(DrmError::NoSpace)?;
-            id
-        };
-        let prepared = FallibleMap::try_prepare(
-            id,
+        let id = publication::FramebufferIdReservation::reserve(self)?;
+        let entry = FallibleMap::try_prepare(
+            id.id,
             Framebuffer {
                 owner: self.file_identity,
                 width,
@@ -408,12 +394,7 @@ impl DrmFile {
             },
         )
         .map_err(|_| DrmError::OutOfMemory)?;
-        self.device
-            .state
-            .lock()
-            .framebuffers
-            .commit_vacant(prepared);
-        Ok(id)
+        Ok(PreparedFramebuffer::new(id, entry))
     }
 
     /// @description 返回当前 device-wide framebuffer object 数量。

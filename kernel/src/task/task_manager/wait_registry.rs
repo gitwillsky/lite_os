@@ -1,15 +1,16 @@
 use alloc::{sync::Arc, vec::Vec};
-use lazy_static::lazy_static;
 
 use super::{IndexedWaitKind, PollWaitKey};
 use crate::{
     fallible_tree::{FallibleMap, VacantEntry},
     fs::AdvisoryLockKey,
-    ipc::{Pipe, PipeDirection, PipePollState, PipeWaitCondition},
+    ipc::{PipeDirection, PipePollState},
     memory::FutexKey,
     sync::IrqMutex,
     task::TaskControlBlock,
 };
+
+mod preparation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum WaitIndexKey {
@@ -37,11 +38,21 @@ enum WaitIndexKey {
     },
 }
 
-/// 已完成全部节点分配、尚未发布 scheduling membership 的 wait transaction。
+/// @description 已完成全部节点分配、尚未发布 scheduling membership 的 wait transaction。
+///
+/// @ownership 未提交时本对象唯一拥有 entry/index AVL nodes、Task Arc 与 poll keys；任一路径
+/// 提前返回都会由 Drop 回收这些未发布资源，不需要 registry cleanup。
 pub(super) struct PreparedWait {
     id: u64,
     entry: VacantEntry<u64, IndexedWaitEntry>,
     indexes: Vec<VacantEntry<WaitIndexKey, ()>>,
+}
+
+/// @description registry 在短锁内签发的唯一 wait ID ticket。
+///
+/// @ownership ticket 尚未进入 registry；锁外准备失败或复查取消只会烧掉 ID，不留下 membership。
+pub(super) struct WaitTicket {
+    id: u64,
 }
 
 /// @description 一个 Task 的唯一 indexed wait membership 与反向 index metadata。
@@ -105,7 +116,7 @@ pub(super) struct IndexedWaitQueue {
 }
 
 impl IndexedWaitQueue {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             next_id: 0,
             entries: FallibleMap::new(),
@@ -113,55 +124,12 @@ impl IndexedWaitQueue {
         }
     }
 
-    fn allocate_id(&mut self) -> u64 {
+    /// @description 在 registry 短锁内签发唯一 ID，不分配或发布 wait membership。
+    /// @return 可移到锁外完成 fallible staging 的唯一 ticket。
+    pub(super) fn allocate_ticket(&mut self) -> WaitTicket {
         self.next_id = self.next_id.wrapping_add(1);
         assert_ne!(self.next_id, 0, "indexed wait ID wrapped");
-        self.next_id
-    }
-
-    fn prepare_wait(
-        &mut self,
-        task: Arc<TaskControlBlock>,
-        kind: IndexedWaitKind,
-        deadline: Option<u64>,
-        poll_keys: Option<Vec<PollWaitKey>>,
-        index_count: usize,
-        prepare_indexes: impl FnOnce(u64, &mut Vec<VacantEntry<WaitIndexKey, ()>>) -> Result<(), ()>,
-    ) -> Result<PreparedWait, ()> {
-        // 1. staging Vec 与每个 AVL node 都在 wait/scheduler publication 前分配。
-        let mut indexes = Vec::new();
-        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
-        let id = self.allocate_id();
-        prepare_indexes(id, &mut indexes)?;
-        debug_assert_eq!(indexes.len(), index_count);
-        let entry = FallibleMap::try_prepare(
-            id,
-            IndexedWaitEntry {
-                task,
-                kind,
-                deadline,
-                poll_keys,
-            },
-        )
-        .map_err(|_| ())?;
-        Ok(PreparedWait { id, entry, indexes })
-    }
-
-    fn prepare_index(
-        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
-        key: WaitIndexKey,
-    ) -> Result<(), ()> {
-        indexes.push(FallibleMap::try_prepare(key, ()).map_err(|_| ())?);
-        Ok(())
-    }
-    fn prepare_optional_deadline(
-        indexes: &mut Vec<VacantEntry<WaitIndexKey, ()>>,
-        id: u64,
-        deadline: Option<u64>,
-    ) -> Result<(), ()> {
-        deadline.map_or(Ok(()), |deadline| {
-            Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id })
-        })
+        WaitTicket { id: self.next_id }
     }
 
     /// 在 scheduling lock 内零分配发布已准备的完整 wait membership。
@@ -183,187 +151,6 @@ impl IndexedWaitQueue {
             IndexedWaitKind::Signal { mask } => Some(mask),
             _ => panic!("signal wait membership has divergent registry kind"),
         }
-    }
-
-    pub(super) fn prepare_deadline(
-        &mut self,
-        deadline: u64,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::Deadline,
-            Some(deadline),
-            None,
-            1,
-            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::Deadline { deadline, id }),
-        )
-    }
-
-    /// @description 把 futex waiter 发布到 key 与可选 deadline 的唯一索引。
-    ///
-    /// @param key memory domain 已归一化的 futex identity。
-    /// @param bitset waiter 接受的非零 wake mask。
-    /// @param deadline 可选 absolute monotonic deadline。
-    /// @param task 被阻塞的 Thread owner。
-    /// @return 新 wait membership ID。
-    pub(super) fn prepare_futex(
-        &mut self,
-        key: FutexKey,
-        bitset: u32,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::Futex { key, bitset },
-            deadline,
-            None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(indexes, WaitIndexKey::Futex { key, id })?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
-        )
-    }
-
-    /// @description 发布 terminal read 的唯一 console membership 与可选 termios deadline。
-    ///
-    /// @param deadline VTIME 导出的 absolute monotonic deadline；无超时时为 None。
-    /// @param task 被阻塞的 Thread owner。
-    /// @return 新 wait membership ID。
-    pub(super) fn prepare_console(
-        &mut self,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::Console,
-            deadline,
-            None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(
-                    indexes,
-                    WaitIndexKey::Console {
-                        exclusive: false,
-                        id,
-                    },
-                )?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
-        )
-    }
-
-    pub(super) fn prepare_signal(
-        &mut self,
-        mask: u64,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::Signal { mask },
-            deadline,
-            None,
-            usize::from(deadline.is_some()),
-            |id, indexes| Self::prepare_optional_deadline(indexes, id, deadline),
-        )
-    }
-
-    pub(super) fn prepare_pipe(
-        &mut self,
-        pipe: &Arc<Pipe>,
-        condition: PipeWaitCondition,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        let identity = Pipe::identity(pipe);
-        let direction = condition.direction();
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::Pipe {
-                identity,
-                condition,
-            },
-            deadline,
-            None,
-            1 + usize::from(deadline.is_some()),
-            |id, indexes| {
-                Self::prepare_index(
-                    indexes,
-                    WaitIndexKey::Pipe {
-                        identity,
-                        direction: direction as u8,
-                        exclusive: false,
-                        id,
-                    },
-                )?;
-                Self::prepare_optional_deadline(indexes, id, deadline)
-            },
-        )
-    }
-
-    pub(super) fn prepare_advisory_lock(
-        &mut self,
-        key: AdvisoryLockKey,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        self.prepare_wait(
-            task,
-            IndexedWaitKind::AdvisoryLock { key },
-            None,
-            None,
-            1,
-            |id, indexes| Self::prepare_index(indexes, WaitIndexKey::AdvisoryLock { key, id }),
-        )
-    }
-
-    pub(super) fn prepare_poll(
-        &mut self,
-        keys: Vec<PollWaitKey>,
-        deadline: Option<u64>,
-        task: Arc<TaskControlBlock>,
-    ) -> Result<PreparedWait, ()> {
-        let index_count = keys
-            .len()
-            .checked_add(usize::from(deadline.is_some()))
-            .ok_or(())?;
-        let mut indexes = Vec::new();
-        indexes.try_reserve_exact(index_count).map_err(|_| ())?;
-        let id = self.allocate_id();
-        for key in &keys {
-            let index = match *key {
-                PollWaitKey::Console { exclusive, .. } => WaitIndexKey::Console { exclusive, id },
-                PollWaitKey::Pipe {
-                    identity,
-                    direction,
-                    exclusive,
-                    ..
-                } => WaitIndexKey::Pipe {
-                    identity,
-                    direction: direction as u8,
-                    exclusive,
-                    id,
-                },
-            };
-            Self::prepare_index(&mut indexes, index)?;
-        }
-        if let Some(deadline) = deadline {
-            Self::prepare_index(&mut indexes, WaitIndexKey::Deadline { deadline, id })?;
-        }
-        let entry = FallibleMap::try_prepare(
-            id,
-            IndexedWaitEntry {
-                task,
-                kind: IndexedWaitKind::Poll,
-                deadline,
-                poll_keys: Some(keys),
-            },
-        )
-        .map_err(|_| ())?;
-        Ok(PreparedWait { id, entry, indexes })
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Option<IndexedWaitEntry> {
@@ -554,8 +341,8 @@ impl IndexedWaitQueue {
         &mut self,
         exclusive: bool,
         ready: i16,
-        excluded_groups: &FallibleMap<usize, ()>,
-    ) -> Option<(VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
+        excluded_groups: &[Option<usize>],
+    ) -> Option<(u64, VacantEntry<u64, IndexedWaitEntry>, Option<usize>)> {
         let start = WaitIndexKey::Console { exclusive, id: 0 };
         let id = self
             .index
@@ -577,12 +364,12 @@ impl IndexedWaitQueue {
                     .get(&id)
                     .and_then(|entry| entry.console_wake_group(ready))
                     .is_some_and(|group| {
-                        group.is_none_or(|group| !excluded_groups.contains_key(&group))
+                        group.is_none_or(|group| !excluded_groups.contains(&Some(group)))
                     })
                     .then_some(id)
             })?;
         let group = self.entries.get(&id)?.console_wake_group(ready)?;
-        self.take_detached(id).map(|entry| (entry, group))
+        self.take_detached(id).map(|entry| (id, entry, group))
     }
 
     pub(super) fn take_pipe(
@@ -641,9 +428,7 @@ impl IndexedWaitQueue {
     }
 }
 
-lazy_static! {
-    // OWNER: wait registry owns one membership plus all source/deadline indexes；mode bit only
-    // changes wake selection，缺失它会把 EPOLLEXCLUSIVE 退化为 wake-all。
-    pub(super) static ref INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue> =
-        IrqMutex::new(IndexedWaitQueue::new());
-}
+// OWNER: wait registry owns one membership plus all source/deadline indexes；mode bit only
+// changes wake selection，缺失它会把 EPOLLEXCLUSIVE 退化为 wake-all。
+pub(super) static INDEXED_WAIT_QUEUE: IrqMutex<IndexedWaitQueue> =
+    IrqMutex::new(IndexedWaitQueue::new());

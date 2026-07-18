@@ -88,18 +88,26 @@ fn positioned_write(
     if vectors.iter().all(|vector| vector.length == 0) {
         return 0;
     }
+    let total_length = vectors
+        .iter()
+        .try_fold(0usize, |total, vector| total.checked_add(vector.length))
+        .expect("positioned write vectors must have a checked total length");
     let file = match RegularFile::from_inode(inode) {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
 
     let append = append_override.unwrap_or_else(|| *ofd.flags.lock() & O_APPEND != 0);
-    let mut position = offset as u64;
-    let writer = match file.begin_write() {
-        Ok(writer) => writer,
-        Err(error) => return ferr(error),
-    };
-    let result = write_regular_vectors(&task, &writer, &mut position, vectors, append);
+    let staging = PreparedRegularWriteStaging::prepare(total_length);
+    let result = with_prepared_staging(staging, |staging| {
+        let staging = staging.as_mut_slice();
+        let mut position = offset as u64;
+        let writer = match file.begin_write() {
+            Ok(writer) => writer,
+            Err(error) => return ferr(error),
+        };
+        write_regular_vectors(&task, &writer, &mut position, vectors, append, staging)
+    });
     task.account_write_result(result);
     result
 }

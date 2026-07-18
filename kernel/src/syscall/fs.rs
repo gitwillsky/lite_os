@@ -31,7 +31,7 @@ use crate::{
     fs::{
         CharacterDevice, DeviceKind, InodeMetadata, InodeType, O_ACCMODE, O_APPEND, O_CLOEXEC,
         O_NONBLOCK, O_RDONLY, O_WRONLY, OpenFileDescription, OpenFileKind, RegularFile,
-        RegularFileWrite, TerminalAccess, TerminalRead, vfs,
+        RegularFileWrite, TerminalAccess, TerminalRead, character_write_chunk, vfs,
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
@@ -101,18 +101,16 @@ pub(crate) fn sys_lseek(fd: usize, offset: i64, whence: u32) -> isize {
     let Some(inode) = ofd.inode_ref() else {
         return -errno::ESPIPE;
     };
-    let base = match whence {
-        0 => 0,
-        1 => *ofd.offset.lock() as i128,
-        2 => inode.size() as i128,
-        _ => return -errno::EINVAL,
-    };
-    let value = base + offset as i128;
-    if value < 0 || value > u64::MAX as i128 {
+    if whence > 2 {
         return -errno::EINVAL;
     }
-    *ofd.offset.lock() = value as u64;
-    value as isize
+    ofd.seek_position(offset, |position| match whence {
+        0 => 0,
+        1 => position,
+        2 => inode.size(),
+        _ => unreachable!(),
+    })
+    .map_or(-errno::EINVAL, |position| position as isize)
 }
 
 pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
@@ -484,43 +482,45 @@ pub(crate) fn sys_getdents64(fd: usize, pointer: *mut u8, length: usize) -> isiz
         Ok(entries) => entries,
         Err(error) => return ferr(error),
     };
-    let mut index = *ofd.offset.lock() as usize;
-    let mut output = Vec::new();
-    while let Some(entry) = entries.get(index) {
-        let record_length = (19 + entry.name.len() + 1 + 7) & !7;
-        if record_length > length.saturating_sub(output.len()) {
-            break;
-        }
-        if output.try_reserve_exact(record_length).is_err() {
-            if output.is_empty() {
-                return -errno::ENOMEM;
+    ofd.with_position(|position| {
+        let mut index = *position as usize;
+        let mut output = Vec::new();
+        while let Some(entry) = entries.get(index) {
+            let record_length = (19 + entry.name.len() + 1 + 7) & !7;
+            if record_length > length.saturating_sub(output.len()) {
+                break;
             }
-            break;
+            if output.try_reserve_exact(record_length).is_err() {
+                if output.is_empty() {
+                    return -errno::ENOMEM;
+                }
+                break;
+            }
+            output.extend_from_slice(&entry.inode.to_ne_bytes());
+            output.extend_from_slice(&((index + 1) as i64).to_ne_bytes());
+            output.extend_from_slice(&(record_length as u16).to_ne_bytes());
+            output.push(match entry.kind {
+                InodeType::Directory => 4,
+                InodeType::Fifo => 1,
+                InodeType::SymLink => 10,
+                InodeType::CharacterDevice => 2,
+                InodeType::Socket => 12,
+                InodeType::File => 8,
+            });
+            output.extend_from_slice(&entry.name);
+            output.push(0);
+            output.resize(output.len() + record_length - 20 - entry.name.len(), 0);
+            index += 1;
         }
-        output.extend_from_slice(&entry.inode.to_ne_bytes());
-        output.extend_from_slice(&((index + 1) as i64).to_ne_bytes());
-        output.extend_from_slice(&(record_length as u16).to_ne_bytes());
-        output.push(match entry.kind {
-            InodeType::Directory => 4,
-            InodeType::Fifo => 1,
-            InodeType::SymLink => 10,
-            InodeType::CharacterDevice => 2,
-            InodeType::Socket => 12,
-            InodeType::File => 8,
-        });
-        output.extend_from_slice(&entry.name);
-        output.push(0);
-        output.resize(output.len() + record_length - 20 - entry.name.len(), 0);
-        index += 1;
-    }
-    if output.is_empty() && index < entries.len() {
-        return -errno::EINVAL;
-    }
-    if task.copy_to_user(pointer as usize, &output).is_err() {
-        return -errno::EFAULT;
-    }
-    *ofd.offset.lock() = index as u64;
-    output.len() as isize
+        if output.is_empty() && index < entries.len() {
+            return -errno::EINVAL;
+        }
+        if task.copy_to_user(pointer as usize, &output).is_err() {
+            return -errno::EFAULT;
+        }
+        *position = index as u64;
+        output.len() as isize
+    })
 }
 pub(crate) fn sys_dup(fd: usize) -> isize {
     let Some(task) = current_task() else {

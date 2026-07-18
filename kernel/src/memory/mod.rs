@@ -13,6 +13,7 @@ mod kernel_stack;
 mod mm;
 mod page_table;
 mod permissions;
+mod retire;
 mod shared_file;
 
 // OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.

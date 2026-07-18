@@ -2,7 +2,6 @@ use super::{
     KERNEL_SPACE, KERNEL_STACK_SIZE, MapPermission, MemoryError, PAGE_SIZE, address::VirtualAddress,
 };
 use crate::id::IdAllocator;
-use lazy_static::lazy_static;
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -16,7 +15,7 @@ impl KernelStack {
     /// @return 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
     pub(crate) fn try_new() -> Result<Self, MemoryError> {
         let handle = KernelStackHandle(
-            KernelStackHandleAllocator
+            KERNEL_STACK_HANDLE_ALLOCATOR
                 .lock()
                 .alloc()
                 .map_err(|_| MemoryError::OutOfMemory)?,
@@ -53,9 +52,6 @@ impl Drop for KernelStack {
             .wait()
             .lock()
             .remove_area_with_start_vpn(VirtualAddress::from(mapped_bottom).into());
-
-        super::mm::MemorySet::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after kernel stack unmapping");
     }
 }
 
@@ -72,11 +68,9 @@ struct KernelStackHandle(usize);
 
 impl Drop for KernelStackHandle {
     fn drop(&mut self) {
-        KernelStackHandleAllocator.lock().dealloc(self.0);
+        KERNEL_STACK_HANDLE_ALLOCATOR.lock().dealloc(self.0);
     }
 }
 
-lazy_static! {
-    // OWNER: kernel-stack module exclusively allocates virtual stack handles.
-    static ref KernelStackHandleAllocator: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));
-}
+// OWNER: kernel-stack module exclusively allocates virtual stack handles.
+static KERNEL_STACK_HANDLE_ALLOCATOR: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));

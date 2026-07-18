@@ -17,6 +17,8 @@ impl MapArea {
             lazy_private: self.lazy_private,
         };
         if let Err(error) = cloned.map(page_table) {
+            // Child page table 尚未发布或激活；撤销 translation 后可直接 Drop owner，
+            // 不存在 remote stale translation retire 窗口。
             cloned.unmap(page_table);
             return Err(error);
         }

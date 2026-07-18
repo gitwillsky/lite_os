@@ -59,20 +59,24 @@ impl MemorySet {
         }
         if advice == MemoryAdvice::DontNeed {
             self.sync_shared_before_discard(&keys, range.clone())?;
+            let memory = revoke_and_synchronize(
+                self,
+                |memory| memory.revoke_dontneed_translations(&keys, &range),
+                |_| Self::flush_tlb_all_cpus(),
+            )
+            .expect("platform TLB synchronization failed after MADV_DONTNEED");
+            memory.release_dontneed_residents(&keys, &range);
+            return Ok(());
         }
+
+        debug_assert_eq!(advice, MemoryAdvice::Free);
         for key in keys {
             let area = self.areas.get_mut(&key).expect("validated VMA key");
             let start = range.start.max(area.vpn_range.start);
             let end = range.end.min(area.vpn_range.end);
             for vpn in start.as_usize()..end.as_usize() {
                 let vpn = VirtualPageNumber::from_vpn(vpn);
-                if advice == MemoryAdvice::DontNeed {
-                    let _ = self.page_table.unmap(vpn);
-                    area.data_frames.remove(&vpn);
-                    if let Some(shared) = &mut area.shared_file {
-                        shared.resident.remove(&vpn);
-                    }
-                } else if let Some(resident) = area.data_frames.get_mut(&vpn) {
+                if let Some(resident) = area.data_frames.get_mut(&vpn) {
                     resident.discardable = true;
                     if self.page_table.translate(vpn).is_some() {
                         let mut flags: PagePermissions = area.map_permission.into();
@@ -83,8 +87,43 @@ impl MemorySet {
             }
         }
         Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after madvise residency update");
+            .expect("platform TLB synchronization failed after MADV_FREE permission update");
         Ok(())
+    }
+
+    fn revoke_dontneed_translations(
+        &mut self,
+        keys: &[VirtualPageNumber],
+        range: &Range<VirtualPageNumber>,
+    ) {
+        let page_table = &mut self.page_table;
+        for key in keys {
+            let area = self.areas.get_mut(key).expect("validated VMA key");
+            let start = range.start.max(area.vpn_range.start);
+            let end = range.end.min(area.vpn_range.end);
+            for vpn in start.as_usize()..end.as_usize() {
+                let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn));
+            }
+        }
+    }
+
+    fn release_dontneed_residents(
+        &mut self,
+        keys: &[VirtualPageNumber],
+        range: &Range<VirtualPageNumber>,
+    ) {
+        for key in keys {
+            let area = self.areas.get_mut(key).expect("validated VMA key");
+            let start = range.start.max(area.vpn_range.start);
+            let end = range.end.min(area.vpn_range.end);
+            for vpn in start.as_usize()..end.as_usize() {
+                let vpn = VirtualPageNumber::from_vpn(vpn);
+                area.data_frames.remove(&vpn);
+                if let Some(shared) = &mut area.shared_file {
+                    shared.resident.remove(&vpn);
+                }
+            }
+        }
     }
 
     fn sync_shared_before_discard(
@@ -138,35 +177,68 @@ impl MemorySet {
         if request.target_pages() == 0 || request.scan_pages() == 0 {
             return ReclaimResult::default();
         }
-        let initial_cursor = self.private_reclaim_cursor;
+        let transaction = PrivateReclaimTransaction::new(self, request);
+        let transaction = revoke_and_synchronize(
+            transaction,
+            PrivateReclaimTransaction::revoke,
+            PrivateReclaimTransaction::synchronize,
+        )
+        .expect("platform TLB synchronization failed after private page reclaim");
+        transaction.release()
+    }
+}
+
+/// 一次不分配内存的 private-resident retire transaction。
+struct PrivateReclaimTransaction<'memory> {
+    memory: &'memory mut MemorySet,
+    request: ReclaimRequest,
+    initial_cursor: VirtualPageNumber,
+    final_cursor: VirtualPageNumber,
+    scanned: usize,
+    revoke_unique_candidates: usize,
+    unmapped: bool,
+}
+
+impl<'memory> PrivateReclaimTransaction<'memory> {
+    fn new(memory: &'memory mut MemorySet, request: ReclaimRequest) -> Self {
+        let initial_cursor = memory.private_reclaim_cursor;
+        Self {
+            memory,
+            request,
+            initial_cursor,
+            final_cursor: initial_cursor,
+            scanned: 0,
+            revoke_unique_candidates: 0,
+            unmapped: false,
+        }
+    }
+
+    fn revoke(&mut self) {
         let mut wrapped = false;
-        let mut reclaimed = 0;
-        let mut scanned = 0;
-        let mut unmapped = false;
-        while reclaimed < request.target_pages() && scanned < request.scan_pages() {
-            // 1. 持久 cursor 到达 VMA 末尾时只回绕一次；wrap 后再到初始
-            // cursor 即结束，不为计算 resident 数先全表扫描或重复访问 entry。
-            let next = self.next_private_resident_from(self.private_reclaim_cursor);
+        while self.revoke_unique_candidates < self.request.target_pages()
+            && self.scanned < self.request.scan_pages()
+        {
+            // cursor 到达末尾时只回绕一次；resident owner 此阶段保持原位，保证 fence
+            // 后可按同一 deterministic sequence 重放并释放。
+            let next = self
+                .memory
+                .next_private_resident_from(self.memory.private_reclaim_cursor);
             let Some((area_key, vpn)) = next else {
                 if wrapped {
                     break;
                 }
-                self.private_reclaim_cursor = VirtualPageNumber::from_vpn(0);
+                self.memory.private_reclaim_cursor = VirtualPageNumber::from_vpn(0);
                 wrapped = true;
                 continue;
             };
-            if wrapped && vpn >= initial_cursor {
+            if wrapped && vpn >= self.initial_cursor {
                 break;
             }
-            self.private_reclaim_cursor = vpn
-                .as_usize()
-                .checked_add(1)
-                .map(VirtualPageNumber::from_vpn)
-                .unwrap_or_else(|| VirtualPageNumber::from_vpn(0));
-            scanned += 1;
+            self.memory.private_reclaim_cursor = Self::after(vpn);
+            self.scanned += 1;
 
-            // 2. 是否可丢弃只由 VMA owner 的单一 resident record 决定。
             let area = self
+                .memory
                 .areas
                 .get_mut(&area_key)
                 .expect("private reclaim lost resident VMA");
@@ -179,22 +251,87 @@ impl MemorySet {
             if !reclaimable {
                 continue;
             }
-            let frees_frame = Arc::strong_count(&resident.frame) == 1;
-            match self.page_table.unmap(vpn) {
-                Ok(()) => unmapped = true,
+            // 这里只用 revoke-time count 控制扫描节奏；其他 mm 可在 fence 期间释放同一
+            // COW Arc，因此结果必须在 release replay 重新判定，不能把此值当作不变量。
+            self.revoke_unique_candidates += usize::from(Arc::strong_count(&resident.frame) == 1);
+            match self.memory.page_table.unmap(vpn) {
+                Ok(()) => self.unmapped = true,
                 Err(PageTableError::NotMapped) => {}
                 Err(error) => panic!("private reclaim failed to unmap {vpn:?}: {error:?}"),
             }
+        }
+        self.final_cursor = self.memory.private_reclaim_cursor;
+    }
+
+    fn synchronize(&self) -> Result<(), crate::platform::TlbShootdownError> {
+        if self.unmapped {
+            MemorySet::flush_tlb_all_cpus()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn release(self) -> ReclaimResult {
+        let mut cursor = self.initial_cursor;
+        let mut wrapped = false;
+        let mut replayed = 0;
+        let mut reclaimed = 0;
+        while replayed < self.scanned {
+            let next = self.memory.next_private_resident_from(cursor);
+            let Some((area_key, vpn)) = next else {
+                assert!(!wrapped, "private reclaim replay ended before scan budget");
+                cursor = VirtualPageNumber::from_vpn(0);
+                wrapped = true;
+                continue;
+            };
+            assert!(
+                !wrapped || vpn < self.initial_cursor,
+                "private reclaim replay crossed its initial cursor"
+            );
+            cursor = Self::after(vpn);
+            replayed += 1;
+
+            let area = self
+                .memory
+                .areas
+                .get_mut(&area_key)
+                .expect("private reclaim replay lost resident VMA");
+            let resident = area
+                .data_frames
+                .get(&vpn)
+                .expect("private reclaim replay lost resident page");
+            let reclaimable =
+                resident.discardable || area.private_file.is_some() && !resident.dirty;
+            if !reclaimable {
+                continue;
+            }
+            let decision = reclaim_release_decision(
+                reclaimed,
+                self.request.target_pages(),
+                Arc::strong_count(&resident.frame),
+            );
+            if !decision.release {
+                // PTE 已在 revoke 阶段撤销；保留 resident owner 后，后续 fault 可直接重建
+                // translation，同时保证 adapter result 不超过 caller target。
+                continue;
+            }
             let removed = area.data_frames.remove(&vpn);
-            debug_assert!(removed.is_some());
-            reclaimed += usize::from(frees_frame);
+            assert!(
+                removed.is_some(),
+                "private reclaim replay lost selected page"
+            );
+            reclaimed += usize::from(decision.reclaimed);
         }
-        // 3. COW frame 仍被其他 mm 引用时 reclaimed==0，但本 mm 的 leaf PTE 已撤销；
-        // 若只按物理页计数 flush，当前 CPU 可继续命中 stale writable translation。
-        if unmapped {
-            Self::flush_tlb_all_cpus()
-                .expect("platform TLB synchronization failed after private page reclaim");
+        if self.scanned != 0 {
+            assert_eq!(cursor, self.final_cursor, "private reclaim replay diverged");
         }
-        ReclaimResult::new(reclaimed, scanned)
+        ReclaimResult::new(reclaimed, replayed)
+    }
+
+    fn after(vpn: VirtualPageNumber) -> VirtualPageNumber {
+        vpn.as_usize()
+            .checked_add(1)
+            .map(VirtualPageNumber::from_vpn)
+            .unwrap_or_else(|| VirtualPageNumber::from_vpn(0))
     }
 }

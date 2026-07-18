@@ -26,12 +26,17 @@ pub(super) fn write_descriptor(
                 Err(error) => return ferr(error),
             };
             let append = *ofd.flags.lock() & O_APPEND != 0;
-            let mut offset = ofd.offset.lock();
-            let writer = match file.begin_write() {
-                Ok(writer) => writer,
-                Err(error) => return ferr(error),
-            };
-            write_regular_vectors(task, &writer, &mut offset, vectors, append)
+            let staging = PreparedRegularWriteStaging::prepare(total_length);
+            with_prepared_staging(staging, |staging| {
+                let staging = staging.as_mut_slice();
+                ofd.with_position(|offset| {
+                    let writer = match file.begin_write() {
+                        Ok(writer) => writer,
+                        Err(error) => return ferr(error),
+                    };
+                    write_regular_vectors(task, &writer, offset, vectors, append, staging)
+                })
+            })
         }
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Write {
@@ -272,7 +277,10 @@ pub(super) fn write_descriptor(
             let mut input = [0u8; 512];
             let mut written = 0usize;
             while written < total_length {
-                let requested = (total_length - written).min(input.len());
+                let requested = character_write_chunk(
+                    total_length - written,
+                    matches!(device, CharacterDevice::PtyMaster(_)),
+                );
                 let copied = match cursor.copy_from_user(task, &mut input[..requested]) {
                     Ok(copied) => copied,
                     Err(()) => {

@@ -8,6 +8,8 @@ use crate::{
 
 use super::errno;
 
+mod publication;
+
 const IOC_WRITE: usize = 1;
 const IOC_READ: usize = 2;
 const DRM_IOCTL_BASE: usize = b'd' as usize;
@@ -63,14 +65,14 @@ pub(in crate::syscall) fn drm_ioctl(
         DRM_IOCTL_MODE_GETENCODER => encoder(task, argument),
         DRM_IOCTL_MODE_GETCONNECTOR => connector(task, file, argument),
         DRM_IOCTL_MODE_GETFB => framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_ADDFB => add_framebuffer(task, file, argument),
+        DRM_IOCTL_MODE_ADDFB => publication::add_framebuffer(task, file, argument),
         DRM_IOCTL_MODE_RMFB => remove_framebuffer(task, file, argument),
         DRM_IOCTL_MODE_PAGE_FLIP => page_flip(task, file, argument),
         DRM_IOCTL_MODE_DIRTYFB => dirty_framebuffer(task, file, argument),
-        DRM_IOCTL_MODE_CREATE_DUMB => create_dumb(task, file, argument),
+        DRM_IOCTL_MODE_CREATE_DUMB => publication::create_dumb(task, file, argument),
         DRM_IOCTL_MODE_MAP_DUMB => map_dumb(task, file, argument),
         DRM_IOCTL_MODE_DESTROY_DUMB => destroy_dumb(task, file, argument),
-        DRM_IOCTL_MODE_ADDFB2 => add_framebuffer2(task, file, argument),
+        DRM_IOCTL_MODE_ADDFB2 => publication::add_framebuffer2(task, file, argument),
         _ => return -errno::ENOTTY,
     };
     result.map_or_else(|error| -error, |()| 0)
@@ -128,23 +130,6 @@ fn drop_master(task: &TaskControlBlock, file: &DrmFile) -> Result<(), isize> {
         .map_err(drm_errno)
 }
 
-fn create_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<32>(task, argument)?;
-    let info = file
-        .create_dumb(
-            read_u32(&bytes, 4)?,
-            read_u32(&bytes, 0)?,
-            read_u32(&bytes, 8)?,
-            read_u32(&bytes, 12)?,
-        )
-        .map_err(drm_errno)?;
-    // Linux 保留 caller 的 height/width/bpp/flags，只覆盖三个 output 字段。
-    write_u32(&mut bytes, 16, info.handle)?;
-    write_u32(&mut bytes, 20, info.pitch)?;
-    write_u64(&mut bytes, 24, info.size)?;
-    copy_out(task, argument, &bytes)
-}
-
 fn map_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
     let mut bytes = copy_in::<16>(task, argument)?;
     let offset = file.map_dumb(read_u32(&bytes, 0)?).map_err(drm_errno)?;
@@ -162,23 +147,6 @@ fn destroy_dumb(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Res
         })
 }
 
-fn add_framebuffer(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<28>(task, argument)?;
-    if read_u32(&bytes, 16)? != 32 || read_u32(&bytes, 20)? != 24 {
-        return Err(errno::EINVAL);
-    }
-    let id = file
-        .add_framebuffer(
-            read_u32(&bytes, 24)?,
-            read_u32(&bytes, 4)?,
-            read_u32(&bytes, 8)?,
-            read_u32(&bytes, 12)?,
-        )
-        .map_err(drm_errno)?;
-    write_u32(&mut bytes, 0, id)?;
-    copy_out(task, argument, &bytes)
-}
-
 fn framebuffer(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
     let mut bytes = copy_in::<28>(task, argument)?;
     let id = read_u32(&bytes, 0)?;
@@ -191,33 +159,6 @@ fn framebuffer(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Resu
     write_u32(&mut bytes, 16, 32)?;
     write_u32(&mut bytes, 20, 24)?;
     write_u32(&mut bytes, 24, info.handle)?;
-    copy_out(task, argument, &bytes)
-}
-
-fn add_framebuffer2(task: &TaskControlBlock, file: &DrmFile, argument: usize) -> Result<(), isize> {
-    let mut bytes = copy_in::<104>(task, argument)?;
-    if read_u32(&bytes, 12)? != DRM_FORMAT_XRGB8888
-        || read_u32(&bytes, 16)? != 0
-        || (1..4).any(|plane| {
-            read_u32(&bytes, 20 + plane * 4).unwrap_or(1) != 0
-                || read_u32(&bytes, 36 + plane * 4).unwrap_or(1) != 0
-        })
-        || (0..4).any(|plane| {
-            read_u32(&bytes, 52 + plane * 4).unwrap_or(1) != 0
-                || read_u64(&bytes, 72 + plane * 8).unwrap_or(1) != 0
-        })
-    {
-        return Err(errno::EINVAL);
-    }
-    let id = file
-        .add_framebuffer(
-            read_u32(&bytes, 20)?,
-            read_u32(&bytes, 4)?,
-            read_u32(&bytes, 8)?,
-            read_u32(&bytes, 36)?,
-        )
-        .map_err(drm_errno)?;
-    write_u32(&mut bytes, 0, id)?;
     copy_out(task, argument, &bytes)
 }
 

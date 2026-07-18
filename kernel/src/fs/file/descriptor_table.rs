@@ -107,6 +107,11 @@ pub(crate) struct FileDescriptorTable {
     slots: IndexedSlots<FileDescriptor>,
 }
 
+const _: () = assert!(
+    core::mem::size_of::<FileDescriptorTable>() == 24,
+    "fd table inline size proof assumes one lazy radix pointer, logical length and free prefix"
+);
+
 impl FileDescriptorTable {
     fn empty() -> Self {
         Self {
@@ -114,19 +119,16 @@ impl FileDescriptorTable {
         }
     }
 
-    /// @description 返回当前 fd table 已分配的 descriptor slot 数。
-    /// @return 包含空洞的 slot 容量，对应 Linux `/proc/<pid>/status` FDSize。
+    /// @description 返回当前 fd table 已发布过的 logical slot capacity。
+    /// @return 包含空洞与未物化 radix path 的容量，对应 Linux `/proc/<pid>/status` FDSize。
     pub(crate) fn slot_capacity(&self) -> usize {
         self.slots.len()
     }
 
-    /// @description 复制 fd entries，同时保持每个 entry 共享原 OFD Arc。
-    /// @return 成功返回独立 descriptor table；kernel heap 耗尽返回错误。
+    /// @description 只遍历并复制 materialized published entries，同时保持每个 entry 共享原 OFD Arc。
+    /// @return 成功返回独立 descriptor table；kernel heap 耗尽会回滚已克隆引用并返回错误。
     pub(crate) fn try_clone(&self) -> Result<Self, ()> {
-        let mut slots = self.slots.try_clone()?;
-        for fd in 0..slots.len() {
-            drop(slots.take_if(fd, |entry| !entry.published));
-        }
+        let slots = self.slots.try_clone_where(|entry| entry.published)?;
         Ok(Self { slots })
     }
 
@@ -224,29 +226,49 @@ impl FileDescriptorTable {
     /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
     /// @param limit Process 当前 fd limit。
     /// @return 已占用且不可由 get/close/dup 观察的 fd number。
-    /// @errors fd limit 或 backing OOM 返回稳定分类。
+    /// @errors fd limit 或 backing OOM 返回稳定分类及未安装 OFD，caller 必须在表锁外析构。
     pub(crate) fn reserve_received(
         &mut self,
         file: Arc<OpenFileDescription>,
         cloexec: bool,
         limit: usize,
-    ) -> Result<usize, FileDescriptorError> {
+    ) -> Result<usize, (FileDescriptorError, Arc<OpenFileDescription>)> {
+        let mut file = Some(file);
         self.slots
-            .insert_with(0, limit, || FileDescriptor::reserved(file, cloexec))
-            .map_err(Into::into)
+            .insert_with(0, limit, || {
+                FileDescriptor::reserved(
+                    file.take()
+                        .expect("SCM_RIGHTS reservation consumed its OFD twice"),
+                    cloexec,
+                )
+            })
+            .map_err(|error| {
+                (
+                    error.into(),
+                    file.expect("failed SCM_RIGHTS reservation consumed its OFD"),
+                )
+            })
     }
 
-    /// @description 无分配提交 copyout 已成功的 receive reservation。
-    /// @param fd 仍由当前 recvmsg transaction 唯一拥有的 reserved slot。
-    /// @return 无返回值；重复/错误 publication fail-stop。
-    pub(crate) fn publish_received(&mut self, fd: usize) {
-        let entry = self
-            .slots
-            .get_mut(fd)
-            .expect("SCM_RIGHTS reservation disappeared before publication");
-        assert!(!entry.published, "SCM_RIGHTS reservation published twice");
-        entry.ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
-        entry.published = true;
+    /// @description 无分配原子提交一次 recvmsg 已完成全部 copyout 的 reservations。
+    /// @param descriptors 仍由同一 receive transaction 唯一拥有的 reserved slots。
+    /// @return 无返回值；任一错误 token 在改变可见性前 fail-stop。
+    pub(crate) fn publish_received(&mut self, descriptors: &[usize]) {
+        for &fd in descriptors {
+            let entry = self
+                .slots
+                .get(fd)
+                .expect("SCM_RIGHTS reservation disappeared before publication");
+            assert!(!entry.published, "SCM_RIGHTS reservation published twice");
+        }
+        for &fd in descriptors {
+            let entry = self
+                .slots
+                .get_mut(fd)
+                .expect("validated SCM_RIGHTS reservation disappeared");
+            entry.ofd.descriptor_refs.fetch_add(1, Ordering::Relaxed);
+            entry.published = true;
+        }
     }
 
     /// @description 无分配摘除 copyout 失败的 receive reservation。
@@ -345,16 +367,21 @@ impl FileDescriptorTable {
             "CLOEXEC close batch still owns a detached descriptor"
         );
         let mut count = 0;
-        while *cursor < self.slots.len() && count < output.len() {
-            let fd = *cursor;
-            *cursor += 1;
-            if let Some(entry) = self
+        while count < output.len() {
+            let Some(fd) = self
                 .slots
-                .take_if(fd, |entry| entry.published && entry.cloexec)
-            {
-                output[count] = Some(DetachedFileDescriptor(entry));
-                count += 1;
-            }
+                .find_from(*cursor, |entry| entry.published && entry.cloexec)
+            else {
+                *cursor = self.slots.len();
+                break;
+            };
+            *cursor = fd + 1;
+            let entry = self
+                .slots
+                .take(fd)
+                .expect("sparse CLOEXEC candidate disappeared before detach");
+            output[count] = Some(DetachedFileDescriptor(entry));
+            count += 1;
         }
         count
     }

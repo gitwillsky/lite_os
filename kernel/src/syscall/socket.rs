@@ -16,6 +16,7 @@ mod control;
 mod interface;
 mod message;
 mod options;
+mod receive_publication;
 mod unix_path;
 pub(super) use interface::socket_ioctl;
 pub(crate) use message::{sys_recvfrom, sys_recvmsg, sys_sendmsg, sys_sendto};

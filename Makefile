@@ -96,7 +96,7 @@ build: build-kernel build-bootloader build-rootfs
 
 verify:
 	cargo fmt --all -- --check
-	cargo clippy -p architecture-check -p architecture-bench -- -D warnings
+	cargo clippy -p architecture-check -p architecture-bench -p kernel-unit -p scheduler-unit --all-targets -- -D warnings
 	cargo clippy -p syscall-abi -p kernel --target riscv64gc-unknown-none-elf --bins --lib -- -D warnings
 	cd bootloader && cargo clippy --release -- -D warnings && cd -
 	$(MAKE) verify-unit

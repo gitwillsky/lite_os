@@ -97,6 +97,13 @@ fn drain_exit_effects() {
     drain_exit_effect(EXIT_EFFECT_CONTINUE, 18);
 }
 
+fn drain_staged_child_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>>) {
+    while let Some((&tid, _)) = waiters.first_key_value() {
+        let waiter = waiters.remove(&tid).expect("staged child waiter");
+        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ProcessExitStatus {
     Exited(u8),
@@ -394,13 +401,10 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     // vfork child exit 只有在临时 trap page 已从共享 AddressSpace 删除后才能恢复 parent；
     // 否则 parent 可与仍持有 shared-mm supervisor mapping 的 child cleanup 并发。
     complete_vfork(task.tgid());
-    let mut waiters = parent_waiters;
-    let mut init_waiters = init_waiters;
-    waiters.append(&mut init_waiters);
-    while let Some((&tid, _)) = waiters.first_key_value() {
-        let waiter = waiters.remove(&tid).expect("staged child waiter");
-        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
-    }
+    // 两个来源分别 staged，按 parent 后 init 的既有来源优先级各 drain 一次；waiter
+    // identity 不依赖跨来源 TID 排序，合并反而会制造没有领域意义的 AVL interface。
+    drain_staged_child_waiters(parent_waiters);
+    drain_staged_child_waiters(init_waiters);
     if let (Some(parent), Some(status)) = (parent_signal_pid, process_status) {
         let info = match status {
             ProcessExitStatus::Exited(code) => {

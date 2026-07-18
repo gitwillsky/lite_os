@@ -30,6 +30,15 @@ pub(crate) enum AdvisoryLockAttempt {
     },
 }
 
+/// @description prepared lock-table transaction 的无分配尝试结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedLockAttempt {
+    /// 尝试已线性化为取得或冲突。
+    Complete(AdvisoryLockAttempt),
+    /// 当前 table 形状超过锁外 staging capacity；未修改任何 lock state。
+    NeedsStorage,
+}
+
 /// @description flock lock-record 分配或 backing inode 解析错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AdvisoryLockError {
@@ -48,6 +57,17 @@ pub(crate) trait AdvisoryLockNotifier: Send + Sync {
 pub(super) struct AdvisoryFileLock {
     key: AdvisoryLockKey,
     exclusive: Option<usize>,
+    shared: Vec<usize>,
+}
+
+/// @description BSD flock acquisition 的锁外 staging storage 与稳定 identity。
+/// @ownership `table`/`shared` 只保存未发布或被替换的 Vec backing；成功 commit 后旧
+/// backing 由本对象带到 lock 外析构。
+pub(crate) struct PreparedAdvisoryLock {
+    key: AdvisoryLockKey,
+    owner: usize,
+    requested: AdvisoryLockMode,
+    table: Vec<AdvisoryFileLock>,
     shared: Vec<usize>,
 }
 
@@ -77,6 +97,165 @@ impl VirtualFileSystem {
         *slot = Some(notifier);
     }
 
+    /// @description 解析 flock identity，但不分配或修改 lock table。
+    /// @param ofd live open file description。
+    /// @param requested shared/exclusive acquisition mode。
+    /// @return 可跨 wait-registry 解锁窗口保留的 acquisition transaction。
+    /// @errors anonymous OFD 或 inode metadata 失败。
+    pub(crate) fn prepare_advisory_lock(
+        &self,
+        ofd: &Arc<OpenFileDescription>,
+        requested: AdvisoryLockMode,
+    ) -> Result<PreparedAdvisoryLock, AdvisoryLockError> {
+        let (key, owner) = Self::advisory_identity(ofd)?;
+        Ok(PreparedAdvisoryLock {
+            key,
+            owner,
+            requested,
+            table: Vec::new(),
+            shared: Vec::new(),
+        })
+    }
+
+    /// @description 按当前 flock table 形状在所有 owner lock 外扩充 staging storage。
+    /// @param prepared 尚未提交的同 inode acquisition transaction。
+    /// @return storage 足以覆盖观察到的 table；并发增长由最终尝试返回 `NeedsStorage`。
+    /// @errors 容量算术或 backing allocation 失败返回 `NoLocks`。
+    pub(crate) fn reserve_advisory_lock_storage(
+        &self,
+        prepared: &mut PreparedAdvisoryLock,
+    ) -> Result<(), AdvisoryLockError> {
+        let (table_required, shared_required) = {
+            let locks = self.advisory_locks.lock();
+            let existing = locks.iter().find(|entry| entry.key == prepared.key);
+            let table_required = if existing.is_some() {
+                0
+            } else {
+                locks
+                    .len()
+                    .checked_add(1)
+                    .ok_or(AdvisoryLockError::NoLocks)?
+            };
+            let shared_required = if prepared.requested == AdvisoryLockMode::Shared {
+                existing.map_or(1, |entry| entry.shared.len().saturating_add(1))
+            } else {
+                0
+            };
+            (table_required, shared_required)
+        };
+        prepared.table.clear();
+        prepared.shared.clear();
+        if prepared.table.capacity() < table_required {
+            prepared
+                .table
+                .try_reserve_exact(table_required)
+                .map_err(|_| AdvisoryLockError::NoLocks)?;
+        }
+        if prepared.shared.capacity() < shared_required {
+            prepared
+                .shared
+                .try_reserve_exact(shared_required)
+                .map_err(|_| AdvisoryLockError::NoLocks)?;
+        }
+        Ok(())
+    }
+
+    /// @description 在 flock owner 下复查冲突并以预留 Vec backing 无失败提交。
+    /// @param prepared 锁外准备且 identity 不变的 acquisition transaction。
+    /// @return acquired/blocked，或容量不足且 state 完全未修改的 `NeedsStorage`。
+    pub(crate) fn try_prepared_advisory_lock(
+        &self,
+        prepared: &mut PreparedAdvisoryLock,
+    ) -> PreparedLockAttempt {
+        let mut locks = self.advisory_locks.lock();
+        let Some(index) = locks.iter().position(|entry| entry.key == prepared.key) else {
+            let Some(table_required) = locks.len().checked_add(1) else {
+                return PreparedLockAttempt::NeedsStorage;
+            };
+            let shared_required = usize::from(prepared.requested == AdvisoryLockMode::Shared);
+            if prepared.table.capacity() < table_required
+                || prepared.shared.capacity() < shared_required
+            {
+                return PreparedLockAttempt::NeedsStorage;
+            }
+            prepared.table.clear();
+            prepared.table.append(&mut locks);
+            prepared.shared.clear();
+            if prepared.requested == AdvisoryLockMode::Shared {
+                prepared.shared.push(prepared.owner);
+            }
+            prepared.table.push(AdvisoryFileLock {
+                key: prepared.key,
+                exclusive: (prepared.requested == AdvisoryLockMode::Exclusive)
+                    .then_some(prepared.owner),
+                shared: core::mem::take(&mut prepared.shared),
+            });
+            core::mem::swap(&mut *locks, &mut prepared.table);
+            return PreparedLockAttempt::Complete(AdvisoryLockAttempt::Acquired {
+                key: prepared.key,
+                wake_waiters: false,
+            });
+        };
+
+        let state = &mut locks[index];
+        let current = if state.exclusive == Some(prepared.owner) {
+            Some(AdvisoryLockMode::Exclusive)
+        } else if state.shared.contains(&prepared.owner) {
+            Some(AdvisoryLockMode::Shared)
+        } else {
+            None
+        };
+        if current == Some(prepared.requested) {
+            return PreparedLockAttempt::Complete(AdvisoryLockAttempt::Acquired {
+                key: prepared.key,
+                wake_waiters: false,
+            });
+        }
+        if prepared.requested == AdvisoryLockMode::Shared
+            && !state.shared.contains(&prepared.owner)
+            && state
+                .shared
+                .len()
+                .checked_add(1)
+                .is_none_or(|required| prepared.shared.capacity() < required)
+        {
+            return PreparedLockAttempt::NeedsStorage;
+        }
+
+        // Capacity 已证明后才撤销旧模式；`NeedsStorage` 因而从不产生部分 conversion。
+        let wake_waiters = current.is_some();
+        if current == Some(AdvisoryLockMode::Exclusive) {
+            state.exclusive = None;
+        } else if current == Some(AdvisoryLockMode::Shared) {
+            state
+                .shared
+                .retain(|candidate| *candidate != prepared.owner);
+        }
+        let compatible = match prepared.requested {
+            AdvisoryLockMode::Shared => state.exclusive.is_none(),
+            AdvisoryLockMode::Exclusive => state.exclusive.is_none() && state.shared.is_empty(),
+        };
+        if !compatible {
+            return PreparedLockAttempt::Complete(AdvisoryLockAttempt::Blocked {
+                key: prepared.key,
+                wake_waiters,
+            });
+        }
+        match prepared.requested {
+            AdvisoryLockMode::Shared => {
+                prepared.shared.clear();
+                prepared.shared.extend_from_slice(&state.shared);
+                prepared.shared.push(prepared.owner);
+                core::mem::swap(&mut state.shared, &mut prepared.shared);
+            }
+            AdvisoryLockMode::Exclusive => state.exclusive = Some(prepared.owner),
+        }
+        PreparedLockAttempt::Complete(AdvisoryLockAttempt::Acquired {
+            key: prepared.key,
+            wake_waiters,
+        })
+    }
+
     /// @description 在 inode-wide lock table 内尝试取得或转换一个 OFD-owned flock。
     /// @param ofd live open file description；dup/fork descriptor 共享其 pointer identity。
     /// @param requested shared 或 exclusive 模式。
@@ -87,74 +266,15 @@ impl VirtualFileSystem {
         ofd: &Arc<OpenFileDescription>,
         requested: AdvisoryLockMode,
     ) -> Result<AdvisoryLockAttempt, AdvisoryLockError> {
-        let (key, owner) = Self::advisory_identity(ofd)?;
-        let mut locks = self.advisory_locks.lock();
-        let index = locks.iter().position(|entry| entry.key == key);
-        if index.is_none() {
-            locks
-                .try_reserve(1)
-                .map_err(|_| AdvisoryLockError::NoLocks)?;
-            let mut shared = Vec::new();
-            if requested == AdvisoryLockMode::Shared {
-                shared
-                    .try_reserve(1)
-                    .map_err(|_| AdvisoryLockError::NoLocks)?;
-                shared.push(owner);
+        let mut prepared = self.prepare_advisory_lock(ofd, requested)?;
+        loop {
+            match self.try_prepared_advisory_lock(&mut prepared) {
+                PreparedLockAttempt::Complete(attempt) => return Ok(attempt),
+                PreparedLockAttempt::NeedsStorage => {
+                    self.reserve_advisory_lock_storage(&mut prepared)?;
+                }
             }
-            locks.push(AdvisoryFileLock {
-                key,
-                exclusive: (requested == AdvisoryLockMode::Exclusive).then_some(owner),
-                shared,
-            });
-            return Ok(AdvisoryLockAttempt::Acquired {
-                key,
-                wake_waiters: false,
-            });
         }
-
-        let state = &mut locks[index.unwrap()];
-        let current = if state.exclusive == Some(owner) {
-            Some(AdvisoryLockMode::Exclusive)
-        } else if state.shared.contains(&owner) {
-            Some(AdvisoryLockMode::Shared)
-        } else {
-            None
-        };
-        if current == Some(requested) {
-            return Ok(AdvisoryLockAttempt::Acquired {
-                key,
-                wake_waiters: false,
-            });
-        }
-        if requested == AdvisoryLockMode::Shared && !state.shared.contains(&owner) {
-            state
-                .shared
-                .try_reserve(1)
-                .map_err(|_| AdvisoryLockError::NoLocks)?;
-        }
-
-        // 1. BSD flock conversion 先撤销旧模式；否则 SH→EX 会错误地原子升级。
-        // 2. wake_waiters 记录该撤销，调用方必须在离开 wait-registry lock 后通知；缺失它会
-        //    让与旧模式冲突的 waiter 永久睡眠。
-        let wake_waiters = current.is_some();
-        if current == Some(AdvisoryLockMode::Exclusive) {
-            state.exclusive = None;
-        } else if current == Some(AdvisoryLockMode::Shared) {
-            state.shared.retain(|candidate| *candidate != owner);
-        }
-
-        let compatible = match requested {
-            AdvisoryLockMode::Shared => state.exclusive.is_none(),
-            AdvisoryLockMode::Exclusive => state.exclusive.is_none() && state.shared.is_empty(),
-        };
-        if !compatible {
-            return Ok(AdvisoryLockAttempt::Blocked { key, wake_waiters });
-        }
-        match requested {
-            AdvisoryLockMode::Shared => state.shared.push(owner),
-            AdvisoryLockMode::Exclusive => state.exclusive = Some(owner),
-        }
-        Ok(AdvisoryLockAttempt::Acquired { key, wake_waiters })
     }
 
     fn remove_advisory_lock(

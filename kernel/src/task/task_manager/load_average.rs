@@ -30,7 +30,7 @@ impl LoadAverage {
     ///
     /// @return 三个 load value 均为零且没有 in-progress sample 的 owner。
     /// @errors 无错误。
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             sample_deadline_us: AtomicU64::new(INTERVAL_US),
             fixed: IrqMutex::new([0; 3]),

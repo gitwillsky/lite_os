@@ -16,6 +16,15 @@
 
 ## Failure and cleanup
 
-- block publication 在 SchedulingState 切换前完成全部 allocation 与 pending-event recheck，避免 lost wakeup。
+- block publication 先用短 registry 锁签发唯一 ID，锁外准备全部 entry/index nodes，再在同一 owner 下复查 pending event 并无失败提交，避免 lost wakeup；取消/OOM 只烧掉 ID。
+- clone/fork/vfork 的 TCB、graph node 与 RLIMIT snapshot storage 在 `process_creation` 外准备；
+  最终 guard 内只捕获已预留 snapshot、复检 limit 并提交 graph。snapshot backing OOM
+  属于 memory failure 并由 syscall 映射为 `ENOMEM`；只有 RLIMIT_NPROC/PID exhaustion
+  映射为 `EAGAIN`。Thread clone 的 Linux
+  best-effort TID stores 完成前 child 保持 `New`；pre-activation group stop 使用
+  `Stopped(New)`，SIGCONT 只能恢复 `New`，最终才在 graph owner 下进入 Ready/Stopped。
+  若期间已提交 group-exit，任何 scheduler state 都必须继承 kernel SIGKILL consequence，
+  不得逃离既有 group exit。
 - exit 顺序保持 robust cleanup、graph removal、clear-child-tid/futex wake；exec/vfork/group-exit 必须明确 point of no return。
 - consequence 可能 drop Arc、OFD、waiter 或发送 signal 时，必须在 owner lock 外执行。
+- exit staged 的 parent/init child waiter 必须按来源各自 exactly once drain；跨来源 TID 没有排序契约，不得为合并它们扩大通用 ordered-storage interface。

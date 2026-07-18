@@ -23,7 +23,7 @@ fn init_interrupt_controller() {
     let Some(plic) = platform_info().plic_device.as_ref() else {
         return;
     };
-    match PlicInterruptController::new(plic.base_addr, plic.size, 1024, crate::cpu::possible()) {
+    match PlicInterruptController::new(plic.base_addr, plic.size, crate::cpu::possible()) {
         Ok(controller) => {
             let controller = match Box::try_new(controller) {
                 Ok(controller) => controller as Box<dyn InterruptController>,

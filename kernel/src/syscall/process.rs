@@ -15,6 +15,9 @@ use crate::{
 };
 
 use super::INTERNAL_RESTART_SYS;
+use super::clone_errno::{
+    clone_resource_errno, process_clone_memory_errno, thread_clone_memory_errno,
+};
 
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_ARG_STRING_BYTES: usize = 32 * 4096;
@@ -137,10 +140,10 @@ pub(crate) fn sys_clone(
         }
         return match fork_current_process() {
             Ok(pid) => pid as isize,
-            Err(ProcessCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
-            Err(ProcessCloneError::Memory(_)) | Err(ProcessCloneError::ResourceLimit) => {
-                -errno::EAGAIN
+            Err(ProcessCloneError::Memory(error)) => {
+                process_clone_memory_errno(error.is_out_of_memory())
             }
+            Err(ProcessCloneError::ResourceLimit) => clone_resource_errno(),
         };
     }
     if flags == (SIGCHLD | CLONE_VM | CLONE_VFORK) {
@@ -149,10 +152,10 @@ pub(crate) fn sys_clone(
         }
         return match vfork_current_process(stack) {
             Ok(pid) => pid as isize,
-            Err(ProcessCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
-            Err(ProcessCloneError::Memory(_)) | Err(ProcessCloneError::ResourceLimit) => {
-                -errno::EAGAIN
+            Err(ProcessCloneError::Memory(error)) => {
+                process_clone_memory_errno(error.is_out_of_memory())
             }
+            Err(ProcessCloneError::ResourceLimit) => clone_resource_errno(),
         };
     }
     const CLONE_FS: usize = 0x200;
@@ -176,12 +179,7 @@ pub(crate) fn sys_clone(
     // 若把它当未知 flag 拒绝，标准 pthread clone 会在任何 Thread 发布前错误返回 EINVAL。
     const OPTIONAL: usize =
         CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID | CLONE_DETACHED;
-    if flags & REQUIRED != REQUIRED
-        || flags & !(REQUIRED | OPTIONAL) != 0
-        || stack == 0
-        || flags & CLONE_PARENT_SETTID != 0 && parent_tid == 0
-        || flags & (CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID) != 0 && child_tid == 0
-    {
+    if flags & REQUIRED != REQUIRED || flags & !(REQUIRED | OPTIONAL) != 0 || stack == 0 {
         return -errno::EINVAL;
     }
     match clone_current_thread(
@@ -192,10 +190,8 @@ pub(crate) fn sys_clone(
         (flags & CLONE_CHILD_CLEARTID != 0).then_some(child_tid),
     ) {
         Ok(tid) => tid as isize,
-        Err(ThreadCloneError::Fault) => -errno::EFAULT,
-        Err(ThreadCloneError::ResourceLimit) => -errno::EAGAIN,
-        Err(ThreadCloneError::Memory(error)) if error.is_out_of_memory() => -errno::ENOMEM,
-        Err(ThreadCloneError::Memory(_)) => -errno::EINVAL,
+        Err(ThreadCloneError::ResourceLimit) => clone_resource_errno(),
+        Err(ThreadCloneError::Memory(error)) => thread_clone_memory_errno(error.is_out_of_memory()),
     }
 }
 

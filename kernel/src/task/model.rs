@@ -1,5 +1,6 @@
 mod address_space;
 mod alternate_signal_stack;
+mod clone_tid_store;
 mod credentials;
 mod debug;
 mod file_descriptions;
@@ -36,6 +37,7 @@ use alternate_signal_stack::AlternateSignalStack;
 pub(crate) use alternate_signal_stack::{SignalStack, SignalStackError};
 pub(crate) use credentials::CredentialUpdateError;
 use credentials::Credentials;
+pub(crate) use file_descriptions::ReceivedFdTransaction;
 use io_accounting::IoAccounting;
 pub(crate) use io_accounting::IoStatistics;
 use process_exec::{process_name, try_elf_arc};
@@ -90,6 +92,7 @@ pub(crate) enum StopTransition {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum StopResume {
+    New,
     Runnable,
     Blocked,
 }

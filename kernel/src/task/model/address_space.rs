@@ -60,15 +60,11 @@ impl AddressSpace {
         addresses: [Option<usize>; 2],
         tid: i32,
         limits: UserFaultLimits,
-    ) -> Result<(), UserAccessError> {
+    ) {
         let mut memory = self.memory_set.lock();
-        for address in addresses.into_iter().flatten() {
-            memory.validate_user_write(address, core::mem::size_of::<i32>(), limits)?;
-        }
-        for address in addresses.into_iter().flatten() {
-            memory.copy_to_user(address, &tid.to_ne_bytes(), limits)?;
-        }
-        Ok(())
+        super::clone_tid_store::store_clone_tid_values(addresses, |address| {
+            memory.copy_to_user(address, &tid.to_ne_bytes(), limits)
+        });
     }
 
     pub(super) fn map_anonymous(
@@ -461,11 +457,7 @@ impl TaskControlBlock {
         )
     }
 
-    pub(in crate::task) fn write_clone_tid_values(
-        &self,
-        addresses: [Option<usize>; 2],
-        tid: i32,
-    ) -> Result<(), UserAccessError> {
+    pub(in crate::task) fn write_clone_tid_values(&self, addresses: [Option<usize>; 2], tid: i32) {
         self.process.address_space().write_clone_tid_values(
             addresses,
             tid,

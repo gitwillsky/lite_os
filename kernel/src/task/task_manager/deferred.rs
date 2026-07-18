@@ -139,8 +139,11 @@ pub(crate) fn dispatch_pending_deferred_work() {
         expire_timers(get_time_ns());
     }
     if work.contains(DeferredWork::Console) {
-        process_terminal_input();
-        wake_console_waiters();
+        let input_backlog = process_terminal_input();
+        let waiter_backlog = wake_console_waiters();
+        if input_backlog || waiter_backlog {
+            cpu::raise_deferred(DeferredWork::Console);
+        }
     }
     if work.contains(DeferredWork::Display) {
         crate::drm::device::dispatch_display_work(get_time_ns());

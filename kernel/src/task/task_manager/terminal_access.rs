@@ -20,6 +20,22 @@ pub(crate) fn hangup_terminal(terminal: &Terminal) {
     send_process_group_signal(pgid, 18);
 }
 
+/// @description 把 line discipline 生成的 ISIG bitset 路由到当前 foreground process group。
+/// @param terminal 提供 controlling foreground group 的唯一 TTY owner。
+/// @param signals 一批输入生成的 Linux signal bitset。
+/// @return 无 foreground group 或空 bitset 时幂等完成；取得 group snapshot 后释放 Terminal lock，
+/// 再执行 signal generation。
+pub(crate) fn publish_terminal_input_signals(terminal: &Terminal, signals: u64) {
+    let Some(pgid) = terminal.signal_target_group() else {
+        return;
+    };
+    for signal in 1..=64 {
+        if signals & (1u64 << (signal - 1)) != 0 {
+            send_process_group_signal(pgid, signal);
+        }
+    }
+}
+
 /// @description 提交 TTY window size，并按 Linux tty resize 语义通知 foreground group。
 /// @param terminal `TIOCSWINSZ` fd 指向的唯一 Terminal owner。
 /// @param window_size 已完整 copy-in 的 Linux `struct winsize` bytes。

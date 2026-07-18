@@ -11,13 +11,14 @@ use crate::memory::{
 use super::{FileSystemError, Inode, InodeType};
 
 mod reclaim;
+mod regular_write;
 mod writeback;
 mod writeback_batch;
 use reclaim::CachedPages;
+use writeback_batch::WRITEBACK_BATCH_PAGES;
 
 const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
-const WRITEBACK_BATCH_PAGES: usize = 32;
 const DIRTY_LIMIT_DIVISOR: usize = 4;
 const DIRTY_THROTTLE_PAGES: usize = WRITEBACK_BATCH_PAGES * 2;
 
@@ -424,43 +425,6 @@ impl RegularFile {
             file,
             _sequence: file.write_sequence.lock(),
         })
-    }
-}
-
-impl RegularFileWrite<'_> {
-    /// @description 向 regular-file storage 写入并同步更新 resident cache pages。
-    /// @param offset 文件 byte offset。
-    /// @param input kernel-owned 输入缓冲区。
-    /// @return storage 实际写入字节数。
-    /// @error storage mutation 失败时透传 filesystem error。
-    pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
-        let _operation = self.file.operation.lock();
-        let written = self.file.inode.write_storage(offset, input)?;
-        self.file.update_cached(offset, &input[..written]);
-        Ok(written)
-    }
-
-    /// @description 在 page-cache operation lock 内原子执行受最大文件大小约束的 append。
-    /// @param input 待追加数据。
-    /// @param size_limit caller 的 RLIMIT_FSIZE soft limit。
-    /// @return append 起始 offset 与实际字节数；已到上限时返回零字节，由 syscall 生成 SIGXFSZ/EFBIG。
-    /// @error storage mutation 失败时透传 filesystem error。
-    pub(crate) fn append(
-        &self,
-        input: &[u8],
-        size_limit: u64,
-    ) -> Result<(u64, usize), FileSystemError> {
-        let _operation = self.file.operation.lock();
-        let offset = self.file.inode.size();
-        let allowed = usize::try_from(size_limit.saturating_sub(offset))
-            .unwrap_or(usize::MAX)
-            .min(input.len());
-        if allowed == 0 {
-            return Ok((offset, 0));
-        }
-        let (offset, written) = self.file.inode.append_storage(&input[..allowed])?;
-        self.file.update_cached(offset, &input[..written]);
-        Ok((offset, written))
     }
 }
 

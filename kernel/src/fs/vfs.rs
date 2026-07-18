@@ -19,9 +19,10 @@ mod advisory_lock;
 #[path = "vfs/record_lock.rs"]
 mod record_lock;
 pub(crate) use advisory_lock::{
-    AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode, AdvisoryLockNotifier,
+    AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
+    AdvisoryLockNotifier, PreparedAdvisoryLock, PreparedLockAttempt,
 };
-pub(crate) use record_lock::{RecordLockMode, RecordLockRange};
+pub(crate) use record_lock::{PreparedRecordLock, RecordLockMode, RecordLockRange};
 
 /// @description 管理唯一 root namespace、boot mounts 与 pathname traversal。
 pub(crate) struct VirtualFileSystem {

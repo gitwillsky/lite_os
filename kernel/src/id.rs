@@ -22,7 +22,7 @@ pub(crate) struct IdAllocator {
 }
 
 impl IdAllocator {
-    pub(crate) fn new(initial_id: usize) -> Self {
+    pub(crate) const fn new(initial_id: usize) -> Self {
         Self {
             initial: initial_id,
             current: initial_id,

@@ -165,7 +165,43 @@ pub(super) fn bounded_staging_capacity(remaining: usize, maximum: usize) -> usiz
     remaining.min(maximum)
 }
 
-/// 一次只读 stage 的结果；任何 copy fault 都使整段 staged prefix 不可提交。
+/// @description 在 stack fast path 与可选 heap staging 之间选择实际容量。
+/// @param desired 已由 subsystem maximum 限制的期望 byte 数。
+/// @param stack_capacity allocation-free fallback 容量。
+/// @param heap_ready 大 staging 的 reserve 是否已在 publication 前成功。
+/// @return 小请求保持精确容量；大请求仅在 reserve 成功时扩大，否则退回 stack。
+pub(super) fn fallible_staging_capacity(
+    desired: usize,
+    stack_capacity: usize,
+    heap_ready: bool,
+) -> usize {
+    if desired <= stack_capacity || heap_ready {
+        desired
+    } else {
+        stack_capacity
+    }
+}
+
+/// @description 在 operation callback 外拥有并最终释放已准备好的 transient staging。
+/// @param prepared callback 开始前已完成分配与清零的 staging owner。
+/// @param operation 可包含 OFD position/write-sequence gate；只能借用 prepared owner。
+/// @return operation 的原样结果；staging 在 callback 返回、相关 gate 释放后才析构。
+/// @note 这里只保证 staging reserve/zero-fill/drop 不与 gate 重叠；user fault 与 backend
+/// transaction 仍可按各自契约分配。若把 staging 生命周期操作移入 callback，allocator/reclaimer
+/// 可能在 filesystem spin lock 内重入。
+pub(super) fn with_prepared_staging<Staging, Output>(
+    mut prepared: Staging,
+    operation: impl FnOnce(&mut Staging) -> Output,
+) -> Output {
+    let output = operation(&mut prepared);
+    drop(prepared);
+    output
+}
+
+/// 一次只读 stage 的结果；`count` 是否可提交由具体 staging seam 定义。
+///
+/// `stage_with`/socket 在 fault 时丢弃 whole-stage，`stage_pagewise_with`/regular write
+/// 则允许提交 fault 前的 `count` prefix。
 pub(super) struct StagedCopy {
     pub(super) count: usize,
     pub(super) faulted: bool,
@@ -231,9 +267,65 @@ impl<'a> UserIoCursor<'a> {
         }
     }
 
+    /// @description 不推进 progress 地按 userspace page 边界 gather prefix。
+    /// @param output kernel staging；单次 copy adapter 调用不会跨 user page。
+    /// @param copy page-bounded userspace copyin adapter。
+    /// @return 首个 fault 前已 staged byte 数与 fault 标志。
+    /// @note regular write 用它保留坏页前 partial progress；socket atomic stage 继续使用 `stage_with`。
+    pub(super) fn stage_pagewise_with(
+        &self,
+        output: &mut [u8],
+        mut copy: impl FnMut(usize, &mut [u8]) -> Result<(), ()>,
+    ) -> StagedCopy {
+        let mut index = self.index;
+        let mut offset = self.offset;
+        let mut copied = 0usize;
+        while copied < output.len() && index < self.vectors.len() {
+            let vector = self.vectors[index];
+            if offset == vector.length {
+                index += 1;
+                offset = 0;
+                continue;
+            }
+            let Some(address) = vector.base.checked_add(offset) else {
+                return StagedCopy {
+                    count: copied,
+                    faulted: true,
+                };
+            };
+            let to_page_end = crate::memory::PAGE_SIZE - address % crate::memory::PAGE_SIZE;
+            let count = (vector.length - offset)
+                .min(output.len() - copied)
+                .min(to_page_end);
+            if copy(address, &mut output[copied..copied + count]).is_err() {
+                return StagedCopy {
+                    count: copied,
+                    faulted: true,
+                };
+            }
+            offset += count;
+            copied += count;
+        }
+        StagedCopy {
+            count: copied,
+            faulted: false,
+        }
+    }
+
     #[cfg(not(test))]
     pub(super) fn stage_from_user(&self, task: &TaskControlBlock, output: &mut [u8]) -> StagedCopy {
         self.stage_with(output, |address, output| {
+            task.copy_from_user(address, output).map_err(|_| ())
+        })
+    }
+
+    #[cfg(not(test))]
+    pub(super) fn stage_from_user_pagewise(
+        &self,
+        task: &TaskControlBlock,
+        output: &mut [u8],
+    ) -> StagedCopy {
+        self.stage_pagewise_with(output, |address, output| {
             task.copy_from_user(address, output).map_err(|_| ())
         })
     }

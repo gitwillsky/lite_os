@@ -159,15 +159,40 @@ pub(crate) fn wait_child(
         if task.has_deliverable_signal() {
             return Err(WaitChildError::Interrupted);
         }
+        drop(graph);
+
+        // Node storage 在 graph IrqMutex 外准备；最终同 owner 复查 event/signal 后才提交。
+        let waiter = FallibleMap::<usize, Arc<TaskControlBlock>>::try_reserve_node();
+        let mut graph = TASK_MANAGER.graph.lock();
+        let record = find_waitable_child(
+            &mut graph,
+            parent,
+            task.tid(),
+            selector,
+            include_stopped,
+            include_continued,
+        )?;
+        match super::wait_publication::child_wait_publication(
+            record.is_some(),
+            nohang,
+            task.has_deliverable_signal(),
+            waiter.is_ok(),
+        ) {
+            super::wait_publication::ChildWaitPublication::ConsumeEvent => return Ok(record),
+            super::wait_publication::ChildWaitPublication::ReturnNoHang => return Ok(None),
+            super::wait_publication::ChildWaitPublication::Interrupted => {
+                return Err(WaitChildError::Interrupted);
+            }
+            super::wait_publication::ChildWaitPublication::OutOfMemory => {
+                return Err(WaitChildError::OutOfMemory);
+            }
+            super::wait_publication::ChildWaitPublication::Publish => {}
+        }
 
         // graph lock 覆盖 child 复查与 waiter 发布；exit/job event 使用同一 owner，因此不会丢唤醒。
-        let waiter = graph
-            .nodes
-            .get(&parent)
-            .expect("waiting parent missing from process graph")
-            .child_waiters
-            .try_prepare_vacant(task.tid(), task.clone())
-            .map_err(|_| WaitChildError::OutOfMemory)?;
+        let waiter = waiter
+            .expect("publication decision requires prepared child waiter")
+            .fill(task.tid(), task.clone());
         let prepared =
             super::context_switch::prepare_current_block(&task, graph, move |graph, _| {
                 let parent_node = graph

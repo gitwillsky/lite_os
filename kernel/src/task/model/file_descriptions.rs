@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use super::TaskControlBlock;
 use crate::fs::{
@@ -7,6 +7,75 @@ use crate::fs::{
 };
 
 const CLOEXEC_CLOSE_BATCH: usize = 32;
+
+/// @description 一次 recvmsg 独占的 SCM_RIGHTS fd reservations。
+///
+/// descriptors 在 transaction 完成全部 name/control/msghdr copyout 前不可由 lookup、close、
+/// fork 或 procfs 观察。消费式 `publish` 是唯一成功出口；其他退出路径由 Drop 撤销全部 slot，
+/// 且 OFD cleanup 始终发生在 Process files lock 外。
+pub(crate) struct ReceivedFdTransaction<'task> {
+    task: &'task TaskControlBlock,
+    descriptors: Vec<usize>,
+}
+
+impl ReceivedFdTransaction<'_> {
+    /// @description 在当前 transaction 中占用下一个 lookup 不可见的最低 fd slot。
+    /// @param file transport 已转交给 receiver 的 OFD。
+    /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
+    /// @return 成功 reservation 返回 true；fd limit 截断返回 false。
+    /// @errors fd-table backing OOM 返回 OutOfMemory；已有 reservations 由 transaction 保持。
+    pub(crate) fn reserve(
+        &mut self,
+        file: Arc<OpenFileDescription>,
+        cloexec: bool,
+    ) -> Result<bool, FileDescriptorError> {
+        let limit = self.task.file_descriptor_limit();
+        let reservation = {
+            self.task
+                .process
+                .files
+                .lock()
+                .reserve_received(file, cloexec, limit)
+        };
+        match reservation {
+            Ok(fd) => {
+                self.descriptors.push(fd);
+                Ok(true)
+            }
+            Err((FileDescriptorError::Limit, file)) => {
+                drop(file);
+                Ok(false)
+            }
+            Err((error, file)) => {
+                drop(file);
+                Err(error)
+            }
+        }
+    }
+
+    /// @description 返回按 SCM_RIGHTS 输入顺序预留的最低可用 fd numbers。
+    /// @return 只读 descriptor slice；transaction 完成前对应 slots 仍不可见。
+    pub(crate) fn descriptors(&self) -> &[usize] {
+        &self.descriptors
+    }
+
+    /// @description 在全部 recvmsg copyout 成功后无分配发布整批 descriptors。
+    /// @return 无返回值；消费 transaction，禁止成功 publication 后再次 rollback。
+    pub(crate) fn publish(mut self) {
+        self.task.fd_publish_received(&self.descriptors);
+        self.descriptors.clear();
+    }
+}
+
+impl Drop for ReceivedFdTransaction<'_> {
+    fn drop(&mut self) {
+        while let Some(fd) = self.descriptors.pop() {
+            let cancelled = self.task.fd_cancel_received(fd);
+            // fd-table guard 已在 fd_cancel_received 返回前释放；OFD cleanup 不得在表锁内发生。
+            drop(cancelled);
+        }
+    }
+}
 
 impl TaskControlBlock {
     pub(crate) fn fd_get(&self, fd: usize) -> Option<Arc<OpenFileDescription>> {
@@ -49,38 +118,35 @@ impl TaskControlBlock {
         self.process.files.lock().capture_many(descriptors)
     }
 
-    /// @description 占用一个 lookup 不可见的 SCM_RIGHTS receive slot。
-    /// @param file transport 已转交给 receiver 的 OFD。
-    /// @param cloexec 对应 MSG_CMSG_CLOEXEC。
-    /// @return 最低可用 reserved fd；达到 limit 时返回 None。
-    /// @errors backing reserve OOM 返回 OutOfMemory。
-    pub(crate) fn fd_reserve_received(
+    /// @description 创建一次 recvmsg 独占、尚未包含 reservation 的 SCM_RIGHTS transaction。
+    /// @param capacity 本条 control message 最多能够发布的 fd 数量。
+    /// @return 预留好 rollback bookkeeping 的 transaction；caller 必须先 reserve 全部 fd，再 copyout。
+    /// @errors transaction staging OOM 时不改变 fd table。
+    pub(crate) fn fd_prepare_received(
         &self,
-        file: Arc<OpenFileDescription>,
-        cloexec: bool,
-    ) -> Result<Option<usize>, FileDescriptorError> {
-        match self.process.files.lock().reserve_received(
-            file,
-            cloexec,
-            self.file_descriptor_limit(),
-        ) {
-            Ok(fd) => Ok(Some(fd)),
-            Err(FileDescriptorError::Limit) => Ok(None),
-            Err(error) => Err(error),
-        }
+        capacity: usize,
+    ) -> Result<ReceivedFdTransaction<'_>, FileDescriptorError> {
+        let mut descriptors = Vec::new();
+        descriptors
+            .try_reserve_exact(capacity)
+            .map_err(|_| FileDescriptorError::OutOfMemory)?;
+        Ok(ReceivedFdTransaction {
+            task: self,
+            descriptors,
+        })
     }
 
-    /// @description 无分配公开已成功 copyout fd number 的 receive reservation。
-    /// @param fd 当前 recvmsg transaction 唯一拥有的 reserved slot。
+    /// @description 无分配公开已完成全部 recvmsg copyout 的 receive reservations。
+    /// @param descriptors 当前 transaction 唯一拥有的完整 reserved slot slice。
     /// @return 无返回值；错误 token fail-stop。
-    pub(crate) fn fd_publish_received(&self, fd: usize) {
-        self.process.files.lock().publish_received(fd);
+    fn fd_publish_received(&self, descriptors: &[usize]) {
+        self.process.files.lock().publish_received(descriptors);
     }
 
     /// @description 回滚 copyout 失败的 receive reservation。
     /// @param fd 当前 recvmsg transaction 唯一拥有的 reserved slot。
     /// @return 锁外 cleanup capability；caller 丢弃即可完成 descriptor_refs cleanup。
-    pub(crate) fn fd_cancel_received(&self, fd: usize) -> CancelledFileReservation {
+    fn fd_cancel_received(&self, fd: usize) -> CancelledFileReservation {
         self.process.files.lock().cancel_received(fd)
     }
 

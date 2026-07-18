@@ -11,11 +11,13 @@ mod mmap;
 mod private_area;
 mod process;
 mod resident;
+mod retire;
 mod shared_area;
 mod statistics;
 mod user_access;
 use super::config;
 use super::permissions::MapPermission;
+use super::retire::{reclaim_release_decision, revoke_and_synchronize};
 use super::{address::VirtualPageNumber, page_table::PageTable};
 use crate::fallible_tree::FallibleMap;
 use crate::memory::{
@@ -221,31 +223,6 @@ impl MapArea {
         Ok(())
     }
 
-    pub(crate) fn unmap(&mut self, page_table: &mut PageTable) {
-        if self.device.is_some() {
-            self.unmap_device_area(page_table);
-            return;
-        }
-        if self.lazy_private || self.shared_anonymous.is_some() || self.shared_file.is_some() {
-            for (&vpn, _) in &self.data_frames {
-                let _ = page_table.unmap(vpn);
-            }
-            if let Some(shared) = &self.shared_file {
-                for (&vpn, _) in &shared.resident {
-                    let _ = page_table.unmap(vpn);
-                }
-            }
-        } else {
-            for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-                let _ = page_table.unmap(VirtualPageNumber::from_vpn(vpn));
-            }
-        }
-        self.data_frames.clear();
-        if let Some(shared) = &mut self.shared_file {
-            shared.resident.clear();
-        }
-    }
-
     fn map_one(
         &mut self,
         page_table: &mut PageTable,
@@ -359,7 +336,8 @@ impl MapArea {
         debug_assert_eq!(self.vpn_range.end, right.vpn_range.start);
         debug_assert_eq!(self.map_permission, right.map_permission);
         self.vpn_range.end = right.vpn_range.end;
-        self.data_frames.append(&mut right.data_frames);
+        self.data_frames
+            .append_ordered_disjoint(&mut right.data_frames);
     }
 }
 
@@ -437,14 +415,31 @@ impl MemorySet {
             .try_prepare_vacant(start, map_area)
             .map_err(|_| MemoryError::OutOfMemory)?;
         if let Err(e) = prepared.value_mut().map(&mut self.page_table) {
-            // 回滚：解除已经映射的页面
-            prepared.value_mut().unmap(&mut self.page_table);
+            // VMA node 尚未发布，但 live shared mm 的 hardware walker 已可观察 partial PTE；
+            // rollback 仍须保留 prepared area owner 直到所有 CPU 完成 fence。
+            let prepared = revoke_and_synchronize(
+                prepared,
+                |prepared| {
+                    prepared.value_mut().unmap(&mut self.page_table);
+                },
+                |_| Self::flush_tlb_all_cpus(),
+            )
+            .expect("platform TLB synchronization failed during VMA map rollback");
+            drop(prepared);
             return Err(e);
         }
         if let Some(data) = data
             && let Err(error) = prepared.value_mut().copy_data(data)
         {
-            prepared.value_mut().unmap(&mut self.page_table);
+            let prepared = revoke_and_synchronize(
+                prepared,
+                |prepared| {
+                    prepared.value_mut().unmap(&mut self.page_table);
+                },
+                |_| Self::flush_tlb_all_cpus(),
+            )
+            .expect("platform TLB synchronization failed during VMA data rollback");
+            drop(prepared);
             return Err(error);
         }
         self.areas.commit_vacant(prepared);
@@ -623,13 +618,6 @@ impl MemorySet {
         Ok(new_break)
     }
 
-    pub(crate) fn remove_area_with_start_vpn(&mut self, start_vpn: VirtualPageNumber) {
-        if let Some(mut area) = self.areas.remove(&start_vpn) {
-            // 将目标区域移出容器后再执行 unmap，规避潜在别名问题
-            area.unmap(&mut self.page_table);
-        }
-    }
-
     /// @description 为共享地址空间中的新 Thread 分配独立 supervisor trap-context 页。
     ///
     /// @param tid 全局唯一且大于 init TID 的线程标识。
@@ -660,10 +648,7 @@ impl MemorySet {
     /// @return 无返回值；缺失映射表示退出清理重复并 fail-stop。
     pub(crate) fn remove_thread_trap_context(&mut self, address: usize) {
         let vpn = VirtualAddress::from(address).floor();
-        assert!(self.areas.contains_key(&vpn));
         self.remove_area_with_start_vpn(vpn);
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after thread trap-context unmapping");
     }
 
     /// 获取给定UserContext虚拟地址的物理页号

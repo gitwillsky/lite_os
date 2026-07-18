@@ -254,40 +254,73 @@ impl MemorySet {
     }
 
     pub(crate) fn invalidate_shared_file(&mut self, id: SharedFileId, size: u64) {
+        let memory = revoke_and_synchronize(
+            self,
+            |memory| memory.revoke_invalidated_file_translations(id, size),
+            |_| Self::flush_tlb_all_cpus(),
+        )
+        .expect("platform TLB synchronization failed after truncate invalidation");
+        memory.release_invalidated_file_residents(id, size);
+    }
+
+    fn invalidated_file_starts(
+        area: &MapArea,
+        id: SharedFileId,
+        size: u64,
+    ) -> (Option<VirtualPageNumber>, Option<VirtualPageNumber>) {
+        let start = area.vpn_range.start;
+        let shared = area
+            .shared_file
+            .as_ref()
+            .filter(|shared| shared.mapping.id() == id)
+            .and_then(|shared| shared.pages.prefix_before(size))
+            .and_then(|offset| usize::try_from(offset).ok())
+            .and_then(|offset| start.as_usize().checked_add(offset))
+            .map(VirtualPageNumber::from_vpn);
+        let private = area
+            .private_file
+            .as_ref()
+            .and_then(|private| private.first_stale_page(start, id, size));
+        (shared, private)
+    }
+
+    fn revoke_invalidated_file_translations(&mut self, id: SharedFileId, size: u64) {
         let page_table = &mut self.page_table;
         self.areas.for_each_mut(|_, area| {
-            let start = area.vpn_range.start;
-            if let Some(shared) = &mut area.shared_file
-                && shared.mapping.id() == id
-                && let Some(first_stale) = shared
-                    .pages
-                    .prefix_before(size)
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .and_then(|offset| start.as_usize().checked_add(offset))
-                    .map(VirtualPageNumber::from_vpn)
+            let (shared_start, private_start) = Self::invalidated_file_starts(area, id, size);
+            if let Some(first_stale) = shared_start
+                && let Some(shared) = &area.shared_file
             {
-                // resident key 本身有序；直接删除 stale suffix，避免 truncate 已提交后
-                // 为临时 key snapshot 分配失败或从 map 起点反复扫描。
-                while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
+                for (&vpn, _) in shared.resident.iter_from(&first_stale) {
                     let _ = page_table.unmap(vpn);
+                }
+            }
+            if let Some(first_stale) = private_start {
+                for (&vpn, _) in area.data_frames.iter_from(&first_stale) {
+                    let _ = page_table.unmap(vpn);
+                }
+            }
+        });
+    }
+
+    fn release_invalidated_file_residents(&mut self, id: SharedFileId, size: u64) {
+        self.areas.for_each_mut(|_, area| {
+            let (shared_start, private_start) = Self::invalidated_file_starts(area, id, size);
+            if let Some(first_stale) = shared_start
+                && let Some(shared) = &mut area.shared_file
+            {
+                while let Some((&vpn, _)) = shared.resident.iter_from(&first_stale).next() {
                     shared.resident.remove(&vpn);
                 }
             }
-            if let Some(first_stale) = area
-                .private_file
-                .as_ref()
-                .and_then(|private| private.first_stale_page(start, id, size))
-            {
+            if let Some(first_stale) = private_start {
                 // Linux truncate 的 even_cows 语义撤销 EOF 外 private residency，包括
                 // operation snapshot 后、truncate callback 取得 mm lock 前发布的页。
                 while let Some((&vpn, _)) = area.data_frames.iter_from(&first_stale).next() {
-                    let _ = page_table.unmap(vpn);
                     area.data_frames.remove(&vpn);
                 }
             }
         });
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after truncate invalidation");
     }
 
     fn overlapping_mmap_keys(
@@ -367,6 +400,12 @@ impl MemorySet {
                     .map_err(|_| MemoryError::OutOfMemory)?,
             );
         }
+        // 被切除的 area 必须在 remote fence 完成前保留全部 frame/device/writer owner。
+        // 缺少该 preflight 会在 PTE 已撤销后因 retire Vec OOM 无法安全保活 owner。
+        let mut retired_areas = Vec::new();
+        retired_areas
+            .try_reserve_exact(keys.len())
+            .map_err(|_| MemoryError::OutOfMemory)?;
         // 3. 从这里开始只有 writeback/PTE 领域错误，VMA segment publication 不再分配。
         for key in &keys {
             let area = &self.areas[key];
@@ -381,8 +420,7 @@ impl MemorySet {
             let area = self.areas.remove(&key).unwrap();
             let cut_start = range.start.max(area.vpn_range.start);
             let cut_end = range.end.min(area.vpn_range.end);
-            let (left, mut middle, right) = area.partition_protectable(cut_start, cut_end);
-            middle.unmap(&mut self.page_table);
+            let (left, middle, right) = area.partition_protectable(cut_start, cut_end);
             if let Some(left) = left {
                 let slot = segment_slots.next().expect("preflighted left VMA slot");
                 self.areas
@@ -393,12 +431,23 @@ impl MemorySet {
                 self.areas
                     .commit_vacant(slot.fill(right.vpn_range.start, right));
             }
+            retired_areas.push(middle);
         }
-        if !self.range_is_free(range.start, range.end) {
-            return Err(MemoryError::PermissionDenied);
-        }
-        Self::flush_tlb_all_cpus()
-            .expect("platform TLB synchronization failed after munmap page-table update");
+        assert!(
+            self.range_is_free(range.start, range.end),
+            "preflighted munmap range remained published"
+        );
+        let retired_areas = revoke_and_synchronize(
+            retired_areas,
+            |areas| {
+                for area in areas {
+                    area.unmap(&mut self.page_table);
+                }
+            },
+            |_| Self::flush_tlb_all_cpus(),
+        )
+        .expect("platform TLB synchronization failed after munmap page-table update");
+        drop(retired_areas);
         Ok(())
     }
 

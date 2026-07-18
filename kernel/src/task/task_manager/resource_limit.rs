@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use super::{ProcessState, TASK_MANAGER};
+use crate::memory::MemoryError;
 use crate::task::{
     PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError,
     TaskControlBlock, current_task,
@@ -14,42 +15,84 @@ fn representative(pid: usize) -> Option<Arc<TaskControlBlock>> {
     threads.values().next().cloned()
 }
 
-/// @description 按 real UID 统计 live threads，实施 Linux RLIMIT_NPROC 创建门。
-pub(in crate::task) fn check_process_slot() -> bool {
-    let Some(caller) = current_task() else {
-        return false;
-    };
-    let real_uid = caller.credential_id(true, false);
-    if real_uid == 0 {
-        return true;
-    }
-    let limit = caller.resource_limit(RLIMIT_NPROC).unwrap().soft;
-    if limit == RLIM_INFINITY {
-        return true;
-    }
-    let representatives: alloc::vec::Vec<_> = {
-        let graph = TASK_MANAGER.graph.lock();
+/// @description 锁外预留 RLIMIT_NPROC 复检所需的 representative snapshot。
+/// @ownership Vec 只持有尚未发布的 Arc snapshot；容量不足/OOM 时没有 graph mutation。
+pub(super) struct ProcessSlotSnapshot {
+    representatives: alloc::vec::Vec<(Arc<TaskControlBlock>, usize)>,
+}
+
+impl ProcessSlotSnapshot {
+    /// @description 按当前 graph 大小在 IrqMutex 外预留 snapshot backing storage。
+    /// @param minimum_capacity 并发增长重试要求的最小 representative 数。
+    /// @return 空但容量充足的 snapshot transaction。
+    /// @errors backing allocation 失败返回 OutOfMemory 且不持有 graph membership。
+    pub(super) fn prepare(minimum_capacity: usize) -> Result<Self, MemoryError> {
+        let observed = TASK_MANAGER
+            .graph
+            .lock()
+            .nodes
+            .values()
+            .filter(
+                |node| matches!(&node.state, ProcessState::Live(threads) if !threads.is_empty()),
+            )
+            .count();
         let mut representatives = alloc::vec::Vec::new();
-        if representatives.try_reserve(graph.nodes.len()).is_err() {
-            return false;
-        }
-        representatives.extend(graph.nodes.values().filter_map(|node| {
-            match &node.state {
-                ProcessState::Live(threads) => threads
-                    .values()
-                    .next()
-                    .map(|task| (task.clone(), threads.len())),
-                ProcessState::Exited(_) => None,
-            }
-        }));
         representatives
-    };
-    let count: usize = representatives
-        .into_iter()
-        .filter(|(task, _)| task.credential_id(true, false) == real_uid)
-        .map(|(_, threads)| threads)
-        .sum();
-    (count as u64) < limit
+            .try_reserve_exact(observed.max(minimum_capacity))
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        Ok(Self { representatives })
+    }
+
+    /// @description 在 process_creation guard 内捕获一次不分配的 live Process snapshot。
+    /// @return 容量足够返回成功；并发增长超出容量时返回新的最小容量且不复制任何 Arc。
+    pub(super) fn capture(&mut self) -> Result<(), usize> {
+        debug_assert!(self.representatives.is_empty());
+        let graph = TASK_MANAGER.graph.lock();
+        let required = graph
+            .nodes
+            .values()
+            .filter(
+                |node| matches!(&node.state, ProcessState::Live(threads) if !threads.is_empty()),
+            )
+            .count();
+        if required > self.representatives.capacity() {
+            return Err(required);
+        }
+        self.representatives
+            .extend(graph.nodes.values().filter_map(|node| {
+                match &node.state {
+                    ProcessState::Live(threads) => threads
+                        .values()
+                        .next()
+                        .map(|task| (task.clone(), threads.len())),
+                    ProcessState::Exited(_) => None,
+                }
+            }));
+        Ok(())
+    }
+
+    /// @description 按 final snapshot 与 caller 当前 limit 判断是否保留一个创建 slot。
+    /// @return root/unlimited 或同 real UID live thread 数低于 soft limit 时为 true。
+    pub(super) fn allows_current(&self) -> bool {
+        let Some(caller) = current_task() else {
+            return false;
+        };
+        let real_uid = caller.credential_id(true, false);
+        if real_uid == 0 {
+            return true;
+        }
+        let limit = caller.resource_limit(RLIMIT_NPROC).unwrap().soft;
+        if limit == RLIM_INFINITY {
+            return true;
+        }
+        let count: usize = self
+            .representatives
+            .iter()
+            .filter(|(task, _)| task.credential_id(true, false) == real_uid)
+            .map(|(_, threads)| *threads)
+            .sum();
+        (count as u64) < limit
+    }
 }
 
 /// @description 在 runtime account 后按 Process 级 RLIMIT_CPU 投递 SIGXCPU/SIGKILL。

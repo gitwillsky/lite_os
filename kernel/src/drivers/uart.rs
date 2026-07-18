@@ -111,3 +111,12 @@ pub(super) fn read(bytes: &mut [u8]) -> usize {
 pub(super) fn input_ready() -> bool {
     !UART.wait().lock().rx.is_empty()
 }
+
+/// @description 原子丢弃尚未交给 TTY line discipline 的全部 UART RX bytes。
+/// @return 被丢弃的 byte 数。
+pub(super) fn discard_input() -> usize {
+    let mut uart = UART.wait().lock();
+    let count = uart.rx.len();
+    uart.rx.clear();
+    count
+}

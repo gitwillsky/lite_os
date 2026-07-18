@@ -1,11 +1,16 @@
 use alloc::boxed::Box;
 use core::{cmp::Ordering, fmt, mem::MaybeUninit, ops::Index};
 
+#[path = "fallible_tree/iter.rs"]
 mod iter;
+#[path = "fallible_tree/topology.rs"]
+mod topology;
 use iter::Iter;
+use topology::{
+    count_nodes, insert_absent, join_ordered, join_with_root, last_key, remove_node, split,
+};
 
 type Link<K, V> = Option<Box<Node<K, V>>>;
-type RemoveResult<K, V> = (Link<K, V>, Option<Box<Node<K, V>>>);
 
 /// 一次有序表节点分配失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,14 +268,6 @@ impl<K: Ord, V> FallibleMap<K, V> {
         find(&mut self.root, key)
     }
 
-    /// 查询不小于 key 的最小 entry。
-    ///
-    /// @param key inclusive lower bound。
-    /// @return ceiling entry。
-    pub(crate) fn ceiling(&self, key: &K) -> Option<(&K, &V)> {
-        self.iter_from(key).next()
-    }
-
     /// 查询全表最小 entry。
     pub(crate) fn first_key_value(&self) -> Option<(&K, &V)> {
         let mut cursor = self.root.as_deref()?;
@@ -368,36 +365,6 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// @param keep 依次观察 key/value，返回 false 的 entry 会被删除。
     /// @return 无返回值；删除过程复用现有树节点与旋转。
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
-        fn join_with_root<K: Ord, V>(
-            left: Link<K, V>,
-            mut root: Box<Node<K, V>>,
-            right: Link<K, V>,
-        ) -> Link<K, V> {
-            let left_height = height(&left);
-            let right_height = height(&right);
-            if left_height > right_height.saturating_add(1) {
-                let mut left = left.expect("left height requires a root");
-                left.right = join_with_root(left.right.take(), root, right);
-                return Some(rebalance(left));
-            }
-            if right_height > left_height.saturating_add(1) {
-                let mut right = right.expect("right height requires a root");
-                right.left = join_with_root(left, root, right.left.take());
-                return Some(rebalance(right));
-            }
-            root.left = left;
-            root.right = right;
-            Some(rebalance(root))
-        }
-
-        fn join<K: Ord, V>(left: Link<K, V>, right: Link<K, V>) -> Link<K, V> {
-            let Some(right) = right else {
-                return left;
-            };
-            let (right, root) = extract_min(right);
-            join_with_root(left, root, right)
-        }
-
         fn retain_link<K: Ord, V>(
             root: Link<K, V>,
             keep: &mut impl FnMut(&K, &V) -> bool,
@@ -412,7 +379,7 @@ impl<K: Ord, V> FallibleMap<K, V> {
                 join_with_root(left, root, right)
             } else {
                 *removed += 1;
-                join(root.left.take(), root.right.take())
+                join_ordered(root.left.take(), root.right.take())
             }
         }
 
@@ -425,47 +392,39 @@ impl<K: Ord, V> FallibleMap<K, V> {
     ///
     /// @param at 新表的 inclusive lower bound。
     /// @return 拥有全部 `key >= at` entry 的表。
-    pub(crate) fn split_off(&mut self, at: &K) -> Self
-    where
-        K: Copy,
-    {
-        let mut right = Self::new();
-        while let Some(key) = self.ceiling(at).map(|(key, _)| *key) {
-            let (root, node) = remove_node(self.root.take(), &key);
-            self.root = root;
-            self.len -= 1;
-            right.insert_box(node.expect("ceiling key must remain present"));
+    pub(crate) fn split_off(&mut self, at: &K) -> Self {
+        let original_len = self.len;
+        let (left, right) = split(self.root.take(), at);
+        // AVL 节点不携带 subtree cardinality；只线性访问被移出的右树一次，避免让
+        // 每个 lookup/rotation 永久承担 size 字段的维护成本。
+        let right_len = count_nodes(&right);
+        self.root = left;
+        self.len = original_len - right_len;
+        Self {
+            root: right,
+            len: right_len,
         }
-        right
     }
 
-    /// 把另一个表的全部节点移动进当前表，不分配节点。
+    /// 把严格位于当前表之后的另一个表整体移动进当前表，不分配节点。
     ///
-    /// @param other 成功后为空的 source 表。
-    pub(crate) fn append(&mut self, other: &mut Self) {
-        while let Some(node) = other.pop_first_box() {
-            self.insert_box(node);
+    /// @param other 全部 key 必须严格大于当前表的最大 key；成功后为空。
+    /// @return 无返回值；重复或无序输入表示 caller contract 损坏并 fail-stop，且两表不变。
+    pub(crate) fn append_ordered_disjoint(&mut self, other: &mut Self) {
+        if let (Some(left_max), Some((right_min, _))) =
+            (last_key(&self.root), other.first_key_value())
+        {
+            assert!(
+                left_max < right_min,
+                "ordered-disjoint AVL join received overlapping or reversed keys"
+            );
         }
-    }
-
-    fn pop_first_box(&mut self) -> Option<Box<Node<K, V>>> {
-        let root = self.root.take()?;
-        let (root, node) = extract_min(root);
-        self.root = root;
-        self.len -= 1;
-        Some(node)
-    }
-
-    fn insert_box(&mut self, mut node: Box<Node<K, V>>) {
-        if let Some(current) = self.get_mut(&node.key) {
-            core::mem::swap(current, &mut node.value);
-            return;
-        }
-        node.height = 1;
-        node.left = None;
-        node.right = None;
-        self.root = Some(insert_absent(self.root.take(), node));
-        self.len += 1;
+        self.root = join_ordered(self.root.take(), other.root.take());
+        self.len = self
+            .len
+            .checked_add(other.len)
+            .expect("AVL length overflow during ordered join");
+        other.len = 0;
     }
 }
 
@@ -498,115 +457,67 @@ impl<'a, K, V> IntoIterator for &'a FallibleMap<K, V> {
     }
 }
 
-fn height<K, V>(node: &Link<K, V>) -> u8 {
-    node.as_ref().map_or(0, |node| node.height)
-}
-
-fn update_height<K, V>(node: &mut Node<K, V>) {
-    node.height = 1 + height(&node.left).max(height(&node.right));
-}
-
-fn balance_factor<K, V>(node: &Node<K, V>) -> i16 {
-    i16::from(height(&node.left)) - i16::from(height(&node.right))
-}
-
-fn rotate_left<K, V>(mut root: Box<Node<K, V>>) -> Box<Node<K, V>> {
-    let mut pivot = root
-        .right
-        .take()
-        .expect("left rotation requires right child");
-    root.right = pivot.left.take();
-    update_height(&mut root);
-    pivot.left = Some(root);
-    update_height(&mut pivot);
-    pivot
-}
-
-fn rotate_right<K, V>(mut root: Box<Node<K, V>>) -> Box<Node<K, V>> {
-    let mut pivot = root
-        .left
-        .take()
-        .expect("right rotation requires left child");
-    root.left = pivot.right.take();
-    update_height(&mut root);
-    pivot.right = Some(root);
-    update_height(&mut pivot);
-    pivot
-}
-
-fn rebalance<K, V>(mut root: Box<Node<K, V>>) -> Box<Node<K, V>> {
-    update_height(&mut root);
-    match balance_factor(&root) {
-        2.. => {
-            if balance_factor(root.left.as_ref().expect("left-heavy AVL node lost child")) < 0 {
-                root.left = root.left.take().map(rotate_left);
-            }
-            rotate_right(root)
+#[cfg(test)]
+impl<K, V> FallibleMap<K, V> {
+    /// @description 向 host test 投影现有节点 identity，不分配或改变 topology。
+    /// @param visit 依次接收每个节点的稳定 storage address。
+    /// @return 无返回值；遍历顺序不属于 production contract。
+    pub(crate) fn test_visit_node_addresses(&self, mut visit: impl FnMut(usize)) {
+        fn walk<K, V>(root: &Link<K, V>, visit: &mut impl FnMut(usize)) {
+            let Some(root) = root else {
+                return;
+            };
+            visit(&**root as *const _ as usize);
+            walk(&root.left, visit);
+            walk(&root.right, visit);
         }
-        ..=-2 => {
-            if balance_factor(
-                root.right
-                    .as_ref()
-                    .expect("right-heavy AVL node lost child"),
-            ) > 0
-            {
-                root.right = root.right.take().map(rotate_right);
-            }
-            rotate_left(root)
-        }
-        _ => root,
+
+        walk(&self.root, &mut visit);
+    }
+
+    /// @description 向 deterministic complexity test 投影当前 AVL root height。
+    /// @return 空树为零，否则返回 root 维护的 height。
+    pub(crate) fn test_root_height(&self) -> u8 {
+        self.root.as_ref().map_or(0, |root| root.height)
     }
 }
 
-fn insert_absent<K: Ord, V>(root: Link<K, V>, node: Box<Node<K, V>>) -> Box<Node<K, V>> {
-    let Some(mut root) = root else {
-        return node;
-    };
-    if node.key < root.key {
-        root.left = Some(insert_absent(root.left.take(), node));
-    } else {
-        debug_assert!(node.key > root.key);
-        root.right = Some(insert_absent(root.right.take(), node));
-    }
-    rebalance(root)
-}
-
-fn extract_min<K, V>(mut root: Box<Node<K, V>>) -> (Link<K, V>, Box<Node<K, V>>) {
-    let Some(left) = root.left.take() else {
-        let right = root.right.take();
-        return (right, root);
-    };
-    let (left, minimum) = extract_min(left);
-    root.left = left;
-    (Some(rebalance(root)), minimum)
-}
-
-fn remove_node<K: Ord, V>(root: Link<K, V>, key: &K) -> RemoveResult<K, V> {
-    let Some(mut root) = root else {
-        return (None, None);
-    };
-    match key.cmp(&root.key) {
-        Ordering::Less => {
-            let (left, removed) = remove_node(root.left.take(), key);
-            root.left = left;
-            (Some(rebalance(root)), removed)
-        }
-        Ordering::Greater => {
-            let (right, removed) = remove_node(root.right.take(), key);
-            root.right = right;
-            (Some(rebalance(root)), removed)
-        }
-        Ordering::Equal => match (root.left.take(), root.right.take()) {
-            (None, right) => (right, Some(root)),
-            (left, None) => (left, Some(root)),
-            (Some(left), Some(right)) => {
-                let (right, mut successor) = extract_min(right);
-                core::mem::swap(&mut root.key, &mut successor.key);
-                core::mem::swap(&mut root.value, &mut successor.value);
-                root.left = Some(left);
-                root.right = right;
-                (Some(rebalance(root)), Some(successor))
+#[cfg(test)]
+impl<K: Ord + fmt::Debug, V> FallibleMap<K, V> {
+    /// @description 验证 host model test 需要的 order、height、balance 与 length 不变量。
+    /// @return 无返回值；任一结构不变量损坏时 fail-stop。
+    pub(crate) fn test_assert_invariants(&self) {
+        fn walk<'a, K: Ord + fmt::Debug, V>(
+            root: &'a Link<K, V>,
+            lower: Option<&'a K>,
+            upper: Option<&'a K>,
+        ) -> (u8, usize) {
+            let Some(root) = root else {
+                return (0, 0);
+            };
+            if let Some(lower) = lower {
+                assert!(lower < &root.key, "AVL lower ordering bound violated");
             }
-        },
+            if let Some(upper) = upper {
+                assert!(&root.key < upper, "AVL upper ordering bound violated");
+            }
+            let (left_height, left_len) = walk(&root.left, lower, Some(&root.key));
+            let (right_height, right_len) = walk(&root.right, Some(&root.key), upper);
+            assert!(
+                left_height.abs_diff(right_height) <= 1,
+                "AVL balance bound violated at {:?}",
+                root.key
+            );
+            let height = 1 + left_height.max(right_height);
+            assert!(root.height == height, "stale AVL height at {:?}", root.key);
+            (height, 1 + left_len + right_len)
+        }
+
+        let (_, structural_len) = walk(&self.root, None, None);
+        assert!(structural_len == self.len, "stale AVL map length");
+        assert!(
+            self.iter().count() == self.len,
+            "AVL iterator lost an entry"
+        );
     }
 }

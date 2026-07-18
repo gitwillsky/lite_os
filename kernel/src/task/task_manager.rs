@@ -1,7 +1,6 @@
 use core::sync::atomic::Ordering;
 
 use alloc::sync::Arc;
-use lazy_static::lazy_static;
 
 use crate::arch::context::KernelContext;
 use crate::{
@@ -9,7 +8,8 @@ use crate::{
     fallible_tree::{FallibleMap, VacantEntry},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
-        PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
+        PendingSignal, Processor, RunState, StopResume, TaskControlBlock, WaitMembership,
+        WaitResult,
         pid::{INIT_PID, PID_MAX, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
@@ -19,6 +19,8 @@ use crate::{
 
 pub(in crate::task) mod advisory_lock;
 mod affinity;
+mod console_batch;
+mod console_wait;
 mod context_switch;
 mod deferred;
 mod futex;
@@ -31,16 +33,21 @@ mod process_group;
 mod procfs;
 mod resource_limit;
 mod signal;
+mod snapshot_staging;
 mod terminal_access;
+mod thread_activation;
 mod thread_clone;
 mod thread_selector;
 pub(in crate::task) mod timer_queue;
 pub(in crate::task) mod vfork;
 mod wait_child;
 mod wait_key;
+mod wait_publication;
 mod wait_registry;
 
 pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
+pub(crate) use console_wait::{drain_terminal_input, wait_for_console};
+use console_wait::{process_terminal_input, wake_console_waiters};
 use context_switch::{prepare_current_block, schedule_with_task_context};
 pub(crate) use deferred::dispatch_pending_deferred_work;
 pub(in crate::task) use futex::futex_wake_with_key;
@@ -66,7 +73,7 @@ pub(crate) use process_group::{
 pub(in crate::task) use process_group::{current_process_group_is_orphaned, mark_process_exec};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
 pub(crate) use resource_limit::process_resource_limit;
-use resource_limit::{check_process_slot, enforce_cpu_limit};
+use resource_limit::{ProcessSlotSnapshot, enforce_cpu_limit};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
     SignalSendError, send_kernel_thread_signal, send_kernel_thread_signal_info,
@@ -74,7 +81,8 @@ pub(crate) use signal::{
 };
 use signal::{complete_process_stop, send_kernel_process_signal, send_process_group_signal};
 pub(crate) use terminal_access::{
-    TerminalAccessError, check_terminal_access, hangup_terminal, resize_terminal,
+    TerminalAccessError, check_terminal_access, hangup_terminal, publish_terminal_input_signals,
+    resize_terminal,
 };
 pub(crate) use thread_clone::{ThreadCloneError, clone_current_thread};
 pub(crate) use thread_selector::{parent_pid, thread_count};
@@ -154,7 +162,7 @@ fn try_allocate_task<E>(
 }
 
 impl TaskManager {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             graph: IrqMutex::new(ProcessGraph {
                 next_pid: INIT_PID + 1,
@@ -174,31 +182,26 @@ impl TaskManager {
         threads
             .try_insert(task.tid(), task.clone())
             .expect("init thread node allocation failed");
-        self.graph
-            .lock()
-            .nodes
-            .try_insert(
-                tgid,
-                ProcessNode {
-                    parent: None,
-                    parent_thread: None,
-                    session: INIT_PID,
-                    process_group: INIT_PID,
-                    has_execed: true,
-                    state: ProcessState::Live(threads),
-                    group_exit: None,
-                    job_control: JobControlState::Running,
-                    exit_effects: 0,
-                    child_events: ChildEvents::default(),
-                    child_waiters: FallibleMap::new(),
-                    child_wait_claim: None,
-                    vfork_parent: None,
-                },
-            )
-            .expect("init process node allocation failed")
-            .is_none()
-            .then_some(())
-            .expect("init inserted twice");
+        let process = FallibleMap::try_prepare(
+            tgid,
+            ProcessNode {
+                parent: None,
+                parent_thread: None,
+                session: INIT_PID,
+                process_group: INIT_PID,
+                has_execed: true,
+                state: ProcessState::Live(threads),
+                group_exit: None,
+                job_control: JobControlState::Running,
+                exit_effects: 0,
+                child_events: ChildEvents::default(),
+                child_waiters: FallibleMap::new(),
+                child_wait_claim: None,
+                vfork_parent: None,
+            },
+        )
+        .expect("init process node allocation failed");
+        self.graph.lock().nodes.commit_vacant(process);
         enqueue_new_task(task);
     }
 
@@ -217,29 +220,66 @@ impl TaskManager {
         tgid: usize,
         thread: Arc<TaskControlBlock>,
         prepared: VacantEntry<usize, Arc<TaskControlBlock>>,
-    ) -> bool {
+    ) {
         let mut graph = self.graph.lock();
         let node = graph
             .nodes
             .get_mut(&tgid)
             .expect("thread group missing from process graph");
-        let stopping = node.group_exit.is_none() && node.job_control != JobControlState::Running;
         let ProcessState::Live(threads) = &mut node.state else {
             panic!("cannot publish thread into exited process");
         };
         debug_assert_eq!(prepared.value().tid(), thread.tid());
         threads.commit_vacant(prepared);
-        if stopping {
-            crate::task::processor::request_task_stop(&thread);
+    }
+
+    /// @description best-effort TID store 完成后，把已发布 Thread 从 New 原子转为 Ready/Stopped。
+    fn activate_thread(&self, tgid: usize, thread: Arc<TaskControlBlock>) {
+        let graph = self.graph.lock();
+        let node = graph
+            .nodes
+            .get(&tgid)
+            .expect("published thread group disappeared before activation");
+        assert!(matches!(node.state, ProcessState::Live(_)));
+        let activation_state = match thread.scheduling.state.lock().run_state() {
+            RunState::New => thread_activation::PreActivationState::New,
+            RunState::Stopped {
+                resume: StopResume::New,
+            } => thread_activation::PreActivationState::StoppedNew,
+            _ => thread_activation::PreActivationState::Activated,
+        };
+        let decision = thread_activation::new_thread_activation(
+            activation_state,
+            node.group_exit.is_some(),
+            node.job_control == JobControlState::Running,
+        );
+        if decision.inherit_group_exit {
+            // begin_group_exit 的首轮 SIGKILL snapshot 可能早于 child publication；任何
+            // scheduler state 都必须继承该 consequence，parent-visible status 仍由 graph 决定。
+            thread
+                .queue_signal(core::iter::empty(), 9, PendingSignal::kernel())
+                .expect("kernel SIGKILL must be valid");
         }
-        stopping
+        match decision.transition {
+            thread_activation::ActivationTransition::None => {}
+            thread_activation::ActivationTransition::StopNew => {
+                crate::task::processor::request_task_stop(&thread);
+            }
+            thread_activation::ActivationTransition::ReadyNew => {
+                // graph owner 覆盖 job-control 决策到 Ready publication；否则并发 stop 可在
+                // New→Ready 间穿过，使 clone child 绕过 group stop。
+                enqueue_new_task(thread);
+            }
+            thread_activation::ActivationTransition::ResumeStoppedNew => {
+                crate::task::processor::continue_stopped_task(thread.clone());
+                enqueue_new_task(thread);
+            }
+        }
     }
 }
 
-lazy_static! {
-    // OWNER: task manager owns PID allocation, parent relation, live task/exit record and child waiter.
-    static ref TASK_MANAGER: TaskManager = TaskManager::new();
-}
+// OWNER: task manager owns PID allocation, parent relation, live task/exit record and child waiter.
+static TASK_MANAGER: TaskManager = TaskManager::new();
 
 /// @description 发布 kernel 创建的唯一 init task。
 ///
@@ -247,109 +287,6 @@ lazy_static! {
 /// @return 无返回值。
 pub(super) fn add_init_task(task: Arc<TaskControlBlock>) {
     TASK_MANAGER.add_init(task);
-}
-
-fn process_terminal_input() {
-    let terminal = {
-        let graph = TASK_MANAGER.graph.lock();
-        graph.nodes.values().find_map(|node| {
-            let ProcessState::Live(threads) = &node.state else {
-                return None;
-            };
-            threads.values().next().map(|task| task.terminal())
-        })
-    };
-    let Some(terminal) = terminal else {
-        return;
-    };
-    if drain_terminal_input(&terminal).is_err() {
-        debug!("TTY line discipline failed to drain UART input");
-    }
-}
-
-/// @description 将指定 Terminal 的 raw input 送入 line discipline 并投递 foreground signals。
-///
-/// @param terminal console OFD 与 Process 共享的唯一 TTY owner。
-/// @return drain 成功返回 `Ok(())`；设备或固定 queue 失败返回 `Err(())`。
-pub(crate) fn drain_terminal_input(terminal: &crate::fs::Terminal) -> Result<(), ()> {
-    let signals = terminal.drain_input().map_err(|_| ())?;
-    let Some(pgid) = terminal.signal_target_group() else {
-        return Ok(());
-    };
-    for signal in 1..=64 {
-        if signals & (1u64 << (signal - 1)) != 0 {
-            send_process_group_signal(pgid, signal);
-        }
-    }
-    Ok(())
-}
-
-/// @description 在统一 wait registry 中阻塞当前 console reader，封闭 read/enqueue IRQ race。
-///
-/// @param deadline VTIME 导出的 absolute monotonic deadline；无超时时为 None。
-/// @param input_ready 在 registry owner lock 内复查 UART ring 的短闭包。
-/// @return 输入已到达/IRQ 唤醒返回 `Woken`，到期返回 `TimedOut`，signal cancellation 返回 `Interrupted`。
-pub(crate) fn wait_for_console(
-    deadline: Option<u64>,
-    input_ready: impl FnOnce() -> bool,
-) -> WaitResult {
-    let task = current_task().expect("console wait requires current task");
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    if input_ready() {
-        return WaitResult::Woken;
-    }
-    if deadline.is_some_and(|value| value <= get_time_ns()) {
-        return WaitResult::TimedOut;
-    }
-    if task.has_deliverable_signal() {
-        return WaitResult::Interrupted;
-    }
-    let Ok(prepared) = queue.prepare_console(deadline, task.clone()) else {
-        return WaitResult::OutOfMemory;
-    };
-    prepare_current_block(&task, queue, move |queue, _| {
-        let wait_id = queue.commit(prepared);
-        WaitMembership::Console(wait_id)
-    })
-    .suspend()
-}
-
-fn wake_console_waiters() -> usize {
-    const INPUT: i16 = 0x001;
-    let mut waiters = FallibleMap::new();
-    let mut wake_groups = FallibleMap::new();
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
-    while let Some((entry, group)) = queue.take_console(false, INPUT, &wake_groups) {
-        if let Some(group) = group
-            && wake_groups.try_insert(group, ()).is_err()
-        {
-            waiters.commit_vacant(entry);
-            break;
-        }
-        waiters.commit_vacant(entry);
-    }
-    if let Some((entry, _)) = queue.take_console(true, INPUT, &wake_groups) {
-        waiters.commit_vacant(entry);
-    }
-    drop(queue);
-    let mut count = 0;
-    let mut waiters = waiters;
-    while let Some((&wait_id, _)) = waiters.first_key_value() {
-        let entry = waiters.remove(&wait_id).expect("staged console waiter");
-        let woke = match entry.kind {
-            IndexedWaitKind::Console => {
-                crate::task::processor::wake_console_task(entry.task, wait_id, WaitResult::Woken)
-            }
-            IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Woken)
-            }
-            _ => panic!("console index contains non-console wait"),
-        };
-        if woke {
-            count += 1;
-        }
-    }
-    count
 }
 
 /// @description 为一次 ppoll 在多个 I/O source index 上发布唯一 wait registration。
@@ -365,7 +302,9 @@ pub(crate) fn wait_for_poll(
 ) -> WaitResult {
     PollWaitKey::normalize(&mut keys);
     let task = current_task().expect("ppoll wait requires current task");
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+    let prepared = ticket.prepare_poll(keys, deadline, task.clone());
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if ready() {
         return WaitResult::Woken;
     }
@@ -375,7 +314,7 @@ pub(crate) fn wait_for_poll(
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let Ok(prepared) = queue.prepare_poll(keys, deadline, task.clone()) else {
+    let Ok(prepared) = prepared else {
         return WaitResult::OutOfMemory;
     };
     prepare_current_block(&task, queue, move |queue, _| {
@@ -404,7 +343,9 @@ pub(crate) fn wait_for_signal(
 ) -> Result<(usize, PendingSignal), SignalWaitError> {
     let task = current_task().expect("signal wait requires current task");
     loop {
-        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+        let prepared = ticket.prepare_signal(mask, deadline, task.clone());
+        let queue = INDEXED_WAIT_QUEUE.lock();
         if let Some(signal) = task.take_pending_signal(mask) {
             return Ok(signal);
         }
@@ -414,10 +355,8 @@ pub(crate) fn wait_for_signal(
         if task.has_deliverable_signal() {
             return Err(SignalWaitError::Interrupted);
         }
+        let prepared = prepared.map_err(|()| SignalWaitError::OutOfMemory)?;
 
-        let prepared = queue
-            .prepare_signal(mask, deadline, task.clone())
-            .map_err(|()| SignalWaitError::OutOfMemory)?;
         let result = prepare_current_block(&task, queue, move |queue, _| {
             let wait_id = queue.commit(prepared);
             WaitMembership::Signal(wait_id)
@@ -438,11 +377,13 @@ pub(crate) fn wait_for_signal(
 /// @return signal 发布后返回；pending signal 留给唯一 trap delivery path。
 pub(crate) fn wait_for_signal_delivery(deliverable_set: u64) -> WaitResult {
     let task = current_task().expect("signal delivery wait requires current task");
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+    let prepared = ticket.prepare_signal(deliverable_set, None, task.clone());
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if task.with_pending_signal(deliverable_set, || ()).is_some() {
         return WaitResult::Woken;
     }
-    let Ok(prepared) = queue.prepare_signal(deliverable_set, None, task.clone()) else {
+    let Ok(prepared) = prepared else {
         return WaitResult::OutOfMemory;
     };
     let result = prepare_current_block(&task, queue, move |queue, _| {
@@ -530,15 +471,17 @@ pub(crate) fn suspend_current_and_run_next() {
 /// @return task 被重新调度后返回 timeout 或 signal interruption 结果。
 fn block_current_until(deadline: u64) -> WaitResult {
     let task = current_task().expect("deadline wait requires current task");
+    let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+    let prepared = ticket.prepare_deadline(deadline, task.clone());
     // 1. wait owner lock 将 signal 复查与 membership 发布串行化，封闭 lost wakeup。
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    // 2. deep blocking seam 同时提交 runtime、发布 membership 并在切换前释放 registry owner。
-    let Ok(prepared) = queue.prepare_deadline(deadline, task.clone()) else {
+    let Ok(prepared) = prepared else {
         return WaitResult::OutOfMemory;
     };
+    // 2. deep blocking seam 同时提交 runtime、发布 membership 并在切换前释放 registry owner。
     prepare_current_block(&task, queue, move |queue, _| {
         let wait_id = queue.commit(prepared);
         WaitMembership::Deadline(wait_id)

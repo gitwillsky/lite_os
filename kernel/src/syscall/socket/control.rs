@@ -4,7 +4,7 @@ use super::{SocketAddress, encode_address, errno, interface_snapshot, socket_err
 use crate::{
     fs::{FileDescriptorError, OpenFileDescription},
     socket::{Socket, SocketDomain, UnixPassedFile, UnixRights},
-    task::TaskControlBlock,
+    task::{ReceivedFdTransaction, TaskControlBlock},
 };
 
 const CMSG_HEADER: usize = 16;
@@ -144,43 +144,50 @@ fn rights_capacity(remaining: usize, count: usize) -> usize {
     count.min(remaining.saturating_sub(CMSG_HEADER) / 4)
 }
 
-fn write_rights(
-    task: &TaskControlBlock,
-    pointer: usize,
+fn prepare_rights<'task>(
+    task: &'task TaskControlBlock,
     remaining: usize,
     rights: UnixRights,
     cloexec: bool,
-) -> (usize, bool) {
+) -> Result<(Option<ReceivedFdTransaction<'task>>, bool), isize> {
     let total = rights.len();
     let fit = rights_capacity(remaining, total);
     if fit == 0 {
         drop(rights);
-        return (0, true);
+        return Ok((None, true));
     }
-    let mut installed = 0;
+    let mut transaction = task.fd_prepare_received(fit).map_err(file_error)?;
+    let mut limit_truncated = false;
     for file in rights.into_files().into_iter().take(fit) {
         let file = Arc::downcast::<OpenFileDescription>(file.into_any())
             .expect("AF_UNIX rights contained a non-OFD capability");
-        let Ok(Some(descriptor)) = task.fd_reserve_received(file, cloexec) else {
-            break;
-        };
-        if task
-            .copy_to_user(
-                pointer + CMSG_HEADER + installed * 4,
-                &(descriptor as i32).to_ne_bytes(),
-            )
-            .is_err()
-        {
-            drop(task.fd_cancel_received(descriptor));
+        if !transaction.reserve(file, cloexec).map_err(file_error)? {
+            limit_truncated = true;
             break;
         }
-        task.fd_publish_received(descriptor);
-        installed += 1;
     }
-    if installed == 0 {
-        return (0, true);
+    let has_descriptors = !transaction.descriptors().is_empty();
+    let truncated = fit < total || limit_truncated;
+    Ok((has_descriptors.then_some(transaction), truncated))
+}
+
+fn write_rights(
+    task: &TaskControlBlock,
+    pointer: usize,
+    remaining: usize,
+    descriptors: &[usize],
+) -> Result<usize, isize> {
+    if descriptors.is_empty() {
+        return Ok(0);
     }
-    let cmsg_length = CMSG_HEADER + installed * 4;
+    for (index, &descriptor) in descriptors.iter().enumerate() {
+        task.copy_to_user(
+            pointer + CMSG_HEADER + index * 4,
+            &(descriptor as i32).to_ne_bytes(),
+        )
+        .map_err(|_| -errno::EFAULT)?;
+    }
+    let cmsg_length = CMSG_HEADER + descriptors.len() * 4;
     let space = align(cmsg_length)
         .expect("bounded SCM_RIGHTS length overflowed")
         .min(remaining);
@@ -188,10 +195,9 @@ fn write_rights(
     header[..8].copy_from_slice(&cmsg_length.to_ne_bytes());
     header[8..12].copy_from_slice(&SOL_SOCKET.to_ne_bytes());
     header[12..16].copy_from_slice(&SCM_RIGHTS.to_ne_bytes());
-    if task.copy_to_user(pointer, &header).is_err() {
-        return (0, true);
-    }
-    (space, installed < total)
+    task.copy_to_user(pointer, &header)
+        .map_err(|_| -errno::EFAULT)?;
+    Ok(space)
 }
 
 /// @description recvmsg ancillary ABI 的用户输出目标。
@@ -226,7 +232,7 @@ pub(super) struct ReceiveContent {
 /// @param target caller、msghdr 与 name/control user buffers。
 /// @param content backend source、packet info、rights 与 output flags。
 /// @return metadata 与 fd publication 成功。
-/// @errors copyout、fd limit 或 OOM 返回标准 errno。
+/// @errors copyout 或 transaction staging OOM 返回标准 errno；fd limit 通过 MSG_CTRUNC 报告。
 pub(super) fn write_receive(
     target: ReceiveTarget<'_>,
     content: ReceiveContent,
@@ -250,44 +256,57 @@ pub(super) fn write_receive(
     } else {
         0
     };
-    if name != 0 {
-        let (encoded, actual) = encode_address(source);
-        task.copy_to_user(name, &encoded[..actual.min(name_length)])
-            .map_err(|_| -errno::EFAULT)?;
-        task.copy_to_user(message + 8, &(actual as u32).to_ne_bytes())
-            .map_err(|_| -errno::EFAULT)?;
-    }
-    let mut written = 0usize;
-    if let Some(rights) = rights {
-        if control == 0 {
-            drop(rights);
-            output_flags |= MSG_CTRUNC;
-        } else {
-            let (count, truncated) = write_rights(task, control, control_length, rights, cloexec);
-            written += count;
-            if truncated {
+    let transaction = match rights {
+        Some(rights) if control != 0 => {
+            let (transaction, rights_truncated) =
+                prepare_rights(task, control_length, rights, cloexec)?;
+            if rights_truncated {
                 output_flags |= MSG_CTRUNC;
             }
+            transaction
         }
-    }
-    if packet_info && let Some(local) = local {
-        if control != 0 && control_length.saturating_sub(written) >= IP_PKTINFO_SPACE {
-            let mut packet_info = [0u8; IP_PKTINFO_SPACE];
-            packet_info[..8].copy_from_slice(&IP_PKTINFO_LENGTH.to_ne_bytes());
-            packet_info[8..12].copy_from_slice(&IPPROTO_IP.to_ne_bytes());
-            packet_info[12..16].copy_from_slice(&IP_PKTINFO.to_ne_bytes());
-            packet_info[16..20].copy_from_slice(&INTERFACE_INDEX.to_ne_bytes());
-            packet_info[20..24].copy_from_slice(&local.octets());
-            packet_info[24..28].copy_from_slice(&local.octets());
-            task.copy_to_user(control + written, &packet_info)
-                .map_err(|_| -errno::EFAULT)?;
-            written += IP_PKTINFO_SPACE;
-        } else {
+        Some(rights) => {
+            drop(rights);
             output_flags |= MSG_CTRUNC;
+            None
         }
-    }
-    task.copy_to_user(message + 40, &written.to_ne_bytes())
-        .map_err(|_| -errno::EFAULT)?;
-    task.copy_to_user(message + 48, &output_flags.to_ne_bytes())
-        .map_err(|_| -errno::EFAULT)
+        None => None,
+    };
+    super::receive_publication::after_copyout(
+        transaction,
+        |transaction| {
+            if name != 0 {
+                let (encoded, actual) = encode_address(source);
+                task.copy_to_user(name, &encoded[..actual.min(name_length)])
+                    .map_err(|_| -errno::EFAULT)?;
+                task.copy_to_user(message + 8, &(actual as u32).to_ne_bytes())
+                    .map_err(|_| -errno::EFAULT)?;
+            }
+            let mut written = 0usize;
+            if let Some(transaction) = transaction {
+                written = write_rights(task, control, control_length, transaction.descriptors())?;
+            }
+            if packet_info && let Some(local) = local {
+                if control != 0 && control_length.saturating_sub(written) >= IP_PKTINFO_SPACE {
+                    let mut packet_info = [0u8; IP_PKTINFO_SPACE];
+                    packet_info[..8].copy_from_slice(&IP_PKTINFO_LENGTH.to_ne_bytes());
+                    packet_info[8..12].copy_from_slice(&IPPROTO_IP.to_ne_bytes());
+                    packet_info[12..16].copy_from_slice(&IP_PKTINFO.to_ne_bytes());
+                    packet_info[16..20].copy_from_slice(&INTERFACE_INDEX.to_ne_bytes());
+                    packet_info[20..24].copy_from_slice(&local.octets());
+                    packet_info[24..28].copy_from_slice(&local.octets());
+                    task.copy_to_user(control + written, &packet_info)
+                        .map_err(|_| -errno::EFAULT)?;
+                    written += IP_PKTINFO_SPACE;
+                } else {
+                    output_flags |= MSG_CTRUNC;
+                }
+            }
+            task.copy_to_user(message + 40, &written.to_ne_bytes())
+                .map_err(|_| -errno::EFAULT)?;
+            task.copy_to_user(message + 48, &output_flags.to_ne_bytes())
+                .map_err(|_| -errno::EFAULT)
+        },
+        ReceivedFdTransaction::publish,
+    )
 }

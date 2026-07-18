@@ -6,6 +6,7 @@ mod devices;
 mod discovery;
 mod firmware;
 mod plic;
+mod plic_policy;
 
 pub(crate) use devices::{handle_external_interrupt, initialize as initialize_devices};
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};

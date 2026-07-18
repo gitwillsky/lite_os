@@ -98,7 +98,12 @@ pub(super) fn tty_ioctl(
             if task.copy_from_user(argument, &mut termios).is_err() {
                 return -errno::EFAULT;
             }
-            terminal.set_termios(termios);
+            match request {
+                TCSETS => terminal.set_termios(termios),
+                TCSETSW => terminal.set_termios_after_output(termios),
+                TCSETSF => terminal.flush_input_and_set_termios(termios),
+                _ => unreachable!(),
+            }
             0
         }
         TIOCSCTTY => claim_controlling_terminal(terminal, argument).map_or_else(tty_error, |()| 0),

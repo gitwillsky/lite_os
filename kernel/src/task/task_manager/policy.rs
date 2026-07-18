@@ -63,32 +63,52 @@ fn nice_targets(
         targets.push(target);
         return Ok(targets);
     }
-    let graph = TASK_MANAGER.graph.lock();
-    let selected_group = match selector {
-        SchedulerNiceSelector::Group(0) => {
-            let Some(node) = graph.nodes.get(&caller.tgid()) else {
-                return Ok(Vec::new());
-            };
-            Some(node.process_group)
-        }
-        SchedulerNiceSelector::Group(group) => Some(group as usize),
-        SchedulerNiceSelector::Process(_) | SchedulerNiceSelector::User(_) => None,
-    };
     let mut candidates = Vec::new();
-    for node in graph
-        .nodes
-        .values()
-        .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
-    {
-        let ProcessState::Live(threads) = &node.state else {
-            continue;
+    loop {
+        let graph = TASK_MANAGER.graph.lock();
+        let selected_group = match selector {
+            SchedulerNiceSelector::Group(0) => {
+                let Some(node) = graph.nodes.get(&caller.tgid()) else {
+                    return Ok(Vec::new());
+                };
+                Some(node.process_group)
+            }
+            SchedulerNiceSelector::Group(group) => Some(group as usize),
+            SchedulerNiceSelector::Process(_) | SchedulerNiceSelector::User(_) => None,
         };
-        candidates
-            .try_reserve(threads.len())
-            .map_err(|_| SchedulerPolicyError::OutOfMemory)?;
-        candidates.extend(threads.values().cloned());
+        let required = graph
+            .nodes
+            .values()
+            .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
+            .try_fold(0usize, |count, node| match &node.state {
+                ProcessState::Live(threads) => count.checked_add(threads.len()).ok_or(()),
+                ProcessState::Exited(_) => Ok(count),
+            })
+            .map_err(|()| SchedulerPolicyError::OutOfMemory)?;
+        match super::snapshot_staging::snapshot_capacity(candidates.capacity(), required) {
+            super::snapshot_staging::SnapshotCapacity::Retry { minimum } => {
+                drop(graph);
+                candidates.clear();
+                candidates
+                    .try_reserve_exact(minimum)
+                    .map_err(|_| SchedulerPolicyError::OutOfMemory)?;
+            }
+            super::snapshot_staging::SnapshotCapacity::Capture => {
+                candidates.clear();
+                for node in graph
+                    .nodes
+                    .values()
+                    .filter(|node| selected_group.is_none_or(|group| node.process_group == group))
+                {
+                    let ProcessState::Live(threads) = &node.state else {
+                        continue;
+                    };
+                    candidates.extend(threads.values().cloned());
+                }
+                break;
+            }
+        }
     }
-    drop(graph);
     let SchedulerNiceSelector::User(requested_uid) = selector else {
         return Ok(candidates);
     };

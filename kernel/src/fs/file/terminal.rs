@@ -3,6 +3,14 @@ use spin::Mutex;
 
 use super::{Console, DeviceKind, FileSystemError};
 
+mod input_batch;
+pub(crate) use input_batch::{TERMINAL_INPUT_BATCH_BYTES, character_write_chunk};
+use input_batch::{TerminalInputBatch, terminal_input_chunk};
+
+#[path = "terminal_flush.rs"]
+mod terminal_flush;
+pub(in crate::fs) use terminal_flush::clear_raw as clear_terminal_raw_input;
+
 const KERNEL_TERMIOS_SIZE: usize = 36;
 const TERMINAL_INPUT_CAPACITY: usize = 4096;
 const TERMINAL_LINE_CAPACITY: usize = 1024;
@@ -211,10 +219,22 @@ impl Terminal {
         self.state.lock().input_generation
     }
 
+    /// @description 在 Terminal→Console 唯一锁序下同步写出一批 terminal output。
+    /// @param bytes kernel-owned output bytes。
+    /// @return Console 已同步接收的 input byte 数。
+    /// @errors Console adapter 写失败时返回 `IoError`。
     pub(crate) fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
+        let state = self.state.lock();
+        let result = self.write_synchronous(bytes, state.output_flags());
+        // TCSETSW/TCSETSF 取得同一 state lock 后，所有更早进入的同步 output 必已返回。
+        drop(state);
+        result
+    }
+
+    fn write_synchronous(&self, bytes: &[u8], output_flags: u32) -> Result<usize, FileSystemError> {
         const OPOST: u32 = 0x1;
         const ONLCR: u32 = 0x4;
-        if self.state.lock().output_flags() & (OPOST | ONLCR) != (OPOST | ONLCR) {
+        if output_flags & (OPOST | ONLCR) != (OPOST | ONLCR) {
             return self.console.write(bytes);
         }
         let mut consumed = 0;
@@ -242,9 +262,9 @@ impl Terminal {
 
     /// @description 在 deferred context 将 UART raw ring 唯一转换进 termios line discipline。
     ///
-    /// @return 本批输入生成的 Linux signal bitset。
+    /// @return 本批输入生成的 Linux signal bitset，以及 raw ring 是否仍有 backlog。
     /// @errors 底层 UART 读写失败或固定 cooked queue 已满时返回 `IoError`。
-    pub(crate) fn drain_input(&self) -> Result<u64, FileSystemError> {
+    pub(crate) fn drain_input(&self) -> Result<TerminalInputBatch, FileSystemError> {
         const IGNCR: u32 = 0x80;
         const ICRNL: u32 = 0x100;
         const INLCR: u32 = 0x40;
@@ -255,16 +275,26 @@ impl Terminal {
         const ECHONL: u32 = 0x40;
         const ECHOCTL: u32 = 0x200;
         let mut signals = 0u64;
+        let mut consumed = 0usize;
         let mut raw = [0u8; 128];
-        loop {
-            let count = self.console.read(&mut raw)?;
-            if count == 0 {
-                return Ok(signals);
-            }
+        while consumed < TERMINAL_INPUT_BATCH_BYTES {
             let mut echo = [0u8; 512];
-            let mut echo_len = 0;
             {
                 let mut state = self.state.lock();
+                let capacity = terminal_input_chunk(consumed, raw.len());
+                let count = self.console.read(&mut raw[..capacity])?;
+                if count == 0 {
+                    return Ok(TerminalInputBatch {
+                        signals,
+                        backlog: false,
+                    });
+                }
+                assert!(
+                    count <= raw.len(),
+                    "console returned more bytes than requested"
+                );
+                consumed += count;
+                let mut echo_len = 0;
                 for mut byte in raw[..count].iter().copied() {
                     let input_flags = state.input_flags();
                     let local_flags = state.local_flags();
@@ -349,11 +379,17 @@ impl Terminal {
                         echo_len += 1;
                     }
                 }
-            }
-            if echo_len != 0 && self.write(&echo[..echo_len])? != echo_len {
-                return Err(FileSystemError::IoError);
+                if echo_len != 0
+                    && self.write_synchronous(&echo[..echo_len], state.output_flags())? != echo_len
+                {
+                    return Err(FileSystemError::IoError);
+                }
             }
         }
+        Ok(TerminalInputBatch {
+            signals,
+            backlog: self.console.input_ready(),
+        })
     }
 
     /// @description 根据 controlling session、foreground group 与 TOSTOP 决定后台访问 signal。
@@ -395,6 +431,35 @@ impl Terminal {
 
     pub(crate) fn set_termios(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
         self.state.lock().termios = termios;
+    }
+
+    /// @description 在当前同步 Console output contract 的 drain point 应用 termios。
+    /// @param termios 完整 Linux kernel termios layout。
+    /// @return 无返回值；Console::write 返回后 Terminal 不保留待发送 output，因此无需等待队列。
+    pub(crate) fn set_termios_after_output(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
+        self.state.lock().termios = termios;
+    }
+
+    /// @description 在同步 output drain point 丢弃 raw/cooked input 后应用 termios。
+    /// @param termios 完整 Linux kernel termios layout。
+    /// @return 无返回值；termios 已应用且所有调用前 pending input 已不可见。
+    pub(crate) fn flush_input_and_set_termios(&self, termios: [u8; KERNEL_TERMIOS_SIZE]) {
+        // 与 drain_input 使用同一 Terminal→Console lock order，使 raw dequeue、cooked publication
+        // 与本次 flush 可以线性化；缺失该顺序会让已经从 raw ring 取出的旧字节越过 TCSETSF。
+        let mut state = self.state.lock();
+        let raw = self.console.discard_input();
+        let TerminalState {
+            input_head,
+            input_len,
+            line_len,
+            eof_pending,
+            ..
+        } = &mut *state;
+        let cooked = terminal_flush::clear_pending(input_head, input_len, line_len, eof_pending);
+        state.termios = termios;
+        if raw != 0 || cooked {
+            state.input_generation = crate::sync::next_readiness_generation();
+        }
     }
 
     pub(crate) fn window_size(&self) -> [u8; 8] {

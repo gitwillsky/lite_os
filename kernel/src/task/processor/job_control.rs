@@ -70,7 +70,9 @@ pub(in crate::task) fn request_task_stop(task: &Arc<TaskControlBlock>) {
         match scheduling.run_state() {
             RunState::New => {
                 scheduling.replace_non_ready_state(RunState::Stopped {
-                    resume: StopResume::Runnable,
+                    // clone SETTID protocol 尚未最终激活；SIGCONT 只能恢复 New，提前
+                    // enqueue 会让 child 在 parent 完成 best-effort stores 前运行。
+                    resume: StopResume::New,
                 });
                 None
             }
@@ -128,6 +130,12 @@ pub(in crate::task) fn continue_stopped_task(task: Arc<TaskControlBlock>) {
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
         match scheduling.run_state() {
+            RunState::Stopped {
+                resume: StopResume::New,
+            } => {
+                scheduling.replace_non_ready_state(RunState::New);
+                None
+            }
             RunState::Stopped {
                 resume: StopResume::Runnable,
             } => {

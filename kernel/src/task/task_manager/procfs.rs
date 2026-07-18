@@ -13,6 +13,91 @@ use crate::{
 
 use super::{ProcessState, TASK_MANAGER};
 
+struct ProcessSnapshotRow {
+    pid: usize,
+    ppid: usize,
+    process_group: usize,
+    session: usize,
+    representative: alloc::sync::Arc<crate::task::TaskControlBlock>,
+    threads: core::ops::Range<usize>,
+}
+
+type GraphSnapshotRows = (
+    alloc::vec::Vec<ProcessSnapshotRow>,
+    alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>>,
+    usize,
+    u64,
+);
+
+fn graph_snapshot_rows() -> Result<GraphSnapshotRows, crate::fs::FileSystemError> {
+    let (mut row_capacity, mut thread_capacity) = {
+        let graph = TASK_MANAGER.graph.lock();
+        graph.nodes.values().fold((0usize, 0usize), |counts, node| {
+            let ProcessState::Live(threads) = &node.state else {
+                return counts;
+            };
+            (
+                counts.0 + usize::from(!threads.is_empty()),
+                counts.1 + threads.len(),
+            )
+        })
+    };
+    loop {
+        // 1. 两个 Vec 的全部 backing storage 都在 graph IrqMutex 外准备；重试只丢弃未发布 Arc clone。
+        let mut rows = alloc::vec::Vec::new();
+        rows.try_reserve_exact(row_capacity)
+            .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+        let mut tasks = alloc::vec::Vec::new();
+        tasks
+            .try_reserve_exact(thread_capacity)
+            .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+
+        let graph = TASK_MANAGER.graph.lock();
+        let (required_rows, required_threads) =
+            graph.nodes.values().fold((0usize, 0usize), |counts, node| {
+                let ProcessState::Live(threads) = &node.state else {
+                    return counts;
+                };
+                (
+                    counts.0 + usize::from(!threads.is_empty()),
+                    counts.1 + threads.len(),
+                )
+            });
+        if required_rows > rows.capacity() || required_threads > tasks.capacity() {
+            row_capacity = required_rows;
+            thread_capacity = required_threads;
+            drop(graph);
+            continue;
+        }
+
+        // 2. 容量验证与 Arc/关系快照处于同一次 graph linearization；push/extend 已证明不会增长。
+        for (&pid, node) in &graph.nodes {
+            let ProcessState::Live(threads) = &node.state else {
+                continue;
+            };
+            let Some(representative) = threads.values().next() else {
+                continue;
+            };
+            let start = tasks.len();
+            tasks.extend(threads.values().cloned());
+            rows.push(ProcessSnapshotRow {
+                pid,
+                ppid: node.parent.unwrap_or(0),
+                process_group: node.process_group,
+                session: node.session,
+                representative: representative.clone(),
+                threads: start..tasks.len(),
+            });
+        }
+        return Ok((
+            rows,
+            tasks,
+            graph.next_pid.saturating_sub(1),
+            graph.processes_created,
+        ));
+    }
+}
+
 /// @description task façade 对外提供的系统运行状态快照，不拥有任何统计状态。
 pub(crate) struct SystemInfoSnapshot {
     /// 自启动起的 monotonic 微秒数。
@@ -101,39 +186,8 @@ impl ProcSource for KernelProcSource {
 fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
     let uptime_us = get_time_us();
     let current = current_task();
-    // 1. graph lock 内只复制关系元数据与 Arc；后续不得带 graph lock 获取 task 内部锁。
-    let (rows, last_pid, processes_created) = {
-        let graph = TASK_MANAGER.graph.lock();
-        let mut rows = alloc::vec::Vec::new();
-        rows.try_reserve_exact(graph.nodes.len())
-            .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-        for (&pid, node) in &graph.nodes {
-            let ProcessState::Live(threads) = &node.state else {
-                continue;
-            };
-            let Some(representative) = threads.values().next() else {
-                continue;
-            };
-            let mut thread_rows = alloc::vec::Vec::new();
-            thread_rows
-                .try_reserve_exact(threads.len())
-                .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-            thread_rows.extend(threads.values().cloned());
-            rows.push((
-                pid,
-                node.parent.unwrap_or(0),
-                node.process_group,
-                node.session,
-                representative.clone(),
-                thread_rows,
-            ));
-        }
-        (
-            rows,
-            graph.next_pid.saturating_sub(1),
-            graph.processes_created,
-        )
-    };
+    // graph lock 内只做已预留 Vec 的关系/Arc 快照；后续不得带 graph lock 获取 task 内部锁。
+    let (rows, tasks, last_pid, processes_created) = graph_snapshot_rows()?;
 
     // 2. 聚合每个 live thread 的 scheduler 状态；Process 级内存只从 representative 读取一次。
     let mut runnable_tasks = 0;
@@ -142,12 +196,21 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
     processes
         .try_reserve_exact(rows.len())
         .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-    for (pid, ppid, process_group, session, representative, threads) in rows {
+    for row in rows {
+        let ProcessSnapshotRow {
+            pid,
+            ppid,
+            process_group,
+            session,
+            representative,
+            threads,
+        } = row;
+        let threads = &tasks[threads];
         let mut thread_snapshots = alloc::vec::Vec::new();
         thread_snapshots
             .try_reserve_exact(threads.len())
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-        for thread in &threads {
+        for thread in threads {
             total_tasks += 1;
             let run_state = thread.scheduling.state.lock().run_state();
             let runnable = matches!(

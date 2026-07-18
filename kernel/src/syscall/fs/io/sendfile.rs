@@ -103,36 +103,17 @@ fn copy_from_shared_offset(
     count: usize,
 ) -> isize {
     if Arc::ptr_eq(input_ofd, output_ofd) {
-        let position = *input_ofd.offset.lock();
+        let position = input_ofd.position_snapshot();
         return if count == 0 || position >= input.size() {
             0
         } else {
             -errno::EINVAL
         };
     }
-    if Arc::as_ptr(input_ofd) < Arc::as_ptr(output_ofd) {
-        let mut input_position = input_ofd.offset.lock();
-        let mut output_position = output_ofd.offset.lock();
-        copy_regular_file(
-            task,
-            input,
-            output,
-            &mut input_position,
-            &mut output_position,
-            count,
-        )
-    } else {
-        let mut output_position = output_ofd.offset.lock();
-        let mut input_position = input_ofd.offset.lock();
-        copy_regular_file(
-            task,
-            input,
-            output,
-            &mut input_position,
-            &mut output_position,
-            count,
-        )
-    }
+    OpenFileDescription::with_positions(input_ofd, output_ofd, |input_position, output_position| {
+        copy_regular_file(task, input, output, input_position, output_position, count)
+    })
+    .expect("distinct OFDs must own distinct file positions")
 }
 
 /// @description 完成 descriptor 校验并执行 regular-file 到 regular-file copy。
@@ -193,15 +174,16 @@ fn do_sendfile(
     let Some(input_position) = input_position else {
         return copy_from_shared_offset(task, &input_ofd, &output_ofd, &input, &output, count);
     };
-    let mut output_position = output_ofd.offset.lock();
-    copy_regular_file(
-        task,
-        &input,
-        &output,
-        input_position,
-        &mut output_position,
-        count,
-    )
+    output_ofd.with_position(|output_position| {
+        copy_regular_file(
+            task,
+            &input,
+            &output,
+            input_position,
+            output_position,
+            count,
+        )
+    })
 }
 
 /// @description 实现 Linux/riscv64 `sendfile` 的 regular-file 到 regular-file 数据路径。

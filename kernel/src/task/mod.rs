@@ -18,9 +18,10 @@ pub(crate) use memory_barrier::{
 };
 pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use model::{
-    CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
-    ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalStack, SignalStackError,
-    StopResume, StopTransition, TaskControlBlock, WaitMembership, WaitResult,
+    CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC,
+    ReceivedFdTransaction, ResourceLimit, ResourceLimitError, RunState, SignalAction,
+    SignalDelivery, SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
+    WaitMembership, WaitResult,
 };
 pub(crate) use processor::*;
 pub(crate) use task_manager::advisory_lock::{

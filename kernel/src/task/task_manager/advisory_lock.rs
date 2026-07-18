@@ -2,7 +2,8 @@ use super::wait_registry::IndexedWaitEntry;
 use super::*;
 use crate::fs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,
-    AdvisoryLockNotifier, OpenFileDescription, RecordLockMode, RecordLockRange, vfs,
+    AdvisoryLockNotifier, OpenFileDescription, PreparedAdvisoryLock, PreparedLockAttempt,
+    PreparedRecordLock, RecordLockMode, RecordLockRange, vfs,
 };
 
 struct TaskAdvisoryLockNotifier;
@@ -63,18 +64,33 @@ pub(super) fn interrupt_waiter(entry: IndexedWaitEntry, wait_id: u64, membership
 
 /// @description 在统一 indexed wait owner 中执行任一种 inode advisory-lock 的阻塞竞争。
 ///
-/// @param attempt 在 registry lock 内复查并尝试提交 lock 的无阻塞 closure。
+/// @param transaction 持有稳定 inode identity 与全部锁外 staging storage。
+/// @param reserve_storage 仅在没有 registry/VFS owner guard 时扩充 transaction。
+/// @param attempt 在 registry→VFS 固定锁序内只复查并无分配提交的 closure。
 /// @return 成功时 lock 已提交；signal、容量、backend 或 metadata 错误明确返回。
-fn wait_for_file_lock(
-    mut attempt: impl FnMut() -> Result<AdvisoryLockAttempt, AdvisoryLockError>,
+fn wait_for_file_lock<Prepared>(
+    mut transaction: Prepared,
+    mut reserve_storage: impl FnMut(&mut Prepared) -> Result<(), AdvisoryLockError>,
+    mut attempt: impl FnMut(&mut Prepared) -> Result<PreparedLockAttempt, AdvisoryLockError>,
 ) -> Result<(), AdvisoryLockWaitError> {
     let task = current_task().expect("file-lock wait requires current task");
     loop {
         // wait-registry → VFS lock-table 是唯一锁序。release 先放开 VFS table 再经 notifier
         // 获取 registry，因此 unlock 不可能落在 conflict recheck 与 membership publication 之间。
         let mut queue = INDEXED_WAIT_QUEUE.lock();
-        let attempt = attempt()?;
-        let (key, wake_waiters) = match attempt {
+        let ticket = queue.allocate_ticket();
+        let first_attempt = loop {
+            match attempt(&mut transaction)? {
+                PreparedLockAttempt::Complete(attempt) => break attempt,
+                PreparedLockAttempt::NeedsStorage => {
+                    // transaction 尚未修改 VFS state；解锁后扩容再从同一 owner 重新验证。
+                    drop(queue);
+                    reserve_storage(&mut transaction)?;
+                    queue = INDEXED_WAIT_QUEUE.lock();
+                }
+            }
+        };
+        let (key, wake_waiters) = match first_attempt {
             AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
                 drop(queue);
                 if wake_waiters {
@@ -84,23 +100,92 @@ fn wait_for_file_lock(
             }
             AdvisoryLockAttempt::Blocked { key, wake_waiters } => (key, wake_waiters),
         };
+        drop(queue);
+        if wake_waiters {
+            vfs().notify_advisory_lock(key);
+        }
+        let wait = match ticket.prepare_advisory_lock(key, task.clone()) {
+            Ok(wait) => wait,
+            Err(()) => {
+                let mut queue = INDEXED_WAIT_QUEUE.lock();
+                let attempt = loop {
+                    match attempt(&mut transaction)? {
+                        PreparedLockAttempt::Complete(attempt) => break attempt,
+                        PreparedLockAttempt::NeedsStorage => {
+                            drop(queue);
+                            reserve_storage(&mut transaction)?;
+                            queue = INDEXED_WAIT_QUEUE.lock();
+                        }
+                    }
+                };
+                let interrupted = task.has_deliverable_signal();
+                drop(queue);
+                match attempt {
+                    AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
+                        if wake_waiters {
+                            vfs().notify_advisory_lock(key);
+                        }
+                        return Ok(());
+                    }
+                    AdvisoryLockAttempt::Blocked { key, wake_waiters } => {
+                        if wake_waiters {
+                            vfs().notify_advisory_lock(key);
+                        }
+                        return Err(if interrupted {
+                            AdvisoryLockWaitError::Interrupted
+                        } else {
+                            AdvisoryLockWaitError::NoLocks
+                        });
+                    }
+                }
+            }
+        };
+
+        // staging 后必须在原锁序内再次竞争；key 改变或已经成功时丢弃未发布节点并重试/返回。
+        let mut queue = INDEXED_WAIT_QUEUE.lock();
+        let attempt = loop {
+            match attempt(&mut transaction)? {
+                PreparedLockAttempt::Complete(attempt) => break attempt,
+                PreparedLockAttempt::NeedsStorage => {
+                    drop(queue);
+                    reserve_storage(&mut transaction)?;
+                    queue = INDEXED_WAIT_QUEUE.lock();
+                }
+            }
+        };
+        let (confirmed_key, wake_waiters) = match attempt {
+            AdvisoryLockAttempt::Acquired { key, wake_waiters } => {
+                drop(queue);
+                drop(wait);
+                if wake_waiters {
+                    vfs().notify_advisory_lock(key);
+                }
+                return Ok(());
+            }
+            AdvisoryLockAttempt::Blocked { key, wake_waiters } => (key, wake_waiters),
+        };
+        if confirmed_key != key {
+            drop(queue);
+            drop(wait);
+            if wake_waiters {
+                vfs().notify_advisory_lock(confirmed_key);
+            }
+            continue;
+        }
         if task.has_deliverable_signal() {
             drop(queue);
             if wake_waiters {
-                vfs().notify_advisory_lock(key);
+                vfs().notify_advisory_lock(confirmed_key);
             }
             return Err(AdvisoryLockWaitError::Interrupted);
         }
-        let wait = queue
-            .prepare_advisory_lock(key, task.clone())
-            .map_err(|()| AdvisoryLockWaitError::NoLocks)?;
         let prepared =
             super::context_switch::prepare_current_block(&task, queue, move |queue, _| {
                 let wait_id = queue.commit(wait);
                 WaitMembership::AdvisoryLock(wait_id)
             });
         if wake_waiters {
-            vfs().notify_advisory_lock(key);
+            vfs().notify_advisory_lock(confirmed_key);
         }
         match prepared.suspend() {
             WaitResult::Woken => {}
@@ -120,7 +205,12 @@ pub(crate) fn wait_for_advisory_lock(
     ofd: &Arc<OpenFileDescription>,
     mode: AdvisoryLockMode,
 ) -> Result<(), AdvisoryLockWaitError> {
-    wait_for_file_lock(|| vfs().try_advisory_lock(ofd, mode))
+    let transaction: PreparedAdvisoryLock = vfs().prepare_advisory_lock(ofd, mode)?;
+    wait_for_file_lock(
+        transaction,
+        |transaction| vfs().reserve_advisory_lock_storage(transaction),
+        |transaction| Ok(vfs().try_prepared_advisory_lock(transaction)),
+    )
 }
 
 /// @description 无丢失唤醒地阻塞到 calling Process 取得 POSIX byte-range lock。
@@ -136,5 +226,11 @@ pub(crate) fn wait_for_record_lock(
     mode: RecordLockMode,
     range: RecordLockRange,
 ) -> Result<(), AdvisoryLockWaitError> {
-    wait_for_file_lock(|| vfs().try_record_lock(ofd, owner, Some(mode), range))
+    let transaction: PreparedRecordLock =
+        vfs().prepare_record_lock(ofd, owner, Some(mode), range)?;
+    wait_for_file_lock(
+        transaction,
+        |transaction| vfs().reserve_record_lock_storage(transaction),
+        |transaction| vfs().try_prepared_record_lock(transaction),
+    )
 }

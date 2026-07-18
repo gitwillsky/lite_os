@@ -142,7 +142,7 @@ impl CharacterDevice {
                     events & Self::OUTPUT
                 } else {
                     0
-                }) | if terminal.wait_ready() {
+                }) | if terminal.input_ready() {
                     events & Self::INPUT
                 } else {
                     0

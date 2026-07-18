@@ -1,5 +1,13 @@
 use crate::fallible_tree::FallibleMap;
 
+mod period;
+mod posix_creation;
+mod preparation;
+mod preparation_policy;
+use period::next_period;
+use preparation::{PreparedPosixCreate, PreparedPosixReplacement, PreparedRealReplacement};
+use preparation_policy::{TimerReplacementNeeds, posix_deadline_needed, real_replacement_needs};
+
 #[derive(Clone, Copy)]
 struct RealTimer {
     next_expiration_ns: Option<u64>,
@@ -106,7 +114,7 @@ pub(super) struct TimerQueue {
 }
 
 impl TimerQueue {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             real_timers: FallibleMap::new(),
             posix_timers: FallibleMap::new(),
@@ -163,36 +171,29 @@ impl TimerQueue {
         }
     }
 
-    pub(super) fn replace_real(
+    fn replace_real(
         &mut self,
-        tgid: usize,
-        value_ns: u64,
-        interval_ns: u64,
+        prepared: PreparedRealReplacement,
         now_ns: u64,
-    ) -> Result<TimerSetting, TimerError> {
-        let next = (value_ns != 0).then(|| now_ns.saturating_add(value_ns));
-        let replacement = (next.is_some() || interval_ns != 0).then_some(RealTimer {
-            next_expiration_ns: next,
-            interval_ns,
-        });
+    ) -> Option<TimerSetting> {
+        let PreparedRealReplacement {
+            tgid,
+            replacement,
+            timer_node,
+            deadline_node,
+        } = prepared;
+        let next = replacement.and_then(|timer| timer.next_expiration_ns);
         let current = self.real_timers.get(&tgid).copied();
-        let prepared_timer = if current.is_none() {
-            replacement
-                .map(|timer| FallibleMap::try_prepare(tgid, timer))
-                .transpose()
-                .map_err(|_| TimerError::OutOfMemory)?
-        } else {
-            None
-        };
+        let needs = real_replacement_needs(
+            current.is_some(),
+            current.is_some_and(|timer| timer.next_expiration_ns.is_some()),
+            replacement.is_some(),
+            next.is_some(),
+        );
+        if needs.record && timer_node.is_none() || needs.deadline && deadline_node.is_none() {
+            return None;
+        }
         let identity = TimerIdentity::Real(tgid);
-        let prepared_deadline = if current.and_then(|timer| timer.next_expiration_ns).is_none() {
-            next.map(|expiration| FallibleMap::try_prepare((expiration, identity), ()))
-                .transpose()
-                .map_err(|_| TimerError::OutOfMemory)?
-        } else {
-            None
-        };
-
         let previous = current.map_or(
             TimerSetting {
                 remaining_ns: 0,
@@ -213,7 +214,7 @@ impl TimerQueue {
                     *current = timer;
                 } else {
                     self.real_timers
-                        .commit_vacant(prepared_timer.expect("new real timer node not prepared"));
+                        .commit_vacant(timer_node.expect("new real timer node not prepared"));
                 }
             }
             None => {
@@ -225,11 +226,13 @@ impl TimerQueue {
                 entry.set_key((expiration, identity));
                 entry
             } else {
-                prepared_deadline.expect("new real deadline node not prepared")
+                let mut entry = deadline_node.expect("new real deadline node not prepared");
+                entry.set_key((expiration, identity));
+                entry
             };
             self.deadline_index.commit_vacant(entry);
         }
-        Ok(previous)
+        Some(previous)
     }
 
     pub(super) fn real(&self, tgid: usize, now_ns: u64) -> TimerSetting {
@@ -242,45 +245,39 @@ impl TimerQueue {
         )
     }
 
-    pub(super) fn create_posix(
-        &mut self,
+    fn real_replacement_needs(
+        &self,
         tgid: usize,
-        clock: PosixTimerClock,
-        notification: PosixTimerNotification,
-    ) -> Result<i32, TimerError> {
-        let mut id = 0i32;
-        while self.posix_timers.contains_key(&(tgid, id)) {
-            id = id.checked_add(1).ok_or(TimerError::Exhausted)?;
-        }
-        let timer = PosixTimer {
-            clock,
-            notification,
-            next_expiration_ns: None,
-            interval_ns: 0,
-            overrun: 0,
-        };
-        let prepared =
-            FallibleMap::try_prepare((tgid, id), timer).map_err(|_| TimerError::OutOfMemory)?;
-        self.posix_timers.commit_vacant(prepared);
-        Ok(id)
+        replacement_record: bool,
+        replacement_deadline: bool,
+    ) -> TimerReplacementNeeds {
+        let current = self.real_timers.get(&tgid).copied();
+        real_replacement_needs(
+            current.is_some(),
+            current.is_some_and(|timer| timer.next_expiration_ns.is_some()),
+            replacement_record,
+            replacement_deadline,
+        )
     }
 
-    pub(super) fn replace_posix(
+    fn replace_posix(
         &mut self,
-        tgid: usize,
-        id: i32,
-        value_ns: u64,
-        interval_ns: u64,
-        absolute: bool,
+        prepared: PreparedPosixReplacement,
         now_ns: u64,
-    ) -> Result<TimerSetting, TimerError> {
-        let key = (tgid, id);
+    ) -> Result<Option<TimerSetting>, TimerError> {
+        let PreparedPosixReplacement {
+            key,
+            value_ns,
+            interval_ns,
+            absolute,
+            deadline_node,
+        } = prepared;
         let current = self
             .posix_timers
             .get(&key)
             .copied()
             .ok_or(TimerError::NotFound)?;
-        let identity = TimerIdentity::Posix(tgid, id);
+        let identity = TimerIdentity::Posix(key.0, key.1);
         let next = (value_ns != 0).then(|| {
             if !absolute {
                 now_ns.saturating_add(value_ns)
@@ -290,13 +287,11 @@ impl TimerQueue {
                 value_ns
             }
         });
-        let prepared_deadline = if current.next_expiration_ns.is_none() {
-            next.map(|expiration| FallibleMap::try_prepare((expiration, identity), ()))
-                .transpose()
-                .map_err(|_| TimerError::OutOfMemory)?
-        } else {
-            None
-        };
+        if posix_deadline_needed(current.next_expiration_ns.is_some(), next.is_some())
+            && deadline_node.is_none()
+        {
+            return Ok(None);
+        }
         let mut deadline = current.next_expiration_ns.map(|expiration| {
             self.deadline_index
                 .take_entry(&(expiration, identity))
@@ -315,11 +310,13 @@ impl TimerQueue {
                 entry.set_key((expiration, identity));
                 entry
             } else {
-                prepared_deadline.expect("new POSIX deadline node not prepared")
+                let mut entry = deadline_node.expect("new POSIX deadline node not prepared");
+                entry.set_key((expiration, identity));
+                entry
             };
             self.deadline_index.commit_vacant(entry);
         }
-        Ok(previous)
+        Ok(Some(previous))
     }
 
     pub(super) fn posix(
@@ -332,6 +329,20 @@ impl TimerQueue {
             .get(&(tgid, id))
             .copied()
             .map(|timer| timer.snapshot(now_ns))
+            .ok_or(TimerError::NotFound)
+    }
+
+    fn posix_deadline_needed(
+        &self,
+        tgid: usize,
+        id: i32,
+        replacement_deadline: bool,
+    ) -> Result<bool, TimerError> {
+        self.posix_timers
+            .get(&(tgid, id))
+            .map(|timer| {
+                posix_deadline_needed(timer.next_expiration_ns.is_some(), replacement_deadline)
+            })
             .ok_or(TimerError::NotFound)
     }
 
@@ -412,17 +423,6 @@ impl TimerQueue {
     }
 }
 
-fn next_period(expiration: u64, interval_ns: u64, now_ns: u64) -> (Option<u64>, u64) {
-    let Some(elapsed_periods) = now_ns.saturating_sub(expiration).checked_div(interval_ns) else {
-        return (None, 1);
-    };
-    let elapsed = elapsed_periods.saturating_add(1);
-    (
-        expiration.checked_add(elapsed.saturating_mul(interval_ns)),
-        elapsed,
-    )
-}
-
 fn live_process(
     graph: &super::ProcessGraph,
     tgid: usize,
@@ -440,12 +440,28 @@ pub(crate) fn set_real_timer(
     interval_ns: u64,
     now_ns: u64,
 ) -> Result<TimerSetting, TimerError> {
-    let graph = super::TASK_MANAGER.graph.lock();
-    live_process(&graph, tgid)?;
-    super::TASK_MANAGER
-        .timers
-        .lock()
-        .replace_real(tgid, value_ns, interval_ns, now_ns)
+    {
+        let graph = super::TASK_MANAGER.graph.lock();
+        live_process(&graph, tgid)?;
+    }
+    loop {
+        let needs = super::TASK_MANAGER.timers.lock().real_replacement_needs(
+            tgid,
+            value_ns != 0 || interval_ns != 0,
+            value_ns != 0,
+        );
+        let prepared =
+            PreparedRealReplacement::prepare(tgid, value_ns, interval_ns, now_ns, needs)?;
+        let graph = super::TASK_MANAGER.graph.lock();
+        live_process(&graph, tgid)?;
+        if let Some(previous) = super::TASK_MANAGER
+            .timers
+            .lock()
+            .replace_real(prepared, now_ns)
+        {
+            return Ok(previous);
+        }
+    }
 }
 
 /// 查询 Process 当前 ITIMER_REAL setting。
@@ -461,17 +477,39 @@ pub(crate) fn create_posix_timer(
     clock: PosixTimerClock,
     notification: PosixTimerNotification,
 ) -> Result<i32, TimerError> {
-    let graph = super::TASK_MANAGER.graph.lock();
-    let threads = live_process(&graph, tgid)?;
-    if let PosixTimerNotification::Thread { tid, .. } = notification
-        && !threads.contains_key(&tid)
+    // 初次 lifecycle 检查维持 NotFound 优先；最终 graph→timer 复查是 publication point。
     {
-        return Err(TimerError::NotFound);
+        let graph = super::TASK_MANAGER.graph.lock();
+        let threads = live_process(&graph, tgid)?;
+        if let PosixTimerNotification::Thread { tid, .. } = notification
+            && !threads.contains_key(&tid)
+        {
+            return Err(TimerError::NotFound);
+        }
     }
-    super::TASK_MANAGER
-        .timers
-        .lock()
-        .create_posix(tgid, clock, notification)
+    let mut id = super::TASK_MANAGER.timers.lock().next_posix_id(tgid)?;
+    let mut prepared = PreparedPosixCreate::prepare(tgid, id, clock, notification)?;
+    loop {
+        let graph = super::TASK_MANAGER.graph.lock();
+        let threads = live_process(&graph, tgid)?;
+        if let PosixTimerNotification::Thread { tid, .. } = notification
+            && !threads.contains_key(&tid)
+        {
+            return Err(TimerError::NotFound);
+        }
+        let commit = super::TASK_MANAGER
+            .timers
+            .lock()
+            .commit_posix_create(prepared);
+        match commit {
+            Ok(()) => return Ok(id),
+            Err(collision) => {
+                drop(graph);
+                id = super::TASK_MANAGER.timers.lock().next_posix_id(tgid)?;
+                prepared = collision.retarget(id);
+            }
+        }
+    }
 }
 
 /// 原子替换一个 Process-owned POSIX timer，并返回旧 setting。
@@ -483,16 +521,35 @@ pub(crate) fn set_posix_timer(
     absolute: bool,
     now_ns: u64,
 ) -> Result<TimerSetting, TimerError> {
-    let graph = super::TASK_MANAGER.graph.lock();
-    live_process(&graph, tgid)?;
-    super::TASK_MANAGER.timers.lock().replace_posix(
-        tgid,
-        id,
-        value_ns,
-        interval_ns,
-        absolute,
-        now_ns,
-    )
+    {
+        let graph = super::TASK_MANAGER.graph.lock();
+        live_process(&graph, tgid)?;
+        super::TASK_MANAGER.timers.lock().posix(tgid, id, now_ns)?;
+    }
+    loop {
+        let deadline_needed =
+            super::TASK_MANAGER
+                .timers
+                .lock()
+                .posix_deadline_needed(tgid, id, value_ns != 0)?;
+        let prepared = PreparedPosixReplacement::prepare(
+            tgid,
+            id,
+            value_ns,
+            interval_ns,
+            absolute,
+            deadline_needed,
+        )?;
+        let graph = super::TASK_MANAGER.graph.lock();
+        live_process(&graph, tgid)?;
+        if let Some(previous) = super::TASK_MANAGER
+            .timers
+            .lock()
+            .replace_posix(prepared, now_ns)?
+        {
+            return Ok(previous);
+        }
+    }
 }
 
 /// 查询一个 Process-owned POSIX timer。

@@ -1,11 +1,15 @@
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use spin::{Mutex, Once};
 
-use super::{Console, FileSystemError, Terminal};
+use super::{Console, FileSystemError, Terminal, file::clear_terminal_raw_input};
 use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
+
+#[path = "pty/input_notification.rs"]
+mod input_notification;
 
 type PipeFactory = fn() -> Result<(Arc<PipeEnd>, Arc<PipeEnd>), ()>;
 type HangupNotifier = fn(&Terminal);
+type InputSignalNotifier = fn(&Terminal, u64);
 const PTY_INPUT_CAPACITY: usize = 4096;
 const PTY_OUTPUT_ATOMIC_CAPACITY: usize = 512;
 
@@ -58,6 +62,18 @@ impl Console for PtyConsole {
         self.state.lock().length != 0
     }
 
+    fn discard_input(&self) -> usize {
+        let count = {
+            let mut state = self.state.lock();
+            let PtyConsoleState { head, length, .. } = &mut *state;
+            clear_terminal_raw_input(head, length)
+        };
+        if count != 0 {
+            self.master_notification.signal_readiness();
+        }
+        count
+    }
+
     fn write(&self, bytes: &[u8]) -> Result<usize, FileSystemError> {
         match self.output.write(bytes) {
             PipeWrite::Bytes(count) => {
@@ -88,6 +104,7 @@ pub(crate) struct PtyPair {
     master_notification_read: Arc<PipeEnd>,
     master_notification_write: Arc<PipeEnd>,
     hangup: HangupNotifier,
+    input_signals: InputSignalNotifier,
     state: Mutex<PtyState>,
 }
 
@@ -166,8 +183,16 @@ impl PtyMaster {
         if count == 0 {
             return Ok(0);
         }
-        self.pair.terminal.drain_input()?;
-        if self.pair.terminal.input_ready() {
+        let batch = self.pair.terminal.drain_input()?;
+        let actions = input_notification::pty_input_actions(
+            self.pair.terminal.input_ready(),
+            batch.backlog,
+            batch.signals,
+        );
+        if actions.signals != 0 {
+            (self.pair.input_signals)(&self.pair.terminal, actions.signals);
+        }
+        if actions.notify_slave {
             self.pair.slave_notification_write.signal_readiness();
         }
         Ok(count)
@@ -230,11 +255,11 @@ impl PtySlave {
     }
 
     pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.terminal().input_ready() || self.master_hung_up() {
+        if self.terminal().wait_ready() || self.master_hung_up() {
             return None;
         }
         self.pair.slave_notification_read.drain_readiness();
-        (!self.terminal().input_ready() && !self.master_hung_up()).then(|| self.notification_pipe())
+        (!self.terminal().wait_ready() && !self.master_hung_up()).then(|| self.notification_pipe())
     }
 
     pub(crate) fn master_hung_up(&self) -> bool {
@@ -271,6 +296,7 @@ impl Drop for PtySlave {
 struct PtyRegistry {
     pipes: PipeFactories,
     hangup: HangupNotifier,
+    input_signals: InputSignalNotifier,
     slots: Vec<Weak<PtyPair>>,
 }
 
@@ -288,11 +314,14 @@ static PTYS: Once<Mutex<PtyRegistry>> = Once::new();
 /// @param data_factory composition root 提供的 64 KiB output Pipe constructor。
 /// @param notification_factory composition root 提供的一字节 readiness Pipe constructor。
 /// @param hangup task owner 提供的无分配 SIGHUP/SIGCONT notifier。
+/// @param input_signals task owner 提供的 foreground ISIG notifier；只在 Terminal locks 外调用，
+/// 空 bitset 必须幂等完成。
 /// @return 首次初始化成功；重复初始化返回错误。
 pub(crate) fn init(
     data_factory: PipeFactory,
     notification_factory: PipeFactory,
     hangup: HangupNotifier,
+    input_signals: InputSignalNotifier,
 ) -> Result<(), ()> {
     if PTYS.get().is_some() {
         return Err(());
@@ -304,6 +333,7 @@ pub(crate) fn init(
                 notification: notification_factory,
             },
             hangup,
+            input_signals,
             slots: Vec::new(),
         })
     });
@@ -319,9 +349,9 @@ pub(crate) fn open_master(
     owner_gid: u32,
 ) -> Result<Arc<PtyMaster>, FileSystemError> {
     let registry = PTYS.get().ok_or(FileSystemError::InvalidOperation)?;
-    let (pipes, hangup) = {
+    let (pipes, hangup, input_signals) = {
         let registry = registry.lock();
-        (registry.pipes, registry.hangup)
+        (registry.pipes, registry.hangup, registry.input_signals)
     };
     let (output_read, output_write) = (pipes.data)().map_err(|()| FileSystemError::OutOfMemory)?;
     let (slave_notification_read, slave_notification_write) =
@@ -365,6 +395,7 @@ pub(crate) fn open_master(
         master_notification_read,
         master_notification_write,
         hangup,
+        input_signals,
         state: Mutex::new(PtyState {
             locked: true,
             master_open: true,

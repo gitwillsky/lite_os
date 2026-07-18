@@ -28,8 +28,7 @@ pub(super) fn read_descriptor(
             };
             // 单个 sequential read 唯一持有 OFD offset；缺失该 ownership 会让共享 OFD
             // 的并发 reader 在 chunks 之间穿插，使一次 operation 返回不连续的文件区间。
-            let mut offset = ofd.offset.lock();
-            read_regular_vectors(task, &file, &mut offset, vectors)
+            ofd.with_position(|offset| read_regular_vectors(task, &file, offset, vectors))
         }
         OpenFileKind::Pipe(endpoint) => {
             if endpoint.direction() != PipeDirection::Read {

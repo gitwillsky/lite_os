@@ -54,26 +54,38 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>) -> usize {
         while let Some((entry, group)) =
             queue.take_pipe(identity, direction, false, ready, state, &wake_groups)
         {
-            if let Some(group) = group
-                && wake_groups.try_insert(group, ()).is_err()
-            {
+            if let Some(group) = group {
+                // `entry` owns the waiter while the registry is unlocked, so the
+                // fallible group-node allocation cannot leave it published twice.
+                drop(queue);
+                let group_error = wake_groups.try_insert(group, ()).is_err();
                 waiters.commit_vacant(entry);
-                break 'sources;
+                queue = INDEXED_WAIT_QUEUE.lock();
+                if group_error {
+                    break 'sources;
+                }
+            } else {
+                waiters.commit_vacant(entry);
             }
-            waiters.commit_vacant(entry);
         }
         if !exclusive_selected
             && let Some((entry, group)) =
                 queue.take_pipe(identity, direction, true, ready, state, &wake_groups)
         {
-            if let Some(group) = group
-                && wake_groups.try_insert(group, ()).is_err()
-            {
+            if let Some(group) = group {
+                // Keep allocation outside the IRQ-safe registry lock. The detached
+                // entry remains exclusively owned until it is staged for wakeup.
+                drop(queue);
+                let group_error = wake_groups.try_insert(group, ()).is_err();
                 waiters.commit_vacant(entry);
-                break 'sources;
+                queue = INDEXED_WAIT_QUEUE.lock();
+                if group_error {
+                    break 'sources;
+                }
+            } else {
+                waiters.commit_vacant(entry);
             }
             exclusive_selected = true;
-            waiters.commit_vacant(entry);
         }
     }
     drop(queue);
@@ -114,7 +126,9 @@ pub(crate) fn wait_for_pipe_until(
     deadline: Option<u64>,
 ) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
-    let mut queue = INDEXED_WAIT_QUEUE.lock();
+    let ticket = INDEXED_WAIT_QUEUE.lock().allocate_ticket();
+    let prepared = ticket.prepare_pipe(pipe, condition, deadline, task.clone());
+    let queue = INDEXED_WAIT_QUEUE.lock();
     if pipe.wait_ready(condition) {
         return WaitResult::Woken;
     }
@@ -124,7 +138,7 @@ pub(crate) fn wait_for_pipe_until(
     if task.has_deliverable_signal() {
         return WaitResult::Interrupted;
     }
-    let Ok(prepared) = queue.prepare_pipe(pipe, condition, deadline, task.clone()) else {
+    let Ok(prepared) = prepared else {
         return WaitResult::OutOfMemory;
     };
     super::context_switch::prepare_current_block(&task, queue, move |queue, _| {

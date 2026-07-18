@@ -64,7 +64,7 @@ fn normalize_range(
 ) -> Result<RecordLockRange, isize> {
     let base = match lock.whence {
         SEEK_SET => 0i128,
-        SEEK_CUR => i128::from(*ofd.offset.lock()),
+        SEEK_CUR => i128::from(ofd.position_snapshot()),
         SEEK_END => i128::from(ofd.inode_ref().ok_or(-errno::EBADF)?.size()),
         _ => return Err(-errno::EINVAL),
     };

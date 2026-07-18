@@ -31,7 +31,7 @@
 | `config` | 无 | 只保存无运行时依赖的常量 |
 | `cpu` | `arch` | logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner |
 | `platform` | `cpu`, `drivers`, `fallible_tree`, `sync` | 编译期选择的 machine/firmware adapter；拥有 DTB、SBI、PLIC、UART/VirtIO 装配，不向上泄漏 raw hardware identity/context |
-| `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；只提供显式 OOM 的有序节点 publication，不拥有领域数据 |
+| `fallible_tree` | 无 | 无状态的确定性 AVL mechanism；提供显式 OOM publication、结构化 split 与 ordered-disjoint join，不拥有领域数据 |
 | `sync` | `arch` | 只依赖本地中断机制 |
 | `memory` | `arch`, `config`, `cpu`, `fallible_tree`, `id`, `platform`, `random`, `sync` | VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding |
 | `drivers` | `arch`, `cpu`, `fallible_tree`, `memory`, `sync` | 只保存设备模型与通用 interrupt interface；具体 PLIC/DTB 装配属于 platform |
@@ -52,6 +52,13 @@
 | `main` | `arch`, `config`, `cpu`, `drivers`, `drm`, `entry`, `fallible_tree`, `fs`, `id`, `input`, `ipc`, `lang_item`, `log`, `memory`, `platform`, `random`, `socket`, `sync`, `syscall`, `system`, `task`, `timer`, `trap` | 唯一 composition root；不含 raw firmware/trap ABI |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
+
+### Fallible ordered-storage contract
+
+- `split_off` 只沿 AVL root-to-leaf path 比较并重组现有节点，再对移出的 subtree 做一次无 key comparison 的精确 cardinality 遍历；不为所有节点增加永久 subtree-size 字段，复杂度为 `O(log n + k)`。
+- bulk join 只接受 `left.max < right.min` 的 ordered-disjoint 输入，边界检查必须在 mutation 前完成；重复或逆序表示 caller contract 损坏并 fail-stop，两表保持不变。join 只改动 AVL spine，复杂度为 `O(log n)`。
+- regression 的 primary metric 是 AVL order/height/length/model 不变量，以及 split 不超过原树高的 key comparison、join 一次边界 comparison 和 cardinality 每个移出节点一次 structural visit。
+  host wall time 会混入建树 allocation 与 runner 调度，不作为稳定 gate；只有新增持续调用该 bulk interface 的 production 热路径时才增加 wall-clock benchmark。
 
 
 ## State-owner registry
@@ -97,10 +104,20 @@
 
 ## 4. Source size contract
 
-生产 kernel/bootloader Rust 源文件采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致验证失败；超过 1200 行默认拒绝。
-reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam，选择拆成深 module，或在下表登记精确审查额度。
-登记必须给出 owner、暂不拆分的原因与消除条件。额度是硬上限，只能随重构下降，不得为功能开发上调；文件缩短时 checker 强制同步下调。
+生产 kernel/bootloader Rust 源文件，`tools/kernel-unit/src`、`tools/scheduler-unit/src` 下的
+host unit-test Rust 源文件，以及 `tools/architecture-check/src` 中以 `_tests.rs` 命名的
+unit-test module 采用两级围栏：超过 600 行触发 architecture review notice，但不单独导致
+验证失败；超过 1200 行默认拒绝。architecture-check 的 unit-test module 必须使用
+`_tests.rs` 后缀，禁止把测试正文重新塞回 production `main.rs` 绕过围栏。
+reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam。生产 source 可以拆成深
+module，或在下表登记精确审查额度；登记必须给出 owner、暂不拆分的原因与消除条件。
+额度是硬上限，只能随重构下降，不得为功能开发上调；文件缩短时 checker 强制同步下调。
 行数只是退化信号，禁止按行数机械切片或建立 pass-through module。
+
+host unit-test 入口只装配 production path module 与领域测试 module；测试正文按
+filesystem/storage、memory、platform/execution、socket/ABI 等真实 seam 放入独立文件。
+unit-test source 的 review notice 不允许把新测试继续堆进入口文件；必须先检查测试所属
+owner 并迁移到对应领域 module，或新增有领域含义的 module。
 
 `user/` 下全部 Rust/C/header/JS/TypeScript/CSS source 采用单文件 600 行硬上限，不提供 review
 例外。超过上限必须按状态 owner/interface 拆分；checker 递归扫描实际文件集，避免新 crate、
@@ -109,11 +126,7 @@ reviewer 必须检查 owner、依赖方向、公开接口与真实领域 seam，
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
 | `kernel/src/fs/ext2.rs` | 1861 | `fs::ext2` | inode 与 packed layout 仍共享 mutation domain；validation、allocator、storage、directory 与 rename 已下沉 | 提取不泄漏 packed layout 的 inode module 后下调 |
-| `kernel/src/memory/mm.rs` | 686 | `memory::MemorySet` | VMA、page-table commit、brk 与 kernel mapping 仍共享底层 PageTable/frame 不变量 | 提取不泄漏 PageTable/frame 的 kernel mapping 后下调 |
-| `kernel/src/fallible_tree.rs` | 612 | `fallible_tree` | node token、AVL mutation、height-aware retain 与无分配 iteration 共享树形不变量；iterator 已独立 | 将 rotation/join 下沉为不暴露 Node 的 topology module 后下调 |
-| `kernel/src/syscall/drm.rs` | 614 | `syscall::drm` | topology、GEM、DIRTYFB 与 fence 共用 Linux DRM ioctl codec；状态留在 drm façade | 提取不持有 DrmFile 的 plain UAPI codec 后下调 |
-| `kernel/src/task/model/address_space.rs` | 603 | `task::AddressSpace` | mm lock facade、futex/user-copy 与 proc projection 共享 AddressSpace lifetime；统计与 mapping policy 仍属 memory owner | 将 proc projection 封装为不泄漏 Process 字段的深 seam 后下调 |
-| `kernel/src/task/task_manager/wait_registry.rs` | 649 | `task::IndexedWaitQueue` | entry 与全部 source indexes 是单一预分配 publication transaction，机械拆分会泄漏 index mutation | 当 wait kind 可由不拥有状态的 key codec 封装时下调 |
+| `kernel/src/memory/mm.rs` | 671 | `memory::MemorySet` | VMA、page-table commit、brk 与 kernel mapping 仍共享底层 PageTable/frame 不变量 | 提取不泄漏 PageTable/frame 的 kernel mapping 后下调 |
 
 ## Change contract
 

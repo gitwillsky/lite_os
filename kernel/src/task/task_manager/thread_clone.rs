@@ -3,7 +3,6 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ThreadCloneError {
     Memory(crate::memory::MemoryError),
-    Fault,
     ResourceLimit,
 }
 
@@ -22,10 +21,6 @@ pub(crate) fn clone_current_thread(
     child_set_tid: Option<usize>,
     clear_child_tid: Option<usize>,
 ) -> Result<usize, ThreadCloneError> {
-    let creation = TASK_MANAGER.process_creation.lock();
-    if !check_process_slot() {
-        return Err(ThreadCloneError::ResourceLimit);
-    }
     let parent = current_task().expect("thread clone requires current task");
     let tid = TASK_MANAGER
         .allocate_pid()
@@ -41,17 +36,40 @@ pub(crate) fn clone_current_thread(
                 .map_err(ThreadCloneError::Memory)
         },
     )?;
-    if parent
-        .write_clone_tid_values([parent_tid, child_set_tid], tid as i32)
-        .is_err()
-    {
-        child.remove_thread_trap_context();
-        return Err(ThreadCloneError::Fault);
+    let mut minimum_snapshot_capacity = 0;
+    let mut snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            child.remove_thread_trap_context();
+            return Err(ThreadCloneError::Memory(error));
+        }
+    };
+    loop {
+        let creation = TASK_MANAGER.process_creation.lock();
+        if let Err(required) = snapshot.capture() {
+            drop(creation);
+            minimum_snapshot_capacity = required;
+            snapshot = match ProcessSlotSnapshot::prepare(minimum_snapshot_capacity) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    child.remove_thread_trap_context();
+                    return Err(ThreadCloneError::Memory(error));
+                }
+            };
+            continue;
+        }
+        if !snapshot.allows_current() {
+            drop(creation);
+            child.remove_thread_trap_context();
+            return Err(ThreadCloneError::ResourceLimit);
+        }
+        let membership = graph_slot.fill(tid, child.clone());
+        TASK_MANAGER.publish_thread(parent.tgid(), child.clone(), membership);
+        drop(creation);
+        break;
     }
-    let membership = graph_slot.fill(tid, child.clone());
-    if !TASK_MANAGER.publish_thread(parent.tgid(), child.clone(), membership) {
-        enqueue_new_task(child);
-    }
-    drop(creation);
+    drop(snapshot);
+    parent.write_clone_tid_values([parent_tid, child_set_tid], tid as i32);
+    TASK_MANAGER.activate_thread(parent.tgid(), child);
     Ok(tid)
 }

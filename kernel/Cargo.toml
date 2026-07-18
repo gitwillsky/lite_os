@@ -9,10 +9,9 @@ test = false
 bench = false
 
 [dependencies]
-spin = "0.10.0"
+spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }
 dtb-walker = "=0.2.0-alpha.3"
 bitflags = "2.9.1"
-lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 syscall-abi = { path = "../syscall-abi" }
 smoltcp = { version = "=0.13.1", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }
 

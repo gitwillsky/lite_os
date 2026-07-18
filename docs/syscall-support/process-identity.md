@@ -25,7 +25,7 @@
 | 176 | `getgid` | Complete | real GID |
 | 177 | `getegid` | Complete | effective GID |
 | 178 | `gettid` | Complete | Thread ID |
-| 220 | `clone` | Partial | fork/thread/vfork 已声明 flags；其余返回标准错误 |
+| 220 | `clone` | Partial | fork/thread/vfork 已声明 flags；SETTID 为 Linux best-effort store，fault 不回滚 child；其余返回标准错误 |
 | 221 | `execve` | Partial | ELF64/script、dynamic musl 与 single-thread commit |
 | 260 | `wait4` | Partial | exit/stop/continue event 与 rusage 子集 |
 | 261 | `prlimit64` | Partial | 已声明 resources、permission 与 copyout ordering |
