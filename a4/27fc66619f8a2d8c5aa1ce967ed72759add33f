@@ -1,0 +1,23 @@
+docs/architecture.md
+  s_a241f671fb821f::t_1533823ed4ed17 236
+scripts/verify_busybox.py
+  s_a241f671fb821f::t_282c38ddc7b789 749,752-755,758,761-762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a427fc66619f8a2d8c5aa1ce967ed72759add33f",
+  "prompts": {},
+  "sessions": {
+    "s_a241f671fb821f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7034-9d0f-76e0-b23e-353f867f8b17",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
