@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "musl-runtime"
 MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
-MUSL_URL = f"https://musl.libc.org/releases/musl-{MUSL_VERSION}.tar.gz"
+MUSL_URL = f"https://download.nus.edu.sg/mirror/gentoo/distfiles/9d/musl-{MUSL_VERSION}.tar.gz"
 MUSL_SHA256 = "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
 LINUX_VERSION = "7.1"
 LINUX_URL = f"https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-{LINUX_VERSION}.tar.xz"
@@ -106,7 +106,7 @@ def source_cache_path() -> Path:
 
 
 def obtain_source() -> Path:
-    """获取并缓存固定官方源码；完整目录只在校验和解压成功后发布。"""
+    """获取并缓存固定源码；完整目录只在校验和解压成功后发布。"""
     archive = WORK / f"musl-{MUSL_VERSION}.tar.gz"
     if not archive.is_file() or sha256(archive) != MUSL_SHA256:
         archive.unlink(missing_ok=True)
