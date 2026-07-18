@@ -110,7 +110,7 @@ make build-rootfs
 make verify-musl
 ```
 
-该目标在 `target/musl-runtime/` 构建唯一 musl sysroot（`libc.a/libc.so/ld-musl` 与 Linux 7.1 UAPI），并将 `user/probes/musl-smoke.c` 与独立的 shared-sync translation unit 链接为静态 ABI consumer 冷启动。consumer 验证 pthread、private/shared futex、匿名共享映射、bitset/requeue、signal interruption 与定向 `SA_RESTART`；musl 源码和二进制不进入仓库。
+该目标在 `target/musl-runtime/` 构建唯一 musl sysroot（`libc.a/libc.so/ld-musl` 与 Linux 7.1 UAPI），并将 `scripts/fixtures/musl/musl-smoke.c` 与独立的 shared-sync translation unit 链接为静态 ABI consumer 冷启动。consumer 验证 pthread、private/shared futex、匿名共享映射、bitset/requeue、signal interruption 与定向 `SA_RESTART`；musl 源码和二进制不进入仓库。
 
 musl source、sysroot 和 smoke ELF 分别使用包含官方 SHA-256、compiler identity、configure/link recipe 和 consumer hash 的 content fingerprint。缓存以不可变 generation 生成，并用进程锁与原子 symlink 切换发布；普通命中不重新 configure/build/install。冷构建并行度默认来自宿主 CPU/上层 GNU Make jobserver，可用 `LITEOS_BUILD_JOBS=<n>` 显式覆盖。强制重建使用 `python3 scripts/verify_musl.py --build-only --rebuild`；清理全部 generation 使用 `make clean-musl`。
 

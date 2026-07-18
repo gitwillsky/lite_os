@@ -1,3 +1,2 @@
 root:x:0:
-liteui:x:100:liteui,liteui-terminal,liteui-app
 nobody:x:65534:

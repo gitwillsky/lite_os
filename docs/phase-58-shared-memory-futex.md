@@ -18,7 +18,7 @@
 
 ## 固定 consumer
 
-`scripts/fixtures/musl-shared-sync.c` 作为独立 verification translation unit 链入唯一静态 musl smoke，避免继续扩大主 consumer 或增加第二个 userspace 入口。它在一个 anonymous shared page 中完成：
+`scripts/fixtures/musl/shared-sync.c` 作为独立 verification translation unit 链入唯一静态 musl smoke，避免继续扩大主 consumer 或增加第二个 userspace 入口。它在一个 anonymous shared page 中完成：
 
 1. fork 父子通过 `PTHREAD_PROCESS_SHARED` mutex/condition 与 process-shared semaphore 同步，并核对共享写入；
 2. raw `WAIT_BITSET|CLOCK_REALTIME` waiter 由 `CMP_REQUEUE` 返回值完成无时间假设的注册握手，迁移到第二个 word 后以不相交 mask 证明不会被误唤醒，再由匹配 mask 精确 wake；

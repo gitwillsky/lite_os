@@ -354,7 +354,7 @@ def _verify_package_ownership(
     for package in application_packages:
         name = package.name.rsplit("-", 2)[0]
         if f"P:{name}" not in installed:
-            raise RuntimeError(f"final rootfs lacks LiteUI APK ownership: {name}")
+            raise RuntimeError(f"final rootfs lacks application APK ownership: {name}")
     listing = run([str(debugfs), "-R", "ls -l /run", str(image)])
     if ".apk" in listing or "apk-bootstrap.sh" in listing:
         raise RuntimeError("final rootfs retains temporary APK bootstrap artifacts")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
 from qemu_gate import boot as boot_image
-from verify_busybox import build_dynamic_probe, cached_busybox_binary
+from verify_busybox import cached_busybox_binary
 from verify_musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +55,6 @@ def main() -> int:
         compiler = find_compiler()
         musl = cached_musl_paths(compiler)
         busybox = cached_busybox_binary(compiler)
-        dynamic_probe, dynamic_library = build_dynamic_probe(musl)
         stamp = ROOT / "target/verify-gates/boot.json"
         payload = runtime_gate_payload(
             "boot-topology",
@@ -66,8 +65,6 @@ def main() -> int:
                 ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
                 busybox,
                 musl.install / "usr/lib/libc.so",
-                dynamic_probe,
-                dynamic_library,
                 ROOT / "user/base/inittab",
                 ROOT / "create_fs.py",
                 ROOT / "scripts/verify_busybox.py",

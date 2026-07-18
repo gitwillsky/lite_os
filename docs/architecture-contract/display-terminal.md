@@ -1,34 +1,40 @@
-# Display、input 与 terminal architecture contract
+# Display、input 与 terminal interface contract
 
-> 权威入口：[architecture-contract.md](../architecture-contract.md)
->
-> 机器读取的依赖矩阵、状态 owner、持久 `FallibleMap` 清单和 source-size review
-> 继续保留在入口文件；本文承载本领域的详细 interface/capability 证明。
+本文件定义 kernel device seam 与唯一图形 console userspace Module；当前实现事实见
+[display-terminal architecture](../architecture/display-terminal.md)。
 
-## 1. Device backing 与 display adapter
+## Kernel seam
 
-- `memory::DeviceBacking` 是 device-shared 非连续页的唯一 owner/interface；`try_allocate` 以精确 page count 和 allocation class 构造，最大 256 个 extent、单 extent 最大 64 页，按可满足剩余数量的最大 buddy order 下降尝试，任何中途失败都只靠已构造 `FrameTracker` 的 RAII 回滚。`page/pages` 只供 device VMA index translation，`extent/extent_count` 只供 VirtIO SG attach；禁止向 DRM、VMA 或 driver 暴露内部 Vec、复制 PPN 列表，或建立第二份 backing。
-- `drivers::display` 是 DRM 可见的唯一显示 seam；VirtIO resource ID、command header、descriptor head 与 MMIO device 不得穿过该 seam。display-info 必须在 VirtIO adapter 边界一次性规范为 8-pixel granular CVT/scanout mode，connector、resource、framebuffer 校验与 SET_SCANOUT 只能消费同一 canonical width/height/pitch，禁止保留 host raw width 形成第二 mode owner。启动期同步 bootstrap 只允许发生在 IRQ/scheduler publication 前；运行期 config event 与 controlq completion 只发布合并 display softirq。
-- GET_DISPLAY_INFO 只更新 connector preferred mode 并发布 hotplug，不触发 modeset。adapter 唯一拥有两个固定 resident resource slot：framebuffer identity 首次出现才执行 CREATE→ATTACH，常规双缓冲 page flip 只执行 SET_SCANOUT→FLUSH；未先 DIRTYFB 的 target 在 SET 前补一次 full TRANSFER。首次驻留的 host resource 没有历史 framebuffer 内容，因此即使首个 DIRTYFB 只声明局部 clip，也必须把该次 transfer 提升为一次 full-frame synchronization，之后才允许按 clip 增量同步。DIRTYFB 的 1..=32 个 TRANSFER 以 queue free/4 为证明分成最多 15 项的无分配 batch，每批只 notify 一次，全部 fenced completion 后只执行一次覆盖 union 的 FLUSH；命令可乱序完成但 FLUSH 不得越过任何 transfer。RMFB inactive object 显式等待 RESOURCE_UNREF，disable 对两个 slot 执行 SET(resource_id=0)→UNREF；backing 只在最终 UNREF completion 后于 control lock 外释放。禁止 syscall/DRM 自旋、CPU 全帧 memcpy、永久 fallback 或在拖动期间内核自动分配 framebuffer。
+- DRM 只发布 Linux v7.1 primary-node UAPI；VirtIO-GPU adapter 不穿过 `drm` seam。
+- input 只发布 Linux evdev UAPI；VirtIO-input adapter 不穿过 `input` seam。
+- PTY、termios、job control、signal 与 poll 语义由各自 kernel owner 唯一维护；userspace 不复制。
 
-## 2. DRM 与 kobject hotplug
+## Userspace topology
 
-- `drm::DrmFile` 是 devfs/OFD 与 DRM domain 的唯一 backend seam；syscall 只编解码固定 Linux UAPI、copy user arrays、等待 `DrmWait`/event，不读取 display adapter。每个 OFD 的 `FallibleMap` 是唯一 GEM handle namespace；device VMA、framebuffer 与 adapter resource 以 Arc 保活同一 SG backing。
-- device state 唯一拥有 master、active object 与 pending fence。`device::{submit_scanout,submit_damage,submit_disable}` 只允许 parent DRM lifecycle 调用；`DisplayDevice::release_buffer` 只允许 RMFB lifecycle 调用。任一时刻只有一个 DRM operation；active RMFB/OFD close 先完成 disable，inactive RMFB 先完成精确 resource release，再零分配删除 object，不存在 fallback framebuffer 或依赖未来 eviction 的延迟回收。
-- DIRTYFB 单次最多导入 32 个 clip，允许 owner 在 page flip 前同步 inactive framebuffer，并等待 batched TRANSFER+single-FLUSH；page flip 只表示 framebuffer switch，命中已同步 resident target 时不得 CREATE、ATTACH、TRANSFER 或 UNREF。每个 OFD 固定 4 KiB event ring 是唯一 event-space owner；completion 不得调用同步日志，且只做无分配状态 publication/edge。atomic、auth/lease、vblank wait 未完成时不得伪造相应 capability。
-- `socket::kobject::KobjectRegistry/KobjectSocket` 唯一拥有 group-1 listener membership、sequence、固定消息 queue 与 latest-event coalescing。registry 只持 Weak，endpoint close 禁止反向获取 registry lock；dead Weak 必须由 new/publish 的 allocation-free `retain` 回收。DRM 只调用 `socket::publish_drm_hotplug`；它不持有 listener、queue 或 notification state。queue 满时只能替换 coalesced latest slot，readiness 只在 empty→non-empty 时 signal；事件路径禁止分配和重复 edge。
-- `socket::observation` 是 sealed `SocketBackend` 到 local/peer address、poll state、readiness generation 与 wait source 的唯一只读投影；这些 scoped methods虽位于 child module，调用者仍只看到 parent façade。该 module 不拥有 endpoint 状态、不分配、不缓存 readiness，也不得把 concrete backend variant 穿过 fs/syscall seam。
+- `user/` 顶层只允许 `README.md`、`base`、`console-session` 与 `diagnostics`；verification
+  consumer 只允许位于 `scripts/fixtures/`，不得进入产品 userspace topology。
+- root workspace 必须显式 exclude `user/console-session`。该 crate 使用标准 `src/lib.rs`
+  staticlib，经唯一 `build_rust_user_program` seam 与 musl CRT/libc 链接为动态 PIE。
+- BusyBox init 只 respawn `/bin/console-session`、network service 与 UART recovery ash。
+- `/bin/console-session` 是唯一 userspace DRM、evdev、PTY child、ANSI model、font、dirty
+  renderer 与 resize transaction owner。禁止第二 display consumer、display broker、私有应用协议、
+  JavaScript runtime 或 terminal model transport。
+- 应用 Interface 只有 PTY、termios、ECMA-48/DEC terminal semantics 与 checked `TERM=liteos`
+  terminfo。应用必须是普通 Linux process 或 Alpine APK，禁止 LiteOS 私有 SDK/manifest。
 
-## 3. Input、PTY 与 desktop terminal
+## State ownership
 
-- `drivers::input` 是 input domain 可见的唯一 raw-event seam；VirtIO selector/eventq/DMA slot 不得穿过。`input::InputFile` 是 evdev 唯一 backend，per-OFD queue/clock/revoked 必须在同一 client lock 内线性化，device lock 唯一维护 registry/live state/grab。`EVIOCREVOKE` 只能在 device→client 锁序内释放 grab 并提交不可逆状态，随后用既有 notification Pipe 唤醒；revoke/fanout/read/poll 禁止复制状态或分配。
-- PTY byte Pipe 与 notification Pipe 必须分离；前者拥有 output capacity，后者只承载 state edge。`PtyPair` 是 ptmx opener effective UID/GID 与 slave lifecycle 的唯一 owner；`sys_openat → OpenFileDescription::character → CharacterDevice::open → open_master` 只传递同一次 `AccessIdentity` snapshot，`devpts::metadata` 只经 `slave_owner` 投影 live `/dev/pts/N` 的 `0600` owner，禁止固定 root 或放宽 other permission。Terminal、Process controlling handle 与 process graph SID/PGID 各自保持单 owner，master close consequence 只经 task seam 发布。Terminal 的实际 character-device identity 创建后不可变，`/dev/tty` 只能引用而不能成为 identity owner；procfs 只能消费 Terminal 的一次 `(tty_nr,tpgid)` snapshot。
-- `user/` 顶层只允许源码索引、按生命周期精确登记的 `base` rootfs policy、`probes` ABI consumers、`diagnostics` 单 ELF `liteos-stress`、APK application sources，以及 checker 精确登记的 `display-client`、`display-session`、`liteui-core`、`liteui-compositor`、`liteui-host`、`liteui-session`、`service-activation` 与 `terminal-service` crates。三个分组目录的直接条目同样由 checker 精确比对，新增、遗漏或替换都必须显式更新契约。所有 Rust/C production source 都受 600 行不可豁免硬上限约束；超限必须沿 owner/interface seam 拆分，禁止登记例外额度。
-- root workspace 必须显式 exclude 全部八个 userspace Rust crate。`display-client` 唯一封装 pinned libseat lifecycle，`service-activation` 唯一解码 activated listener，`liteui-core` 保持无 I/O；其余 executable crate 都采用标准 `src/lib.rs` staticlib 布局，由唯一 `build_rust_user_program` seam 以 Linux-musl target 重建 PIC `core/alloc/compiler_builtins`，再经同一 musl CRT/libc driver 链接为动态 PIE。它们不得拥有 linker script、私有 syscall/runtime、init 或第二 rootfs build track。
-- BusyBox init 只 respawn `/bin/liteui-session`、network service 与 UART recovery ash。`liteui-session` 是 display-session、compositor、System Shell host、terminal service 与普通 application host 的唯一 spawn/reap/restart owner；terminal 不再拥有独立 init action，compositor/terminal/host 也不得互相 fork。generation 启动的时钟事实必须在首个 child publication 前取得；任一中途 spawn failure 必须逆序终止已发布成员并删除 activated socket。
-- `display-session::Broker` 只接受 session 直接创建的 root compositor：`SO_PEERCRED`、compositor `comm` 与 parent `liteui-session`/PPID=1 链共同构成 controller identity。broker 预留固定 client/device/output slots，唯一保留 DRM/input OFD 并经 `SCM_RIGHTS` 交付；controller disconnect 必须同步对同一 OFD 执行 `DRM_IOCTL_DROP_MASTER`/`EVIOCREVOKE` 后关闭。无法证明 revoke 已完成时 broker fail-stop，使 session 进入完整 generation recovery；不存在 deadline、ACK 或第二 active owner。
-- `liteui-compositor` 是 DRM、evdev、netlink 与 display capability 的唯一 userspace consumer：main reactor 唯一拥有 Display/Scene、一只持久 scanout dumb buffer、keyboard/mouse 与 resize。`scene/damage.rs` 只拥有 reactor 内未发布 frame delta 的固定 value type，不持有 scene 或 framebuffer；软件合成只更新该 buffer 的有界 damage，并在唯一 presenter pthread 中执行 blocking DIRTYFB。禁止用两只 host resource 的局部历史代替 framebuffer 切换时的整帧一致性。这使 geometry 和 pointer 共用同一 TRANSFER→FLUSH 路径，且不为 compositor 常驻第二份全屏内存。每个 primitive 的 paint bounds 必须包含在其 owner 的 visual bounds 内；child overflow 必须被显式 clip，或扩大 old/new visual bounds 后进入 damage，禁止用 logical window rectangle 隐式代替真实 paint bounds。slot 的 `AtomicU8` 是唯一跨线程 publication fact，Release/Acquire 严格按 IDLE→SUBMITTED→COMPLETED→IDLE 换手 `UnsafeCell`；两个 eventfd 只承载 command/completion edge，不复制状态。buffer 唯一拥有固定 32 项 damage set 与唯一 inflight snapshot；worker 阻塞期间新输入只进入新的 damage set，completion failure 必须无损合并回去。任一 request 在途时 render/resize deadline 必须从 poll timeout 排除，只由 completion event 重新启用；revoke/exit 必须先收割 request，再 RMFB/close 并 join worker。idle 时 main reactor 与 worker 都无限阻塞。显示 damage 的诊断顺序与案例见 [display damage guide](../desktop/display-damage.md)。
-- compositor 以 16 ms 整数 frame cadence 近似 60 Hz，并在 submit 时推进唯一 cadence owner；completion 后不得重新等待完整 interval，否则 blocking DIRTYFB 时间会被串联到下一帧。软件 pointer/click damage 是唯一 urgent fast lane：presenter 空闲时立即提交，request 在途时仍只进入同一个 pending damage set，禁止建立第二队列或并发 DIRTYFB。resize 采用 50 ms latest-mode quiet period、持久候选 buffer 与 query-build-query。瞬时 `EBUSY/EINTR/EINVAL` 保留候选并按 frame interval 重试；pre-commit `ENOMEM`/system rejection 只丢弃候选并保留旧 scanout。成功 mode commit 后，compositor 从唯一 TextGrid viewport 计算 16×32 cell geometry，并通过有界 `LUE1` configure 交付 terminal；terminal 不订阅 netlink、不分配 framebuffer，也不选择另一套字体 metrics。
-- `terminal-service` 唯一拥有 PTY child、ANSI parser、screen/reflow、keyboard/mouse encoder 与固定 4 KiB PTY input ring；它禁止打开 DRM、evdev 或 display-session。PTY child 创建成功后必须在读取任何 output 前一次性重置 parser、style、grid 与 cursor。`PR_SET_PDEATHSIG(SIGKILL)` 加 parent-race 复查保证 service owner 消失时 child 不成为孤儿；service 退出还必须 close master、kill 并 reap child。
-- terminal 对外声明 `TERM=liteos`；checked terminfo 精确继承 pinned Linux console，并只增加 model 已实现的 `?1049` alternate-screen enter/leave。DECSC/DECRC、scroll region、insert/delete/erase、tab、DEC charset、palette、SGR、device reply、application cursor/keypad、X10/VT200 mouse、alternate screen 与 blink 都只有 model 单一 owner。parser reply 与 compositor input 只经同一 ring 返回，PTY read 产生的同步 reply 必须在同一 poll turn 尝试 flush。
-- terminal reactor 保持 single-thread poll：PTY 每 turn 最多 64 KiB，完整 TextGrid snapshot 最多 16,384 cells（即 256 KiB wire budget / 16-byte cell），发布最多 60 fps；没有 dirty/blink deadline 时无限等待。resize 必须按 prepare model→`TIOCSWINSZ`→commit model 顺序 failure-atomic；socket backpressure 下 model 是唯一 latest state，不得排队多个 snapshot。compositor 只持双状态 TextGrid resource 并直接 raster active snapshot；完整 snapshot transport 不等于 full-grid damage：commit 前必须比较 active/candidate，以连续 changed-cell span 加 old/new cursor cell 生成有界 damage；仅尺寸、全局 reverse 或首次发布允许提升为整网格。断线只撤销 grid，不影响 System Shell window tree。
+- `reactor` 唯一拥有 active DRM/input fd、PTY master/child、deadline 与 pending resize。
+- `Model` 唯一拥有 primary/alternate screen、parser、cursor、palette、mode 与 dirty spans。
+- `Display` 唯一拥有 active framebuffer/GEM mapping；candidate 在 commit 前不对外可见。
+- resize 固定执行 query → prepare model/framebuffer → query confirmation → SETCRTC commit →
+  model commit → `TIOCSWINSZ`。commit 前失败保留旧 mode，commit 后无法同步 PTY 必须 fail-stop。
+- PTY child 以 `PR_SET_PDEATHSIG(SIGKILL)` 和 parent-race 复查绑定 owner；session exit 关闭
+  master、SIGKILL 并 reap child，禁止遗留孤儿 shell。
+- reactor 没有 render/resize/blink deadline 时必须无限阻塞；输入和 PTY 每轮有固定 work budget，
+  禁止 busy polling。
+
+## Source fence
+
+`console-session` 的 crate/source 直接条目由 architecture checker 精确比对。所有 Rust/C
+production source 都受 600 行硬上限约束；超限必须沿 owner/interface seam 拆分，禁止豁免。

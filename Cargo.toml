@@ -6,7 +6,7 @@ members = [
     "tools/kernel-unit",
     "tools/scheduler-unit",
 ]
-exclude = ["bootloader", "user/display-client", "user/display-session", "user/liteui-compositor", "user/liteui-core", "user/liteui-host", "user/liteui-session", "user/service-activation", "user/terminal-service"]
+exclude = ["bootloader", "user/console-session"]
 default-members = ["kernel"]
 resolver = "3"
 

@@ -1,43 +1,51 @@
 # Display、input 与 terminal 当前架构
 
-> 权威入口：[architecture.md](../architecture.md)
->
-> 本文只记录当前实现事实；稳定 owner、依赖与 capability 约束见
-> [display contract](../architecture-contract/display-terminal.md)，Linux ABI 状态见
-> [syscall-support.md](../syscall-support.md)。
+## Kernel
 
-## 1. VirtIO-GPU 与 DRM/KMS
+VirtIO-GPU 经 DRM primary node `/dev/dri/card0` 提供 dumb buffer、legacy KMS、DIRTYFB 与
+hotplug uevent。VirtIO-input 经 `/dev/input/eventN` 提供 evdev keyboard/tablet；Unix98 PTY、
+termios、foreground process group 与 signal/job-control 走标准 Linux ABI。
 
-- VirtIO-GPU 2D adapter 查询第一个 enabled scanout，并按 Linux virtio-gpu/CVT 语义在 adapter 边界把 host display-info 宽度向下规范到 8-pixel granularity；该 canonical width/height/pitch 是 connector mode、resource、framebuffer 校验与 SET_SCANOUT 的唯一事实，host 原始宽度不进入上层状态。adapter 在 scheduler/IRQ publication 前用 `DeviceBacking` 完成唯一同步 boot scanout。`DeviceBacking` 精确拥有 page count，以不超过 256 KiB 的 buddy extents 组成最多 256 项 SG 表；GEM、VMA、framebuffer 与 GPU resource 都只 clone 同一个 Arc。首个 userspace SETCRTC 替换 boot resource，之后不保留 fallback。
-- 运行期 config/vring interrupt 只发布合并 display softirq；deferred context 每次有界推进一个 completion。GET_DISPLAY_INFO 立即更新 connector preferred mode，但与 active CRTC mode 相互独立且绝不自动 modeset；变化经 `AF_NETLINK/NETLINK_KOBJECT_UEVENT` group 1 发布标准 NUL-separated DRM hotplug。每个 listener 使用固定 16×256-byte queue，满时只合并最新 event，Pipe 只发布 empty→non-empty 边沿；关闭留下的 dead Weak 由下次创建/广播无分配清扫，因此 resize storm 不产生重复唤醒、分配或 registry-lock 自死锁。
-- 两个固定 resource ID 组成唯一 residency set。framebuffer 首次出现时占用 vacant/inactive slot 并执行可选旧 UNREF→CREATE→ATTACH；常规双缓冲 PAGE_FLIP 命中 resident resource，inactive DIRTYFB 已同步时只执行 SET_SCANOUT→FLUSH，未同步时先补 full TRANSFER。DIRTYFB 可命中 active/inactive framebuffer，把最多 32 个 clip 分成 queue-capacity 证明的最多 15 项 TRANSFER batch，每批一次 doorbell、允许 response 乱序回收，全部完成后只发一次 union FLUSH。RMFB inactive resource 显式 UNREF；disable 先 SET_SCANOUT(resource_id=0) 再依次 UNREF 两槽。最终 fence 才发布 DRM state/Pipe edge，backing 只在对应 UNREF completion 后释放。
-- devfs 发布标准 primary node `/dev/dri/card0`（226:0）。query 支持 VERSION、GET_CAP、GETRESOURCES、GETCRTC、GETENCODER 与 GETCONNECTOR；CRTC/encoder/virtual-connector identity 固定，connector 返回当前 preferred mode，active CRTC 返回最后成功 SETCRTC 捕获的 mode。DRM owner 只消费通用 display seam，syscall 只消费 `DrmWait`，没有 adapter 泄漏或 `drm ↔ task` 反向依赖。
-- 每个 card OFD 独立拥有 GEM handle map。CREATE_DUMB 创建 linear XRGB8888/bpp=32、page-aligned SG backing；MAP_DUMB 返回 file-private fake offset，`mmap(MAP_SHARED)` 建立按 page index 投影的 device VMA。handle DESTROY/close 后，既有 VMA、framebuffer 或 GPU resource 继续保活同一 Arc；最后 owner 才逐 extent 回收。device VMA 不进入 page cache、writeback 或 anonymous reclaim，也禁止 executable permission 与 MADV_DONTNEED。
-- device-wide framebuffer map 支持 legacy ADDFB/GETFB/RMFB 与 XRGB8888 single-plane ADDFB2；primary node 第一个 open 自动成为 master，SET/DROP_MASTER 遵循 current/was-master 与 effective-root 边界。SETCRTC/PAGE_FLIP/DIRTYFB 只允许 current master，任一时刻只允许一个 pending display operation；active RMFB、disable 与 OFD close 等待 resource_id=0 transaction，inactive RMFB 等待精确 RESOURCE_UNREF，随后零分配删除 object。
-- DIRTYFB 接受 Linux `drm_mode_fb_dirty_cmd`，annotations 只按标准 mask 接受，单次最多 copyin 32 个 `drm_clip_rect`，空 clip 表示 full framebuffer；允许预同步 owned inactive framebuffer，返回前等待 batched TRANSFER+single-FLUSH fence。PAGE_FLIP 只表示 framebuffer switch，支持 flags=0 与 `DRM_MODE_PAGE_FLIP_EVENT`；completion 在每-OFD 固定 4 KiB ring 中无分配发布完整 event，热路径无同步串口日志。target/async flags、auth/lease、vblank wait 与 atomic KMS 尚未发布。
+## Userspace
 
-## 2. VirtIO-input、evdev 与 Unix98 PTY
+`/bin/console-session` 是单线程 `no_std` Rust executable，也是唯一图形 console Module：
 
-- modern MMIO v2 adapter 读取 name/serial/device ID、property/event bitmap 与 absolute-axis limits，并为每个设备发布稳定 physical path。`EV_SYN` 是 Linux input core 固有能力，即使 VirtIO config 不重复声明也会进入 event-type bitmap；未知 type/code 在进入 evdev state 前丢弃。
-- eventq 固定最多 64 descriptors，并预留 `queue_size/2` 个永久 8-byte DMA slot，以证明任一跨页 buffer 都有两个 descriptor。descriptor head 到 slot 使用 O(1) index；hardirq 只 ack vring/config status 并发布 input softirq，deferred context 每轮每设备最多消费 64 个 event、立即 repost 同一 slot 并在批末只 notify 一次，持续指针流不会分配或忙等。
-- input core 为每个 adapter 唯一维护 live key/absolute state、client weak registry 与 exclusive grab；每个 `/dev/input/eventN` OFD 以同一 client lock 维护 64-entry ring、REALTIME/MONOTONIC/BOOTTIME clock 与不可逆 revoked 状态。只有到 `SYN_REPORT` 为止的完整 packet 可读，空 report 被丢弃；overflow、clock change 或 state ioctl copyout failure 以 `SYN_DROPPED` 要求 userspace 重取状态。`EVIOCREVOKE(0)` 原子释放当前 grab、停止后续 fanout 并唤醒既有 waiter；之后 read/ioctl 返回 `ENODEV`，poll/epoll 返回 HUP+ERR。
-- devfs 发布 Linux input major 13、minor 64+N。RV64 `struct input_event` 固定 24 bytes；read/readv 支持 blocking、`O_NONBLOCK`、整数 event 边界与 partial copy，pselect/ppoll/epoll 共用 device Pipe notification 和 level recheck。ioctl 支持 VERSION/ID/NAME/PHYS/UNIQ/PROP/BIT/KEY/ABS、CLOCKID、GRAB 与 REVOKE；write/statusq、LED/sound/force-feedback injection、event mask、multitouch slot state、runtime config change 与 hot-unplug 尚未开放。
-- `/dev/ptmx` 每次 open 分配一个锁定的 Unix98 pair；`TIOCGPTN/TIOCSPTLCK` 是 slave index 与 unlock 的唯一 ABI。独立 devpts filesystem 挂载在 `/dev/pts`，lookup/getdents 只投影仍有 live master 的动态节点；master 最后关闭后节点立即消失，最后一个 endpoint 释放后 index 才可复用。
-- pair 的单一 lifecycle lock 同时拥有 lock、master-open 与 slave-open count。master→slave raw input 进入同一个 Terminal line discipline；slave→master output 使用独立 64 KiB byte Pipe，小块原子写与真实 write-capacity wait 保证 CRLF 转换不会部分提交，阻塞/nonblocking write 不会返回伪零进度。两端另有不进入字节流的一字节 readiness Pipe，slave `POLLOUT` 直接复查 byte Pipe 容量，因此 input/output、hangup、poll/epoll generation 不会靠伪字节同步。slave 最后关闭使 master read 返回 `EIO/POLLHUP`；master 最后关闭使 slave read 返回 EOF、write `EIO/POLLHUP`，并经 composition-root 注入的 task seam 对 foreground group 发布 SIGHUP/SIGCONT。
-- Process 以单锁持有当前 controlling-Terminal Arc；成功 `TIOCSCTTY` 原子替换，fork 继承，`/dev/tty` 始终投影该 handle。Terminal 永久绑定实际 `/dev/console` 或 `/dev/pts/N` identity，并与 controlling SID、foreground PGID、termios、cooked queue 同为唯一 owner；`/proc/<pid>/stat` 从一次 Terminal lock snapshot 编码真实 `tty_nr/tpgid`，无 controlling terminal 固定为 `0/-1`。process graph 仍唯一拥有 SID/PGID membership，未复制 job-control 状态。
+1. 打开 DRM、订阅 netlink hotplug并取得 checked terminal atlas；
+2. 创建 framebuffer、回放 boot log并完整绘制初始 terminal grid；
+3. 创建 PTY，在 child session 中执行 `/bin/sh`；
+4. 用一次 blocking `poll` 同时等待 PTY、hotplug、keyboard、pointer 与 frame/blink deadline；
+5. 只重绘 dirty cell span，并通过 DIRTYFB 提交有界 clip；
+6. resize 以候选 model/framebuffer 事务提交，成功后向 PTY 发布真实 pixel/cell winsize。
 
-## 3. Desktop display 与 terminal
+应用不连接 console socket，也不发布 scene。shell、vim、htop、tmux 等程序只看到
+`TERM=liteos`、PTY、termios 和标准 signal/process/filesystem/network ABI。
 
-- `/bin/liteui-session` 由 init 监督，并在一个 generation 内启动 root `display-session`/`liteui-compositor`、uid 100 System Shell host、uid 101 `terminal-service` 与 uid 102 Calculator host。broker 或 compositor 退出会终止其余成员并重建 generation；Shell、terminal、Calculator 各自最多快速重启三次且互不拖垮。UART ash 保持独立 recovery console，不拥有图形状态。
-- `/bin/display-session` 只授权 parent 为 `liteui-session` 的 root compositor，保留 DRM/input OFD 并经固定 seatd 0.9.3 wire 与 `SCM_RIGHTS` 交付。compositor disconnect 时 broker 同步 DROP_MASTER/EVIOCREVOKE；不能证明撤销完成就退出，由 session 完整重建。
-- `/bin/liteui-compositor` 是唯一 DRM/evdev/netlink consumer。main reactor 拥有 Display/Scene、一只持久 scanout dumb buffer、pointer/focus/window tree 与 resize；geometry 与 pointer 都在该 buffer 上精确重绘 damage，再由固定 presenter pthread 执行单槽 SPSC 中的 blocking DIRTYFB。该路径不用两只 host resource 人工同步局部历史，也不常驻第二份全屏内存。recovery scene 的 child paint bounds 被约束在 window visual bounds 内，窗口移动以旧/新 window 加 shadow 的 union 作为 damage；cursor 同样覆盖旧/新位置。request 在途时 render/resize deadline 从 poll timeout 排除，idle 时两线程都无限阻塞。诊断模型与本次 overflow 案例见 [display damage guide](../desktop/display-damage.md)。
-- hotplug 采用 50 ms latest-mode quiet deadline，再执行 query-build-query 与 failure-atomic mode commit。瞬时 `EBUSY/EINTR/EINVAL` 保留候选并以 frame interval 重试，pre-commit OOM/预算失败保留旧 scanout。成功后 compositor 从 System Shell 的 TextGrid viewport 计算 16×32 cell geometry，并向 terminal service 发送唯一 configure；QEMU resize 不触发 terminal 自行 modeset 或字体缩放。
-- System Shell 通过 `LUI1` 发布 Solid retained subtree 并拥有 terminal 窗口 chrome；terminal service 不发布窗口。compositor 的 `liteui-core::TextGrid` 以两份 16,384-cell fixed state 保存 active/staging snapshot，完整校验 `LUG1` 后单次 swap。该上限正好等于 256 KiB payload / 16-byte cell，可覆盖 3840×2160 的 16×32 grid。raster 直接消费 active snapshot 和 checked 16×32 Medium/Bold A8 atlas，不保存 shadow framebuffer 或第二套 terminal scene。
-- `/bin/terminal-service` 只拥有 PTY child、ANSI parser、screen/reflow 与输入编码，不打开 DRM/evdev。它等待 compositor configure 后创建 PTY、设置真实 rows/columns/pixel winsize，并在读取首字节前重置 model。resize 按 prepare model→TIOCSWINSZ→commit model；退出时 close master、SIGKILL/reap child，`PR_SET_PDEATHSIG` 防止 session owner 消失后遗留 shell。
-- terminal 单线程 poll compositor socket 与 PTY；PTY 每 turn 最多读 64 KiB，键盘、X10/VT200 mouse 与 device reply 共用固定 4 KiB ring，内容发布最多 60 fps，没有 dirty/blink deadline 时无限阻塞。socket backpressure 只保留最新 ANSI model，不排队历史 frame；compositor 的固定 64-event ring 接近满时停止读取 keyboard evdev OFD，让唯一 evdev queue 承担 backpressure。
-- checked `TERM=liteos` 继承 pinned Linux console 并增加 `?1049` alternate screen。当前 model 支持增量 UTF-8、DECSC/DECRC、ECMA/DEC CSI、滚动区、插删/擦除、tab、DEC charset、OSC palette、16/256/truecolor SGR、device reply、deferred autowrap、应用光标/键盘、X10/VT200 mouse、alternate screen 与 blink；primary resize 按逻辑行 reflow，alternate resize 清屏后由 SIGWINCH 驱动应用重绘。
+## Data flow
 
-当前图形竖切已经从 direct-DRM terminal/reference client 收敛为唯一 compositor + System Shell +
-terminal service/TextGrid + Calculator。运行时性能门仍以 pointer latency、resize 连续性、idle CPU、
-process RSS 与 crash recovery 的实测为准；测量证明需要前，不引入 atomic KMS、render node、GPU
-backend、共享 buffer 或第二 input seat。
+```text
+evdev ──> reactor ──> bounded input queue ──> PTY master ──> shell/TUI
+shell/TUI ──> PTY master ──> Model ──> dirty spans ──> Display ──> DRM
+netlink hotplug ──> reactor ──> candidate Model + framebuffer ──> KMS commit ──> TIOCSWINSZ
+```
+
+`reactor` 只编排事件和 transaction，不复制 terminal/display 状态；`Model` 与 `Display`
+分别是字符语义和 scanout 资源的唯一事实源。三个方向都不经过第二个 broker、transport 或缓存。
+
+## Rootfs topology
+
+```text
+BusyBox init
+├── /bin/console-session
+│   └── /bin/sh (PTY controlling terminal)
+├── /etc/init.d/network-service
+└── -/bin/sh (UART recovery console)
+```
+
+rootfs 不包含 display broker、compositor、window manager、QuickJS、UI SDK、私有协议、应用目录
+或第二套 package profile。图形 console crash 由 init 重新启动；UART recovery path 不依赖图形状态。
+
+## Known limits
+
+当前 terminal model 覆盖 UTF-8、DEC/ECMA CSI、滚动区、alternate screen、16/256/truecolor、
+应用光标/键盘、X10/VT200 mouse、blink 与 primary reflow。尚未声明完整 grapheme cluster、SGR
+mouse 1006、bracketed paste、OSC 8/52、Kitty keyboard 或 synchronized output 支持。

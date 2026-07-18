@@ -17,8 +17,6 @@ from pathlib import Path
 
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
-from liteui_package import build_calculator_apk, build_system_shell_apk
-from quickjs_cache import build_quickjs, build_quickjs_bridge
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -37,7 +35,6 @@ from build_cache import (
     write_manifest,
 )
 from qemu_gate import boot, power_cut
-from display_stack_cache import DisplayStackPaths, build_display_stack
 from openssl_cache import OpenSslPaths, build_openssl
 from ext2_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
@@ -62,7 +59,7 @@ BINARY_RECIPE_VERSION = 5
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext2 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 7
+ROOTFS_RECIPE_VERSION = 9
 FORBIDDEN_BOOT_MARKERS = (
     "Invalid argument",
     "init: can't log to /dev/tty5",
@@ -686,9 +683,9 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
         "recipe_version": 2,
         "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
         "driver_sha256": sha256(ROOT / "scripts/musl_clang.py"),
-        "main_sha256": sha256(ROOT / "user/probes/dynamic-smoke.c"),
-        "spawn_sha256": sha256(ROOT / "scripts/fixtures/musl-process-spawn.c"),
-        "library_sha256": sha256(ROOT / "user/probes/dynamic-smoke-lib.c"),
+        "main_sha256": sha256(ROOT / "scripts/fixtures/musl/dynamic-smoke.c"),
+        "spawn_sha256": sha256(ROOT / "scripts/fixtures/musl/process-spawn.c"),
+        "library_sha256": sha256(ROOT / "scripts/fixtures/musl/dynamic-smoke-lib.c"),
     }
     entry = WORK / "dynamic-probes" / fingerprint(payload)
     if manifest_matches(entry, payload, ("dynamic-smoke", "libliteos-smoke.so")):
@@ -712,7 +709,7 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
                 "-shared",
                 "-fPIC",
                 "-Wl,-z,relro,-z,now,-z,noexecstack",
-                str(ROOT / "user/probes/dynamic-smoke-lib.c"),
+                str(ROOT / "scripts/fixtures/musl/dynamic-smoke-lib.c"),
                 "-o",
                 str(generation / "libliteos-smoke.so"),
             ],
@@ -723,8 +720,8 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
             [
                 sys.executable,
                 str(ROOT / "scripts/musl_clang.py"),
-                str(ROOT / "user/probes/dynamic-smoke.c"),
-                str(ROOT / "scripts/fixtures/musl-process-spawn.c"),
+                str(ROOT / "scripts/fixtures/musl/dynamic-smoke.c"),
+                str(ROOT / "scripts/fixtures/musl/process-spawn.c"),
                 "-fPIE",
                 "-pie",
                 "-ldl",
@@ -741,6 +738,45 @@ def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
         if not published:
             shutil.rmtree(generation, ignore_errors=True)
     return entry / "dynamic-smoke", entry / "libliteos-smoke.so"
+
+
+def install_runtime_execution_fixtures(
+    image: Path,
+    dynamic_probe: Path,
+    dynamic_library: Path,
+    workspace: Path,
+) -> None:
+    """Inject ABI and shebang consumers into one disposable runtime-gate image.
+
+    Args:
+        image: Private writable image owned by the current runtime gate.
+        dynamic_probe: Checked dynamic musl consumer executable.
+        dynamic_library: Checked shared object loaded by the consumer.
+        workspace: Gate-private directory for the script and debugfs command file.
+
+    Returns:
+        None. The supplied image contains the three verification-only files.
+
+    Raises:
+        OSError: Writing gate-private fixture files fails.
+        subprocess.CalledProcessError: debugfs cannot update the private image.
+    """
+    executable_script = workspace / "liteos-script"
+    executable_script.write_text(
+        "#!/bin/sh -e\n"
+        "[ \"$0\" = /bin/liteos-script ]\n"
+        "[ \"$1:$2\" = 'alpha beta:omega' ]\n"
+        "echo LITEOS_SCRIPT_EXEC_$((6*7))\n"
+    )
+    commands = workspace / "execution-fixtures.debugfs"
+    commands.write_text(
+        f"write {dynamic_library} /usr/lib/libliteos-smoke.so\n"
+        f"write {dynamic_probe} /bin/dynamic-smoke\n"
+        "set_inode_field /bin/dynamic-smoke mode 0100755\n"
+        f"write {executable_script} /bin/liteos-script\n"
+        "set_inode_field /bin/liteos-script mode 0100755\n"
+    )
+    run([str(find_debugfs()), "-w", "-f", str(commands), str(image)], ROOT)
 
 
 def build_rust_user_program(
@@ -856,102 +892,15 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def build_display_session(musl: MuslCachePaths) -> Path:
-    """构建 seat0 capability transition 的唯一 userspace owner。"""
+def build_console_session(musl: MuslCachePaths) -> Path:
+    """构建唯一 display/input/PTY/ANSI owner。"""
     return build_rust_user_program(
         musl,
-        "display-session",
-        "display-session",
-        "display-session",
-        2,
-        service_activation_inputs(),
-    )
-
-
-def build_compositor(musl: MuslCachePaths, stack: DisplayStackPaths) -> Path:
-    """构建图形 session 的唯一 double-buffered compositor owner。"""
-    return build_rust_user_program(
-        musl,
-        "liteui-compositor",
-        "liteui-compositor",
-        "liteui-compositor",
-        2,
-        (
-            *display_client_inputs(),
-            *liteui_core_inputs(),
-            *service_activation_inputs(),
-            ROOT / "assets/fonts/liteos-terminal.a8",
-        ),
-        (stack.libseat, stack.libdrm),
-    )
-
-
-def build_liteui_session(musl: MuslCachePaths) -> Path:
-    """构建图形 generation 与进程 failure domain 的唯一 owner。"""
-    return build_rust_user_program(
-        musl,
-        "liteui-session",
-        "liteui-session",
-        "liteui-session",
+        "console-session",
+        "console-session",
+        "console-session",
         1,
-    )
-
-
-def build_terminal_service(musl: MuslCachePaths) -> Path:
-    """构建只拥有 PTY/ANSI model 的非特权图形 terminal service。"""
-    return build_rust_user_program(
-        musl,
-        "terminal-service",
-        "terminal-service",
-        "terminal-service",
-        1,
-    )
-
-
-def build_liteui_host(musl: MuslCachePaths) -> Path:
-    """构建一个 application/process/runtime 的 capability-free QuickJS host。"""
-    quickjs = build_quickjs(musl)
-    bridge_source = ROOT / "user/liteui-host/native/bridge.c"
-    bridge = build_quickjs_bridge(musl, quickjs, bridge_source)
-    return build_rust_user_program(
-        musl,
-        "liteui-host",
-        "liteui-host",
-        "liteui-host",
-        1,
-        (bridge_source, ROOT / "scripts/quickjs_cache.py"),
-        static_archives=(bridge, quickjs.library),
-        system_libraries=("m",),
-    )
-
-
-def display_client_inputs() -> tuple[Path, ...]:
-    """返回共享 libseat lifecycle crate 的完整、精确构建输入。"""
-    crate = ROOT / "user/display-client"
-    return (
-        crate / "Cargo.toml",
-        crate / "Cargo.lock",
-        *sorted((crate / "src").rglob("*.rs")),
-    )
-
-
-def liteui_core_inputs() -> tuple[Path, ...]:
-    """返回无 I/O LiteUI deep module 的完整、精确构建输入。"""
-    crate = ROOT / "user/liteui-core"
-    return (
-        crate / "Cargo.toml",
-        crate / "Cargo.lock",
-        *sorted((crate / "src").rglob("*.rs")),
-    )
-
-
-def service_activation_inputs() -> tuple[Path, ...]:
-    """返回两个 activated listener consumers 共用的完整契约输入。"""
-    crate = ROOT / "user/service-activation"
-    return (
-        crate / "Cargo.toml",
-        crate / "Cargo.lock",
-        *sorted((crate / "src").rglob("*.rs")),
+        (ROOT / "assets/fonts/liteos-terminal.a8",),
     )
 
 
@@ -1025,17 +974,9 @@ def create_image(
         ],
         ROOT,
     )
-    dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-    display_session = build_display_session(musl)
-    display_stack = build_display_stack(musl)
-    compositor = build_compositor(musl, display_stack)
-    liteui_host = build_liteui_host(musl)
-    liteui_session = build_liteui_session(musl)
-    terminal_service = build_terminal_service(musl)
+    console_session = build_console_session(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
-    system_shell = build_system_shell_apk(bootstrap, WORK / "liteui-apks")
-    calculator = build_calculator_apk(bootstrap, WORK / "liteui-apks")
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
@@ -1044,17 +985,8 @@ def create_image(
         "mkdir /etc/terminfo/l",
         "mkdir /lib",
         "mkdir /run",
-        "mkdir /run/liteui",
-        "set_inode_field /run/liteui uid 100",
-        "set_inode_field /run/liteui gid 100",
-        "set_inode_field /run/liteui mode 040770",
         "mkdir /root",
         "set_inode_field /root mode 040700",
-        "mkdir /home",
-        "mkdir /home/liteui-terminal",
-        "set_inode_field /home/liteui-terminal uid 101",
-        "set_inode_field /home/liteui-terminal gid 100",
-        "set_inode_field /home/liteui-terminal mode 040700",
         "mkdir /tmp",
         "set_inode_field /tmp mode 041777",
         "mkdir /usr",
@@ -1063,16 +995,6 @@ def create_image(
         "mkdir /usr/share/udhcpc",
         "mkdir /var",
         "mkdir /var/cache",
-        "mkdir /var/cache/liteui",
-        "set_inode_field /var/cache/liteui mode 040755",
-        "mkdir /var/cache/liteui/100",
-        "set_inode_field /var/cache/liteui/100 uid 100",
-        "set_inode_field /var/cache/liteui/100 gid 100",
-        "set_inode_field /var/cache/liteui/100 mode 040700",
-        "mkdir /var/cache/liteui/102",
-        "set_inode_field /var/cache/liteui/102 uid 102",
-        "set_inode_field /var/cache/liteui/102 gid 100",
-        "set_inode_field /var/cache/liteui/102 mode 040700",
         "mkdir /var/empty",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
@@ -1088,23 +1010,8 @@ def create_image(
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
         "set_inode_field /usr/lib/libc.so mode 0100755",
-        f"write {display_stack.libseat} /usr/lib/libseat.so.1",
-        "set_inode_field /usr/lib/libseat.so.1 mode 0100755",
-        f"write {display_stack.libdrm} /usr/lib/libdrm.so.2",
-        "set_inode_field /usr/lib/libdrm.so.2 mode 0100755",
-        f"write {dynamic_library} /usr/lib/libliteos-smoke.so",
-        f"write {dynamic_probe} /bin/dynamic-smoke",
-        "set_inode_field /bin/dynamic-smoke mode 0100755",
-        f"write {compositor} /bin/liteui-compositor",
-        "set_inode_field /bin/liteui-compositor mode 0100755",
-        f"write {liteui_host} /bin/liteui-host",
-        "set_inode_field /bin/liteui-host mode 0100755",
-        f"write {liteui_session} /bin/liteui-session",
-        "set_inode_field /bin/liteui-session mode 0100755",
-        f"write {terminal_service} /bin/terminal-service",
-        "set_inode_field /bin/terminal-service mode 0100755",
-        f"write {display_session} /bin/display-session",
-        "set_inode_field /bin/display-session mode 0100755",
+        f"write {console_session} /bin/console-session",
+        "set_inode_field /bin/console-session mode 0100755",
         f"write {stress_tools} /bin/liteos-stress",
         "set_inode_field /bin/liteos-stress mode 0100755",
         "ln /bin/liteos-stress /bin/cputest",
@@ -1116,22 +1023,7 @@ def create_image(
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     commands.append(f"set_inode_field /bin/init links_count {len(BUSYBOX_LINKS) + 1}")
     script_path: Path | None = None
-    executable_script_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile("w", delete=False) as executable_script:
-            executable_script.write(
-                "#!/bin/sh -e\n"
-                "[ \"$0\" = /bin/liteos-script ]\n"
-                "[ \"$1:$2\" = 'alpha beta:omega' ]\n"
-                "echo LITEOS_SCRIPT_EXEC_$((6*7))\n"
-            )
-            executable_script_path = Path(executable_script.name)
-        commands.extend(
-            (
-                f"write {executable_script_path} /bin/liteos-script",
-                "set_inode_field /bin/liteos-script mode 0100755",
-            )
-        )
         with tempfile.NamedTemporaryFile("w", delete=False) as script:
             script.write("\n".join(commands) + "\n")
             script_path = Path(script.name)
@@ -1139,8 +1031,6 @@ def create_image(
     finally:
         if script_path is not None:
             script_path.unlink(missing_ok=True)
-        if executable_script_path is not None:
-            executable_script_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="liteos-apk-rootfs-") as workspace:
         assemble_apk_rootfs(
             image,
@@ -1149,7 +1039,7 @@ def create_image(
             BUSYBOX_LINKS,
             STRESS_LINKS,
             FORBIDDEN_BOOT_MARKERS,
-            (system_shell, calculator),
+            (),
         )
     listing = run([str(find_debugfs()), "-R", "ls -l /bin", str(image)], ROOT)
     entries: dict[str, int] = {}
@@ -1186,11 +1076,14 @@ def create_image(
     group = run([str(find_debugfs()), "-R", "cat /etc/group", str(image)], ROOT)
     if "root:x:0:0:root:/root:/bin/sh" not in passwd or "root:x:0:" not in group:
         raise RuntimeError("BusyBox rootfs lacks the canonical root identity records")
-    executable_script = run(
-        [str(find_debugfs()), "-R", "stat /bin/liteos-script", str(image)], ROOT
+    for fixture in ("dynamic-smoke", "liteos-script"):
+        if fixture in entries:
+            raise RuntimeError(f"product rootfs contains verification fixture: {fixture}")
+    product_libraries = run(
+        [str(find_debugfs()), "-R", "ls -l /usr/lib", str(image)], ROOT
     )
-    if "Type: regular" not in executable_script or "Mode:  0755" not in executable_script:
-        raise RuntimeError("BusyBox rootfs lacks executable shebang script")
+    if "libliteos-smoke.so" in product_libraries:
+        raise RuntimeError("product rootfs contains verification fixture: libliteos-smoke.so")
     loader = run([str(find_debugfs()), "-R", "stat /lib/ld-musl-riscv64.so.1", str(image)], ROOT)
     if "Type: symlink" not in loader or "Size: 16" not in loader:
         raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
@@ -1202,20 +1095,11 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    for path in (
-        "/bin/display-session",
-        "/bin/liteui-compositor",
-        "/bin/liteui-host",
-        "/bin/liteui-session",
-        "/bin/terminal-service",
-    ):
-        metadata = run([str(find_debugfs()), "-R", f"stat {path}", str(image)], ROOT)
-        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
-            raise RuntimeError(f"BusyBox rootfs lacks registered display program {path}")
-    for path in ("/usr/lib/libseat.so.1", "/usr/lib/libdrm.so.2"):
-        metadata = run([str(find_debugfs()), "-R", f"stat {path}", str(image)], ROOT)
-        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
-            raise RuntimeError(f"BusyBox rootfs lacks pinned display library {path}")
+    console = run(
+        [str(find_debugfs()), "-R", "stat /bin/console-session", str(image)], ROOT
+    )
+    if "Type: regular" not in console or "Mode:  0755" not in console:
+        raise RuntimeError("BusyBox rootfs lacks the console session")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
@@ -1247,17 +1131,9 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-    display_session = build_display_session(musl)
-    display_stack = build_display_stack(musl)
-    compositor = build_compositor(musl, display_stack)
-    liteui_host = build_liteui_host(musl)
-    liteui_session = build_liteui_session(musl)
-    terminal_service = build_terminal_service(musl)
+    console_session = build_console_session(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
-    system_shell = build_system_shell_apk(bootstrap, WORK / "liteui-apks")
-    calculator = build_calculator_apk(bootstrap, WORK / "liteui-apks")
     host_openssl = shutil.which("openssl")
     if host_openssl is None:
         raise RuntimeError("host OpenSSL is required to sign the rootfs package")
@@ -1269,51 +1145,23 @@ def create_published_image(
         ROOT / "bootloader/target/riscv64gc-unknown-none-elf/release/bootloader",
         binary,
         musl.install / "usr/lib/libc.so",
-        dynamic_probe,
-        dynamic_library,
-        display_session,
-        compositor,
-        liteui_host,
-        liteui_session,
-        terminal_service,
-        display_stack.libseat,
-        display_stack.libdrm,
+        console_session,
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
         bootstrap.ca_certificates_bundle,
         bootstrap.private_key,
         bootstrap.public_key,
-        system_shell,
-        calculator,
         *alpine_keys,
         ROOT / "user/base/passwd",
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
-        ROOT / "user/display-session/Cargo.toml",
-        ROOT / "user/display-session/Cargo.lock",
-        *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
-        *display_client_inputs(),
-        *service_activation_inputs(),
-        ROOT / "user/liteui-compositor/Cargo.toml",
-        ROOT / "user/liteui-compositor/Cargo.lock",
-        *sorted((ROOT / "user/liteui-compositor/src").rglob("*.rs")),
-        *liteui_core_inputs(),
-        ROOT / "user/liteui-host/Cargo.toml",
-        ROOT / "user/liteui-host/Cargo.lock",
-        *sorted((ROOT / "user/liteui-host/src").rglob("*.rs")),
-        ROOT / "user/liteui-host/native/bridge.c",
-        ROOT / "user/liteui-session/Cargo.toml",
-        ROOT / "user/liteui-session/Cargo.lock",
-        *sorted((ROOT / "user/liteui-session/src").rglob("*.rs")),
-        ROOT / "user/terminal-service/Cargo.toml",
-        ROOT / "user/terminal-service/Cargo.lock",
-        *sorted((ROOT / "user/terminal-service/src").rglob("*.rs")),
-        *sorted((ROOT / "user/apps/system-shell/src").iterdir()),
-        *sorted((ROOT / "user/apps/calculator/src").iterdir()),
-        ROOT / "user/apps/runtime/app-runtime.mjs",
+        ROOT / "user/console-session/Cargo.toml",
+        ROOT / "user/console-session/Cargo.lock",
+        *sorted((ROOT / "user/console-session/src").rglob("*.rs")),
         ROOT / "user/diagnostics/liteos-stress.c",
         ROOT / "assets/terminfo/l/liteos",
+        ROOT / "assets/fonts/liteos-terminal.a8",
         ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
@@ -1323,9 +1171,6 @@ def create_published_image(
         ROOT / "scripts/apk_cache.py",
         ROOT / "scripts/apk_package.py",
         ROOT / "scripts/apk_rootfs.py",
-        ROOT / "scripts/liteui_package.py",
-        ROOT / "scripts/quickjs_cache.py",
-        ROOT / "scripts/solidjs_cache.py",
         ROOT / "scripts/ext2_image.py",
         ROOT / "scripts/qemu_gate.py",
         find_mke2fs(),
@@ -1398,7 +1243,7 @@ def main() -> int:
             print(f"BusyBox {BUSYBOX_VERSION} rootfs build passed: {image}")
             return 0
         dynamic_probe, dynamic_library = build_dynamic_probe(musl)
-        display_stack = build_display_stack(musl)
+        console_session = build_console_session(musl)
         stamp = ROOT / "target/verify-gates/busybox.json"
         payload = runtime_gate_payload(
             "busybox-runtime",
@@ -1410,15 +1255,14 @@ def main() -> int:
                 musl.install / "usr/lib/libc.so",
                 dynamic_probe,
                 dynamic_library,
-                display_stack.libseat,
-                display_stack.libdrm,
+                console_session,
                 openssl.binary,
                 ROOT / "user/base/passwd",
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
-                ROOT / "user/display-session/Cargo.toml",
-                ROOT / "user/display-session/Cargo.lock",
-                *sorted((ROOT / "user/display-session/src").rglob("*.rs")),
+                ROOT / "user/console-session/Cargo.toml",
+                ROOT / "user/console-session/Cargo.lock",
+                *sorted((ROOT / "user/console-session/src").rglob("*.rs")),
                 ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
                 ROOT / "user/base/udhcpc.script",
@@ -1443,6 +1287,12 @@ def main() -> int:
         runtime_path = Path(runtime_directory.name)
         runtime_image = runtime_path / "fs.img"
         shutil.copyfile(image, runtime_image)
+        install_runtime_execution_fixtures(
+            runtime_image,
+            dynamic_probe,
+            dynamic_library,
+            runtime_path,
+        )
         http_server, http_port = start_http_gate()
         https_server, https_port, gate_ca = start_https_gate(runtime_path)
         install_runtime_tls_identity(runtime_image, gate_ca, runtime_path, find_debugfs())
@@ -1991,6 +1841,12 @@ def main() -> int:
         )
         crash_image = Path(runtime_directory.name) / "crash.img"
         shutil.copyfile(image, crash_image)
+        install_runtime_execution_fixtures(
+            crash_image,
+            dynamic_probe,
+            dynamic_library,
+            runtime_path,
+        )
         power_cut(
             crash_image,
             4,
