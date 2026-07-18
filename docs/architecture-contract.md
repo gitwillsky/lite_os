@@ -75,12 +75,13 @@
 | `kernel/src/platform/qemu_virt/plic.rs :: PlicInterruptController.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/drm.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
 | `kernel/src/drm.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
+| `kernel/src/drm/publication_order.rs :: IdAllocator.reusable` | `FallibleMap < T , () >` |
 | `kernel/src/fs/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
 | `kernel/src/fs/ext2.rs :: Ext2FileSystem.inode_cache` | `Mutex < FallibleMap < u32 , Weak < Ext2Inode > > >` |
 | `kernel/src/fs/ext2/journal.rs :: Journal.active` | `Option < FallibleMap < u32 , Vec < u8 > > >` |
 | `kernel/src/fs/page_cache.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
 | `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
-| `kernel/src/memory/mm.rs :: MapArea.data_frames` | `FallibleMap < VirtualPageNumber , PrivateResident >` |
+| `kernel/src/memory/mm/area.rs :: MapArea.data_frames` | `FallibleMap < VirtualPageNumber , PrivateResident >` |
 | `kernel/src/memory/mm.rs :: MemorySet.areas` | `FallibleMap < VirtualPageNumber , MapArea >` |
 | `kernel/src/memory/mm/shared_area.rs :: AnonymousSharedBacking.frames` | `Mutex < FallibleMap < usize , Arc < FrameTracker > > >` |
 | `kernel/src/memory/mm/shared_area.rs :: SharedFileArea.resident` | `FallibleMap < VirtualPageNumber , SharedResident >` |
@@ -92,6 +93,7 @@
 | `kernel/src/socket/unix/namespace.rs :: static NAMESPACE` | `Once < Mutex < FallibleMap < NamespaceKey , Weak < UnixSocket > > > >` |
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.nodes` | `FallibleMap < u64 , Arc < GraphNode > >` |
 | `kernel/src/socket/unix/rights_graph.rs :: RightsGraph.uid_inflight` | `FallibleMap < u32 , usize >` |
+| `kernel/src/socket/unix/stream_backlog.rs :: StreamBacklog.pending` | `FallibleMap < u64 , T >` |
 | `kernel/src/task/task_manager.rs :: ProcessGraph.nodes` | `FallibleMap < usize , ProcessNode >` |
 | `kernel/src/task/task_manager.rs :: ProcessNode.child_waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/task_manager.rs :: ProcessState::Live[0]` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
@@ -125,8 +127,6 @@ owner 并迁移到对应领域 module，或新增有领域含义的 module。
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/fs/ext2.rs` | 1861 | `fs::ext2` | inode 与 packed layout 仍共享 mutation domain；validation、allocator、storage、directory 与 rename 已下沉 | 提取不泄漏 packed layout 的 inode module 后下调 |
-| `kernel/src/memory/mm.rs` | 671 | `memory::MemorySet` | VMA、page-table commit、brk 与 kernel mapping 仍共享底层 PageTable/frame 不变量 | 提取不泄漏 PageTable/frame 的 kernel mapping 后下调 |
 
 ## Change contract
 

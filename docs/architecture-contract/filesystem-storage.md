@@ -12,7 +12,10 @@
   dense `Option<FileDescriptor>` table。RV64 reviewed payload 为 table inline 24 B、root/branch 各
   1040 B、64-slot FileDescriptor chunk 1024 B；仅 fd 0 与 1,048,575 时 heap payload 为 5168 B，
   全物化时 metadata/chunk payload 上限分别为 134,160 B/16,777,216 B（不含 allocator header）。
-- ext2 owner 独占 inode/directory/link/allocation mutation；JBD2 journal 独占 transaction/commit/replay；page cache 独占 cached page lifecycle。
+- ext2 owner 独占 inode/directory/link/allocation mutation；packed disk value 定义与字段保持
+  `fs::ext2` parent-private，`fs::ext2::layout` 只封装定长 decode/encode 与 raw byte access，
+  `fs::ext2::block_io` 封装 filesystem/device block 换算，`fs::ext2::inode` 独占 inode identity、
+  block mapping 与 VFS projection；JBD2 journal 独占 transaction/commit/replay；page cache 独占 cached page lifecycle。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
 
 ## Interface

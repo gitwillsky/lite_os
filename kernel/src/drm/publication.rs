@@ -2,65 +2,99 @@ use alloc::sync::Arc;
 
 use super::{
     DrmError, DrmFile, DumbBuffer, DumbBufferInfo, Framebuffer,
-    publication_order::{after_copyout, rollback_latest_u32, rollback_latest_u64},
+    publication_order::{ReservationError, UnpublishedId, after_copyout},
 };
 use crate::fallible_tree::VacantEntry;
+
+fn reservation_error(error: ReservationError) -> DrmError {
+    match error {
+        ReservationError::OutOfMemory => DrmError::OutOfMemory,
+        ReservationError::NoSpace => DrmError::NoSpace,
+    }
+}
 
 pub(super) struct DumbHandleReservation<'file> {
     file: &'file DrmFile,
     pub(super) handle: u32,
+    reservation: Option<UnpublishedId<u32>>,
 }
 
 impl<'file> DumbHandleReservation<'file> {
     pub(super) fn reserve(file: &'file DrmFile) -> Result<Self, DrmError> {
-        let handle = {
+        let reservation = {
             let mut state = file.state.lock();
-            let handle = state.next_handle;
-            state.next_handle = handle.checked_add(1).ok_or(DrmError::NoSpace)?;
-            handle
+            state.handle_ids.reserve().map_err(reservation_error)?
         };
-        Ok(Self { file, handle })
+        Ok(Self {
+            file,
+            handle: reservation.id(),
+            reservation: Some(reservation),
+        })
     }
 
-    fn commit(self) {
-        // namespace publication 已接管 identity；抑制 rollback-only Drop，不遗留 owned resource。
-        core::mem::forget(self);
+    fn commit(mut self) {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("published DRM handle lost reservation");
+        self.file.state.lock().handle_ids.publish(reservation);
     }
 }
 
 impl Drop for DumbHandleReservation<'_> {
     fn drop(&mut self) {
-        let mut state = self.file.state.lock();
-        rollback_latest_u32(&mut state.next_handle, self.handle);
+        if let Some(reservation) = self.reservation.take() {
+            self.file.state.lock().handle_ids.rollback(reservation);
+        }
     }
 }
 
 pub(super) struct BufferIdentityReservation<'file> {
     file: &'file DrmFile,
     pub(super) identity: u64,
+    reservation: Option<UnpublishedId<u64>>,
 }
 
 impl<'file> BufferIdentityReservation<'file> {
     pub(super) fn reserve(file: &'file DrmFile) -> Result<Self, DrmError> {
-        let identity = {
+        let reservation = {
             let mut state = file.device.state.lock();
-            let identity = state.next_buffer_identity;
-            state.next_buffer_identity = identity.checked_add(1).ok_or(DrmError::NoSpace)?;
-            identity
+            state
+                .buffer_identities
+                .reserve()
+                .map_err(reservation_error)?
         };
-        Ok(Self { file, identity })
+        Ok(Self {
+            file,
+            identity: reservation.id(),
+            reservation: Some(reservation),
+        })
     }
 
-    fn commit(self) {
-        // namespace publication 已接管 identity；抑制 rollback-only Drop，不遗留 owned resource。
-        core::mem::forget(self);
+    fn commit(mut self) {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("published DRM buffer identity lost reservation");
+        self.file
+            .device
+            .state
+            .lock()
+            .buffer_identities
+            .publish(reservation);
     }
 }
 
 impl Drop for BufferIdentityReservation<'_> {
     fn drop(&mut self) {
-        let mut state = self.file.device.state.lock();
-        rollback_latest_u64(&mut state.next_buffer_identity, self.identity);
+        if let Some(reservation) = self.reservation.take() {
+            self.file
+                .device
+                .state
+                .lock()
+                .buffer_identities
+                .rollback(reservation);
+        }
     }
 }
 
@@ -118,29 +152,46 @@ impl<'file> PreparedDumbBuffer<'file> {
 pub(super) struct FramebufferIdReservation<'file> {
     file: &'file DrmFile,
     pub(super) id: u32,
+    reservation: Option<UnpublishedId<u32>>,
 }
 
 impl<'file> FramebufferIdReservation<'file> {
     pub(super) fn reserve(file: &'file DrmFile) -> Result<Self, DrmError> {
-        let id = {
+        let reservation = {
             let mut state = file.device.state.lock();
-            let id = state.next_framebuffer_id;
-            state.next_framebuffer_id = id.checked_add(1).ok_or(DrmError::NoSpace)?;
-            id
+            state.framebuffer_ids.reserve().map_err(reservation_error)?
         };
-        Ok(Self { file, id })
+        Ok(Self {
+            file,
+            id: reservation.id(),
+            reservation: Some(reservation),
+        })
     }
 
-    fn commit(self) {
-        // namespace publication 已接管 identity；抑制 rollback-only Drop，不遗留 owned resource。
-        core::mem::forget(self);
+    fn commit(mut self) {
+        let reservation = self
+            .reservation
+            .take()
+            .expect("published DRM framebuffer ID lost reservation");
+        self.file
+            .device
+            .state
+            .lock()
+            .framebuffer_ids
+            .publish(reservation);
     }
 }
 
 impl Drop for FramebufferIdReservation<'_> {
     fn drop(&mut self) {
-        let mut state = self.file.device.state.lock();
-        rollback_latest_u32(&mut state.next_framebuffer_id, self.id);
+        if let Some(reservation) = self.reservation.take() {
+            self.file
+                .device
+                .state
+                .lock()
+                .framebuffer_ids
+                .rollback(reservation);
+        }
     }
 }
 

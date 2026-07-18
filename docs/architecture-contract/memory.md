@@ -3,7 +3,9 @@
 ## Owner
 
 - frame allocator 独占物理页容量和 buddy metadata；global allocator 独占已借入 extent 内的 slab/direct metadata。
-- `MemorySet` 独占 page table、VMA 和 program break；page cache 独占 shared file page、dirty/writeback 与 reclaim state。
+- `MemorySet` 独占 page table、有序 VMA 集合和 program break；`mm::area` 只封装单个 VMA
+  的范围、backing、resident frame 与 map/partition/merge mechanism，不取得集合 owner。
+  page cache 独占 shared file page、dirty/writeback 与 reclaim state。
 - `FilePageRange` 独占 file mapping checked projection；`PrivateResident` 与 `SharedResident` 分别独占对应 residency record。
 
 ## Interface

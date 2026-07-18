@@ -366,28 +366,6 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         Ok(value) => value,
         Err(error) => return error,
     };
-    let resources =
-        if client.domain() == SocketDomain::Unix && client.socket_type() == SocketType::Stream {
-            let server_notify = match task::create_notification_endpoints() {
-                Ok(value) => value,
-                Err(_) => return -errno::ENOMEM,
-            };
-            let client_to_server = match task::create_pipe_endpoints() {
-                Ok(value) => value,
-                Err(_) => return -errno::ENOMEM,
-            };
-            let server_to_client = match task::create_pipe_endpoints() {
-                Ok(value) => value,
-                Err(_) => return -errno::ENOMEM,
-            };
-            Some(UnixConnectResources {
-                server_notify,
-                client_to_server,
-                server_to_client,
-            })
-        } else {
-            None
-        };
     let credentials = (client.domain() == SocketDomain::Unix).then(current_unix_credentials);
     let unix_path = match &address {
         SocketAddress::Unix(unix) if !unix.is_abstract() => match unix_path::resolve(unix, true) {
@@ -397,7 +375,26 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
         _ => None,
     };
     let unix_identity = unix_path.as_ref().map(|(_, identity)| *identity);
-    match client.connect(address, resources, credentials, unix_identity) {
+    let resources = || {
+        let server_notify = match task::create_notification_endpoints() {
+            Ok(value) => value,
+            Err(_) => return Err(SocketError::NoMemory),
+        };
+        let client_to_server = match task::create_pipe_endpoints() {
+            Ok(value) => value,
+            Err(_) => return Err(SocketError::NoMemory),
+        };
+        let server_to_client = match task::create_pipe_endpoints() {
+            Ok(value) => value,
+            Err(_) => return Err(SocketError::NoMemory),
+        };
+        Ok(UnixConnectResources {
+            server_notify,
+            client_to_server,
+            server_to_client,
+        })
+    };
+    match client.connect(address, credentials, unix_identity, resources) {
         Ok(()) => 0,
         Err(SocketError::InProgress) if *ofd.flags.lock() & O_NONBLOCK != 0 => -errno::EINPROGRESS,
         Err(SocketError::InProgress) => loop {

@@ -23,9 +23,12 @@
   必须重新发布 deferred work，不能依赖用户可见 readiness 继续 drain。
 - PTY master syscall write 的 user-copy chunk 同样限制为 256 bytes，并在返回前同步 drain 完整
   chunk；因此用户可见 `POLLIN` 只投影 cooked input/canonical EOF，未成行 raw bytes 只供内部
-  `wait_ready(raw || cooked)` 封闭进度竞态。其他 character backend 保持 512-byte chunk。
+  `wait_ready(raw || cooked)` 封闭进度竞态。其他 character backend 保持 512-byte chunk；
+  architecture fence 直接解析 `CharacterDevice::poll_events` 与 sequential-write production dispatch，
+  禁止 user-visible poll 改用 raw readiness，或 PTY master 退回 512-byte character chunk。
 - PTY registry 通过 composition root 保存不可变 input-signal callback；PTY master drain 生成的 ISIG bitset 必须由 task owner 路由到当时的 foreground process group，filesystem 不得反向依赖 task graph。
 - DMA/storage 必须在 publication 前预留；queue ownership、fence 或 descriptor mapping 损坏时 fail-stop。
 - DRM CREATE_DUMB/ADDFB 必须先预留 backing、object node 与 identity；完整 ioctl copyout 成功后才
-  无分配发布 handle/ID，copyout failure 必须回收资源并释放未发布的最新 identity。
+  无分配发布 handle/ID；identity reserve 同时预留 rollback node，copyout failure 必须按任意并发
+  顺序无分配回收全部未发布 identity，已经 publication 的 identity 永不复用。
 - DRM close/RMFB/disable、evdev revoke、PTY master close 与 session exit 必须沿唯一 owner seam 清理并在锁外发布 consequence。

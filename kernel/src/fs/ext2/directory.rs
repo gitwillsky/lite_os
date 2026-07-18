@@ -26,7 +26,7 @@ impl Ext2Inode {
         name: &[u8],
         kind: InodeType,
     ) -> Result<(), FileSystemError> {
-        let needed = align_up(mem::size_of::<Ext2DirEntry2Header>() + name.len(), 4);
+        let needed = align_up(Ext2DirEntry2Header::SIZE + name.len(), 4);
         let blocks = ceil_div(self.size() as usize, self.fs.block_size);
         for index in 0..=blocks {
             let block = if index == blocks {
@@ -45,12 +45,10 @@ impl Ext2Inode {
                     name_len: name.len() as u8,
                     file_type: inode_kind::file_type(kind),
                 };
-                // SAFETY: a fresh complete block has room for the header and validated name.
-                unsafe {
-                    ptr::write_unaligned(buf.as_mut_ptr() as *mut Ext2DirEntry2Header, header)
-                };
-                buf[mem::size_of::<Ext2DirEntry2Header>()
-                    ..mem::size_of::<Ext2DirEntry2Header>() + name.len()]
+                if !header.encode(&mut buf, 0) {
+                    return Err(FileSystemError::InvalidFileSystem);
+                }
+                buf[Ext2DirEntry2Header::SIZE..Ext2DirEntry2Header::SIZE + name.len()]
                     .copy_from_slice(name);
                 self.fs.write_fs_block(block, &buf)?;
                 let mut inode = mutation.inode(self)?;
@@ -60,45 +58,30 @@ impl Ext2Inode {
             }
             let mut pos = 0;
             while pos < self.fs.block_size {
-                // SAFETY: directory validation guarantees a complete header at pos.
-                let mut header = unsafe {
-                    ptr::read_unaligned(buf.as_ptr().add(pos) as *const Ext2DirEntry2Header)
-                };
+                let mut header = Ext2DirEntry2Header::decode(&buf, pos)
+                    .ok_or(FileSystemError::InvalidFileSystem)?;
                 let record = header.rec_len as usize;
                 if record < 8 || pos + record > self.fs.block_size {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
-                let ideal = align_up(
-                    mem::size_of::<Ext2DirEntry2Header>() + header.name_len as usize,
-                    4,
-                );
+                let ideal = align_up(Ext2DirEntry2Header::SIZE + header.name_len as usize, 4);
                 if header.inode == 0 && record >= needed {
                     header.inode = child;
                     header.name_len = name.len() as u8;
                     header.file_type = inode_kind::file_type(kind);
-                    // SAFETY: directory validation proved `record` covers a complete header at
-                    // `pos`; write_unaligned updates that on-disk header without forming a reference.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                            header,
-                        )
-                    };
-                    let start = pos + mem::size_of::<Ext2DirEntry2Header>();
+                    if !header.encode(&mut buf, pos) {
+                        return Err(FileSystemError::InvalidFileSystem);
+                    }
+                    let start = pos + Ext2DirEntry2Header::SIZE;
                     buf[start..start + name.len()].copy_from_slice(name);
                     self.fs.write_fs_block(block, &buf)?;
                     return Ok(());
                 }
                 if header.inode != 0 && record >= ideal + needed {
                     header.rec_len = ideal as u16;
-                    // SAFETY: `pos` names the validated current record and its complete header
-                    // lies inside the full block buffer.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                            header,
-                        )
-                    };
+                    if !header.encode(&mut buf, pos) {
+                        return Err(FileSystemError::InvalidFileSystem);
+                    }
                     let new_pos = pos + ideal;
                     let new_header = Ext2DirEntry2Header {
                         inode: child,
@@ -106,15 +89,10 @@ impl Ext2Inode {
                         name_len: name.len() as u8,
                         file_type: inode_kind::file_type(kind),
                     };
-                    // SAFETY: split condition proves `new_pos + header_size <= pos + record`, so
-                    // the new unaligned header lies wholly inside the current block buffer.
-                    unsafe {
-                        ptr::write_unaligned(
-                            buf.as_mut_ptr().add(new_pos) as *mut Ext2DirEntry2Header,
-                            new_header,
-                        )
-                    };
-                    let start = new_pos + mem::size_of::<Ext2DirEntry2Header>();
+                    if !new_header.encode(&mut buf, new_pos) {
+                        return Err(FileSystemError::InvalidFileSystem);
+                    }
+                    let start = new_pos + Ext2DirEntry2Header::SIZE;
                     buf[start..start + name.len()].copy_from_slice(name);
                     self.fs.write_fs_block(block, &buf)?;
                     return Ok(());
@@ -143,48 +121,30 @@ impl Ext2Inode {
             let mut pos = 0;
             let mut previous = None;
             while pos < self.fs.block_size {
-                // SAFETY: prior record validation advances `pos` by a nonzero aligned rec_len;
-                // the loop bound and filesystem validation guarantee a complete header remains.
-                let header = unsafe {
-                    ptr::read_unaligned(buf.as_ptr().add(pos) as *const Ext2DirEntry2Header)
-                };
+                let header = Ext2DirEntry2Header::decode(&buf, pos)
+                    .ok_or(FileSystemError::InvalidFileSystem)?;
                 let record = header.rec_len as usize;
                 if record < 8 || pos + record > self.fs.block_size {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
-                let start = pos + mem::size_of::<Ext2DirEntry2Header>();
+                let start = pos + Ext2DirEntry2Header::SIZE;
                 if header.inode != 0
                     && header.name_len as usize <= record - 8
                     && &buf[start..start + header.name_len as usize] == name
                 {
                     if let Some(previous_pos) = previous {
-                        // SAFETY: `previous_pos` was recorded only after validating a complete
-                        // preceding directory record in this same live block buffer.
-                        let mut previous_header = unsafe {
-                            ptr::read_unaligned(
-                                buf.as_ptr().add(previous_pos) as *const Ext2DirEntry2Header
-                            )
-                        };
+                        let mut previous_header = Ext2DirEntry2Header::decode(&buf, previous_pos)
+                            .ok_or(FileSystemError::InvalidFileSystem)?;
                         previous_header.rec_len += header.rec_len;
-                        // SAFETY: previous header remains inside the block; merging adjacent
-                        // validated lengths cannot extend beyond their original combined span.
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf.as_mut_ptr().add(previous_pos) as *mut Ext2DirEntry2Header,
-                                previous_header,
-                            )
-                        };
+                        if !previous_header.encode(&mut buf, previous_pos) {
+                            return Err(FileSystemError::InvalidFileSystem);
+                        }
                     } else {
                         let mut empty = header;
                         empty.inode = 0;
-                        // SAFETY: `pos` currently identifies a validated complete header in buf;
-                        // write_unaligned changes only its inode field representation.
-                        unsafe {
-                            ptr::write_unaligned(
-                                buf.as_mut_ptr().add(pos) as *mut Ext2DirEntry2Header,
-                                empty,
-                            )
-                        };
+                        if !empty.encode(&mut buf, pos) {
+                            return Err(FileSystemError::InvalidFileSystem);
+                        }
                     }
                     self.fs.write_fs_block(block, &buf)?;
                     return Ok(header.inode);
@@ -216,16 +176,11 @@ impl Ext2Inode {
             self.fs.read_fs_block(block, &mut bytes)?;
             let mut offset = 0;
             while offset < self.fs.block_size {
-                if offset + mem::size_of::<Ext2DirEntry2Header>() > self.fs.block_size {
-                    return Err(FileSystemError::InvalidFileSystem);
-                }
-                // SAFETY: 剩余 bytes 已覆盖完整 packed header；按值非对齐读取。
-                let header = unsafe {
-                    ptr::read_unaligned(bytes[offset..].as_ptr() as *const Ext2DirEntry2Header)
-                };
+                let header = Ext2DirEntry2Header::decode(&bytes, offset)
+                    .ok_or(FileSystemError::InvalidFileSystem)?;
                 let record_length = header.rec_len as usize;
                 let name_length = header.name_len as usize;
-                let minimum = align_up(mem::size_of::<Ext2DirEntry2Header>() + name_length, 4);
+                let minimum = align_up(Ext2DirEntry2Header::SIZE + name_length, 4);
                 let end = offset
                     .checked_add(record_length)
                     .ok_or(FileSystemError::InvalidFileSystem)?;
@@ -235,7 +190,7 @@ impl Ext2Inode {
                 {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
-                let name_start = offset + mem::size_of::<Ext2DirEntry2Header>();
+                let name_start = offset + Ext2DirEntry2Header::SIZE;
                 if name_length > 255 || name_start + name_length > end {
                     return Err(FileSystemError::InvalidFileSystem);
                 }
@@ -288,14 +243,9 @@ impl Ext2Inode {
         disk.set_gid(metadata.gid);
         if target.len() <= mem::size_of::<[u32; 15]>() {
             disk.i_size_lo = target.len() as u32;
-            // SAFETY: target 不超过 i_block 的 60-byte inline storage，且源/目标不重叠。
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    target.as_ptr(),
-                    ptr::addr_of_mut!(disk.i_block).cast::<u8>(),
-                    target.len(),
-                )
-            };
+            if !disk.set_inline_symlink(target) {
+                return Err(FileSystemError::InvalidFileSystem);
+            }
             self.fs.write_inode_disk(number, &disk)?;
         } else {
             self.fs.write_inode_disk(number, &disk)?;

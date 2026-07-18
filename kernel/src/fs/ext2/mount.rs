@@ -123,3 +123,342 @@ impl Ext2FileSystem {
         Ok(())
     }
 }
+
+impl Ext2FileSystem {
+    /// Validate group descriptor
+    fn validate_group_descriptor(
+        gd: &Ext2GroupDesc,
+        group_index: usize,
+        sb: &Ext2SuperBlock,
+    ) -> Result<(), FileSystemError> {
+        let blocks_per_group = sb.s_blocks_per_group as usize;
+        let inodes_per_group = sb.s_inodes_per_group as usize;
+
+        // Copy fields to avoid unaligned access
+        let block_bitmap = gd.bg_block_bitmap;
+        let inode_bitmap = gd.bg_inode_bitmap;
+        let inode_table = gd.bg_inode_table;
+        let free_blocks_count = gd.bg_free_blocks_count;
+        let free_inodes_count = gd.bg_free_inodes_count;
+        let used_dirs_count = gd.bg_used_dirs_count;
+
+        // Validate block bitmap location
+        if block_bitmap == 0 {
+            error!(
+                "[EXT2] Group {}: invalid block bitmap location (0)",
+                group_index
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Validate inode bitmap location
+        if inode_bitmap == 0 {
+            error!(
+                "[EXT2] Group {}: invalid inode bitmap location (0)",
+                group_index
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Validate inode table location
+        if inode_table == 0 {
+            error!(
+                "[EXT2] Group {}: invalid inode table location (0)",
+                group_index
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Validate free block count
+        if free_blocks_count as usize > blocks_per_group {
+            error!(
+                "[EXT2] Group {}: free blocks count {} exceeds blocks per group {}",
+                group_index, free_blocks_count, blocks_per_group
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Validate free inode count
+        if free_inodes_count as usize > inodes_per_group {
+            error!(
+                "[EXT2] Group {}: free inodes count {} exceeds inodes per group {}",
+                group_index, free_inodes_count, inodes_per_group
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Validate used directories count
+        if used_dirs_count as usize > inodes_per_group {
+            error!(
+                "[EXT2] Group {}: used dirs count {} exceeds inodes per group {}",
+                group_index, used_dirs_count, inodes_per_group
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Logical consistency check: used dirs can't exceed (total inodes - free inodes)
+        let used_inodes = inodes_per_group - free_inodes_count as usize;
+        if used_dirs_count as usize > used_inodes {
+            error!(
+                "[EXT2] Group {}: used dirs count {} exceeds used inodes {}",
+                group_index, used_dirs_count, used_inodes
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        Ok(())
+    }
+
+    /// Perform filesystem consistency checks
+    fn check_filesystem_consistency(&self) -> Result<(), FileSystemError> {
+        let groups = self.groups.lock();
+        let mut total_free_blocks = 0u32;
+        let mut total_free_inodes = 0u32;
+
+        // Check each group descriptor consistency
+        for (i, gd) in groups.iter().enumerate() {
+            // Copy fields to avoid unaligned access
+            let free_blocks = gd.bg_free_blocks_count;
+            let free_inodes = gd.bg_free_inodes_count;
+            let block_bitmap = gd.bg_block_bitmap;
+            let inode_bitmap = gd.bg_inode_bitmap;
+            let inode_table = gd.bg_inode_table;
+
+            let total_blocks = self.superblock.lock().s_blocks_count as usize;
+            let block_limit = cmp::min(
+                self.blocks_per_group,
+                total_blocks
+                    .saturating_sub(self.first_data_block as usize + i * self.blocks_per_group),
+            );
+            let total_inodes = self.superblock.lock().s_inodes_count as usize;
+            let inode_limit = cmp::min(
+                self.inodes_per_group,
+                total_inodes.saturating_sub(i * self.inodes_per_group),
+            );
+            let mut block_bits = try_zeroed(self.block_size)?;
+            let mut inode_bits = try_zeroed(self.block_size)?;
+            self.read_fs_block(block_bitmap, &mut block_bits)?;
+            self.read_fs_block(inode_bitmap, &mut inode_bits)?;
+            let bitmap_free_blocks = (0..block_limit)
+                .filter(|index| block_bits[index / 8] & (1 << (index % 8)) == 0)
+                .count();
+            let bitmap_free_inodes = (0..inode_limit)
+                .filter(|index| inode_bits[index / 8] & (1 << (index % 8)) == 0)
+                .count();
+            if bitmap_free_blocks != free_blocks as usize
+                || bitmap_free_inodes != free_inodes as usize
+            {
+                error!("[EXT2] Group {} bitmap/descriptor free-count mismatch", i);
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+
+            total_free_blocks += free_blocks as u32;
+            total_free_inodes += free_inodes as u32;
+
+            // Verify bitmap blocks are within reasonable range
+            let group_start = self.first_data_block + (i as u32 * self.blocks_per_group as u32);
+            let group_end = group_start + self.blocks_per_group as u32;
+
+            if block_bitmap < group_start || block_bitmap >= group_end {
+                error!(
+                    "[EXT2] Group {}: block bitmap {} outside group range [{}, {})",
+                    i, block_bitmap, group_start, group_end
+                );
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+
+            if inode_bitmap < group_start || inode_bitmap >= group_end {
+                error!(
+                    "[EXT2] Group {}: inode bitmap {} outside group range [{}, {})",
+                    i, inode_bitmap, group_start, group_end
+                );
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+
+            if inode_table < group_start || inode_table >= group_end {
+                error!(
+                    "[EXT2] Group {}: inode table {} outside group range [{}, {})",
+                    i, inode_table, group_start, group_end
+                );
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+        }
+
+        drop(groups);
+
+        // Check if group descriptor totals match superblock (copy to avoid unaligned access)
+        let superblock = self.superblock.lock();
+        let sb_free_blocks = superblock.s_free_blocks_count;
+        let sb_free_inodes = superblock.s_free_inodes_count;
+        drop(superblock);
+
+        if total_free_blocks != sb_free_blocks {
+            error!(
+                "[EXT2] Free blocks count mismatch: superblock={}, group_descriptors={}",
+                sb_free_blocks, total_free_blocks
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        if total_free_inodes != sb_free_inodes {
+            error!(
+                "[EXT2] Free inodes count mismatch: superblock={}, group_descriptors={}",
+                sb_free_inodes, total_free_inodes
+            );
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Check root inode exists and is valid
+        match self.read_inode_disk(2) {
+            Ok(root_inode) => {
+                if (root_inode.i_mode & 0xF000) != 0x4000 {
+                    error!("[EXT2] Root inode is not a directory");
+                    return Err(FileSystemError::InvalidFileSystem);
+                }
+                if root_inode.i_links_count == 0 {
+                    error!("[EXT2] Root inode has zero link count");
+                    return Err(FileSystemError::InvalidFileSystem);
+                }
+            }
+            Err(_) => {
+                error!("[EXT2] Cannot read root inode");
+                return Err(FileSystemError::InvalidFileSystem);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 从块设备加载并校验 ext2 元数据。
+    ///
+    /// # Parameters
+    ///
+    /// - `device`: 存放 ext2 卷的块设备。
+    ///
+    /// # Returns
+    ///
+    /// 成功时返回同步读写文件系统实例。
+    ///
+    /// # Errors
+    ///
+    /// 设备 I/O 失败、超级块或块组描述符无效、特性不受支持时返回错误。
+    pub(crate) fn new(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, FileSystemError> {
+        let dev_block_size = device.block_size();
+        if dev_block_size != BLOCK_SIZE {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        // Read superblock at byte offset 1024 from filesystem start
+        // Superblock is always 1024 bytes long starting at offset 1024
+        // We need to read enough device blocks to cover offset 1024-2048
+        let superblock_offset = 1024usize;
+        let superblock_size = 1024usize;
+        let blocks_needed = (superblock_offset + superblock_size).div_ceil(dev_block_size);
+        let mut sb_data = try_zeroed(blocks_needed * dev_block_size)?;
+
+        for i in 0..blocks_needed {
+            device
+                .read_block(
+                    i,
+                    &mut sb_data[i * dev_block_size..(i + 1) * dev_block_size],
+                )
+                .map_err(|_| FileSystemError::IoError)?;
+        }
+
+        let superblock = Ext2SuperBlock::decode(&sb_data, superblock_offset)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
+
+        if superblock.s_magic != EXT2_SUPER_MAGIC {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        let block_size = 1024usize << superblock.s_log_block_size;
+        // Comprehensive superblock validation
+        if let Err(e) = Self::validate_superblock(&superblock, block_size) {
+            error!("[EXT2] Superblock validation failed: {:?}", e);
+            return Err(e);
+        }
+
+        // Filesystem block size can differ from device block size
+        // 文件系统块可能大于设备块，后续读取统一由 `read_fs_block_from` 换算。
+
+        // Get inode size from superblock
+        let inode_size = if superblock.s_rev_level >= 1 && superblock.s_inode_size != 0 {
+            superblock.s_inode_size as usize
+        } else {
+            128usize // EXT2_GOOD_OLD_INODE_SIZE
+        };
+
+        // Validate inode size
+        if inode_size < 128 || (inode_size & (inode_size - 1)) != 0 {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        let blocks_per_group = superblock.s_blocks_per_group as usize;
+        let inodes_per_group = superblock.s_inodes_per_group as usize;
+        let first_data_block = superblock.s_first_data_block;
+
+        // Read group descriptor table
+        let gdt_start_block = if block_size == 1024 { 2 } else { 1 } as usize;
+        let total_blocks = superblock.s_blocks_count as usize;
+        let group_count = ceil_div(total_blocks - first_data_block as usize, blocks_per_group);
+        let gdt_bytes = group_count * Ext2GroupDesc::SIZE;
+        let gdt_blocks = ceil_div(gdt_bytes, block_size);
+
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(group_count)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut gdt_buf = try_zeroed(gdt_blocks * block_size)?;
+        for i in 0..gdt_blocks {
+            Self::read_fs_block_from(
+                &device,
+                block_size,
+                (gdt_start_block + i) as u32,
+                &mut gdt_buf[i * block_size..(i + 1) * block_size],
+            )?;
+        }
+        for i in 0..group_count {
+            let start = i * Ext2GroupDesc::SIZE;
+            let gd =
+                Ext2GroupDesc::decode(&gdt_buf, start).ok_or(FileSystemError::InvalidFileSystem)?;
+
+            // Validate group descriptor
+            if let Err(e) = Self::validate_group_descriptor(&gd, i, &superblock) {
+                error!("[EXT2] Group descriptor {} validation failed: {:?}", i, e);
+                return Err(e);
+            }
+
+            groups.push(gd);
+        }
+
+        let fs = Arc::try_new(Self {
+            device,
+            superblock: Mutex::new(superblock),
+            block_size,
+            inode_size,
+            inodes_per_group,
+            blocks_per_group,
+            first_data_block,
+            groups: Mutex::new(groups),
+            mutation: Mutex::new(()),
+            journal: Mutex::new(None),
+            inode_cache: Mutex::new(FallibleMap::new()),
+            self_ref: spin::Mutex::new(Weak::new()),
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        // set self_ref
+        *fs.self_ref.lock() = Arc::downgrade(&fs);
+
+        let mut journal = Journal::load(&fs)?;
+        journal.recover(&fs)?;
+        fs.superblock.lock().s_feature_incompat |= EXT2_FEATURE_INCOMPAT_RECOVER;
+        fs.write_primary_superblock()?;
+        fs.device.flush().map_err(|_| FileSystemError::IoError)?;
+        *fs.journal.lock() = Some(journal);
+        fs.recover_orphans()?;
+        fs.check_filesystem_consistency()?;
+
+        Ok(fs)
+    }
+}

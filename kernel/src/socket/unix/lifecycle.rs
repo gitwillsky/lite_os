@@ -5,51 +5,152 @@ use crate::ipc::PipeEnd;
 use super::{BoundAddress, SocketState, UnixSocket};
 use crate::socket::{SocketError, SocketType, UnixCredentials};
 
+use super::stream_backlog::{BacklogReservation, StagedConnection};
+
+enum CapacityReservation {
+    Reserved(BacklogReservation<Arc<UnixSocket>>),
+    Staged(StagedConnection<Arc<UnixSocket>>),
+}
+
+struct ConnectGuard {
+    // Some 是 client Connecting state 的唯一 owner。所有 error/OOM exit 由 Drop 还原 Initial；
+    // commit 取走 capability。缺失它会让失败 transaction 永久留下不可重试 endpoint。
+    client: Option<Arc<UnixSocket>>,
+    listener: Arc<UnixSocket>,
+    capacity: Option<CapacityReservation>,
+}
+
+impl ConnectGuard {
+    fn begin(client: &Arc<UnixSocket>, listener: &Arc<UnixSocket>) -> Result<Self, SocketError> {
+        let mut state = client.state.lock();
+        if !matches!(*state, SocketState::Initial) {
+            return Err(SocketError::AlreadyConnected);
+        }
+        *state = SocketState::Connecting;
+        drop(state);
+        let mut guard = Self {
+            client: Some(client.clone()),
+            listener: listener.clone(),
+            capacity: None,
+        };
+        let reservation = {
+            let mut listener_state = listener.state.lock();
+            let SocketState::Listening { backlog } = &mut *listener_state else {
+                return Err(SocketError::ConnectionRefused);
+            };
+            backlog.reserve().map_err(|_| SocketError::Again)?
+        };
+        guard.capacity = Some(CapacityReservation::Reserved(reservation));
+        Ok(guard)
+    }
+
+    fn stage(&mut self, server: Arc<UnixSocket>) -> Result<(), SocketError> {
+        let reservation = match self.capacity.take() {
+            Some(CapacityReservation::Reserved(reservation)) => reservation,
+            _ => panic!("AF_UNIX connect capacity staged twice"),
+        };
+        match reservation.try_stage(server) {
+            Ok(staged) => {
+                self.capacity = Some(CapacityReservation::Staged(staged));
+                Ok(())
+            }
+            Err((_, reservation)) => {
+                self.capacity = Some(CapacityReservation::Reserved(reservation));
+                Err(SocketError::NoMemory)
+            }
+        }
+    }
+
+    fn commit(mut self, state: SocketState) {
+        let client = self
+            .client
+            .as_ref()
+            .expect("AF_UNIX connect guard consumed twice");
+        let staged = match self.capacity.take() {
+            Some(CapacityReservation::Staged(staged)) => staged,
+            _ => panic!("AF_UNIX connect committed without staged backlog node"),
+        };
+        let mut client_state = client.state.lock();
+        assert!(
+            matches!(*client_state, SocketState::Connecting),
+            "AF_UNIX connect transaction lost client ownership"
+        );
+        let mut listener_state = self.listener.state.lock();
+        let SocketState::Listening { backlog } = &mut *listener_state else {
+            panic!("AF_UNIX reserved listener changed state");
+        };
+        *client_state = state;
+        backlog.commit(staged);
+        drop(listener_state);
+        drop(client_state);
+        self.client.take();
+    }
+}
+
+impl Drop for ConnectGuard {
+    fn drop(&mut self) {
+        if let Some(capacity) = self.capacity.take() {
+            let reservation = match capacity {
+                CapacityReservation::Reserved(reservation) => reservation,
+                CapacityReservation::Staged(staged) => staged.into_reservation(),
+            };
+            let mut listener_state = self.listener.state.lock();
+            let SocketState::Listening { backlog } = &mut *listener_state else {
+                panic!("AF_UNIX reserved listener changed state during rollback");
+            };
+            backlog.rollback(reservation);
+        }
+        let Some(client) = self.client.take() else {
+            return;
+        };
+        let mut state = client.state.lock();
+        assert!(
+            matches!(*state, SocketState::Connecting),
+            "AF_UNIX failed connect lost transaction state"
+        );
+        *state = SocketState::Initial;
+    }
+}
+
+struct PreparedClientStream {
+    receive: Arc<super::stream::StreamReceive>,
+    transmit: Arc<super::stream::StreamTransmit>,
+    peer: Option<super::UnixAddress>,
+    peer_credentials: UnixCredentials,
+}
+
 impl UnixSocket {
     /// @description 原子建立 client/server stream endpoints 并发布到 listener backlog。
     /// @param client 发起连接且仍处于 Initial 的 endpoint。
     /// @param listener 已进入 Listening 的目标 endpoint。
-    /// @param server 尚未发布的 accepted endpoint。
-    /// @param client_to_server client 写、server 读的 Pipe endpoints。
-    /// @param server_to_client server 写、client 读的 Pipe endpoints。
+    /// @param resources 只在 listener capacity reservation 成功后调用的 transport factory。
     /// @param client_credentials connect transaction 捕获的 caller credentials。
     /// @return 两端状态与 backlog publication 全部成功。
     /// @errors 类型、状态、backlog 或内存约束不满足时不发布半连接。
-    pub(crate) fn connect_stream(
+    pub(crate) fn connect_stream<F>(
         client: &Arc<Self>,
         listener: &Arc<Self>,
-        server: Arc<Self>,
-        client_to_server: (Arc<PipeEnd>, Arc<PipeEnd>),
-        server_to_client: (Arc<PipeEnd>, Arc<PipeEnd>),
         client_credentials: UnixCredentials,
-    ) -> Result<(), SocketError> {
+        resources: F,
+    ) -> Result<(), SocketError>
+    where
+        F: FnOnce() -> Result<crate::socket::UnixConnectResources, SocketError>,
+    {
         if client.socket_type != SocketType::Stream || listener.socket_type != SocketType::Stream {
             return Err(SocketError::WrongType);
         }
-        let mut client_state = client.state.lock();
-        if !matches!(*client_state, SocketState::Initial) {
-            return Err(SocketError::AlreadyConnected);
-        }
-        let mut listener_state = listener.state.lock();
-        let SocketState::Listening { backlog, pending } = &mut *listener_state else {
-            return Err(SocketError::ConnectionRefused);
-        };
-        if pending.len() >= *backlog {
-            return Err(SocketError::Again);
-        }
-        pending.try_reserve(1).map_err(|_| SocketError::NoMemory)?;
-        let (client_receive, server_transmit) = super::stream::channel(server_to_client, client)?;
-        let (server_receive, client_transmit) = super::stream::channel(client_to_server, &server)?;
-
-        // 1. 所有 fallible work 在 publication 前完成。
-        // 2. 两端 transport 和 accepted address 在 listener lock 内一次提交。
-        // 3. 最后发布 backlog 并在解锁后唤醒，避免观察到半连接或锁内 callback。
-        *client_state = SocketState::Stream {
-            receive: Some(client_receive),
-            transmit: Some(client_transmit),
-            peer: listener.address(),
-            peer_credentials: Some(listener.credentials),
-        };
+        let mut guard = ConnectGuard::begin(client, listener)?;
+        let resources = resources()?;
+        let server = UnixSocket::new(
+            SocketType::Stream,
+            resources.server_notify,
+            listener.credentials,
+            crate::id::next_runtime_object_id(),
+        )?;
+        let (client_receive, server_transmit) =
+            super::stream::channel(resources.server_to_client, client)?;
+        let (server_receive, client_transmit) =
+            super::stream::channel(resources.client_to_server, &server)?;
         *server.state.lock() = SocketState::Stream {
             receive: Some(server_receive),
             transmit: Some(server_transmit),
@@ -60,9 +161,23 @@ impl UnixSocket {
             visible,
             binding: None,
         });
-        pending.push_back(server);
-        drop(listener_state);
-        drop(client_state);
+        let client_stream = PreparedClientStream {
+            receive: client_receive,
+            transmit: client_transmit,
+            peer: listener.address(),
+            peer_credentials: listener.credentials,
+        };
+        guard.stage(server)?;
+
+        // 1. backlog reservation 在线性化点先于全部大块/可失败分配。
+        // 2. server state 与 queue node 都在锁外完整准备。
+        // 3. client lock 内只执行无分配 publication；pending 随后即可被 accept 安全观察。
+        guard.commit(SocketState::Stream {
+            receive: Some(client_stream.receive),
+            transmit: Some(client_stream.transmit),
+            peer: client_stream.peer,
+            peer_credentials: Some(client_stream.peer_credentials),
+        });
         listener.notify();
         Ok(())
     }
@@ -155,10 +270,10 @@ impl UnixSocket {
     /// @errors 非 listener 或 backlog 为空时返回明确错误。
     pub(crate) fn accept(&self) -> Result<Arc<Self>, SocketError> {
         let mut state = self.state.lock();
-        let SocketState::Listening { pending, .. } = &mut *state else {
+        let SocketState::Listening { backlog } = &mut *state else {
             return Err(SocketError::Invalid);
         };
-        let accepted = pending.pop_front().ok_or(SocketError::Again)?;
+        let accepted = backlog.pop().ok_or(SocketError::Again)?;
         drop(state);
         self.consume_notify();
         Ok(accepted)

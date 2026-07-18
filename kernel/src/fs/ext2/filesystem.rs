@@ -18,10 +18,7 @@ impl FileSystem for Ext2FileSystem {
         let superblock = *self.superblock.lock();
         let group_count = self.groups.lock().len();
         // 2. 按 Linux ext2_statfs 排除 superblock、GDT、bitmap 与 inode table overhead。
-        let descriptor_blocks = ceil_div(
-            group_count * mem::size_of::<Ext2GroupDesc>(),
-            self.block_size,
-        );
+        let descriptor_blocks = ceil_div(group_count * Ext2GroupDesc::SIZE, self.block_size);
         let inode_table_blocks = ceil_div(self.inodes_per_group * self.inode_size, self.block_size);
         let backup_blocks = (0..group_count)
             .filter(|group| self.group_has_superblock(*group))

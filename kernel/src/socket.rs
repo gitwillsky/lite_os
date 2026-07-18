@@ -298,13 +298,16 @@ impl Socket {
         }
     }
 
-    pub(crate) fn connect(
+    pub(crate) fn connect<F>(
         self: &Arc<Self>,
         address: SocketAddress,
-        resources: Option<UnixConnectResources>,
         unix_credentials: Option<UnixCredentials>,
         unix_path: Option<UnixPathIdentity>,
-    ) -> Result<(), SocketError> {
+        unix_resources: F,
+    ) -> Result<(), SocketError>
+    where
+        F: FnOnce() -> Result<UnixConnectResources, SocketError>,
+    {
         match (&self.backend, address) {
             (SocketBackend::Inet(socket), SocketAddress::Inet(address)) => socket.connect(address),
             (SocketBackend::Unix(client), SocketAddress::Unix(address)) => {
@@ -316,20 +319,11 @@ impl Socket {
                 if self.socket_type == SocketType::Datagram {
                     return client.connect_datagram(&listener);
                 }
-                let resources = resources.ok_or(SocketError::NoMemory)?;
-                let server = UnixSocket::new(
-                    SocketType::Stream,
-                    resources.server_notify,
-                    listener.credentials(),
-                    crate::id::next_runtime_object_id(),
-                )?;
                 UnixSocket::connect_stream(
                     client,
                     &listener,
-                    server,
-                    resources.client_to_server,
-                    resources.server_to_client,
                     unix_credentials.ok_or(SocketError::Invalid)?,
+                    unix_resources,
                 )
             }
             (SocketBackend::InterfaceControl, _) => Err(SocketError::OperationNotSupported),

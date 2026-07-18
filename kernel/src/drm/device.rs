@@ -272,9 +272,9 @@ pub(crate) fn init(
             reset_after_owner: None,
         }),
         state: Mutex::new(DrmDeviceState {
-            next_buffer_identity: 1,
+            buffer_identities: IdAllocator::new(1),
             next_file_identity: 1,
-            next_framebuffer_id: 4,
+            framebuffer_ids: IdAllocator::new(4),
             master: None,
             mode,
             framebuffers: FallibleMap::new(),
@@ -300,7 +300,7 @@ pub(crate) fn open() -> Result<Arc<DrmFile>, ()> {
         device,
         file_identity,
         state: Mutex::new(DrmFileState {
-            next_handle: 1,
+            handle_ids: IdAllocator::new(1),
             buffers: FallibleMap::new(),
             was_master: false,
         }),

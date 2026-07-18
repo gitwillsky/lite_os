@@ -67,6 +67,10 @@ mod riscv_pte;
 mod unix_datagram_queue;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/socket/unix/stream_backlog.rs"]
+mod unix_stream_backlog;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/syscall/user_iovec.rs"]
 mod user_iovec;
 
@@ -160,3 +164,7 @@ mod task_execution_tests;
 #[cfg(test)]
 #[path = "tests/socket_abi.rs"]
 mod socket_abi_tests;
+
+#[cfg(test)]
+#[path = "tests/unix_stream_backlog.rs"]
+mod unix_stream_backlog_tests;

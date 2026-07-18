@@ -20,6 +20,7 @@ mod mode;
 mod publication;
 mod publication_order;
 pub(crate) use publication::{PreparedDumbBuffer, PreparedFramebuffer};
+use publication_order::IdAllocator;
 
 struct CompletionState {
     // OWNER: pending 同时绑定 adapter fence 与 scanout/damage/disable 领域结果；若拆分，
@@ -73,9 +74,13 @@ struct ActiveScanout {
 }
 
 struct DrmDeviceState {
-    next_buffer_identity: u64,
+    // OWNER: allocator 只回收 publication 前失败的 buffer identity；若仅保留 monotonic next，
+    // 并发 transaction 的非尾部 copyout failure 会永久烧掉 identity。
+    buffer_identities: IdAllocator<u64>,
     next_file_identity: u64,
-    next_framebuffer_id: u32,
+    // OWNER: framebuffer allocator 与 device-wide object map 同锁；rollback storage 在 reserve
+    // 时预留，copyout failure 可按任意并发顺序无分配回收未发布 ID。
+    framebuffer_ids: IdAllocator<u32>,
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
@@ -108,7 +113,7 @@ struct Framebuffer {
 struct DrmFileState {
     // OWNER: handle allocator 与同 OFD map 共用 transaction lock；若独立递增，两个并发
     // CREATE_DUMB 可预留同一 handle，后提交者会覆盖前一个 object access。
-    next_handle: u32,
+    handle_ids: IdAllocator<u32>,
     // OWNER: buffers 是当前 OFD 唯一 GEM handle namespace；缺失 file-private collection
     // 会让不同 open 通过猜测 handle/offset 访问彼此 backing。
     buffers: FallibleMap<u32, Arc<DumbBuffer>>,
@@ -134,7 +139,7 @@ struct DrmDevice {
 pub(crate) struct DrmFile {
     device: Arc<DrmDevice>,
     file_identity: u64,
-    // OWNER: 每个 OFD 的 handle namespace 与 next_handle 在同一锁内发布；若放到 device
+    // OWNER: 每个 OFD 的 handle namespace 与 handle allocator 在同一锁内发布；若放到 device
     // global，两个独立 open 会错误地互相获得或销毁 buffer access。
     state: Mutex<DrmFileState>,
     // OWNER: 每个 OFD 唯一拥有 Linux event_space 与 read cursor。固定 4 KiB queue 让
@@ -260,8 +265,8 @@ impl DrmFile {
             .filter(|size| *size != 0)
             .ok_or(DrmError::Invalid)?;
 
-        // 1. 未发布 identity/handle 由 reservation token 独占；后续 OOM/copyout failure 会把
-        //    最新 reservation 退回 allocator，已成功 publication 的 identity 仍绝不复用。
+        // 1. 未发布 identity/handle 由 reservation token 独占；后续 OOM/copyout failure 会
+        //    按任意并发顺序退回 allocator，已成功 publication 的 identity 仍绝不复用。
         let handle = publication::DumbHandleReservation::reserve(self)?;
         let identity = publication::BufferIdentityReservation::reserve(self)?;
 

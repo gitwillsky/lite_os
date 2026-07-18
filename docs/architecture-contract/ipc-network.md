@@ -16,4 +16,7 @@
 ## Failure and cleanup
 
 - send/receive publication 在 payload、control、fd reservation 与 queue capacity 全部验证后提交；partial stream progress 与 atomic message 失败必须区分。
+- AF_UNIX stream listener 以 pending queue 与 RAII connect reservation 共同计入唯一 backlog
+  capacity；backlog-full 必须在 transport factory 前返回，queue node、双向 Pipe 与 accepted endpoint
+  全部在 listener/client lock 外准备，OOM 或并发失败由 reservation capability 自动回滚。
 - hardirq 不分配；deferred 网络处理有 batch 上限。close/drop 不得在 registry/graph lock 内反向调用 socket state。

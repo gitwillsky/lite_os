@@ -1,5 +1,4 @@
 use alloc::{
-    collections::VecDeque,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -29,6 +28,9 @@ mod rights_graph;
 #[path = "unix/stream.rs"]
 mod stream;
 use stream::{StreamReceive, StreamTransmit};
+#[path = "unix/stream_backlog.rs"]
+mod stream_backlog;
+use stream_backlog::StreamBacklog;
 
 pub(crate) const SCM_MAX_FD: usize = 253;
 
@@ -49,9 +51,11 @@ struct BoundAddress {
 
 enum SocketState {
     Initial,
+    // Connecting 只在 ConnectGuard capability 存活期间存在；Drop 必须回滚到 Initial。
+    // 缺失该 transaction state 会让同一 client 的并发 connect 重复分配两套 128 KiB transport。
+    Connecting,
     Listening {
-        backlog: usize,
-        pending: VecDeque<Arc<UnixSocket>>,
+        backlog: StreamBacklog<Arc<UnixSocket>>,
     },
     Stream {
         receive: Option<Arc<StreamReceive>>,
@@ -122,10 +126,6 @@ impl UnixSocket {
 
     pub(super) fn node_id(&self) -> u64 {
         self.node_id
-    }
-
-    pub(crate) fn credentials(&self) -> UnixCredentials {
-        self.credentials
     }
 
     pub(super) fn node(self: &Arc<Self>) -> UnixNode {
@@ -235,13 +235,11 @@ impl UnixSocket {
         if self.socket_type != SocketType::Stream || self.address.lock().is_none() {
             return Err(SocketError::Invalid);
         }
+        let backlog = StreamBacklog::new(backlog);
         let mut state = self.state.lock();
         match &*state {
             SocketState::Initial => {
-                *state = SocketState::Listening {
-                    backlog: backlog.max(1),
-                    pending: VecDeque::new(),
-                };
+                *state = SocketState::Listening { backlog };
                 Ok(())
             }
             SocketState::Listening { .. } => Ok(()),
@@ -354,14 +352,14 @@ impl UnixSocket {
     pub(crate) fn poll_state(&self) -> SocketPollState {
         let state = self.state.lock();
         match &*state {
-            SocketState::Initial => SocketPollState {
+            SocketState::Initial | SocketState::Connecting => SocketPollState {
                 readable: false,
                 writable: false,
                 hangup: false,
                 error: false,
             },
-            SocketState::Listening { pending, .. } => SocketPollState {
-                readable: !pending.is_empty(),
+            SocketState::Listening { backlog } => SocketPollState {
+                readable: !backlog.is_empty(),
                 writable: false,
                 hangup: false,
                 error: false,
