@@ -746,20 +746,20 @@ def install_runtime_execution_fixtures(
     dynamic_library: Path,
     workspace: Path,
 ) -> None:
-    """Inject ABI and shebang consumers into one disposable runtime-gate image.
+    """只向一次性 runtime-gate 镜像注入 ABI 与 shebang consumer。
 
     Args:
-        image: Private writable image owned by the current runtime gate.
-        dynamic_probe: Checked dynamic musl consumer executable.
-        dynamic_library: Checked shared object loaded by the consumer.
-        workspace: Gate-private directory for the script and debugfs command file.
+        image: 当前 runtime gate 独占的可写镜像。
+        dynamic_probe: 已校验的动态 musl consumer executable。
+        dynamic_library: consumer 加载的已校验 shared object。
+        workspace: script 与 debugfs command file 的 gate-private 目录。
 
     Returns:
-        None. The supplied image contains the three verification-only files.
+        None。返回时 supplied image 包含三个 verification-only 文件。
 
     Raises:
-        OSError: Writing gate-private fixture files fails.
-        subprocess.CalledProcessError: debugfs cannot update the private image.
+        OSError: 写入 gate-private fixture 文件失败。
+        subprocess.CalledProcessError: debugfs 无法更新 private image。
     """
     executable_script = workspace / "liteos-script"
     executable_script.write_text(

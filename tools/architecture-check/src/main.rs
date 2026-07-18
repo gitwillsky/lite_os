@@ -260,12 +260,7 @@ fn check_source_sizes(
 fn check_userspace_single_track(root: &Path, errors: &mut Vec<String>) {
     check_user_source_sizes(root, errors);
 
-    let allowed = BTreeSet::from([
-        "README.md",
-        "base",
-        "console-session",
-        "diagnostics",
-    ]);
+    let allowed = BTreeSet::from(["README.md", "base", "console-session", "diagnostics"]);
     let actual = match fs::read_dir(root.join("user")) {
         Ok(entries) => entries
             .flatten()
