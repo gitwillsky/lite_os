@@ -40,7 +40,7 @@ impl MemorySet {
             return Ok(start);
         }
         let end = start.checked_add(len).ok_or(UserAccessError::Overflow)?;
-        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        let user_end = config::USER_ADDRESS_END;
         if start == 0 || start >= user_end || end > user_end {
             return Err(UserAccessError::Fault);
         }
@@ -50,14 +50,14 @@ impl MemorySet {
     pub(super) fn user_page(
         &self,
         address: usize,
-        required: PTEFlags,
+        required: PagePermissions,
     ) -> Result<(PhysicalPageNumber, usize), UserAccessError> {
         let va = VirtualAddress::from(address);
         let pte = self
             .page_table
             .translate(va.floor())
             .ok_or(UserAccessError::Fault)?;
-        if !pte.flags().contains(PTEFlags::U | required) {
+        if !pte.permissions().contains(PagePermissions::USER | required) {
             return Err(UserAccessError::Fault);
         }
         Ok((pte.ppn(), va.page_offset()))
@@ -92,7 +92,7 @@ impl MemorySet {
         let end = Self::checked_user_end(address, length)?;
         let mut current = address;
         while current < end {
-            if self.user_page(current, PTEFlags::R).is_err() {
+            if self.user_page(current, PagePermissions::READ).is_err() {
                 self.fault_in_user_page(current, PageFaultAccess::Read, limits)?;
             }
             current = (current | (config::PAGE_SIZE - 1))
@@ -122,7 +122,7 @@ impl MemorySet {
             // 绕过它直接按 PTE copy 会让共享 frame 被覆盖或让已写页仍可被回收。
             self.fault_in_user_page(current, PageFaultAccess::Write, limits)?;
             // 2. Handled 的领域 postcondition 已证明 U|W leaf 可重试；再次查询只会让每个
-            // copyout 页多走一遍 Sv39 页表，不提供新的失败原子性或状态证明。
+            // copyout 页多走一遍 architecture page table，不提供新的失败原子性或状态证明。
             current = (current | (config::PAGE_SIZE - 1))
                 .saturating_add(1)
                 .min(end);
@@ -141,7 +141,7 @@ impl MemorySet {
         let mut current = address;
         let mut copied = 0;
         while current < end {
-            let (ppn, offset) = self.user_page(current, PTEFlags::R)?;
+            let (ppn, offset) = self.user_page(current, PagePermissions::READ)?;
             let count = (config::PAGE_SIZE - offset).min(end - current);
             // SAFETY: user_page 证明源页存活且 U|R；destination 是有效独占切片。
             unsafe {
@@ -168,7 +168,7 @@ impl MemorySet {
         let mut current = address;
         let mut copied = 0;
         while current < end {
-            let (ppn, offset) = self.user_page(current, PTEFlags::W)?;
+            let (ppn, offset) = self.user_page(current, PagePermissions::WRITE)?;
             let count = (config::PAGE_SIZE - offset).min(end - current);
             // SAFETY: user_page 证明目标页存活且 U|W；source 是有效只读切片。
             unsafe {
@@ -204,7 +204,8 @@ impl MemorySet {
             return Err(UserAccessError::Fault);
         }
         self.prepare_user_write(address, 4, limits)?;
-        let (ppn, offset) = self.user_page(address, PTEFlags::R | PTEFlags::W)?;
+        let (ppn, offset) =
+            self.user_page(address, PagePermissions::READ | PagePermissions::WRITE)?;
         if offset + 4 > config::PAGE_SIZE {
             return Err(UserAccessError::Fault);
         }
@@ -227,10 +228,10 @@ impl MemorySet {
         let mut current = address;
         while bytes.len() < max_len {
             Self::checked_user_end(current, 1)?;
-            if self.user_page(current, PTEFlags::R).is_err() {
+            if self.user_page(current, PagePermissions::READ).is_err() {
                 self.fault_in_user_page(current, PageFaultAccess::Read, limits)?;
             }
-            let (ppn, offset) = self.user_page(current, PTEFlags::R)?;
+            let (ppn, offset) = self.user_page(current, PagePermissions::READ)?;
             let count = (config::PAGE_SIZE - offset).min(max_len - bytes.len());
             // SAFETY: user_page 证明当前页存活且可读，slice 不越页且不逃逸本次循环。
             let page = unsafe { core::slice::from_raw_parts(ppn.as_page_ptr().add(offset), count) };

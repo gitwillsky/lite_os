@@ -49,7 +49,7 @@ impl UartState {
             if self.rx.len() < RX_CAPACITY {
                 self.rx.push_back(byte);
             }
-            // 满 ring 仍必须读取 RBR 以撤销 level IRQ；否则 PLIC 会持续重入并饿死系统。
+            // 满 ring 仍必须读取 RBR 以撤销 level IRQ；否则 interrupt controller 会持续重入。
         }
     }
 }
@@ -61,7 +61,7 @@ impl InterruptHandler for UartInterruptHandler {
     }
 }
 
-/// @description 初始化 DTB UART RX ring，并返回唯一 PLIC handler。
+/// @description 初始化 platform UART RX ring，并返回唯一 external-interrupt handler。
 ///
 /// @param base DTB UART MMIO 起始地址。
 /// @param size DTB UART MMIO 长度，必须覆盖 16550 前六个 byte register。
@@ -80,7 +80,7 @@ pub(super) fn init(base: usize, size: usize) -> Result<Arc<dyn InterruptHandler>
         .map_err(|_| InterruptError::NoMemory)
 }
 
-/// @description 在 PLIC handler/affinity 发布后使能 16550 received-data interrupt。
+/// @description 在 external handler/affinity 发布后使能 16550 received-data interrupt。
 ///
 /// @return 无返回值；UART 尚未初始化表示启动不变量损坏并 fail-stop。
 pub(super) fn enable_receive_interrupt() {

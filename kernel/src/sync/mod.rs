@@ -25,31 +25,29 @@ pub(crate) fn next_readiness_generation() -> u64 {
         .expect("readiness generation exhausted")
 }
 
-/// @description 当前 hart 的 supervisor interrupt 屏蔽 guard。
+/// @description 当前 CPU 的 architecture local-interrupt 屏蔽 guard。
 ///
-/// 构造时保存 SIE 并关闭本地 S-mode 中断；释放时仅在原状态为 enabled 时恢复。
-/// 嵌套 guard 的内层观察到 SIE 已关闭，因此不会提前打开中断。
+/// 构造时保存并关闭本地中断；释放时仅在原状态为 enabled 时恢复。
+/// 嵌套 guard 的内层观察到中断已关闭，因此不会提前打开中断。
 #[must_use = "dropping the guard immediately re-enables local interrupts"]
 pub(crate) struct LocalIrqGuard {
-    restore_sie: bool,
-    // guard 只能在创建它的 hart 上释放；缺失该约束会在错误 hart 上修改 SIE。
+    state: crate::arch::interrupt::LocalInterruptState,
+    // guard 只能在创建它的 CPU 上释放；缺失该约束会在错误 CPU 上修改 local interrupt state。
     _not_send: PhantomData<*mut ()>,
 }
 
 impl LocalIrqGuard {
-    /// @description 关闭当前 hart 的 S-mode 中断并返回恢复 guard。
+    /// @description 关闭当前 CPU 的 local interrupt 并返回恢复 guard。
     ///
-    /// @return 离开作用域时恢复构造前 SIE 状态的 guard。
-    /// @errors 无可恢复错误；必须在 S-mode kernel 上下文调用。
+    /// @return 离开作用域时恢复构造前 local-interrupt 状态的 guard。
+    /// @errors 无可恢复错误；必须在 kernel execution context 调用。
     #[inline(always)]
     pub(crate) fn disable() -> Self {
-        let restore_sie = riscv::register::sstatus::read().sie();
-        // SAFETY: kernel 在 S-mode 执行；只修改当前 hart 的 SIE，原值由同 hart guard 保存。
-        unsafe { riscv::register::sstatus::clear_sie() };
-        // 防止编译器把临界区内的普通内存访问移动到 clear SIE 之前。
+        let state = crate::arch::interrupt::disable_local();
+        // 防止编译器把临界区内的普通内存访问移动到关闭 local interrupt 之前。
         compiler_fence(Ordering::SeqCst);
         Self {
-            restore_sie,
+            state,
             _not_send: PhantomData,
         }
     }
@@ -58,18 +56,16 @@ impl LocalIrqGuard {
 impl Drop for LocalIrqGuard {
     #[inline(always)]
     fn drop(&mut self) {
-        // 临界区写必须在重新允许本地中断前对编译器可见；跨 hart 可见性仍由具体 lock/atomic 提供。
+        // 临界区写必须在重新允许本地中断前对编译器可见；跨 CPU 可见性仍由具体 lock/atomic 提供。
         compiler_fence(Ordering::SeqCst);
-        if self.restore_sie {
-            // SAFETY: PhantomData 使 guard 不可跨 hart 发送，因此只恢复创建时读取的本地 SIE。
-            unsafe { riscv::register::sstatus::set_sie() };
-        }
+        // SAFETY: PhantomData 使 guard 不可跨 CPU 发送，因此只恢复创建时读取的本地状态。
+        unsafe { crate::arch::interrupt::restore_local(self.state) };
     }
 }
 
-/// @description 屏蔽本地 S-mode 中断的非睡眠互斥锁。
+/// @description 屏蔽 architecture local interrupt 的非睡眠互斥锁。
 ///
-/// 该锁防止同 hart interrupt reentrancy，并由底层 spin mutex 串行化其他 hart。
+/// 该锁防止同 CPU interrupt reentrancy，并由底层 spin mutex 串行化其他 CPU。
 /// guard 内禁止调度、阻塞 I/O 或执行无界工作。
 pub(crate) struct IrqMutex<T: ?Sized> {
     inner: spin::Mutex<T>,
@@ -91,7 +87,7 @@ impl<T> IrqMutex<T> {
 impl<T: ?Sized> IrqMutex<T> {
     /// @description 先关闭本地中断，再自旋获取互斥锁。
     ///
-    /// @return 可变访问受保护值的 guard；释放顺序固定为 unlock 后 restore SIE。
+    /// @return 可变访问受保护值的 guard；释放顺序固定为 unlock 后恢复 local interrupt。
     /// @errors 不返回错误；递归获取同一 mutex 会永久自旋，调用者必须遵守锁序。
     #[inline(always)]
     pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {

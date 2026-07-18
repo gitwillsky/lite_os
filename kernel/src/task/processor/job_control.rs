@@ -2,10 +2,10 @@ use super::*;
 
 /// @description 撤销 Running membership 并进入 preemption 或既有 group-stop 交接状态。
 ///
-/// @param task 当前 hart 唯一 running Task。
-/// @return 无返回值；Ready/Stopped 发布必须等源 hart 切回 idle stack。
+/// @param task 当前 CPU 唯一 running Task。
+/// @return 无返回值；Ready/Stopped 发布必须等源 CPU 切回 idle stack。
 pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) {
-    let source_cpu = hart_id();
+    let source_cpu = cpu::current_id();
     let current =
         with_current_processor(Processor::take_current).expect("preemption requires current task");
     assert!(Arc::ptr_eq(&current, task));
@@ -23,21 +23,15 @@ pub(in crate::task) fn begin_preempt_running_task(task: &Arc<TaskControlBlock>) 
     }
 }
 
-pub(super) fn request_reschedule_on(cpu: usize) {
-    let cpu_index = if cpu == hart_id() {
-        hart::current_hart_index()
-    } else {
-        hart::hart_index(cpu)
-            .unwrap_or_else(|| panic!("reschedule CPU {} is absent from DTB topology", cpu))
-    };
-    publish_reschedule_at(cpu_index);
+pub(super) fn request_reschedule_on(cpu: CpuId) {
+    publish_reschedule_at(cpu);
 }
 
-/// @description timer tick 到期时仅在本 hart 存在 runnable 竞争者才请求抢占。
+/// @description timer tick 到期时仅在当前 CPU 存在 runnable 竞争者才请求抢占。
 ///
 /// @return 无返回值；单一 Running task 不产生无意义的自我 context switch。
 pub(in crate::task) fn request_tick_reschedule() {
-    let slot = current_per_hart();
+    let slot = current_per_cpu();
     let competitors = slot.ready_entries.load(Ordering::Relaxed);
     if slot.running_entries.load(Ordering::Relaxed) != 0 && competitors != 0 {
         request_reschedule();

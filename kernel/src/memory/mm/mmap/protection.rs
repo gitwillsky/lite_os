@@ -80,7 +80,8 @@ impl MemorySet {
             }
         }
         self.merge_adjacent_anonymous();
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mprotect page-table update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after mprotect page-table update");
         Ok(())
     }
 
@@ -108,7 +109,7 @@ impl MemorySet {
                 }
                 resident.writer = writer;
             }
-            let flags = PTEFlags::from_bits(permission.bits()).unwrap();
+            let flags = permission.into();
             match (old_leaf, new_leaf) {
                 (true, true) => self.page_table.set_flags(vpn, flags)?,
                 (true, false) => self.page_table.unmap(vpn)?,
@@ -135,13 +136,13 @@ impl MemorySet {
             let Some(frame) = area.data_frames.get(&vpn) else {
                 continue;
             };
-            let mut flags = PTEFlags::from_bits(permission.bits()).unwrap();
+            let mut flags: PagePermissions = permission.into();
             if permission.contains(MapPermission::W)
                 && area.shared_anonymous.is_none()
                 && (Arc::strong_count(&frame.frame) > 1
                     || area.private_file.is_some() && !frame.dirty)
             {
-                flags.remove(PTEFlags::W);
+                flags.remove(PagePermissions::WRITE);
             }
             match (old_leaf, new_leaf) {
                 (true, true) => self.page_table.set_flags(vpn, flags)?,

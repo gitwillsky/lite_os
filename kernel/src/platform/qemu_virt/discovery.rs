@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::{
     fmt::{self, Display},
     ops::Range,
@@ -6,15 +7,70 @@ use core::{
 use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
 use spin::Once;
 
-// OWNER: DTB module publishes the immutable board description for the kernel lifetime.
-static BOARD_INFO: Once<BoardInfo> = Once::new();
+use crate::cpu::HardwareCpuId;
 
-pub(crate) fn init(dtb_addr: usize) {
-    BOARD_INFO.call_once(|| BoardInfo::parse(dtb_addr));
+// OWNER: platform discovery publishes the immutable machine description for the kernel lifetime.
+static PLATFORM_INFO: Once<PlatformInfo> = Once::new();
+
+/// @description QEMU virt firmware 交付的 opaque device-tree handoff。
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BootInfo(usize);
+
+impl BootInfo {
+    pub(crate) fn from_firmware_opaque(value: usize) -> Self {
+        Self(value)
+    }
+
+    pub(super) fn address(self) -> usize {
+        self.0
+    }
 }
 
-pub(crate) fn board_info() -> &'static BoardInfo {
-    BOARD_INFO.wait()
+/// @description 解析 firmware 交付的 QEMU `virt` flattened device tree。
+///
+/// @param device_tree_address identity-mapped DTB physical address。
+/// @return 无返回值。
+/// @errors DTB 无效或重复初始化时 fail-stop。
+pub(crate) fn initialize(boot: BootInfo) {
+    PLATFORM_INFO.call_once(|| PlatformInfo::parse(boot.address()));
+}
+
+pub(crate) fn validate_boot_info(boot: BootInfo) {
+    assert_eq!(
+        boot.address(),
+        info().dtb.start,
+        "secondary received a different platform handoff"
+    );
+}
+
+/// @description 获取已发布的 immutable platform description。
+///
+/// @return kernel lifetime 内唯一的 QEMU `virt` description。
+/// @errors platform 尚未初始化时等待 publication。
+pub(crate) fn info() -> &'static PlatformInfo {
+    PLATFORM_INFO.wait()
+}
+
+/// @description 迭代 platform 中所有 enabled hardware CPU identity。
+pub(crate) fn hardware_cpu_ids() -> impl ExactSizeIterator<Item = HardwareCpuId> {
+    HardwareCpuIds(info().hardware_cpu_ids.iter())
+}
+
+struct HardwareCpuIds(core::slice::Iter<'static, usize>);
+
+impl Iterator for HardwareCpuIds {
+    type Item = HardwareCpuId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().copied().map(HardwareCpuId::from_raw)
+    }
+}
+
+impl ExactSizeIterator for HardwareCpuIds {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 pub(crate) struct StringInLine<const N: usize>(usize, [u8; N]);
@@ -42,13 +98,10 @@ pub(crate) struct PLICDevice {
     pub(crate) size: usize,
 }
 
-pub(crate) struct BoardInfo {
+pub(crate) struct PlatformInfo {
     pub(crate) dtb: Range<usize>,
     pub(crate) model: StringInLine<128>,
-    pub(crate) hart_count: usize,
-    pub(crate) hart_mask: usize,
-    pub(crate) max_hart_id: usize,
-    pub(crate) invalid_hart_id: Option<usize>,
+    hardware_cpu_ids: Vec<usize>,
     pub(crate) time_base_freq: u64,
     pub(crate) mem: Range<usize>,
     pub(crate) uart: Range<usize>,
@@ -71,16 +124,11 @@ impl<const N: usize> Display for StringInLine<N> {
     }
 }
 
-impl Display for BoardInfo {
+impl Display for PlatformInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "DTB: {:#x?}", self.dtb)?;
         writeln!(f, "Model: {}", self.model)?;
-        writeln!(f, "Hart Count: {}", self.hart_count)?;
-        writeln!(f, "Hart Mask: {:#x}", self.hart_mask)?;
-        writeln!(f, "Max Hart ID: {}", self.max_hart_id)?;
-        if let Some(invalid) = self.invalid_hart_id {
-            writeln!(f, "Invalid Hart ID: {invalid}")?;
-        }
+        writeln!(f, "Hardware CPUs: {:?}", self.hardware_cpu_ids)?;
         writeln!(f, "Time Base Frequency: {}", self.time_base_freq)?;
         writeln!(f, "Memory: {:#x?}", self.mem)?;
         writeln!(f, "UART: {:#x?}, IRQ: {}", self.uart, self.uart_irq)?;
@@ -117,7 +165,7 @@ impl Display for BoardInfo {
     }
 }
 
-impl BoardInfo {
+impl PlatformInfo {
     pub(crate) fn parse(dtb_addr: usize) -> Self {
         const CPUS: &str = "cpus";
         const MEM: &str = "memory";
@@ -130,13 +178,10 @@ impl BoardInfo {
         const RTC: &str = "rtc";
         const PLIC: &str = "plic";
 
-        let mut ans = BoardInfo {
+        let mut ans = PlatformInfo {
             dtb: dtb_addr..dtb_addr,
             model: StringInLine(0, [0; 128]),
-            hart_count: 0,
-            hart_mask: 0,
-            max_hart_id: 0,
-            invalid_hart_id: None,
+            hardware_cpu_ids: Vec::new(),
             mem: 0..0,
             uart: 0..0,
             uart_irq: 0,
@@ -218,7 +263,6 @@ impl BoardInfo {
                         WalkOperation::StepOver
                     }
                 } else if current == Str::from(CPUS) && name.starts_with("cpu@") {
-                    ans.hart_count += 1;
                     WalkOperation::StepInto
                 } else {
                     WalkOperation::StepOver
@@ -244,13 +288,11 @@ impl BoardInfo {
                     ans.mem = reg.next().unwrap();
                     WalkOperation::StepOut
                 } else if node.starts_with("cpu@") {
-                    let hart_id = reg.next().unwrap().start;
-                    ans.max_hart_id = ans.max_hart_id.max(hart_id);
-                    if hart_id < usize::BITS as usize {
-                        ans.hart_mask |= 1usize << hart_id;
-                    } else {
-                        ans.invalid_hart_id = Some(hart_id);
-                    }
+                    let hardware_cpu_id = reg.next().unwrap().start;
+                    ans.hardware_cpu_ids
+                        .try_reserve(1)
+                        .expect("hardware CPU discovery allocation failed");
+                    ans.hardware_cpu_ids.push(hardware_cpu_id);
                     WalkOperation::StepOver
                 } else if node.starts_with(VIRTIO) {
                     // VirtIO 设备的 reg 属性

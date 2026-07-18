@@ -9,13 +9,13 @@ use super::{
 /// OWNER: virtio-rng driver owns the only kernel entropy device and serializes its queue.
 static ENTROPY_DEVICE: Once<Arc<VirtIORngDevice>> = Once::new();
 
-pub(super) struct VirtIORngDevice {
+pub(crate) struct VirtIORngDevice {
     device: VirtIODevice,
     queue: Mutex<VirtQueue>,
 }
 
 impl VirtIORngDevice {
-    pub(super) fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 4 {
             return None;

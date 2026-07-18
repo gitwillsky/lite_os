@@ -7,13 +7,15 @@
 use crate::memory::KERNEL_SPACE;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
-use riscv::register;
 
 extern crate alloc;
 
-#[macro_use]
 mod arch;
 mod config;
+mod cpu;
+mod entry;
+#[macro_use]
+mod platform;
 #[macro_use]
 mod log;
 
@@ -38,33 +40,29 @@ mod trap;
 
 /// 标记全局内核设施已完成初始化。
 ///
-/// 次级 hart 不能仅等待内核页表，因为页表会在文件系统、驱动和首个用户任务
-/// 就绪前发布；缺少此屏障会让次级 hart 提前进入调度器并访问未初始化的全局状态。
-// OWNER: boot hart publishes completion of global initialization to secondary harts.
+/// 次级 CPU 不能仅等待内核页表，因为页表会在文件系统、驱动和首个用户任务
+/// 就绪前发布；缺少此屏障会让次级 CPU 提前进入调度器并访问未初始化的全局状态。
+// OWNER: boot CPU publishes completion of global initialization to secondary CPUs.
 static INIT_READY: AtomicBool = AtomicBool::new(false);
 
-#[unsafe(no_mangle)]
-extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
-    init_local_arch(hart_id);
+fn kernel_main(context: entry::BootContext) -> ! {
+    init_local_arch(context.hardware_cpu());
 
     log::init();
     log::disable_module("kernel::task::loader");
-    arch::dtb::init(dtb_addr);
-    arch::hart::validate_boot_hart(arch::dtb::board_info(), hart_id);
-    arch::sbi::verify_required_extensions();
-
     memory::init_allocator();
-    arch::hart::init_topology(arch::dtb::board_info(), hart_id);
+    platform::initialize(context.platform());
+    platform::verify_firmware();
+    cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
     debug!(
-        "dynamic hart topology initialized: count={}, mask={:#x}, max_id={}",
-        arch::hart::hart_count(),
-        arch::hart::possible_hart_mask(),
-        arch::hart::max_hart_id()
+        "logical CPU topology initialized: count={}, boot={:?}",
+        cpu::count(),
+        cpu::boot_id()
     );
     memory::init();
     timer::init_rtc();
     fs::init_vfs();
-    drivers::init();
+    platform::initialize_devices();
     if let Some(display) = drivers::primary_display() {
         let (completion_read, completion_write) = task::create_notification_endpoints()
             .expect("DRM completion notification allocation failed");
@@ -81,25 +79,20 @@ extern "C" fn kmain_boot(hart_id: usize, dtb_addr: usize) -> ! {
     socket::init();
     mount_root_filesystem();
     task::init(
-        trap::trap_handler as *const () as usize,
-        trap::trap_return as *const () as usize,
+        arch::trap::user_entry(),
+        trap::trap_return,
         Arc::try_new(PlatformConsole).expect("platform console allocation failed"),
     );
 
     // Release 发布页表、设备、文件系统和首个任务；secondary 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);
-    for state in arch::hart::states() {
-        if state.hart_id() == hart_id {
+    for target in cpu::possible().iter() {
+        if target == cpu::boot_id() {
             continue;
         }
-        arch::sbi::hart_start(state.hart_id(), arch::hart_start_entry(), dtb_addr).unwrap_or_else(
-            |error| {
-                panic!(
-                    "SBI HSM failed to start hart {}: {}",
-                    state.hart_id(),
-                    error
-                )
-            },
+        let hardware = cpu::hardware_id(target);
+        platform::start_cpu(hardware, arch::secondary_entry(), context.platform()).unwrap_or_else(
+            |error| panic!("firmware failed to start CPU {:?}: {}", hardware, error),
         );
     }
 
@@ -141,7 +134,7 @@ fn mount_root_filesystem() {
         .mount_at(
             b"/sys",
             b"sysfs",
-            fs::SysFileSystem::new(arch::hart::hart_count()).expect("failed to allocate sysfs"),
+            fs::SysFileSystem::new(cpu::count()).expect("failed to allocate sysfs"),
         )
         .expect("failed to mount sysfs at /sys");
     info!("sysfs mounted at /sys");
@@ -160,39 +153,31 @@ impl fs::Console for PlatformConsole {
 
     fn write(&self, bytes: &[u8]) -> Result<usize, fs::FileSystemError> {
         for byte in bytes {
-            arch::sbi::console_putchar(*byte).map_err(|_| fs::FileSystemError::IoError)?;
+            platform::debug_console_write(*byte).map_err(|_| fs::FileSystemError::IoError)?;
         }
         Ok(bytes.len())
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn kmain_secondary(hart_id: usize, dtb_addr: usize) -> ! {
-    init_local_arch(hart_id);
-    // Acquire 消费 boot hart 在 INIT_READY 之前完成的全部全局初始化写入。
+fn kernel_secondary_main(context: entry::BootContext) -> ! {
+    init_local_arch(context.hardware_cpu());
+    // Acquire 消费 boot CPU 在 INIT_READY 之前完成的全部全局初始化写入。
     while !INIT_READY.load(Ordering::Acquire) {
         core::hint::spin_loop();
     }
-    assert_eq!(
-        dtb_addr,
-        arch::dtb::board_info().dtb.start,
-        "secondary received a different DTB opaque"
-    );
+    platform::validate_boot_info(context.platform());
     KERNEL_SPACE.wait().lock().active();
 
     enter_scheduler()
 }
 
-fn init_local_arch(hart_id: usize) {
-    // 每个 hart 都必须启用浮点状态，否则用户态或内核态浮点指令会触发非法指令异常。
-    // SAFETY: kernel runs in S-mode and updates only the current hart's sstatus.FS field.
-    unsafe {
-        register::sstatus::set_fs(register::sstatus::FS::Dirty);
-    }
+fn init_local_arch(hardware_cpu: cpu::HardwareCpuId) {
+    // 每个 CPU 都必须建立 architecture-local execution state；缺失会使该 CPU 无法运行用户上下文。
+    arch::cpu::initialize_local_execution();
+    let executing_hardware_id = cpu::executing_hardware_id();
     assert_eq!(
-        hart_id,
-        arch::hart::raw_hart_id(),
-        "SBI hart ID and kernel tp disagree"
+        hardware_cpu, executing_hardware_id,
+        "firmware and architecture entry CPU identities disagree"
     );
 
     trap::init();
@@ -200,28 +185,24 @@ fn init_local_arch(hart_id: usize) {
 
 fn enter_scheduler() -> ! {
     timer::enable_timer_interrupt();
-    // SAFETY: all local trap state and interrupt controllers are initialized before enabling
-    // the current hart's supervisor interrupt sources and global SIE bit.
-    unsafe {
-        register::sie::set_ssoft();
-        register::sie::set_sext();
-        register::sstatus::set_sie();
-    }
-    arch::hart::mark_online();
-    if arch::hart::hart_id() == arch::hart::boot_hart_id() {
-        // boot hart 等待所有 HSM target 完成本地初始化；缺失该屏障会把“hart_start 已接受”误当成 online。
-        while arch::hart::online_hart_mask() != arch::hart::possible_hart_mask() {
+    // SAFETY: local trap state and platform interrupt controllers are initialized before the
+    // architecture enables scheduler interrupt delivery for this CPU.
+    unsafe { arch::interrupt::enable_scheduler_interrupts() };
+    cpu::mark_online();
+    if cpu::current_id() == cpu::boot_id() {
+        // boot CPU 等待所有 platform target 完成本地初始化；缺失该屏障会把“start 已接受”误当成 online。
+        while cpu::online() != cpu::possible() {
             core::hint::spin_loop();
         }
         info!(
-            "all DTB harts online: count={}, mask={:#x}",
-            arch::hart::hart_count(),
-            arch::hart::online_hart_mask()
+            "all platform CPUs online: count={}, mask={:#x}",
+            cpu::count(),
+            cpu::online().native_word()
         );
     }
-    // 每个 hart 上线时同步一次共享 kernel 页表。除建立一致性外，这也保证 firmware
-    // RFENCE 的同步完成路径在进入长期调度前已实际经过，而不是保留未连接的实现。
-    memory::MemorySet::flush_tlb_all_cpus().expect("SBI RFENCE failed during per-hart activation");
+    // 每个 CPU 上线时同步一次共享 kernel 页表；缺失会使其他 CPU 继续使用旧 translation。
+    memory::MemorySet::flush_tlb_all_cpus()
+        .expect("platform TLB synchronization failed during per-CPU activation");
 
     task::run_tasks();
 }

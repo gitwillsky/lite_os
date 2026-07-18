@@ -150,102 +150,206 @@ bootloader/src/uart16550.rs :: pub (crate) fn init (base : usize)
 bootloader/src/uart16550.rs :: pub (crate) impl Uart16550Map :: fn get (& self) -> & Uart16550 < u8 >
 bootloader/src/uart16550.rs :: pub (crate) static UART : Mutex < Uart16550Map >
 bootloader/src/uart16550.rs :: pub (crate) struct Uart16550Map
-kernel/src/arch/mod.rs :: pub (crate) use riscv64 :: hart
-kernel/src/arch/mod.rs :: pub (crate) use riscv64 :: { before_mmio_write , console , dtb , hart_start_entry , sbi }
-kernel/src/arch/riscv64/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
-kernel/src/arch/riscv64/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
-kernel/src/arch/riscv64/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: clint : Range < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: dtb : Range < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: hart_count : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: hart_mask : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: invalid_hart_id : Option < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: max_hart_id : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: mem : Range < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: model : StringInLine < 128 >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: plic_device : Option < PLICDevice >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: rtc_device : Option < RTCDevice >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: test : Range < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: time_base_freq : u64
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: uart : Range < usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: uart_irq : u32
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: virtio_count : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) BoardInfo :: virtio_devices : [Option < VirtIODevice > ; 20]
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) PLICDevice :: base_addr : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) PLICDevice :: size : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) RTCDevice :: base_addr : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) RTCDevice :: irq : u32
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) RTCDevice :: size : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) VirtIODevice :: base_addr : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) VirtIODevice :: irq : u32
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) VirtIODevice :: size : usize
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) fn board_info () -> & 'static BoardInfo
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) fn init (dtb_addr : usize)
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) impl BoardInfo :: fn parse (dtb_addr : usize) -> Self
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct BoardInfo
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct PLICDevice
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct RTCDevice
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct StringInLine < const N : usize >
-kernel/src/arch/riscv64/dtb.rs :: pub (crate) struct VirtIODevice
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const CONSOLE_SOFTIRQ : u32 = 1 << 1
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const DISPLAY_SOFTIRQ : u32 = 1 << 4
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_ID_OFFSET : usize = offset_of ! (HartState , hart_id)
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_SIZE : usize = size_of :: < HartState > ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const HART_STATE_STACK_TOP_OFFSET : usize = offset_of ! (HartState , startup_stack_top)
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const INPUT_SOFTIRQ : u32 = 1 << 5
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const NETWORK_SOFTIRQ : u32 = 1 << 2
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const TIMER_BACKLOG_SOFTIRQ : u32 = 1 << 3
-kernel/src/arch/riscv64/hart.rs :: pub (crate) const TIMER_SOFTIRQ : u32 = 1
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn advance_timer_deadline (now : u64 , interval : u64) -> u64
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn boot_hart_id () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn current_hart_index () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn hart_count () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn hart_id () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn hart_index (hart_id : usize) -> Option < usize >
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn init_topology (board_info : & crate :: arch :: dtb :: BoardInfo , boot_hart : usize)
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn mark_active ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn mark_online ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn max_hart_id () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn online_hart_mask () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn possible_hart_mask () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_console_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_display_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_input_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_network_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_backlog_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raise_timer_softirq ()
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn raw_hart_id () -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn states () -> & 'static [HartState]
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn take_softirqs () -> u32
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn topology_ready () -> bool
-kernel/src/arch/riscv64/hart.rs :: pub (crate) fn validate_boot_hart (board_info : & crate :: arch :: dtb :: BoardInfo , boot_hart : usize)
-kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn hart_id (& self) -> usize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn is_active (& self) -> bool
-kernel/src/arch/riscv64/hart.rs :: pub (crate) impl HartState :: fn is_online (& self) -> bool
-kernel/src/arch/riscv64/hart.rs :: pub (crate) static HART_TABLE_ADDRESS : AtomicUsize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) static HART_TABLE_LENGTH : AtomicUsize
-kernel/src/arch/riscv64/hart.rs :: pub (crate) struct HartState
-kernel/src/arch/riscv64/hart.rs :: pub (crate) struct HartTopology
-kernel/src/arch/riscv64/hart.rs :: pub (crate) use memory_barrier :: { complete_pending_memory_barrier , synchronize_memory_barrier }
-kernel/src/arch/riscv64/hart/memory_barrier.rs :: pub (crate) fn complete_pending_memory_barrier ()
-kernel/src/arch/riscv64/hart/memory_barrier.rs :: pub (crate) fn synchronize_memory_barrier ()
+kernel/src/arch/mod.rs :: pub (crate) mod context
+kernel/src/arch/mod.rs :: pub (crate) mod cpu
+kernel/src/arch/mod.rs :: pub (crate) mod interrupt
+kernel/src/arch/mod.rs :: pub (crate) mod mmu
+kernel/src/arch/mod.rs :: pub (crate) mod time
+kernel/src/arch/mod.rs :: pub (crate) mod trap
+kernel/src/arch/mod.rs :: pub (crate) mod user
+kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , secondary_entry }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , enable_scheduler_interrupts , enable_timer_source , raise_software , restore_local , wait_for_interrupt as wait , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: time_counter as counter
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , PAGE_SIZE , PagePermissions , PageTableError , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , activate_address_space as activate , canonicalize_virtual_address , flush_local_tlb as flush_local , normalize_physical_address , normalize_physical_page , normalize_virtual_page , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { KernelContext , KernelResume , SignalMachineContext , SyscallCompletion , UserContext , switch_kernel_context , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { MACHINE_NAME , hardware_probe_value }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { StartupCpu , current_logical_id , entry_identity , initialize_local_execution , initialize_startup , install_boot_cpu , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { TrapEvent , UserTrapEntry , install_kernel_entry , kernel_exception , return_to_user , trap_event as event , user_entry , }
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn clear_software ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_fail_stop ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_transfer ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_local () -> LocalInterruptState
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn raise_software ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn wait_for_interrupt ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) struct LocalInterruptState
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn enable_scheduler_interrupts ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn enable_timer_source ()
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) unsafe fn restore_local (state : LocalInterruptState)
 kernel/src/arch/riscv64/io.rs :: pub (crate) fn before_mmio_write ()
-kernel/src/arch/riscv64/mod.rs :: pub (crate) mod console
-kernel/src/arch/riscv64/mod.rs :: pub (crate) mod dtb
-kernel/src/arch/riscv64/mod.rs :: pub (crate) mod hart
-kernel/src/arch/riscv64/mod.rs :: pub (crate) mod sbi
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn goto_trap_return (kernel_sp : usize , trap_return : KernelResume) -> Self
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn set_resume_target (& mut self , target : KernelResume)
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) impl KernelContext :: fn zero_init () -> Self
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) struct KernelContext
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) type KernelResume  = fn () -> !
+kernel/src/arch/riscv64/kernel_context.rs :: pub (crate) unsafe fn switch_kernel_context (current : * mut KernelContext , next : * const KernelContext ,)
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) const PAGE_SIZE : usize = 1 << PAGE_SHIFT
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) const SIGNAL_TRAMPOLINE_ADDRESS : usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) const TRAMPOLINE_ADDRESS : usize = usize :: MAX - PAGE_SIZE + 1
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) const TRAP_CONTEXT_ADDRESS : usize = TRAMPOLINE_ADDRESS - PAGE_SIZE
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) const USER_ADDRESS_END : usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1)
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn activate (token : AddressSpaceToken)
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn canonicalize_virtual_address (address : usize) -> usize
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn flush_local ()
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_physical_address (address : usize) -> usize
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_physical_page (page : usize) -> usize
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) fn normalize_virtual_page (page : usize) -> usize
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) impl AddressSpaceToken :: fn from_root_page (root_page : usize) -> Self
+kernel/src/arch/riscv64/mmu.rs :: pub (crate) struct AddressSpaceToken
+kernel/src/arch/riscv64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn encoded (self) -> usize
+kernel/src/arch/riscv64/mod.rs :: pub (crate) mod interrupt
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: before_mmio_write
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use start :: entry_address as hart_start_entry
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn console_putchar (byte : u8) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn hart_start (hart_id : usize , start_address : usize , opaque : usize) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn remote_sfence_vma (hart_mask : usize , hart_mask_base : usize , start_address : usize , size : usize ,) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn sbi_call (eid : usize , fid : usize , args : [usize ; 6]) -> (isize , usize)
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn sbi_send_ipi (hart_mask : usize , hart_mask_base : usize) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn set_timer (timer_value : u64) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn system_reset (reset_type : usize , reset_reason : usize) -> Result < () , isize >
-kernel/src/arch/riscv64/sbi.rs :: pub (crate) fn verify_required_extensions ()
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use mmu :: { AddressSpaceToken , PAGE_SIZE , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , USER_ADDRESS_END , activate as activate_address_space , canonicalize_virtual_address , flush_local as flush_local_tlb , normalize_physical_address , normalize_physical_page , normalize_virtual_page , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use page_table :: { PageTable as ArchitecturePageTable , PageTableEntry as ArchitecturePageTableEntry , PageTableError , TablePage , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use pte :: PagePermissions
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use start :: entry_address as secondary_entry
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use startup :: { StartupCpu , current_logical_id , entry_identity , initialize as initialize_startup , initialize_local_execution , install_boot_logical_id as install_boot_cpu , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use time :: counter as time_counter
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use trap :: { TrapEvent , UserTrapEntry , event as trap_event , install_kernel_entry , kernel_exception , return_to_user , user_entry , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use user :: { MACHINE_NAME , SignalMachineContext , SyscallCompletion , hardware_probe_value , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use user_context :: UserContext
+kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: AlreadyMapped
+kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: InvalidFlags
+kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: InvalidPageTable
+kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: NotMapped
+kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: OutOfMemory
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) enum PageTableError
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn map (& mut self , virtual_page : usize , physical_page : usize , permissions : PagePermissions ,) -> Result < () , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn reserve (& mut self , virtual_page : usize) -> Result < () , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn set_flags (& mut self , virtual_page : usize , permissions : PagePermissions ,) -> Result < () , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn token (& self) -> AddressSpaceToken
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn translate (& self , virtual_page : usize) -> Option < PageTableEntry >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn try_new () -> Result < Self , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTable < Page > :: fn unmap (& mut self , virtual_page : usize) -> Result < () , PageTableError >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTableEntry :: fn permissions (self) -> PagePermissions
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) impl PageTableEntry :: fn physical_page (self) -> usize
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) struct PageTable < Page : TablePage >
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) struct PageTableEntry
+kernel/src/arch/riscv64/page_table.rs :: pub (crate) trait TablePage
+kernel/src/arch/riscv64/page_table.rs :: trait TablePage :: fn allocate () -> Option < Self >
+kernel/src/arch/riscv64/page_table.rs :: trait TablePage :: fn physical_page (& self) -> usize
+kernel/src/arch/riscv64/pte.rs :: pub (super) fn decode (flags : RiscvPteFlags) -> PagePermissions
+kernel/src/arch/riscv64/pte.rs :: pub (super) fn encode (permissions : PagePermissions) -> Option < RiscvPteFlags >
 kernel/src/arch/riscv64/start.rs :: pub (crate) fn entry_address () -> usize
+kernel/src/arch/riscv64/startup.rs :: pub (crate) const ENTRY_SIZE : usize = core :: mem :: size_of :: < StartupEntry > ()
+kernel/src/arch/riscv64/startup.rs :: pub (crate) const HARDWARE_ID_OFFSET : usize = core :: mem :: offset_of ! (StartupEntry , hardware_id)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) const LOGICAL_ID_OFFSET : usize = core :: mem :: offset_of ! (StartupEntry , logical_id)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) const STACK_TOP_OFFSET : usize = core :: mem :: offset_of ! (StartupEntry , stack_top)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn current_logical_id () -> usize
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn entry_identity () -> usize
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn initialize (cpus : impl ExactSizeIterator < Item = StartupCpu >)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn initialize_local_execution ()
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn install_boot_logical_id (logical_id : usize)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) impl StartupCpu :: fn new (hardware_id : usize , logical_id : usize) -> Self
+kernel/src/arch/riscv64/startup.rs :: pub (crate) static TABLE_ADDRESS : AtomicUsize
+kernel/src/arch/riscv64/startup.rs :: pub (crate) static TABLE_LENGTH : AtomicUsize
+kernel/src/arch/riscv64/startup.rs :: pub (crate) struct StartupCpu
+kernel/src/arch/riscv64/sv39.rs :: pub (crate) fn indexes (virtual_page : usize) -> [usize ; 3]
+kernel/src/arch/riscv64/time.rs :: pub (crate) fn counter () -> u64
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: Breakpoint
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: ExternalInterrupt
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: IllegalInstruction
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: InstructionPageFault { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: LoadAccessFault { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: LoadPageFault { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: SoftwareInterrupt
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: StoreAccessFault { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: StorePageFault { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: TimerInterrupt
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: UnsupportedException { address : usize }
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: UnsupportedInterrupt
+kernel/src/arch/riscv64/trap.rs :: enum TrapEvent :: UserEnvironmentCall
+kernel/src/arch/riscv64/trap.rs :: pub (crate) KernelException :: event : TrapEvent
+kernel/src/arch/riscv64/trap.rs :: pub (crate) KernelException :: program_counter : usize
+kernel/src/arch/riscv64/trap.rs :: pub (crate) enum TrapEvent
+kernel/src/arch/riscv64/trap.rs :: pub (crate) fn event () -> TrapEvent
+kernel/src/arch/riscv64/trap.rs :: pub (crate) fn install_kernel_entry ()
+kernel/src/arch/riscv64/trap.rs :: pub (crate) fn kernel_exception (event : TrapEvent) -> KernelException
+kernel/src/arch/riscv64/trap.rs :: pub (crate) fn return_to_user (context_address : usize , address_space : AddressSpaceToken , trampoline_address : usize ,) -> !
+kernel/src/arch/riscv64/trap.rs :: pub (crate) fn user_entry () -> UserTrapEntry
+kernel/src/arch/riscv64/trap.rs :: pub (crate) struct KernelException
+kernel/src/arch/riscv64/trap.rs :: pub (crate) struct UserTrapEntry
+kernel/src/arch/riscv64/trap.rs :: pub (super) impl UserTrapEntry :: fn encoded (self) -> usize
+kernel/src/arch/riscv64/user.rs :: enum SyscallCompletion :: Interrupted (isize)
+kernel/src/arch/riscv64/user.rs :: enum SyscallCompletion :: Return (isize)
+kernel/src/arch/riscv64/user.rs :: pub (crate) const MACHINE_NAME : & str = "riscv64"
+kernel/src/arch/riscv64/user.rs :: pub (crate) enum SyscallCompletion
+kernel/src/arch/riscv64/user.rs :: pub (crate) fn hardware_probe_value (key : i64 , time_counter_frequency : u64) -> Option < u64 >
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn arguments (self) -> [usize ; 6]
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn instruction (self) -> usize
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn number (self) -> usize
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn capture_signal_machine_context (& self) -> SignalMachineContext
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn complete_syscall (& mut self , completion : SyscallCompletion)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn enter_signal_handler (& mut self , trampoline : usize , frame : usize , signal : usize , handler : usize ,)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn prepare_kernel_return (& mut self , logical_cpu : usize)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn prepare_process_clone (& mut self , user_stack : Option < usize > , kernel_stack : usize)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn prepare_thread_clone (& mut self , user_stack : usize , thread_pointer : usize , kernel_stack : usize ,)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn program_counter (& self) -> usize
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn restart_syscall (& mut self , number : usize , arguments : [usize ; 6] , instruction : usize ,)
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn restore_signal_machine_context (& mut self , machine : & SignalMachineContext ,) -> Result < usize , InvalidSignalContext >
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn stack_pointer (& self) -> usize
+kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn take_syscall_request (& mut self) -> SyscallRequest
+kernel/src/arch/riscv64/user.rs :: pub (crate) struct InvalidSignalContext
+kernel/src/arch/riscv64/user.rs :: pub (crate) struct SignalMachineContext
+kernel/src/arch/riscv64/user.rs :: pub (crate) struct SyscallRequest
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn app_init_context (entry : usize , sp : usize , kernel_satp : AddressSpaceToken , kernel_sp : usize , trap_handler : UserTrapEntry ,) -> Self
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn set_sp (& mut self , sp : usize)
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) struct UserContext
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: f : [u64 ; 32]
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: fcsr : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: kernel_cpu_id : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: kernel_gp : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: kernel_satp : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: kernel_sp : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: sepc : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: sstatus : Sstatus
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: trap_handler : usize
+kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: x : [usize ; 32]
+kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
 kernel/src/config.rs :: pub (crate) const TICKS_PER_SEC : usize = 100
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: Console = 1 << 1
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: Display = 1 << 4
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: Input = 1 << 5
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: Network = 1 << 2
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: Timer = 1
+kernel/src/cpu/deferred.rs :: enum DeferredWork :: TimerBacklog = 1 << 3
+kernel/src/cpu/deferred.rs :: pub (crate) enum DeferredWork
+kernel/src/cpu/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
+kernel/src/cpu/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
+kernel/src/cpu/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn contains (self , work : DeferredWork) -> bool
+kernel/src/cpu/deferred.rs :: pub (crate) impl DeferredWorkSet :: fn is_empty (self) -> bool
+kernel/src/cpu/deferred.rs :: pub (crate) struct DeferredWorkSet
+kernel/src/cpu/deferred.rs :: pub (super) fn initialize (cpu_count : usize)
+kernel/src/cpu/mod.rs :: pub (crate) fn active () -> CpuSet
+kernel/src/cpu/mod.rs :: pub (crate) fn boot_id () -> CpuId
+kernel/src/cpu/mod.rs :: pub (crate) fn count () -> usize
+kernel/src/cpu/mod.rs :: pub (crate) fn current_id () -> CpuId
+kernel/src/cpu/mod.rs :: pub (crate) fn executing_hardware_id () -> HardwareCpuId
+kernel/src/cpu/mod.rs :: pub (crate) fn hardware_id (cpu : CpuId) -> HardwareCpuId
+kernel/src/cpu/mod.rs :: pub (crate) fn id_at (index : usize) -> Option < CpuId >
+kernel/src/cpu/mod.rs :: pub (crate) fn initialize (hardware_ids : impl IntoIterator < Item = HardwareCpuId > , boot_hardware_id : HardwareCpuId ,)
+kernel/src/cpu/mod.rs :: pub (crate) fn is_active (cpu : CpuId) -> bool
+kernel/src/cpu/mod.rs :: pub (crate) fn is_initialized () -> bool
+kernel/src/cpu/mod.rs :: pub (crate) fn mark_active ()
+kernel/src/cpu/mod.rs :: pub (crate) fn mark_online ()
+kernel/src/cpu/mod.rs :: pub (crate) fn online () -> CpuSet
+kernel/src/cpu/mod.rs :: pub (crate) fn possible () -> CpuSet
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuId :: fn index (self) -> usize
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn contains (self , cpu : CpuId) -> bool
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn from_native_word (bits : usize) -> Self
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn insert (& mut self , cpu : CpuId)
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn is_empty (self) -> bool
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn iter (self) -> CpuSetIter
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn native_word (self) -> usize
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn remove (& mut self , cpu : CpuId)
+kernel/src/cpu/mod.rs :: pub (crate) impl CpuSet :: fn singleton (cpu : CpuId) -> Self
+kernel/src/cpu/mod.rs :: pub (crate) impl HardwareCpuId :: fn from_raw (raw : usize) -> Self
+kernel/src/cpu/mod.rs :: pub (crate) impl HardwareCpuId :: fn raw (self) -> usize
+kernel/src/cpu/mod.rs :: pub (crate) struct CpuId
+kernel/src/cpu/mod.rs :: pub (crate) struct CpuSet
+kernel/src/cpu/mod.rs :: pub (crate) struct CpuSetIter
+kernel/src/cpu/mod.rs :: pub (crate) struct HardwareCpuId
+kernel/src/cpu/mod.rs :: pub (crate) use deferred :: { DeferredWork , raise as raise_deferred , take as take_deferred }
 kernel/src/drivers/block.rs :: enum BlockError :: AlreadyRegistered
 kernel/src/drivers/block.rs :: enum BlockError :: DeviceError
 kernel/src/drivers/block.rs :: enum BlockError :: InvalidBlock
@@ -286,36 +390,34 @@ kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/goldfish_rtc.rs :: enum RtcError :: InvalidRange
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) enum RtcError
-kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (rtc : RTCDevice) -> Result < Self , RtcError >
+kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn new (base_addr : usize , size : usize) -> Result < Self , RtcError >
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) impl GoldfishRTCDevice :: fn read_time_ns (& self) -> Result < u64 , RtcError >
 kernel/src/drivers/goldfish_rtc.rs :: pub (crate) struct GoldfishRTCDevice
 kernel/src/drivers/hal/bus.rs :: enum BusError :: InvalidAddress
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) enum BusError
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) enum BusError
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn new (base_addr : usize , size : usize) -> Result < Self , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) impl MmioBus :: fn read_u32 (& self , offset : usize) -> Result < u32 , BusError >
+kernel/src/drivers/hal/bus.rs :: pub (crate) struct MmioBus
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn read_u8 (& self , offset : usize) -> Result < u8 , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u32 (& self , offset : usize , value : u32) -> Result < () , BusError >
 kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) impl MmioBus :: fn write_u8 (& self , offset : usize , value : u8) -> Result < () , BusError >
-kernel/src/drivers/hal/bus.rs :: pub (in crate :: drivers) struct MmioBus
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: DeviceFailure
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: HandlerNotSet
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: InvalidVector
 kernel/src/drivers/hal/interrupt.rs :: enum InterruptError :: NoMemory
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) enum InterruptError
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) impl PlicInterruptController :: fn new (base_addr : usize , size : usize , max_interrupts : u32 , hart_mask : usize , max_hart_id : usize ,) -> Result < Self , InterruptError >
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) struct PlicInterruptController
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) trait InterruptController
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) trait InterruptHandler
-kernel/src/drivers/hal/interrupt.rs :: pub (in crate :: drivers) type InterruptVector  = u32
+kernel/src/drivers/hal/interrupt.rs :: pub (crate) enum InterruptError
+kernel/src/drivers/hal/interrupt.rs :: pub (crate) trait InterruptController
+kernel/src/drivers/hal/interrupt.rs :: pub (crate) trait InterruptHandler
+kernel/src/drivers/hal/interrupt.rs :: pub (crate) type InterruptVector  = u32
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn enable_interrupt (& mut self , vector : InterruptVector) -> Result < () , InterruptError >
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn handle_pending_interrupts (& mut self) -> Result < () , InterruptError >
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn register_handler (& mut self , vector : InterruptVector , handler : Arc < dyn InterruptHandler > ,) -> Result < () , InterruptError >
-kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn set_affinity (& mut self , vector : InterruptVector , cpu_mask : usize ,) -> Result < () , InterruptError >
+kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn set_affinity (& mut self , vector : InterruptVector , cpus : CpuSet) -> Result < () , InterruptError >
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn set_priority (& mut self , vector : InterruptVector) -> Result < () , InterruptError >
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptController :: fn supports_cpu_affinity (& self) -> bool
 kernel/src/drivers/hal/interrupt.rs :: trait InterruptHandler :: fn handle_interrupt (& self , vector : InterruptVector) -> Result < () , InterruptError >
-kernel/src/drivers/hal/mod.rs :: pub (super) use bus :: MmioBus
-kernel/src/drivers/hal/mod.rs :: pub (super) use interrupt :: { InterruptController , InterruptError , InterruptHandler , InterruptVector , PlicInterruptController , }
+kernel/src/drivers/hal/mod.rs :: pub (crate) use bus :: MmioBus
+kernel/src/drivers/hal/mod.rs :: pub (crate) use interrupt :: { InterruptController , InterruptError , InterruptHandler , InterruptVector , }
 kernel/src/drivers/hal/mod.rs :: pub (super) use virtio :: { VIRTIO_CONFIG_S_DRIVER_OK , VIRTIO_CONFIG_S_FEATURES_OK , VIRTIO_F_VERSION_1 , VIRTIO_MMIO_INT_CONFIG , VIRTIO_MMIO_INT_VRING , VirtIODevice , VirtQueueAddresses , }
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: descriptor : u64
 kernel/src/drivers/hal/virtio.rs :: pub (in crate :: drivers) VirtQueueAddresses :: device : u64
@@ -380,15 +482,25 @@ kernel/src/drivers/input.rs :: trait InputDevice :: fn properties (& self) -> & 
 kernel/src/drivers/input.rs :: trait InputDevice :: fn receive_event (& self) -> Result < Option < RawInputEvent > , InputDeviceError >
 kernel/src/drivers/input.rs :: trait InputDevice :: fn serial (& self) -> & [u8]
 kernel/src/drivers/mod.rs :: pub (crate) fn console_input_ready () -> bool
-kernel/src/drivers/mod.rs :: pub (crate) fn handle_external_interrupt ()
-kernel/src/drivers/mod.rs :: pub (crate) fn init ()
+kernel/src/drivers/mod.rs :: pub (crate) fn enable_console_uart_receive ()
+kernel/src/drivers/mod.rs :: pub (crate) fn initialize_console_uart (base : usize , size : usize ,) -> Result < alloc :: sync :: Arc < dyn InterruptHandler > , InterruptError >
 kernel/src/drivers/mod.rs :: pub (crate) fn read_console (bytes : & mut [u8]) -> usize
+kernel/src/drivers/mod.rs :: pub (crate) fn register_display_device (device : alloc :: sync :: Arc < dyn DisplayDevice > ,) -> Result < () , () >
+kernel/src/drivers/mod.rs :: pub (crate) fn register_entropy_device (device : alloc :: sync :: Arc < VirtIORngDevice >) -> Result < () , () >
+kernel/src/drivers/mod.rs :: pub (crate) fn register_input_device (device : alloc :: sync :: Arc < dyn InputDevice > ,) -> Result < usize , alloc :: sync :: Arc < dyn InputDevice > >
+kernel/src/drivers/mod.rs :: pub (crate) fn register_network_device (device : alloc :: sync :: Arc < dyn network :: NetworkDevice > ,) -> Result < () , () >
 kernel/src/drivers/mod.rs :: pub (crate) mod block
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , primary_display , }
 kernel/src/drivers/mod.rs :: pub (crate) use goldfish_rtc :: GoldfishRTCDevice
+kernel/src/drivers/mod.rs :: pub (crate) use hal :: { InterruptController , InterruptError , InterruptHandler , InterruptVector , MmioBus , }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { device as input_device , device_count as input_device_count }
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_blk :: VirtIOBlockDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_gpu :: VirtIOGpuDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_input :: VirtIOInputDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_net :: VirtIONetworkDevice
+kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: VirtIORngDevice
 kernel/src/drivers/mod.rs :: pub (crate) use virtio_rng :: fill_entropy
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/drivers/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
@@ -417,21 +529,19 @@ kernel/src/drivers/network.rs :: trait NetworkDevice :: fn reserve_transmit (& s
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn statistics (& self) -> NetworkStatistics
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn submit_transmit (& self , reservation : u16 , frame : & [u8]) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn transmit_available (& self) -> bool
-kernel/src/drivers/platform.rs :: pub (super) fn handle_external_interrupt ()
-kernel/src/drivers/platform.rs :: pub (super) fn init ()
 kernel/src/drivers/uart.rs :: pub (super) fn enable_receive_interrupt ()
 kernel/src/drivers/uart.rs :: pub (super) fn init (base : usize , size : usize) -> Result < Arc < dyn InterruptHandler > , InterruptError >
 kernel/src/drivers/uart.rs :: pub (super) fn input_ready () -> bool
 kernel/src/drivers/uart.rs :: pub (super) fn read (bytes : & mut [u8]) -> usize
+kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_blk.rs :: pub (crate) struct VirtIOBlockDevice
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_IOERR : u8 = 1
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_OK : u8 = 0
 kernel/src/drivers/virtio_blk.rs :: pub (super) const VIRTIO_BLK_S_UNSUPP : u8 = 2
-kernel/src/drivers/virtio_blk.rs :: pub (super) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
-kernel/src/drivers/virtio_blk.rs :: pub (super) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_blk.rs :: pub (super) struct VirtIOBlockDevice
-kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
-kernel/src/drivers/virtio_gpu.rs :: pub (super) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_gpu.rs :: pub (super) struct VirtIOGpuDevice
+kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_gpu.rs :: pub (crate) struct VirtIOGpuDevice
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
 kernel/src/drivers/virtio_gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
@@ -538,12 +648,12 @@ kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_display_rect (byte
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_rect (bytes : & mut [u8] , offset : usize , mode : DisplayMode) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
 kernel/src/drivers/virtio_gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
-kernel/src/drivers/virtio_input.rs :: pub (super) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
-kernel/src/drivers/virtio_input.rs :: pub (super) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_input.rs :: pub (super) struct VirtIOInputDevice
-kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
-kernel/src/drivers/virtio_net.rs :: pub (super) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_net.rs :: pub (super) struct VirtIONetworkDevice
+kernel/src/drivers/virtio_input.rs :: pub (crate) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_input.rs :: pub (crate) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_input.rs :: pub (crate) struct VirtIOInputDevice
+kernel/src/drivers/virtio_net.rs :: pub (crate) impl VirtIONetworkDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
+kernel/src/drivers/virtio_net.rs :: pub (crate) impl VirtIONetworkDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_net.rs :: pub (crate) struct VirtIONetworkDevice
 kernel/src/drivers/virtio_queue.rs :: pub (super) VirtQueue :: avail : * mut VirtqAvail
 kernel/src/drivers/virtio_queue.rs :: pub (super) VirtQueue :: avail_idx : u16
 kernel/src/drivers/virtio_queue.rs :: pub (super) VirtQueue :: desc : * mut VirtqDesc
@@ -579,9 +689,9 @@ kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqDesc
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsed
 kernel/src/drivers/virtio_queue.rs :: pub (super) struct VirtqUsedElem
 kernel/src/drivers/virtio_rng.rs :: pub (crate) fn fill_entropy (bytes : & mut [u8]) -> Result < () , () >
+kernel/src/drivers/virtio_rng.rs :: pub (crate) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
+kernel/src/drivers/virtio_rng.rs :: pub (crate) struct VirtIORngDevice
 kernel/src/drivers/virtio_rng.rs :: pub (super) fn register (device : Arc < VirtIORngDevice >) -> Result < () , () >
-kernel/src/drivers/virtio_rng.rs :: pub (super) impl VirtIORngDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
-kernel/src/drivers/virtio_rng.rs :: pub (super) struct VirtIORngDevice
 kernel/src/drm.rs :: enum DrmError :: # [doc = " UAPI 参数、尺寸或 fake offset 非法。"] Invalid
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display adapter 已有未完成 transaction。"] Busy
 kernel/src/drm.rs :: enum DrmError :: # [doc = " display transport 或 response 损坏。"] Device
@@ -664,6 +774,10 @@ kernel/src/drm/master.rs :: pub (crate) impl DrmFile :: fn set_master (& self , 
 kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn active_crtc (& self) -> Option < (u32 , DrmMode) >
 kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn mode (& self) -> DrmMode
 kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
+kernel/src/entry.rs :: pub (crate) impl BootContext :: fn hardware_cpu (self) -> HardwareCpuId
+kernel/src/entry.rs :: pub (crate) impl BootContext :: fn new (hardware_cpu : HardwareCpuId , platform : BootInfo) -> Self
+kernel/src/entry.rs :: pub (crate) impl BootContext :: fn platform (self) -> BootInfo
+kernel/src/entry.rs :: pub (crate) struct BootContext
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn is_empty (& self) -> bool
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn len (& self) -> usize
 kernel/src/fallible_tree.rs :: pub (crate) impl FallibleMap < K , V > :: const fn new () -> Self
@@ -1513,24 +1627,16 @@ kernel/src/memory/address.rs :: pub (crate) impl VirtualAddress :: fn is_aligned
 kernel/src/memory/address.rs :: pub (crate) impl VirtualAddress :: fn page_offset (& self) -> usize
 kernel/src/memory/address.rs :: pub (crate) impl VirtualPageNumber :: fn as_usize (& self) -> usize
 kernel/src/memory/address.rs :: pub (crate) impl VirtualPageNumber :: fn from_vpn (vpn : usize) -> Self
-kernel/src/memory/address.rs :: pub (crate) impl VirtualPageNumber :: fn indexes (& self) -> [usize ; 3]
 kernel/src/memory/address.rs :: pub (crate) struct PhysicalAddress
 kernel/src/memory/address.rs :: pub (crate) struct PhysicalPageNumber
 kernel/src/memory/address.rs :: pub (crate) struct VirtualAddress
 kernel/src/memory/address.rs :: pub (crate) struct VirtualPageNumber
 kernel/src/memory/config.rs :: pub (crate) const BOOTSTRAP_HEAP_SIZE : usize = 2 * 1024 * 1024
-kernel/src/memory/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
-kernel/src/memory/config.rs :: pub (crate) const PAGE_OFFSET_WIDTH : usize = 12
-kernel/src/memory/config.rs :: pub (crate) const PAGE_SIZE : usize = 4096
-kernel/src/memory/config.rs :: pub (crate) const PHYSICAL_ADDRESS_WIDTH : usize = 56
-kernel/src/memory/config.rs :: pub (crate) const PPN_WIDTH : usize = PHYSICAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
-kernel/src/memory/config.rs :: pub (crate) const PTE_FLAGS_WIDTH : usize = 10
-kernel/src/memory/config.rs :: pub (crate) const SIGNAL_TRAMPOLINE : usize = TRAP_CONTEXT - PAGE_SIZE
-kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = usize :: MAX - PAGE_SIZE + 1
-kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = TRAMPOLINE - PAGE_SIZE
+kernel/src/memory/config.rs :: pub (crate) const SIGNAL_TRAMPOLINE : usize = crate :: arch :: mmu :: SIGNAL_TRAMPOLINE_ADDRESS
+kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = crate :: arch :: mmu :: TRAMPOLINE_ADDRESS
+kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = crate :: arch :: mmu :: TRAP_CONTEXT_ADDRESS
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8 * 1024 * 1024
-kernel/src/memory/config.rs :: pub (crate) const VIRTUAL_ADDRESS_WIDTH : usize = 39
-kernel/src/memory/config.rs :: pub (crate) const VPN_WIDTH : usize = VIRTUAL_ADDRESS_WIDTH - PAGE_OFFSET_WIDTH
+kernel/src/memory/config.rs :: pub (crate) use crate :: arch :: mmu :: { PAGE_SIZE , USER_ADDRESS_END }
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent (& self , index : usize) -> Option < (PhysicalPageNumber , usize) >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent_count (& self) -> usize
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn page (& self , index : usize) -> Option < PhysicalPageNumber >
@@ -1589,7 +1695,7 @@ kernel/src/memory/heap_allocator.rs :: pub (crate) HeapStatistics :: resident_pa
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn enable_frame_backed_growth ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn handle_heap_alloc_error (layout : alloc :: Layout) -> !
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn init ()
-kernel/src/memory/heap_allocator.rs :: pub (crate) fn init_hart_caches ()
+kernel/src/memory/heap_allocator.rs :: pub (crate) fn init_cpu_caches ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn statistics () -> HeapStatistics
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct HeapStatistics
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct KernelAllocator
@@ -1605,7 +1711,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn set_global (mut self ,
 kernel/src/memory/mm.rs :: pub (crate) impl MapArea :: fn unmap (& mut self , page_table : & mut PageTable)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn active (& self)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn allocate_thread_trap_context (& mut self , tid : usize ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , isize >
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn flush_tlb_all_cpus () -> Result < () , crate :: platform :: TlbShootdownError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn insert_framed_area (& mut self , start_va : VirtualAddress , end_va : VirtualAddress , permission : MapPermission ,) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn map_trampoline (& mut self) -> Result < () , MemoryError >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn new () -> Self
@@ -1613,7 +1719,7 @@ kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn push (& mut self , m
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn remove_thread_trap_context (& mut self , address : usize)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn set_program_break (& mut self , new_break : usize , address_space_limit : u64 , data_limit : u64 ,) -> Result < usize , MemoryError >
-kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> usize
+kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn token (& self) -> crate :: arch :: mmu :: AddressSpaceToken
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn translate_kernel_address (& self , virtual_address : VirtualAddress ,) -> Option < PhysicalAddress >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn trap_context_ppn (& self , trap_va : usize) -> PhysicalPageNumber
 kernel/src/memory/mm.rs :: pub (crate) struct MapArea
@@ -1792,7 +1898,7 @@ kernel/src/memory/mm/user_access.rs :: pub (crate) impl UserFaultLimits :: const
 kernel/src/memory/mm/user_access.rs :: pub (crate) struct UserFaultLimits
 kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn checked_user_end (start : usize , len : usize) -> Result < usize , UserAccessError >
 kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn prepare_user_read (& mut self , address : usize , length : usize , limits : UserFaultLimits ,) -> Result < usize , UserAccessError >
-kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn user_page (& self , address : usize , required : PTEFlags ,) -> Result < (PhysicalPageNumber , usize) , UserAccessError >
+kernel/src/memory/mm/user_access.rs :: pub (super) impl MemorySet :: fn user_page (& self , address : usize , required : PagePermissions ,) -> Result < (PhysicalPageNumber , usize) , UserAccessError >
 kernel/src/memory/mm/user_access.rs :: pub (super) impl UserFaultLimits :: const fn existing_mappings () -> Self
 kernel/src/memory/mm/user_access.rs :: pub (super) impl UserFaultLimits :: const fn initial_exec () -> Self
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
@@ -1803,35 +1909,28 @@ kernel/src/memory/mod.rs :: pub (crate) fn strampoline ()
 kernel/src/memory/mod.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex < MemorySet > >
 kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , VirtualAddress }
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
+kernel/src/memory/mod.rs :: pub (crate) use crate :: config :: KERNEL_STACK_SIZE
 kernel/src/memory/mod.rs :: pub (crate) use device_backing :: DeviceBacking
 kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MapPermission , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexKey , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , UserAccessError , UserFaultLimits , }
+kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , }
-kernel/src/memory/page_table.rs :: enum PageTableError :: AlreadyMapped
-kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidFlags
-kernel/src/memory/page_table.rs :: enum PageTableError :: InvalidPageTable
-kernel/src/memory/page_table.rs :: enum PageTableError :: NotMapped
-kernel/src/memory/page_table.rs :: enum PageTableError :: OutOfMemory
-kernel/src/memory/page_table.rs :: pub (crate) enum PageTableError
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn map (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn map (& mut self , vpn : VirtualPageNumber , ppn : PhysicalPageNumber , permissions : PagePermissions ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn new () -> Self
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn reserve (& mut self , vpn : VirtualPageNumber) -> Result < () , PageTableError >
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , flags : PTEFlags ,) -> Result < () , PageTableError >
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn token (& self) -> usize
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , permissions : PagePermissions ,) -> Result < () , PageTableError >
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn token (& self) -> crate :: arch :: mmu :: AddressSpaceToken
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn translate (& self , vpn : VirtualPageNumber) -> Option < PageTableEntry >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn try_new () -> Result < Self , PageTableError >
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn unmap (& mut self , vpn : VirtualPageNumber) -> Result < () , PageTableError >
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn empty () -> Self
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn flags (& self) -> PTEFlags
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn is_leaf (& self) -> bool
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn is_valid (& self) -> bool
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn new (ppn : PhysicalPageNumber , flags : PTEFlags) -> Self
-kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn ppn (& self) -> PhysicalPageNumber
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn permissions (self) -> PagePermissions
+kernel/src/memory/page_table.rs :: pub (crate) impl PageTableEntry :: fn ppn (self) -> PhysicalPageNumber
 kernel/src/memory/page_table.rs :: pub (crate) struct PageTable
 kernel/src/memory/page_table.rs :: pub (crate) struct PageTableEntry
+kernel/src/memory/page_table.rs :: pub (crate) use crate :: arch :: mmu :: { PagePermissions , PageTableError }
 kernel/src/memory/shared_file.rs :: enum SharedFileError :: BeyondEof
 kernel/src/memory/shared_file.rs :: enum SharedFileError :: Io
 kernel/src/memory/shared_file.rs :: enum SharedFileError :: OutOfMemory
@@ -1874,6 +1973,67 @@ kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& 
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn frame (& self) -> & SharedFrame
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
+kernel/src/platform/mod.rs :: pub (crate) use selected :: { BootInfo , ResetError , TlbShootdownError , arm_timer , console , debug_console_write , handle_external_interrupt , hardware_cpu_ids , initialize , initialize_devices , kernel_mmio_regions , physical_memory_end , read_realtime_ns , reset_system , send_ipi , start_cpu , synchronize_tlb , timebase_frequency , validate_boot_info , verify_firmware , }
+kernel/src/platform/qemu_virt/console.rs :: pub (crate) fn _print_fmt (args : core :: fmt :: Arguments)
+kernel/src/platform/qemu_virt/console.rs :: pub (crate) fn panic_print_fmt (args : core :: fmt :: Arguments)
+kernel/src/platform/qemu_virt/console.rs :: pub (crate) fn panic_println_fmt (args : core :: fmt :: Arguments)
+kernel/src/platform/qemu_virt/devices.rs :: pub (crate) fn handle_external_interrupt ()
+kernel/src/platform/qemu_virt/devices.rs :: pub (crate) fn initialize ()
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PLICDevice :: base_addr : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PLICDevice :: size : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: clint : Range < usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: dtb : Range < usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: mem : Range < usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: model : StringInLine < 128 >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: plic_device : Option < PLICDevice >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: rtc_device : Option < RTCDevice >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: test : Range < usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: time_base_freq : u64
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: uart : Range < usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: uart_irq : u32
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: virtio_count : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) PlatformInfo :: virtio_devices : [Option < VirtIODevice > ; 20]
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) RTCDevice :: base_addr : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) RTCDevice :: irq : u32
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) RTCDevice :: size : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) VirtIODevice :: base_addr : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) VirtIODevice :: irq : u32
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) VirtIODevice :: size : usize
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) fn hardware_cpu_ids () -> impl ExactSizeIterator < Item = HardwareCpuId >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) fn info () -> & 'static PlatformInfo
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) fn initialize (boot : BootInfo)
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) fn validate_boot_info (boot : BootInfo)
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) impl BootInfo :: fn from_firmware_opaque (value : usize) -> Self
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) impl PlatformInfo :: fn parse (dtb_addr : usize) -> Self
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct BootInfo
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct PLICDevice
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct PlatformInfo
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct RTCDevice
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct StringInLine < const N : usize >
+kernel/src/platform/qemu_virt/discovery.rs :: pub (crate) struct VirtIODevice
+kernel/src/platform/qemu_virt/discovery.rs :: pub (super) impl BootInfo :: fn address (self) -> usize
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn arm_timer (timer_value : u64) -> Result < () , TimerArmError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn debug_console_write (byte : u8) -> Result < () , FirmwareError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn reset_system (reset_type : usize , reset_reason : usize) -> Result < () , ResetError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn send_ipi (cpus : crate :: cpu :: CpuSet) -> Result < () , FirmwareError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn start_cpu (hardware_cpu_id : crate :: cpu :: HardwareCpuId , start_address : usize , boot : super :: BootInfo ,) -> Result < () , CpuStartError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn synchronize_tlb (cpus : crate :: cpu :: CpuSet , start_address : usize , size : usize ,) -> Result < () , TlbShootdownError >
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) fn verify_firmware ()
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) struct CpuStartError
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) struct FirmwareError
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) struct ResetError
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) struct TimerArmError
+kernel/src/platform/qemu_virt/firmware.rs :: pub (crate) struct TlbShootdownError
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) fn kernel_mmio_regions () -> impl Iterator < Item = core :: ops :: Range < usize > >
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) fn physical_memory_end () -> usize
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) fn read_realtime_ns () -> Option < u64 >
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) fn timebase_frequency () -> u64
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) mod console
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use devices :: { handle_external_interrupt , initialize as initialize_devices }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use discovery :: { BootInfo , hardware_cpu_ids , initialize , validate_boot_info }
+kernel/src/platform/qemu_virt/mod.rs :: pub (crate) use firmware :: { ResetError , TlbShootdownError , arm_timer , debug_console_write , reset_system , send_ipi , start_cpu , synchronize_tlb , verify_firmware , }
+kernel/src/platform/qemu_virt/plic.rs :: pub (super) impl PlicInterruptController :: fn new (base_addr : usize , size : usize , max_interrupts : u32 , possible_cpus : CpuSet ,) -> Result < Self , InterruptError >
+kernel/src/platform/qemu_virt/plic.rs :: pub (super) struct PlicInterruptController
 kernel/src/random.rs :: pub (crate) fn fill (bytes : & mut [u8]) -> Result < () , () >
 kernel/src/socket.rs :: enum SocketAddress :: Inet (InetAddress)
 kernel/src/socket.rs :: enum SocketAddress :: Netlink (NetlinkAddress)
@@ -2585,13 +2745,9 @@ kernel/src/system.rs :: pub (crate) enum ResetKind
 kernel/src/system.rs :: pub (crate) fn current_cpu_index () -> usize
 kernel/src/system.rs :: pub (crate) fn identity () -> [& 'static str ; 6]
 kernel/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
-kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , isize >
+kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
 kernel/src/system.rs :: pub (crate) fn riscv_hwprobe_value (key : i64) -> Option < u64 >
 kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
-kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn goto_trap_return (kernel_sp : usize , trap_return : usize) -> Self
-kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn set_ra (& mut self , ra : usize)
-kernel/src/task/context.rs :: pub (crate) impl TaskContext :: fn zero_init () -> Self
-kernel/src/task/context.rs :: pub (crate) struct TaskContext
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " script interpreter rewrite 超过 Linux 固定上限。"] InterpreterLoop
@@ -2606,29 +2762,29 @@ kernel/src/task/loader.rs :: pub (crate) struct LoadedExecutable
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn build_address_space (& self , environments : & [Vec < u8 >] , stack_limit : u64 , address_space_limit : u64 , data_limit : u64 ,) -> Result < (MemorySet , usize , usize) , ElfLoadError >
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn credential_metadata (& self) -> InodeMetadata
 kernel/src/task/loader.rs :: pub (super) impl LoadedExecutable :: fn execfn (& self) -> & [u8]
+kernel/src/task/memory_barrier.rs :: pub (crate) fn complete_pending ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn register_private_memory_barrier ()
 kernel/src/task/memory_barrier.rs :: pub (crate) fn synchronize_private_memory () -> bool
-kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : usize , kernel_trap_return : usize , console : Arc < dyn Console > ,)
-kernel/src/task/mod.rs :: pub (crate) unsafe fn __switch (current_task_cx_ptr : * mut TaskContext , next_task_cx_ptr : * const TaskContext ,)
+kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
+kernel/src/task/mod.rs :: pub (crate) fn init (kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : Arc < dyn Console > ,)
 kernel/src/task/mod.rs :: pub (crate) use loader :: { EXEC_ARGUMENT_BYTES_LIMIT , ProgramLoadError , load_executable }
-kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { register_private_memory_barrier , synchronize_private_memory }
+kernel/src/task/mod.rs :: pub (crate) use memory_barrier :: { complete_pending as complete_pending_memory_barrier , register_private_memory_barrier , synchronize_private_memory , }
 kernel/src/task/mod.rs :: pub (crate) use model :: { CredentialUpdateError , IoStatistics , PendingSignal , RLIM_INFINITY , RLIMIT_NPROC , ResourceLimit , ResourceLimitError , RunState , SignalAction , SignalDelivery , SignalStack , SignalStackError , StopResume , StopTransition , TaskControlBlock , WaitMembership , WaitResult , }
 kernel/src/task/mod.rs :: pub (crate) use processor :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: *
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: advisory_lock :: { AdvisoryLockWaitError , install_advisory_lock_notifier , wait_for_advisory_lock , wait_for_record_lock , }
 kernel/src/task/mod.rs :: pub (crate) use task_manager :: timer_queue :: { PosixTimerClock , PosixTimerNotification , TimerError , TimerSetting , create_posix_timer , delete_posix_timer , posix_timer , posix_timer_overrun , real_timer , remove_posix_timers_for_exec , set_posix_timer , set_real_timer , }
-kernel/src/task/mod.rs :: pub (crate) use trap_context :: TrapContext
 kernel/src/task/mod.rs :: pub (in crate :: task) use model :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: enum RunState :: Blocked
-kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : usize , }
+kernel/src/task/model.rs :: enum RunState :: Blocking { cpu : crate :: cpu :: CpuId , }
 kernel/src/task/model.rs :: enum RunState :: Exited
 kernel/src/task/model.rs :: enum RunState :: New
-kernel/src/task/model.rs :: enum RunState :: Preempting { cpu : usize , }
-kernel/src/task/model.rs :: enum RunState :: Ready { cpu : usize , generation : u64 , }
-kernel/src/task/model.rs :: enum RunState :: Running { cpu : usize , }
-kernel/src/task/model.rs :: enum RunState :: StopPending { cpu : usize , transition : StopTransition , }
+kernel/src/task/model.rs :: enum RunState :: Preempting { cpu : crate :: cpu :: CpuId , }
+kernel/src/task/model.rs :: enum RunState :: Ready { cpu : crate :: cpu :: CpuId , generation : u64 , }
+kernel/src/task/model.rs :: enum RunState :: Running { cpu : crate :: cpu :: CpuId , }
+kernel/src/task/model.rs :: enum RunState :: StopPending { cpu : crate :: cpu :: CpuId , transition : StopTransition , }
 kernel/src/task/model.rs :: enum RunState :: Stopped { resume : StopResume , }
-kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : usize , }
+kernel/src/task/model.rs :: enum RunState :: WakePending { cpu : crate :: cpu :: CpuId , }
 kernel/src/task/model.rs :: enum StopResume :: Blocked
 kernel/src/task/model.rs :: enum StopResume :: Runnable
 kernel/src/task/model.rs :: enum StopTransition :: Blocking
@@ -2642,11 +2798,11 @@ kernel/src/task/model.rs :: pub (crate) enum StopTransition
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn arm_syscall_restart (& self , syscall_id : usize , args : [usize ; 6] , ecall_pc : usize)
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn begin_signal_suspend (& self , temporary : u64) -> u64
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn caught_signal_set (& self , candidates : u64) -> u64
+kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn kernel_context (& self) -> & Mutex < KernelContext >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn restore_temporary_signal_mask (& self) -> Result < () , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn set_clear_child_tid (& self , address : usize) -> usize
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_action (& self , signal : usize , replacement : Option < SignalAction > ,) -> Result < SignalAction , () >
 kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn signal_mask (& self , how : usize , replacement : Option < u64 >) -> Result < u64 , () >
-kernel/src/task/model.rs :: pub (crate) impl TaskControlBlock :: fn task_context (& self) -> & Mutex < TaskContext >
 kernel/src/task/model.rs :: pub (crate) struct TaskControlBlock
 kernel/src/task/model.rs :: pub (crate) use alternate_signal_stack :: { SignalStack , SignalStackError }
 kernel/src/task/model.rs :: pub (crate) use credentials :: CredentialUpdateError
@@ -2654,17 +2810,17 @@ kernel/src/task/model.rs :: pub (crate) use io_accounting :: IoStatistics
 kernel/src/task/model.rs :: pub (crate) use resource_limits :: { RLIM_INFINITY , RLIMIT_AS , RLIMIT_DATA , RLIMIT_NPROC , RLIMIT_STACK , ResourceLimit , ResourceLimitError , }
 kernel/src/task/model.rs :: pub (crate) use scheduling :: { Sched , SchedulingEntity , SchedulingState , WaitMembership , WaitResult }
 kernel/src/task/model.rs :: pub (crate) use signal_state :: { PendingSignal , SignalAction , SignalDelivery }
-kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
-kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn clear_parent_death_signal (& self)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn mark_parent_death (& self , parent_tgid : usize)
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn parent_death_signal (& self , replacement : Option < usize >) -> usize
 kernel/src/task/model.rs :: pub (in crate :: task) impl TaskControlBlock :: fn take_parent_death (& self) -> Option < (usize , usize) >
+kernel/src/task/model.rs :: pub (in crate :: task) use resource_limits :: RLIMIT_NICE
+kernel/src/task/model.rs :: pub (in crate :: task) use scheduling :: { CpuAffinity , ReadyRetirement , ReadyTransition }
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn accepts_process_signal (& self , signal : usize) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn clone_thread (& self , tid : usize , user_stack : usize , tls : usize , clear_child_tid : Option < usize > ,) -> Result < Self , MemoryError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn has_deliverable_signal (& self) -> bool
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn ignores_generated_signal_as_init (& self , signal : usize) -> bool
-kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : usize , kernel_trap_return : usize , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
+kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn new_with_pid (loaded : & LoadedExecutable , pid : ProcessId , kernel_trap_handler : crate :: arch :: trap :: UserTrapEntry , kernel_trap_return : crate :: arch :: context :: KernelResume , console : alloc :: sync :: Arc < dyn Console > ,) -> Result < Self , ElfLoadError >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_clear_child_tid (& self) -> Option < usize >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn take_pending_signal (& self , mask : u64) -> Option < (usize , PendingSignal) >
 kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_deliverable_signal < T > (& self , action : impl FnOnce () -> T) -> Option < T >
@@ -2672,10 +2828,10 @@ kernel/src/task/model.rs :: pub (super) impl TaskControlBlock :: fn with_pending
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_from_user (& self , user_address : usize , destination : & mut [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_to_user (& self , user_address : usize , source : & [u8] ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn copy_user_c_string (& self , user_address : usize , max_len : usize ,) -> Result < alloc :: vec :: Vec < u8 > , UserAccessError >
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn load_trap_context (& self) -> TrapContext
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn set_trap_context (& self , trap_context : TrapContext)
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn trap_context_va (& self) -> usize
-kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> usize
+kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn load_user_context (& self) -> UserContext
+kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn set_user_context (& self , trap_context : UserContext)
+kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn user_context_va (& self) -> usize
+kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn user_token (& self) -> crate :: arch :: mmu :: AddressSpaceToken
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn validate_user_write (& self , user_address : usize , length : usize ,) -> Result < () , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_key < R > (& self , address : usize , private : bool , consume : impl FnOnce (FutexKey) -> R ,) -> Result < R , UserAccessError >
 kernel/src/task/model/address_space.rs :: pub (crate) impl TaskControlBlock :: fn with_futex_requeue < R > (& self , source : usize , target : usize , private : bool , consume : impl FnOnce (FutexKey , FutexKey , u32) -> R ,) -> Result < R , UserAccessError >
@@ -2884,12 +3040,11 @@ kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingEntity
 kernel/src/task/model/scheduling.rs :: pub (crate) struct SchedulingState
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) SchedulingState :: cpu_affinity : CpuAffinity
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn all_possible () -> Self
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn allows_cpu (self , cpu : usize) -> bool
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn allows_hart (self , hart_id : usize) -> bool
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn allows (self , cpu : CpuId) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn effective_bits (self) -> usize
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl CpuAffinity :: fn from_user_bits (bits : usize) -> Option < Self >
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyRetirement < '_ > :: fn consume_ready_projection_cpu (mut self) -> usize
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyTransition < '_ > :: fn consume_ready_projection_parts (mut self) -> (Option < usize > , usize , u64)
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyRetirement < '_ > :: fn consume_ready_projection_cpu (mut self) -> CpuId
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl ReadyTransition < '_ > :: fn consume_ready_projection_parts (mut self) -> (Option < CpuId > , CpuId , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn begin_runtime (& mut self , start_time_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn checkpoint_runtime (& mut self , checkpoint_us : u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn finish_runtime (& mut self , end_time_us : u64)
@@ -2899,9 +3054,9 @@ kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl Sched :: fn r
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn executes_outside_affinity (& self) -> bool
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn replace_non_ready_state (& mut self , state : RunState)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn run_state (& self) -> RunState
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_ready_to_running (& mut self , cpu : usize , generation : u64 ,) -> ReadyRetirement < '_ >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_ready_to_running (& mut self , cpu : CpuId , generation : u64 ,) -> ReadyRetirement < '_ >
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_ready_to_stopped (& mut self) -> ReadyRetirement < '_ >
-kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : usize) -> ReadyTransition < '_ >
+kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl SchedulingState :: fn transition_to_ready (& mut self , cpu : CpuId) -> ReadyTransition < '_ >
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) impl TaskControlBlock :: fn thread_statistics (& self , active_now_us : Option < u64 > ,) -> (u64 , i32 , i32 , u64)
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct CpuAffinity
 kernel/src/task/model/scheduling.rs :: pub (in crate :: task) struct ReadyRetirement < 'owner >
@@ -2952,14 +3107,14 @@ kernel/src/task/pid.rs :: pub (super) const PID_MAX : usize = 0x3fff_ffff
 kernel/src/task/pid.rs :: pub (super) impl ProcessId :: const fn allocated (value : usize) -> Self
 kernel/src/task/pid.rs :: pub (super) struct ProcessId
 kernel/src/task/processor.rs :: pub (crate) Processor :: current : Option < Arc < TaskControlBlock > >
-kernel/src/task/processor.rs :: pub (crate) extern "C" fn idle_return () -> !
 kernel/src/task/processor.rs :: pub (crate) fn cpu_runtime_snapshot () -> Result < Vec < (usize , u64) > , () >
+kernel/src/task/processor.rs :: pub (crate) fn idle_return () -> !
 kernel/src/task/processor.rs :: pub (crate) fn request_reschedule ()
 kernel/src/task/processor.rs :: pub (crate) fn take_reschedule () -> bool
 kernel/src/task/processor.rs :: pub (crate) fn with_current_processor < R > (f : impl FnOnce (& mut Processor) -> R) -> R
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn add_ready_entry (& mut self , entry : RunQueueEntry) -> bool
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn drain_inbound_to_local (& mut self)
-kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn idle_context_ptr (& mut self) -> * mut TaskContext
+kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn idle_context_ptr (& mut self) -> * mut KernelContext
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn select_task (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) impl Processor :: fn take_current (& mut self) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/processor.rs :: pub (crate) struct Processor
@@ -2967,7 +3122,7 @@ kernel/src/task/processor.rs :: pub (crate) use placement :: enqueue_new_task
 kernel/src/task/processor.rs :: pub (in crate :: task) fn replace_task_affinity (task : & Arc < TaskControlBlock > , affinity : CpuAffinity)
 kernel/src/task/processor.rs :: pub (in crate :: task) fn wake_waiting_task (task : Arc < TaskControlBlock > , expected : WaitMembership , result : Option < WaitResult > ,) -> bool
 kernel/src/task/processor.rs :: pub (in crate :: task) use job_control :: request_tick_reschedule
-kernel/src/task/processor.rs :: pub (super) fn account_current_hart_runtime (runtime_us : u64)
+kernel/src/task/processor.rs :: pub (super) fn account_current_cpu_runtime (runtime_us : u64)
 kernel/src/task/processor.rs :: pub (super) fn defer_task_reap (task : Arc < TaskControlBlock >)
 kernel/src/task/processor.rs :: pub (super) fn finish_deschedule_transition (task : & Arc < TaskControlBlock >) -> bool
 kernel/src/task/processor.rs :: pub (super) fn init_topology ()
@@ -2986,14 +3141,14 @@ kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn continue_s
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_reschedule (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_task_stop (task : & Arc < TaskControlBlock >)
 kernel/src/task/processor/job_control.rs :: pub (in crate :: task) fn request_tick_reschedule ()
-kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on (cpu : usize)
-kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> usize
+kernel/src/task/processor/job_control.rs :: pub (super) fn request_reschedule_on (cpu : CpuId)
+kernel/src/task/processor/placement.rs :: pub (crate) fn enqueue_new_task (task : Arc < TaskControlBlock >) -> CpuId
 kernel/src/task/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < TaskControlBlock > , generation : u64) -> RunQueueEntry
-kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock , affinity : CpuAffinity) -> usize
+kernel/src/task/processor/placement.rs :: pub (super) fn select_cpu (task : & TaskControlBlock , affinity : CpuAffinity) -> CpuId
 kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_retirement (retirement : ReadyRetirement < '_ >)
 kernel/src/task/processor/ready_membership.rs :: pub (super) fn commit_ready_transition (transition : ReadyTransition < '_ >) -> u64
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry) -> bool
-kernel/src/task/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : usize , entry : RunQueueEntry)
+kernel/src/task/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : CpuId , entry : RunQueueEntry)
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn drain_inbound_to_local (processor : & mut Processor)
 kernel/src/task/processor/ready_queue.rs :: pub (super) fn select_task (processor : & mut Processor) -> Option < Arc < TaskControlBlock > >
 kernel/src/task/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
@@ -3034,8 +3189,8 @@ kernel/src/task/task_manager.rs :: pub (crate) fn wait_for_signal_delivery (deli
 kernel/src/task/task_manager.rs :: pub (crate) use affinity :: { SchedulerAffinityError , scheduler_affinity }
 kernel/src/task/task_manager.rs :: pub (crate) use deferred :: dispatch_pending_deferred_work
 kernel/src/task/task_manager.rs :: pub (crate) use futex :: { FutexWaitError , futex_requeue , futex_wait , futex_wake }
-kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
 kernel/src/task/task_manager.rs :: pub (crate) use parent_death :: parent_death_signal
+kernel/src/task/task_manager.rs :: pub (crate) use pipe_wait :: { create_notification_endpoints , create_pipe_endpoints , wait_for_pipe , wait_for_pipe_until , }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerNiceSelector , scheduler_nice , scheduler_rr_interval }
 kernel/src/task/task_manager.rs :: pub (crate) use policy :: { SchedulerPolicyError , SchedulerPolicyRequest , scheduler_io_priority , scheduler_policy , }
 kernel/src/task/task_manager.rs :: pub (crate) use process_exit :: { exit_current_group , exit_current_group_by_signal , exit_current_if_group_exiting , exit_current_thread , }
@@ -3317,19 +3472,6 @@ kernel/src/task/task_manager/wait_registry.rs :: pub (super) impl IndexedWaitQue
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitEntry
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct IndexedWaitQueue
 kernel/src/task/task_manager/wait_registry.rs :: pub (super) struct PreparedWait
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: f : [u64 ; 32]
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: fcsr : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_gp : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_hart_id : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_satp : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: kernel_sp : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: sepc : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: sstatus : Sstatus
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: trap_handler : usize
-kernel/src/task/trap_context.rs :: pub (crate) TrapContext :: x : [usize ; 32]
-kernel/src/task/trap_context.rs :: pub (crate) impl TrapContext :: fn app_init_context (entry : usize , sp : usize , kernel_satp : usize , kernel_sp : usize , trap_handler : usize ,) -> Self
-kernel/src/task/trap_context.rs :: pub (crate) impl TrapContext :: fn set_sp (& mut self , sp : usize)
-kernel/src/task/trap_context.rs :: pub (crate) struct TrapContext
 kernel/src/timer.rs :: pub (crate) fn boot_epoch_seconds () -> u64
 kernel/src/timer.rs :: pub (crate) fn enable_timer_interrupt ()
 kernel/src/timer.rs :: pub (crate) fn get_realtime_ns () -> u64
@@ -3340,6 +3482,8 @@ kernel/src/timer.rs :: pub (crate) fn monotonic_resolution_ns () -> u64
 kernel/src/timer.rs :: pub (crate) fn realtime_deadline_to_monotonic_ns (realtime_ns : u64) -> u64
 kernel/src/timer.rs :: pub (crate) fn scheduler_quantum_ns () -> u64
 kernel/src/timer.rs :: pub (crate) fn set_next_timer_interrupt ()
+kernel/src/timer/deadline.rs :: pub (crate) fn next (previous : u64 , now : u64 , interval : u64) -> Option < u64 >
+kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
+kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !
 kernel/src/trap/mod.rs :: pub (crate) fn init ()
-kernel/src/trap/mod.rs :: pub (crate) fn trap_handler ()
 kernel/src/trap/mod.rs :: pub (crate) fn trap_return () -> !

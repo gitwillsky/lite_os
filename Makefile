@@ -1,6 +1,6 @@
 ROOTFS_IMAGE := target/rootfs.img
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
@@ -96,14 +96,26 @@ build: build-kernel build-bootloader build-rootfs
 
 verify:
 	cargo fmt --all -- --check
-	cargo clippy -p architecture-check -- -D warnings
+	cargo clippy -p architecture-check -p architecture-bench -- -D warnings
 	cargo clippy -p syscall-abi -p kernel --target riscv64gc-unknown-none-elf --bins --lib -- -D warnings
 	cd bootloader && cargo clippy --release -- -D warnings && cd -
+	$(MAKE) verify-unit
+	$(MAKE) verify-architecture-benchmark
+	$(MAKE) verify-architecture-release
 	$(MAKE) build
 	cargo run --quiet -p architecture-check
 	python3 scripts/verify_artifacts.py
 	$(MAKE) -j4 verify-runtime-gates
 	git diff --check
+
+verify-unit:
+	cargo test -p architecture-check -p kernel-unit -p scheduler-unit -p syscall-abi
+
+verify-architecture-benchmark:
+	cargo run --quiet --release -p architecture-bench
+
+verify-architecture-release:
+	cd kernel && cargo build --release && cd -
 
 verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
 

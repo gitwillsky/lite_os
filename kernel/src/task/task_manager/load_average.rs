@@ -17,7 +17,7 @@ struct SampleClaim {
 /// @description Linux 1/5/15 minute fixed-point load average 的唯一 cadence 与 value owner。
 pub(super) struct LoadAverage {
     // OWNER: 本 atomic 唯一分配 5-second sample cadence；0 是 in-progress sentinel。
-    // 缺失 claim 会让每个 hart 重复扫描全部 Task；缺失 sentinel 会允许后一周期先提交，
+    // 缺失 claim 会让每个 CPU 重复扫描全部 Task；缺失 sentinel 会允许后一周期先提交，
     // 使不同 active sample 以反向时间顺序更新 EWMA。
     sample_deadline_us: AtomicU64,
     // OWNER: 本锁原子发布同一次 sample 的三个 EWMA value；拆锁会让 procfs/sysinfo
@@ -129,7 +129,7 @@ fn calc_load(load: u64, exp: u64, active: u64) -> u64 {
 /// @description 在到期 tick 上唯一采样全局 runnable Task 并提交 Linux fixed-point EWMA。
 ///
 /// @param now_us 本次 timer deferred batch 固定的 monotonic 微秒时刻。
-/// @return 未到期或其他 hart 已 claim 时立即返回；claimant 完成本批提交后返回。
+/// @return 未到期或其他 CPU 已 claim 时立即返回；claimant 完成本批提交后返回。
 /// @errors cadence、task count 或 EWMA 数值耗尽可表达范围时 fail-stop。
 pub(super) fn update(now_us: u64) {
     // 1. 非到期 tick 只执行 atomic load；不关闭中断、不争抢全局 value lock。

@@ -55,10 +55,10 @@ impl TaskControlBlock {
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
         let kernel_stack_top = self.thread.kernel_stack.get_top();
-        let old_trap_context = self.trap_context_va();
+        let old_trap_context = self.user_context_va();
         let old_address_space = self.process.replace_address_space(new_address_space);
         *self.process.comm.lock() = new_comm;
-        *self.thread.trap_cx_va.lock() = TRAP_CONTEXT;
+        *self.thread.user_cx_va.lock() = TRAP_CONTEXT;
         self.close_cloexec_files();
         self.process
             .signal_state
@@ -72,7 +72,7 @@ impl TaskControlBlock {
         );
 
         // 步骤3: 参数与环境只存在于新初始栈；地址空间由统一 trap return 激活。
-        self.set_trap_context(TrapContext::app_init_context(
+        self.set_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),

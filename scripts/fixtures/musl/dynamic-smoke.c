@@ -43,7 +43,10 @@ static int resolve_host(const char *host)
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
     struct addrinfo *addresses = NULL;
     int error = getaddrinfo(host, NULL, &hints, &addresses);
-    if (error != 0 || addresses == NULL) return 70;
+    if (error != 0 || addresses == NULL) {
+        fprintf(stderr, "LITEOS_DNS_FAILURE gai=%d errno=%d\n", error, errno);
+        return 70;
+    }
     char address[INET_ADDRSTRLEN];
     struct sockaddr_in *resolved = (struct sockaddr_in *)addresses->ai_addr;
     if (inet_ntop(AF_INET, &resolved->sin_addr, address, sizeof(address)) == NULL) {

@@ -1,7 +1,7 @@
 use spin::{Mutex, Once};
 
 use self::mm::MapArea;
-use crate::arch::dtb;
+use crate::platform;
 
 mod address;
 mod config;
@@ -12,6 +12,7 @@ mod heap_allocator;
 mod kernel_stack;
 mod mm;
 mod page_table;
+mod permissions;
 mod shared_file;
 
 // OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.
@@ -23,6 +24,7 @@ const KERNEL_HEAP_GROWTH_PAGES: usize = 64;
 // the same last frames needed to tear down the faulting task after ENOMEM.
 const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
 
+pub(crate) use crate::config::KERNEL_STACK_SIZE;
 pub(crate) use address::{PhysicalAddress, VirtualAddress};
 pub(crate) use config::*;
 pub(crate) use device_backing::DeviceBacking;
@@ -36,9 +38,10 @@ pub(crate) use heap_allocator::statistics as heap_statistics;
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::{
     DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexKey,
-    MapPermission, MappingResourceLimits, MemoryAdvice, MemoryError, MemorySet, PageFaultAccess,
-    PageFaultOutcome, UserAccessError, UserFaultLimits,
+    MappingResourceLimits, MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome,
+    UserAccessError, UserFaultLimits,
 };
+pub(crate) use permissions::MapPermission;
 pub(crate) use shared_file::{
     MemoryMappingOwner, MemoryReclaimer, ReclaimRequest, ReclaimResult, SharedFileError,
     SharedFileId, SharedFileMapping, SharedFrame, SharedPage, invalidate_shared_file,
@@ -75,7 +78,7 @@ pub(crate) fn signal_trampoline_entry() -> usize {
 // OWNER: memory module owns the canonical kernel address space after initialization.
 pub(crate) static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
-/// @description 初始化构造动态 hart topology 所需的 kernel allocator。
+/// @description 初始化构造动态 logical CPU topology 所需的 kernel allocator。
 ///
 /// @return 无返回值。
 /// @errors allocator 重复初始化或内存布局损坏时 fail-stop。
@@ -85,13 +88,13 @@ pub(crate) fn init_allocator() {
 
 pub(crate) fn init() {
     let kernel_end_addr: PhysicalAddress = (ekernel as *const () as usize).into();
-    let memory_end_addr: PhysicalAddress = dtb::board_info().mem.end.into();
+    let memory_end_addr: PhysicalAddress = platform::physical_memory_end().into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
     frame_allocator::init(kernel_end_addr, memory_end_addr);
     heap_allocator::enable_frame_backed_growth();
-    heap_allocator::init_hart_caches();
+    heap_allocator::init_cpu_caches();
 
     KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
     KERNEL_SPACE.wait().lock().active();
@@ -105,88 +108,19 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         .map_trampoline()
         .expect("Failed to map kernel trampoline");
 
-    // VirtIO MMIO 设备映射 - 使用 BoardInfo 获取动态地址范围
-    let board_info = dtb::board_info();
-    if !board_info.uart.is_empty() {
-        debug!("[init_kernel_space] UART MMIO: {:#x?}", board_info.uart);
+    for region in platform::kernel_mmio_regions() {
+        debug!("[init_kernel_space] platform MMIO: {region:#x?}");
         memory_set
             .push(
                 MapArea::new(
-                    board_info.uart.start.into(),
-                    board_info.uart.end.into(),
+                    region.start.into(),
+                    region.end.into(),
                     mm::MapType::Identical,
                     MapPermission::R | MapPermission::W,
                 ),
                 None,
             )
-            .expect("Failed to map UART MMIO memory");
-    }
-    if board_info.virtio_count > 0 {
-        let mut min_addr = usize::MAX;
-        let mut max_addr = 0;
-
-        for i in 0..board_info.virtio_count {
-            if let Some(dev) = &board_info.virtio_devices[i] {
-                min_addr = min_addr.min(dev.base_addr);
-                max_addr = max_addr.max(dev.base_addr + dev.size);
-            }
-        }
-
-        debug!(
-            "[init_kernel_space] VirtIO MMIO: {:#x} - {:#x}",
-            min_addr, max_addr
-        );
-        memory_set
-            .push(
-                MapArea::new(
-                    min_addr.into(),
-                    max_addr.into(),
-                    mm::MapType::Identical,
-                    MapPermission::R | MapPermission::W,
-                ),
-                None,
-            )
-            .expect("Failed to map VirtIO MMIO memory");
-    }
-
-    // RTC 设备映射
-    if let Some(rtc_dev) = &board_info.rtc_device {
-        debug!(
-            "[init_kernel_space] RTC MMIO: {:#x} - {:#x}",
-            rtc_dev.base_addr,
-            rtc_dev.base_addr + rtc_dev.size
-        );
-        memory_set
-            .push(
-                MapArea::new(
-                    rtc_dev.base_addr.into(),
-                    (rtc_dev.base_addr + rtc_dev.size).into(),
-                    mm::MapType::Identical,
-                    MapPermission::R | MapPermission::W,
-                ),
-                None,
-            )
-            .expect("Failed to map RTC MMIO memory");
-    }
-
-    // PLIC 中断控制器映射
-    if let Some(plic_dev) = &board_info.plic_device {
-        debug!(
-            "[init_kernel_space] PLIC MMIO: {:#x} - {:#x}",
-            plic_dev.base_addr,
-            plic_dev.base_addr + plic_dev.size
-        );
-        memory_set
-            .push(
-                MapArea::new(
-                    plic_dev.base_addr.into(),
-                    (plic_dev.base_addr + plic_dev.size).into(),
-                    mm::MapType::Identical,
-                    MapPermission::R | MapPermission::W,
-                ),
-                None,
-            )
-            .expect("Failed to map PLIC MMIO memory");
+            .expect("failed to map platform MMIO region");
     }
 
     // kernel text section
@@ -269,7 +203,7 @@ fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
         )
         .expect("Failed to map kernel .bss section");
 
-    // boot hart 独占的 early stack，底部保留一页 guard。
+    // boot CPU 独占的 early stack，底部保留一页 guard。
     // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题。
     let boot_stack_bottom_addr = boot_stack_bottom as *const () as usize;
     let boot_stack_top_addr = boot_stack_top as *const () as usize;

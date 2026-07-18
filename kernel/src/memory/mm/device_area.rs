@@ -89,11 +89,7 @@ impl MapArea {
         for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             if Self::has_leaf_permission(self.map_permission) {
-                page_table.map(
-                    vpn,
-                    self.device_ppn(vpn)?,
-                    PTEFlags::from_bits(self.map_permission.bits()).unwrap(),
-                )?;
+                page_table.map(vpn, self.device_ppn(vpn)?, self.map_permission.into())?;
             } else {
                 page_table.reserve(vpn)?;
             }
@@ -117,7 +113,7 @@ impl MapArea {
     ) -> Result<(), MemoryError> {
         let old_leaf = Self::has_leaf_permission(self.map_permission);
         let new_leaf = Self::has_leaf_permission(permission);
-        let flags = PTEFlags::from_bits(permission.bits()).unwrap();
+        let flags = permission.into();
         for vpn in range.start.as_usize()..range.end.as_usize() {
             let vpn = VirtualPageNumber::from_vpn(vpn);
             match (old_leaf, new_leaf) {

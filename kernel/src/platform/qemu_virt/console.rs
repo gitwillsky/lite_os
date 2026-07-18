@@ -1,13 +1,13 @@
 fn print_str(s: &str) {
     for byte in s.bytes() {
-        let _ = super::sbi::console_putchar(byte);
+        let _ = super::debug_console_write(byte);
     }
 }
 
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {
-        $crate::arch::console::_print_fmt(format_args!($($arg)*));
+        $crate::platform::console::_print_fmt(format_args!($($arg)*));
     };
 }
 
@@ -63,7 +63,7 @@ impl core::fmt::Write for PanicConsoleWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         // 直接轮询输出，避免拿锁
         for b in s.bytes() {
-            let _ = super::sbi::console_putchar(b);
+            let _ = super::debug_console_write(b);
         }
         Ok(())
     }

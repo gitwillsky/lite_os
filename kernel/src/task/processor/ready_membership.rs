@@ -1,18 +1,12 @@
 use super::*;
 
-fn processor_for_hart(cpu: usize) -> &'static PerHartProcessor {
-    let index = if cpu == hart_id() {
-        hart::current_hart_index()
-    } else {
-        hart::hart_index(cpu)
-            .unwrap_or_else(|| panic!("scheduler CPU {} is absent from DTB topology", cpu))
-    };
-    processor_at(index)
+fn processor_for_cpu(cpu: CpuId) -> &'static PerCpuProcessor {
+    processor_at(cpu.index())
 }
 
 #[inline(always)]
-fn publish(cpu: usize) {
-    let slot = processor_for_hart(cpu);
+fn publish(cpu: CpuId) {
+    let slot = processor_for_cpu(cpu);
     let previous = slot.ready_entries.fetch_add(1, Ordering::Relaxed);
     assert!(
         previous < slot.queue_capacity,
@@ -20,7 +14,7 @@ fn publish(cpu: usize) {
     );
 }
 
-/// @description 消费线性 Ready token 并提交唯一 per-hart logical-load projection。
+/// @description 消费线性 Ready token 并提交唯一 per-CPU logical-load projection。
 /// @param transition SchedulingState lock 内刚产生且尚未消费的 token。
 /// @return 本次 Ready generation，供同一 transaction 构造物理 queue token。
 #[inline(always)]
@@ -40,14 +34,14 @@ pub(super) fn commit_ready_transition(transition: ReadyTransition<'_>) -> u64 {
 }
 
 #[inline(always)]
-fn retire(cpu: usize) {
-    let previous = processor_for_hart(cpu)
+fn retire(cpu: CpuId) {
+    let previous = processor_for_cpu(cpu)
         .ready_entries
         .fetch_sub(1, Ordering::Relaxed);
     assert_ne!(previous, 0, "Ready membership count underflow");
 }
 
-/// @description 消费线性 Ready-retirement token 并撤销 per-hart logical-load projection。
+/// @description 消费线性 Ready-retirement token 并撤销 per-CPU logical-load projection。
 /// @param retirement SchedulingState lock 内刚产生且尚未消费的 token。
 #[inline(always)]
 pub(super) fn commit_ready_retirement(retirement: ReadyRetirement<'_>) {

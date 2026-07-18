@@ -1,11 +1,11 @@
 use super::*;
 
-/// @description 将已发布 Ready generation 的 entry 加入 owner hart runqueue。
-/// @param processor 当前 hart 独占的 scheduler 执行状态。
-/// @param entry 已属于 processor hart 的 membership token。
+/// @description 将已发布 Ready generation 的 entry 加入 owner CPU runqueue。
+/// @param processor 当前 CPU 独占的 scheduler 执行状态。
+/// @param entry 已属于 processor CPU 的 membership token。
 /// @return 同一 slot 当前是否已有 Running owner。
 pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -> bool {
-    let slot = current_per_hart();
+    let slot = current_per_cpu();
     make_runqueue_room(processor, 1);
     processor.runqueue.push(entry);
     discard_stale_ready_roots(processor);
@@ -15,7 +15,7 @@ pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -
 
 #[inline(always)]
 fn make_runqueue_room(processor: &mut Processor, additional: usize) {
-    let cpu = processor.hart_id;
+    let cpu = processor.cpu_id;
     processor
         .runqueue
         .make_room(additional, |candidate| candidate.is_current_ready(cpu));
@@ -23,13 +23,13 @@ fn make_runqueue_room(processor: &mut Processor, additional: usize) {
 
 #[inline(always)]
 fn discard_stale_ready_roots(processor: &mut Processor) {
-    let cpu = processor.hart_id;
+    let cpu = processor.cpu_id;
     processor
         .runqueue
         .discard_stale_roots(|candidate| candidate.is_current_ready(cpu));
 }
 
-fn publish_vruntime_floor(processor: &Processor, slot: &PerHartProcessor) {
+fn publish_vruntime_floor(processor: &Processor, slot: &PerCpuProcessor) {
     if let Some(floor) = processor.runqueue.minimum_vruntime() {
         slot.placement_vruntime.store(floor, Ordering::Release);
     }
@@ -37,7 +37,7 @@ fn publish_vruntime_floor(processor: &Processor, slot: &PerHartProcessor) {
 
 #[cold]
 #[inline(never)]
-fn compact_full_mailbox(inbound: &mut VecDeque<RunQueueEntry>, cpu_id: usize, capacity: usize) {
+fn compact_full_mailbox(inbound: &mut VecDeque<RunQueueEntry>, cpu_id: CpuId, capacity: usize) {
     assert_eq!(
         inbound.len(),
         capacity,
@@ -47,23 +47,23 @@ fn compact_full_mailbox(inbound: &mut VecDeque<RunQueueEntry>, cpu_id: usize, ca
 }
 
 /// @description 消费 stale entry，完成唯一 Ready → Running membership 转换。
-/// @param processor 当前 hart 独占的 scheduler 执行状态。
+/// @param processor 当前 CPU 独占的 scheduler 执行状态。
 /// @return 队列为空时返回 `None`，否则返回唯一取出的任务。
 pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBlock>> {
     assert!(
         processor.current.is_none(),
         "CPU already owns a current task"
     );
-    let slot = current_per_hart();
+    let slot = current_per_cpu();
     loop {
         let entry = processor.runqueue.pop()?;
         let mut scheduling = entry.task.scheduling.state.lock();
         match scheduling.run_state() {
             RunState::Ready { cpu, generation }
-                if cpu == processor.hart_id && generation == entry.generation =>
+                if cpu == processor.cpu_id && generation == entry.generation =>
             {
                 commit_ready_retirement(
-                    scheduling.transition_ready_to_running(processor.hart_id, entry.generation),
+                    scheduling.transition_ready_to_running(processor.cpu_id, entry.generation),
                 );
                 drop(scheduling);
                 processor.current = Some(entry.task.clone());
@@ -85,17 +85,17 @@ pub(super) fn select_task(processor: &mut Processor) -> Option<Arc<TaskControlBl
 }
 
 /// @description 在一次 mailbox lock 内批量转移本轮 inbound snapshot。
-/// @param processor 当前 hart 独占的 scheduler 执行状态。
+/// @param processor 当前 CPU 独占的 scheduler 执行状态。
 /// @return 无返回值。
 pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
-    let slot = current_per_hart();
+    let slot = current_per_cpu();
     // 锁内只消费进入本轮时的 snapshot；后续 delivery 等待锁，
     // 解锁后留给下一轮。VecDeque 不 swap，始终保留启动期预留 backing。
     let mut inbound = slot.inbound.lock();
     if inbound.is_empty() {
         return;
     }
-    inbound.retain(|candidate| candidate.is_current_ready(processor.hart_id));
+    inbound.retain(|candidate| candidate.is_current_ready(processor.cpu_id));
     if inbound.is_empty() {
         return;
     }
@@ -117,13 +117,13 @@ pub(super) fn drain_inbound_to_local(processor: &mut Processor) {
 }
 
 /// @description 投递 Ready entry；busy target 同步 reschedule，避免 writer 饿死 Ready reader。
-/// @param cpu_id 目标 raw hart ID。
+/// @param cpu_id 目标 logical CPU identity。
 /// @param entry 带 generation 的 membership token。
 /// @return 无返回值。
-/// @errors 目标越界、未 active 或 SBI IPI 失败均 fail-stop。
+/// @errors 目标越界、未 active 或 platform IPI 失败均 fail-stop。
 #[inline(always)]
-pub(super) fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
-    if cpu_id == hart_id() {
+pub(super) fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
+    if cpu_id == cpu::current_id() {
         deliver_local(entry);
     } else {
         deliver_remote(cpu_id, entry);
@@ -138,12 +138,9 @@ fn deliver_local(entry: RunQueueEntry) {
 }
 
 #[inline(never)]
-fn deliver_remote(cpu_id: usize, entry: RunQueueEntry) {
-    let target_index = hart::hart_index(cpu_id)
-        .unwrap_or_else(|| panic!("target CPU {} is absent from DTB topology", cpu_id));
-    let target_state = &hart::states()[target_index];
-    let target = processor_at(target_index);
-    assert!(target_state.is_active());
+fn deliver_remote(cpu_id: CpuId, entry: RunQueueEntry) {
+    let target = processor_at(cpu_id.index());
+    assert!(cpu::is_active(cpu_id));
     let mut inbound = target.inbound.lock();
     if inbound.len() == target.queue_capacity {
         compact_full_mailbox(&mut inbound, cpu_id, target.queue_capacity);
@@ -154,14 +151,14 @@ fn deliver_remote(cpu_id: usize, entry: RunQueueEntry) {
     );
     inbound.push_back(entry);
     drop(inbound);
-    publish_reschedule_at(target_index);
+    publish_reschedule_at(cpu_id);
 }
 
 impl RunQueueEntry {
     /// @description 核对 entry generation 与唯一 SchedulingState Ready membership。
-    /// @param cpu 容器所属 hart ID。
+    /// @param cpu 容器所属 CPU ID。
     /// @return 该 entry 仍是当前唯一 Ready membership 时返回 true。
-    fn is_current_ready(&self, cpu: usize) -> bool {
+    fn is_current_ready(&self, cpu: CpuId) -> bool {
         matches!(
             self.task.scheduling.state.lock().run_state(),
             RunState::Ready {

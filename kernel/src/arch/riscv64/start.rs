@@ -1,6 +1,12 @@
 use core::arch::naked_asm;
 
-use super::hart;
+use super::startup;
+
+// SAFETY: assembly calls these symbols only after establishing the Rust ABI stack contract.
+unsafe extern "C" {
+    fn __liteos_primary_entry(hardware_cpu: usize, platform_opaque: usize) -> !;
+    fn __liteos_secondary_entry(hardware_cpu: usize, platform_opaque: usize) -> !;
+}
 
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -16,14 +22,14 @@ unsafe extern "C" fn _start() -> ! {
             li   t1, -1
             beq  t0, t1, 3f
 
-            # 2. secondary 消费 boot hart 发布的动态表，按 DTB hart ID 查找启动栈。
+            # 2. secondary 消费 boot hart 发布的动态表，按 firmware hart ID 查找启动栈。
             fence r, rw
             la   t1, {table_length}
             ld   t1, 0(t1)
             mv   t2, t0
         1:
             beqz t1, 5f
-            ld   t3, {id_offset}(t2)
+            ld   t3, {hardware_id_offset}(t2)
             beq  t3, a0, 2f
             li   t4, {state_size}
             add  t2, t2, t4
@@ -31,6 +37,7 @@ unsafe extern "C" fn _start() -> ! {
             j    1b
         2:
             ld   sp, {stack_top_offset}(t2)
+            ld   tp, {logical_id_offset}(t2)
             j    4f
         3:
             la   sp, boot_stack_top
@@ -65,14 +72,15 @@ unsafe extern "C" fn _start() -> ! {
             wfi
             j 6b
         ",
-        table_address = sym hart::HART_TABLE_ADDRESS,
-        table_length = sym hart::HART_TABLE_LENGTH,
-        id_offset = const hart::HART_STATE_ID_OFFSET,
-        stack_top_offset = const hart::HART_STATE_STACK_TOP_OFFSET,
-        state_size = const hart::HART_STATE_SIZE,
+        table_address = sym startup::TABLE_ADDRESS,
+        table_length = sym startup::TABLE_LENGTH,
+        hardware_id_offset = const startup::HARDWARE_ID_OFFSET,
+        logical_id_offset = const startup::LOGICAL_ID_OFFSET,
+        stack_top_offset = const startup::STACK_TOP_OFFSET,
+        state_size = const startup::ENTRY_SIZE,
         clear_bss = sym clear_bss,
-        boot_main = sym crate::kmain_boot,
-        secondary_main = sym crate::kmain_secondary,
+        boot_main = sym __liteos_primary_entry,
+        secondary_main = sym __liteos_secondary_entry,
     )
 }
 

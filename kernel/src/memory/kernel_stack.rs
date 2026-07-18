@@ -34,7 +34,7 @@ impl KernelStack {
         )?;
 
         super::mm::MemorySet::flush_tlb_all_cpus()
-            .expect("SBI RFENCE failed after kernel stack mapping");
+            .expect("platform TLB synchronization failed after kernel stack mapping");
 
         Ok(Self { handle })
     }
@@ -55,13 +55,13 @@ impl Drop for KernelStack {
             .remove_area_with_start_vpn(VirtualAddress::from(mapped_bottom).into());
 
         super::mm::MemorySet::flush_tlb_all_cpus()
-            .expect("SBI RFENCE failed after kernel stack unmapping");
+            .expect("platform TLB synchronization failed after kernel stack unmapping");
     }
 }
 
 /// 获取应用内核栈的地址范围，返回 (bottom, top)
 fn kernel_stack_position(app_id: usize) -> (usize, usize) {
-    // 内核栈位于单一 TrapContext 页之下，并在相邻栈之间保留一页守护间隔。
+    // 内核栈位于单一 UserContext 页之下，并在相邻栈之间保留一页守护间隔。
     let top = super::TRAP_CONTEXT - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
     let bottom = top - KERNEL_STACK_SIZE;
     (bottom, top)

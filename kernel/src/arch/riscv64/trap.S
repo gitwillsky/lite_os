@@ -94,7 +94,7 @@ __kernel_trap:
     .endr
     frcsr t0
     sd t0, 64*8(sp)
-    call rust_trap_from_kernel
+    call __liteos_kernel_trap
     ld t0, 64*8(sp)
     fscsr t0
     .set n, 0

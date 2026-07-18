@@ -34,7 +34,7 @@ from build_cache import (
     temporary_directory,
     write_manifest,
 )
-from qemu_gate import boot, power_cut
+from qemu_gate import boot, cpu_topology_markers, power_cut
 from openssl_cache import OpenSslPaths, build_openssl
 from ext2_image import find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
@@ -66,6 +66,7 @@ FORBIDDEN_BOOT_MARKERS = (
     "unsupported syscall_id:",
     "Please press Enter to activate this console.",
     "udhcpc:",
+    "LITEOS_DNS_FAILURE",
 )
 BUSYBOX_LINKS = (
     "[",
@@ -1314,8 +1315,7 @@ def main() -> int:
             runtime_image,
             1,
             (
-                "dynamic hart topology initialized: count=1, mask=0x1",
-                "all DTB harts online: count=1, mask=0x1",
+                *cpu_topology_markers(1),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_BUSYBOX_SHELL_42",
                 "LITEOS_DHCP_51",
@@ -1724,8 +1724,7 @@ def main() -> int:
             phase55_image,
             1,
             (
-                "dynamic hart topology initialized: count=1, mask=0x1",
-                "all DTB harts online: count=1, mask=0x1",
+                *cpu_topology_markers(1),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PROCESS_TOOLS_55",
             ),
@@ -1736,8 +1735,7 @@ def main() -> int:
             phase56_image,
             1,
             (
-                "dynamic hart topology initialized: count=1, mask=0x1",
-                "all DTB harts online: count=1, mask=0x1",
+                *cpu_topology_markers(1),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_IDENTITY_56",
             ),
@@ -1748,8 +1746,7 @@ def main() -> int:
             phase57_image,
             1,
             (
-                "dynamic hart topology initialized: count=1, mask=0x1",
-                "all DTB harts online: count=1, mask=0x1",
+                *cpu_topology_markers(1),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_OPENED_FD_57",
             ),
@@ -1760,8 +1757,7 @@ def main() -> int:
             runtime_image,
             8,
             (
-                "dynamic hart topology initialized: count=8, mask=0xff",
-                "all DTB harts online: count=8, mask=0xff",
+                *cpu_topology_markers(8),
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PERSIST_42",
                 "LITEOS_SHARED_PERSIST_45",

@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
-    arch::hart,
+    cpu,
     fs::{
         ProcCpuSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot, ProcNetworkSnapshot,
         ProcProcessSnapshot, ProcSnapshot, ProcSource, ProcThreadSnapshot, page_cache_statistics,
@@ -181,8 +181,9 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
                 priority,
                 runtime_us,
                 start_time_us,
-                last_cpu: hart::hart_index(thread.scheduling.last_cpu.load(Ordering::Relaxed))
-                    .expect("task last_cpu disappeared from topology"),
+                last_cpu: cpu::id_at(thread.scheduling.last_cpu.load(Ordering::Relaxed))
+                    .expect("task last CPU disappeared from topology")
+                    .index(),
                 io: io_snapshot(thread.thread_io_statistics()),
             });
         }
@@ -239,7 +240,7 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
         });
     }
 
-    // 3. allocator 与 per-hart processor 分别提供其唯一 owner 下的统计。
+    // 3. allocator 与 per-CPU processor 分别提供其唯一 owner 下的统计。
     let frame = frame_statistics();
     let heap = crate::memory::heap_statistics();
     let reclaim = reclaim_statistics();
@@ -253,10 +254,7 @@ fn process_snapshot() -> Result<ProcSnapshot, crate::fs::FileSystemError> {
     cpus.extend(
         cpu_runtime
             .into_iter()
-            .map(|(hart_id, busy_us)| ProcCpuSnapshot {
-                cpu: hart::hart_index(hart_id).expect("processor hart disappeared from topology"),
-                busy_us,
-            }),
+            .map(|(cpu, busy_us)| ProcCpuSnapshot { cpu, busy_us }),
     );
     let network = crate::socket::network_snapshot().map(|snapshot| ProcNetworkSnapshot {
         address: snapshot.address.map(|address| address.octets()),

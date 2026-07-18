@@ -51,7 +51,7 @@ struct QueueState {
 }
 
 /// @description VirtIO MMIO v2 Ethernet adapter；queue 与 DMA buffer 生命周期由实例唯一拥有。
-pub(super) struct VirtIONetworkDevice {
+pub(crate) struct VirtIONetworkDevice {
     device: VirtIODevice,
     mac: [u8; 6],
     // OWNER: one IRQ-safe queue lock serializes descriptor recycling, RX repost and TX slot state.
@@ -65,7 +65,7 @@ impl VirtIONetworkDevice {
     ///
     /// @param base_addr DTB VirtIO MMIO base。
     /// @return 完整设备；类型、feature、queue 或 allocation 不满足时返回 `None`。
-    pub(super) fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 1 {
             return None;
@@ -168,7 +168,7 @@ impl VirtIONetworkDevice {
         Some(queue)
     }
 
-    pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
+    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIONetworkIrqHandler {
             device: self.clone(),
         })
@@ -314,7 +314,7 @@ impl NetworkDevice for VirtIONetworkDevice {
         }
         drop(queues);
         if was_full {
-            crate::arch::hart::raise_network_softirq();
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
         }
     }
 
@@ -400,7 +400,7 @@ impl InterruptHandler for VirtIONetworkIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & VIRTIO_MMIO_INT_VRING != 0 {
-            crate::arch::hart::raise_network_softirq();
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Network);
         }
         Ok(())
     }

@@ -15,18 +15,18 @@ mod shared_area;
 mod statistics;
 mod user_access;
 use super::config;
+use super::permissions::MapPermission;
 use super::{address::VirtualPageNumber, page_table::PageTable};
 use crate::fallible_tree::FallibleMap;
 use crate::memory::{
     ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedPage,
     address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress},
     frame_allocator::{FrameTracker, alloc},
-    page_table::{PTEFlags, PageTableEntry},
+    page_table::{PagePermissions, PageTableEntry},
     strampoline,
 };
 use alloc::{sync::Arc, vec::Vec};
-use bitflags::bitflags;
-use core::{arch::asm, ops::Range};
+use core::ops::Range;
 use device_area::DeviceArea;
 use error::try_memory_arc;
 use fault_preflight::{
@@ -35,7 +35,6 @@ use fault_preflight::{
 use file_page_range::{FilePageRange, FilePageRangeError};
 use private_area::{PrivateFaultPreparation, PrivateFileArea};
 use resident::PrivateResident;
-use riscv::register::satp::{self, Satp};
 use shared_area::{AnonymousSharedBacking, SharedAnonymousArea, SharedFileArea, SharedResident};
 pub(crate) use {
     error::{ElfLoadError, MemoryError, UserAccessError},
@@ -48,17 +47,6 @@ pub(crate) use {
     mmap::PageFaultOutcome,
     user_access::UserFaultLimits,
 };
-bitflags! {
-    // PTE Flags 的子集
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct MapPermission: u8 {
-        const R = 1 << 1; // 可读
-        const W = 1 << 2; // 可写
-        const X = 1 << 3; // 可执行
-        const U = 1 << 4; // 用户态可访问 (默认仅 内核 态可访问)
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum MapType {
     Identical, // PA <-> VA 恒等映射
@@ -280,14 +268,14 @@ impl MapArea {
             .map_err(|_| MemoryError::OutOfMemory)?;
 
         if Self::has_leaf_permission(self.map_permission) {
-            let mut pte_flags = PTEFlags::from_bits(self.map_permission.bits()).unwrap();
+            let mut pte_flags = self.map_permission.into();
             if self.global {
-                pte_flags |= PTEFlags::G;
+                pte_flags |= PagePermissions::GLOBAL;
             }
             page_table.map(vpn, ppn, pte_flags)?;
         } else if self.map_type == MapType::Framed {
-            // PROT_NONE VMA 仍由 data_frames 唯一持有物理页，但 leaf slot 必须保持 invalid。
-            // 若写入 V|U 且 R/W/X 全零，RISC-V walker 会把数据页误当成下一级页表。
+            // PROT_NONE VMA 仍由 data_frames 唯一持有物理页，但 translation slot 必须保持 reserved。
+            // 若发布无 leaf access 的 entry，部分 architecture 会把它解释成 table pointer。
             page_table.reserve(vpn)?;
         } else {
             return Err(MemoryError::InvalidRange);
@@ -475,7 +463,7 @@ impl MemorySet {
         )
     }
 
-    pub(crate) fn token(&self) -> usize {
+    pub(crate) fn token(&self) -> crate::arch::mmu::AddressSpaceToken {
         self.page_table.token()
     }
 
@@ -529,43 +517,34 @@ impl MemorySet {
             trampoline_va.into(),
             strampoline_pa.into(),
             // Trampoline 在所有地址空间通用，标记为 Global，避免跨进程切换时TLB混淆
-            PTEFlags::R | PTEFlags::X | PTEFlags::G,
+            PagePermissions::READ | PagePermissions::EXECUTE | PagePermissions::GLOBAL,
         )?;
         self.page_table.map(
             VirtualAddress::from(config::SIGNAL_TRAMPOLINE).into(),
             strampoline_pa.into(),
-            PTEFlags::R | PTEFlags::X | PTEFlags::U,
+            PagePermissions::READ | PagePermissions::EXECUTE | PagePermissions::USER,
         )?;
         Ok(())
     }
 
     pub(crate) fn active(&self) {
-        let satp = self.page_table.token();
-        // SAFETY: token encodes this live Sv39 root table; activation runs in S-mode and the
-        // following local fence invalidates translations derived from the previous root.
-        unsafe {
-            satp::write(Satp::from_bits(satp));
-            asm!("sfence.vma")
-        }
+        crate::arch::mmu::activate(self.page_table.token());
     }
 
-    /// @description 同步刷新所有 online hart 的 S-stage TLB。
+    /// @description 同步刷新所有 online CPU 的 userspace translation cache。
     ///
-    /// @return 所有目标 hart 完成 `SFENCE.VMA` 后返回 `Ok(())`；SBI RFENCE 失败时返回错误码。
-    pub(crate) fn flush_tlb_all_cpus() -> Result<(), isize> {
-        // 1. 本 hart 先完成 fence；当前页表写在后续 SBI ecall 之前保持程序顺序。
-        // SAFETY: `sfence.vma` is executed in S-mode and affects only architectural TLB state.
-        unsafe { asm!("sfence.vma") }
-        // 2. Acquire online mask 只选择已发布可接收远端请求的 hart。
-        let current = crate::arch::hart::hart_id();
-        let targets = crate::arch::hart::online_hart_mask()
-            & crate::arch::hart::possible_hart_mask()
-            & !(1usize << current);
-        if targets == 0 {
+    /// @return 所有目标 CPU 完成 remote fence 后返回 `Ok(())`；platform 操作失败时返回错误。
+    pub(crate) fn flush_tlb_all_cpus() -> Result<(), crate::platform::TlbShootdownError> {
+        // 1. 当前 CPU 先完成 fence；当前页表写在后续 platform call 前保持程序顺序。
+        crate::arch::mmu::flush_local();
+        // 2. Acquire online set 只选择已发布可接收远端请求的 CPU。
+        let mut targets = crate::cpu::online() & crate::cpu::possible();
+        targets.remove(crate::cpu::current_id());
+        if targets.is_empty() {
             return Ok(());
         }
-        // 3. SBI RFENCE 是同步接口；返回即证明目标 hart 已完成 fence。
-        crate::arch::sbi::remote_sfence_vma(targets, 0, 0, 0)
+        // 3. platform shootdown 是同步接口；返回即证明目标 CPU 已完成 fence。
+        crate::platform::synchronize_tlb(targets, 0, 0)
     }
 
     fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
@@ -670,7 +649,8 @@ impl MemorySet {
             (address + config::PAGE_SIZE).into(),
             MapPermission::R | MapPermission::W,
         )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after thread trap-context mapping");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after thread trap-context mapping");
         Ok(address)
     }
 
@@ -682,14 +662,15 @@ impl MemorySet {
         let vpn = VirtualAddress::from(address).floor();
         assert!(self.areas.contains_key(&vpn));
         self.remove_area_with_start_vpn(vpn);
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after thread trap-context unmapping");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after thread trap-context unmapping");
     }
 
-    /// 获取给定TrapContext虚拟地址的物理页号
+    /// 获取给定UserContext虚拟地址的物理页号
     pub(crate) fn trap_context_ppn(&self, trap_va: usize) -> PhysicalPageNumber {
         self.page_table
             .translate(VirtualAddress::from(trap_va).into())
-            .expect("TrapContext VA should be mapped")
+            .expect("UserContext VA should be mapped")
             .ppn()
     }
 }

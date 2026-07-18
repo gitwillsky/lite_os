@@ -1,9 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::fs::{AccessIdentity, Console, vfs};
-use crate::task::{context::TaskContext, pid::ProcessId};
+use crate::task::pid::ProcessId;
 
-mod context;
 mod loader;
 mod memory_barrier;
 mod model;
@@ -11,10 +10,12 @@ mod pid;
 mod processor;
 mod scheduler;
 mod task_manager;
-mod trap_context;
 
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
-pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
+pub(crate) use memory_barrier::{
+    complete_pending as complete_pending_memory_barrier, register_private_memory_barrier,
+    synchronize_private_memory,
+};
 pub(in crate::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
 pub(crate) use model::{
     CredentialUpdateError, IoStatistics, PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
@@ -32,29 +33,16 @@ pub(crate) use task_manager::timer_queue::{
     set_posix_timer, set_real_timer,
 };
 pub(crate) use task_manager::*;
-pub(crate) use trap_context::TrapContext;
-
-// SAFETY: the linked assembly routine obeys the declared C ABI; individual calls must additionally
-// uphold the TaskContext lifetime and exclusive-save-target contract below.
-unsafe extern "C" {
-    /// Switch to the context of 'next_task_cx_ptr', saving the current context
-    /// in `current_task_cx_ptr`
-    // SAFETY: caller must keep both TaskContext allocations alive, provide exclusive access to
-    // the save target, and ensure the next context names a valid kernel stack and return PC.
-    pub(crate) unsafe fn __switch(
-        current_task_cx_ptr: *mut TaskContext,
-        next_task_cx_ptr: *const TaskContext,
-    );
-}
 
 const INIT_PROC_NAME: &[u8] = b"/bin/init";
 
 pub(crate) fn init(
-    kernel_trap_handler: usize,
-    kernel_trap_return: usize,
+    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
+    kernel_trap_return: crate::arch::context::KernelResume,
     console: Arc<dyn Console>,
 ) {
     install_advisory_lock_notifier();
+    memory_barrier::initialize();
     processor::init_topology();
     let mut path = Vec::new();
     path.try_reserve_exact(INIT_PROC_NAME.len())

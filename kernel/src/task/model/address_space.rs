@@ -368,7 +368,7 @@ impl TaskControlBlock {
     /// @description 删除非 canonical 的 Thread/vfork-child supervisor trap-context 页。
     /// @return 无返回值；canonical process trap context 随 AddressSpace 生命周期释放。
     pub(in crate::task) fn remove_thread_trap_context(&self) {
-        let address = self.trap_context_va();
+        let address = self.user_context_va();
         if address == TRAP_CONTEXT {
             return;
         }
@@ -381,47 +381,47 @@ impl TaskControlBlock {
 
     /// @description 返回当前 Thread 的 supervisor trap-context 虚拟地址。
     /// @return canonical Process 地址或共享 mm 内按 TID 分配的独立地址。
-    pub(crate) fn trap_context_va(&self) -> usize {
-        *self.thread.trap_cx_va.lock()
+    pub(crate) fn user_context_va(&self) -> usize {
+        *self.thread.user_cx_va.lock()
     }
 
     /// @description 覆盖当前 Thread 的 supervisor-only trap context。
     ///
     /// @param trap_context 待写入的完整上下文值。
     /// @return 无返回值；映射缺失表示 kernel 不变量损坏并 panic。
-    pub(crate) fn set_trap_context(&self, trap_context: TrapContext) {
-        let va = self.trap_context_va();
+    pub(crate) fn set_user_context(&self, trap_context: UserContext) {
+        let va = self.user_context_va();
         let address_space = self.process.address_space();
         let memory_set = address_space.memory_set.lock();
         let ppn = memory_set.trap_context_ppn(va);
         let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        assert!(offset + core::mem::size_of::<UserContext>() <= crate::memory::PAGE_SIZE);
         // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
         // frame retained by the address-space guard.
-        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<TrapContext>() };
+        let ptr = unsafe { ppn.as_page_mut_ptr().add(offset).cast::<UserContext>() };
         assert!(
             ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
+            "UserContext physical address is not aligned"
         );
         // SAFETY: address-space guard 保证映射存活；当前 Thread 是该 trap context 的唯一写者。
         unsafe { ptr.write(trap_context) };
     }
 
     /// @description 复制当前 Thread trap context，不让底层映射引用逃逸地址空间锁。
-    /// @return owned TrapContext clone；映射缺失表示 kernel 不变量损坏并 panic。
-    pub(crate) fn load_trap_context(&self) -> TrapContext {
-        let va = self.trap_context_va();
+    /// @return owned UserContext clone；映射缺失表示 kernel 不变量损坏并 panic。
+    pub(crate) fn load_user_context(&self) -> UserContext {
+        let va = self.user_context_va();
         let address_space = self.process.address_space();
         let memory_set = address_space.memory_set.lock();
         let ppn = memory_set.trap_context_ppn(va);
         let offset = VirtualAddress::from(va).page_offset();
-        assert!(offset + core::mem::size_of::<TrapContext>() <= crate::memory::PAGE_SIZE);
+        assert!(offset + core::mem::size_of::<UserContext>() <= crate::memory::PAGE_SIZE);
         // SAFETY: validated page offset keeps pointer arithmetic inside the live trap-context
         // frame retained by the address-space guard.
-        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<TrapContext>() };
+        let ptr = unsafe { ppn.as_page_ptr().add(offset).cast::<UserContext>() };
         assert!(
             ptr.is_aligned(),
-            "TrapContext physical address is not aligned"
+            "UserContext physical address is not aligned"
         );
         // SAFETY: guard 保证 frame 存活；只读引用仅用于本行 clone 且不会逃逸。
         unsafe { (&*ptr).clone() }
@@ -485,7 +485,7 @@ impl TaskControlBlock {
         )
     }
 
-    pub(crate) fn user_token(&self) -> usize {
+    pub(crate) fn user_token(&self) -> crate::arch::mmu::AddressSpaceToken {
         self.process.address_space().memory_set.lock().token()
     }
 

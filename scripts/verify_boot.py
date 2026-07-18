@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
-from qemu_gate import boot as boot_image
+from qemu_gate import boot as boot_image, cpu_topology_markers
 from verify_busybox import cached_busybox_binary
 from verify_musl import cached_musl_paths, find_compiler
 
@@ -18,7 +18,7 @@ SMP_CONFIGURATIONS = (3,)
 
 
 def boot(image: Path, smp: int) -> None:
-    """冷启动指定 rootfs，并核对动态 hart topology 与 BusyBox init。
+    """冷启动指定 rootfs，并核对 logical CPU topology 与 BusyBox init。
 
     Args:
         image: 只读基准 rootfs；QEMU helper 会创建私有可写副本。
@@ -30,12 +30,7 @@ def boot(image: Path, smp: int) -> None:
     Raises:
         RuntimeError: QEMU 启动失败、超时或缺少预期标记。
     """
-    expected_mask = (1 << smp) - 1
-    markers = (
-        f"dynamic hart topology initialized: count={smp}, mask={expected_mask:#x}",
-        f"all DTB harts online: count={smp}, mask={expected_mask:#x}",
-        "init started: BusyBox v1.37.0",
-    )
+    markers = (*cpu_topology_markers(smp), "init started: BusyBox v1.37.0")
     boot_image(image, smp, markers)
 
 

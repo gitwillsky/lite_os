@@ -44,7 +44,7 @@ pub(crate) use timing::network_work_due;
 
 const EPHEMERAL_START: u16 = 49_152;
 const EPHEMERAL_END: u16 = 65_535;
-// 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 hart 永久停留在 softirq context；
+// 每轮最多消费 64 个 frame，避免持续 RX 流量让当前 CPU 永久停留在 softirq context；
 // 若没有此上限，user task 和其他 deferred work 在高包速下可能饥饿。
 const NETWORK_RX_BUDGET: usize = 64;
 // TX completion 与 RX 使用同一 softirq fairness 约束；缺失上限时大量完成的
@@ -155,7 +155,7 @@ impl NetworkStack {
         let timestamp = now();
         // 1. 定时维护只执行一次，确保单轮协议推进的固定成本。
         self.interface.poll_maintenance(timestamp);
-        // 2. ingress 逐帧推进并受 budget 限制，禁止网络洪泛独占当前 hart。
+        // 2. ingress 逐帧推进并受 budget 限制，禁止网络洪泛独占当前 CPU。
         let mut rx_budget_exhausted = true;
         for _ in 0..NETWORK_RX_BUDGET {
             if self

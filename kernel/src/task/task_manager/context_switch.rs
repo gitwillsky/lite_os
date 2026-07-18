@@ -1,5 +1,5 @@
 use super::*;
-use crate::task::{context::TaskContext, with_current_processor};
+use crate::{arch::context::KernelContext, cpu, task::with_current_processor};
 
 /// @description 已发布唯一 wait membership、且外部 owner guard 已释放的单次阻塞转换。
 pub(super) struct PreparedBlock {
@@ -38,7 +38,7 @@ impl Drop for PreparedBlock {
 
 /// @description 将 current Running task 原子转换为拥有唯一 wait membership 的 Blocking task。
 ///
-/// @param task calling hart 当前唯一 Running task。
+/// @param task calling CPU 当前唯一 Running task。
 /// @param owner 覆盖 readiness/signal 复查到 membership publication 的外部 owner guard。
 /// @param publish 在 scheduling lock 内向 owner 发布 waiter，并返回对应 membership。
 /// @return owner guard 已释放、只允许执行一次 suspend 的 prepared transition。
@@ -48,7 +48,7 @@ pub(super) fn prepare_current_block<Owner>(
     mut owner: Owner,
     publish: impl FnOnce(&mut Owner, Arc<TaskControlBlock>) -> WaitMembership,
 ) -> PreparedBlock {
-    let cpu = hart_id();
+    let cpu = cpu::current_id();
     // 1. 只有确认需要阻塞后才结束 active slice，early return 不会重复提交 runtime。
     task.scheduling.policy.lock().finish_runtime(get_time_us());
     // 2. 外部 owner → processor → scheduling 是全部 wait publication 共用的锁序。
@@ -71,7 +71,7 @@ pub(super) fn prepare_current_block<Owner>(
     }
 }
 
-/// @description 保持 task owner 存活，安全地从 task context 切回当前 hart idle context。
+/// @description 保持 task owner 存活，安全地从 task context 切回当前 CPU idle context。
 ///
 /// @param task 即将让出 CPU 的当前 task；函数在切换前释放临时 Arc，避免它滞留在不再恢复的 task stack。
 pub(super) fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
@@ -79,8 +79,8 @@ pub(super) fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     // 1. 只提取稳定 raw pointer，避免 `&mut Processor` 跨越会执行任意代码的 context switch。
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
     let task_cx_ptr = {
-        let mut task_cx = task.task_context().lock();
-        let ptr = &mut *task_cx as *mut TaskContext;
+        let mut kernel_cx = task.kernel_context().lock();
+        let ptr = &mut *kernel_cx as *mut KernelContext;
         if ptr.is_null() {
             panic!("Task context pointer is null for task {}", task.tid());
         }
@@ -92,5 +92,5 @@ pub(super) fn schedule_with_task_context(task: Arc<TaskControlBlock>) {
     drop(task);
     // 3. 两侧 context 均由稳定 owner 保留，且此时没有 scheduler guard 跨越切换。
     // SAFETY: task/idle owners retain both contexts until the switch completes.
-    unsafe { crate::task::__switch(task_cx_ptr, idle_task_cx_ptr) }
+    unsafe { crate::arch::context::switch_kernel_context(task_cx_ptr, idle_task_cx_ptr) }
 }

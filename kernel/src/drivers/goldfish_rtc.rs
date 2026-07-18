@@ -1,5 +1,3 @@
-use crate::arch::dtb::RTCDevice;
-
 const RTC_TIME_LOW: usize = 0x00;
 const RTC_TIME_HIGH: usize = 0x04;
 
@@ -19,7 +17,8 @@ impl GoldfishRTCDevice {
     ///
     /// # Parameters
     ///
-    /// - `rtc`: DTB 中的 MMIO 基址和区间长度。
+    /// - `base_addr`: 已由 platform discovery 验证来源的 MMIO 基址。
+    /// - `size`: MMIO 区间长度。
     ///
     /// # Returns
     ///
@@ -28,16 +27,14 @@ impl GoldfishRTCDevice {
     /// # Errors
     ///
     /// 基址为零、区间不足 8 字节或地址溢出时返回 `InvalidRange`。
-    pub(crate) fn new(rtc: RTCDevice) -> Result<Self, RtcError> {
-        if rtc.base_addr == 0
-            || rtc.size < RTC_TIME_HIGH + core::mem::size_of::<u32>()
-            || rtc.base_addr.checked_add(rtc.size).is_none()
+    pub(crate) fn new(base_addr: usize, size: usize) -> Result<Self, RtcError> {
+        if base_addr == 0
+            || size < RTC_TIME_HIGH + core::mem::size_of::<u32>()
+            || base_addr.checked_add(size).is_none()
         {
             return Err(RtcError::InvalidRange);
         }
-        Ok(Self {
-            base_addr: rtc.base_addr,
-        })
+        Ok(Self { base_addr })
     }
 
     /// 读取 Unix epoch realtime 纳秒值。

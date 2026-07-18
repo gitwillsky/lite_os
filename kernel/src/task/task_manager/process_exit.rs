@@ -223,10 +223,10 @@ fn begin_group_exit(requested: ProcessExitStatus) -> ProcessExitStatus {
 }
 
 fn exit_current(requested: ProcessExitStatus) -> ! {
-    let (task_context, idle_context) = prepare_current_exit(requested);
+    let (kernel_context, idle_context) = prepare_current_exit(requested);
     // SAFETY: prepare_current_exit 已把退出 task 的唯一调度 owner 移交 deferred-reap slot；
-    // 两个 context 都由该 hart 独占，且本 frame 不保留任何指向退出 task 的 Arc。
-    unsafe { crate::task::__switch(task_context, idle_context) };
+    // 两个 context 都由该 CPU 独占，且本 frame 不保留任何指向退出 task 的 Arc。
+    unsafe { crate::arch::context::switch_kernel_context(kernel_context, idle_context) };
     panic!("exited task context resumed")
 }
 
@@ -234,7 +234,7 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
 ///
 /// @param requested calling Thread 请求的退出原因。
 /// @return 依次为 task/idle raw context 地址；task 由 deferred-reap slot 保活。
-fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut TaskContext) {
+fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *mut KernelContext) {
     let task = take_current_task().expect("No current task to exit");
     let end_time = get_time_us();
     task.scheduling.policy.lock().finish_runtime(end_time);
@@ -414,8 +414,8 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut TaskContext, *mut
     }
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
     let task_cx_ptr = {
-        let mut task_cx = task.task_context().lock();
-        &mut *task_cx as *mut TaskContext
+        let mut kernel_cx = task.kernel_context().lock();
+        &mut *kernel_cx as *mut KernelContext
     };
 
     crate::task::processor::defer_task_reap(task);

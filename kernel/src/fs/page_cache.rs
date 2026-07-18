@@ -24,7 +24,7 @@ const DIRTY_THROTTLE_PAGES: usize = WRITEBACK_BATCH_PAGES * 2;
 // OWNER: dirty count 只投影 CachedPage 单一 atomic state 的 clean→dirty / dirty→clean
 // 转换。缺少该高水位投影会让 writable mapping 吃完可用于 journal writeback 的内存。
 static DIRTY_PAGES: AtomicUsize = AtomicUsize::new(0);
-// OWNER: 此 gate 只合并跨 hart 的同一 dirty 高水位回收尝试；缺失它会让多个
+// OWNER: 此 gate 只合并跨 CPU 的同一 dirty 高水位回收尝试；缺失它会让多个
 // writable fault 同时扫描相同 owner，放大 CPU/FLUSH，而跳过者仍由后续 cadence 重试。
 static DIRTY_THROTTLE_ACTIVE: AtomicBool = AtomicBool::new(false);
 

@@ -27,6 +27,18 @@ mod file_page_range;
 mod fault_preflight;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/timer/deadline.rs"]
+mod timer_deadline;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/riscv64/sv39.rs"]
+mod sv39;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/arch/riscv64/pte.rs"]
+mod riscv_pte;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/socket/unix/datagram_queue.rs"]
 mod unix_datagram_queue;
 
@@ -107,6 +119,46 @@ mod ext2_link_count_tests {
             assert_eq!(count, expected);
         }
         assert_eq!(decrement(count), Err(LinkCountError::Corrupt));
+    }
+}
+
+#[cfg(test)]
+mod timer_deadline_tests {
+    use super::timer_deadline::next;
+
+    #[test]
+    fn first_deadline_starts_one_interval_after_now() {
+        assert_eq!(next(0, 100, 25), Some(125));
+    }
+
+    #[test]
+    fn delayed_handler_preserves_phase_and_skips_missed_ticks() {
+        assert_eq!(next(100, 100, 25), Some(125));
+        assert_eq!(next(100, 149, 25), Some(150));
+        assert_eq!(next(100, 150, 25), Some(175));
+    }
+
+    #[test]
+    fn future_deadline_is_not_reprogrammed() {
+        assert_eq!(next(200, 150, 25), Some(200));
+    }
+
+    #[test]
+    fn invalid_or_exhausted_deadline_is_rejected() {
+        assert_eq!(next(100, 100, 0), None);
+        assert_eq!(next(0, u64::MAX, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod sv39_tests {
+    use super::sv39::indexes;
+
+    #[test]
+    fn virtual_page_number_splits_into_three_nine_bit_indexes() {
+        assert_eq!(indexes(0), [0, 0, 0]);
+        assert_eq!(indexes(0x7fff_ffff), [0x1ff, 0x1ff, 0x1ff]);
+        assert_eq!(indexes((3 << 18) | (7 << 9) | 11), [3, 7, 11]);
     }
 }
 

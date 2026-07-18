@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "apk-runtime"
 ALPINE_BRANCH = "v3.22"
 ALPINE_ARCH = "riscv64"
-ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
+ALPINE_MIRROR = "https://mirrors.huaweicloud.com/repository/alpine"
 ALPINE_REPOSITORY = (
     f"{ALPINE_MIRROR}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}"
 )

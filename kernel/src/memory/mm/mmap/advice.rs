@@ -75,14 +75,15 @@ impl MemorySet {
                 } else if let Some(resident) = area.data_frames.get_mut(&vpn) {
                     resident.discardable = true;
                     if self.page_table.translate(vpn).is_some() {
-                        let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
-                        flags.remove(PTEFlags::W);
+                        let mut flags: PagePermissions = area.map_permission.into();
+                        flags.remove(PagePermissions::WRITE);
                         self.page_table.set_flags(vpn, flags)?;
                     }
                 }
             }
         }
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after madvise residency update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after madvise residency update");
         Ok(())
     }
 
@@ -189,9 +190,10 @@ impl MemorySet {
             reclaimed += usize::from(frees_frame);
         }
         // 3. COW frame 仍被其他 mm 引用时 reclaimed==0，但本 mm 的 leaf PTE 已撤销；
-        // 若只按物理页计数 flush，当前 hart 可继续命中 stale writable translation。
+        // 若只按物理页计数 flush，当前 CPU 可继续命中 stale writable translation。
         if unmapped {
-            Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after private page reclaim");
+            Self::flush_tlb_all_cpus()
+                .expect("platform TLB synchronization failed after private page reclaim");
         }
         ReclaimResult::new(reclaimed, scanned)
     }

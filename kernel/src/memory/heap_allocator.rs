@@ -181,12 +181,12 @@ pub(crate) struct HeapStatistics {
     pub(crate) resident_pages: usize,
 }
 
-struct HartHeapCache {
+struct CpuHeapCache {
     heads: [usize; CACHE_CLASS_COUNT],
     counts: [u8; CACHE_CLASS_COUNT],
 }
 
-impl HartHeapCache {
+impl CpuHeapCache {
     const fn new() -> Self {
         Self {
             heads: [0; CACHE_CLASS_COUNT],
@@ -199,11 +199,11 @@ impl HartHeapCache {
         if head == 0 {
             return None;
         }
-        // SAFETY: head 只由当前 hart/class push 写入，指向同 canonical layout 的 block。
+        // SAFETY: head 只由当前 CPU/class push 写入，指向同 canonical layout 的 block。
         self.heads[class] = unsafe { (head as *const usize).read() };
         self.counts[class] = self.counts[class]
             .checked_sub(1)
-            .expect("per-hart heap cache count underflow");
+            .expect("per-CPU heap cache count underflow");
         NonNull::new(head as *mut u8)
     }
 
@@ -213,17 +213,17 @@ impl HartHeapCache {
         self.heads[class] = block.as_ptr() as usize;
         self.counts[class] = self.counts[class]
             .checked_add(1)
-            .expect("per-hart heap cache count overflow");
+            .expect("per-CPU heap cache count overflow");
     }
 }
 
-struct HartHeapCaches(Vec<UnsafeCell<HartHeapCache>>);
+struct CpuHeapCaches(Vec<UnsafeCell<CpuHeapCache>>);
 
-// SAFETY: vector 发布后不变；每个 cell 只由对应 compact hart 在本地 IRQ-off 期间访问。
-unsafe impl Sync for HartHeapCaches {}
+// SAFETY: vector 发布后不变；每个 cell 只由对应 logical CPU 在本地 IRQ-off 期间访问。
+unsafe impl Sync for CpuHeapCaches {}
 
-// OWNER: 唯一 per-hart small-block cache；cache 持有的 block 仍计入所属 slab allocated。
-static HART_HEAP_CACHES: Once<HartHeapCaches> = Once::new();
+// OWNER: 唯一 per-CPU small-block cache；cache 持有的 block 仍计入所属 slab allocated。
+static CPU_HEAP_CACHES: Once<CpuHeapCaches> = Once::new();
 
 // OWNER: 该 release/acquire flag 是 bootstrap -> frame-backed allocation 的唯一切换点。
 static FRAME_BACKED_GROWTH: AtomicBool = AtomicBool::new(false);
@@ -289,11 +289,11 @@ fn slab_layout(layout: Layout) -> Option<(usize, Layout)> {
     class_layout(layout, SLAB_MAX_SIZE)
 }
 
-fn current_hart_cache() -> Option<&'static UnsafeCell<HartHeapCache>> {
-    HART_HEAP_CACHES
+fn current_cpu_cache() -> Option<&'static UnsafeCell<CpuHeapCache>> {
+    CPU_HEAP_CACHES
         .get()?
         .0
-        .get(crate::arch::hart::current_hart_index())
+        .get(crate::cpu::current_id().index())
 }
 
 fn bootstrap_bounds() -> (usize, usize) {
@@ -318,9 +318,9 @@ fn try_allocate_slab(layout: Layout) -> Option<NonNull<u8>> {
     let (slab_class, canonical) = slab_layout(layout)?;
     let _irq = LocalIrqGuard::disable();
     if let Some((cache_class, _)) = cache_layout(canonical)
-        && let Some(cache) = current_hart_cache()
+        && let Some(cache) = current_cpu_cache()
     {
-        // SAFETY: local IRQ guard makes this hart's cell exclusively accessible.
+        // SAFETY: local IRQ guard makes this CPU's cell exclusively accessible.
         let cache = unsafe { &mut *cache.get() };
         if let Some(block) = cache.pop(cache_class) {
             return Some(block);
@@ -399,7 +399,7 @@ fn grow_and_allocate(layout: Layout) -> Option<NonNull<u8>> {
         // Frame allocation/direct reclaim 必须在 IRQ-on 且不持 heap lock 时执行。
         let frames = frame_allocator::alloc_contiguous(1, FrameAllocationClass::KernelHeap);
         let Some(frames) = frames else {
-            // 另一 hart 可能在 reclaim 窗口发布了同 class slab。
+            // 另一 CPU 可能在 reclaim 窗口发布了同 class slab。
             return try_allocate_slab(layout);
         };
         return publish_slab_and_allocate(layout, frames);
@@ -449,7 +449,7 @@ fn deallocate_backend(ptr: NonNull<u8>, layout: Layout) {
 pub(crate) struct KernelAllocator;
 
 // SAFETY: bootstrap bump ranges never overlap; frame-backed slab/direct ownership is serialized by
-// HEAP_STATE or represented by one direct header, and same-hart cache mutation is IRQ-safe.
+// HEAP_STATE or represented by one direct header, and same-CPU cache mutation is IRQ-safe.
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if layout.size() == 0 {
@@ -478,9 +478,9 @@ unsafe impl GlobalAlloc for KernelAllocator {
         let block = NonNull::new(ptr).expect("non-null heap pointer");
         let _irq = LocalIrqGuard::disable();
         if let Some((class, _)) = cache_layout(layout)
-            && let Some(cache) = current_hart_cache()
+            && let Some(cache) = current_cpu_cache()
         {
-            // SAFETY: local IRQ guard makes this hart's cell exclusively accessible.
+            // SAFETY: local IRQ guard makes this CPU's cell exclusively accessible.
             let cache = unsafe { &mut *cache.get() };
             if cache.counts[class] < CACHE_BLOCKS_PER_CLASS {
                 cache.push(class, block);
@@ -505,28 +505,28 @@ pub(crate) fn init() {
     *BOOTSTRAP_OFFSET.lock() = 0;
 }
 
-/// @description 按已发布的动态 hart topology 构造 per-hart 小对象 cache。
-/// @return 无返回值；每个 topology hart 恰有一个 cache cell。
-/// @errors topology 未发布、零 hart 或重复初始化时 fail-stop。
-pub(crate) fn init_hart_caches() {
+/// @description 按已发布的 logical CPU topology 构造 per-CPU 小对象 cache。
+/// @return 无返回值；每个 logical CPU 恰有一个 cache cell。
+/// @errors topology 未发布、零 CPU 或重复初始化时 fail-stop。
+pub(crate) fn init_cpu_caches() {
     assert!(
-        crate::arch::hart::topology_ready(),
-        "heap caches require initialized hart topology"
+        crate::cpu::is_initialized(),
+        "heap caches require initialized CPU topology"
     );
     assert!(
-        HART_HEAP_CACHES.get().is_none(),
+        CPU_HEAP_CACHES.get().is_none(),
         "heap caches initialized twice"
     );
-    let hart_count = crate::arch::hart::hart_count();
-    assert!(hart_count != 0, "heap caches require at least one hart");
+    let cpu_count = crate::cpu::count();
+    assert!(cpu_count != 0, "heap caches require at least one CPU");
     let mut caches = Vec::new();
     caches
-        .try_reserve_exact(hart_count)
-        .expect("hart heap-cache allocation failed");
-    for _ in 0..hart_count {
-        caches.push(UnsafeCell::new(HartHeapCache::new()));
+        .try_reserve_exact(cpu_count)
+        .expect("CPU heap-cache allocation failed");
+    for _ in 0..cpu_count {
+        caches.push(UnsafeCell::new(CpuHeapCache::new()));
     }
-    HART_HEAP_CACHES.call_once(|| HartHeapCaches(caches));
+    CPU_HEAP_CACHES.call_once(|| CpuHeapCaches(caches));
 }
 
 /// @description 在 frame allocator 初始化后原子切换到可回收的 slab/direct heap。

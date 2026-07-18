@@ -101,8 +101,8 @@ impl SysInode {
     fn contents(&self) -> Result<Vec<u8>, FileSystemError> {
         match self.node {
             SysNode::CpuSet(_) => self.cpu_range(),
-            // LiteOS 不支持 CPU hotplug：能进入 userspace 的 boot 必须已启动全部 DTB hart。
-            // 若这里依赖一次启动期 online 快照，后启动 hart 会永久被 userspace 隐藏。
+            // LiteOS 不支持 CPU hotplug：能进入 userspace 的 boot 必须已启动全部 platform CPU。
+            // 若这里依赖一次启动期 online 快照，后启动 CPU 会永久被 userspace 隐藏。
             SysNode::CpuOnline(_) => {
                 let mut bytes = Vec::new();
                 bytes
@@ -312,7 +312,7 @@ pub(crate) struct SysFileSystem {
 impl SysFileSystem {
     /// @description 创建只投影 Linux CPU topology 节点的 sysfs。
     ///
-    /// @param cpu_count composition root 从 HartTopology 取得的非零 logical CPU 数。
+    /// @param cpu_count composition root 从 CpuTopology 取得的非零 logical CPU 数。
     /// @return 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
     pub(crate) fn new(cpu_count: usize) -> Result<Arc<Self>, FileSystemError> {
         assert_ne!(cpu_count, 0, "sysfs requires non-empty CPU topology");

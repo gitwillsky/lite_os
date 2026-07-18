@@ -174,25 +174,20 @@ impl MemorySet {
                     .data_frames
                     .try_prepare_vacant(vpn, PrivateResident::new(frame))
                     .map_err(|_| MemoryError::OutOfMemory)?;
-                self.page_table.map(
-                    vpn,
-                    ppn,
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                )?;
+                self.page_table.map(vpn, ppn, area.map_permission.into())?;
                 area.data_frames.commit_vacant(resident);
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared anonymous page fault");
+                Self::flush_tlb_all_cpus().expect(
+                    "platform TLB synchronization failed after shared anonymous page fault",
+                );
                 return Ok(PageFaultOutcome::Handled);
             }
             if self.page_table.translate(vpn).is_none() {
                 let frame = area.data_frames.get(&vpn).expect("resident shared page");
-                self.page_table.map(
-                    vpn,
-                    frame.ppn,
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-                )?;
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared anonymous permission fault");
+                self.page_table
+                    .map(vpn, frame.ppn, area.map_permission.into())?;
+                Self::flush_tlb_all_cpus().expect(
+                    "platform TLB synchronization failed after shared anonymous permission fault",
+                );
             }
             return Ok(PageFaultOutcome::Handled);
         }
@@ -221,13 +216,13 @@ impl MemorySet {
                 let ppn = frame.ppn;
                 let frame = try_memory_arc(frame)?;
                 let mut resident = PrivateResident::new(frame);
-                let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
+                let mut flags: PagePermissions = area.map_permission.into();
                 if area.private_file.is_some() && area.map_permission.contains(MapPermission::W) {
                     // 首次 read 保持只读，后续 store fault 是标记 MAP_PRIVATE dirty 的唯一入口。
-                    flags.remove(PTEFlags::W);
+                    flags.remove(PagePermissions::WRITE);
                     if access == PageFaultAccess::Write {
                         resident.dirty = true;
-                        flags |= PTEFlags::W;
+                        flags |= PagePermissions::WRITE;
                     }
                 }
                 let resident = area
@@ -236,7 +231,8 @@ impl MemorySet {
                     .map_err(|_| MemoryError::OutOfMemory)?;
                 self.page_table.map(vpn, ppn, flags)?;
                 area.data_frames.commit_vacant(resident);
-                Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after private page fault");
+                Self::flush_tlb_all_cpus()
+                    .expect("platform TLB synchronization failed after private page fault");
                 return Ok(PageFaultOutcome::Handled);
             }
             if access == PageFaultAccess::Write && area.private_file.is_some() {
@@ -268,10 +264,11 @@ impl MemorySet {
                 self.page_table.map(
                     vpn,
                     resident.page.frame().ppn(),
-                    PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
+                    area.map_permission.into(),
                 )?;
-                Self::flush_tlb_all_cpus()
-                    .expect("SBI RFENCE failed after shared file permission fault");
+                Self::flush_tlb_all_cpus().expect(
+                    "platform TLB synchronization failed after shared file permission fault",
+                );
             }
             return Ok(PageFaultOutcome::Handled);
         }
@@ -284,10 +281,11 @@ impl MemorySet {
             .resident
             .try_prepare_vacant(vpn, resident)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
+        let flags = area.map_permission.into();
         self.page_table.map(vpn, ppn, flags)?;
         shared.resident.commit_vacant(resident);
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after shared page fault");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after shared page fault");
         Ok(PageFaultOutcome::Handled)
     }
 

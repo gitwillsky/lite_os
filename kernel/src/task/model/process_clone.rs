@@ -89,7 +89,7 @@ impl TaskControlBlock {
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
-        let trap_cx_va = if share_user_memory {
+        let user_cx_va = if share_user_memory {
             address_space
                 .memory_set
                 .lock()
@@ -99,22 +99,17 @@ impl TaskControlBlock {
         };
 
         // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
-        let mut child_trap = self.load_trap_context();
-        child_trap.x[10] = 0;
-        if child_stack != 0 {
-            child_trap.set_sp(child_stack);
-        }
-        child_trap.kernel_sp = kernel_stack_top;
-        child_trap.kernel_hart_id = 0;
-        child_trap.kernel_gp = 0;
+        let mut child_trap = self.load_user_context();
+        child_trap
+            .prepare_process_clone((child_stack != 0).then_some(child_stack), kernel_stack_top);
         let child = Self {
             process,
             thread: ThreadContext {
                 tid,
                 start_time_us,
                 kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                user_cx_va: Mutex::new(user_cx_va),
+                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
                     self.thread.kernel_trap_return,
                 )),
@@ -136,7 +131,7 @@ impl TaskControlBlock {
                 last_cpu: AtomicUsize::new(last_cpu),
             },
         };
-        child.set_trap_context(child_trap);
+        child.set_user_context(child_trap);
         Ok(child)
     }
 }

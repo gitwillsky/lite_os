@@ -50,7 +50,7 @@ struct ControlQueue {
 }
 
 /// @description VirtIO-GPU 2D single-scanout adapter。
-pub(super) struct VirtIOGpuDevice {
+pub(crate) struct VirtIOGpuDevice {
     device: VirtIODevice,
     // OWNER: adapter 在 device ready 后永久持有 controlq DMA backing；若初始化后释放，
     // device 仍可访问已经归还 allocator 的 descriptor pages。
@@ -63,7 +63,7 @@ impl VirtIOGpuDevice {
     /// @param base_addr DTB VirtIO MMIO 基址。
     /// @return 已绑定单 scanout 的 GPU adapter。
     /// @errors feature、queue、mode、frame allocation 或命令失败返回 `None`。
-    pub(super) fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 16 {
             return None;
@@ -206,7 +206,7 @@ impl VirtIOGpuDevice {
     /// @description 构造持有 GPU owner 的 IRQ handler。
     ///
     /// @return 只确认 control/config interrupt 的 handler。
-    pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
+    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIOGpuIrqHandler {
             device: self.clone(),
         })
@@ -230,7 +230,7 @@ impl InterruptHandler for VirtIOGpuIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG) != 0 {
-            crate::arch::hart::raise_display_softirq();
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Display);
         }
         Ok(())
     }

@@ -1,44 +1,46 @@
+use super::mmu::AddressSpaceToken;
+use super::trap::UserTrapEntry;
 use riscv::register::sstatus::{self, SPP, Sstatus};
 
 /// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
 #[derive(Clone)]
-pub(crate) struct TrapContext {
+pub(crate) struct UserContext {
     /// 用户通用寄存器 x0..x31，包括 psABI 的 gp(x3) 与 tp(x4)。
-    pub(crate) x: [usize; 32],
+    pub(super) x: [usize; 32],
     /// trap 发生时的 supervisor status。
-    pub(crate) sstatus: Sstatus,
+    pub(super) sstatus: Sstatus,
     /// trap 返回的用户程序计数器。
-    pub(crate) sepc: usize,
+    pub(super) sepc: usize,
     /// trampoline 进入内核时切换的 kernel satp。
-    pub(crate) kernel_satp: usize,
+    pub(super) kernel_satp: usize,
     /// 当前任务的内核栈顶。
-    pub(crate) kernel_sp: usize,
+    pub(super) kernel_sp: usize,
     /// S-mode Rust trap handler 入口。
-    pub(crate) trap_handler: usize,
+    pub(super) trap_handler: usize,
     /// 当前执行该任务的 hart ID，用于在保存用户 tp 后恢复 kernel tp。
-    pub(crate) kernel_hart_id: usize,
+    pub(super) kernel_cpu_id: usize,
     /// kernel psABI global pointer，用于在保存用户 gp 后恢复 kernel gp。
-    pub(crate) kernel_gp: usize,
+    pub(super) kernel_gp: usize,
     /// 用户浮点寄存器 f0..f31 的原始 64-bit 内容。
-    pub(crate) f: [u64; 32],
+    pub(super) f: [u64; 32],
     /// 用户 floating-point control/status register。
-    pub(crate) fcsr: usize,
+    pub(super) fcsr: usize,
 }
 
 const _: () = {
     use core::mem::{offset_of, size_of};
     const WORD: usize = size_of::<usize>();
-    assert!(offset_of!(TrapContext, sstatus) == 32 * WORD);
-    assert!(offset_of!(TrapContext, kernel_satp) == 34 * WORD);
-    assert!(offset_of!(TrapContext, kernel_hart_id) == 37 * WORD);
-    assert!(offset_of!(TrapContext, kernel_gp) == 38 * WORD);
-    assert!(offset_of!(TrapContext, f) == 39 * WORD);
-    assert!(offset_of!(TrapContext, fcsr) == 71 * WORD);
-    assert!(size_of::<TrapContext>() == 72 * WORD);
+    assert!(offset_of!(UserContext, sstatus) == 32 * WORD);
+    assert!(offset_of!(UserContext, kernel_satp) == 34 * WORD);
+    assert!(offset_of!(UserContext, kernel_cpu_id) == 37 * WORD);
+    assert!(offset_of!(UserContext, kernel_gp) == 38 * WORD);
+    assert!(offset_of!(UserContext, f) == 39 * WORD);
+    assert!(offset_of!(UserContext, fcsr) == 71 * WORD);
+    assert!(size_of::<UserContext>() == 72 * WORD);
 };
 
-impl TrapContext {
+impl UserContext {
     /// @description 设置用户栈指针。
     ///
     /// @param sp 满足用户 ABI 对齐要求的栈顶。
@@ -58,9 +60,9 @@ impl TrapContext {
     pub(crate) fn app_init_context(
         entry: usize,
         sp: usize,
-        kernel_satp: usize,
+        kernel_satp: AddressSpaceToken,
         kernel_sp: usize,
-        trap_handler: usize,
+        trap_handler: UserTrapEntry,
     ) -> Self {
         let mut sstatus = sstatus::read(); // CSR status
         sstatus.set_spp(SPP::User);
@@ -77,10 +79,10 @@ impl TrapContext {
             x: [0; 32],
             sstatus,
             sepc: entry,
-            kernel_satp,
+            kernel_satp: kernel_satp.encoded(),
             kernel_sp,
-            trap_handler,
-            kernel_hart_id: 0,
+            trap_handler: trap_handler.encoded(),
+            kernel_cpu_id: 0,
             kernel_gp: 0,
             f: [0; 32],
             fcsr: 0,

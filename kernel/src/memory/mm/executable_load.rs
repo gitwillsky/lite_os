@@ -4,7 +4,7 @@ use crate::memory::{
     address::VirtualAddress,
     config,
     executable::{ElfKind, ExecutableImage, ParsedElf},
-    page_table::PTEFlags,
+    page_table::PagePermissions,
 };
 
 use super::{
@@ -46,7 +46,7 @@ impl MemorySet {
         };
         let phdr_address = main.phdr.ok_or(ElfLoadError::InvalidElf)?;
         let heap_base = VirtualAddress::from(main.max_end).ceil().as_usize() * config::PAGE_SIZE;
-        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        let user_end = config::USER_ADDRESS_END;
         let user_stack_top = user_end
             .checked_sub(config::PAGE_SIZE)
             .ok_or(ElfLoadError::InvalidElf)?;
@@ -57,7 +57,7 @@ impl MemorySet {
             return Err(ElfLoadError::InvalidElf);
         }
 
-        // 2. heap 从最高 LOAD 末端开始；栈位于 Sv39 低半区顶部，上下各保留一页 guard。
+        // 2. heap 从最高 LOAD 末端开始；栈位于 architecture user range 顶部，上下各保留一页 guard。
         memory_set
             .push(MapArea::stack(user_stack_top), None)
             .map_err(ElfLoadError::from)?;
@@ -84,7 +84,10 @@ impl MemorySet {
         let phdr_pte = memory_set
             .translate(VirtualAddress::from(phdr_address).floor())
             .ok_or(ElfLoadError::InvalidElf)?;
-        if !phdr_pte.flags().contains(PTEFlags::U | PTEFlags::R) {
+        if !phdr_pte
+            .permissions()
+            .contains(PagePermissions::USER | PagePermissions::READ)
+        {
             return Err(ElfLoadError::InvalidElf);
         }
 
@@ -136,7 +139,7 @@ impl MemorySet {
             let end = start
                 .checked_add(segment.memory_size)
                 .ok_or(ElfLoadError::InvalidElf)?;
-            let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+            let user_end = config::USER_ADDRESS_END;
             if start == 0 || start >= end || end > user_end {
                 return Err(ElfLoadError::InvalidElf);
             }
@@ -185,7 +188,10 @@ impl MemorySet {
         let entry_pte = self
             .translate(VirtualAddress::from(entry).floor())
             .ok_or(ElfLoadError::InvalidElf)?;
-        if !entry_pte.flags().contains(PTEFlags::U | PTEFlags::X) {
+        if !entry_pte
+            .permissions()
+            .contains(PagePermissions::USER | PagePermissions::EXECUTE)
+        {
             return Err(ElfLoadError::InvalidElf);
         }
         Ok(LoadedElf {

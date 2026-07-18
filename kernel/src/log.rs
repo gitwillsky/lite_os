@@ -1,6 +1,6 @@
 use core::fmt::{self, Write};
 
-use crate::sync::IrqMutex;
+use crate::{println, sync::IrqMutex};
 
 /// Log levels in order of severity
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -266,7 +266,7 @@ impl Logger {
 
     pub(crate) fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
         if level >= self.level && self.is_module_enabled(module) {
-            let hart_id = crate::arch::hart::hart_id();
+            let hart_id = crate::cpu::current_id().index();
             let mut message = FixedBytes::<KMSG_MESSAGE_CAPACITY>::new();
             write!(message, "[CPU-{hart_id}] [{module}] {args}")
                 .expect("fixed kmsg message formatting failed");
@@ -287,7 +287,7 @@ impl Logger {
     }
 }
 
-// logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 hart 中断重入时自死锁。
+// logger 可由 task、hardirq 和 softirq 调用；普通 spin lock 会在同 CPU 中断重入时自死锁。
 // OWNER: logging module owns the process-wide logger registered with the log facade.
 static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 

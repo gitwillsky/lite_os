@@ -2,9 +2,9 @@ mod bus;
 mod interrupt;
 mod virtio;
 
-pub(super) use bus::MmioBus;
-pub(super) use interrupt::{
-    InterruptController, InterruptError, InterruptHandler, InterruptVector, PlicInterruptController,
+pub(crate) use bus::MmioBus;
+pub(crate) use interrupt::{
+    InterruptController, InterruptError, InterruptHandler, InterruptVector,
 };
 pub(super) use virtio::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,

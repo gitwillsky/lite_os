@@ -18,6 +18,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use crate::{
+    arch::context::{KernelContext, UserContext},
     fs::{Console, FileDescriptorTable, OpenedFile, Terminal, vfs},
     memory::{
         DeviceMappingSource, ElfLoadError, FileMappingSource, FutexKey, KERNEL_SPACE, KernelStack,
@@ -26,7 +27,7 @@ use crate::{
         UserFaultLimits, VirtualAddress,
     },
     sync::IrqMutex,
-    task::{TrapContext, context::TaskContext, loader::LoadedExecutable, pid::ProcessId},
+    task::{loader::LoadedExecutable, pid::ProcessId},
     timer::get_time_us,
 };
 
@@ -53,24 +54,24 @@ use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, si
 pub(crate) enum RunState {
     New,
     Ready {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
         generation: u64,
     },
     Running {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
     },
     Preempting {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
     },
     Blocking {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
     },
     Blocked,
     WakePending {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
     },
     StopPending {
-        cpu: usize,
+        cpu: crate::cpu::CpuId,
         transition: StopTransition,
     },
     Stopped {
@@ -99,10 +100,10 @@ struct ThreadContext {
     // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
     start_time_us: u64,
     kernel_stack: KernelStack,
-    trap_cx_va: Mutex<usize>,
-    task_cx: Mutex<TaskContext>,
-    kernel_trap_handler: usize,
-    kernel_trap_return: usize,
+    user_cx_va: Mutex<usize>,
+    kernel_cx: Mutex<KernelContext>,
+    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
+    kernel_trap_return: crate::arch::context::KernelResume,
     clear_child_tid: Mutex<Option<usize>>,
     robust_list: Mutex<Option<usize>>,
     signal_mask: Mutex<u64>,
@@ -179,8 +180,8 @@ impl TaskControlBlock {
     pub(super) fn new_with_pid(
         loaded: &LoadedExecutable,
         pid: ProcessId,
-        kernel_trap_handler: usize,
-        kernel_trap_return: usize,
+        kernel_trap_handler: crate::arch::trap::UserTrapEntry,
+        kernel_trap_return: crate::arch::context::KernelResume,
         console: alloc::sync::Arc<dyn Console>,
     ) -> Result<Self, ElfLoadError> {
         let resource_limits = ResourceLimits::defaults();
@@ -191,7 +192,7 @@ impl TaskControlBlock {
             loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let trap_cx_va = TRAP_CONTEXT;
+        let user_cx_va = TRAP_CONTEXT;
         let tid = pid.0;
         let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
             .map_err(|()| ElfLoadError::OutOfMemory)?;
@@ -222,8 +223,8 @@ impl TaskControlBlock {
                 tid,
                 start_time_us,
                 kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                user_cx_va: Mutex::new(user_cx_va),
+                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
                     kernel_trap_return,
                 )),
@@ -242,12 +243,12 @@ impl TaskControlBlock {
             scheduling: SchedulingEntity {
                 state: IrqMutex::new(SchedulingState::new(CpuAffinity::all_possible())),
                 policy: Mutex::new(Sched::new(0, 0, cpu_runtime_us)),
-                last_cpu: AtomicUsize::new(crate::arch::hart::hart_id()),
+                last_cpu: AtomicUsize::new(crate::cpu::current_id().index()),
             },
         };
 
-        // prepare TrapContext in user space
-        tcb.set_trap_context(TrapContext::app_init_context(
+        // prepare UserContext in user space
+        tcb.set_user_context(UserContext::app_init_context(
             entry_point,
             user_sp,
             KERNEL_SPACE.wait().lock().token(),
@@ -276,20 +277,15 @@ impl TaskControlBlock {
         }
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let trap_cx_va = self
+        let user_cx_va = self
             .process
             .address_space()
             .memory_set
             .lock()
             .allocate_thread_trap_context(tid)?;
         let policy = self.scheduling.policy.lock();
-        let mut child_trap = self.load_trap_context();
-        child_trap.x[2] = user_stack;
-        child_trap.x[4] = tls;
-        child_trap.x[10] = 0;
-        child_trap.kernel_sp = kernel_stack_top;
-        child_trap.kernel_hart_id = 0;
-        child_trap.kernel_gp = 0;
+        let mut child_trap = self.load_user_context();
+        child_trap.prepare_thread_clone(user_stack, tls, kernel_stack_top);
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let child = Self {
             process: self.process.clone(),
@@ -297,8 +293,8 @@ impl TaskControlBlock {
                 tid,
                 start_time_us: get_time_us(),
                 kernel_stack,
-                trap_cx_va: Mutex::new(trap_cx_va),
-                task_cx: Mutex::new(TaskContext::goto_trap_return(
+                user_cx_va: Mutex::new(user_cx_va),
+                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
                     kernel_stack_top,
                     self.thread.kernel_trap_return,
                 )),
@@ -325,7 +321,7 @@ impl TaskControlBlock {
             },
         };
         drop(policy);
-        child.set_trap_context(child_trap);
+        child.set_user_context(child_trap);
         Ok(child)
     }
 
@@ -552,8 +548,8 @@ impl TaskControlBlock {
 
     /// @description 取得当前 Thread 的 context-switch 保存区锁。
     ///
-    /// @return TaskContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
-    pub(crate) fn task_context(&self) -> &Mutex<TaskContext> {
-        &self.thread.task_cx
+    /// @return KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
+    pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
+        &self.thread.kernel_cx
     }
 }

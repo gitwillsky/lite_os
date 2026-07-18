@@ -52,7 +52,7 @@ struct EventQueueState {
 }
 
 /// @description modern MMIO VirtIO input adapter；eventq DMA 与 metadata 由实例唯一拥有。
-pub(super) struct VirtIOInputDevice {
+pub(crate) struct VirtIOInputDevice {
     device: VirtIODevice,
     metadata: InputMetadata,
     // OWNER: event queue lock 唯一串行 used recycle、slot/head 映射与 repost publication。
@@ -65,7 +65,7 @@ impl VirtIOInputDevice {
     /// @param base_addr DTB VirtIO MMIO base。
     /// @return 完整 adapter Arc。
     /// @errors transport、metadata、queue 或 allocation 不满足时返回 `None`。
-    pub(super) fn new(base_addr: usize) -> Option<Arc<Self>> {
+    pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
         let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
         if device.device_id() != 18 {
             return None;
@@ -233,7 +233,7 @@ impl VirtIOInputDevice {
 
     /// @description 构造只确认 VirtIO interrupt 并投递 input softirq 的 handler。
     /// @return 与 adapter 同生命周期的 IRQ handler Arc。
-    pub(super) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
+    pub(crate) fn irq_handler_for(self: &Arc<Self>) -> Arc<dyn InterruptHandler> {
         Arc::try_new(VirtIOInputIrqHandler {
             device: self.clone(),
         })
@@ -365,7 +365,7 @@ impl InterruptHandler for VirtIOInputIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & VIRTIO_MMIO_INT_VRING != 0 {
-            crate::arch::hart::raise_input_softirq();
+            crate::cpu::raise_deferred(crate::cpu::DeferredWork::Input);
         }
         Ok(())
     }

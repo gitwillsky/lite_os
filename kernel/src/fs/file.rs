@@ -63,7 +63,7 @@ pub(crate) enum OpenFileKind {
     Inode(Arc<OpenedFile>),
 }
 
-/// @description console 文件后端 seam；具体 SBI adapter 只在 composition root 装配。
+/// @description console 文件后端 seam；具体 platform adapter 只在 composition root 装配。
 pub(crate) trait Console: Send + Sync {
     /// @description 非阻塞读取当前 IRQ ring 中已有 console bytes。
     ///

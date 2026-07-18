@@ -4,7 +4,6 @@ mod goldfish_rtc;
 mod hal;
 mod input;
 pub(crate) mod network;
-mod platform;
 mod uart;
 mod virtio_blk;
 mod virtio_gpu;
@@ -17,36 +16,55 @@ pub(crate) use display::{
     DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, primary_display,
 };
 pub(crate) use goldfish_rtc::GoldfishRTCDevice;
-use hal::{
+pub(crate) use hal::{
     InterruptController, InterruptError, InterruptHandler, InterruptVector, MmioBus,
-    PlicInterruptController, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK,
-    VIRTIO_F_VERSION_1, VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
+};
+use hal::{
+    VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
+    VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
 };
 pub(crate) use input::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
 pub(crate) use input::{device as input_device, device_count as input_device_count};
-use virtio_blk::VirtIOBlockDevice;
-use virtio_gpu::VirtIOGpuDevice;
-use virtio_input::VirtIOInputDevice;
-use virtio_net::VirtIONetworkDevice;
-use virtio_rng::VirtIORngDevice;
+pub(crate) use virtio_blk::VirtIOBlockDevice;
+pub(crate) use virtio_gpu::VirtIOGpuDevice;
+pub(crate) use virtio_input::VirtIOInputDevice;
+pub(crate) use virtio_net::VirtIONetworkDevice;
+pub(crate) use virtio_rng::VirtIORngDevice;
 
 pub(crate) use virtio_rng::fill_entropy;
 
-/// 初始化整个驱动子系统
-///
-/// 1. 初始化 PLIC。
-/// 2. 扫描 DTB VirtIO MMIO 区间并选定唯一 block device。
-pub(crate) fn init() {
-    info!("[Drivers] Initializing LiteOS driver subsystem");
-
-    platform::init();
-
-    info!("[Drivers] Driver subsystem initialization completed");
+/// Platform backend 可用的窄设备注册 seam。
+pub(crate) fn register_input_device(
+    device: alloc::sync::Arc<dyn InputDevice>,
+) -> Result<usize, alloc::sync::Arc<dyn InputDevice>> {
+    input::register(device)
 }
 
-/// @description 处理当前 hart 的 PLIC supervisor external interrupt。
-pub(crate) fn handle_external_interrupt() {
-    platform::handle_external_interrupt();
+pub(crate) fn register_network_device(
+    device: alloc::sync::Arc<dyn network::NetworkDevice>,
+) -> Result<(), ()> {
+    network::register_network_device(device).map_err(|_| ())
+}
+
+pub(crate) fn register_entropy_device(device: alloc::sync::Arc<VirtIORngDevice>) -> Result<(), ()> {
+    virtio_rng::register(device)
+}
+
+pub(crate) fn register_display_device(
+    device: alloc::sync::Arc<dyn DisplayDevice>,
+) -> Result<(), ()> {
+    display::register(device)
+}
+
+pub(crate) fn initialize_console_uart(
+    base: usize,
+    size: usize,
+) -> Result<alloc::sync::Arc<dyn InterruptHandler>, InterruptError> {
+    uart::init(base, size)
+}
+
+pub(crate) fn enable_console_uart_receive() {
+    uart::enable_receive_interrupt();
 }
 
 /// @description 从唯一 UART RX ring 非阻塞读取 console bytes。

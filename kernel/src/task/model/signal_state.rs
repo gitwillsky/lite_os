@@ -311,6 +311,7 @@ fn signal_conflicting_mask(signal: usize) -> u64 {
 use alloc::sync::Arc;
 
 use super::*;
+use crate::arch::context::SignalMachineContext;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -319,13 +320,6 @@ struct UserSignalStack {
     flags: i32,
     padding: u32,
     size: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct SignalMachineContext {
-    regs: [usize; 32],
-    fp: [u8; 528],
 }
 
 #[repr(C)]
@@ -353,21 +347,11 @@ const _: () = {
 };
 
 impl TaskControlBlock {
-    fn apply_syscall_restart(&self, context: &mut TrapContext) {
+    fn apply_syscall_restart(&self, context: &mut UserContext) {
         let Some(restart) = self.thread.syscall_restart.lock().take() else {
             return;
         };
-        assert_eq!(
-            context.sepc,
-            restart
-                .ecall_pc
-                .checked_add(4)
-                .expect("restart ecall PC overflow"),
-            "restart record does not match interrupted ecall"
-        );
-        context.x[10..16].copy_from_slice(&restart.args);
-        context.x[17] = restart.syscall_id;
-        context.sepc = restart.ecall_pc;
+        context.restart_syscall(restart.syscall_id, restart.args, restart.ecall_pc);
     }
 
     /// @description 在 trap return 前选择 pending signal，并构造唯一 RV64 rt frame。
@@ -408,9 +392,9 @@ impl TaskControlBlock {
                     continue;
                 }
                 self.thread.suspend_restore_mask.lock().take();
-                let mut context = self.load_trap_context();
+                let mut context = self.load_user_context();
                 self.apply_syscall_restart(&mut context);
-                self.set_trap_context(context);
+                self.set_user_context(context);
                 return Ok(SignalDelivery::Stop(signal));
             }
             if action.handler == 0 {
@@ -426,23 +410,18 @@ impl TaskControlBlock {
                 .take()
                 .unwrap_or(selection_mask);
 
-            let mut context = self.load_trap_context();
+            let mut context = self.load_user_context();
             if action.flags & SA_RESTART != 0 {
                 self.apply_syscall_restart(&mut context);
             } else {
                 self.thread.syscall_restart.lock().take();
             }
             let frame_size = core::mem::size_of::<RtSignalFrame>();
-            let (frame_address, saved_stack) =
-                self.signal_frame_stack(context.x[2], action.flags & SA_ONSTACK != 0, frame_size)?;
-            let mut registers = [0usize; 32];
-            registers[0] = context.sepc;
-            registers[1..].copy_from_slice(&context.x[1..]);
-            let mut fp = [0u8; 528];
-            for (index, value) in context.f.iter().enumerate() {
-                fp[index * 8..index * 8 + 8].copy_from_slice(&value.to_ne_bytes());
-            }
-            fp[256..260].copy_from_slice(&(context.fcsr as u32).to_ne_bytes());
+            let (frame_address, saved_stack) = self.signal_frame_stack(
+                context.stack_pointer(),
+                action.flags & SA_ONSTACK != 0,
+                frame_size,
+            )?;
             let frame = RtSignalFrame {
                 info: signal_info.encode(signal),
                 context: SignalUserContext {
@@ -456,10 +435,7 @@ impl TaskControlBlock {
                     },
                     signal_mask: old_mask,
                     unused: [0; 120],
-                    context: SignalMachineContext {
-                        regs: registers,
-                        fp,
-                    },
+                    context: context.capture_signal_machine_context(),
                 },
             };
             // SAFETY: repr(C) frame contains no references or padding with uninitialized data.
@@ -479,13 +455,13 @@ impl TaskControlBlock {
             if action.flags & SA_RESETHAND != 0 {
                 self.process.signal_state.lock().actions[signal] = SignalAction::default();
             }
-            context.x[1] = crate::memory::signal_trampoline_entry();
-            context.x[2] = frame_address;
-            context.x[10] = signal;
-            context.x[11] = frame_address;
-            context.x[12] = frame_address + 128;
-            context.sepc = action.handler;
-            self.set_trap_context(context);
+            context.enter_signal_handler(
+                crate::memory::signal_trampoline_entry(),
+                frame_address,
+                signal,
+                action.handler,
+            );
+            self.set_user_context(context);
             return Ok(SignalDelivery::None);
         }
     }
@@ -495,44 +471,26 @@ impl TaskControlBlock {
     /// @return 恢复后的用户 `a0`。
     /// @errors frame 不可读或包含未支持 extension 时返回 `UserAccessError`。
     pub(crate) fn restore_signal_frame(&self) -> Result<usize, UserAccessError> {
-        let frame_address = self.load_trap_context().x[2];
+        let frame_address = self.load_user_context().stack_pointer();
         let mut bytes = [0u8; core::mem::size_of::<RtSignalFrame>()];
         self.copy_from_user(frame_address, &mut bytes)?;
         // SAFETY: byte array has the exact size/alignment-independent representation; read_unaligned
         // produces an owned frame before any field is inspected.
         let frame = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<RtSignalFrame>()) };
-        // Linux 将 extra-extension 的 reserved word 与 END header 覆盖在 FP union 尾部。
-        // 这里尚不支持 vector/CFI extension；若不校验这 12 bytes，损坏或伪造的扩展链会被
-        // 静默接受，并把一个并非本实现能够完整恢复的上下文当作有效 frame。
-        if frame.context.context.fp[516..528]
-            .iter()
-            .any(|byte| *byte != 0)
-        {
-            return Err(UserAccessError::Fault);
-        }
-        let mut context = self.load_trap_context();
-        context.sepc = frame.context.context.regs[0];
-        context.x[1..].copy_from_slice(&frame.context.context.regs[1..]);
-        for index in 0..32 {
-            context.f[index] = u64::from_ne_bytes(
-                frame.context.context.fp[index * 8..index * 8 + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-        }
-        context.fcsr =
-            u32::from_ne_bytes(frame.context.context.fp[256..260].try_into().unwrap()) as usize;
+        let mut context = self.load_user_context();
+        let result = context
+            .restore_signal_machine_context(&frame.context.context)
+            .map_err(|_| UserAccessError::Fault)?;
         *self.thread.signal_mask.lock() = normalize_signal_mask(frame.context.signal_mask);
         self.restore_signal_stack(
-            context.x[2],
+            context.stack_pointer(),
             SignalStack {
                 sp: frame.context.stack.sp,
                 flags: frame.context.stack.flags,
                 size: frame.context.stack.size,
             },
         );
-        let result = context.x[10];
-        self.set_trap_context(context);
+        self.set_user_context(context);
         Ok(result)
     }
 }

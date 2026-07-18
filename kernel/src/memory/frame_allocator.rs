@@ -6,7 +6,7 @@ use spin::Once;
 
 use crate::sync::IrqMutex;
 
-// frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭本地 SIE。
+// frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭 local interrupt。
 // OWNER: frame allocator module owns all allocatable physical-frame metadata.
 static FRAME_ALLOCATOR: Once<IrqMutex<FrameAllocator>> = Once::new();
 

@@ -148,7 +148,7 @@ impl TaskControlBlock {
         &self,
         replacement: Option<SignalStack>,
     ) -> Result<SignalStack, SignalStackError> {
-        let user_sp = self.load_trap_context().x[2];
+        let user_sp = self.load_user_context().stack_pointer();
         let mut state = self.thread.alternate_signal_stack.lock();
         let old = state.snapshot(user_sp);
         if let Some(replacement) = replacement {

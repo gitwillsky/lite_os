@@ -48,7 +48,7 @@ impl MemorySet {
             .checked_add(page_count)
             .map(VirtualPageNumber::from_vpn)
             .ok_or(MemoryError::InvalidRange)?;
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let user_end = config::USER_ADDRESS_END / config::PAGE_SIZE;
         let hint_is_valid =
             address != 0 && hinted_start.as_usize() < user_end && hinted_end.as_usize() <= user_end;
         let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
@@ -69,7 +69,8 @@ impl MemorySet {
             MapArea::device(start.into(), end.into(), permission, source),
             None,
         )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after device mmap update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after device mmap update");
         Ok(start)
     }
 }

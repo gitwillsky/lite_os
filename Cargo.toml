@@ -3,6 +3,7 @@ members = [
     "kernel",
     "syscall-abi",
     "tools/architecture-check",
+    "tools/architecture-bench",
     "tools/kernel-unit",
     "tools/scheduler-unit",
 ]

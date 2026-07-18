@@ -22,6 +22,27 @@ SERIAL_TRIGGER_SETTLE_SECONDS = 0.02
 SERIAL_ESCAPE_SETTLE_SECONDS = 0.1
 
 
+def cpu_topology_markers(cpu_count: int) -> tuple[str, str]:
+    """构造 architecture-neutral CPU topology 启动契约。
+
+    Args:
+        cpu_count: QEMU 向 guest 暴露的 CPU 数量。
+
+    Returns:
+        logical topology 发布与全部 platform CPU online 的唯一 marker 集合。
+
+    Raises:
+        ValueError: CPU 数量不是正数。
+    """
+    if cpu_count <= 0:
+        raise ValueError("CPU count must be positive")
+    expected_mask = (1 << cpu_count) - 1
+    return (
+        f"logical CPU topology initialized: count={cpu_count},",
+        f"all platform CPUs online: count={cpu_count}, mask={expected_mask:#x}",
+    )
+
+
 def send_interaction(stream: BinaryIO, data: bytes) -> None:
     """按 UART 可消费速率注入交互，避免 host pipe 瞬时写满 16550 RX FIFO。
 

@@ -31,7 +31,7 @@ impl MemorySet {
         first: VirtualPageNumber,
         page_count: usize,
     ) -> Option<Range<VirtualPageNumber>> {
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let user_end = config::USER_ADDRESS_END / config::PAGE_SIZE;
         let mut start = first.as_usize().max(1);
         for area in self.areas.values() {
             let area_start = area.vpn_range.start.as_usize();
@@ -90,7 +90,7 @@ impl MemorySet {
             .checked_add(page_count)
             .map(VirtualPageNumber::from_vpn)
             .ok_or(MemoryError::InvalidRange)?;
-        let user_end_vpn = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let user_end_vpn = config::USER_ADDRESS_END / config::PAGE_SIZE;
         let hint_is_valid = address != 0
             && hinted_start.as_usize() < user_end_vpn
             && hinted_end.as_usize() <= user_end_vpn;
@@ -113,7 +113,8 @@ impl MemorySet {
             None,
         )?;
         self.merge_adjacent_anonymous();
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after mmap page-table update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after mmap page-table update");
         Ok(start_address)
     }
 
@@ -144,7 +145,7 @@ impl MemorySet {
             .checked_add(page_count)
             .map(VirtualPageNumber::from_vpn)
             .ok_or(MemoryError::InvalidRange)?;
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let user_end = config::USER_ADDRESS_END / config::PAGE_SIZE;
         let hint_is_valid =
             address != 0 && hinted_start.as_usize() < user_end && hinted_end.as_usize() <= user_end;
         let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
@@ -166,7 +167,8 @@ impl MemorySet {
             MapArea::file(start.into(), end.into(), permission, backing),
             None,
         )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after file mmap page-table update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after file mmap page-table update");
         Ok(start)
     }
 
@@ -197,7 +199,7 @@ impl MemorySet {
             .checked_add(page_count)
             .map(VirtualPageNumber::from_vpn)
             .ok_or(MemoryError::InvalidRange)?;
-        let user_end = (1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1)) / config::PAGE_SIZE;
+        let user_end = config::USER_ADDRESS_END / config::PAGE_SIZE;
         let hint_is_valid =
             address != 0 && hinted_start.as_usize() < user_end && hinted_end.as_usize() <= user_end;
         let range = if hint_is_valid && self.range_is_free(hinted_start, hinted_end) {
@@ -218,7 +220,8 @@ impl MemorySet {
             MapArea::shared_file(start.into(), end.into(), permission, mapping, pages),
             None,
         )?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after shared mmap update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after shared mmap update");
         Ok(start)
     }
 
@@ -283,7 +286,8 @@ impl MemorySet {
                 }
             }
         });
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after truncate invalidation");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after truncate invalidation");
     }
 
     fn overlapping_mmap_keys(
@@ -393,7 +397,8 @@ impl MemorySet {
         if !self.range_is_free(range.start, range.end) {
             return Err(MemoryError::PermissionDenied);
         }
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after munmap page-table update");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after munmap page-table update");
         Ok(())
     }
 
@@ -409,7 +414,7 @@ impl MemorySet {
             .and_then(|value| value.checked_add(config::PAGE_SIZE - 1))
             .map(|value| value / config::PAGE_SIZE * config::PAGE_SIZE)
             .ok_or(MemoryError::InvalidRange)?;
-        let user_end = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1);
+        let user_end = config::USER_ADDRESS_END;
         if end > user_end {
             return Err(MemoryError::InvalidRange);
         }

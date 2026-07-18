@@ -39,15 +39,13 @@ impl Debug for VirtualPageNumber {
 
 impl From<usize> for PhysicalAddress {
     fn from(addr: usize) -> Self {
-        // 仅低位有效
-        PhysicalAddress(addr & ((1usize << config::PHYSICAL_ADDRESS_WIDTH) - 1))
+        PhysicalAddress(crate::arch::mmu::normalize_physical_address(addr))
     }
 }
 
 impl From<usize> for VirtualAddress {
     fn from(addr: usize) -> Self {
-        // 保留传入地址的规范形式（canonical address）。
-        // 不再截断为低 39 位，防止高半区地址（如 TRAMPOLINE）被错误折叠到低半区。
+        // 保留传入地址；输出时由 architecture MMU façade canonicalize。
         VirtualAddress(addr)
     }
 }
@@ -60,16 +58,7 @@ impl From<PhysicalAddress> for usize {
 
 impl From<VirtualAddress> for usize {
     fn from(addr: VirtualAddress) -> Self {
-        // 对 Sv39 虚拟地址做正确的符号扩展：
-        // 若 bit[38] 为 1，则高位应填充为 1；否则填充为 0。
-        let mask: usize = (1usize << config::VIRTUAL_ADDRESS_WIDTH) - 1; // 低 39 位掩码
-        let sign_bit: usize = 1usize << (config::VIRTUAL_ADDRESS_WIDTH - 1); // 第 38 位
-        let raw: usize = addr.0 & mask;
-        if (raw & sign_bit) != 0 {
-            raw | (!mask)
-        } else {
-            raw
-        }
+        crate::arch::mmu::canonicalize_virtual_address(addr.0)
     }
 }
 
@@ -87,13 +76,13 @@ impl From<VirtualPageNumber> for usize {
 
 impl From<usize> for PhysicalPageNumber {
     fn from(addr: usize) -> Self {
-        Self(addr & ((1 << config::PPN_WIDTH) - 1))
+        Self(crate::arch::mmu::normalize_physical_page(addr))
     }
 }
 
 impl From<usize> for VirtualPageNumber {
     fn from(addr: usize) -> Self {
-        Self(addr & ((1 << config::VPN_WIDTH) - 1))
+        Self(crate::arch::mmu::normalize_virtual_page(addr))
     }
 }
 
@@ -215,17 +204,6 @@ impl PhysicalPageNumber {
 impl VirtualPageNumber {
     pub(crate) fn from_vpn(vpn: usize) -> Self {
         VirtualPageNumber(vpn)
-    }
-
-    // 获取页号
-    pub(crate) fn indexes(&self) -> [usize; 3] {
-        let mut vpn = self.0;
-        let mut indexes = [0usize; 3];
-        for i in (0..3).rev() {
-            indexes[i] = vpn & 511;
-            vpn >>= 9;
-        }
-        indexes
     }
 
     pub(crate) fn as_usize(&self) -> usize {

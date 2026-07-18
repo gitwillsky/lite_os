@@ -1,13 +1,11 @@
+use crate::arch::context::KernelContext;
 use crate::sync::{IrqMutex, LocalIrqGuard};
 use crate::{
-    arch::{
-        hart::{self, hart_id},
-        sbi,
-    },
+    cpu::{self, CpuId, CpuSet},
+    platform,
     task::{
         CpuAffinity, ReadyRetirement, ReadyTransition, RunState, StopResume, StopTransition,
         TaskControlBlock, WaitMembership, WaitResult,
-        context::TaskContext,
         scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry},
     },
 };
@@ -33,26 +31,25 @@ use ready_membership::{commit_ready_retirement, commit_ready_transition};
 /// @description context switch 异常返回时的 fail-stop 目标。
 ///
 /// @return 永不返回。
-#[unsafe(no_mangle)]
-pub(crate) extern "C" fn idle_return() -> ! {
+pub(crate) fn idle_return() -> ! {
     panic!("idle context returned unexpectedly");
 }
 
-/// @description 仅由所属 hart 可变访问的调度执行状态。
+/// @description 仅由所属 CPU 可变访问的调度执行状态。
 pub(crate) struct Processor {
-    hart_id: usize,
+    cpu_id: CpuId,
     pub(crate) current: Option<Arc<TaskControlBlock>>,
-    idle_context: TaskContext,
+    idle_context: KernelContext,
     runqueue: CfsRunQueue,
     deferred_reap: Option<Arc<TaskControlBlock>>,
 }
 
 impl Processor {
-    fn new(hart_id: usize, queue_capacity: usize) -> Self {
-        let mut idle_context = TaskContext::zero_init();
-        idle_context.set_ra(idle_return as *const () as usize);
+    fn new(cpu_id: CpuId, queue_capacity: usize) -> Self {
+        let mut idle_context = KernelContext::zero_init();
+        idle_context.set_resume_target(idle_return);
         Self {
-            hart_id,
+            cpu_id,
             current: None,
             idle_context,
             runqueue: CfsRunQueue::try_with_capacity(queue_capacity)
@@ -61,17 +58,17 @@ impl Processor {
         }
     }
 
-    /// @description 获取当前 hart idle context 的稳定地址。
+    /// @description 获取当前 CPU idle context 的稳定地址。
     ///
-    /// @return 指向本 hart `TaskContext` 的唯一可变指针。
-    pub(crate) fn idle_context_ptr(&mut self) -> *mut TaskContext {
+    /// @return 指向当前 CPU `KernelContext` 的唯一可变指针。
+    pub(crate) fn idle_context_ptr(&mut self) -> *mut KernelContext {
         &mut self.idle_context
     }
 
     /// @description 把已完成 Ready 状态转换的 entry 加入本地 runqueue。
     ///
     /// @param entry generation 必须对应 `Ready { cpu: self }`。
-    /// @return 本 hart 当前是否已有 Running owner，供 delivery 决定 reschedule。
+    /// @return 当前 CPU 是否已有 Running owner，供 delivery 决定 reschedule。
     pub(crate) fn add_ready_entry(&mut self, entry: RunQueueEntry) -> bool {
         ready_queue::add_ready_entry(self, entry)
     }
@@ -83,19 +80,19 @@ impl Processor {
         ready_queue::select_task(self)
     }
 
-    /// @description 撤销当前 hart 的 running ownership 与负载发布。
+    /// @description 撤销当前 CPU 的 running ownership 与负载发布。
     ///
     /// @return 当前 Task；空 current 表示调用路径破坏调度状态并返回 None。
     pub(crate) fn take_current(&mut self) -> Option<Arc<TaskControlBlock>> {
         let current = self.current.take()?;
-        let previous = current_per_hart()
+        let previous = current_per_cpu()
             .running_entries
             .fetch_sub(1, Ordering::Relaxed);
         assert_eq!(previous, 1, "running load counter lost current ownership");
         Some(current)
     }
 
-    /// @description 把远端 mailbox 中的任务转移到本 hart scheduler。
+    /// @description 把远端 mailbox 中的任务转移到当前 CPU scheduler。
     ///
     /// @return 无返回值。
     pub(crate) fn drain_inbound_to_local(&mut self) {
@@ -115,30 +112,30 @@ impl Processor {
     }
 }
 
-struct PerHartProcessor {
+struct PerCpuProcessor {
     local: UnsafeCell<MaybeUninit<Processor>>,
     initialized: AtomicBool,
-    // SchedulingState transition 同锁发布该 hart 的精确 Ready membership 数；它只投影
+    // SchedulingState transition 同锁发布该 CPU 的精确 Ready membership 数；它只投影
     // logical load，不拥有 heap/mailbox token，Relaxed 过期值只影响瞬时选核 hint。
     ready_entries: AtomicUsize,
-    // OWNER: processor slot 发布本 hart 当前 Running membership；缺失会让选核把 busy hart 当成 idle。
+    // OWNER: processor slot 发布当前 CPU 的 Running membership；缺失会让选核把 busy CPU 当成 idle。
     running_entries: AtomicUsize,
-    // OWNER: per-hart reschedule request 可由远端 stop signal 发布，本 hart trap return 唯一消费。
+    // OWNER: per-CPU reschedule request 可由远端 stop signal 发布，当前 CPU trap return 唯一消费。
     // 若仍保存在 local Processor，远端 IPI 只能唤醒而不能阻止目标 Thread 返回用户态。
     reschedule_requested: AtomicBool,
-    // OWNER: owner hart 发布 local Ready 队列的 vruntime floor；remote creator 只读取并与
+    // OWNER: owner CPU 发布 local Ready 队列的 vruntime floor；remote creator 只读取并与
     // inbound snapshot 合并。缺失时 fork churn 可持续插队，饿死已经 runnable 的 task。
     // 过期值只改变新 task 排序，不拥有或发布 scheduler membership。
     placement_vruntime: AtomicU64,
-    // OWNER: processor slot 累计本 hart 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
+    // OWNER: processor slot 累计当前 CPU 已提交的 task runtime；缺失会使 /proc/stat 无法区分 busy/idle。
     busy_us: AtomicU64,
-    // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断本 hart drain 后再入。
+    // timer softirq 可远端投递 runnable task；IRQ-safe lock 防止打断当前 CPU drain 后再入。
     inbound: IrqMutex<VecDeque<RunQueueEntry>>,
     queue_capacity: usize,
 }
 
-impl PerHartProcessor {
-    /// @description 创建尚未由 owner hart 初始化的 processor slot。
+impl PerCpuProcessor {
+    /// @description 创建尚未由 owner CPU 初始化的 processor slot。
     ///
     /// @return 空 local processor、mailbox 和负载计数。
     /// @errors 无错误。
@@ -161,8 +158,8 @@ impl PerHartProcessor {
     }
 }
 
-pub(super) fn account_current_hart_runtime(runtime_us: u64) {
-    current_per_hart()
+pub(super) fn account_current_cpu_runtime(runtime_us: u64) {
+    current_per_cpu()
         .busy_us
         .fetch_add(runtime_us, Ordering::Relaxed);
 }
@@ -171,31 +168,32 @@ pub(crate) fn cpu_runtime_snapshot() -> Result<Vec<(usize, u64)>, ()> {
     let slots = &PROCESSOR_TOPOLOGY.wait().slots;
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(slots.len()).map_err(|_| ())?;
-    snapshot.extend(
-        slots
-            .iter()
-            .map(|slot| (slot.hart_id, slot.processor.busy_us.load(Ordering::Relaxed))),
-    );
+    snapshot.extend(slots.iter().map(|slot| {
+        (
+            slot.cpu_id.index(),
+            slot.processor.busy_us.load(Ordering::Relaxed),
+        )
+    }));
     Ok(snapshot)
 }
 
-// SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 hart 只能触及
-// Ready/Running 投影和 inbound Mutex。trap 入口保持 SIE 关闭，因此同 hart 不会重入 local 可变借用。
-unsafe impl Sync for PerHartProcessor {}
+// SAFETY: `local` 只能由 ID 等于所属 ProcessorSlot 的执行流访问；远端 CPU 只能触及
+// Ready/Running 投影和 inbound Mutex。trap 入口保持 local interrupt 关闭，因此同 CPU 不会重入 local 可变借用。
+unsafe impl Sync for PerCpuProcessor {}
 
 struct ProcessorSlot {
-    hart_id: usize,
-    processor: PerHartProcessor,
+    cpu_id: CpuId,
+    processor: PerCpuProcessor,
 }
 
 struct ProcessorTopology {
     slots: Box<[ProcessorSlot]>,
 }
 
-// OWNER: processor module owns scheduler-local state for every DTB hart.
+// OWNER: processor module owns scheduler-local state for every platform CPU.
 static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
 
-/// @description 按 HartTopology 的 compact-index 顺序构造唯一 scheduler processor slots。
+/// @description 按 CpuTopology 的 logical-index 顺序构造唯一 scheduler processor slots。
 ///
 /// @return 无返回值。
 /// @errors 重复初始化或 arch/task topology 顺序分裂时 fail-stop。
@@ -214,18 +212,12 @@ pub(super) fn init_topology() {
     );
     let mut slots = Vec::new();
     slots
-        .try_reserve_exact(hart::hart_count())
+        .try_reserve_exact(cpu::count())
         .expect("processor topology allocation failed");
-    for state in hart::states() {
-        let index = slots.len();
-        assert_eq!(
-            hart::hart_index(state.hart_id()),
-            Some(index),
-            "processor topology order diverged from compact hart index"
-        );
+    for cpu_id in cpu::possible().iter() {
         slots.push(ProcessorSlot {
-            hart_id: state.hart_id(),
-            processor: PerHartProcessor::new(queue_capacity),
+            cpu_id,
+            processor: PerCpuProcessor::new(queue_capacity),
         });
     }
     PROCESSOR_TOPOLOGY.call_once(|| ProcessorTopology {
@@ -237,48 +229,48 @@ pub(super) fn init_topology() {
 static NEXT_CPU: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
-fn processor_at(index: usize) -> &'static PerHartProcessor {
+fn processor_at(index: usize) -> &'static PerCpuProcessor {
     &PROCESSOR_TOPOLOGY.wait().slots[index].processor
 }
 
 #[inline(always)]
 fn current_slot() -> &'static ProcessorSlot {
-    &PROCESSOR_TOPOLOGY.wait().slots[hart::current_hart_index()]
+    &PROCESSOR_TOPOLOGY.wait().slots[cpu::current_id().index()]
 }
 
 #[inline(always)]
-fn current_per_hart() -> &'static PerHartProcessor {
-    processor_at(hart::current_hart_index())
+fn current_per_cpu() -> &'static PerCpuProcessor {
+    processor_at(cpu::current_id().index())
 }
 
 fn local_processor() -> &'static mut Processor {
     let slot = current_slot();
-    let hart = slot.hart_id;
+    let cpu = slot.cpu_id;
     let processor = &slot.processor;
-    // initialized 只由本 hart 在关闭 SIE 时读写，不承担跨 hart 发布；缺失该分支会重复构造 Processor。
+    // initialized 只由当前 CPU 在关闭 local interrupt 时读写，不承担跨 CPU 发布；缺失会重复构造 Processor。
     if !processor.initialized.load(Ordering::Relaxed) {
-        // SAFETY: 只有 hart `hart` 能到达自己的 slot.local，且 S-mode trap 不开启嵌套中断。
+        // SAFETY: 只有当前 logical CPU 能到达自己的 slot.local，且 generic trap 不开启嵌套中断。
         unsafe {
-            (*processor.local.get()).write(Processor::new(hart, processor.queue_capacity));
+            (*processor.local.get()).write(Processor::new(cpu, processor.queue_capacity));
         }
         processor.initialized.store(true, Ordering::Relaxed);
     }
-    // SAFETY: 与上面的 per-hart 唯一所有权约束相同，initialized 证明对象已构造。
+    // SAFETY: 与上面的 per-CPU 唯一所有权约束相同，initialized 证明对象已构造。
     unsafe { (*processor.local.get()).assume_init_mut() }
 }
 
-/// @description 在关闭本地 S-mode 中断期间访问当前 hart 独占的 processor。
+/// @description 在关闭本地 S-mode 中断期间访问当前 CPU 独占的 processor。
 ///
 /// @param f 不得保存或泄漏 `Processor` 引用的同步闭包。
 /// @return 闭包的返回值。
 /// @errors `tp` 越界属于内核不变量破坏。
 pub(crate) fn with_current_processor<R>(f: impl FnOnce(&mut Processor) -> R) -> R {
     let _irq = LocalIrqGuard::disable();
-    // 中断关闭保证同 hart 的 trap handler 不能在该 mutable borrow 存活时再次借用 local processor。
+    // 中断关闭保证同 CPU 的 trap handler 不能在该 mutable borrow 存活时再次借用 local processor。
     f(local_processor())
 }
 
-/// @description 将当前 exiting Task 在 task stack 上的 owner 移交给所属 hart。
+/// @description 将当前 exiting Task 在 task stack 上的 owner 移交给所属 CPU。
 ///
 /// @param task 必须是已从 current、PID index 与 runqueue 移除的退出任务。
 /// @return 无返回值；slot 未先 drain 表示 terminal ownership 协议损坏并 panic。
@@ -294,43 +286,43 @@ pub(super) fn reap_deferred_task() {
     drop(task);
 }
 
-/// @description 标记当前 hart 在返回用户态前需要重新调度。
+/// @description 标记当前 CPU 在返回用户态前需要重新调度。
 ///
-/// @return 无返回值；flag 仅由本 hart 在关中断临界区访问。
+/// @return 无返回值；flag 仅由当前 CPU 在关中断临界区访问。
 pub(crate) fn request_reschedule() {
-    current_per_hart()
+    current_per_cpu()
         .reschedule_requested
         .store(true, Ordering::Release);
 }
 
-/// @description 消费当前 hart 的 reschedule flag。
+/// @description 消费当前 CPU 的 reschedule flag。
 ///
 /// @return 本次用户态返回是否应先 yield。
 pub(crate) fn take_reschedule() -> bool {
-    current_per_hart()
+    current_per_cpu()
         .reschedule_requested
         .swap(false, Ordering::AcqRel)
 }
 
-fn publish_reschedule_at(cpu_index: usize) {
-    let target = &PROCESSOR_TOPOLOGY.wait().slots[cpu_index];
+fn publish_reschedule_at(cpu_id: CpuId) {
+    let target = &PROCESSOR_TOPOLOGY.wait().slots[cpu_id.index()];
     target
         .processor
         .reschedule_requested
         .store(true, Ordering::Release);
-    if target.hart_id != hart_id() {
-        sbi::sbi_send_ipi(1usize << target.hart_id, 0)
-            .expect("SBI IPI failed for remote reschedule");
+    if target.cpu_id != cpu::current_id() {
+        platform::send_ipi(CpuSet::singleton(target.cpu_id))
+            .expect("platform IPI failed for remote reschedule");
     }
 }
 
 /// @description 投递 Ready entry；busy target 同步 reschedule，避免 syscall writer 饿死 Ready reader。
 ///
-/// @param cpu_id 目标 hart ID。
+/// @param cpu_id 目标 CPU ID。
 /// @param entry 带 generation 的 membership token。
 /// @return 无返回值。
-/// @errors 目标越界、未 active 或 SBI IPI 失败均触发内核不变量失败，不做 CPU fallback。
-fn deliver_ready_entry(cpu_id: usize, entry: RunQueueEntry) {
+/// @errors 目标越界、未 active 或 platform IPI 失败均触发内核不变量失败，不做 CPU fallback。
+fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
     ready_queue::deliver_ready_entry(cpu_id, entry);
 }
 
@@ -347,7 +339,7 @@ pub(in crate::task) fn replace_task_affinity(task: &Arc<TaskControlBlock>, affin
         let mut scheduling = task.scheduling.state.lock();
         scheduling.cpu_affinity = affinity;
         if let RunState::Ready { cpu, .. } = scheduling.run_state()
-            && !affinity.allows_hart(cpu)
+            && !affinity.allows(cpu)
         {
             let target = select_cpu(task, affinity);
             let generation = commit_ready_transition(scheduling.transition_to_ready(target));
@@ -514,7 +506,7 @@ pub(in crate::task) fn wake_waiting_task(
 /// @param task 刚从该 CPU 切回 idle 的 task。
 /// @return 无返回值；Ready 只在 task context 已停止执行后发布。
 pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool {
-    let cpu = hart_id();
+    let cpu = cpu::current_id();
     let mut stopped = false;
     let ready = {
         let mut scheduling = task.scheduling.state.lock();
@@ -526,7 +518,7 @@ pub(super) fn finish_deschedule_transition(task: &Arc<TaskControlBlock>) -> bool
             }
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending task returned on another CPU");
-                let target = if scheduling.cpu_affinity.allows_hart(cpu) {
+                let target = if scheduling.cpu_affinity.allows(cpu) {
                     cpu
                 } else {
                     select_cpu(task, scheduling.cpu_affinity)

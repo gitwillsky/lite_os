@@ -1,13 +1,15 @@
 use alloc::boxed::Box;
 
-use crate::arch::dtb::{BoardInfo, board_info};
-use crate::drivers::block::register_block_device;
+use super::discovery::{PlatformInfo, info as platform_info};
+use super::plic::PlicInterruptController;
+#[cfg(debug_assertions)]
+use crate::debug;
 use crate::drivers::{
-    DisplayDevice, InputDevice, InterruptController, InterruptHandler, MmioBus,
-    PlicInterruptController, VirtIOBlockDevice, VirtIOGpuDevice, VirtIOInputDevice,
-    VirtIONetworkDevice, VirtIORngDevice,
+    DisplayDevice, InputDevice, InterruptController, InterruptHandler, MmioBus, VirtIOBlockDevice,
+    VirtIOGpuDevice, VirtIOInputDevice, VirtIONetworkDevice, VirtIORngDevice,
 };
 use crate::sync::IrqMutex;
+use crate::{error, info, warn};
 
 /// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
 // OWNER: platform layer owns the unique interrupt controller discovered from DTB.
@@ -18,16 +20,10 @@ fn interrupt_controller() -> Option<&'static IrqMutex<Box<dyn InterruptControlle
 }
 
 fn init_interrupt_controller() {
-    let Some(plic) = board_info().plic_device.as_ref() else {
+    let Some(plic) = platform_info().plic_device.as_ref() else {
         return;
     };
-    match PlicInterruptController::new(
-        plic.base_addr,
-        plic.size,
-        1024,
-        crate::arch::hart::possible_hart_mask(),
-        crate::arch::hart::max_hart_id(),
-    ) {
+    match PlicInterruptController::new(plic.base_addr, plic.size, 1024, crate::cpu::possible()) {
         Ok(controller) => {
             let controller = match Box::try_new(controller) {
                 Ok(controller) => controller as Box<dyn InterruptController>,
@@ -43,7 +39,7 @@ fn init_interrupt_controller() {
 }
 
 /// 系统初始化入口点
-pub(super) fn init() {
+pub(crate) fn initialize() {
     init_interrupt_controller();
     init_uart_console();
     // 扫描和初始化设备
@@ -53,14 +49,14 @@ pub(super) fn init() {
 
 /// 扫描并初始化所有设备
 fn scan_and_init_devices() {
-    let board_info = board_info();
+    let board_info = platform_info();
 
     // 初始化VirtIO设备
     init_virtio_devices(board_info);
 }
 
 /// 初始化VirtIO设备
-fn init_virtio_devices(board_info: &BoardInfo) {
+fn init_virtio_devices(board_info: &PlatformInfo) {
     info!(
         "[Platform] Scanning {} VirtIO devices",
         board_info.virtio_count
@@ -104,9 +100,9 @@ fn init_virtio_devices(board_info: &BoardInfo) {
     }
 }
 
-fn init_virtio_input_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_input_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
     let device = VirtIOInputDevice::new(base_addr).expect("DTB virtio-input must initialize");
-    let index = super::input::register(device.clone())
+    let index = crate::drivers::register_input_device(device.clone())
         .unwrap_or_else(|_| panic!("VirtIO input registry allocation failed"));
     assert!(
         maybe_register_irq(board_info, irq, device.irq_handler_for(), "input"),
@@ -120,9 +116,9 @@ fn init_virtio_input_device(board_info: &BoardInfo, irq: u32, base_addr: usize) 
     );
 }
 
-fn init_virtio_net_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_net_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
     let device = VirtIONetworkDevice::new(base_addr).expect("DTB virtio-net must initialize");
-    super::network::register_network_device(device.clone())
+    crate::drivers::register_network_device(device.clone())
         .unwrap_or_else(|_| panic!("only one virtio-net device is supported"));
     assert!(
         maybe_register_irq(board_info, irq, device.irq_handler_for(), "net"),
@@ -139,14 +135,15 @@ fn init_virtio_net_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
 
 fn init_virtio_rng_device(base_addr: usize) {
     let device = VirtIORngDevice::new(base_addr).expect("DTB virtio-rng must initialize");
-    super::virtio_rng::register(device).expect("only one virtio-rng device is supported");
+    crate::drivers::register_entropy_device(device)
+        .expect("only one virtio-rng device is supported");
     info!("[Platform] VirtIO RNG registered at {:#x}", base_addr);
 }
 
-fn init_virtio_gpu_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_gpu_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
     let device = VirtIOGpuDevice::new(base_addr).expect("DTB virtio-gpu must initialize");
     let mode = device.mode();
-    super::display::register(device.clone())
+    crate::drivers::register_display_device(device.clone())
         .unwrap_or_else(|_| panic!("only one virtio-gpu device is supported"));
     assert!(
         maybe_register_irq(board_info, irq, device.irq_handler_for(), "gpu"),
@@ -164,7 +161,7 @@ fn read_virtio_device_id(base_addr: usize, size: usize) -> Option<u32> {
 }
 
 fn maybe_register_irq(
-    board_info: &BoardInfo,
+    board_info: &PlatformInfo,
     irq: u32,
     handler: alloc::sync::Arc<dyn InterruptHandler>,
     label: &str,
@@ -185,13 +182,14 @@ fn maybe_register_irq(
             error!("[Platform] Failed to set {} IRQ priority: {:?}", label, e);
             Err(())
         } else if ctrl.supports_cpu_affinity() {
-            let boot_hart = crate::arch::hart::boot_hart_id();
-            if let Err(e) = ctrl.set_affinity(irq, 1usize << boot_hart) {
+            let boot_cpu = crate::cpu::boot_id();
+            if let Err(e) = ctrl.set_affinity(irq, crate::cpu::CpuSet::singleton(boot_cpu)) {
                 warn!("[Platform] Failed to set {} IRQ affinity: {:?}", label, e);
             } else {
                 info!(
                     "[Platform] Set {} IRQ affinity to boot hart {}",
-                    label, boot_hart
+                    label,
+                    boot_cpu.index()
                 );
             }
             if let Err(e) = ctrl.enable_interrupt(irq) {
@@ -221,22 +219,22 @@ fn maybe_register_irq(
 }
 
 fn init_uart_console() {
-    let board = board_info();
+    let board = platform_info();
     let size = board.uart.end.saturating_sub(board.uart.start);
-    let handler =
-        super::uart::init(board.uart.start, size).expect("boot requires a valid DTB UART console");
+    let handler = crate::drivers::initialize_console_uart(board.uart.start, size)
+        .expect("boot requires a valid DTB UART console");
     assert!(
         maybe_register_irq(board, board.uart_irq, handler, "uart"),
         "boot requires a registered UART IRQ"
     );
-    super::uart::enable_receive_interrupt();
+    crate::drivers::enable_console_uart_receive();
 }
 
-fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
+fn init_virtio_blk_device(board_info: &PlatformInfo, irq: u32, base_addr: usize) {
     info!("[Platform] Creating VirtIOBlockDevice at {:#x}", base_addr);
     if let Some(virtio_block) = VirtIOBlockDevice::new(base_addr) {
         let virtio_arc = virtio_block.clone();
-        match register_block_device(virtio_arc.clone()) {
+        match crate::drivers::block::register_block_device(virtio_arc.clone()) {
             Ok(device_id) => {
                 info!(
                     "[Platform] VirtIO Block device #{} registered at {:#x}",
@@ -257,7 +255,7 @@ fn init_virtio_blk_device(board_info: &BoardInfo, irq: u32, base_addr: usize) {
 }
 
 /// 处理外部中断
-pub(super) fn handle_external_interrupt() {
+pub(crate) fn handle_external_interrupt() {
     // 先短暂获取控制器引用，再释放设备管理器锁，避免在中断回调中重入造成死锁
     if let Some(controller) = interrupt_controller() {
         let result = controller.lock().handle_pending_interrupts();

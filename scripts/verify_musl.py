@@ -30,7 +30,7 @@ from build_cache import (
     write_manifest,
 )
 
-from qemu_gate import boot
+from qemu_gate import boot, cpu_topology_markers
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "musl-runtime"
@@ -560,8 +560,7 @@ def main() -> int:
             image,
             1,
             (
-                "dynamic hart topology initialized: count=1, mask=0x1",
-                "all DTB harts online: count=1, mask=0x1",
+                *cpu_topology_markers(1),
                 "LiteOS musl pthread signal ok",
             ),
         )

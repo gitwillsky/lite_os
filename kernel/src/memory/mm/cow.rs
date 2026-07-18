@@ -63,11 +63,7 @@ fn clone_shared_file_area(
             .try_prepare_vacant(vpn, cloned_page)
             .map_err(|_| MemoryError::OutOfMemory)?;
         if MapArea::has_leaf_permission(area.map_permission) {
-            page_table.map(
-                vpn,
-                ppn,
-                PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-            )?;
+            page_table.map(vpn, ppn, area.map_permission.into())?;
         }
         resident.commit_vacant(prepared);
     }
@@ -126,9 +122,9 @@ impl MemorySet {
                         lazy_private: area.lazy_private,
                     };
                     if MapArea::has_leaf_permission(area.map_permission) {
-                        let mut flags = PTEFlags::from_bits(area.map_permission.bits()).unwrap();
+                        let mut flags: PagePermissions = area.map_permission.into();
                         if area.shared_anonymous.is_none() {
-                            flags.remove(PTEFlags::W);
+                            flags.remove(PagePermissions::WRITE);
                         }
                         for (&vpn, frame) in &area.data_frames {
                             if area.map_permission.contains(MapPermission::W)
@@ -153,7 +149,8 @@ impl MemorySet {
                 .commit_vacant(area_slot.fill(*key, cloned_area));
             Ok::<(), MemoryError>(())
         })?;
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after fork COW publication");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after fork COW publication");
         Ok(cloned)
     }
 
@@ -175,7 +172,7 @@ impl MemorySet {
             return Ok(self
                 .page_table
                 .translate(vpn)
-                .is_some_and(|pte| pte.flags().contains(PTEFlags::W)));
+                .is_some_and(|pte| pte.permissions().contains(PagePermissions::WRITE)));
         }
         let Some(frame) = area.data_frames.get_mut(&vpn) else {
             return Ok(false);
@@ -183,7 +180,7 @@ impl MemorySet {
         if self
             .page_table
             .translate(vpn)
-            .is_some_and(|pte| pte.flags().contains(PTEFlags::W))
+            .is_some_and(|pte| pte.permissions().contains(PagePermissions::WRITE))
         {
             return Ok(true);
         }
@@ -192,19 +189,14 @@ impl MemorySet {
             replacement.bytes_mut().copy_from_slice(frame.bytes());
             let replacement = try_memory_arc(replacement)?;
             self.page_table.unmap(vpn)?;
-            self.page_table.map(
-                vpn,
-                replacement.ppn,
-                PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-            )?;
+            self.page_table
+                .map(vpn, replacement.ppn, area.map_permission.into())?;
             frame.frame = replacement;
         } else {
-            self.page_table.set_flags(
-                vpn,
-                PTEFlags::from_bits(area.map_permission.bits()).unwrap(),
-            )?;
+            self.page_table.set_flags(vpn, area.map_permission.into())?;
         }
-        Self::flush_tlb_all_cpus().expect("SBI RFENCE failed after COW resolution");
+        Self::flush_tlb_all_cpus()
+            .expect("platform TLB synchronization failed after COW resolution");
         Ok(true)
     }
 }

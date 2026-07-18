@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{
-    arch::hart,
+    cpu::{self, DeferredWork},
     task::{
         PendingSignal, TaskControlBlock, WaitResult, current_task,
         processor::request_tick_reschedule,
@@ -67,14 +67,14 @@ fn expire_timers(now_ns: u64) {
     }
     // 3. 超出 batch 的到期项仅合并发布一个 bit；无界循环会饿死 I/O 与 user return。
     if backlog {
-        hart::raise_timer_backlog_softirq();
+        cpu::raise_deferred(DeferredWork::TimerBacklog);
     }
 }
 
 /// @description 单锁摘取固定数量的到期 wait，锁外完成 wake，并为 backlog 发布续批。
 ///
 /// @param now_ns 本批次固定的 absolute monotonic 纳秒时刻。
-/// @return 无返回值；超过 batch 的已到期项由当前 hart 的 timer backlog softirq 继续消费。
+/// @return 无返回值；超过 batch 的已到期项由当前 CPU 的 timer backlog softirq 继续消费。
 fn wake_expired_tasks(now_ns: u64) {
     let mut batch: [Option<ExpiredWait>; TIMER_WORK_BATCH] = core::array::from_fn(|_| None);
     // 1. 一次 registry owner lock 摘取完整 batch，避免每个 waiter 重复关中断和抢锁。
@@ -115,17 +115,17 @@ fn wake_expired_tasks(now_ns: u64) {
     }
     // 3. backlog 只发布一个合并 bit；直接无界循环会让 I/O 与 user return 永久饥饿。
     if backlog {
-        hart::raise_timer_backlog_softirq();
+        cpu::raise_deferred(DeferredWork::TimerBacklog);
     }
 }
 
 /// @description 在 user-return 或 scheduler idle context 消费全部 deferred work。
 pub(crate) fn dispatch_pending_deferred_work() {
-    let work = hart::take_softirqs();
-    if work == 0 {
+    let work = cpu::take_deferred();
+    if work.is_empty() {
         return;
     }
-    if work & hart::TIMER_SOFTIRQ != 0 {
+    if work.contains(DeferredWork::Timer) {
         let now_us = get_time_us();
         if let Some(task) = current_task() {
             task.scheduling.policy.lock().checkpoint_runtime(now_us);
@@ -134,28 +134,28 @@ pub(crate) fn dispatch_pending_deferred_work() {
         load_average::update(now_us);
         expire_timers(get_time_ns());
         request_tick_reschedule();
-    } else if work & hart::TIMER_BACKLOG_SOFTIRQ != 0 {
+    } else if work.contains(DeferredWork::TimerBacklog) {
         wake_expired_tasks(get_time_ns());
         expire_timers(get_time_ns());
     }
-    if work & hart::CONSOLE_SOFTIRQ != 0 {
+    if work.contains(DeferredWork::Console) {
         process_terminal_input();
         wake_console_waiters();
     }
-    if work & hart::DISPLAY_SOFTIRQ != 0 {
+    if work.contains(DeferredWork::Display) {
         crate::drm::device::dispatch_display_work(get_time_ns());
     }
-    if work & hart::INPUT_SOFTIRQ != 0 && crate::input::dispatch_input_work() {
-        hart::raise_input_softirq();
+    if work.contains(DeferredWork::Input) && crate::input::dispatch_input_work() {
+        cpu::raise_deferred(DeferredWork::Input);
     }
-    let network_due = work & hart::NETWORK_SOFTIRQ != 0
-        || work & hart::TIMER_SOFTIRQ != 0 && crate::socket::network_work_due();
+    let network_due = work.contains(DeferredWork::Network)
+        || work.contains(DeferredWork::Timer) && crate::socket::network_work_due();
     if network_due {
         // RX budget 用尽时必须再次发布同一 deferred work；否则 used ring 中没有新 IRQ edge
         // 的 frame 可能永久滞留。timer deadline 同样在此推进 ARP/UDP egress；缺失时丢失
         // 首个 ARP reply 后将永远不重试。requeue 由 task deferred owner 执行，socket 不反向依赖 arch。
         if crate::socket::dispatch_network_work() {
-            hart::raise_network_softirq();
+            cpu::raise_deferred(DeferredWork::Network);
         }
     }
 }

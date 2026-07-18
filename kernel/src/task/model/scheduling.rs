@@ -1,5 +1,8 @@
 use super::*;
-use crate::{arch::hart, task::processor::account_current_hart_runtime};
+use crate::{
+    cpu::{self, CpuId, CpuSet},
+    task::processor::account_current_cpu_runtime,
+};
 use core::{num::NonZeroU64, sync::atomic::Ordering};
 
 const NICE_0_LOAD_SHIFT: u32 = 10;
@@ -31,29 +34,18 @@ const NICE_TO_WEIGHT_RECIPROCAL: [u32; 40] = [
 
 /// @description 以紧凑 topology index 表示 Thread 可运行的 logical CPU 集合。
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(in crate::task) struct CpuAffinity(usize);
+pub(in crate::task) struct CpuAffinity(CpuSet);
 
 impl CpuAffinity {
-    fn active_bits() -> usize {
-        hart::states()
-            .iter()
-            .enumerate()
-            .fold(0, |bits, (cpu, state)| {
-                if state.is_active() {
-                    bits | (1usize << cpu)
-                } else {
-                    bits
-                }
-            })
+    fn active_set() -> CpuSet {
+        cpu::active()
     }
 
     /// @description 构造包含动态 topology 全部 possible CPU 的初始 affinity。
     ///
     /// @return 非空 logical CPU mask；CPU 尚未 active 不影响初始继承集合。
     pub(in crate::task) fn all_possible() -> Self {
-        let count = hart::states().len();
-        assert!(count != 0 && count <= usize::BITS as usize);
-        Self(usize::MAX >> (usize::BITS as usize - count))
+        Self(cpu::possible())
     }
 
     /// @description 将 userspace logical CPU mask 收敛到当前 active scheduler topology。
@@ -61,31 +53,23 @@ impl CpuAffinity {
     /// @param bits Linux CPU index bitmap。
     /// @return 至少保留一个 active CPU 时返回规范化 affinity，否则返回 `None`。
     pub(in crate::task) fn from_user_bits(bits: usize) -> Option<Self> {
-        let effective = bits & Self::active_bits();
-        (effective != 0).then_some(Self(effective))
+        let effective = CpuSet::from_native_word(bits) & Self::active_set();
+        (!effective.is_empty()).then_some(Self(effective))
     }
 
     /// @description 投影当前 active CPU 上实际生效的 logical mask。
     ///
     /// @return stored affinity 与 active topology 的交集。
     pub(in crate::task) fn effective_bits(self) -> usize {
-        self.0 & Self::active_bits()
+        (self.0 & Self::active_set()).native_word()
     }
 
-    /// @description 判断 raw hart 是否对应 affinity 中允许的 logical CPU。
+    /// @description 判断 affinity 是否包含指定 logical CPU。
     ///
-    /// @param hart_id DTB raw hart ID。
-    /// @return hart 存在且对应 logical bit 已设置时返回 `true`。
-    pub(in crate::task) fn allows_hart(self, hart_id: usize) -> bool {
-        hart::hart_index(hart_id).is_some_and(|cpu| self.allows_cpu(cpu))
-    }
-
-    /// @description 判断紧凑 topology index 是否包含在 affinity 中。
-    ///
-    /// @param cpu 零基 logical CPU index。
+    /// @param cpu logical CPU identity。
     /// @return 对应 bit 已设置时返回 `true`。
-    pub(in crate::task) fn allows_cpu(self, cpu: usize) -> bool {
-        self.0 & (1usize << cpu) != 0
+    pub(in crate::task) fn allows(self, cpu: CpuId) -> bool {
+        self.0.contains(cpu)
     }
 }
 
@@ -157,14 +141,14 @@ pub(crate) struct SchedulingState {
     pub(in crate::task) cpu_affinity: CpuAffinity,
 }
 
-/// @description 已发布 `RunState::Ready`、但尚未提交 per-hart Ready 投影的线性 token。
+/// @description 已发布 `RunState::Ready`、但尚未提交 per-CPU Ready 投影的线性 token。
 ///
 /// 只有 processor owner 能消费该 token；遗失会让 load/tick projection 与唯一 run state
 /// 分裂，因此 Drop 必须 fail-stop。token 非 Copy，禁止同一 transition 重复计数。
-#[must_use = "Ready transition must commit its per-hart membership projection"]
+#[must_use = "Ready transition must commit its per-CPU membership projection"]
 pub(in crate::task) struct ReadyTransition<'owner> {
-    previous_cpu: Option<usize>,
-    target_cpu: usize,
+    previous_cpu: Option<CpuId>,
+    target_cpu: CpuId,
     generation: u64,
     committed: bool,
     owner: core::marker::PhantomData<&'owner mut SchedulingState>,
@@ -172,7 +156,7 @@ pub(in crate::task) struct ReadyTransition<'owner> {
 
 impl ReadyTransition<'_> {
     #[inline(always)]
-    pub(in crate::task) fn consume_ready_projection_parts(mut self) -> (Option<usize>, usize, u64) {
+    pub(in crate::task) fn consume_ready_projection_parts(mut self) -> (Option<CpuId>, CpuId, u64) {
         self.committed = true;
         (self.previous_cpu, self.target_cpu, self.generation)
     }
@@ -182,22 +166,22 @@ impl Drop for ReadyTransition<'_> {
     fn drop(&mut self) {
         assert!(
             self.committed,
-            "Ready state published without per-hart membership commit"
+            "Ready state published without per-CPU membership commit"
         );
     }
 }
 
-/// @description 已撤销 `RunState::Ready`、但尚未撤销 per-hart Ready 投影的线性 token。
-#[must_use = "Ready retirement must commit its per-hart membership projection"]
+/// @description 已撤销 `RunState::Ready`、但尚未撤销 per-CPU Ready 投影的线性 token。
+#[must_use = "Ready retirement must commit its per-CPU membership projection"]
 pub(in crate::task) struct ReadyRetirement<'owner> {
-    cpu: usize,
+    cpu: CpuId,
     committed: bool,
     owner: core::marker::PhantomData<&'owner mut SchedulingState>,
 }
 
 impl ReadyRetirement<'_> {
     #[inline(always)]
-    pub(in crate::task) fn consume_ready_projection_cpu(mut self) -> usize {
+    pub(in crate::task) fn consume_ready_projection_cpu(mut self) -> CpuId {
         self.committed = true;
         self.cpu
     }
@@ -207,7 +191,7 @@ impl Drop for ReadyRetirement<'_> {
     fn drop(&mut self) {
         assert!(
             self.committed,
-            "Ready state retired without per-hart membership commit"
+            "Ready state retired without per-CPU membership commit"
         );
     }
 }
@@ -236,7 +220,7 @@ impl SchedulingState {
     /// @description 在不进入或离开 Ready membership 时替换 run state。
     ///
     /// Ready ingress/egress 必须使用返回线性 token 的专用 transition；两侧任一为
-    /// Ready 都表示 caller 绕过了 per-hart projection transaction，必须 fail-stop。
+    /// Ready 都表示 caller 绕过了 per-CPU projection transaction，必须 fail-stop。
     #[inline(always)]
     pub(in crate::task) fn replace_non_ready_state(&mut self, state: RunState) {
         assert!(
@@ -249,9 +233,9 @@ impl SchedulingState {
 
     /// @description 创建新的唯一 Ready generation，并使此前所有 queue entry 失效。
     #[inline(always)]
-    pub(in crate::task) fn transition_to_ready(&mut self, cpu: usize) -> ReadyTransition<'_> {
+    pub(in crate::task) fn transition_to_ready(&mut self, cpu: CpuId) -> ReadyTransition<'_> {
         assert!(
-            self.cpu_affinity.allows_hart(cpu),
+            self.cpu_affinity.allows(cpu),
             "Ready transition selected a disallowed CPU"
         );
         let previous_cpu = match self.run_state {
@@ -282,7 +266,7 @@ impl SchedulingState {
     #[inline(always)]
     pub(in crate::task) fn transition_ready_to_running(
         &mut self,
-        cpu: usize,
+        cpu: CpuId,
         generation: u64,
     ) -> ReadyRetirement<'_> {
         assert_eq!(
@@ -331,7 +315,7 @@ impl SchedulingState {
             | RunState::Stopped { .. }
             | RunState::Exited => None,
         };
-        cpu.is_some_and(|cpu| !self.cpu_affinity.allows_hart(cpu))
+        cpu.is_some_and(|cpu| !self.cpu_affinity.allows(cpu))
     }
 }
 
@@ -440,7 +424,7 @@ impl Sched {
         );
     }
 
-    /// @description 恰好一次结束 active CPU slice，并累计 Thread、Process、hart 与 vruntime。
+    /// @description 恰好一次结束 active CPU slice，并累计 Thread、Process、CPU 与 vruntime。
     ///
     /// @param end_time_us monotonic deschedule 时刻。
     /// @return 无返回值；全部 runtime owner 已同步推进。
@@ -460,7 +444,7 @@ impl Sched {
     /// @description 在不结束 active slice 的前提下提交 timer tick 前已消耗的 CPU runtime。
     ///
     /// @param checkpoint_us monotonic timer deferred-work 时刻。
-    /// @return 无返回值；Thread、Process、hart runtime 与 vruntime 同步推进，dispatch weight 保持冻结。
+    /// @return 无返回值；Thread、Process、CPU runtime 与 vruntime 同步推进，dispatch weight 保持冻结。
     /// @panics 没有 active slice，或 monotonic 微秒计数耗尽时 panic。
     pub(in crate::task) fn checkpoint_runtime(&mut self, checkpoint_us: u64) {
         // 1. 原子地把 active 起点推进到 checkpoint，后续 finish 只提交剩余增量。
@@ -498,12 +482,12 @@ impl Sched {
         now_us.saturating_sub(start_time_us)
     }
 
-    /// 同时累计 Thread、Process 与 hart runtime，并推进 CFS virtual runtime。
+    /// 同时累计 Thread、Process 与 CPU runtime，并推进 CFS virtual runtime。
     fn commit_runtime(&mut self, runtime_us: u64, priority: usize) {
         self.total_runtime_us = self.total_runtime_us.saturating_add(runtime_us);
         self.process_runtime_us
             .fetch_add(runtime_us, Ordering::Relaxed);
-        account_current_hart_runtime(runtime_us);
+        account_current_cpu_runtime(runtime_us);
         let reciprocal = NICE_TO_WEIGHT_RECIPROCAL[priority] as u64;
         // 1. Q10 vruntime 需要 runtime * 2^20 / weight；Linux reciprocal 已含 2^32。
         // 2. 先拆掉低 12 位，避免 64-bit 乘法溢出而不引入 deschedule 热路径除法。
@@ -519,7 +503,7 @@ impl TaskControlBlock {
     /// @description 快照 Thread 创建时刻、调度属性与已累计 CPU runtime。
     ///
     /// @param active_now_us calling Thread 传入本次 monotonic 时刻以包含尚未提交的 active slice；
-    /// 其他 Thread 传入 `None`，保持跨 hart 最多一个 scheduler tick 的 bounded-stale 读取。
+    /// 其他 Thread 传入 `None`，保持跨 CPU 最多一个 scheduler tick 的 bounded-stale 读取。
     /// @return `(start_time_us, nice, priority, runtime_us)`；读取不修改任何 owner。
     pub(in crate::task) fn thread_statistics(
         &self,

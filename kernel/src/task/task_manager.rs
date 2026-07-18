@@ -3,13 +3,13 @@ use core::sync::atomic::Ordering;
 use alloc::sync::Arc;
 use lazy_static::lazy_static;
 
+use crate::arch::context::KernelContext;
 use crate::{
-    arch::hart::{self, hart_id},
+    cpu,
     fallible_tree::{FallibleMap, VacantEntry},
     sync::{IrqMutex, LocalIrqGuard},
     task::{
         PendingSignal, Processor, RunState, TaskControlBlock, WaitMembership, WaitResult,
-        context::TaskContext,
         pid::{INIT_PID, PID_MAX, ProcessId},
         processor::{begin_preempt_running_task, enqueue_new_task},
         with_current_processor,
@@ -487,8 +487,8 @@ pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
 
 pub(crate) fn run_tasks() -> ! {
     with_current_processor(|_| {
-        // Release 发布 local Processor 初始化；缺失时远端选核可能向尚未开始 drain 的 hart 投递任务。
-        hart::mark_active();
+        // Release 发布 local Processor 初始化；缺失时远端选核可能向尚未开始 drain 的 CPU 投递任务。
+        cpu::mark_active();
     });
     loop {
         // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
@@ -498,19 +498,17 @@ pub(crate) fn run_tasks() -> ! {
         let task = with_current_processor(Processor::select_task);
         if let Some(task) = task {
             switch_to_task(task);
-            // guard 留在 idle stack 跨越切换，确保 kernel continuation 恢复后先在 SIE=0
-            // 完成 switch bookkeeping；释放时才恢复下一轮 idle 所需的 SIE=1 不变量。
+            // guard 跨切换保活，使 continuation 在 local interrupt disabled 下完成 bookkeeping。
             drop(idle_irq);
             continue;
         }
 
-        // 2. 所有 scheduler guard 释放后恢复 SIE，再执行 WFI；QEMU 只在全局中断开启时
-        // 才会用 PLIC source 唤醒 idle vCPU，反序会让 device IRQ 滞留到其他 task 活动。
-        // 3. enable 与 WFI 之间命中 IRQ 时，周期 scheduler timer 最迟在下一 tick 结束 WFI；
-        // 下一轮仍在 SIE=0 下重查 softirq/mailbox/run queue，不会丢失 runnable state。
+        // 2. 所有 scheduler guard 释放后恢复 local interrupt，再进入 architecture wait；
+        // 反序会让 platform interrupt 无法唤醒 idle CPU。
+        // 3. enable 与 wait 之间命中 IRQ 时，周期 scheduler timer 最迟在下一 tick 结束 wait；
+        // 下一轮仍先关闭 local interrupt 重查 deferred/mailbox/run queue，不丢 runnable state。
         drop(idle_irq);
-        use riscv::asm::wfi;
-        wfi();
+        crate::arch::interrupt::wait();
     }
 }
 
@@ -550,7 +548,7 @@ fn block_current_until(deadline: u64) -> WaitResult {
 
 /// 切换到指定任务
 fn switch_to_task(task: Arc<TaskControlBlock>) {
-    let cpu = hart_id();
+    let cpu = cpu::current_id();
     with_current_processor(|processor| {
         let current = processor
             .current
@@ -570,15 +568,17 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     let start_time = get_time_us();
     task.scheduling.policy.lock().begin_runtime(start_time);
     // last_cpu 只记录下次调度 hint，不发布 task 内部状态。
-    task.scheduling.last_cpu.store(cpu, Ordering::Relaxed);
+    task.scheduling
+        .last_cpu
+        .store(cpu.index(), Ordering::Relaxed);
 
     // 只保留 raw context 地址，避免 mutable Processor borrow 跨越切换。
     let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
 
     // 获取任务上下文地址
     let next_task_cx_ptr = {
-        let task_cx = task.task_context().lock();
-        &*task_cx as *const TaskContext
+        let kernel_cx = task.kernel_context().lock();
+        &*kernel_cx as *const KernelContext
     };
 
     // 验证指针有效性
@@ -587,14 +587,14 @@ fn switch_to_task(task: Arc<TaskControlBlock>) {
     }
 
     // 所有 guard 已释放，只携带由 task Arc 保活的 context raw pointer。
-    // SAFETY: owning task Arc keeps the next context alive, the hart-local idle context is an
+    // SAFETY: owning task Arc keeps the next context alive, the CPU-local idle context is an
     // exclusive save target, and scheduling state prevents concurrent execution of next.
     unsafe {
-        crate::task::__switch(idle_task_cx_ptr, next_task_cx_ptr);
+        crate::arch::context::switch_kernel_context(idle_task_cx_ptr, next_task_cx_ptr);
     }
     if crate::task::processor::finish_deschedule_transition(&task) {
         complete_process_stop(task.tgid());
     }
-    // 退出 task 把自身 Arc 留在 per-hart slot；这里只在已经恢复的 idle stack 上析构。
+    // 退出 task 把自身 Arc 留在 per-CPU slot；这里只在已经恢复的 idle stack 上析构。
     crate::task::processor::reap_deferred_task();
 }

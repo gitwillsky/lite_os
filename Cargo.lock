@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "architecture-bench"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.9.1",
+]
+
+[[package]]
 name = "architecture-check"
 version = "0.1.0"
 dependencies = [
@@ -134,6 +141,9 @@ dependencies = [
 [[package]]
 name = "kernel-unit"
 version = "0.1.0"
+dependencies = [
+ "bitflags 2.9.1",
+]
 
 [[package]]
 name = "lazy_static"
