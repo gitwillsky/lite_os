@@ -1,139 +1,16 @@
 # LiteOS
 
-LiteOS 是一个使用 Rust `no_std` 实现的 RISC-V 64 操作系统基线，当前目标平台是 QEMU `virt`。项目优先保证特权级、SMP、内存、调度、设备和 Linux/riscv64 ABI 的已声明子集正确，不以功能数量作为兼容性证明。
+LiteOS 是一个以 Rust `no_std` 实现、面向多架构演进的紧凑型操作系统内核。通用内核通过编译期静态 `arch` 与 `platform` façade 消费硬件能力；当前唯一可用 backend 是 RISC-V64，当前唯一支持的 machine 是 QEMU `virt`。
 
-## 当前边界
+项目追求清晰的状态所有权、窄接口、可证明的错误与清理路径，以及可持续执行的单元、性能和运行时验证。没有实现的能力不会通过私有 ABI、兼容入口或双轨实现伪装为已支持。
 
-- M-mode bootloader + S-mode kernel + U-mode 动态 PIE BusyBox `init + ash` 三层结构。
-- QEMU `virt`，RV64GC；实际 hart 集合来自 DTB，容量受可用内存和 SBI/PLIC/CLINT 表达能力约束。
-- bootloader 只把 cold-boot hart 送入 kernel；kernel 构造动态 hart topology 后通过 SBI HSM 启动 secondary。
-- Sv39、统一 VMA owner、独立用户地址空间、页级 W^X、栈 guard page、`brk`，以及 eager private/anonymous shared、lazy regular-file shared `mmap/munmap/mprotect/msync` 与 `MAP_FIXED`。
-- 显式 Process/Thread/SchedulingEntity 边界；支持 fork-shaped process clone、共享资源 thread clone、TLS、clear-child-tid、futex 与 robust-list cleanup。
-- 唯一 CFS-like vruntime runqueue、timer preemption、SMP mailbox 与统一 indexed wait registry。
-- 带标准 JBD2 metadata journal 的读写 ext2 revision 1 启动卷与 boot-time devfs/procfs/sysfs mount；统一 opened-entry/OFD 模型覆盖 regular file、directory、symlink、pipe、eventfd、`/dev/null|zero|random|urandom|tty|console`、`/proc/<pid>/fd` 与 `/dev/fd`。
-- PLIC、Goldfish RTC、VirtIO MMIO legacy block、rng 与 Ethernet；设备只服务已声明路径。
-- ELF64 ET_EXEC 与动态 PIE/PT_INTERP，共享 musl loader、RELRO、TLS、`AT_BASE/AT_RANDOM/AT_EXECFN`；固定 pthread consumer、动态 BusyBox 与 `dlopen` 共享对象均纳入冷启动围栏。
-- 默认 ext2 rootfs 由本地签名的 `liteos-base` APK 唯一拥有；镜像内使用固定 Alpine v3.22 `apk-tools-static`、官方 repository keys 与本地 public key，private key 只存在于 `target/apk-runtime/`。
-- 146 个 Linux/riscv64 syscall number；credentials/permission、完整 noncanonical VMIN/VTIME TTY read、Pipe/eventfd、pselect/ppoll/epoll、BSD flock/POSIX record lock、positioned/vector/sendfile I/O、per-task I/O accounting/ioprio policy、AF_UNIX、AF_INET UDP/TCP/raw ICMP、标准链接、共享文件映射、按需用户页、`madvise`、mode=0 space reservation、统一资源限制、private expedited membarrier、getrandom、sysinfo/statfs、uname/realtime/CPU clocks 与 POSIX wall-clock timers、signal altstack、parent-death signal、Linux nice/`SCHED_OTHER` policy/time slice/per-Thread CPU affinity、RISC-V hwprobe 与 system reset 统一经过各自的单一 owner，未实现编号返回 `-ENOSYS`。
+## 快速开始
 
-LiteOS 当前不支持 futex PI/PI-requeue/WAKE_OP、完整 clone flags、普通多线程 Process 的直接 fork/exec、所有 syscall 的 restart、queued realtime signal、pathname AF_UNIX、IPv6/raw socket、后台 page-cache reclaim/writeback worker、完整 pthread runtime、GUI 或任意 musl 程序。动态链路证明固定 BusyBox（含基础 job control）、`dlopen` consumer、跨进程 musl shared synchronization、multithreaded `posix_spawn/system/popen` 与 AF_INET UDP/TCP 竖切，不外推为完整 Linux、POSIX.1-2024 或 musl conformance。
-
-## 组件
-
-- `bootloader/`：M-mode RustSBI firmware，负责 DTB、UART/CLINT、HSM、TIME、IPI、RFENCE、SRST 和 DBCN。
-- `kernel/`：S-mode kernel，负责 trap/SMP、内存、task/scheduler、VFS/ext2、PLIC/VirtIO/RTC 和 syscall dispatch。
-- `syscall-abi/`：kernel dispatcher 使用的 Linux/riscv64 syscall number。
-- `user/`：固定 BusyBox config/inittab 与 musl ABI consumer；不包含自有 runtime 或第二个 init。
-
-完整调用链、所有权和不支持范围见 [当前架构](docs/architecture.md)；syscall 精确状态见 [Linux/riscv64 syscall 支持矩阵](docs/syscall-support.md)。
-
-## ABI 与规范基线
-
-- Linux/riscv64 UAPI：Linux `v7.1`，commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。
-- POSIX 语义目标：POSIX.1-2024 / Issue 8。
-- RISC-V ELF psABI：2026-07-01 的 `e03d44ae2f0e1144f9498c2896b5ae25b0449398`。
-- RISC-V Privileged Architecture：`v20260120`。
-- SBI：`v3.0` 用于审计当前实现的有效子集；firmware 对外由 RustSBI 报告 SBI `2.0`。
-- VirtIO：`1.4` CS01。
-- musl：`v1.2.6` 只作为 ABI consumer 审计对象。
-- BusyBox：官方 release `1.37.0`，是默认且唯一的 `init + ash` userspace。
-- apk-tools：Alpine v3.22 的 `apk-tools-static 2.14.10-r0`，是 rootfs package database、签名校验和 add/del/upgrade 的唯一实现。
-
-不可变 revision 和一手来源见 [规范基线](docs/standards-baseline.md)。
-
-## 环境
-
-- Rust nightly `nightly-2026-07-12`，由 `rust-toolchain.toml` 固定。
-- target `riscv64gc-unknown-none-elf`。
-- QEMU `qemu-system-riscv64`。
-- e2fsprogs：`mke2fs` 和 `debugfs`。
-- Rust `llvm-tools`；GDB/addr2line 只在调试时需要。
-
-macOS 可使用：
+准备 `qemu-system-riscv64` 后执行：
 
 ```bash
-brew install qemu e2fsprogs
-brew tap riscv/riscv
-brew install riscv-gnu-toolchain
-```
-
-Debian/Ubuntu 可使用：
-
-```bash
-sudo apt-get install qemu-system-misc e2fsprogs binutils-riscv64-unknown-elf gcc-riscv64-linux-gnu
-```
-
-## 构建与启动
-
-```bash
-# 构建 bootloader、kernel、固定 musl/BusyBox，并生成基准镜像 target/rootfs.img
 make build
-
-# 以默认的 8-hart QEMU 配置启动；已有 fs.img 的 guest 状态保持不变
 make run
 ```
 
-成功启动后会看到 RustSBI/kernel 与必要的 BusyBox init 信息，随后直接进入 ash；无需额外按 Enter。DHCP 服务仍由 init 监督，其输出保存在 `/run/network-service.log`，不会打断当前命令行：
-
-```text
-/ #
-```
-
-镜像固定为 ext2 revision 1、4 KiB block、256-byte inode、4 MiB 内置 journal inode，并只启用驱动完整处理的 `has_journal,filetype,sparse_super,large_file` 特性。journal 固定为无 checksum/64-bit/revoke 扩展的 JBD2 v2 格式，不依赖宿主机随版本变化的 mke2fs 默认 feature 集合。
-
-默认 rootfs 只包含固定 config 选中的 BusyBox applet；全部入口是同一 ELF inode 的 hardlink。
-
-`target/rootfs.img` 是固定输入生成的可复现基准，`fs.img` 是 QEMU 持续写入的开发实例。普通 `make build`、`make run`、`make run-gdb` 和 `make verify` 均不覆盖已有 `fs.img`；开发镜像缺失时，`make run` 会按需初始化。需要明确丢弃 guest 内安装的软件和文件改动时执行：
-
-```bash
-make reset-rootfs
-```
-
-验证门只消费基准镜像并为每条 QEMU 路径创建私有副本，不把验证状态写回开发镜像。
-
-当前工具集除 `init + ash` 与基础文件命令外，还包含外部 `test`/`[`/`[[`、`stat/mktemp/install/printenv/whoami/groups/yes/tty`、`cksum/md5sum/sha1sum/sha256sum/sha512sum`、`pidof/pgrep/pkill/killall/timeout/nohup/watch`、`vi/less/more`、`diff/patch/cmp`、`hexdump/hd/od/strings`、`awk/sed`、`head/tail/cut/sort/uniq/tr/tee`、`find/xargs`、`basename/dirname/readlink/realpath/which/env/expr/seq/sleep`、`tar/unzip` 与 `gzip/bzip2/XZ` 解压。每个入口都由 guest self-checking script 或 BusyBox UART gate 执行真实 procfs、opened-file、signal、文件、终端、pipe、安装、差异应用、归档、压缩或校验路径，不以“编译进 ELF”代替运行支持。BusyBox `xz` 上游 applet 仅提供解压，不声明 XZ 压缩能力。
-
-分组构建：
-
-```bash
-make build-bootloader
-make build-kernel
-make build-musl
-make build-rootfs
-```
-
-`create_fs.py` 是 rootfs builder 的底层工具，必须显式传入 `--init`；默认入口是 `make build-rootfs`，它将 inittab 和 BusyBox hardlink applet 写入 `target/rootfs.img`，不修改开发中的 `fs.img`。
-
-固定 musl v1.2.6 pthread 验收可单独执行：
-
-```bash
-make verify-musl
-```
-
-该目标在 `target/musl-runtime/` 构建唯一 musl sysroot（`libc.a/libc.so/ld-musl` 与 Linux 7.1 UAPI），并将 `scripts/fixtures/musl/musl-smoke.c` 与独立的 shared-sync translation unit 链接为静态 ABI consumer 冷启动。consumer 验证 pthread、private/shared futex、匿名共享映射、bitset/requeue、signal interruption 与定向 `SA_RESTART`；musl 源码和二进制不进入仓库。
-
-musl source、sysroot 和 smoke ELF 分别使用包含官方 SHA-256、compiler identity、configure/link recipe 和 consumer hash 的 content fingerprint。缓存以不可变 generation 生成，并用进程锁与原子 symlink 切换发布；普通命中不重新 configure/build/install。冷构建并行度默认来自宿主 CPU/上层 GNU Make jobserver，可用 `LITEOS_BUILD_JOBS=<n>` 显式覆盖。强制重建使用 `python3 scripts/verify_musl.py --build-only --rebuild`；清理全部 generation 使用 `make clean-musl`。
-
-固定 BusyBox 1.37.0 `init + ash` 验收可单独执行：
-
-```bash
-make verify-busybox
-```
-
-该目标构建 RISC-V 动态 PIE BusyBox 和单 inode hardlink applet rootfs，再把完整 userspace 制作为本地 RSA256 签名的 `liteos-base` APK，由 guest 内真实 `apk.static --initdb add` 生成最终 package database。gate 同时覆盖 dependency failure rollback、add/del、v1→v2 upgrade、篡改签名拒绝、并发 database lock、掉电后继续升级，以及 `dlopen/dlsym/dlclose`、getrandom、ash、pipeline、后台 wait、VINTR 和 1-hart 写入/8-hart 冷启动读回。
-
-BusyBox source、动态 ELF、unstripped diagnostics 与共享对象 probe 按官方 archive SHA-256、唯一 config、musl sysroot fingerprint、toolchain identity 和 recipe 做内容寻址缓存。命中后仍执行 ELF 围栏并重新构造基准镜像；强制重建使用 `python3 scripts/verify_busybox.py --build-only --image target/rootfs.img --rebuild`，随后由 `make reset-rootfs` 明确决定是否替换开发实例。
-
-## 调试
-
-```bash
-# 窗口 1
-make run-gdb
-
-# 窗口 2
-make gdb
-```
-
-## 验证约束
-
-本仓库不维护、不修正、不执行测试用例。统一运行 `make verify`；它先执行 AST 架构围栏、workspace/组件构建、Clippy 与 ELF 静态检查，再并发运行 topology、musl、BusyBox、APK runtime gate，合计覆盖 `-smp 1/3/8`、动态 userspace 与持久化恢复。每条 gate 使用独占镜像/成功戳，recursive Make 等待全部结果，验证墙钟时间由最慢 gate 决定。runtime gate 只在 kernel、bootloader、rootfs 的 ELF/library/recipe 输入与 QEMU identity 全部相同时复用上次成功结果；任一语义输入变化自动失效，可用 `LITEOS_VERIFY_REBUILD=1 make verify` 强制完整重跑。各阶段的证据保存在 `docs/phase-*.md`。
+构建环境、测试入口和缓存规则见 [构建与验证](docs/development/build-and-verify.md)。架构、接口、ABI 与规范资料从 [文档索引](docs/README.md) 进入。

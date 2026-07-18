@@ -116,6 +116,7 @@ verify-architecture-benchmark:
 
 verify-architecture-release:
 	cd kernel && cargo build --release && cd -
+	python3 scripts/verify_architecture_release.py
 
 verify-runtime-gates: verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps
 
