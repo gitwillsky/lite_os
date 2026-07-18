@@ -1,0 +1,79 @@
+AGENTS.md
+  s_90300d796c22b3::t_bca797aa21c561 3,5-7,9,11-15,17,19-24,26,28,30-42,48
+README.md
+  s_90300d796c22b3::t_2a2253eb0ff940 3,5,7,9,16
+docs/README.md
+  s_90300d796c22b3::t_78b54e3a28e95d 1-47
+docs/architecture-contract/boot-platform.md
+  s_90300d796c22b3::t_dafee5f3020605 1-19
+docs/architecture-contract/devices-terminal.md
+  s_90300d796c22b3::t_2a1c4174a539a7 1-19
+docs/architecture-contract/execution.md
+  s_90300d796c22b3::t_566f5c0641a7ec 1-19
+docs/architecture-contract/filesystem-storage.md
+  s_90300d796c22b3::t_b420e33fab2d64 1-19
+docs/architecture-contract/ipc-network.md
+  s_90300d796c22b3::t_cb12727215d45c 1,3,5-7,9,11-14,16,18-19
+docs/architecture-contract/memory.md
+  s_90300d796c22b3::t_9daf13f3d66adf 1,3,5-7,9,11-14,16,18-19
+docs/architecture-contract/process-scheduling.md
+  s_90300d796c22b3::t_b7f0403f984c92 1-21
+docs/architecture-contract/userspace-abi.md
+  s_90300d796c22b3::t_ee371441df8212 1-20
+docs/architecture.md
+  s_90300d796c22b3::t_d24a4c2035c1b4 3,5,7-12,14,16-25,27,29,31-33
+docs/architecture/boot-platform.md
+  s_90300d796c22b3::t_a9e6eb7c50f91f 1-19
+docs/architecture/devices-terminal.md
+  s_90300d796c22b3::t_354dc39db6fe46 1-15
+docs/architecture/execution.md
+  s_90300d796c22b3::t_5f508aba8a5323 1-15
+docs/architecture/filesystem-storage.md
+  s_90300d796c22b3::t_1c9c009355ea32 1,3,5-9,11,13-14
+docs/architecture/ipc-network.md
+  s_90300d796c22b3::t_90dc50f7a94df6 1,3,5-9,11,13-14
+docs/architecture/memory.md
+  s_90300d796c22b3::t_fc7aa641ca4a0b 1-15
+docs/architecture/process-scheduling.md
+  s_90300d796c22b3::t_b60a3a1dd6b590 1-15
+docs/architecture/userspace-abi.md
+  s_90300d796c22b3::t_2b9d7487eb4b77 1-13
+docs/generated/architecture-interface.txt
+  s_90300d796c22b3::t_034ad612c11fd8 1-2
+docs/standards-baseline.md
+  s_90300d796c22b3::t_de92be1ca2feec 1,3,5,7,9-11,13,15-17,19,21-23,25,27-29,31,33-35,37,39-41,43,45,47-48,50,52-54,56,58-62,64,66-67,69,71-74,76,78-81,83,85-90,92
+docs/syscall-support/filesystem-io.md
+  s_90300d796c22b3::t_7e1479a7552fc8 1-56
+docs/syscall-support/ipc.md
+  s_90300d796c22b3::t_c6f75b99c41ef0 1-15
+docs/syscall-support/memory.md
+  s_90300d796c22b3::t_fa9556e21b2297 1,3-10,12,14
+docs/syscall-support/process-identity.md
+  s_90300d796c22b3::t_aed26896b88c41 1-35
+docs/syscall-support/signal-time.md
+  s_90300d796c22b3::t_97b9adb96897cb 1-29
+docs/syscall-support/socket.md
+  s_90300d796c22b3::t_51f859fdff82fa 1,3-20,22,24-27,29,31
+docs/syscall-support/synchronization-scheduling.md
+  s_90300d796c22b3::t_128a20498f3227 1-23
+docs/syscall-support/system.md
+  s_90300d796c22b3::t_6209072107a356 1-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "34608090d3bb0e7c3b9142668e81e87f142ffa0f",
+  "prompts": {},
+  "sessions": {
+    "s_90300d796c22b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f7419-942d-7860-8027-00417cb1128e",
+        "model": "unknown"
+      },
+      "human_author": "hdu_willsky <hdu_willsky@foxmail.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
