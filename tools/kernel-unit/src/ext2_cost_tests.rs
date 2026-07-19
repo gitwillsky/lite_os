@@ -29,7 +29,7 @@ use crate::{
     writeback_batch::REGULAR_WRITE_BATCH_PAGES,
 };
 
-static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct CountingImage {
     image: Mutex<File>,

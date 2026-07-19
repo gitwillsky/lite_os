@@ -351,19 +351,13 @@ impl Inode for Ext2Inode {
 
 impl Drop for Ext2Inode {
     fn drop(&mut self) {
-        let orphan_next = {
+        let reclaim = {
             let disk = self.disk.lock();
-            (disk.i_links_count == 0 && matches!(disk.i_mode & 0xF000, 0x8000 | 0xA000))
-                .then_some(disk.i_dtime)
+            disk.i_links_count == 0 && matches!(disk.i_mode & 0xF000, 0x8000 | 0xA000)
         };
-        if let Some(orphan_next) = orphan_next {
-            let result = self.fs.begin_mutation().and_then(|mut mutation| {
-                mutation.discard_inode_on_abort(self.inode_num)?;
-                self.fs
-                    .remove_orphan_locked(&mut mutation, self.inode_num, orphan_next)?;
-                self.reclaim_locked(&mut mutation, false)?;
-                mutation.commit()
-            });
+        if reclaim {
+            test_orphan_drop_admission(self.inode_num);
+            let result = self.reclaim_dropped_orphan();
             if let Err(error) = result {
                 error!(
                     "[EXT2] failed to reclaim unlinked inode {}: {:?}",
@@ -371,5 +365,27 @@ impl Drop for Ext2Inode {
                 );
             }
         }
+    }
+}
+
+impl Ext2Inode {
+    fn reclaim_dropped_orphan(&self) -> Result<(), FileSystemError> {
+        let mut mutation = self.fs.begin_mutation()?;
+        // The lock-free admission above avoids a filesystem transaction for ordinary inode drops.
+        // `i_dtime` is chain topology and may be rewritten by an earlier orphan reclaim, so its
+        // authoritative value must be read only after acquiring the unique mutation owner.
+        // Final Arc::drop has already made the cache Weak non-upgradeable. A predecessor reclaim
+        // may therefore have updated the on-disk chain through another temporary identity; only
+        // the raw inode image under the mutation owner is authoritative here.
+        let disk = self.fs.read_inode_disk(self.inode_num)?;
+        if disk.i_links_count != 0 || !matches!(disk.i_mode & 0xF000, 0x8000 | 0xA000) {
+            return Ok(());
+        }
+        let orphan_next = disk.i_dtime;
+        mutation.discard_inode_on_abort(self.inode_num)?;
+        self.fs
+            .remove_orphan_locked(&mut mutation, self.inode_num, orphan_next)?;
+        self.reclaim_locked(&mut mutation, false)?;
+        mutation.commit()
     }
 }

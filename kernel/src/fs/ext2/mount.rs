@@ -333,6 +333,82 @@ impl Ext2FileSystem {
         Ok(())
     }
 
+    /// 重新读取 journal replay 后的 primary superblock 与 group descriptor runtime owner。
+    ///
+    /// Replay 只更新 home blocks；继续使用挂载早期的旧内存快照会覆盖已恢复计数，并让
+    /// orphan recovery 按旧链表头运行。新快照必须保持已构造 filesystem 的 immutable topology。
+    fn reload_replayed_mount_metadata(&self) -> Result<(), FileSystemError> {
+        let superblock_block = if self.block_size == 1024 { 1 } else { 0 };
+        let superblock_offset = if self.block_size == 1024 { 0 } else { 1024 };
+        let mut bytes = try_zeroed(self.block_size)?;
+        self.read_fs_block_home(superblock_block, &mut bytes)?;
+        let recovered = Ext2SuperBlock::decode(&bytes, superblock_offset)
+            .ok_or(FileSystemError::InvalidFileSystem)?;
+        Self::validate_superblock(&recovered, self.block_size)?;
+
+        let original = *self.superblock.lock();
+        let original_uuid = original.s_uuid;
+        let recovered_uuid = recovered.s_uuid;
+        let original_journal_uuid = original.s_journal_uuid;
+        let recovered_journal_uuid = recovered.s_journal_uuid;
+        let topology_unchanged = recovered.s_inodes_count == original.s_inodes_count
+            && recovered.s_blocks_count == original.s_blocks_count
+            && recovered.s_first_data_block == original.s_first_data_block
+            && recovered.s_log_block_size == original.s_log_block_size
+            && recovered.s_log_frag_size == original.s_log_frag_size
+            && recovered.s_blocks_per_group == original.s_blocks_per_group
+            && recovered.s_frags_per_group == original.s_frags_per_group
+            && recovered.s_inodes_per_group == original.s_inodes_per_group
+            && recovered.s_inode_size == original.s_inode_size
+            && recovered.s_feature_compat == original.s_feature_compat
+            && recovered.s_feature_incompat == original.s_feature_incompat
+            && recovered.s_feature_ro_compat == original.s_feature_ro_compat
+            && recovered.s_journal_inum == original.s_journal_inum
+            && recovered.s_journal_dev == original.s_journal_dev
+            && recovered_uuid == original_uuid
+            && recovered_journal_uuid == original_journal_uuid;
+        if !topology_unchanged {
+            error!("[EXT2] Journal replay changed immutable mount topology");
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+
+        let group_count = ceil_div(
+            recovered.s_blocks_count as usize - recovered.s_first_data_block as usize,
+            self.blocks_per_group,
+        );
+        if group_count != self.groups.lock().len() {
+            return Err(FileSystemError::InvalidFileSystem);
+        }
+        let gdt_start_block = if self.block_size == 1024 { 2 } else { 1 };
+        let gdt_bytes = group_count * Ext2GroupDesc::SIZE;
+        let gdt_blocks = ceil_div(gdt_bytes, self.block_size);
+        let mut gdt = try_zeroed(gdt_blocks * self.block_size)?;
+        for index in 0..gdt_blocks {
+            self.read_fs_block_home(
+                (gdt_start_block + index) as u32,
+                &mut gdt[index * self.block_size..(index + 1) * self.block_size],
+            )?;
+        }
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(group_count)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        for index in 0..group_count {
+            let descriptor = Ext2GroupDesc::decode(&gdt, index * Ext2GroupDesc::SIZE)
+                .ok_or(FileSystemError::InvalidFileSystem)?;
+            Self::validate_group_descriptor(&descriptor, index, &recovered)?;
+            groups.push(descriptor);
+        }
+
+        // Journal inode mapping may have populated caches before replay. Mount is still
+        // single-threaded here, so clear both identities before publishing the recovered owners.
+        self.metadata_cache.lock().clear();
+        self.inode_cache.lock().clear();
+        *self.superblock.lock() = recovered;
+        *self.groups.lock() = groups;
+        Ok(())
+    }
+
     /// 从块设备加载并校验 ext2 元数据。
     ///
     /// # Parameters
@@ -457,6 +533,10 @@ impl Ext2FileSystem {
 
         let mut journal = Journal::load(&fs)?;
         journal.recover(&fs)?;
+        fs.reload_replayed_mount_metadata()?;
+        // Orphan recovery writes allocation state. Validate recovered block addresses and
+        // counters before allowing it to issue a mutation against the recovered topology.
+        fs.check_filesystem_consistency()?;
         fs.superblock.lock().s_feature_incompat |= EXT2_FEATURE_INCOMPAT_RECOVER;
         fs.write_primary_superblock_home()?;
         fs.device.flush().map_err(block_error)?;

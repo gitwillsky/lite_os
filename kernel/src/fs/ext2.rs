@@ -61,16 +61,18 @@ mod orphan;
 mod storage_mutation;
 #[cfg(test)]
 pub(crate) use cost_test_support::{
-    TestMappedInode, clear_test_metadata_cache, fail_next_test_metadata_owner,
-    reset_test_allocation_attempts, reset_test_stage_capacity, reset_test_write_costs,
-    set_test_stage_capacity, test_allocation_attempts, test_write_costs,
+    TestMappedInode, arm_test_orphan_drop, clear_test_metadata_cache,
+    fail_next_test_metadata_owner, release_test_orphan_drop, reset_test_allocation_attempts,
+    reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
+    test_allocation_attempts, test_mount_allocation_state, test_write_costs,
+    wait_test_orphan_drop_admission,
 };
 #[cfg(test)]
 use cost_test_support::{
     fail_test_metadata_owner, record_test_allocation_attempt,
     record_test_allocation_materialization, record_test_allocation_metadata_bytes,
     record_test_home_write, record_test_journal_write, record_test_transaction,
-    test_stage_capacity,
+    test_orphan_drop_admission, test_stage_capacity,
 };
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use inode::Ext2Inode;
@@ -135,6 +137,8 @@ fn record_test_home_write() {}
 fn record_test_journal_write() {}
 #[cfg(not(test))]
 fn record_test_transaction() {}
+#[cfg(not(test))]
+fn test_orphan_drop_admission(_: u32) {}
 #[cfg(not(test))]
 const fn test_stage_capacity(capacity: usize) -> usize {
     capacity

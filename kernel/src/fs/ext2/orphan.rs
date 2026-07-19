@@ -46,18 +46,29 @@ impl Ext2FileSystem {
             }
             if current == target {
                 if let Some(previous) = previous {
-                    let previous = self.load_inode(previous)?;
-                    let mut disk = mutation.inode(&previous)?;
-                    disk.i_dtime = target_next;
-                    self.write_inode_disk(previous.inode_num, &disk)?;
+                    let live = self
+                        .inode_cache
+                        .lock()
+                        .get(&previous)
+                        .and_then(Weak::upgrade);
+                    if let Some(live) = live {
+                        let mut disk = mutation.inode(&live)?;
+                        disk.i_dtime = target_next;
+                        self.write_inode_disk(previous, &disk)?;
+                    } else {
+                        // No live identity needs rollback publication. The journal owns the raw
+                        // inode preimage, and avoiding a temporary Arc prevents recursive final Drop.
+                        let mut disk = self.read_inode_disk(previous)?;
+                        disk.i_dtime = target_next;
+                        self.write_inode_disk(previous, &disk)?;
+                    }
                 } else {
                     self.superblock.lock().s_last_orphan = target_next;
                     self.write_primary_superblock()?;
                 }
                 return Ok(());
             }
-            let inode = self.load_inode(current)?;
-            let next = inode.disk.lock().i_dtime;
+            let next = self.read_inode_disk(current)?.i_dtime;
             previous = Some(current);
             current = next;
         }

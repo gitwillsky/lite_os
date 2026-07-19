@@ -72,6 +72,10 @@
   期间 reader 只短暂取得 staged view，cache miss 可继续访问 home device；禁止把 block I/O
   重新放回 journal spin guard。commit failure 必须清空 metadata cache 并把 journal 标记为
   fail-stop，后续 mutation 不得另走无 journal 兼容路径。
+- mount journal replay 若更新了 home blocks，必须在任何 superblock home write、orphan reclaim 或
+  consistency scan 前，从 primary home blocks 重新 decode/validate superblock 与完整 GDT，验证
+  immutable topology 未改变、清空 replay 前 cache identity，再一次性发布 runtime owner。禁止让
+  replay 前的 `superblock/groups` 快照覆盖或解释 replay 后的 bitmap/inode state。
 - ext2 inode mutation 只能使用锁外 `InodeMutation` working copy；普通 inode spin guard 只允许
   取得或发布一个完整 `Ext2InodeDisk` snapshot，不得跨 journal/block I/O。working copy 的类型
   lifetime 必须借用 `MutationGuard`，所以全部 live inode 发布必然发生在 commit 消费并释放
@@ -94,6 +98,9 @@
 ## Failure and cleanup
 
 - rename/link/unlink/truncate 等 mutation 必须预留 journal/owner storage并提供完整 rollback；不能留下未索引 inode、错误 link count 或半提交 directory entry。
+- open-unlinked inode 的 `i_dtime` 是 orphan chain topology；final Drop 可在锁前只读 inode 状态作
+  admission，但 predecessor/successor 必须在取得 filesystem mutation owner 后重新读取并 journal。
+  禁止把锁前 successor 快照用于摘链，否则并发 reclaim 可把 head 指回已释放 inode。
 - close/dup/CLOEXEC 在 fd-table lock 内只 detach；OFD drop、epoll/flock/record-lock consequence 在锁外执行。
 - opened membership 的 register node 必须在 publication 前可失败预分配；OOM
   不得留下 raw pointer 或半发布 location key。rename 只回收并重用原节点，
@@ -108,9 +115,10 @@
   cold-first getdents 与 warm single-indirect mapping 测试窗口的 device read/allocation attempts 分别
   不得超过 `0/0`、`1/2`、`0/0`；固定 64-entry 线性 probe 的 CPU 成本有严格上界，当前不另设
   不稳定的 host wall-time benchmark。
-- journal barrier 保持 `dirty-start durable → descriptor/data/commit durable → home checkpoint durable`
-  三阶段；最后 clean marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等 replay 已 durable
-  home image。真实 counting-device gate 要求单次 1 MiB batch 保持 1 transaction 且最多
+- journal barrier 保持 `dirty-start + descriptor/data durable → commit durable → home checkpoint durable`
+  三阶段；commit record 前必须存在 descriptor/data durability barrier，不能依赖同一 flush 内的
+  device write ordering。最后 clean marker 可延迟到下一 transaction 的首 barrier，crash 只会幂等
+  replay 已 durable home image。真实 counting-device gate 要求单次 1 MiB batch 保持 1 transaction 且最多
   3 flush；固定 64 data block truncate（另含一个 indirect block）只允许一次 allocation metadata
   materialization，当前单-group fixture 上限为 8 KiB metadata preparation。
 - ext2 mapping structure gate 固定覆盖 direct/single/double/triple 的 96-block toy address space，并要求

@@ -16,6 +16,8 @@
   allocation 共用同一路径，`PointerBlock` 是 cache-owned block image 的唯一 pointer decode seam。
 - JBD2 active transaction 同时拥有 redo block set 与 allocation dirty-group bitset；block/inode alloc/free
   只标记 dirty group，commit 前一次性物化 primary superblock、受影响 GDT block 及其 sparse backups。
+- JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
+  primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - page cache 唯一拥有 shared file page identity、dirty/writeback 状态和 reclaim cursor；VMA 与 filesystem 通过 shared-page seam 交互。
 - devfs、devpts、procfs 与 sysfs 是 composition root 挂载的明确 adapter；它们不形成第二套 namespace 或对象状态。
 - directory iteration 由 inode adapter 从 opaque cursor 直接推进：ext2 的 cursor 是下一 record byte

@@ -82,6 +82,9 @@ mod fs;
 mod ext2_cost_tests;
 
 #[cfg(test)]
+mod ext2_recovery_tests;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/fs/directory.rs"]
 #[allow(dead_code)]
 mod directory_stream;

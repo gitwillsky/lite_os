@@ -1,5 +1,5 @@
 use super::*;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 // OWNER: serialized host cost tests own this diagnostic counter; production does not compile it.
 #[cfg(test)]
@@ -25,6 +25,16 @@ static ALLOCATION_METADATA_BYTES: AtomicUsize = AtomicUsize::new(0);
 // OWNER: serialized host ENOSPC test owns this journal capacity override.
 #[cfg(test)]
 static STAGE_CAPACITY: AtomicUsize = AtomicUsize::new(usize::MAX);
+// OWNER: one serialized host recovery test owns this admission/release rendezvous. It forces the
+// stale-successor interleaving; without either edge the concurrency regression is nondeterministic.
+#[cfg(test)]
+static ORPHAN_DROP_TARGET: AtomicU32 = AtomicU32::new(0);
+// OWNER: the same serialized recovery test publishes this one-shot admission edge.
+#[cfg(test)]
+static ORPHAN_DROP_ADMITTED: AtomicBool = AtomicBool::new(false);
+// OWNER: the same serialized recovery test publishes this one-shot release edge.
+#[cfg(test)]
+static ORPHAN_DROP_RELEASED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
@@ -124,6 +134,48 @@ pub(super) fn fail_test_metadata_owner() -> bool {
 #[cfg(test)]
 pub(crate) fn clear_test_metadata_cache(fs: &Ext2FileSystem) {
     fs.metadata_cache.lock().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn test_mount_allocation_state(fs: &Ext2FileSystem) -> (u32, u32, u32) {
+    let superblock = fs.superblock.lock();
+    (
+        superblock.s_free_blocks_count,
+        superblock.s_free_inodes_count,
+        superblock.s_last_orphan,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn arm_test_orphan_drop(inode: u32) {
+    assert_ne!(inode, 0);
+    ORPHAN_DROP_ADMITTED.store(false, Ordering::Relaxed);
+    ORPHAN_DROP_RELEASED.store(false, Ordering::Relaxed);
+    ORPHAN_DROP_TARGET.store(inode, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(super) fn test_orphan_drop_admission(inode: u32) {
+    if ORPHAN_DROP_TARGET.load(Ordering::Acquire) != inode {
+        return;
+    }
+    ORPHAN_DROP_ADMITTED.store(true, Ordering::Release);
+    while !ORPHAN_DROP_RELEASED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn wait_test_orphan_drop_admission() {
+    while !ORPHAN_DROP_ADMITTED.load(Ordering::Acquire) {
+        core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn release_test_orphan_drop() {
+    ORPHAN_DROP_RELEASED.store(true, Ordering::Release);
+    ORPHAN_DROP_TARGET.store(0, Ordering::Release);
 }
 
 #[cfg(test)]

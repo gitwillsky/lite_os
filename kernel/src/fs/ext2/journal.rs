@@ -314,7 +314,6 @@ impl Journal {
         );
         let sequence = self.sequence;
         self.write_state(fs, 1, sequence)?;
-        fs.device.flush().map_err(block_error)?;
         let uuid = fs.superblock.lock().s_uuid;
         let mut cursor = 1;
         // commit 已把 journal 标为 dirty；此后 descriptor/escape 复用同一固定栈 scratch。
@@ -365,6 +364,9 @@ impl Journal {
             }
             next_block = writes.successor(&last_block).map(|(&block, _)| block);
         }
+        // Descriptor 和全部 data image 必须先于 commit record 到达稳定存储。否则断电可留下
+        // durable commit 与旧 journal slot data 的组合，recovery 会把旧 image 当成新事务 replay。
+        fs.device.flush().map_err(block_error)?;
         scratch.fill(0);
         put_header(&mut *scratch, JBD2_COMMIT_BLOCK, sequence)?;
         self.journal_write(fs, cursor, scratch)?;
