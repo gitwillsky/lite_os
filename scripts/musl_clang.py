@@ -26,7 +26,17 @@ def main() -> int:
     target_argument = f"--target={target.linux_triple}"
     clang = required_path("LITEOS_MUSL_CLANG")
     linker = required_path("LITEOS_MUSL_LLD")
-    compiler_runtime = required_path("LITEOS_MUSL_COMPILER_RUNTIME")
+    rust_provides_builtins = os.environ.get("LITEOS_RUST_PROVIDES_COMPILER_BUILTINS")
+    if rust_provides_builtins not in (None, "1"):
+        raise RuntimeError("LITEOS_RUST_PROVIDES_COMPILER_BUILTINS must be 1 when set")
+    # OWNER: Cargo `build-std` 独占其最终 link 中的 compiler_builtins rlib；普通 C/musl
+    # consumer 仍由 userspace sysroot 的固定 compiler runtime 提供 builtins。缺少该显式
+    # selector 会把两个不同 runtime provider 放进同一 archive resolution，造成版本混用。
+    compiler_runtime = (
+        None
+        if rust_provides_builtins == "1"
+        else required_path("LITEOS_MUSL_COMPILER_RUNTIME")
+    )
     sysroot = Path(os.environ["LITEOS_MUSL_SYSROOT"])
     arguments = sys.argv[1:]
     query = {"--version", "-dumpmachine", "-dumpversion", "-print-search-dirs"}
@@ -75,6 +85,7 @@ def main() -> int:
         command.extend(arguments)
     else:
         library = sysroot / "usr/lib"
+        runtime_arguments = () if compiler_runtime is None else (str(compiler_runtime),)
         if "-shared" in arguments:
             command.extend(
                 [
@@ -82,7 +93,7 @@ def main() -> int:
                     f"-L{library}",
                     *arguments,
                     "-lc",
-                    str(compiler_runtime),
+                    *runtime_arguments,
                 ]
             )
         else:
@@ -94,7 +105,7 @@ def main() -> int:
                     f"-L{library}",
                     *arguments,
                     "-lc",
-                    str(compiler_runtime),
+                    *runtime_arguments,
                     str(library / "crtn.o"),
                     f"-Wl,-dynamic-linker,{target.musl_loader}",
                 ]

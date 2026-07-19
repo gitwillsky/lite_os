@@ -3558,6 +3558,10 @@ kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize ,
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_statfs (name : * const u8 , address : usize) -> isize
 kernel/src/syscall/futex.rs :: pub (crate) fn sys_futex (address : usize , operation : usize , value : u32 , timeout : usize , target : usize , value3 : u32 ,) -> isize
+kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_INSECURE : usize = 0x4
+kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_NONBLOCK : usize = 0x1
+kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_RANDOM : usize = 0x2
+kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_supported (flags : usize) -> bool
 kernel/src/syscall/input.rs :: pub (in crate :: syscall) fn input_ioctl (task : & TaskControlBlock , file : & Arc < InputFile > , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/ioctl.rs :: pub (crate) fn sys_ioctl (fd : usize , request : usize , argument : usize) -> isize
 kernel/src/syscall/membarrier.rs :: pub (super) fn sys_membarrier (command : usize , flags : usize , _cpu_id : usize) -> isize
@@ -3567,6 +3571,14 @@ kernel/src/syscall/memory.rs :: pub (crate) fn sys_mmap (address : usize , lengt
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_mprotect (address : usize , length : usize , prot : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_msync (address : usize , length : usize , flags : usize) -> isize
 kernel/src/syscall/memory.rs :: pub (crate) fn sys_munmap (address : usize , length : usize) -> isize
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_ANONYMOUS : usize = 0x20
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_FIXED : usize = 0x10
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_FIXED_NOREPLACE : usize = 0x10_0000
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_NORESERVE : usize = 0x4000
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_PRIVATE : usize = 0x02
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_SHARED : usize = 0x01
+kernel/src/syscall/mmap_flags.rs :: pub (super) const MAP_STACK : usize = 0x2_0000
+kernel/src/syscall/mmap_flags.rs :: pub (super) const fn mmap_flags_supported (flags : usize) -> bool
 kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 将 Linux 返回值或负 errno 写回 `a0`。"] Return (isize)
 kernel/src/syscall/mod.rs :: enum SyscallOutcome :: # [doc = " 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 ecall。"] Restart
 kernel/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize = - errno :: EINTR

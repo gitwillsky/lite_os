@@ -4,7 +4,7 @@
 |---:|---|---|---|
 | 214 | `brk` | Complete | program break 与 anonymous VMA 统一 owner |
 | 215 | `munmap` | Complete | VMA split、shared writeback 与 TLB cleanup |
-| 222 | `mmap` | Partial | anonymous/file、private/shared、fixed 与 noreserve advisory |
+| 222 | `mmap` | Partial | anonymous/file、private/shared、fixed，以及 noreserve/stack advisory |
 | 226 | `mprotect` | Complete | Linux protection combinations 与 VMA split |
 | 227 | `msync` | Partial | shared regular-file mapping 的同步范围 |
 | 233 | `madvise` | Partial | 已声明 advice、discard/reclaim 与 residency 语义 |

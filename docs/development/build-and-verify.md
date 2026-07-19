@@ -10,10 +10,17 @@
 - `PROFILE` 默认 `release`，只接受 `release` 与 `debug`；提交门禁以 release 产物为准。
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture identity，不允许跨目标命中。
+- `FS_IMAGE_SIZE_MIB` 只控制可写开发实例的最小容量，默认 8192 MiB；`run`、`run-gui` 与
+  `run-gdb` 在 QEMU 启动前离线扩容已有实例并保留内容，较大的实例不会被缩容。缺少该扩容会让
+  基线派生的 128 MiB 实例在安装 Node.js 等应用时以 `ENOSPC` 失败；runtime gate 仍消费紧凑、
+  可复现的只读基线，不继承开发容量。
 - AArch64 userspace compiler owner 是含 AArch64 backend 的 Clang driver、固定 Rust toolchain的
   `rust-lld` 与 hard-float AAPCS64 `aarch64-unknown-none` `compiler_builtins`；kernel 独立使用
   `aarch64-unknown-none-softfloat`，两者不得混用。任一 runtime 缺失或歧义都必须在发布 sysroot
   前失败，musl smoke 必须实际验证 `strtod` 返回与 FP arithmetic。RISC-V 保留 GCC 与其 `libgcc` runtime 路径。
+- 标准 Rust userspace 由 `scripts/verify_rust_std.py` 使用固定 rust-src 构建；Cargo 禁用 bundled
+  musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind。libunwind 是 panic/backtrace
+  冷路径且固定 `-O2`；其正确性由双架构 target runtime gate 裁决，不增加失真的 host wall-clock benchmark。
 - `verify-runtime-gates` 在 target owner 内串行启动 boot、musl、BusyBox 与 APK QEMU。外层即使
   使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
   workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。静态编译、clippy、
@@ -26,6 +33,7 @@
 
 ```bash
 make build
+make build-rust-std
 make run
 make run-gui
 make verify-unit
@@ -111,6 +119,7 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - AArch64 `run-gui` 同构的 GPU、keyboard、tablet VirtIO 拓扑；gate 使用无 host 窗口的一 CPU
   guest，只裁决设备初始化与 HVF MMIO 指令兼容性，真实 11-CPU 全拓扑由同一静态路径覆盖；
 - musl ELF/TLS/thread/signal/process consumer；
+- 标准 Rust `std` 的 allocator/entropy、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client；
 - BusyBox init/ash、TTY、filesystem、IPC 与 network consumer；
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice。
 

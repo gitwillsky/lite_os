@@ -212,6 +212,26 @@ class MuslRoutingTests(unittest.TestCase):
         self.assertIn("--target=riscv64-linux-musl", command)
         self.assertIn("-Wl,-dynamic-linker,/lib/ld-musl-riscv64.so.1", command)
 
+    def test_musl_clang_rust_std_uses_build_std_compiler_builtins(self) -> None:
+        completed = Mock(returncode=0)
+        required = [Path("/tool/clang"), Path("/tool/ld.lld")]
+        environment = {
+            "ARCH": "aarch64",
+            "LITEOS_MUSL_SYSROOT": "/sysroot",
+            "LITEOS_RUST_PROVIDES_COMPILER_BUILTINS": "1",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(sys, "argv", ["musl_clang.py", "std.o", "-o", "std-app"]),
+            patch.object(musl_clang, "required_path", side_effect=required),
+            patch.object(musl_clang.subprocess, "run", return_value=completed) as run,
+        ):
+            self.assertEqual(musl_clang.main(), 0)
+
+        command = run.call_args.args[0]
+        self.assertNotIn("/tool/compiler-builtins.rlib", command)
+        self.assertEqual(required, [Path("/tool/clang"), Path("/tool/ld.lld")])
+
     def test_musl_ld_empty_relocatable_uses_selected_target(self) -> None:
         completed = Mock(returncode=0)
         environment = {

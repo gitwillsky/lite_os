@@ -7,7 +7,7 @@
 | 168 | `getcpu` | Complete | current logical `CpuId` |
 | 179 | `sysinfo` | Partial | uptime、memory、process 与 runnable load scope |
 | 258 | `riscv_hwprobe` | Partial | value query、logical CPU mask 与 conservative capability |
-| 278 | `getrandom` | Complete | initialized hardware entropy façade |
+| 278 | `getrandom` | Complete | RANDOM/NONBLOCK/INSECURE flags 与 initialized hardware entropy façade |
 
 ## 已知缺口
 

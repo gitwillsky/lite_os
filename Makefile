@@ -41,8 +41,10 @@ KERNEL_BOOT_ARTIFACT := target/$(KERNEL_TARGET)/$(PROFILE)/$(KERNEL_BOOT_NAME)
 ROOTFS_IMAGE := target/rootfs/$(ARCH).img
 FS_IMAGE := fs-$(ARCH).img
 APK_APPS_IMAGE := target/apk-apps/$(ARCH).img
+# FS_IMAGE_SIZE_MIB 只控制可持续修改的开发实例；缺少扩容会让 GUI 内安装 Node.js 等应用时 ENOSPC。
+FS_IMAGE_SIZE_MIB ?= 8192
 
-.PHONY: build-kernel build-bootloader build-musl build-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-busybox verify-apk-apps gdb addr2line
+.PHONY: build-kernel build-bootloader build-musl build-rootfs build-rust-std prepare-rootfs reset-rootfs build-apk-apps regen-font run run-gui run-gdb clean clean-musl clean-busybox build verify verify-riscv64-secondary verify-unit verify-architecture-benchmark verify-architecture-release verify-runtime-gates verify-runtime-boot verify-runtime-musl verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line
 
 QEMU_GUI_DISPLAY ?= cocoa,zoom-to-fit=off
 QEMU_GPU_DEVICE ?= virtio-gpu-device,xres=3008,yres=1692
@@ -76,17 +78,25 @@ build-musl:
 build-rootfs: build-musl
 	python3 scripts/verify_busybox.py --build-only --image $(ROOTFS_IMAGE)
 
+build-rust-std: build-musl
+	python3 scripts/verify_rust_std.py --build-only
+
 # target/rootfs/<arch>.img 是可复现基线；fs-<arch>.img 是 guest 可持续修改的开发实例。
 reset-rootfs: build-rootfs
 	@temporary="$(FS_IMAGE).$$$$.tmp"; \
 	trap 'rm -f "$$temporary"' 0 1 2 3 15; \
 	cp "$(ROOTFS_IMAGE)" "$$temporary"; \
+	python3 scripts/resize_ext2_image.py --image "$$temporary" --size-mib "$(FS_IMAGE_SIZE_MIB)"; \
 	mv -f "$$temporary" "$(FS_IMAGE)"; \
 	trap - 0 1 2 3 15
 
 # 仅在开发镜像不存在时初始化；已有 target-specific 实例不以 mtime 与基线同步。
 $(FS_IMAGE):
 	$(MAKE) reset-rootfs
+
+# QEMU 启动前离线扩容；只增长不缩容，因此保留已有开发数据。
+prepare-rootfs: $(FS_IMAGE)
+	python3 scripts/resize_ext2_image.py --image "$(FS_IMAGE)" --size-mib "$(FS_IMAGE_SIZE_MIB)"
 
 build-apk-apps: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_apk_apps.py --build-only --image $(ROOTFS_IMAGE) --output $(APK_APPS_IMAGE)
@@ -95,7 +105,7 @@ build-apk-apps: build-kernel build-bootloader build-rootfs
 regen-font:
 	python3 scripts/generate_terminal_font.py
 
-run: build-kernel build-bootloader $(FS_IMAGE)
+run: build-kernel build-bootloader prepare-rootfs
 	$(QEMU) \
 	-machine $(QEMU_MACHINE) \
 	-cpu $(QEMU_CPU) \
@@ -113,7 +123,7 @@ run: build-kernel build-bootloader $(FS_IMAGE)
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
-run-gui: build-kernel build-bootloader $(FS_IMAGE)
+run-gui: build-kernel build-bootloader prepare-rootfs
 	$(QEMU) \
 	-machine $(QEMU_MACHINE) \
 	-cpu $(QEMU_CPU) \
@@ -135,7 +145,7 @@ run-gui: build-kernel build-bootloader $(FS_IMAGE)
 	-netdev user,id=net0 \
 	-device virtio-net-device,netdev=net0
 
-run-gdb: build-kernel build-bootloader $(FS_IMAGE)
+run-gdb: build-kernel build-bootloader prepare-rootfs
 	$(QEMU) -machine $(QEMU_MACHINE) -cpu $(QEMU_CPU) -global virtio-mmio.force-legacy=false -m $(QEMU_MEMORY) -smp $(QEMU_SMP) $(QEMU_BOOT_ARGS) -nographic -kernel $(KERNEL_BOOT_ARTIFACT) -drive file=$(FS_IMAGE),if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0 -object rng-random,filename=/dev/urandom,id=rng0 -device virtio-rng-device,rng=rng0 -device $(QEMU_GPU_DEVICE) -netdev user,id=net0 -device virtio-net-device,netdev=net0 -S -s
 
 clean:
@@ -178,6 +188,7 @@ verify-riscv64-secondary:
 	$(MAKE) ARCH=riscv64 ACCEL=tcg PROFILE=release verify-architecture-release
 	ARCH=riscv64 ACCEL=tcg python3 scripts/verify_artifacts.py
 	ARCH=riscv64 ACCEL=tcg python3 scripts/verify_boot.py --image target/rootfs/riscv64.img
+	ARCH=riscv64 ACCEL=tcg python3 scripts/verify_rust_std.py --image target/rootfs/riscv64.img
 
 verify-unit:
 	cargo test -p architecture-check -p kernel-unit -p scheduler-unit -p syscall-abi
@@ -193,6 +204,7 @@ verify-architecture-release:
 verify-runtime-gates:
 	$(MAKE) verify-runtime-boot
 	$(MAKE) verify-runtime-musl
+	$(MAKE) verify-runtime-rust-std
 	$(MAKE) verify-runtime-busybox
 	$(MAKE) verify-runtime-apk-apps
 
@@ -202,6 +214,9 @@ verify-runtime-boot:
 verify-runtime-musl:
 	python3 scripts/verify_musl.py
 
+verify-runtime-rust-std:
+	python3 scripts/verify_rust_std.py --image $(ROOTFS_IMAGE)
+
 verify-runtime-busybox:
 	python3 scripts/verify_busybox.py --image $(ROOTFS_IMAGE)
 
@@ -210,6 +225,9 @@ verify-runtime-apk-apps:
 
 verify-musl: build-kernel build-bootloader
 	python3 scripts/verify_musl.py
+
+verify-rust-std: build-kernel build-bootloader build-rootfs
+	python3 scripts/verify_rust_std.py --image $(ROOTFS_IMAGE)
 
 verify-busybox: build-kernel build-bootloader build-rootfs
 	python3 scripts/verify_busybox.py --image $(ROOTFS_IMAGE)

@@ -4,20 +4,17 @@ use crate::{
     task::current_task,
 };
 
-use super::errno;
+use super::{
+    errno,
+    mmap_flags::{
+        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_PRIVATE, MAP_SHARED,
+        mmap_flags_supported,
+    },
+};
 
 const PROT_READ: usize = 0x1;
 const PROT_WRITE: usize = 0x2;
 const PROT_EXEC: usize = 0x4;
-const MAP_PRIVATE: usize = 0x02;
-const MAP_SHARED: usize = 0x01;
-const MAP_FIXED: usize = 0x10;
-const MAP_ANONYMOUS: usize = 0x20;
-/// Linux `MAP_NORESERVE` 只控制 swap/commit reservation accounting。
-/// LiteOS 没有该 accounting owner，且 VMA 已按 fault 延迟驻留，因此只需接受而不保存状态；
-/// 缺失该 flag 会让 V8 的 `PROT_NONE` 地址 reservation 在建立 VMA 前被误拒为 `EINVAL`。
-const MAP_NORESERVE: usize = 0x4000;
-const MAP_FIXED_NOREPLACE: usize = 0x10_0000;
 
 fn permission_from_prot(prot: usize) -> Result<MapPermission, isize> {
     if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
@@ -68,7 +65,7 @@ pub(crate) fn sys_brk(new_brk: usize) -> isize {
 /// @param address 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
 /// @param length 非零映射长度。
 /// @param prot `PROT_NONE/READ/WRITE/EXEC` 的任意合法组合。
-/// @param flags 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加 anonymous/fixed/no-reserve variants。
+/// @param flags 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加已声明的 semantic/advisory variants。
 /// @param fd anonymous mapping 必须传 `-1`；file mapping 为 readable regular-file fd。
 /// @param offset anonymous mapping 必须传零。
 /// @return 成功返回映射地址；失败返回负 Linux errno。
@@ -81,17 +78,7 @@ pub(crate) fn sys_mmap(
     offset: usize,
 ) -> isize {
     let sharing = flags & (MAP_PRIVATE | MAP_SHARED);
-    if !matches!(sharing, MAP_PRIVATE | MAP_SHARED)
-        || flags
-            & !(MAP_PRIVATE
-                | MAP_SHARED
-                | MAP_FIXED
-                | MAP_ANONYMOUS
-                | MAP_NORESERVE
-                | MAP_FIXED_NOREPLACE)
-            != 0
-        || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0
-    {
+    if !mmap_flags_supported(flags) {
         return -errno::EINVAL;
     }
     let permission = match permission_from_prot(prot) {

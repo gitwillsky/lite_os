@@ -1117,7 +1117,7 @@ def create_image(
     group = run([str(find_debugfs()), "-R", "cat /etc/group", str(image)], ROOT)
     if "root:x:0:0:root:/root:/bin/sh" not in passwd or "root:x:0:" not in group:
         raise RuntimeError("BusyBox rootfs lacks the canonical root identity records")
-    for fixture in ("dynamic-smoke", "liteos-script"):
+    for fixture in ("dynamic-smoke", "liteos-script", "rust-std-smoke"):
         if fixture in entries:
             raise RuntimeError(f"product rootfs contains verification fixture: {fixture}")
     product_libraries = run(

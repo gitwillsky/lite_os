@@ -14,6 +14,9 @@
   AArch64 使用 Clang、固定 `rust-lld` 和 hard-float AAPCS64 `aarch64-unknown-none`
   `compiler_builtins`；softfloat builtins 只属于 kernel，链接进 musl 会让 FP helper return ABI
   与调用方分裂。RISC-V 使用 GCC 与 `libgcc`。产品 userspace 每个架构只保留一条 runtime。
+- Rust std builder 独占固定 rust-src `std/panic_abort` 与同 revision LLVM libunwind 的 source-list
+  build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
+  compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
 
 ## Interface
 
@@ -44,6 +47,8 @@
   EFAULT 只允许保留此前完整 batch/vector 的 partial progress。
 - pipe/socket/regular-file write 必须使用同一个 `UserInputStaging` seam；memory user-copy 直接初始化 `MaybeUninit<u8>` destination，不得为形成 `&mut [u8]` 预清零随后完整覆盖，也不得在各 syscall 保留 unsafe 转换分支。
 - userspace application 不得依赖 LiteOS 私有 runtime、init、device protocol 或第二条 rootfs path。
+- Rust application 必须使用标准 Linux/musl target；禁止 `os=none` custom target、预编译 bundled
+  musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
 
 ## Failure and cleanup
@@ -53,6 +58,8 @@
   `recvmsg` 收到的 fd 必须等 name、control 和 msghdr metadata 全部 copyout 成功后整批发布。
 - copyin fault 只允许发布已完成的 initialized prefix；atomic socket message 丢弃该 prefix，regular write 可按既有 partial-write policy 提交它，任何路径都不得读取未发布 suffix。
 - compiler、linker、compiler runtime、ELF machine 或 APK name/version/arch/摘要不匹配时，必须在 sysroot、rootfs 或 cache generation 发布前 fail-stop；临时下载和未发布 generation 必须清理，其他架构 cache 不得作为回退。
+- rust-src、LLVM libunwind input、build-std feature、target linker 或唯一动态 dependency 不匹配时，
+  必须在 std consumer generation 发布前 fail-stop；未完成的 object/Cargo target directory 必须清理。
 - Linux `clone` 的 `CLONE_PARENT_SETTID`/`CLONE_CHILD_SETTID` 是例外的 best-effort store：
   Thread identity 先发布但保持 `New`，store fault 不回滚、不改成功返回；全部 store 尝试
   完成后才按 process job-control 原子转为 Ready/Stopped。并发 `exit_group` 已提交时，新

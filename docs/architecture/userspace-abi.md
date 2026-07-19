@@ -15,10 +15,17 @@
   `SIG_IGN` 时恢复默认 disposition 并解除屏蔽，默认动作对 PID 1 也不豁免。RISC-V lazy FP
   指令必须先由 architecture backend 激活并原 PC 重试，只有未被该机制消费的指令生成 SIGILL。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、dependency-free Rust `console-session` 和单 ELF `liteos-stress` diagnostics。kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
+- 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
+  target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
+  静态链接 LLVM libunwind，最终动态 runtime 仍只有固定 musl。`rust-std-smoke` 只注入 disposable
+  gate image，覆盖 allocator/RandomState、filesystem、Thread/TLS、process、AF_UNIX 与 IPv4 client，
+  不进入产品 rootfs。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；应用与 terminal 只通过标准 Linux process、fd、PTY、termios、socket 和 ELF ABI 交互。
 
 ## Known limits
 
 - 支持矩阵只证明列出的 syscall、对象类型和 consumer，不宣称完整 Linux、POSIX 或任意 musl 程序兼容。
+- Rust std gate 只证明列出的 vertical slice；不外推 panic unwind、全部 allocator size、IPv6、
+  async runtime、直接使用 raw syscall 的 crate 或完整 `std::os::linux` 能力。
 - AArch64 与 RISC-V backend 只声明各自门禁覆盖的 register、signal、ELF/TLS 与 capability 语义；共享 asm-generic 编号不意味着 architecture-specific UAPI 可互换。

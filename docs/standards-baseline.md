@@ -56,6 +56,8 @@
 
 - `nightly-2026-07-12`；rustc commit `be8e82435eb04fbe75ed5286b52735366e160bed`；LLVM `22.1.8`。
 - 来源：[固定 rustc commit](https://github.com/rust-lang/rust/commit/be8e82435eb04fbe75ed5286b52735366e160bed) 与仓库 `rust-toolchain.toml`。
+- 标准 userspace 的 `std`、`panic_abort` 与静态 LLVM libunwind 都取自该 toolchain 安装的同 revision
+  rust-src；不得从 host LLVM、滚动系统 libunwind 或另一 Rust revision 回退。
 
 ### smoltcp
 

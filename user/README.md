@@ -16,3 +16,5 @@ runtime or UI protocol exists.
 evdev, resize transactions, font rasterization, dirty tracking and shell supervision remain private
 implementation details. The UART shell is an independent recovery path owned by BusyBox init.
 ABI verification consumers live under `scripts/fixtures/` and never enter the product source tree.
+Standard Rust applications use the official Linux/musl target and the repository-owned musl runtime;
+the `std` ABI proof remains a verification fixture rather than a second product userspace track.

@@ -256,6 +256,20 @@ mod errno;
 mod clone_errno;
 
 #[cfg(test)]
+#[path = "../../../kernel/src/syscall/mmap_flags.rs"]
+mod mmap_flags;
+
+#[cfg(test)]
+mod mmap_flags_tests;
+
+#[cfg(test)]
+#[path = "../../../kernel/src/syscall/getrandom_flags.rs"]
+mod getrandom_flags;
+
+#[cfg(test)]
+mod getrandom_flags_tests;
+
+#[cfg(test)]
 #[path = "../../../kernel/src/fs/pty/input_notification.rs"]
 mod pty_input_notification;
 
