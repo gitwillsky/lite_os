@@ -55,7 +55,7 @@ impl TaskControlBlock {
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
         let kernel_stack_top = self.thread.kernel_stack.get_top();
-        let old_trap_context = self.user_context_va();
+        let old_context_binding = self.thread.user_context.binding();
         let old_address_space = self.process.replace_address_space(new_address_space);
         self.process
             .address_space()
@@ -84,14 +84,12 @@ impl TaskControlBlock {
         // exec 不继承旧 image 的 live FP/NEON state；AArch64 在显式 asm boundary 清零，
         // RISC-V state 已由上面的新 UserContext image 覆盖。缺失该 hook 会跨 exec 泄漏寄存器。
         crate::arch::context::reset_live_floating_point();
-        if old_trap_context != TRAP_CONTEXT
-            && !crate::arch::context::is_kernel_stack_user_context(old_trap_context)
-        {
+        if old_context_binding.requires_retirement_wait(TRAP_CONTEXT) {
             old_address_space
                 .memory_set
                 .try_lock()
                 .expect("single-thread exec old address space is contended")
-                .remove_thread_trap_context(old_trap_context);
+                .remove_thread_trap_context(old_context_binding.address());
         }
         // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。

@@ -68,26 +68,18 @@ pub(crate) fn handle_user_trap() -> ! {
         TrapEvent::UnsupportedInterrupt => panic!("unsupported user interrupt"),
         TrapEvent::IllegalInstruction => {
             if let Some(current) = task::current_task() {
-                let program_counter = current.user_program_counter();
-                if arch::trap::is_floating_point_instruction_at(
-                    program_counter,
-                    |address, destination| {
-                        let halfword: &mut [u8; 2] = destination
-                            .try_into()
-                            .expect("RISC-V decoder requests one instruction halfword");
-                        current.copy_instruction_halfword(address, halfword).is_ok()
-                    },
-                ) && current.activate_user_floating_point()
-                {
-                    // 保持 sepc 不变；return path 初始化 FP register file 后重试原指令。
-                    drop(current);
-                } else {
-                    current
-                        .queue_synchronous_fault(
-                            4,
-                            task::PendingSignal::synchronous_fault(1, program_counter),
-                        )
-                        .expect("SIGILL synchronous delivery must accept a valid current task");
+                match current.handle_illegal_instruction() {
+                    Ok(()) => {
+                        // PC 保持不变；return path 使用初始化后的 architecture state 重试原指令。
+                    }
+                    Err(fault) => {
+                        current
+                            .queue_synchronous_fault(
+                                4,
+                                task::PendingSignal::synchronous_fault(1, fault.address()),
+                            )
+                            .expect("SIGILL synchronous delivery must accept a valid current task");
+                    }
                 }
             } else {
                 error!("[kernel] IllegalInstruction with no current task");

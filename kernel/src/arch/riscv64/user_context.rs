@@ -1,23 +1,13 @@
 use super::mmu::AddressSpaceToken;
 use super::trap::UserTrapEntry;
+use crate::arch::{IllegalInstructionFault, IllegalInstructionProbe, IllegalInstructionRetry};
 use riscv::register::sstatus::{self, SPP, Sstatus};
 
 /// RISC-V UserContext 必须保留在 trampoline 可访问的 TTBR0/Sv39 映射中。
 pub(crate) const KERNEL_STACK_CONTEXT_RESERVE: usize = 0;
-
-/// @description RISC-V kernel stack 不承载用户 trap context。
-/// @param _mapped_top kernel stack mapping top；RISC-V 不消费。
-/// @return 始终为 None，选择现有 Sv39 trap-context VMA。
-pub(crate) const fn kernel_stack_user_context(_mapped_top: usize) -> Option<usize> {
-    None
-}
-
-/// @description RISC-V 没有 kernel-stack-owned UserContext。
-/// @param _address 任意 context address。
-/// @return 始终为 false。
-pub(crate) const fn is_kernel_stack_user_context(_address: usize) -> bool {
-    false
-}
+/// RISC-V keeps the U-mode register image in its supervisor trap-context mapping.
+pub(crate) const USER_CONTEXT_PLACEMENT: crate::arch::UserContextPlacement =
+    crate::arch::UserContextPlacement::AddressSpace;
 
 /// @description U-mode 与 S-mode trap 路径之间共享的完整用户执行上下文。
 #[repr(C)]
@@ -110,17 +100,53 @@ impl UserContext {
         cx
     }
 
-    /// 激活首次使用的用户浮点上下文。
-    ///
-    /// 仅允许 `Off -> Initial`。返回 false 表示该上下文已经启用，caller 必须把当前
-    /// illegal instruction 按真正的 SIGILL 处理，避免重复 trap 被错误吞掉。
-    pub(crate) fn activate_floating_point(&mut self) -> bool {
-        if self.sstatus.fs() != sstatus::FS::Off {
-            return false;
+    /// @description 在短 context transaction 中分类 illegal instruction。
+    /// @return `FS=Off` 时请求 transaction 外解码；其他状态直接形成同步 SIGILL。
+    pub(crate) fn illegal_instruction_probe(&self) -> IllegalInstructionProbe {
+        let address = self.sepc;
+        if self.sstatus.fs() == sstatus::FS::Off {
+            IllegalInstructionProbe::Decode { address }
+        } else {
+            IllegalInstructionProbe::Fault(IllegalInstructionFault::new(address))
         }
-        self.f.fill(0);
-        self.fcsr = 0;
-        self.sstatus.set_fs(sstatus::FS::Initial);
-        true
+    }
+
+    /// @description 在第二个短 transaction 中提交已验证的 lazy-FP transition。
+    pub(crate) fn finish_illegal_instruction(
+        &mut self,
+        result: Result<IllegalInstructionRetry, IllegalInstructionFault>,
+    ) -> Result<(), IllegalInstructionFault> {
+        match result {
+            Err(fault) => Err(fault),
+            Ok(retry) => {
+                assert_eq!(retry.address(), self.sepc, "illegal-instruction PC changed");
+                assert_eq!(
+                    self.sstatus.fs(),
+                    sstatus::FS::Off,
+                    "illegal-instruction FP state changed"
+                );
+                self.f.fill(0);
+                self.fcsr = 0;
+                self.sstatus.set_fs(sstatus::FS::Initial);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// @description 在 ContextOwner transaction 外执行可能取得 AddressSpace lock 的指令读取。
+pub(crate) fn inspect_illegal_instruction(
+    probe: IllegalInstructionProbe,
+    read_halfword: impl FnMut(usize, &mut [u8]) -> bool,
+) -> Result<IllegalInstructionRetry, IllegalInstructionFault> {
+    match probe {
+        IllegalInstructionProbe::Fault(fault) => Err(fault),
+        IllegalInstructionProbe::Decode { address } => {
+            if super::fp_instruction::is_floating_point_instruction_at(address, read_halfword) {
+                Ok(IllegalInstructionRetry::new(address))
+            } else {
+                Err(IllegalInstructionFault::new(address))
+            }
+        }
     }
 }

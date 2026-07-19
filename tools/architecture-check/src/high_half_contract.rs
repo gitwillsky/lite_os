@@ -21,6 +21,7 @@ const KERNEL_STACK: &str = "kernel/src/memory/kernel_stack.rs";
 const AARCH64_CONTEXT: &str = "kernel/src/arch/aarch64/user_context.rs";
 const RISCV64_CONTEXT: &str = "kernel/src/arch/riscv64/user_context.rs";
 const TASK_TRAP_CONTEXT: &str = "kernel/src/task/model/trap_context.rs";
+const TASK_USER_CONTEXT: &str = "kernel/src/task/model/user_context.rs";
 const TASK_MODEL: &str = "kernel/src/task/model.rs";
 const PROCESS_CLONE: &str = "kernel/src/task/model/process_clone.rs";
 const PROCESS_EXEC: &str = "kernel/src/task/model/process_exec.rs";
@@ -87,6 +88,9 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         return;
     };
     let Ok(task_trap_context) = read(root, TASK_TRAP_CONTEXT, errors) else {
+        return;
+    };
+    let Ok(task_user_context) = read(root, TASK_USER_CONTEXT, errors) else {
         return;
     };
     let Ok(task_model) = read(root, TASK_MODEL, errors) else {
@@ -204,48 +208,45 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         && aarch64_context.contains(
             "KERNEL_STACK_CONTEXT_OFFSET + size_of::<UserContext>() <= KERNEL_STACK_CONTEXT_RESERVE",
         )
-        && aarch64_context.contains("mapped_top.checked_sub(KERNEL_STACK_CONTEXT_RESERVE)?")
         && aarch64_context.contains("KERNEL_STACK_CONTEXT_OFFSET: usize = 16")
-        && aarch64_context.contains("Some(reserved + KERNEL_STACK_CONTEXT_OFFSET)")
+        && aarch64_context.contains("UserContextPlacement::KernelStack")
         && aarch64_context.contains(
             "(super::mmu::KERNEL_STACK_REGION_START..super::mmu::KERNEL_STACK_REGION_TOP)",
         )
         && riscv64_context.contains("KERNEL_STACK_CONTEXT_RESERVE: usize = 0")
-        && riscv64_context
-            .contains("kernel_stack_user_context(_mapped_top: usize) -> Option<usize>")
-        && riscv64_context.contains("is_kernel_stack_user_context(_address: usize) -> bool")
-        && riscv64_context.matches("None").count() >= 1
-        && riscv64_context.matches("false").count() >= 1
+        && riscv64_context.contains("UserContextPlacement::AddressSpace")
+        && !riscv64_context.contains("kernel_stack_user_context")
+        && !riscv64_context.contains("is_kernel_stack_user_context")
         && kernel_stack
             .contains("top.checked_sub(crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE)")
         && kernel_stack.contains("pub(crate) fn user_context_address(&self) -> Option<usize>")
-        && kernel_stack.contains("crate::arch::context::kernel_stack_user_context(mapped_top)")
-        && task_trap_context
-            .contains("crate::arch::context::is_kernel_stack_user_context(address)")
-        && task_trap_context
-            .contains("crate::arch::context::is_kernel_stack_user_context(owner.address())")
-        && task_model.contains("kernel_stack.user_context_address().unwrap_or(TRAP_CONTEXT)")
+        && kernel_stack.contains("match crate::arch::context::USER_CONTEXT_PLACEMENT")
+        && task_user_context.contains("enum ContextBacking")
+        && task_user_context.contains("struct ContextBinding")
+        && task_user_context.contains("backing: ContextBacking")
+        && task_user_context.contains("for_placement(kernel_stack: Option<usize>")
+        && task_user_context.contains("requires_retirement_wait")
+        && task_trap_context.contains("match binding.backing()")
+        && task_trap_context.contains("ContextBacking::KernelStack")
+        && task_trap_context.contains("ContextBacking::AddressSpace")
+        && !task_trap_context.contains("is_kernel_stack_user_context")
+        && task_model.contains("ContextBinding::for_placement(")
         && task_model.contains("match kernel_stack.user_context_address()")
         && task_model.contains("allocate_thread_trap_context(tid)?")
-        && task_model
-            .matches("!crate::arch::context::is_kernel_stack_user_context(user_cx_va)")
-            .count()
-            == 2
+        && task_model.matches("requires_retirement_wait(TRAP_CONTEXT)").count() == 2
         && task_model
             .matches("memory_retirement_wait: Mutex::new(memory_retirement_wait)")
             .count()
             == 2
         && process_clone.contains("if let Some(address) = kernel_stack.user_context_address()")
         && process_clone.contains("allocate_thread_trap_context(tid)?")
-        && process_clone
-            .contains("!crate::arch::context::is_kernel_stack_user_context(user_cx_va)")
+        && process_clone.contains("requires_retirement_wait(TRAP_CONTEXT)")
         && process_clone
             .contains("memory_retirement_wait: Mutex::new(memory_retirement_wait)")
-        && process_exec
-            .contains("!crate::arch::context::is_kernel_stack_user_context(old_trap_context)"))
+        && process_exec.contains("old_context_binding.requires_retirement_wait(TRAP_CONTEXT)"))
     {
         errors.push(
-            "AArch64 KernelStack must own context storage without an AddressSpace-retirement waiter while RISC-V keeps the supervisor-VMA backend"
+            "Thread context backing must be classified once as typed KernelStack/AddressSpace ownership; generic lifecycle code must not infer architecture ownership from addresses"
                 .into(),
         );
     }

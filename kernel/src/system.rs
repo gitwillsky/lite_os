@@ -23,17 +23,18 @@ pub(crate) fn identity() -> [&'static str; 6] {
     ]
 }
 
-/// @description 投影所有 online CPU 共同成立的保守 Linux/riscv64 hwprobe value。
-/// @param key Linux `RISCV_HWPROBE_KEY_*`。
-/// @return 已知 key/value；未知 key 返回 None，由 syscall 编码 key=-1。
-pub(crate) fn riscv_hwprobe_value(key: i64) -> Option<u64> {
-    crate::arch::user::hardware_probe_value(key, crate::platform::timebase_frequency())
+/// @description 通过编译期选中的 architecture decoder 过滤私有 Linux syscall number。
+/// @param syscall_id raw Linux syscall number。
+/// @return 当前 backend 拥有该编号时返回原编号，否则返回 None。
+#[inline(always)]
+pub(crate) fn decode_architecture_syscall(syscall_id: usize) -> Option<usize> {
+    crate::arch::user::decode_private_syscall(syscall_id)
 }
 
-/// @description 判断当前编译期 architecture 是否定义 Linux `riscv_hwprobe` syscall。
-/// @return RISC-V 后端为 true；其他架构为 false，dispatcher 必须返回 `ENOSYS`。
-pub(crate) const fn supports_riscv_hwprobe() -> bool {
-    crate::arch::user::SUPPORTS_RISCV_HWPROBE
+/// @description 返回 platform monotonic counter 的固定频率。
+/// @return DTB/architecture platform owner 已验证的 Hz 值。
+pub(crate) fn time_counter_frequency() -> u64 {
+    crate::platform::timebase_frequency()
 }
 
 /// @description 返回 calling CPU 对应的紧凑 Linux logical CPU index。

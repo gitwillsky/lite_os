@@ -34,6 +34,11 @@
   selection；无 successor 时 guard 继续覆盖 architecture guarded WFI。assembly 临时开中断，trap
   通过精确 WFI/resume PC 修复 enable-to-WFI 窗口，返回前再次关中断，guard 随后恢复旧状态。
   禁止先释放 guard 再执行裸 WFI，也禁止把周期 timer 当作一次性 IPI/deferred edge 的可靠兜底。
+- boot CPU 保留 always-armed housekeeping/liveness tick；global deadline/timer queue 的状态 owner
+  不变。非 boot CPU 在同一个 idle IRQ guard 内关闭 local timer source，只有选中 runnable task
+  后才先写入未来 deadline、恢复 source，
+  再切换到 task；remote Ready 的 IPI 必须独立于 timer source 唤醒 WFI。禁止让全部 idle CPU 保持
+  周期 tick，也禁止关闭 boot tick 后用轮询或 runtime housekeeping source 迁移补偿。
 - signal selection、permission、generation 与 job-control consequence 必须在 process-graph transaction 内线性化，锁外才执行 wake/notification。
 - clone/fork/vfork child 必须在发布前从 calling task 的 live architecture context 取得完整 machine snapshot；AArch64 包含 q0-q31、FPCR 与 FPSR。新 task 初始 vector image 和 exec commit 后的 live vector file 必须为零，禁止跨进程映像泄漏；普通 trap 不得承担该同步。
 - exit/reparent/wait/TID selection 只能遍历 direct children、creator dependents 或 exact group

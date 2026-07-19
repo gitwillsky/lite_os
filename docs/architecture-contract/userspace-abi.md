@@ -3,7 +3,10 @@
 ## Owner
 
 - `syscall-abi` 独占已接入 Linux 64-bit asm-generic number 与 RISC-V 扩展编号；dispatcher 独占 number-to-handler mapping。
-- 编译期选中的 `arch::user` backend 独占 raw syscall register codec、signal machine context、ELF machine/flags/HWCAP 与 architecture capability query；generic syscall、process 与 memory 不得解释这些 layout。
+- 编译期选中的 `arch::user` backend 独占 raw syscall register codec、signal machine context、
+  ELF machine/flags/HWCAP 与 architecture-private syscall number decode；generic syscall、process
+  与 memory 不得解释这些 layout。decoder 通过编译期选中的普通后端函数调用，禁止 capability bool、
+  单次使用的 trait 或零大小 dispatch type。
 - syscall module 独占 raw UAPI codec、user-copy 和 errno translation；领域 module 独占行为与状态。
 - `syscall::user_iovec::UserInputStaging` 独占 write/send copyin 的 initialized prefix；stack 与 heap storage 都以 `MaybeUninit<u8>` 准备，只有成功 user-copy 的 prefix 可投影为 backend `&[u8]`。
 - task loader 独占 pathname/script rewrite；memory ELF loader 独占 ELF plan、mapping、initial stack 与 rollback。
@@ -17,13 +20,20 @@
 - 未接入 number 返回 `ENOSYS`；不得建立私有 number、错号转发、silent flag ignore 或 userspace compatibility shim。
 - syscall matrix中的每个入口必须唯一归属一个领域文件，并明确 Complete/Partial、对象范围与已知缺口。
 - Linux/AArch64 与 Linux/RISC-V register convention、signal frame、ELF/TLS 与 capability query 必须经静态 ABI backend；禁止 `dyn` dispatch、运行时 architecture 分支或 generic owner 依赖具体 layout。
-- AArch64 ELF 必须是 `EM_AARCH64`（183），auxv HWCAP 只公布 FP 与 ASIMD；编号 258 必须返回 `ENOSYS`。RISC-V 保留既有 ELF/HWCAP 与 `riscv_hwprobe` backend。
+- AArch64 ELF 必须是 `EM_AARCH64`（183），auxv HWCAP 只公布 FP 与 ASIMD；其静态 decoder
+  不接纳编号 258，dispatcher 必须返回 `ENOSYS`。RISC-V decoder 唯一接纳该编号并投递既有
+  `riscv_hwprobe` UAPI codec；禁止恢复 `SUPPORTS_*` flag 或 AArch64 hwprobe 假实现。
 - AArch64 CPU 即使能 decode 未公布的 SVE/SME probe，也不得为其建立第二套 context state；Unknown、
   SVE-access 与 SME-access exception 必须统一强制投递 `SIGILL/ILL_ILLOPC`，使标准用户 signal
   handler 能恢复 feature probe。blocked/ignored consequence 仍按同步 fault policy 收敛为 default。
 - signal frame capture、SA_RESTART 与 sigreturn register restore 都通过 Thread context owner；frame
   copyout 成功前不得发布 handler registers，clone child 可取得一次完整 machine snapshot。
-- trap/task signal owner 必须把未被 architecture lazy-FP seam 消费的非法指令发布为当前
+- `ContextOwner<UserContext>` 必须用两个短 transaction 调用静态 backend 的
+  illegal-instruction seam：第一次只产生 typed probe，transaction 外完成可能阻塞的指令读取，
+  第二次提交 retry/fault。RISC-V 可在精确 F/D/FP-CSR 且 `FS=Off` 时返回 retry；AArch64
+  直接返回 typed fault，不得保留恒 false decoder/activation compatibility pipeline，也不得让
+  context claim 跨越 AddressSpace lock。trap/task signal owner 必须把未被
+  architecture seam 消费的非法指令发布为当前
   Thread 的 forced SIGILL generation；首个 fault siginfo 编码 `si_code=ILL_ILLOPC` 与
   `si_addr=PC`。caught+unblocked disposition 保持 handler；blocked 或 `SIG_IGN` 必须在同一
   generation 事务中恢复 `SIG_DFL` 并解除屏蔽，forced consequence 必须绕过 PID 1

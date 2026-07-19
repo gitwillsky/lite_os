@@ -15,6 +15,10 @@
 - scheduler idle 的 local IRQ guard 覆盖 deferred/mailbox/runqueue 复查与 guarded WFI；架构
   assembly 只为 WFI 临时开中断并在返回前再次关闭，trap 用精确 WFI/resume PC 关闭一次性
   wake edge 窗口，不依赖下一个周期 tick 兜底。
+- CPU0 持续提供 100Hz housekeeping/liveness tick；global timer queue 仍由 TaskManager 唯一拥有。
+  其他 CPU 进入 idle 时屏蔽本地 tick，由 IPI/device edge 唤醒，选中 task 后在 context switch
+  前恢复新 deadline。空闲成本因此不随
+  vCPU 数乘以 tick 频率增长，busy CPU 仍保留固定时间片抢占。
 - TaskManager process graph 拥有 PID/TID、parent/child、creator Thread、process group/session、
   wait event、timer index 与 process lifecycle transaction；内部维护 direct-child、global TID、
   creator-dependent 与 `(SID,PGID)` exact-membership indexes，使 exit/wait/signal lookup 只触达

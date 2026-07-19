@@ -5,11 +5,15 @@
 - `arch` 以静态 façade 暴露 `UserContext`、`KernelContext`、`TrapEvent`、MMU、local interrupt 与 fail-stop mechanism；内部寄存器布局不泄漏。
 - `entry` 是 raw boot/trap callback ABI 的唯一 codec。boot 生成 typed `BootContext`，trap 生成 semantic event。
 - `cpu::CpuTopology` 唯一拥有 hardware identity 到 logical `CpuId` 的映射及 possible/online/active lifecycle；领域状态按 logical CPU 建槽。
-- `trap` 只协调 syscall、fault、timer、software 和 external interrupt 的领域投递。CSR/cause decode 留在 architecture backend。
+- `trap` 只协调 syscall、fault、timer、software 和 external interrupt 的领域投递。CSR/cause decode
+  留在 architecture backend；illegal instruction 由 backend 以“短 transaction 分类 →
+  transaction 外读取 → 短 transaction 提交”返回 retry 或 typed fault，不经过 capability probe 链，
+  也不持有 context claim 获取 AddressSpace lock。
 - Thread context owner 在 lifecycle seam 缓存唯一稳定 `UserContext` pointer；AArch64 pointer
   直接落在同一 Thread 的 TTBR1 KernelStack 保留页，RISC-V pointer 继续绑定 supervisor
-  trap-context mapping。普通 syscall/trap 使用 register-level transaction，因此不复制完整
-  UserContext，也不在热路径取得 AddressSpace lock 或 page-table walk。
+  trap-context mapping，并在创建时记录 typed backing；bind/rebind/retire 不再从地址范围推断架构
+  ownership。普通 syscall/trap 使用 register-level transaction，因此不复制完整 UserContext，
+  也不在热路径取得 AddressSpace lock 或 page-table walk。
 - timer/device hardirq 只发布合并的 per-CPU deferred work；kernel SSIP 只确认中断并完成同步
   barrier，领域 consumer 统一在 user-return 或 local-IRQ-closed idle safe point 处理 tick、deadline、
   device work 和 signal consequence。deferred bitmap 只在空→非空 transition 签发一次 local

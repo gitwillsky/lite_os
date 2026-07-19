@@ -115,6 +115,16 @@ pub(crate) unsafe fn enable_timer_source() {
     unsafe { riscv::register::sie::set_stimer() };
 }
 
+/// @description 在 calling CPU 保持 scheduler idle 时屏蔽 supervisor timer source。
+///
+/// absolute deadline 仍由 timer module 独占；恢复运行 task 前会先写入新 deadline。
+/// @return 无返回值。
+/// @errors caller 必须持有当前 CPU 的 local IRQ guard。
+pub(crate) fn disable_timer_source() {
+    // SAFETY: scheduler idle owns this CPU's STIE source and local SIE is already disabled.
+    unsafe { riscv::register::sie::clear_stimer() };
+}
+
 /// @description 发布 calling CPU 的 software interrupt pending bit。
 #[inline(always)]
 pub(crate) fn raise_software() {

@@ -487,6 +487,10 @@ pub(crate) fn run_tasks() -> ! {
         // Release 发布 local Processor 初始化；缺失时远端选核可能向尚未开始 drain 的 CPU 投递任务。
         cpu::mark_active();
     });
+    // CPU0 保留低成本 housekeeping/liveness tick；其余 CPU 的 tick 只在运行 task 时用于抢占。
+    // timer queue 仍由 TaskManager 唯一拥有；该 stack-local token 只避免每轮 spurious wake 重写 CSR。
+    let keeps_housekeeping_tick = cpu::current_id() == cpu::boot_id();
+    let mut local_tick_armed = true;
     loop {
         // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
         let idle_irq = LocalIrqGuard::disable();
@@ -494,15 +498,26 @@ pub(crate) fn run_tasks() -> ! {
         with_current_processor(|processor| processor.drain_inbound_to_local());
         let task = with_current_processor(Processor::select_task);
         if let Some(task) = task {
+            if !local_tick_armed {
+                crate::timer::resume_local_idle_tick();
+                local_tick_armed = true;
+            }
             switch_from_idle(task);
             // guard 跨切换保活，使 continuation 在 local interrupt disabled 下完成 bookkeeping。
             drop(idle_irq);
             continue;
         }
 
-        // 2. guard 保持 local IRQ 关闭直到 architecture seam 临时开中断并完成 WFI。固定的
+        // 2. 非 boot idle CPU 不承担 housekeeping liveness；关闭其本地周期 tick，避免 100Hz tick
+        // 把每个空闲 vCPU 都从 HVF 唤醒。远端 runnable publication 的 IPI 仍可唤醒 WFI。
+        if !keeps_housekeeping_tick && local_tick_armed {
+            crate::timer::suspend_local_idle_tick();
+            local_tick_armed = false;
+        }
+
+        // 3. guard 保持 local IRQ 关闭直到 architecture seam 临时开中断并完成 WFI。固定的
         // WFI/resume PC 使 trap entry 能跳过已消费 edge 对应的 WFI，关闭 enable-to-WFI 窗口。
-        // 3. seam 返回时 IRQ 仍关闭；guard 随后恢复原状态，下一轮再原子复查全部 scheduler state。
+        // 4. seam 返回时 IRQ 仍关闭；guard 随后恢复原状态，下一轮再原子复查全部 scheduler state。
         crate::arch::interrupt::wait_with_local_irq_masked();
         drop(idle_irq);
     }

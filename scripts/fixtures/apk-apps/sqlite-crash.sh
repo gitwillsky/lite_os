@@ -19,7 +19,8 @@ rm -f "$ready"
         'BEGIN IMMEDIATE;' \
         'INSERT INTO records(value) VALUES("uncommitted-crash");' \
         '.shell echo ready > /run/sqlite-crash-writer-active'
-    sleep 30
+    # 覆盖最长 5 秒 marker 观察窗口并留出 kill 余量；30 秒会让 ash 长时间等待孤儿 job。
+    sleep 10
     printf '%s\n' 'COMMIT;'
 ) | sqlite3 "$database" &
 writer=$!

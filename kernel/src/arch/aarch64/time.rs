@@ -20,17 +20,16 @@ pub(crate) fn counter_frequency() -> u64 {
     value
 }
 
-/// Program and unmask the calling CPU's generic virtual timer deadline.
+/// Program the calling CPU's generic virtual timer deadline.
 pub(crate) fn program_virtual_timer(deadline: u64) {
-    // SAFETY: each CPU exclusively owns CNTV_CVAL/CTL. CVAL is written first so an expired level
-    // is deasserted before the GIC owner completes the active PPI.
+    // SAFETY: each CPU exclusively owns CNTV_CVAL. Writing the future CVAL deasserts an expired
+    // level before the GIC owner completes the active PPI; interrupt source masking stays in the
+    // architecture interrupt owner.
     unsafe {
         core::arch::asm!(
             "msr cntv_cval_el0, {deadline}",
-            "msr cntv_ctl_el0, {enable}",
             "isb",
             deadline = in(reg) deadline,
-            enable = in(reg) 1u64,
             options(nomem, nostack, preserves_flags)
         )
     };

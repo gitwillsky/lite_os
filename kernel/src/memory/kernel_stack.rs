@@ -45,7 +45,15 @@ impl KernelStack {
     /// @return AArch64 为保留顶页 metadata 后的 context；RISC-V 为 None。
     pub(crate) fn user_context_address(&self) -> Option<usize> {
         let (_, mapped_top) = kernel_stack_position(self.handle.0);
-        crate::arch::context::kernel_stack_user_context(mapped_top)
+        match crate::arch::context::USER_CONTEXT_PLACEMENT {
+            crate::arch::UserContextPlacement::KernelStack { offset } => Some(
+                mapped_top
+                    .checked_sub(crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE)
+                    .and_then(|reserved| reserved.checked_add(offset))
+                    .expect("kernel-stack user-context placement exceeds mapping"),
+            ),
+            crate::arch::UserContextPlacement::AddressSpace => None,
+        }
     }
 }
 

@@ -326,11 +326,11 @@ impl GicV3 {
         }
         let interrupt = acknowledge as u32 & 0x00ff_ffff;
         if interrupt >= SPURIOUS_INTERRUPT_MIN {
-            return ClaimedInterrupt::from_controller(3, interrupt);
+            return ClaimedInterrupt::Spurious;
         }
         match interrupt {
-            TIMER_PPI => ClaimedInterrupt::from_controller(0, interrupt),
-            SOFTWARE_SGI => ClaimedInterrupt::from_controller(2, interrupt),
+            TIMER_PPI => ClaimedInterrupt::Timer(interrupt),
+            SOFTWARE_SGI => ClaimedInterrupt::Software(interrupt),
             device => {
                 if let Some(handler) = self.handlers.get(&device).cloned() {
                     if let Err(_error) = handler.handle_interrupt(device) {
@@ -340,7 +340,7 @@ impl GicV3 {
                 } else {
                     crate::error!("[Platform] unregistered GIC interrupt {}", device);
                 }
-                ClaimedInterrupt::from_controller(1, device)
+                ClaimedInterrupt::Device(device)
             }
         }
     }

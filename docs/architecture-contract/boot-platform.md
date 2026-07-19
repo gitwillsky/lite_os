@@ -13,7 +13,8 @@
 ## Interface
 
 - RISC-V bootloader 与 kernel 只通过 entry ABI、DTB opaque 和 SBI 交互；AArch64 只通过 Linux Image header、x0 DTB 与 PSCI HVC 交互。两者都不得共享 Rust state。
-- platform 向上只公开 typed `BootInfo`、`PlatformInfo`、firmware operation、linear interrupt token 与通用 device façade。
+- platform 向上只公开 typed `BootInfo`、`PlatformInfo`、firmware operation、linear interrupt token 与通用 device façade。GIC/PLIC claim backend 必须直接构造 `Timer/Device/Software/Spurious`
+  语义 variant；禁止用 `u8 kind` 私有 ABI 再做第二次运行时翻译。
 - hardware address、hart ID、SBI status、PLIC context 和 concrete VirtIO adapter 不得进入 generic domain。
 - `platform::qemu_virt` 的 PLIC register codec 只编码 source ID `1..=1023`；`0` 是 claim 哨兵，越过单个 context `0x80` enable bitmap 的 ID 必须在 MMIO 前拒绝。
 - 新 machine 必须作为独立 compile-time platform backend 接入；禁止在 generic code 追加 target 分支。

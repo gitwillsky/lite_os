@@ -131,13 +131,35 @@ pub(crate) fn enable_timer_interrupt() {
 
     // 2. Release 发布 interval，set_next_timer_interrupt 的 Acquire 保证不会读到未初始化值。
     TICK_INTERVAL_VALUE.store(interval, Ordering::Release);
+    // 3. 先写首个 deadline，再开放 source；缺失此顺序会让恢复中的 stale level 先于新 CVAL 交付。
+    set_next_timer_interrupt();
     // SAFETY: timer initialization changes only the current CPU's architecture timer source.
     unsafe {
-        // 3. 每个 CPU 独立启用 timer source，并在打开 scheduler interrupts 前写入首个 deadline。
         crate::arch::interrupt::enable_timer_source();
     }
+}
 
+/// @description 在非 boot CPU 进入 scheduler idle 前关闭本地周期 tick。
+///
+/// @return 无返回值；boot CPU 不得调用，它保留 always-armed housekeeping/liveness tick。
+/// @errors caller 必须持有当前 CPU 的 local IRQ guard，且当前 CPU 不得运行 task。
+pub(crate) fn suspend_local_idle_tick() {
+    assert_ne!(
+        cpu::current_id(),
+        cpu::boot_id(),
+        "boot CPU keeps the always-armed scheduler tick"
+    );
+    arch::interrupt::disable_timer_source();
+}
+
+/// @description 在非 boot CPU 离开 scheduler idle、运行 task 前恢复本地抢占 tick。
+///
+/// @return 无返回值；首个 deadline 严格晚于当前 counter。
+/// @errors caller 必须持有当前 CPU 的 local IRQ guard，且 timer 已完成全局初始化。
+pub(crate) fn resume_local_idle_tick() {
     set_next_timer_interrupt();
+    // SAFETY: the fresh local deadline was programmed while local IRQ delivery remains masked.
+    unsafe { arch::interrupt::enable_timer_source() };
 }
 
 pub(crate) fn init_rtc() {

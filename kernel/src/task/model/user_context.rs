@@ -9,12 +9,72 @@ enum ContextAccessError {
     Retired,
 }
 
+/// Owner that keeps the raw user-context pointer live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContextBacking {
+    /// The containing Thread kernel stack owns the storage lifetime.
+    KernelStack,
+    /// The process address space owns the mapped frame lifetime.
+    AddressSpace,
+}
+
+/// Typed binding returned when a context owner is inspected or retired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContextBinding {
+    address: usize,
+    backing: ContextBacking,
+}
+
+impl ContextBinding {
+    /// Bind an address whose storage is retained by the Thread kernel stack.
+    pub(super) const fn kernel_stack(address: usize) -> Self {
+        Self {
+            address,
+            backing: ContextBacking::KernelStack,
+        }
+    }
+
+    /// Bind an address whose storage is retained by the process address space.
+    pub(super) const fn address_space(address: usize) -> Self {
+        Self {
+            address,
+            backing: ContextBacking::AddressSpace,
+        }
+    }
+
+    /// Resolve the compile-time placement once at Thread creation.
+    ///
+    /// `kernel_stack` contains the selected backend's fixed stack address when present;
+    /// `address_space` is the already allocated supervisor mapping otherwise.
+    pub(super) fn for_placement(kernel_stack: Option<usize>, address_space: usize) -> Self {
+        kernel_stack.map_or_else(|| Self::address_space(address_space), Self::kernel_stack)
+    }
+
+    /// Return the trampoline-visible address paired with this owner.
+    pub(super) const fn address(self) -> usize {
+        self.address
+    }
+
+    /// Return the immutable owner that retains the backing storage.
+    pub(super) const fn backing(self) -> ContextBacking {
+        self.backing
+    }
+
+    /// Return whether a noncanonical AddressSpace mapping needs blocking retirement capacity.
+    pub(super) const fn requires_retirement_wait(self, canonical_address: usize) -> bool {
+        matches!(self.backing, ContextBacking::AddressSpace) && self.address != canonical_address
+    }
+}
+
 /// 当前 Thread 的唯一 trap-context owner。
 ///
 /// pointer 只在 architecture-selected backing create/exec-rebind/retire seam 改变；普通 trap
 /// transaction 不再取得 AddressSpace lock 或重新 page-table walk。
 #[derive(Debug)]
 pub(super) struct ContextOwner<T> {
+    // OWNER: backing provenance is fixed for the Thread lifetime. Exec may replace an
+    // AddressSpace mapping but cannot migrate the context into or out of its KernelStack.
+    backing: ContextBacking,
     // OWNER: address/pointer 是同一 mapping binding，只能在 claimed transaction 内读取或替换；
     // atomic storage 使错误的跨 CPU claim 在 fail-stop 前也不产生 data race。缺失任一字段会让
     // trap entry 地址与 Rust 访问的 physical context 分裂。
@@ -31,16 +91,21 @@ impl<T> ContextOwner<T> {
     /// # Safety
     /// pointer 必须对齐、可写，并在 rebind/retire 前始终指向 address 对应的唯一 live `T`。
     /// SAFETY: caller 独占并保活该 mapping；缺失唯一性会让后续 `with` 构造 aliasing `&mut T`。
-    pub(super) unsafe fn bind(address: usize, pointer: NonNull<T>) -> Self {
+    pub(super) unsafe fn bind(
+        address: usize,
+        pointer: NonNull<T>,
+        backing: ContextBacking,
+    ) -> Self {
         Self {
+            backing,
             address: AtomicUsize::new(address),
             pointer: AtomicPtr::new(pointer.as_ptr()),
             claimed: AtomicBool::new(false),
         }
     }
 
-    /// 返回 trampoline 使用的当前 supervisor trap-context VA。
-    pub(super) fn address(&self) -> usize {
+    /// Return the address paired with its immutable storage owner.
+    pub(super) fn binding(&self) -> ContextBinding {
         let _claim = self.claim().unwrap_or_else(|error| {
             panic!("user-context address violated owner contract: {error:?}")
         });
@@ -48,7 +113,10 @@ impl<T> ContextOwner<T> {
             !self.pointer.load(Ordering::Acquire).is_null(),
             "retired user-context address accessed"
         );
-        self.address.load(Ordering::Acquire)
+        ContextBinding {
+            address: self.address.load(Ordering::Acquire),
+            backing: self.backing,
+        }
     }
 
     /// 在唯一 owner transaction 内原地访问 context。
@@ -100,13 +168,16 @@ impl<T> ContextOwner<T> {
     }
 
     /// 退休 binding 并返回 architecture owner 用于清理 backing 的地址。
-    pub(super) fn retire(&self) -> usize {
+    pub(super) fn retire(&self) -> ContextBinding {
         let _claim = self.claim().unwrap_or_else(|error| {
             panic!("user-context retire violated owner contract: {error:?}")
         });
         let pointer = self.pointer.swap(core::ptr::null_mut(), Ordering::AcqRel);
         assert!(!pointer.is_null(), "user-context owner retired twice");
-        self.address.swap(0, Ordering::AcqRel)
+        ContextBinding {
+            address: self.address.swap(0, Ordering::AcqRel),
+            backing: self.backing,
+        }
     }
 
     #[cfg(test)]
@@ -187,8 +258,20 @@ mod tests {
         }));
         let pointer = NonNull::from(context);
         // SAFETY: leaked test allocation remains live and unique for the test process.
-        let owner = unsafe { ContextOwner::bind(0x8000, pointer) };
+        let owner = unsafe { ContextOwner::bind(0x8000, pointer, ContextBacking::AddressSpace) };
         (Arc::new(owner), clones)
+    }
+
+    #[test]
+    fn typed_backing_is_classified_once_and_preserved() {
+        let stack = ContextBinding::for_placement(Some(0x7000), 0x8000);
+        assert_eq!(stack.address(), 0x7000);
+        assert_eq!(stack.backing(), ContextBacking::KernelStack);
+        assert!(!stack.requires_retirement_wait(0x8000));
+
+        let temporary = ContextBinding::for_placement(None, 0x9000);
+        assert_eq!(temporary, ContextBinding::address_space(0x9000));
+        assert!(temporary.requires_retirement_wait(0x8000));
     }
 
     #[test]
@@ -256,14 +339,14 @@ mod tests {
         }));
         // SAFETY: replacement is a leaked, aligned and uniquely bound test allocation.
         unsafe { owner.rebind(0x9000, NonNull::from(replacement)) };
-        assert_eq!(owner.address(), 0x9000);
+        assert_eq!(owner.binding(), ContextBinding::address_space(0x9000));
         owner.replace(TestContext {
             registers: [1; 8],
             pc: 0x6000,
             clones: Arc::new(AtomicUsize::new(0)),
         });
         assert_eq!(owner.with(|context| context.pc), 0x6000);
-        assert_eq!(owner.retire(), 0x9000);
+        assert_eq!(owner.retire(), ContextBinding::address_space(0x9000));
         assert_eq!(owner.try_with(|_| ()), Err(ContextAccessError::Retired));
     }
 

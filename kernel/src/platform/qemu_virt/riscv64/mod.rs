@@ -21,7 +21,7 @@ pub(crate) use firmware::{
 /// @description claim 并处理当前 RISC-V external interrupt batch。
 pub(crate) fn claim_interrupt() -> super::ClaimedInterrupt {
     handle_external_interrupt();
-    super::ClaimedInterrupt::from_controller(1, 0)
+    super::ClaimedInterrupt::Device(0)
 }
 
 /// @description PLIC handler 已在 batch 内 exactly-once complete；此处只消费 typed token。

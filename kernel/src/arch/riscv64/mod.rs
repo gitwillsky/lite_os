@@ -17,7 +17,6 @@ mod trap;
 mod user;
 mod user_context;
 
-pub(crate) use fp_instruction::is_floating_point_instruction_at;
 pub(crate) use instruction_cache::publish_range as publish_instruction_range;
 pub(crate) use io::{
     before_mmio_write, read_mmio_u8, read_mmio_u32, write_mmio_u8, write_mmio_u32,
@@ -47,12 +46,11 @@ pub(crate) use trap::{
     return_to_user, user_entry,
 };
 pub(crate) use user::{
-    ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SUPPORTS_RISCV_HWPROBE, SyscallCompletion,
-    hardware_probe_value, valid_elf_flags,
+    ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SyscallCompletion, decode_private_syscall,
+    valid_elf_flags,
 };
 pub(crate) use user_context::{
-    KERNEL_STACK_CONTEXT_RESERVE, UserContext, is_kernel_stack_user_context,
-    kernel_stack_user_context,
+    KERNEL_STACK_CONTEXT_RESERVE, USER_CONTEXT_PLACEMENT, UserContext, inspect_illegal_instruction,
 };
 
 global_asm!(include_str!("trap.S"));

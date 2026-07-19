@@ -153,7 +153,6 @@ bootloader/src/uart16550.rs :: pub (crate) fn init (base : usize)
 bootloader/src/uart16550.rs :: pub (crate) impl Uart16550Map :: fn get (& self) -> & Uart16550 < u8 >
 bootloader/src/uart16550.rs :: pub (crate) static UART : Mutex < Uart16550Map >
 bootloader/src/uart16550.rs :: pub (crate) struct Uart16550Map
-kernel/src/arch/aarch64/fp_instruction.rs :: pub (crate) fn is_floating_point_instruction_at (_address : usize , _read_halfword : impl FnMut (usize , & mut [u8]) -> bool ,) -> bool
 kernel/src/arch/aarch64/fp_state.rs :: pub (crate) fn reset_live ()
 kernel/src/arch/aarch64/fp_state.rs :: pub (super) unsafe fn capture_clone (context : * mut KernelContext)
 kernel/src/arch/aarch64/fp_state.rs :: pub (super) unsafe fn capture_signal (state : * mut u8)
@@ -165,6 +164,7 @@ kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn clear_software ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn disable_for_fail_stop ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn disable_for_transfer ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn disable_local () -> LocalInterruptState
+kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn disable_timer_source ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn wait_for_external_interrupt ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn wait_for_interrupt ()
 kernel/src/arch/aarch64/interrupt.rs :: pub (crate) fn wait_with_local_irq_masked ()
@@ -213,7 +213,6 @@ kernel/src/arch/aarch64/mmu.rs :: pub (super) fn allocate_address_space_id () ->
 kernel/src/arch/aarch64/mmu.rs :: pub (super) fn release_address_space_id_after_global_fence (identifier : usize)
 kernel/src/arch/aarch64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn encoded (self) -> u64
 kernel/src/arch/aarch64/mod.rs :: pub (crate) mod interrupt
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use fp_instruction :: is_floating_point_instruction_at
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use fp_state :: reset_live as reset_live_floating_point
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: broadcast_instruction_cache
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
@@ -228,8 +227,8 @@ kernel/src/arch/aarch64/mod.rs :: pub (crate) use startup :: { StartupCpu , curr
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use time :: counter as time_counter
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use time :: { counter_frequency , program_virtual_timer }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use trap :: { TrapEvent , UserTrapEntry , event as trap_event , install_kernel_entry , kernel_exception , return_to_user , user_entry , }
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use user :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SUPPORTS_RISCV_HWPROBE , SyscallCompletion , hardware_probe_value , valid_elf_flags , }
-kernel/src/arch/aarch64/mod.rs :: pub (crate) use user_context :: { KERNEL_STACK_CONTEXT_RESERVE , UserContext , is_kernel_stack_user_context , kernel_stack_user_context , }
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use user :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SyscallCompletion , decode_private_syscall , valid_elf_flags , }
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use user_context :: { KERNEL_STACK_CONTEXT_RESERVE , USER_CONTEXT_PLACEMENT , UserContext , inspect_illegal_instruction , }
 kernel/src/arch/aarch64/page_table.rs :: enum AddressSpaceKind :: Kernel
 kernel/src/arch/aarch64/page_table.rs :: enum AddressSpaceKind :: User
 kernel/src/arch/aarch64/page_table.rs :: enum PageTableError :: AddressSpaceIdentifiersExhausted
@@ -346,10 +345,9 @@ kernel/src/arch/aarch64/user.rs :: enum SyscallCompletion :: Return (isize)
 kernel/src/arch/aarch64/user.rs :: pub (crate) const ELF_HWCAP : usize = (1 << 0) | (1 << 1)
 kernel/src/arch/aarch64/user.rs :: pub (crate) const ELF_MACHINE : u16 = 183
 kernel/src/arch/aarch64/user.rs :: pub (crate) const MACHINE_NAME : & str = "aarch64"
-kernel/src/arch/aarch64/user.rs :: pub (crate) const SUPPORTS_RISCV_HWPROBE : bool = false
+kernel/src/arch/aarch64/user.rs :: pub (crate) const fn decode_private_syscall (_syscall_id : usize) -> Option < usize >
 kernel/src/arch/aarch64/user.rs :: pub (crate) const fn valid_elf_flags (flags : u32) -> bool
 kernel/src/arch/aarch64/user.rs :: pub (crate) enum SyscallCompletion
-kernel/src/arch/aarch64/user.rs :: pub (crate) fn hardware_probe_value (_key : i64 , _time_counter_frequency : u64) -> Option < u64 >
 kernel/src/arch/aarch64/user.rs :: pub (crate) impl SyscallRequest :: fn arguments (self) -> [usize ; 6]
 kernel/src/arch/aarch64/user.rs :: pub (crate) impl SyscallRequest :: fn instruction (self) -> usize
 kernel/src/arch/aarch64/user.rs :: pub (crate) impl SyscallRequest :: fn number (self) -> usize
@@ -367,10 +365,12 @@ kernel/src/arch/aarch64/user.rs :: pub (crate) impl UserContext :: fn take_sysca
 kernel/src/arch/aarch64/user.rs :: pub (crate) struct InvalidSignalContext
 kernel/src/arch/aarch64/user.rs :: pub (crate) struct SyscallRequest
 kernel/src/arch/aarch64/user_context.rs :: pub (crate) const KERNEL_STACK_CONTEXT_RESERVE : usize = super :: mmu :: PAGE_SIZE
+kernel/src/arch/aarch64/user_context.rs :: pub (crate) const USER_CONTEXT_PLACEMENT : crate :: arch :: UserContextPlacement = crate :: arch :: UserContextPlacement :: KernelStack { offset : KERNEL_STACK_CONTEXT_OFFSET , }
+kernel/src/arch/aarch64/user_context.rs :: pub (crate) fn inspect_illegal_instruction (probe : IllegalInstructionProbe , _read_halfword : impl FnMut (usize , & mut [u8]) -> bool ,) -> Result < IllegalInstructionRetry , IllegalInstructionFault >
 kernel/src/arch/aarch64/user_context.rs :: pub (crate) fn is_kernel_stack_user_context (address : usize) -> bool
-kernel/src/arch/aarch64/user_context.rs :: pub (crate) fn kernel_stack_user_context (mapped_top : usize) -> Option < usize >
-kernel/src/arch/aarch64/user_context.rs :: pub (crate) impl UserContext :: fn activate_floating_point (& mut self) -> bool
 kernel/src/arch/aarch64/user_context.rs :: pub (crate) impl UserContext :: fn app_init_context (entry : usize , sp : usize , _kernel_root : KernelTrapToken , kernel_sp : usize , trap_handler : UserTrapEntry ,) -> Self
+kernel/src/arch/aarch64/user_context.rs :: pub (crate) impl UserContext :: fn finish_illegal_instruction (& mut self , result : Result < IllegalInstructionRetry , IllegalInstructionFault > ,) -> Result < () , IllegalInstructionFault >
+kernel/src/arch/aarch64/user_context.rs :: pub (crate) impl UserContext :: fn illegal_instruction_probe (& self) -> IllegalInstructionProbe
 kernel/src/arch/aarch64/user_context.rs :: pub (crate) impl UserContext :: fn set_sp (& mut self , sp : usize)
 kernel/src/arch/aarch64/user_context.rs :: pub (crate) struct UserContext
 kernel/src/arch/aarch64/user_context.rs :: pub (super) UserContext :: _reserved : usize
@@ -386,6 +386,16 @@ kernel/src/arch/aarch64/user_context.rs :: pub (super) UserContext :: x : [usize
 kernel/src/arch/aarch64/user_context.rs :: pub (super) const KERNEL_STACK_CONTEXT_OFFSET : usize = 16
 kernel/src/arch/aarch64/va39.rs :: pub (crate) const fn tlbi_all_asid_operand (virtual_address : usize) -> u64
 kernel/src/arch/aarch64/va39.rs :: pub (crate) fn indexes (virtual_page : usize) -> [usize ; 3]
+kernel/src/arch/mod.rs :: enum IllegalInstructionProbe :: # [cfg_attr (target_arch = "aarch64" , allow (dead_code , reason = "AArch64 never requests lazy instruction decode"))] Decode { address : usize }
+kernel/src/arch/mod.rs :: enum IllegalInstructionProbe :: # [doc = " No architecture state transition can consume the exception."] Fault (IllegalInstructionFault)
+kernel/src/arch/mod.rs :: enum UserContextPlacement :: # [doc = " The context lives at a fixed offset in the Thread's kernel-stack reservation."] # [cfg_attr (target_arch = "riscv64" , allow (dead_code , reason = "RISC-V uses an address-space trap context"))] KernelStack { offset : usize }
+kernel/src/arch/mod.rs :: enum UserContextPlacement :: # [doc = " The context lives in the process supervisor address-space mapping."] # [cfg_attr (target_arch = "aarch64" , allow (dead_code , reason = "AArch64 uses a kernel-stack user context"))] AddressSpace
+kernel/src/arch/mod.rs :: pub (crate) enum IllegalInstructionProbe
+kernel/src/arch/mod.rs :: pub (crate) enum UserContextPlacement
+kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionFault :: const fn address (self) -> usize
+kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionFault :: const fn new (address : usize) -> Self
+kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionRetry :: const fn address (self) -> usize
+kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionRetry :: const fn new (address : usize) -> Self
 kernel/src/arch/mod.rs :: pub (crate) mod context
 kernel/src/arch/mod.rs :: pub (crate) mod cpu
 kernel/src/arch/mod.rs :: pub (crate) mod instruction
@@ -394,19 +404,21 @@ kernel/src/arch/mod.rs :: pub (crate) mod mmu
 kernel/src/arch/mod.rs :: pub (crate) mod time
 kernel/src/arch/mod.rs :: pub (crate) mod trap
 kernel/src/arch/mod.rs :: pub (crate) mod user
+kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionFault
+kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionRetry
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , secondary_entry , write_mmio_u8 , write_mmio_u32 , }
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { read_mmio_u64 , write_mmio_u64 }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruction_cache
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_tlb
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: publish_instruction_range as publish_range
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: time_counter as counter
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceKind , AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , PagePermissions , PageTableError , SIGNAL_TRAMPOLINE_ADDRESS , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local_tlb as flush_local , flush_local_tlb_range as flush_local_range , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_to_virtual , virtual_to_physical , }
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SUPPORTS_RISCV_HWPROBE , hardware_probe_value , valid_elf_flags , }
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { KERNEL_STACK_CONTEXT_RESERVE , KernelContext , KernelResume , MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack , SyscallCompletion , UserContext , is_kernel_stack_user_context , kernel_stack_user_context , reset_live_floating_point , switch_kernel_context , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , decode_private_syscall , valid_elf_flags , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { KERNEL_STACK_CONTEXT_RESERVE , KernelContext , KernelResume , MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack , SyscallCompletion , USER_CONTEXT_PLACEMENT , UserContext , inspect_illegal_instruction , reset_live_floating_point , switch_kernel_context , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { StartupCpu , current_logical_id , entry_identity , initialize_local_execution , initialize_startup , install_boot_cpu , }
-kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { TrapEvent , UserTrapEntry , install_kernel_entry , is_floating_point_instruction_at , kernel_exception , return_to_user , trap_event as event , user_entry , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { TrapEvent , UserTrapEntry , install_kernel_entry , kernel_exception , return_to_user , trap_event as event , user_entry , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { counter_frequency , program_virtual_timer }
 kernel/src/arch/riscv64/fp_instruction.rs :: pub (crate) fn is_floating_point_instruction_at (program_counter : usize , mut copy : impl FnMut (usize , & mut [u8]) -> bool ,) -> bool
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn initialize_local ()
@@ -416,6 +428,7 @@ kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn clear_software ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_fail_stop ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_for_transfer ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_local () -> LocalInterruptState
+kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn disable_timer_source ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn raise_software ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn wait_for_external_interrupt ()
 kernel/src/arch/riscv64/interrupt.rs :: pub (crate) fn wait_for_interrupt ()
@@ -465,7 +478,6 @@ kernel/src/arch/riscv64/mmu.rs :: pub (super) fn release_address_space_id_after_
 kernel/src/arch/riscv64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn encoded (self) -> usize
 kernel/src/arch/riscv64/mod.rs :: pub (crate) fn reset_live_floating_point ()
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod interrupt
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use fp_instruction :: is_floating_point_instruction_at
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u32 , write_mmio_u8 , write_mmio_u32 , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use kernel_context :: { KernelContext , KernelResume , switch_kernel_context }
@@ -477,8 +489,8 @@ kernel/src/arch/riscv64/mod.rs :: pub (crate) use start :: entry_address as seco
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use startup :: { StartupCpu , current_logical_id , entry_identity , initialize as initialize_startup , initialize_local_execution , install_boot_logical_id as install_boot_cpu , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use time :: counter as time_counter
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use trap :: { TrapEvent , UserTrapEntry , event as trap_event , install_kernel_entry , kernel_exception , return_to_user , user_entry , }
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use user :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SUPPORTS_RISCV_HWPROBE , SyscallCompletion , hardware_probe_value , valid_elf_flags , }
-kernel/src/arch/riscv64/mod.rs :: pub (crate) use user_context :: { KERNEL_STACK_CONTEXT_RESERVE , UserContext , is_kernel_stack_user_context , kernel_stack_user_context , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use user :: { ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SyscallCompletion , decode_private_syscall , valid_elf_flags , }
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use user_context :: { KERNEL_STACK_CONTEXT_RESERVE , USER_CONTEXT_PLACEMENT , UserContext , inspect_illegal_instruction , }
 kernel/src/arch/riscv64/page_table.rs :: enum AddressSpaceKind :: Kernel
 kernel/src/arch/riscv64/page_table.rs :: enum AddressSpaceKind :: User
 kernel/src/arch/riscv64/page_table.rs :: enum PageTableError :: AddressSpaceIdentifiersExhausted
@@ -579,10 +591,9 @@ kernel/src/arch/riscv64/user.rs :: enum SyscallCompletion :: Return (isize)
 kernel/src/arch/riscv64/user.rs :: pub (crate) const ELF_HWCAP : usize = (1 << 0) | (1 << (b'C' - b'A')) | (1 << (b'D' - b'A')) | (1 << (b'F' - b'A')) | (1 << (b'I' - b'A')) | (1 << (b'M' - b'A'))
 kernel/src/arch/riscv64/user.rs :: pub (crate) const ELF_MACHINE : u16 = 243
 kernel/src/arch/riscv64/user.rs :: pub (crate) const MACHINE_NAME : & str = "riscv64"
-kernel/src/arch/riscv64/user.rs :: pub (crate) const SUPPORTS_RISCV_HWPROBE : bool = true
+kernel/src/arch/riscv64/user.rs :: pub (crate) const fn decode_private_syscall (syscall_id : usize) -> Option < usize >
 kernel/src/arch/riscv64/user.rs :: pub (crate) const fn valid_elf_flags (flags : u32) -> bool
 kernel/src/arch/riscv64/user.rs :: pub (crate) enum SyscallCompletion
-kernel/src/arch/riscv64/user.rs :: pub (crate) fn hardware_probe_value (key : i64 , time_counter_frequency : u64) -> Option < u64 >
 kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn arguments (self) -> [usize ; 6]
 kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn instruction (self) -> usize
 kernel/src/arch/riscv64/user.rs :: pub (crate) impl SyscallRequest :: fn number (self) -> usize
@@ -600,10 +611,11 @@ kernel/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn take_sysca
 kernel/src/arch/riscv64/user.rs :: pub (crate) struct InvalidSignalContext
 kernel/src/arch/riscv64/user.rs :: pub (crate) struct SyscallRequest
 kernel/src/arch/riscv64/user_context.rs :: pub (crate) const KERNEL_STACK_CONTEXT_RESERVE : usize = 0
-kernel/src/arch/riscv64/user_context.rs :: pub (crate) const fn is_kernel_stack_user_context (_address : usize) -> bool
-kernel/src/arch/riscv64/user_context.rs :: pub (crate) const fn kernel_stack_user_context (_mapped_top : usize) -> Option < usize >
-kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn activate_floating_point (& mut self) -> bool
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) const USER_CONTEXT_PLACEMENT : crate :: arch :: UserContextPlacement = crate :: arch :: UserContextPlacement :: AddressSpace
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) fn inspect_illegal_instruction (probe : IllegalInstructionProbe , read_halfword : impl FnMut (usize , & mut [u8]) -> bool ,) -> Result < IllegalInstructionRetry , IllegalInstructionFault >
 kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn app_init_context (entry : usize , sp : usize , kernel_satp : AddressSpaceToken , kernel_sp : usize , trap_handler : UserTrapEntry ,) -> Self
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn finish_illegal_instruction (& mut self , result : Result < IllegalInstructionRetry , IllegalInstructionFault > ,) -> Result < () , IllegalInstructionFault >
+kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn illegal_instruction_probe (& self) -> IllegalInstructionProbe
 kernel/src/arch/riscv64/user_context.rs :: pub (crate) impl UserContext :: fn set_sp (& mut self , sp : usize)
 kernel/src/arch/riscv64/user_context.rs :: pub (crate) struct UserContext
 kernel/src/arch/riscv64/user_context.rs :: pub (super) UserContext :: f : [u64 ; 32]
@@ -3738,14 +3750,14 @@ kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) impl UserInputStag
 kernel/src/syscall/user_iovec/input_staging.rs :: pub (crate) struct UserInputStaging < 'a >
 kernel/src/system.rs :: enum ResetKind :: ColdReboot
 kernel/src/system.rs :: enum ResetKind :: Shutdown
-kernel/src/system.rs :: pub (crate) const fn supports_riscv_hwprobe () -> bool
 kernel/src/system.rs :: pub (crate) enum ResetKind
 kernel/src/system.rs :: pub (crate) fn current_cpu_index () -> usize
+kernel/src/system.rs :: pub (crate) fn decode_architecture_syscall (syscall_id : usize) -> Option < usize >
 kernel/src/system.rs :: pub (crate) fn identity () -> [& 'static str ; 6]
 kernel/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
 kernel/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
-kernel/src/system.rs :: pub (crate) fn riscv_hwprobe_value (key : i64) -> Option < u64 >
 kernel/src/system.rs :: pub (crate) fn set_ctrl_alt_del (enabled : bool)
+kernel/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 kernel/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " script interpreter rewrite 超过 Linux 固定上限。"] InterpreterLoop
@@ -4117,26 +4129,35 @@ kernel/src/task/model/synchronous_fault.rs :: pub (super) SynchronousFaultPolicy
 kernel/src/task/model/synchronous_fault.rs :: pub (super) fn force_synchronous_fault (signal : usize , handler : usize , signal_mask : u64 ,) -> SynchronousFaultPolicy
 kernel/src/task/model/synchronous_fault.rs :: pub (super) fn merge_forced (existing : & mut bool , incoming : bool)
 kernel/src/task/model/synchronous_fault.rs :: pub (super) struct SynchronousFaultPolicy
-kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn activate_user_floating_point (& self) -> bool
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn complete_syscall (& self , completion : crate :: arch :: context :: SyscallCompletion)
+kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn handle_illegal_instruction (& self ,) -> Result < () , crate :: arch :: IllegalInstructionFault >
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn prepare_user_return (& self , logical_cpu : usize) -> usize
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn take_syscall_request (& self) -> (usize , [usize ; 6] , usize)
-kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn user_context_va (& self) -> usize
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn user_program_counter (& self) -> usize
 kernel/src/task/model/trap_context.rs :: pub (crate) impl TaskControlBlock :: fn user_stack_pointer (& self) -> usize
 kernel/src/task/model/trap_context.rs :: pub (in crate :: task) impl TaskControlBlock :: fn remove_thread_trap_context (& self)
-kernel/src/task/model/trap_context.rs :: pub (super) impl AddressSpace :: fn bind_user_context (& self , address : usize ,) -> Result < ContextOwner < UserContext > , MemoryError >
+kernel/src/task/model/trap_context.rs :: pub (super) impl AddressSpace :: fn bind_user_context (& self , binding : ContextBinding ,) -> Result < ContextOwner < UserContext > , MemoryError >
 kernel/src/task/model/trap_context.rs :: pub (super) impl AddressSpace :: fn rebind_user_context (& self , owner : & ContextOwner < UserContext > , address : usize)
 kernel/src/task/model/trap_context.rs :: pub (super) impl TaskControlBlock :: fn replace_user_context (& self , trap_context : UserContext)
 kernel/src/task/model/trap_context.rs :: pub (super) impl TaskControlBlock :: fn snapshot_user_context_for_clone (& self) -> UserContext
-kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn address (& self) -> usize
+kernel/src/task/model/user_context.rs :: enum ContextBacking :: # [doc = " The containing Thread kernel stack owns the storage lifetime."] KernelStack
+kernel/src/task/model/user_context.rs :: enum ContextBacking :: # [doc = " The process address space owns the mapped frame lifetime."] AddressSpace
+kernel/src/task/model/user_context.rs :: pub (super) enum ContextBacking
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: const fn address (self) -> usize
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: const fn address_space (address : usize) -> Self
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: const fn backing (self) -> ContextBacking
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: const fn kernel_stack (address : usize) -> Self
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: const fn requires_retirement_wait (self , canonical_address : usize) -> bool
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextBinding :: fn for_placement (kernel_stack : Option < usize > , address_space : usize) -> Self
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn binding (& self) -> ContextBinding
 kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn replace (& self , value : T)
-kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn retire (& self) -> usize
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn retire (& self) -> ContextBinding
 kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn snapshot_for_clone (& self) -> T where T : Clone ,
 kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn with < R > (& self , operation : impl FnOnce (& mut T) -> R) -> R
 kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: fn with_address < R > (& self , operation : impl FnOnce (& mut T) -> R) -> (usize , R)
-kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: unsafe fn bind (address : usize , pointer : NonNull < T >) -> Self
+kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: unsafe fn bind (address : usize , pointer : NonNull < T > , backing : ContextBacking ,) -> Self
 kernel/src/task/model/user_context.rs :: pub (super) impl ContextOwner < T > :: unsafe fn rebind (& self , address : usize , pointer : NonNull < T >)
+kernel/src/task/model/user_context.rs :: pub (super) struct ContextBinding
 kernel/src/task/model/user_context.rs :: pub (super) struct ContextOwner < T >
 kernel/src/task/pid.rs :: pub (crate) const INIT_PID : usize = 1
 kernel/src/task/pid.rs :: pub (crate) impl ProcessId :: const fn init () -> Self
@@ -4674,8 +4695,10 @@ kernel/src/timer.rs :: pub (crate) fn get_time_us () -> u64
 kernel/src/timer.rs :: pub (crate) fn init_rtc ()
 kernel/src/timer.rs :: pub (crate) fn monotonic_resolution_ns () -> u64
 kernel/src/timer.rs :: pub (crate) fn realtime_deadline_to_monotonic_ns (realtime_ns : u64) -> u64
+kernel/src/timer.rs :: pub (crate) fn resume_local_idle_tick ()
 kernel/src/timer.rs :: pub (crate) fn scheduler_quantum_ns () -> u64
 kernel/src/timer.rs :: pub (crate) fn set_next_timer_interrupt ()
+kernel/src/timer.rs :: pub (crate) fn suspend_local_idle_tick ()
 kernel/src/timer/deadline.rs :: pub (crate) fn next (previous : u64 , now : u64 , interval : u64) -> Option < u64 >
 kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
 kernel/src/trap/mod.rs :: pub (crate) fn handle_user_trap () -> !

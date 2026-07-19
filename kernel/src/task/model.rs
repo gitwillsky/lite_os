@@ -54,7 +54,7 @@ pub(in crate::task) use scheduling::{CpuAffinity, ReadyRetirement, ReadyTransiti
 pub(crate) use scheduling::{Sched, SchedulingEntity, SchedulingState, WaitMembership, WaitResult};
 pub(crate) use signal_state::{PendingSignal, SignalAction, SignalDelivery};
 use signal_state::{PendingSignals, ProcessSignalState, normalize_signal_mask, signal_is_ignored};
-use user_context::ContextOwner;
+use user_context::{ContextBacking, ContextBinding, ContextOwner};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RunState {
@@ -208,15 +208,14 @@ impl TaskControlBlock {
             loaded.build_address_space(&[], stack_limit, address_space_limit, data_limit)?;
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
-        let user_cx_va = kernel_stack.user_context_address().unwrap_or(TRAP_CONTEXT);
+        let context_binding =
+            ContextBinding::for_placement(kernel_stack.user_context_address(), TRAP_CONTEXT);
         let tid = pid.0;
         let terminal = Terminal::new(console, crate::fs::DeviceKind::Console)
             .map_err(|()| ElfLoadError::OutOfMemory)?;
         let address_space = AddressSpace::new(memory_set)?;
-        let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
-            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
-        {
+        let user_context = address_space.bind_user_context(context_binding)?;
+        let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?)
         } else {
             None
@@ -304,18 +303,18 @@ impl TaskControlBlock {
         let kernel_stack = KernelStack::try_new()?;
         let kernel_stack_top = kernel_stack.get_top();
         let address_space = self.process.address_space();
-        let user_cx_va = match kernel_stack.user_context_address() {
-            Some(address) => address,
-            None => address_space
-                .memory_set
-                .lock()
-                .map_err(|_| MemoryError::OutOfMemory)?
-                .allocate_thread_trap_context(tid)?,
+        let context_binding = match kernel_stack.user_context_address() {
+            Some(address) => ContextBinding::kernel_stack(address),
+            None => ContextBinding::address_space(
+                address_space
+                    .memory_set
+                    .lock()
+                    .map_err(|_| MemoryError::OutOfMemory)?
+                    .allocate_thread_trap_context(tid)?,
+            ),
         };
-        let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
-            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
-        {
+        let user_context = address_space.bind_user_context(context_binding)?;
+        let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?)
         } else {
             None

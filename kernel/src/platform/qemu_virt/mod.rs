@@ -14,6 +14,12 @@ use aarch64 as selected;
 use riscv64 as selected;
 
 /// @description GIC/PLIC claim 后交给 generic trap domain 的语义中断与 opaque completion token。
+// RISC-V external claim 只产生 Device；其 local timer/software traps 不经过 controller seam。
+// 缺少该 target-owned lint projection 时，保留的语义 union 会被 `-D warnings` 误判为 dead code。
+#[cfg_attr(
+    target_arch = "riscv64",
+    allow(dead_code, reason = "RISC-V controller only constructs Device")
+)]
 pub(crate) enum ClaimedInterrupt {
     Timer(u32),
     Device(u32),
@@ -22,16 +28,6 @@ pub(crate) enum ClaimedInterrupt {
 }
 
 impl ClaimedInterrupt {
-    fn from_controller(kind: u8, token: u32) -> Self {
-        match kind {
-            0 => Self::Timer(token),
-            1 => Self::Device(token),
-            2 => Self::Software(token),
-            3 => Self::Spurious,
-            _ => panic!("interrupt controller returned an invalid semantic kind"),
-        }
-    }
-
     fn completion_token(&self) -> Option<u32> {
         match self {
             Self::Timer(token) | Self::Device(token) | Self::Software(token) => Some(*token),

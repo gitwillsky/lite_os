@@ -6,11 +6,16 @@
 - `entry` 独占 raw boot/trap callback ABI；`cpu` 独占 logical identity/lifecycle/deferred bitset。
 - `timer` 独占 per-CPU deadline；`TimerQueue` 独占 Process timer record/deadline index；
   `WaitRegistry` 独占 wait ID、registration 与 sharded source/deadline indexes。
+- boot CPU 保留 always-armed housekeeping/liveness timer source；`TimerQueue` owner 不变，运行中的
+  CPU 仍可消费 timer deferred work。非 boot timer source 只在 task execution 期间开启。
+  scheduler idle 的 stack-local armed 状态只是 hardware source transition token，不是
+  第二份 deadline/source 状态；缺失时每个 idle vCPU 都会以固定 tick 频率退出虚拟化运行。
 - `ProcessorTopology` 独占 current/runqueue/mailbox；`task::memory_barrier` 独占 request/completion generation；`ProcessGraph` 独占 proc snapshot 与 creation publication。
 - 每个 Thread 的 `ContextOwner<UserContext>` 独占稳定 pointer 与 mutable transaction
-  capability。AArch64 pointer 绑定到同一 Thread `KernelStack` 顶部保留页，生命周期随 stack
-  owner，不建立 user page-table mapping；RISC-V 继续独占 supervisor trap-context VA，
-  AddressSpace 只在 create/exec/retire seam bind、rebind 或 unmap。
+  capability，并在创建时固定记录 typed `KernelStack/AddressSpace` backing。AArch64 pointer
+  绑定到同一 Thread `KernelStack` 顶部保留页，生命周期随 stack owner，不建立 user
+  page-table mapping；RISC-V 继续独占 supervisor trap-context VA，AddressSpace 只在
+  create/exec/retire seam bind、rebind 或 unmap。后续 lifecycle 禁止从地址范围反推 backing。
 - RISC-V `sstatus.FS` 是用户 FP register image 的唯一 ownership state；不得增加平行 lazy flag/cache。Off 首用只能由精确 F/D/FP-CSR instruction decode 激活，Dirty entry 必须在 kernel 使用 FP 前保存为 Clean image。
 - user trap entry 必须先把用户 `sstatus` 及 Dirty FP image 固化到 `UserContext`，再把 live
   `sstatus.FS` 设为 Dirty 交给 kernel LP64D execution owner。kernel trap 与 context switch 都会
@@ -67,6 +72,8 @@
 - context、CPU index、trap class 或 queue ownership 不一致时 fail-stop；不能回退到 boot CPU 或丢弃错误。
 - context transaction 并发 claim 或 retire 后访问必须 fail-stop；clone/fork 是唯一允许的完整
   UserContext snapshot，signal/restart/sigreturn 必须在同一 owner 上原地完成且 copy fault 不发布 handler。
+- illegal-instruction 首次分类与最终 state commit 各使用一个短 context transaction；可能取得
+  AddressSpace lock 的 instruction copy 必须位于两者之间，禁止持有 context claim 跨阻塞锁。
 - deferred consumer 必须有界并可续批；hardirq 只确认硬件与发布 work，不执行无界领域逻辑。
 - `cpu::deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
   `platform::notify_self`；bitmap 非空时已有 edge 或当前 hardirq continuation 负责抵达 safe point，

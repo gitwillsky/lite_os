@@ -11,6 +11,77 @@ use riscv64 as selected;
 #[cfg(not(any(target_arch = "aarch64", target_arch = "riscv64")))]
 compile_error!("LiteOS currently has no architecture implementation for this target");
 
+/// A genuine user illegal instruction that must become synchronous `SIGILL`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IllegalInstructionFault {
+    address: usize,
+}
+
+/// Architecture-owned first-stage classification of a user illegal instruction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IllegalInstructionProbe {
+    /// No architecture state transition can consume the exception.
+    Fault(IllegalInstructionFault),
+    // AArch64 eagerly enables FP/ASIMD and therefore never asks for instruction decoding.
+    // Without this target-owned lint projection, `-D warnings` rejects the shared semantic result.
+    #[cfg_attr(
+        target_arch = "aarch64",
+        allow(dead_code, reason = "AArch64 never requests lazy instruction decode")
+    )]
+    Decode { address: usize },
+}
+
+/// Verified lazy architecture-state transition to commit in a short context transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IllegalInstructionRetry {
+    address: usize,
+}
+
+#[cfg_attr(
+    target_arch = "aarch64",
+    allow(dead_code, reason = "AArch64 never commits lazy instruction retry")
+)]
+impl IllegalInstructionRetry {
+    /// Record the instruction address whose lazy state transition was verified.
+    pub(crate) const fn new(address: usize) -> Self {
+        Self { address }
+    }
+
+    /// Return the verified instruction address for commit-time validation.
+    pub(crate) const fn address(self) -> usize {
+        self.address
+    }
+}
+
+impl IllegalInstructionFault {
+    /// Construct a fault at the architecture-owned user program counter.
+    pub(crate) const fn new(address: usize) -> Self {
+        Self { address }
+    }
+
+    /// Return the user instruction address reported to `siginfo_t`.
+    pub(crate) const fn address(self) -> usize {
+        self.address
+    }
+}
+
+/// Compile-time placement of each Thread's architecture user context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UserContextPlacement {
+    /// The context lives at a fixed offset in the Thread's kernel-stack reservation.
+    #[cfg_attr(
+        target_arch = "riscv64",
+        allow(dead_code, reason = "RISC-V uses an address-space trap context")
+    )]
+    KernelStack { offset: usize },
+    /// The context lives in the process supervisor address-space mapping.
+    #[cfg_attr(
+        target_arch = "aarch64",
+        allow(dead_code, reason = "AArch64 uses a kernel-stack user context")
+    )]
+    AddressSpace,
+}
+
 pub(crate) use selected::{
     before_mmio_write, read_mmio_u8, read_mmio_u32, secondary_entry, write_mmio_u8, write_mmio_u32,
 };
@@ -23,8 +94,9 @@ pub(crate) mod interrupt {
     pub(crate) use super::selected::interrupt::raise_software;
     pub(crate) use super::selected::interrupt::{
         LocalInterruptState, clear_software, disable_for_fail_stop, disable_for_transfer,
-        disable_local, enable_scheduler_interrupts, enable_timer_source, restore_local,
-        wait_for_external_interrupt, wait_for_interrupt as wait, wait_with_local_irq_masked,
+        disable_local, disable_timer_source, enable_scheduler_interrupts, enable_timer_source,
+        restore_local, wait_for_external_interrupt, wait_for_interrupt as wait,
+        wait_with_local_irq_masked,
     };
 }
 
@@ -32,9 +104,8 @@ pub(crate) mod interrupt {
 pub(crate) mod context {
     pub(crate) use super::selected::{
         KERNEL_STACK_CONTEXT_RESERVE, KernelContext, KernelResume, MIN_SIGNAL_STACK_SIZE,
-        SIGNAL_FRAME_SIZE, SignalFrame, SignalStack, SyscallCompletion, UserContext,
-        is_kernel_stack_user_context, kernel_stack_user_context, reset_live_floating_point,
-        switch_kernel_context,
+        SIGNAL_FRAME_SIZE, SignalFrame, SignalStack, SyscallCompletion, USER_CONTEXT_PLACEMENT,
+        UserContext, inspect_illegal_instruction, reset_live_floating_point, switch_kernel_context,
     };
 }
 
@@ -71,8 +142,8 @@ pub(crate) mod mmu {
 /// Trap entry, decoding and return mechanism selected at compile time.
 pub(crate) mod trap {
     pub(crate) use super::selected::{
-        TrapEvent, UserTrapEntry, install_kernel_entry, is_floating_point_instruction_at,
-        kernel_exception, return_to_user, trap_event as event, user_entry,
+        TrapEvent, UserTrapEntry, install_kernel_entry, kernel_exception, return_to_user,
+        trap_event as event, user_entry,
     };
 }
 
@@ -86,7 +157,6 @@ pub(crate) mod instruction {
 /// User-visible architecture conventions selected at compile time.
 pub(crate) mod user {
     pub(crate) use super::selected::{
-        ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SUPPORTS_RISCV_HWPROBE, hardware_probe_value,
-        valid_elf_flags,
+        ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, decode_private_syscall, valid_elf_flags,
     };
 }

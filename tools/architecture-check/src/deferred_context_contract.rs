@@ -411,16 +411,45 @@ fn check_idle_dispatch_is_irq_closed(source: &SourceFile, errors: &mut Vec<Strin
     let irq = body.find("LocalIrqGuard :: disable");
     let dispatch = body.find("scheduler_deferred_safe_point");
     let select = body.find("Processor :: select_task");
+    let resume_tick = body.find("resume_local_idle_tick");
+    let switch = body.find("switch_from_idle");
+    let suspend_tick = body.find("suspend_local_idle_tick");
     let wait = body.find("wait_with_local_irq_masked");
     let restore = wait.and_then(|wait| {
         body[wait..]
             .find("drop (idle_irq)")
             .map(|offset| wait + offset)
     });
-    if !matches!((irq, dispatch, select, wait, restore), (Some(irq), Some(dispatch), Some(select), Some(wait), Some(restore)) if irq < dispatch && dispatch < select && select < wait && wait < restore)
-    {
+    if !matches!(
+        (
+            irq,
+            dispatch,
+            select,
+            resume_tick,
+            switch,
+            suspend_tick,
+            wait,
+            restore,
+        ),
+        (
+            Some(irq),
+            Some(dispatch),
+            Some(select),
+            Some(resume_tick),
+            Some(switch),
+            Some(suspend_tick),
+            Some(wait),
+            Some(restore),
+        ) if irq < dispatch
+            && dispatch < select
+            && select < resume_tick
+            && resume_tick < switch
+            && switch < suspend_tick
+            && suspend_tick < wait
+            && wait < restore
+    ) {
         errors.push(format!(
-            "{TASK_MANAGER_SOURCE}: idle scheduler must select and enter the exact-PC WFI seam while the local IRQ guard remains held"
+            "{TASK_MANAGER_SOURCE}: idle scheduler must resume the local tick before task switch and suspend it before exact-PC WFI while the local IRQ guard remains held"
         ));
     }
 }

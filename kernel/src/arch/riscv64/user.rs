@@ -4,10 +4,18 @@ use super::{
     UserContext,
     signal_frame::{SignalFrame, SignalMachineContext, SignalStack},
 };
-
 /// @description Linux utsname 使用的 architecture machine identity。
 pub(crate) const MACHINE_NAME: &str = "riscv64";
-pub(crate) const SUPPORTS_RISCV_HWPROBE: bool = true;
+/// @description 解码当前 RISC-V backend 独占的 Linux syscall number。
+/// @param syscall_id raw Linux syscall number。
+/// @return 当前仅接纳 `riscv_hwprobe`；其他编号由通用 dispatcher 处理。
+pub(crate) const fn decode_private_syscall(syscall_id: usize) -> Option<usize> {
+    if syscall_id == syscall_abi::SYSCALL_RISCV_HWPROBE {
+        Some(syscall_id)
+    } else {
+        None
+    }
+}
 pub(crate) const ELF_MACHINE: u16 = 243;
 pub(crate) const ELF_HWCAP: usize = (1 << 0)
     | (1 << (b'C' - b'A'))
@@ -22,27 +30,6 @@ pub(crate) const ELF_HWCAP: usize = (1 << 0)
 /// @return flags 仅包含当前支持的 RVC/float ABI 编码且没有保留编码时返回 true。
 pub(crate) const fn valid_elf_flags(flags: u32) -> bool {
     flags & !0x7 == 0 && flags & 0x6 != 0x6
-}
-
-/// @description 投影所有 online CPU 共同成立的保守 Linux RISC-V hwprobe value。
-///
-/// @param key Linux `RISCV_HWPROBE_KEY_*`。
-/// @param time_counter_frequency platform time counter frequency。
-/// @return 已知 key/value；未知 key 返回 `None`。
-pub(crate) fn hardware_probe_value(key: i64, time_counter_frequency: u64) -> Option<u64> {
-    const IMA: u64 = 1;
-    const FD_AND_C: u64 = (1 << 0) | (1 << 1);
-    const SV39_USER_ADDRESS_MAX: u64 = (1u64 << 38) - 1;
-    match key {
-        0..=2 => Some(0),
-        3 => Some(IMA),
-        4 => Some(FD_AND_C),
-        5 | 6 | 9 | 11..=16 => Some(0),
-        7 => Some(SV39_USER_ADDRESS_MAX),
-        8 => Some(time_counter_frequency),
-        10 => Some(4),
-        _ => None,
-    }
 }
 
 /// @description 已从 RISC-V user context 取出的完整 syscall request。

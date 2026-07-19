@@ -75,5 +75,18 @@ fn validate_cpu_mask(cpusetsize: usize, cpus: usize) -> Result<(), isize> {
 }
 
 fn probe_value(key: i64) -> (i64, u64) {
-    system::riscv_hwprobe_value(key).map_or((-1, 0), |value| (key, value))
+    const IMA: u64 = 1;
+    const FD_AND_C: u64 = (1 << 0) | (1 << 1);
+    const SV39_USER_ADDRESS_MAX: u64 = (1u64 << 38) - 1;
+    let value = match key {
+        0..=2 => Some(0),
+        3 => Some(IMA),
+        4 => Some(FD_AND_C),
+        5 | 6 | 9 | 11..=16 => Some(0),
+        7 => Some(SV39_USER_ADDRESS_MAX),
+        8 => Some(system::time_counter_frequency()),
+        10 => Some(4),
+        _ => None,
+    };
+    value.map_or((-1, 0), |value| (key, value))
 }

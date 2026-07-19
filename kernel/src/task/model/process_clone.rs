@@ -92,21 +92,21 @@ impl TaskControlBlock {
         // 2. vfork child 在共享 mm 中使用按全局 TID 分配的 supervisor trap page；若复用
         // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
         // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
-        let user_cx_va = if let Some(address) = kernel_stack.user_context_address() {
-            address
+        let context_binding = if let Some(address) = kernel_stack.user_context_address() {
+            ContextBinding::kernel_stack(address)
         } else if share_user_memory {
-            address_space
-                .memory_set
-                .lock()
-                .map_err(|_| MemoryError::OutOfMemory)?
-                .allocate_thread_trap_context(tid)?
+            ContextBinding::address_space(
+                address_space
+                    .memory_set
+                    .lock()
+                    .map_err(|_| MemoryError::OutOfMemory)?
+                    .allocate_thread_trap_context(tid)?,
+            )
         } else {
-            TRAP_CONTEXT
+            ContextBinding::address_space(TRAP_CONTEXT)
         };
-        let user_context = address_space.bind_user_context(user_cx_va)?;
-        let memory_retirement_wait = if user_cx_va != TRAP_CONTEXT
-            && !crate::arch::context::is_kernel_stack_user_context(user_cx_va)
-        {
+        let user_context = address_space.bind_user_context(context_binding)?;
+        let memory_retirement_wait = if context_binding.requires_retirement_wait(TRAP_CONTEXT) {
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?)
         } else {
             None

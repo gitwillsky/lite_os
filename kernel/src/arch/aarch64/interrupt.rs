@@ -85,6 +85,18 @@ pub(crate) unsafe fn enable_timer_source() {
     };
 }
 
+/// Mask the calling CPU's generic virtual timer while it remains scheduler-idle.
+///
+/// The absolute deadline stays owned by the timer module. A later resume programs a fresh
+/// deadline before this CPU can run a preemptible task.
+pub(crate) fn disable_timer_source() {
+    // ENABLE=0 deasserts the CPU-local level source; CVAL remains available for diagnostics.
+    // SAFETY: scheduler idle owns this CPU's timer source and local IRQ delivery is masked.
+    unsafe {
+        asm!("msr cntv_ctl_el0, {value}", "isb", value = in(reg) 0u64, options(nomem, nostack, preserves_flags))
+    };
+}
+
 /// Software interrupt completion belongs to the platform claim owner.
 pub(crate) fn clear_software() {
     panic!("AArch64 software interrupt completion must be routed through platform GICv3")

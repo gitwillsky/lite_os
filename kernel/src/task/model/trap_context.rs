@@ -2,20 +2,22 @@ use super::*;
 
 impl AddressSpace {
     /// @description 为 Thread owner 解析一次 architecture-selected trap-context backing。
-    /// @param address AArch64 kernel-stack pointer，或 RISC-V supervisor trap-context VA。
+    /// @param binding 已在 Thread 创建时分类的 typed address/backing 配对。
     /// @return 与 caller 保活的 KernelStack/AddressSpace 配对的唯一 context owner。
     pub(super) fn bind_user_context(
         &self,
-        address: usize,
+        binding: ContextBinding,
     ) -> Result<ContextOwner<UserContext>, MemoryError> {
-        let pointer = if crate::arch::context::is_kernel_stack_user_context(address) {
-            core::ptr::NonNull::new(address as *mut UserContext).ok_or(MemoryError::InvalidRange)?
-        } else {
-            self.user_context_pointer(address)?
+        let pointer = match binding.backing() {
+            ContextBacking::KernelStack => {
+                core::ptr::NonNull::new(binding.address() as *mut UserContext)
+                    .ok_or(MemoryError::InvalidRange)?
+            }
+            ContextBacking::AddressSpace => self.user_context_pointer(binding.address())?,
         };
         // SAFETY: the caller keeps either the containing KernelStack or AddressSpace mapping live
         // until retire. ContextOwner serializes all mutable access to the selected storage.
-        Ok(unsafe { ContextOwner::bind(address, pointer) })
+        Ok(unsafe { ContextOwner::bind(binding.address(), pointer, binding.backing()) })
     }
 
     /// @description exec commit 时重绑定 AddressSpace-backed owner；kernel-stack owner 不变。
@@ -23,7 +25,7 @@ impl AddressSpace {
     /// @param address 新映像中的 canonical trap-context VA。
     /// @return 无返回值；mapping 缺失属于 kernel invariant failure。
     pub(super) fn rebind_user_context(&self, owner: &ContextOwner<UserContext>, address: usize) {
-        if crate::arch::context::is_kernel_stack_user_context(owner.address()) {
+        if matches!(owner.binding().backing(), ContextBacking::KernelStack) {
             return;
         }
         // exec replacement 尚未对其他 task 发布，故这不是可竞争的 lock acquisition。
@@ -69,8 +71,8 @@ impl AddressSpace {
 impl TaskControlBlock {
     /// @description 退休 Thread trap context，并删除非 canonical temporary mapping。
     pub(in crate::task) fn remove_thread_trap_context(&self) {
-        let address = self.thread.user_context.retire();
-        if address == TRAP_CONTEXT || crate::arch::context::is_kernel_stack_user_context(address) {
+        let binding = self.thread.user_context.retire();
+        if !binding.requires_retirement_wait(TRAP_CONTEXT) {
             return;
         }
         let mut wait = self
@@ -83,12 +85,7 @@ impl TaskControlBlock {
             .address_space()
             .memory_set
             .lock_prepared(&mut wait)
-            .remove_thread_trap_context(address);
-    }
-
-    /// @description 返回 trampoline 使用的当前 supervisor trap-context VA。
-    pub(crate) fn user_context_va(&self) -> usize {
-        self.thread.user_context.address()
+            .remove_thread_trap_context(binding.address());
     }
 
     pub(super) fn replace_user_context(&self, trap_context: UserContext) {
@@ -131,11 +128,26 @@ impl TaskControlBlock {
             .with(|context| context.program_counter())
     }
 
-    /// 为确认过的首次 FP 指令原地激活 architecture-owned FP context。
-    pub(crate) fn activate_user_floating_point(&self) -> bool {
+    /// @description 由静态 architecture backend 检查并处理一次用户 illegal instruction。
+    ///
+    /// @return lazy architecture state 已初始化时 Retry；真正非法时返回带 fault address 的 Signal。
+    pub(crate) fn handle_illegal_instruction(
+        &self,
+    ) -> Result<(), crate::arch::IllegalInstructionFault> {
+        let probe = self
+            .thread
+            .user_context
+            .with(|context| context.illegal_instruction_probe());
+        let result =
+            crate::arch::context::inspect_illegal_instruction(probe, |address, destination| {
+                let halfword: &mut [u8; 2] = destination
+                    .try_into()
+                    .expect("architecture decoder requests one instruction halfword");
+                self.copy_instruction_halfword(address, halfword).is_ok()
+            });
         self.thread
             .user_context
-            .with(|context| context.activate_floating_point())
+            .with(|context| context.finish_illegal_instruction(result))
     }
 
     /// @description 投影当前用户 SP，不复制 UserContext。

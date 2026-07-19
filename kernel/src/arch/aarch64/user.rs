@@ -5,9 +5,14 @@ use super::{
     mmu::USER_ADDRESS_END,
     signal_frame::{InvalidSignalFrame, SignalFrame, SignalStack},
 };
-
 pub(crate) const MACHINE_NAME: &str = "aarch64";
-pub(crate) const SUPPORTS_RISCV_HWPROBE: bool = false;
+/// Decode an AArch64-private Linux syscall number.
+///
+/// AArch64 currently owns no private syscall numbers; the compile-time façade lets release builds
+/// erase this call and its architecture-dispatch branch completely.
+pub(crate) const fn decode_private_syscall(_syscall_id: usize) -> Option<usize> {
+    None
+}
 pub(crate) const ELF_MACHINE: u16 = 183;
 /// Linux arm64 baseline FP/Advanced SIMD capability bits exposed to userspace.
 pub(crate) const ELF_HWCAP: usize = (1 << 0) | (1 << 1);
@@ -18,11 +23,6 @@ pub(crate) const ELF_HWCAP: usize = (1 << 0) | (1 << 1);
 /// @return AArch64 保留字段为零时返回 true。
 pub(crate) const fn valid_elf_flags(flags: u32) -> bool {
     flags == 0
-}
-
-/// RISC-V hwprobe has no AArch64 key space.
-pub(crate) fn hardware_probe_value(_key: i64, _time_counter_frequency: u64) -> Option<u64> {
-    None
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -91,10 +91,26 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 source.relative
             ));
         }
+        for retired_capability in [
+            "SUPPORTS_RISCV_HWPROBE",
+            "supports_riscv_hwprobe",
+            "from_controller(kind:",
+            "activate_user_floating_point",
+            "fn kernel_stack_user_context",
+            "crate::arch::context::is_kernel_stack_user_context",
+        ] {
+            if source.text.contains(retired_capability) {
+                errors.push(format!(
+                    "{}: retired runtime architecture capability/private dispatch {:?} must not return",
+                    source.relative, retired_capability
+                ));
+            }
+        }
     }
 
     for retired in [
         "kernel/src/arch/riscv64/hart.rs",
+        "kernel/src/arch/aarch64/fp_instruction.rs",
         "kernel/src/task/context.rs",
         "kernel/src/task/trap_context.rs",
         "kernel/src/drivers/platform.rs",
